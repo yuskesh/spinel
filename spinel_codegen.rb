@@ -337,6 +337,11 @@ class Compiler
     @lambda_var_ret_names = "".split(",")
     @lambda_var_ret_types = "".split(",")
     @last_lambda_ret_type = ""
+    # `Klass.method(:cls_meth)` generates an adapter trampoline so the
+    # Method object's `(void *self, mrb_int...)` ABI fits a class
+    # method's no-self C signature. Tracks emitted (Klass, method)
+    # pairs to avoid duplicate definitions.
+    @cls_method_adapters = "".split(",")
 
     # Proc closure support (Phase 2)
     @in_proc_body = 0
@@ -410,6 +415,7 @@ class Compiler
     @lambda_params = "".split(",")
     @lambda_captures = "".split(",")
     @lambda_insert_pos = 0
+    @cls_method_adapters = "".split(",")
 
     # Proc closure support (Phase 2)
     @in_proc_body = 0
@@ -1858,6 +1864,78 @@ class Compiler
       end
     end
     -1
+  end
+
+  # Emit a one-off adapter that wraps `sp_<Klass>_cls_<mname>` so the
+  # Method dispatch ABI `(void *self, mrb_int...)` works on a class
+  # method (which has no self param). Idempotent: re-emitting the
+  # same (Klass, mname) pair is a no-op. Buffered into @lambda_funcs
+  # so the function lands at the same insertion point as lambdas
+  # (before main, after forward declarations of every cls method).
+  def emit_cls_method_adapter(ci, mname)
+    cname = @cls_names[ci]
+    key = cname + "::" + mname
+    k = 0
+    while k < @cls_method_adapters.length
+      if @cls_method_adapters[k] == key
+        return
+      end
+      k = k + 1
+    end
+    @cls_method_adapters.push(key)
+
+    cmnames = @cls_cmeth_names[ci].split(";")
+    cm_returns = @cls_cmeth_returns[ci].split(";")
+    cm_ptypes = @cls_cmeth_ptypes[ci].split("|")
+    j = 0
+    while j < cmnames.length
+      if cmnames[j] == mname
+        break
+      end
+      j = j + 1
+    end
+    rt = "int"
+    if j < cm_returns.length
+      rt = cm_returns[j]
+    end
+    pt_list = "".split(",")
+    if j < cm_ptypes.length
+      pt_list = cm_ptypes[j].split(",")
+    end
+    base_name = "sp_" + cname + "_cls_" + sanitize_name(mname)
+    adapter_name = "sp_" + cname + "_" + sanitize_name(mname) + "_cls_method_adapter"
+    sig = c_type(rt) + " " + adapter_name + "(void *_unused"
+    body_args = ""
+    pi2 = 0
+    while pi2 < pt_list.length
+      sig = sig + ", mrb_int _a" + pi2.to_s
+      if pi2 == 0
+        body_args = "_a" + pi2.to_s
+      else
+        body_args = body_args + ", _a" + pi2.to_s
+      end
+      pi2 = pi2 + 1
+    end
+    sig = sig + ")"
+    @lambda_funcs << "static "
+    @lambda_funcs << sig
+    @lambda_funcs << " {\n"
+    if rt == "void"
+      @lambda_funcs << "  "
+      @lambda_funcs << base_name
+      @lambda_funcs << "("
+      @lambda_funcs << body_args
+      @lambda_funcs << ");\n"
+      @lambda_funcs << "  return 0;\n"
+    else
+      @lambda_funcs << "  return "
+      @lambda_funcs << base_name
+      @lambda_funcs << "("
+      @lambda_funcs << body_args
+      @lambda_funcs << ");\n"
+    end
+    @lambda_funcs << "}\n"
+    nil
   end
 
   def cls_cmethod_return_inherited(ci, mname)
@@ -4190,6 +4268,26 @@ class Compiler
         if ci2 >= 0
           if mname == "new"
             return "obj_" + rcname
+          end
+          # `Klass.method(:cls_meth)` — bind to a class method.
+          # Returns a Method object exactly like the instance-recv
+          # form. The compile path below emits an adapter trampoline
+          # so the Method's `(void *, mrb_int...)` ABI absorbs the
+          # missing self.
+          if mname == "method"
+            args_idm = @nd_arguments[nid]
+            if args_idm >= 0
+              ams = get_args(args_idm)
+              if ams.length >= 1
+                cm_ref = @nd_content[ams[0]]
+                if cm_ref == ""
+                  cm_ref = @nd_name[ams[0]]
+                end
+                if cls_cmethod_owner(ci2, cm_ref) >= 0
+                  return "obj_Method"
+                end
+              end
+            end
           end
           # Issue #208: walk the parent chain so an inherited
           # `def self.<mname>` on a base class resolves correctly
@@ -16927,9 +17025,43 @@ class Compiler
         if @nd_type[recv] == "ConstantReadNode" || @nd_type[recv] == "ConstantPathNode"
           cname = constructor_class_name(recv)
           if cname != ""
-            tci = find_class_idx(cname)
-            if tci >= 0
-              cls_cmeth_mark_live(tci, mname)
+            # constructor_class_name resolves via lexical scope, but
+            # this DCE walker runs without method-body context. Fall
+            # back to suffix-matching when the unscoped name doesn't
+            # match a registered class — `CPU` (called inside
+            # `Optcarrot::CPU`) needs to mark `Optcarrot_CPU::poke_nop`
+            # live, but cname is plain `CPU`. Walks every cls name
+            # and marks any matching suffix.
+            cm_lit_for_method = ""
+            if mname == "method"
+              args_ic = @nd_arguments[nid]
+              if args_ic >= 0
+                ac_arg_ids = get_args(args_ic)
+                if ac_arg_ids.length >= 1
+                  cm_lit_for_method = @nd_content[ac_arg_ids[0]]
+                  if cm_lit_for_method == ""
+                    cm_lit_for_method = @nd_name[ac_arg_ids[0]]
+                  end
+                end
+              end
+            end
+            mark_idx = 0
+            while mark_idx < @cls_names.length
+              cn_full = @cls_names[mark_idx]
+              if cn_full == cname || cn_full.end_with?("_" + cname)
+                cls_cmeth_mark_live(mark_idx, mname)
+                # `Klass.method(:cls_meth)` — keeps the *named* cls
+                # method live so the adapter trampoline emitted by
+                # compile_constant_recv_expr resolves to a real
+                # symbol at link time. Without this, the cls method
+                # is DCE'd (no direct call site, only an indirect
+                # bind) and the adapter references an undefined
+                # function.
+                if cm_lit_for_method != ""
+                  cls_cmeth_mark_live(mark_idx, cm_lit_for_method)
+                end
+              end
+              mark_idx = mark_idx + 1
             end
           end
         end
@@ -25358,6 +25490,37 @@ class Compiler
           end
         end
         mi2 = mi2 + 1
+      end
+      # `Klass.method(:cls_meth)` — bind to a class method. Mirrors
+      # the instance-recv `obj.method(:bar)` form (line ~20940), but
+      # the underlying class method has no `self *` param. Emit a
+      # static adapter trampoline that ignores the dispatch ABI's
+      # `void *self` slot and forwards the rest, then bind the
+      # Method's iv_fn_ptr to the adapter. iv_self_obj is unused but
+      # set to a stable stand-in (a NULL pointer cast through
+      # sp_Method *); the Method dispatch in compile_poly_method_call
+      # passes it as the void * arg, which the adapter discards.
+      if mname == "method"
+        ci_cm = find_class_idx(rcname)
+        if ci_cm >= 0
+          args_id_cm = @nd_arguments[nid]
+          if args_id_cm >= 0
+            arg_ids_cm = get_args(args_id_cm)
+            if arg_ids_cm.length >= 1
+              cm_ref = @nd_content[arg_ids_cm[0]]
+              if cm_ref == ""
+                cm_ref = @nd_name[arg_ids_cm[0]]
+              end
+              owner_cm = cls_cmethod_owner(ci_cm, cm_ref)
+              if owner_cm >= 0
+                owner_cm_name = @cls_names[owner_cm]
+                emit_cls_method_adapter(owner_cm, cm_ref)
+                adapter_name = "sp_" + owner_cm_name + "_" + sanitize_name(cm_ref) + "_cls_method_adapter"
+                return "sp_Method_new((sp_Method *)0, (mrb_int)(uintptr_t)&" + adapter_name + ")"
+              end
+            end
+          end
+        end
       end
       # Class method dispatch (def self.xxx). Issue #208: walk the
       # parent chain so `Leaf.all` resolves to `Base.all`'s emitter
