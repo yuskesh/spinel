@@ -62,6 +62,19 @@ TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/
 TIMEOUT10 := $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) 10,)
 TIMEOUT60 := $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) 60,)
 
+# Default -j to logical CPU count when MAKEFLAGS doesn't already
+# carry a -j flag. The combined guard catches the three forms a user
+# can supply -j in (per the GNU Make manual): `-j N` / `-jN` via
+# filter, the short-flag-cluster form like `-kj` via findstring on
+# the first word (the leading `-` makes firstword non-empty when
+# MAKEFLAGS starts blank), and Make 4.x's `--jobserver-auth=…` long
+# form. Note: GNU Make 3.81 (macOS system make) reports MAKEFLAGS
+# as empty at parse time, so the guard always fires there; users on
+# 3.81 wanting to override should pass `MAKEFLAGS=-jN make …`.
+ifeq (,$(filter -j%,$(MAKEFLAGS))$(findstring j,$(firstword -$(MAKEFLAGS)))$(filter --jobserver%,$(MAKEFLAGS)))
+  MAKEFLAGS += -j$(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+endif
+
 # Reference Ruby for `make test` / `make bench` output comparison.
 # Defaults to `ruby` (the system CRuby), matching the historical
 # behaviour. Override on the command line when a newer or differently-
