@@ -27414,8 +27414,15 @@ class Compiler
           aexpr = compile_expr(arg_ids[k])
           if at == "int"
             if is_obj_type(pt) == 1
-              # Cast int to object pointer
-              pcname = pt[4, pt.length - 4]
+              # Cast int to object pointer. Strip the nullable `?`
+              # marker before deriving the C class name — a param
+              # type like `obj_BoundMethod?` would otherwise produce
+              # `(sp_BoundMethod? *)0` and gcc chokes on the stray `?`.
+              pt_base = pt
+              if is_nullable_type(pt) == 1
+                pt_base = base_type(pt)
+              end
+              pcname = pt_base[4, pt_base.length - 4]
               aexpr = "(sp_" + pcname + " *)" + aexpr
             end
           end
