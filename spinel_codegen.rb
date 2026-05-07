@@ -15171,11 +15171,11 @@ class Compiler
       infer_function_body_call_types
       infer_class_body_call_types
       infer_ivar_types_from_writers
-      # Issue #58: after scan_locals has populated @meth_param_empty
-      # via the per-call-site forward propagation, promote int_array
-      # params to concrete typed-arrays where bodies push known types.
-      # Then the next iteration's scan_locals back-propagates those
-      # promoted types to caller-side locals.
+      # After scan_locals has populated @meth_param_empty via the
+      # per-call-site forward propagation, promote int_array
+      # params to concrete typed-arrays where bodies push known
+      # types. The next iteration's scan_locals back-propagates
+      # those promoted types to caller-side locals.
       infer_param_array_type_from_body
       narrow_param_types_from_body_method_calls
       detect_poly_params
@@ -15196,9 +15196,9 @@ class Compiler
     infer_class_body_call_types
     infer_ivar_types_from_writers
     infer_all_returns
-    # Issue #303: param types are now stable, so module ivar refinement
-    # (which infers hash / array specialization from `@h[k] = v` writes
-    # in class-method bodies) sees the right key / value types instead
+    # Param types are now stable, so module ivar refinement (which
+    # infers hash / array specialization from `@h[k] = v` writes in
+    # class-method bodies) sees the right key / value types instead
     # of the placeholder "int" they'd carry at module-collect time.
     # After refining, re-run return / call-type inference so methods
     # that read or push the refined const see the new shape (e.g. a
@@ -15255,12 +15255,12 @@ class Compiler
       end
       gi = gi + 1
     end
-    # Issue #229: compute the live set of cls methods before any
-    # cls-method-related emit. Forward decls + bodies both consult
+    # Compute the live set of cls methods before any cls-method-
+    # related emit. Forward decls + bodies both consult
     # @cls_cmeth_live to skip uncalled methods that may otherwise
-    # emit non-compiling bodies (uncalled `def self.factory(attrs);
-    # new(attrs); end` against a 0-arg or differently-typed
-    # constructor).
+    # emit non-compiling bodies (an uncalled
+    # `def self.factory(attrs); new(attrs); end` against a 0-arg
+    # or differently-typed constructor).
     compute_live_cls_methods
     emit_forward_decls
     emit_global_constants
@@ -16028,11 +16028,11 @@ class Compiler
     if @cvar_names.length > 0
       emit_raw("")
     end
-    # Issue #126 Stage 2: storage for module-level singleton accessors
-    # whose resolved set has 2+ candidates. The slot stores the
-    # assigned module's sentinel (mrb_int from `module_sentinel`); the
-    # write site emits `slot = N;` and the chain dispatch reads back
-    # via a sentinel switch.
+    # Storage for module-level singleton accessors whose resolved
+    # set has 2+ candidates. The slot stores the assigned module's
+    # sentinel (mrb_int from `module_sentinel`); the write site
+    # emits `slot = N;` and the chain dispatch reads back via a
+    # sentinel switch.
     j = 0
     emitted = 0
     while j < @module_acc_keys.length
@@ -16414,20 +16414,21 @@ class Compiler
     end
   end
 
-  # Issue #314: classes whose instances flow into a poly-typed param
-  # slot at any call site. The boxing helper `sp_box_obj(p, ci)` takes
-  # `void *p`; a value-type-eligible class would emit
-  # `sp_box_obj(sp_<C>_new(...), ci)` (or `sp_box_obj(local, ci)`
-  # where `local` is the value-type struct), feeding a struct-by-value
-  # into a `void *` slot — a C type error. Excluding such classes
-  # from the value-type optimization keeps `<C>` heap-allocated, so
-  # the boxing argument is a stable pointer.
+  # Track classes whose instances flow into a poly-typed param
+  # slot at any call site. The boxing helper `sp_box_obj(p, ci)`
+  # takes `void *p`; a value-type-eligible class would emit
+  # `sp_box_obj(sp_<C>_new(...), ci)` or `sp_box_obj(local, ci)`
+  # where `local` is the value-type struct, feeding a
+  # struct-by-value into a `void *` slot — a C type error.
+  # Excluding such classes from the value-type optimization keeps
+  # `<C>` heap-allocated, so the boxing argument is always a
+  # stable pointer.
   #
-  # Surfaces specifically when a kwargs widening pass (this issue's
-  # main fix) collapses two or more concrete obj-typed call sites for
-  # the same kwarg into "poly" — at which point the call site starts
-  # boxing the instance, hitting the same struct-by-void-* mismatch
-  # the ptr_array / poly-return passes already guard against.
+  # Surfaces when kwargs widening collapses two or more concrete
+  # obj-typed call sites for the same kwarg into "poly" — at that
+  # point the call site starts boxing the instance, hitting the
+  # same struct-by-void-* mismatch the ptr_array / poly-return
+  # passes already guard against.
   def detect_poly_arg_passed_types
     @poly_arg_passed_types = "".split(",")
     nid = 0
@@ -16945,11 +16946,11 @@ class Compiler
               pri = pri + 1
             end
           end
-          # Issue #314: same exclusion for classes whose instances flow
-          # into a poly-typed param at any call site. Surfaces when
-          # kwargs widening collapses two obj types into "poly" — the
-          # call site then boxes a value-type instance, mismatching
-          # sp_box_obj's `void *` slot.
+          # Same value-type exclusion for classes whose instances
+          # flow into a poly-typed param at any call site. When
+          # kwargs widening collapses two obj types into "poly",
+          # the call site boxes a value-type instance and
+          # mismatches sp_box_obj's `void *` slot.
           if all_val == 1
             type_str314 = "obj_" + @cls_names[i]
             pai = 0
@@ -17399,14 +17400,14 @@ class Compiler
     i = 0
     while i < @cls_names.length
       cname = @cls_names[i]
-      # Issue #314 follow-up: pin @current_class_idx during this
-      # forward-decl emit pass so block_params_csig_for_body's
-      # infer_type calls (on `@ivar` reads inside yield arg
-      # expressions) resolve against this class's ivar table.
-      # Without this, ivars infer to int default and yields like
-      # `yield k, @data[k]` lower to `(mrb_int, mrb_int)` while
-      # the impl emit (which DOES set @current_class_idx) lowers
-      # to `(string, sp_RbVal)` — declaration/definition mismatch.
+      # Pin @current_class_idx during this forward-decl emit pass
+      # so block_params_csig_for_body's infer_type calls (on
+      # `@ivar` reads inside yield arg expressions) resolve
+      # against this class's ivar table. Otherwise ivars infer
+      # to the int default and yields like `yield k, @data[k]`
+      # lower to `(mrb_int, mrb_int)` in the decl while the impl
+      # emit lowers to `(string, sp_RbVal)` — and the C
+      # declaration/definition signatures mismatch.
       saved_ci_decl = @current_class_idx
       @current_class_idx = i
       # Constructor
@@ -17452,10 +17453,10 @@ class Compiler
       cm_ptypes = @cls_cmeth_ptypes[i].split("|")
       j = 0
       while j < cmnames.length
-        # Issue #229: skip forward decls for dead cls methods so the
-        # linker doesn't see "declared here" without a definition
-        # (the corresponding emit_class_methods skip would still
-        # otherwise leave the prototype dangling).
+        # Skip forward decls for dead cls methods so the linker
+        # doesn't see "declared here" without a definition — the
+        # corresponding emit_class_methods skip would otherwise
+        # leave the prototype dangling.
         if cls_cmeth_is_live(i, cmnames[j]) == 0
           j = j + 1
         else
@@ -17513,23 +17514,21 @@ class Compiler
     return ", void (*_block)(" + csig + ", void*), void *_benv"
   end
 
-  # Issue #314 follow-up: build the block fn-pointer C signature
-  # from the yield call sites' inferred arg types. Without this,
-  # block_params_csig emitted `mrb_int, mrb_int, ...` regardless,
-  # so a method that yields (String, sp_RbVal) had the function-
-  # pointer declared `void(*)(mrb_int, mrb_int, void*)` while the
-  # actual yield invocation site emitted `_block(const_char*,
-  # sp_RbVal, _benv)` — gcc errored with `incompatible type for
-  # argument`.
+  # Build the block fn-pointer C signature from the yield call
+  # sites' inferred arg types. block_params_csig alone returns
+  # `mrb_int, mrb_int, ...` regardless of what's yielded; this
+  # variant inspects the body so a method that yields (String,
+  # sp_RbVal) gets `void (*)(const char *, sp_RbVal, void *)` —
+  # matching the emitted `_block(lv_k, lv_v, _benv)` call site.
   #
   # Called BEFORE the function's scope has been pushed, so
   # locally-declared vars referenced in yield args (`yield k, v`
   # where `k`, `v` were assigned from typed expressions) are not
   # in @scope_names. Run scan_locals on the body and push a
   # temporary scope so body_yield_arg_types' infer_type calls
-  # resolve those reads. (Re-runs both at forward-decl emit time
-  # and at impl emit time; results converge once @meth_*/@cls_*
-  # tables stabilize through the type-inference fixpoint.)
+  # resolve those reads. Re-runs at both forward-decl emit time
+  # and impl emit time; results converge once @meth_* / @cls_*
+  # tables stabilize through the type-inference fixpoint.
   def block_params_csig_for_body(bid, arity)
     if bid < 0 || arity <= 0
       return block_params_csig(arity)
@@ -17964,12 +17963,12 @@ class Compiler
         if j < cm_ptypes.length
           ptypes = cm_ptypes[j].split(",")
         end
-        # Issue #229: dead-code-eliminate cls methods with no call
-        # site. The bug is that an unused `def self.factory(attrs);
-        # new(attrs); ...; end` emits a body whose `sp_<this>_new(args)`
-        # may not match the defining class's actual constructor
-        # arity/types — spinel can't infer types for an uncalled
-        # method, so the body fails to C-compile. compute_live_cls_methods
+        # Dead-code-eliminate cls methods with no call site. An
+        # unused `def self.factory(attrs); new(attrs); ...; end`
+        # would emit a body whose `sp_<this>_new(args)` may not
+        # match the defining class's actual constructor arity /
+        # types — spinel can't infer types for an uncalled method,
+        # so the body fails to C-compile. compute_live_cls_methods
         # ran before emit and seeded live entries from explicit
         # `<Class>.<m>(...)` call sites + transitive self/bare calls
         # within live cls method bodies.
@@ -17984,15 +17983,15 @@ class Compiler
     end
   end
 
-  # Issue #229: dead-code elimination for cls methods. An uncalled
+  # Dead-code elimination for class methods. An uncalled
   # `def self.factory(attrs); new(attrs); ...; end` on a parent
-  # class whose own `initialize` has different arity emits a body
-  # that doesn't C-compile (`sp_<class>_new(args)` against a 0-arg
-  # constructor; or, with a default-arg `initialize`, against a
-  # typed param when the uncalled method's own param can't be
+  # class whose own `initialize` has different arity would emit a
+  # body that doesn't C-compile (`sp_<class>_new(args)` against a
+  # 0-arg constructor; or, with a default-arg `initialize`,
+  # against a typed param the uncalled method itself can't have
   # inferred). The reachability set seeds from explicit
   # `<Class>.<m>(...)` call sites in the AST, then propagates
-  # through bare/self calls inside live cls method bodies. Anything
+  # through bare/self calls inside live cls method bodies; anything
   # not reached is skipped at forward-decl + body emit time.
   #
   # Live entries are stored as `<ClassName>::<methodName>` joined
@@ -18148,12 +18147,12 @@ class Compiler
         if @nd_type[recv] == "SelfNode" && ctx_ci >= 0
           cls_cmeth_mark_live(ctx_ci, mname)
         end
-        # Issue #126 / #229 interaction: `<Module>.<acc>.<method>`
-        # where `<Module>.<acc>` was constant-folded by Pass 2.7
-        # (resolve_module_singleton_accessors) to a class name.
-        # The receiver is a CallNode at AST level, so the
-        # ConstantReadNode branch above doesn't catch it. Look up
-        # the fold and mark the resolved class's cls method live.
+        # `<Module>.<acc>.<method>` where `<Module>.<acc>` was
+        # constant-folded by resolve_module_singleton_accessors to
+        # one or more class names. The receiver is a CallNode at
+        # AST level, so the ConstantReadNode branch above doesn't
+        # catch it; look up the fold and mark each resolved
+        # class's cls method live.
         if @nd_type[recv] == "CallNode"
           inner_recv = @nd_receiver[recv]
           if inner_recv >= 0 && @nd_type[inner_recv] == "ConstantReadNode"
@@ -18325,13 +18324,14 @@ class Compiler
       end
       if bid >= 0
         @current_class_idx = ci
-        # Issue #337: pin the synthesized sp_<C>_new function's return
-        # type so a bare `return` inside the initialize body lowers to
-        # `return self;` (the partially-initialized instance) rather
-        # than the default `return 0;` (which silently NULLs the
-        # pointer-returning constructor for the heap-allocated shape).
-        # Value-type constructors return a struct, leave at "" so the
-        # bare-return path falls through to its existing 0 default.
+        # Pin the synthesized sp_<C>_new function's return type so
+        # a bare `return` inside the initialize body lowers to
+        # `return self;` (the partially-initialized instance)
+        # rather than the default `return 0;` — the latter would
+        # silently NULL the pointer-returning constructor for the
+        # heap-allocated shape. Value-type constructors return a
+        # struct; leave at "" so the bare-return path falls
+        # through to its existing 0 default.
         saved_method_return = @current_method_return
         saved_has_self = @current_method_has_self
         @current_method_has_self = 1
@@ -18373,14 +18373,14 @@ class Compiler
           is_super = (@nd_type[sid] == "SuperNode" || @nd_type[sid] == "ForwardingSuperNode")
           if is_super
             if @cls_parents[ci] != ""
-              # Issue #314 follow-up: when the immediate parent is
-              # an "abstract" class (no own `initialize`, e.g.
-              # `class ApplicationRecord < ActiveRecord::Base`),
-              # the void `_initialize` wrapper is never emitted for
-              # it — so a literal `sp_<parent>_initialize(...)` call
-              # here would be an undefined reference at link time.
-              # Walk up to find_init_class to skip over abstract
-              # ancestors and call the nearest emitted wrapper.
+              # When the immediate parent is an "abstract" class
+              # (no own `initialize`, e.g. `class ApplicationRecord
+              # < ActiveRecord::Base`), the void `_initialize`
+              # wrapper is never emitted for it — a literal
+              # `sp_<parent>_initialize(...)` call here would be
+              # an undefined reference at link time. Walk via
+              # find_init_class to skip over abstract ancestors
+              # and call the nearest emitted wrapper.
               pi_imm = find_class_idx(@cls_parents[ci])
               pi = pi_imm
               if pi_imm >= 0
@@ -18444,13 +18444,13 @@ class Compiler
                       ak = ak + 1
                     end
                   end
-                  # Issue #314 follow-up: explicit `super(...)` with
-                  # fewer args than the parent expects (e.g. `super()`
-                  # against `def initialize(_attrs = {})`). Ruby fills
-                  # missing trailing slots from the parent's defaults;
-                  # the C signature has no defaults, so pad with
-                  # c_default_val per param type. Without this, gcc
-                  # errors `too few arguments to function`.
+                  # Explicit `super(...)` with fewer args than the
+                  # parent expects (e.g. `super()` against
+                  # `def initialize(_attrs = {})`). Ruby fills
+                  # missing trailing slots from the parent's
+                  # defaults; the C signature has no defaults, so
+                  # pad with c_default_val per param type to
+                  # satisfy gcc's argument count.
                   while ak < p_ptypes.length
                     if super_args != ""
                       super_args = super_args + ", "
@@ -18585,9 +18585,9 @@ class Compiler
                 end
                 emit_raw("  " + self_arrow + ivar + " = " + tmp_iv + ";")
               else
-                # Issue #130: same poly-slot boxing as the general
-                # InstanceVariableWriteNode emit path (compile_expr branch).
-                # Initialize bodies can introduce one of the disagreeing
+                # Same poly-slot boxing as the general
+                # InstanceVariableWriteNode emit path: initialize
+                # bodies can introduce one of the disagreeing
                 # writes to a multi-typed ivar.
                 if ivt == "poly"
                   val = box_expr_to_poly(expr_id_iv)
@@ -18656,24 +18656,22 @@ class Compiler
         bid = bodies[init_idx].to_i
       end
       if bid >= 0
-        # Issue #337: this wrapper has C return type `void`. Pin
-        # @current_method_return so a bare `return` inside the body
-        # lowers to the void shape (`return;`) instead of leaking
-        # whatever was set during the prior _new emission.
+        # This wrapper has C return type `void`. Pin
+        # @current_method_return so a bare `return` inside the
+        # body lowers to the void shape (`return;`) instead of
+        # leaking whatever was set during the prior _new emission.
         saved_method_return = @current_method_return
         saved_has_self2 = @current_method_has_self
         @current_method_has_self = 1
         @current_method_return = "void"
         @current_class_idx = ci
-        # Issue #314 follow-up: if the body contains an early `return`,
-        # compile_return_stmt emits `SP_GC_RESTORE()` (which references
-        # `_gc_saved`). The matching `SP_GC_SAVE()` at the top of the
-        # function must therefore exist. emit_constructor restored
-        # `@in_gc_scope` to its pre-constructor value just above; if
-        # that was 1 from a stale prior emit, declare_method_locals'
-        # `@in_gc_scope == 0` guard skips the SAVE emit and `_gc_saved`
-        # ends up undeclared. Reset to 0 here so declare_method_locals
-        # can decide cleanly.
+        # Reset @in_gc_scope to 0 so declare_method_locals'
+        # `@in_gc_scope == 0` guard fires and emits the
+        # `SP_GC_SAVE()` that early-`return` paths' matching
+        # `SP_GC_RESTORE()` (compile_return_stmt) refers to. The
+        # value inherited from emit_constructor above could be 1
+        # (stale from a heap constructor's body) and would
+        # otherwise leave `_gc_saved` undeclared.
         saved_in_gc_scope2 = @in_gc_scope
         @in_gc_scope = 0
         all_params = @cls_meth_params[ci].split("|")
@@ -19072,9 +19070,9 @@ class Compiler
             end
             set_var_type(lnames[k], ltypes[k])
           elsif (ltypes2[j] == "str_poly_hash" || ltypes2[j] == "sym_poly_hash") && ltypes[k] != ltypes2[j]
-            # Issue #133: empty-hash promotion in 2nd pass discovered the
-            # iterated value type is poly (each-rebuild over a poly_hash
-            # whose source type wasn't known on 1st pass). Upgrade the
+            # The 2nd pass discovered the iterated value type is
+            # poly (each-rebuild over a poly_hash whose source
+            # type wasn't known on the 1st pass). Upgrade the
             # 1st pass's intermediate non-poly variant.
             ltypes[k] = ltypes2[j]
             set_var_type(lnames[k], ltypes2[j])
@@ -19508,8 +19506,8 @@ class Compiler
         end
       end
     end
-    # Issue #58: empty-array param promotion at instance-method call
-    # sites — `obj.method(arg)`. Same forward/backward propagation as
+    # Empty-array param promotion at instance-method call sites
+    # (`obj.method(arg)`). Same forward/backward propagation as
     # the top-level branch below, but reads/writes the per-class
     # @cls_meth_ptypes / @cls_meth_ptypes_empty storage.
     if @nd_type[nid] == "CallNode"
@@ -19619,15 +19617,15 @@ class Compiler
         end
       end
     end
-    # Issue #58: empty-array param promotion at top-level function
-    # call sites. Two directions in one place:
+    # Empty-array param promotion at top-level function call
+    # sites. Two directions in one place:
     #   (a) Forward: if `arg` is `[]` literal or a local with the
-    #       empty flag set, mark @meth_param_empty[mi][k] = "1" so a
-    #       later body-promotion pass can refine the param type.
+    #       empty flag set, mark @meth_param_empty[mi][k] = "1" so
+    #       a later body-promotion pass can refine the param type.
     #   (b) Backward: if @meth_param_types[mi][k] has already been
-    #       promoted to a concrete typed-array (str_array, etc.) and
-    #       `arg` is a local with the empty flag, upgrade the local's
-    #       type to match — this is what propagates the deferred
+    #       promoted to a concrete typed-array (str_array, etc.)
+    #       and `arg` is a local with the empty flag, upgrade the
+    #       local's type to match — this propagates the deferred
     #       resolution back to the caller's variable.
     if @nd_type[nid] == "CallNode"
       if @nd_receiver[nid] < 0
@@ -19793,14 +19791,14 @@ class Compiler
                                 cur == "sym_int_hash" ||
                                 cur == "sym_str_hash")
                   if promotable && ki < @scan_empty_hash_flags.length && @scan_empty_hash_flags[ki] == "1"
-                    # Issue #133: block params (e.g. `|k, v|` in
-                    # `each`) aren't yet `declare_var`'d when scan_locals
-                    # walks the block body, so a bare `infer_type(v)`
-                    # falls back to "int" even though scan_locals has
-                    # already collected v's actual type into `types[]`.
-                    # Prefer scan_locals's local types array when the
-                    # argument is a LocalVariableReadNode we've recorded;
-                    # fall back to infer_type for everything else.
+                    # Block params (e.g. `|k, v|` in `each`) aren't
+                    # yet `declare_var`'d when scan_locals walks
+                    # the block body, so a bare `infer_type(v)`
+                    # falls back to "int" even though scan_locals
+                    # has already collected v's actual type into
+                    # `types[]`. Prefer that local types array when
+                    # the argument is a LocalVariableReadNode we
+                    # recorded; fall back to infer_type otherwise.
                     key_type = scan_locals_arg_type(aargs[0], names, types, params)
                     val_type = scan_locals_arg_type(aargs[aargs.length - 1], names, types, params)
                     promoted = promote_empty_hash_for(key_type, val_type)
@@ -20595,8 +20593,8 @@ class Compiler
         else
           @current_lexical_scope = ""
         end
-        # Issue #303: when refine_module_ivar_types widened the const
-        # type from the empty-hash default `str_int_hash` to a more
+        # When refine_module_ivar_types widened the const type
+        # from the empty-hash default `str_int_hash` to a more
         # specific shape (sym_str_hash etc.), emit the matching
         # `sp_<Hash>_new()` directly instead of falling through to
         # compile_expr's default `sp_StrIntHash_new()`. Same for
@@ -20977,9 +20975,9 @@ class Compiler
       return "(cvar_" + qname + " = " + val + ")"
     end
     if t == "InstanceVariableWriteNode"
-      # Issue #130: same poly-slot boxing as the statement-form emit.
-      # Expression form (`x = (@y = expr)`) is rarer but reaches the
-      # same slot through a different compile path.
+      # Same poly-slot boxing as the statement-form emit.
+      # Expression form (`x = (@y = expr)`) is rarer but reaches
+      # the same slot through a different compile path.
       iname_w = @nd_name[nid]
       ivt_w = ""
       if @current_class_idx >= 0
@@ -22311,10 +22309,10 @@ class Compiler
       end
     end
 
-    # Issue #126: `Module.accessor.<method>` where the slot was
-    # resolved by `resolve_module_singleton_accessors`. With a single
-    # constant in the resolved set, inline the call directly. With
-    # two or more, emit a sentinel-switch over the slot variable.
+    # `Module.accessor.<method>` where the slot was resolved by
+    # `resolve_module_singleton_accessors`. With a single constant
+    # in the resolved set, inline the call directly. With two or
+    # more, emit a sentinel-switch over the slot variable.
     if recv >= 0 && @nd_type[recv] == "CallNode"
       inner_recv = @nd_receiver[recv]
       inner_mname = @nd_name[recv]
@@ -22325,12 +22323,12 @@ class Compiler
           if rconsts != "" && rconsts != "?"
             args_id = @nd_arguments[nid]
             cands = rconsts.split(";")
-            # Issue #314 follow-up: scan_new_calls' #304 widening
-            # has already unified the candidates' per-arg ptypes,
-            # so any candidate's ptypes table tells us the target
-            # types here. Box each arg expression to match — without
-            # this, an int arg passed to a poly-widened param emits
-            # raw `mrb_int` to a `sp_RbVal` slot (Wint-conversion).
+            # scan_new_calls' module-dispatch widening has already
+            # unified the candidates' per-arg ptypes, so any
+            # candidate's ptypes table tells us the target types
+            # here. Box each arg expression to match — an int arg
+            # passed to a poly-widened param would otherwise emit
+            # raw `mrb_int` into a `sp_RbVal` slot.
             target_ptypes = "".split(",")
             cands.each { |cn_t|
               cci_t = find_class_idx(cn_t)
@@ -22974,11 +22972,11 @@ class Compiler
   end
 
   def compile_no_recv_call_expr(nid, mname)
-    # Issue #207: bare `new` inside a `def self.<m>` body resolves
-    # to <CurrentClass>.new. Dispatched here (rather than relying on
-    # the later `mname == "new"` branch in compile_call_expr) because
-    # compile_call_expr short-circuits to this function for recv < 0
-    # before reaching that branch.
+    # Bare `new` inside a `def self.<m>` body resolves to
+    # <CurrentClass>.new. Dispatched here rather than via the
+    # later `mname == "new"` branch in compile_call_expr because
+    # compile_call_expr short-circuits to this function for
+    # recv < 0 before reaching that branch.
     if mname == "new"
       r = compile_constructor_expr(nid, -1)
       if r != ""
@@ -23331,12 +23329,12 @@ class Compiler
             bp = "0"
           end
         end
-        # Issue #286: when the call resolves through inheritance to an
-        # ancestor's method, the C function takes `sp_<owner> *self`.
-        # Our `self` here is `sp_<current> *`. Cast so the `-Werror`
-        # build doesn't trip on -Wincompatible-pointer-types. The same
-        # cast pattern is already used by the recv >= 0 / instance_eval
-        # branches a few lines above.
+        # When the call resolves through inheritance to an
+        # ancestor's method, the C function takes `sp_<owner>
+        # *self`. Our `self` here is `sp_<current> *`. Cast so
+        # the `-Werror` build doesn't trip on
+        # -Wincompatible-pointer-types. Same cast pattern as the
+        # recv >= 0 / instance_eval branches above.
         recv_arg = self_expr
         if owner != "" && owner != @cls_names[@current_class_idx]
           recv_arg = "(sp_" + owner + " *)" + self_expr
@@ -23959,9 +23957,10 @@ class Compiler
       if lt == "mutable_str"
         @needs_mutable_str = 1
         rc = compile_expr_gc_rooted(recv)
-        # Issue #313: unbox a poly-typed arg to const char * before
-        # sp_String_append (which takes const char *). sp_poly_to_s
-        # handles every tag — string passes through, others coerce.
+        # Unbox a poly-typed arg to const char * before
+        # sp_String_append (which takes const char *).
+        # sp_poly_to_s handles every tag — string passes through,
+        # others coerce.
         args_id = @nd_arguments[nid]
         if args_id >= 0
           arg_ids = get_args(args_id)
@@ -24071,12 +24070,11 @@ class Compiler
     ""
   end
 
-  # Issue #207: implicit `new` (recv-less) inside a `def self.<m>`
-  # body resolves to <CurrentClass>.new. Without this the recv < 0
-  # branch fell through to "0" with the warning, leaving a factory
-  # like `def self.from_raw(p); instance = new; instance.x = ...; end`
-  # broken. Mirrors how implicit `self` inside instance methods
-  # already routes recv-less calls to the enclosing class.
+  # Resolve an implicit `new` (recv-less) inside a `def self.<m>`
+  # body to <CurrentClass>.new, so a factory like `def
+  # self.from_raw(p); instance = new; instance.x = ...; end`
+  # works. Mirrors the way implicit `self` inside instance methods
+  # routes recv-less calls to the enclosing class.
   def implicit_new_class_name(recv)
     if recv >= 0
       return ""
@@ -24266,11 +24264,11 @@ class Compiler
         return "sp_IntArray_new()"
       end
       if cname == "String"
-        # Issue #203: `String.new` and `String.new("seed")` produce
-        # the same sp_String * value that `s = ""` widens into when
-        # followed by `<<`. Mirror sp_String_new's signature: a NUL-
-        # terminated seed (defaulting to "") that the runtime copies
-        # into the freshly allocated buffer.
+        # `String.new` and `String.new("seed")` produce the same
+        # sp_String * value that `s = ""` widens into when
+        # followed by `<<`. Mirror sp_String_new's signature: a
+        # NUL-terminated seed (defaulting to "") that the runtime
+        # copies into the freshly allocated buffer.
         @needs_mutable_str = 1
         @needs_gc = 1
         args_id = @nd_arguments[nid]
@@ -26086,7 +26084,7 @@ class Compiler
       if mname == "empty?"
         return "sp_PtrArray_empty(" + rc + ")"
       end
-      # Issue #156: transpose for [[Int]] (int_array_ptr_array). Other
+      # transpose for [[Int]] (int_array_ptr_array). Other
       # nested-array element shapes are not yet supported and fall
       # through to the unresolved-call warning.
       if mname == "transpose" && elem_type == "int_array"
@@ -27084,11 +27082,12 @@ class Compiler
           mfn = rcname + "_cls_" + mname
           mfi = find_method_idx(mfn)
           if mfi >= 0
-            # Issue #239: route through compile_call_args_with_defaults
-            # so a `def self.greet(name, msg = nil); end` inside a
+            # Route through compile_call_args_with_defaults so a
+            # `def self.greet(name, msg = nil); end` inside a
             # module accepts shorter call sites — caller-omitted
-            # trailing args get filled in from the method's recorded
-            # default expressions, the same as top-level method calls.
+            # trailing args get filled in from the method's
+            # recorded default expressions, the same as top-level
+            # method calls.
             ca = compile_call_args_with_defaults(nid, mfi)
             if ca != ""
               return "sp_" + sanitize_name(mfn) + "(" + ca + ")"
@@ -27140,9 +27139,9 @@ class Compiler
         if owner_ci >= 0
           owner_name = @cls_names[owner_ci]
           ca = compile_call_args(nid)
-          # Issue #239: fill in defaults for trailing params the
-          # caller omitted. `def self.greet(name, msg = nil)` with
-          # call site `C.greet("a")` would otherwise emit
+          # Fill in defaults for trailing params the caller
+          # omitted. `def self.greet(name, msg = nil)` with call
+          # site `C.greet("a")` would otherwise emit
           # `sp_C_cls_greet("a")` against the 2-arg signature and
           # the C compiler rejects with `too few arguments`. Look
           # up the cls method's recorded defaults (parallel to
@@ -27448,15 +27447,16 @@ class Compiler
     # Fallback: if receiver is int (e.g. from IntArray get) but method belongs to a class,
     # cast the int to the appropriate class pointer and dispatch.
     #
-    # Issue #305: but NOT when `mname` is a method that's also defined
-    # on a primitive type (String, Array, Hash, Integer, etc.). The
-    # int-to-class cast here would silently pick the first user class
-    # that happens to define the same method name — exactly the
-    # `String#index` vs `ArticlesController#index` collision the issue
-    # reports. A param typed `mrb_int` because it wasn't pinned upstream
-    # is NOT the IntArray-of-pointers shape this fallback was written
-    # for; refuse to pick a user class and let compile_call_expr's
-    # unresolved-call diagnostic fire instead.
+    # ...but NOT when `mname` is a method also defined on a
+    # primitive type (String, Array, Hash, Integer, etc.). The
+    # int-to-class cast here would silently pick the first user
+    # class defining the same method name — e.g. routing
+    # `s.index("[")` (a String method on a still-int-typed param)
+    # to `ArticlesController#index`. A param typed `mrb_int`
+    # because it wasn't pinned upstream is not the IntArray-of-
+    # pointers shape this fallback was written for; refuse to
+    # pick a user class and let the unresolved-call diagnostic
+    # fire instead.
     if recv_type == "int" && primitive_method_shared_with_user_class(mname) == 1
       return ""
     end
@@ -27927,11 +27927,11 @@ class Compiler
     # instructions etc.) must compile to `(pc >> 8) & 1`, not to
     # the array dispatch in the SP_TAG_OBJ block below — which
     # would silently leave the result at nil and miscount cycles.
-    # Issue #341: only emit the int-bit-extract fallback when the
-    # index argument is itself an int (or a poly we can unbox to
-    # int). For non-int keys (string, sym, etc.) the SP_TAG_INT
-    # branch is unreachable at runtime and `(recv.v.i >> key)`
-    # is invalid C — `>> const char *` won't compile.
+    # Only emit the int-bit-extract fallback when the index
+    # argument is itself an int (or a poly we can unbox to int).
+    # For non-int keys (string, sym, ...) the SP_TAG_INT branch
+    # is unreachable at runtime and `(recv.v.i >> key)` is
+    # invalid C — `>> const char *` won't compile.
     if mname == "[]" && arg_compiled.length >= 1 && (arg_types[0] == "int" || arg_types[0] == "poly")
       a0_int = arg_compiled[0]
       if arg_types[0] == "poly"
@@ -27962,15 +27962,15 @@ class Compiler
         pk = 0
         while pk < arm_ptypes.length
           if pk < arg_compiled.length
-            # Issue #351: when this arm's param widened to `poly`
-            # (matz/spinel#341 cross-call-site union) but the call
-            # site supplied a concrete value (string / mrb_int /
-            # symbol / ...), box it via the appropriate sp_box_*
-            # helper. Without this, gcc errors `incompatible type
-            # for argument` — `const char *` / `mrb_int` into a
-            # `sp_RbVal` slot. Inverse direction (poly arg into a
-            # concrete-typed param) was already covered downstream;
-            # this only handles the boxing direction.
+            # When this arm's param widened to `poly` (cross-
+            # call-site union) but the call site supplied a
+            # concrete value (string / mrb_int / symbol / ...),
+            # box it via the appropriate sp_box_* helper so the
+            # arg type matches the slot — otherwise gcc errors
+            # `incompatible type for argument` on `const char *` /
+            # `mrb_int` into a `sp_RbVal`. The inverse direction
+            # (poly arg into a concrete-typed param) is handled
+            # downstream; this only does the boxing direction.
             arg_v = arg_compiled[pk]
             arm_pt_base = base_type(arm_ptypes[pk])
             if arm_pt_base == "poly" && pk < arg_types.length && arg_types[pk] != "poly" && arg_types[pk] != ""
@@ -28052,9 +28052,9 @@ class Compiler
     # acceptable since the caller's static type analysis already
     # picked a compatible result type.
     #
-    # Issue #341: every built-in [] arm here passes the key to a
-    # function expecting `mrb_int`. Only emit the arms when the key
-    # type is int or poly (poly is unboxed via `.v.i` above). For
+    # Every built-in [] arm here passes the key to a function
+    # expecting `mrb_int`. Only emit the arms when the key type
+    # is int or poly (poly is unboxed via `.v.i` above). For
     # non-int keys (string, sym), these arms are unreachable at
     # runtime (a poly recv carrying a String key would be a hash,
     # not an array) and emitting them produces Wint-conversion
@@ -28265,10 +28265,11 @@ class Compiler
       if cc != ""
         return cc
       end
-      # Issue #129: NULL-safe equality via sp_str_eq. Plain strcmp(NULL, ...)
-      # is UB and segfaults on real inputs (ENV[] returns NULL for unset
-      # vars). The helper does a NULL check, then strcmp; identical answer
-      # for non-NULL operands so existing equality call sites are unaffected.
+      # NULL-safe equality via sp_str_eq. Plain strcmp(NULL, ...)
+      # is UB and segfaults on real inputs (ENV[] returns NULL for
+      # unset vars). The helper does a NULL check then strcmp;
+      # identical answer for non-NULL operands, so existing
+      # equality call sites are unaffected.
       if op == "=="
         return "sp_str_eq(" + lc + ", " + rc + ")"
       else
@@ -28464,25 +28465,25 @@ class Compiler
   end
 
   def box_expr_to_poly(nid)
-    # Issue #131: ternary / if-as-expression whose branches may have
-    # different concrete types. Per-branch box unconditionally — same-
-    # type branches yield a redundant box that still produces correct
-    # sp_RbVal, and mixed-type branches need the per-branch box to
-    # avoid C's pointer/integer ternary-type-mismatch (which lands as
-    # an unsafe cast in the poly slot and segfaults).
-    # Gating on infer_type's "poly" answer would not work: unify_return
-    # _type treats int as default/unresolved (`int + T → T`), so a
-    # genuinely mixed-int-string ternary infers as "string" and the
-    # gate misses it. The pre-#131 emit then `sp_box_str`'d the entire
-    # raw ternary, which is the same UB.
+    # Ternary / if-as-expression whose branches may have different
+    # concrete types: per-branch box unconditionally. Same-type
+    # branches yield a redundant box that still produces correct
+    # sp_RbVal; mixed-type branches need the per-branch box to
+    # avoid C's pointer/integer ternary-type-mismatch (which would
+    # otherwise land as an unsafe cast in the poly slot and
+    # segfault). Gating on infer_type's "poly" answer would miss
+    # mixed-type cases — unify_return_type treats int as
+    # default/unresolved (`int + T → T`), so a genuinely
+    # int-string ternary infers as "string" and a poly gate would
+    # fall through to the same UB-prone wholesale `sp_box_str`.
     if nid >= 0 && @nd_type[nid] == "IfNode"
-      # Issue #207: if the predicate is a statically-decidable
-      # is_a? / kind_of? on an already-typed expression, emit only
-      # the live arm. The dead arm may contain a recursion call
-      # whose argument types don't match the function's signature
-      # (e.g. `v.is_a?(Hash) ? recurse(v) : v` where v is statically
-      # a string) — generating it would land as a C type error
-      # even though the branch is unreachable at runtime.
+      # When the predicate is a statically-decidable is_a? /
+      # kind_of? on an already-typed expression, emit only the
+      # live arm. The dead arm may contain a recursion call whose
+      # argument types don't match the function's signature (e.g.
+      # `v.is_a?(Hash) ? recurse(v) : v` where v is statically a
+      # string) — generating it would land as a C type error even
+      # though the branch is unreachable at runtime.
       sv = static_is_a_value(@nd_predicate[nid])
       if sv == "TRUE"
         body = @nd_body[nid]
@@ -28589,16 +28590,17 @@ class Compiler
       end
       return
     end
-    # Issue #236: empty `{}` / `[]` literal RHS — `compile_expr`
-    # returns the default `sp_StrIntHash_new()` / `sp_IntArray_new()`,
-    # but slots may have been promoted to a typed container by their
+    # Empty `{}` / `[]` literal RHS — `compile_expr` returns the
+    # default `sp_StrIntHash_new()` / `sp_IntArray_new()`, but
+    # slots may have been promoted to a typed container by their
     # subsequent writes (e.g. `@h["k"] = "v"` lifts the slot to
-    # str_str_hash). If every chain participant agrees on the same
-    # promoted concrete container type, emit the slot-typed
-    # constructor as the temp so each store is type-correct AND the
-    # Ruby semantic of one shared object is preserved across the
-    # chain. Disagreeing-type chains fall through to the general
-    # case below; the resulting C will still warn about pointer
+    # str_str_hash). If every chain participant agrees on the
+    # same promoted concrete container type, emit the slot-typed
+    # constructor as the temp so each store is type-correct AND
+    # the Ruby semantic of one shared object is preserved across
+    # the chain. Disagreeing-type chains fall through to the
+    # general case below; the resulting C will still warn about
+    # pointer
     # type mismatch but at least one slot will be correct.
     if is_empty_hash_literal(rhs_id) == 1 || is_empty_array_literal(rhs_id) == 1
       consensus_t = ""
@@ -28831,12 +28833,12 @@ class Compiler
         if kw_names[ki] == pnames[k]
           kw_found = 1
           if k < ptypes.length && ptypes[k] == "poly"
-            # Issue #314: pick the box helper from the arg's actual
-            # source type via box_expr_to_poly. The pre-fix sp_box_str
-            # hardcoding mistyped any non-string source (e.g. an
-            # `obj_<C>` instance) as SP_TAG_STR — invalid C and the
-            # boxed value disagrees with sp_RbVal's tag/cls_id contract
-            # at runtime.
+            # Pick the box helper from the arg's actual source
+            # type via box_expr_to_poly. A hardcoded sp_box_str
+            # would mistype any non-string source (e.g. an
+            # `obj_<C>` instance) as SP_TAG_STR — invalid C and a
+            # value that disagrees with sp_RbVal's tag/cls_id
+            # contract at runtime.
             result = result + box_expr_to_poly(kw_arg_ids[ki])
           else
             result = result + kw_vals[ki]
@@ -29052,13 +29054,13 @@ class Compiler
           # Check if param is poly
           if k < ptypes.length
             if ptypes[k] == "poly"
-              # Issue #314: pick the box helper from the arg's actual
-              # source type via box_expr_to_poly. The pre-fix sp_box_str
-              # hardcoding mistyped any non-string source — and a kwargs
-              # call site with a poly-widened param (e.g. `model:` after
-              # the call-site widening pass folds Article+Comment into
-              # poly) is exactly the path that flows non-string objs
-              # through here.
+              # Pick the box helper from the arg's actual source
+              # type via box_expr_to_poly. A hardcoded sp_box_str
+              # would mistype any non-string source — and a
+              # kwargs call site with a poly-widened param
+              # (e.g. `model:` after call-site widening folds
+              # Article + Comment into poly) is exactly the path
+              # that flows non-string objs through here.
               result = result + box_expr_to_poly(kw_arg_ids[ki])
             else
               result = result + kw_vals[ki]
@@ -29142,11 +29144,12 @@ class Compiler
               k = k + 1
               next
             end
-            # Issue #58: empty `[]` literal at the call site needs to
-            # construct the right typed-array container. The literal's
-            # own infer_type returns int_array (compile_array_literal
-            # emits sp_IntArray_new()), but if the param is a concrete
-            # typed-array, emit the matching constructor instead.
+            # An empty `[]` literal at the call site needs to
+            # construct the right typed-array container. The
+            # literal's own infer_type returns int_array
+            # (compile_array_literal emits sp_IntArray_new()), but
+            # when the param is a concrete typed-array, emit the
+            # matching constructor instead.
             if is_empty_array_literal(positional_ids[k]) == 1
               if ptypes[k] == "str_array"
                 @needs_str_array = 1
@@ -30622,11 +30625,12 @@ class Compiler
         emit("  " + self_arrow + sanitize_ivar(iname) + " = " + tmp_arr + ";")
         return
       end
-      # Issue #130: poly slot — every concrete-typed RHS must be boxed
-      # to sp_RbVal. Without the box, C compiler sees `sp_RbVal = mrb_int`
-      # (or const char *, etc.) and either rejects the assignment or
-      # silently coerces. Read sites already dispatch through poly-aware
-      # emitters (sp_poly_puts, etc.) that unbox.
+      # Poly slot — every concrete-typed RHS must be boxed to
+      # sp_RbVal. Without the box, the C compiler sees
+      # `sp_RbVal = mrb_int` (or const char *, etc.) and either
+      # rejects the assignment or silently coerces. Read sites
+      # already dispatch through poly-aware emitters
+      # (sp_poly_puts, etc.) that unbox.
       if ivt == "poly"
         val = box_expr_to_poly(expr_id)
       else
@@ -31341,15 +31345,16 @@ class Compiler
         compile_stmts_body(@nd_body[sub])
         @indent = @indent - 1
       else
-        # Issue #310: wrap elsif in braces. compile_cond_expr for the
-        # nested predicate may emit prologue C (temp decls, tag checks)
-        # before returning the cond expression — e.g. `value.is_a?(B)`
-        # on a poly receiver expands to `sp_RbVal _t = ...; if (_t.tag
-        # == SP_TAG_OBJ) {...}; if (_flag) ...`. Without wrapping, the
-        # `} else <prologue> if (...)` shape is invalid C: the bare-
-        # else's body is the first statement only (the prologue decl),
-        # and the inner if sits in the outer scope with the decl out
-        # of reach.
+        # Wrap elsif in braces. compile_cond_expr for the nested
+        # predicate may emit prologue C (temp decls, tag checks)
+        # before returning the cond expression — e.g.
+        # `value.is_a?(B)` on a poly receiver expands to
+        # `sp_RbVal _t = ...; if (_t.tag == SP_TAG_OBJ) {...}; if
+        # (_flag) ...`. Without the wrap, the `} else <prologue>
+        # if (...)` shape is invalid C: the bare-else's body
+        # would be the first statement only (the prologue decl),
+        # leaving the inner if in the outer scope with the decl
+        # out of reach.
         emit("  } else {")
         @indent = @indent + 1
         compile_if_stmt(sub)
@@ -32063,12 +32068,13 @@ class Compiler
     #                                           initialized instance)
     #   nullable pointer  → return NULL;
     #   anything else     → return 0;
-    # Issue #337: `return if x.nil?` inside a `def initialize` was
-    # emitted as `return 0;` regardless of the wrapping function. In
-    # the synthesized `sp_<C>_new` (sp_<C> *-returning) it silently
-    # NULLed the instance on the early-return branch; in the void
-    # `sp_<C>_initialize` form it was a `void function should not
-    # return a value` C error.
+    # The shape per @current_method_return matters because a
+    # `return if x.nil?` inside a `def initialize` reaches this
+    # bare-return path: in the synthesized `sp_<C>_new` (sp_<C>
+    # *-returning) emitting `return 0;` would silently NULL the
+    # instance on the early-return branch, and in the void
+    # `sp_<C>_initialize` form it would be a `void function
+    # should not return a value` C error.
     emit_setjmp_depth_unwind
     emit_ensure_replays
     if @in_gc_scope == 1
@@ -32109,7 +32115,7 @@ class Compiler
       return
     end
 
-    # Issue #126: `Module.accessor = X` write.
+    # `Module.accessor = X` write.
     #   Stage 1 (1 candidate): no emit; reads fold to that constant.
     #   Stage 2 (2+ candidates): emit `slot = SP_MOD_<X>;` so the
     #   read site's sentinel switch picks the right branch.
@@ -32400,10 +32406,11 @@ class Compiler
                   emit("  sp_String_append(" + rc + ", " + val + "->data);")
                 else
                   if at == "poly"
-                    # Issue #313: a poly-typed source (e.g. a module
-                    # method returning sp_RbVal from a SymPolyHash
-                    # read) needs runtime unbox to const char * before
-                    # sp_String_append. sp_poly_to_s handles every tag.
+                    # A poly-typed source (e.g. a module method
+                    # returning sp_RbVal from a SymPolyHash read)
+                    # needs runtime unbox to const char * before
+                    # sp_String_append. sp_poly_to_s handles
+                    # every tag.
                     emit("  sp_String_append(" + rc + ", sp_poly_to_s(" + val + "));")
                   else
                     emit("  sp_String_append(" + rc + ", " + val + ");")
@@ -36685,11 +36692,11 @@ class Compiler
     tmp_arr
   end
 
-  # Issue #210 follow-up: an empty `map {}` block yields nil per
-  # iteration in CRuby — the result array's length still matches the
-  # receiver. Without an explicit push the typed accumulator stays
-  # short and downstream `.length` / `[i]` on the result is wrong.
-  # Push a type-appropriate default (0 / 0.0 / "" / sp_box_nil) so
+  # An empty `map {}` block yields nil per iteration in CRuby —
+  # the result array's length still matches the receiver. Without
+  # an explicit push the typed accumulator stays short and
+  # downstream `.length` / `[i]` on the result is wrong. Push a
+  # type-appropriate default (0 / 0.0 / "" / sp_box_nil) so
   # length is preserved across all map dispatches.
   def emit_map_default_push(target, container_type)
     if container_type == "str_array"
@@ -38999,10 +39006,10 @@ class Compiler
         end
         @indent = @indent - 1
       else
-        # Issue #310: wrap elsif in braces. See compile_if_stmt for
-        # the same fix; predicates that emit prologue C statements
-        # (poly is_a? etc.) leak declarations out of a bare else
-        # because the bare else's body is one statement.
+        # Wrap elsif in braces. See compile_if_stmt for the same
+        # rationale: predicates that emit prologue C statements
+        # (poly is_a? etc.) would leak declarations out of a bare
+        # else because the bare else's body is one statement.
         emit("  } else {")
         @indent = @indent + 1
         compile_if_return(sub, rt)
