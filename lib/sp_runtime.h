@@ -910,7 +910,10 @@ static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_in
 static sp_RbVal sp_poly_div(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_poly_to_f(a) / sp_poly_to_f(b)); return sp_box_int(sp_idiv(sp_poly_to_i(a), sp_poly_to_i(b))); }
 static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(fmod(sp_poly_to_f(a), sp_poly_to_f(b))); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }
 static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) { double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b)); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i >= 0) return sp_box_int((mrb_int)r); return sp_box_float((mrb_float)r); }
-static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) << sp_poly_to_i(b)); }
+/* sp_poly_shl is defined after sp_PolyArray_push (below) so the
+   push-dispatch path can call it directly. The Integer-bit-shift
+   semantics fall through when the recv isn't an array. */
+static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b);
 static sp_RbVal sp_poly_shr(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) >> sp_poly_to_i(b)); }
 static sp_RbVal sp_poly_band(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) & sp_poly_to_i(b)); }
 static sp_RbVal sp_poly_bor(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) | sp_poly_to_i(b)); }
@@ -924,6 +927,35 @@ static void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; fo
 static void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
 static sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } return a; }
 static void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; a->cap = a->cap * 2 + 1; a->data = (sp_RbVal *)realloc(a->data, sizeof(sp_RbVal) * a->cap); h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } a->data[a->len++] = v; }
+static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
+  /* Dispatch by recv cls_id: an IntArray / PolyArray / etc. boxed
+     into a poly slot still wants Array#<< (push), not Integer#<<
+     (bit-shift). Falls through to bit-shift only when the recv is
+     a non-array. Returns the recv (matching `<<`s chainability). */
+  if (a.tag == SP_TAG_OBJ) {
+    if (a.cls_id == SP_BUILTIN_INT_ARRAY) {
+      sp_IntArray_push((sp_IntArray *)a.v.p, b.tag == SP_TAG_INT ? b.v.i : sp_poly_to_i(b));
+      return a;
+    }
+    if (a.cls_id == SP_BUILTIN_POLY_ARRAY) {
+      sp_PolyArray_push((sp_PolyArray *)a.v.p, b);
+      return a;
+    }
+    if (a.cls_id == SP_BUILTIN_PTR_ARRAY) {
+      sp_PtrArray_push((sp_PtrArray *)a.v.p, b.v.p);
+      return a;
+    }
+    if (a.cls_id == SP_BUILTIN_FLT_ARRAY) {
+      sp_FloatArray_push((sp_FloatArray *)a.v.p, b.tag == SP_TAG_FLT ? b.v.f : (mrb_float)sp_poly_to_i(b));
+      return a;
+    }
+    if (a.cls_id == SP_BUILTIN_STR_ARRAY) {
+      sp_StrArray_push((sp_StrArray *)a.v.p, b.tag == SP_TAG_STR ? (const char *)b.v.p : "");
+      return a;
+    }
+  }
+  return sp_box_int(sp_poly_to_i(a) << sp_poly_to_i(b));
+}
 static mrb_int sp_PolyArray_length(sp_PolyArray *a) { return a->len; }
 static sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (i < 0) i += a->len; return a->data[i]; }
 static void sp_PolyArray_set(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (i < 0) i += a->len; a->data[i] = v; }
