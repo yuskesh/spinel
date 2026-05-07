@@ -21087,12 +21087,13 @@ class Compiler
     end
     if t == "IndexOrWriteNode"
       # `recv[k] ||= v` used as an expression (`x = recv[k] ||= v`,
-      # method-body return, ternary arm, …). Lower the get-then-set
-      # into a stmt-level emit and return the temp holding the
-      # resulting value. Only the poly_poly_hash receiver shape needs
-      # this expression form so far — typed hashes were always lowered
-      # as stmts for backward compatibility, so falling through to the
-      # default catch-all is fine for them.
+      # method-body return, parenthesized chain like
+      # `(@h[k] ||= []) << v`). Lower the get-then-set into a
+      # stmt-level emit and return the temp holding the resulting
+      # value (existing on hit, freshly-stored rhs on miss). Without
+      # this branch the expression-form falls through to the default
+      # catch-all and silently emits `0` as the value, collapsing
+      # any subsequent chain.
       recv_iow = @nd_receiver[nid]
       args_iow = @nd_arguments[nid]
       if recv_iow >= 0 && args_iow >= 0
@@ -21101,6 +21102,12 @@ class Compiler
           rc_iow = compile_expr_gc_rooted(recv_iow)
           arg_ids_iow = get_args(args_iow)
           tg = compile_poly_poly_index_or_assign_to_temp(nid, rc_iow, arg_ids_iow)
+          return tg
+        end
+        if rt_iow == "sym_poly_hash" || rt_iow == "str_poly_hash"
+          rc_iow = compile_expr_gc_rooted(recv_iow)
+          arg_ids_iow = get_args(args_iow)
+          tg = compile_typed_poly_hash_index_or_assign_to_temp(nid, rc_iow, arg_ids_iow, rt_iow)
           return tg
         end
       end
@@ -35052,6 +35059,10 @@ class Compiler
       compile_poly_poly_index_or_assign_to_temp(nid, rc, arg_ids)
       return
     end
+    if rt == "sym_poly_hash" || rt == "str_poly_hash"
+      compile_typed_poly_hash_index_or_assign_to_temp(nid, rc, arg_ids, rt)
+      return
+    end
   end
 
   # Emit the get-then-set body for `recv[k] ||= v` against a
@@ -35070,6 +35081,35 @@ class Compiler
     emit("  if (" + tg + ".tag == SP_TAG_NIL) {")
     emit("    " + tg + " = " + val_boxed + ";")
     emit("    sp_PolyPolyHash_set(" + tt + ", " + tk + ", " + tg + ");")
+    emit("  }")
+    tg
+  end
+
+  # Same shape as `compile_poly_poly_index_or_assign_to_temp` for
+  # sym_poly_hash / str_poly_hash receivers — the keys are bare
+  # `sp_sym` / `const char *` (not boxed sp_RbVal) but the value
+  # slot is poly so the get-then-set still pivots on the
+  # `tag == SP_TAG_NIL` miss probe.
+  def compile_typed_poly_hash_index_or_assign_to_temp(nid, rc, arg_ids, recv_type)
+    tt = new_temp
+    tk = new_temp
+    tg = new_temp
+    if recv_type == "sym_poly_hash"
+      hash_c = "sp_SymPolyHash"
+      key_t = "sp_sym"
+      key_expr = compile_expr(arg_ids[0])
+    else
+      hash_c = "sp_StrPolyHash"
+      key_t = "const char *"
+      key_expr = compile_expr_as_string(arg_ids[0])
+    end
+    emit("  " + hash_c + " *" + tt + " = " + rc + ";")
+    emit("  " + key_t + " " + tk + " = " + key_expr + ";")
+    emit("  sp_RbVal " + tg + " = " + hash_c + "_get(" + tt + ", " + tk + ");")
+    val_boxed = box_expr_to_poly(@nd_expression[nid])
+    emit("  if (" + tg + ".tag == SP_TAG_NIL) {")
+    emit("    " + tg + " = " + val_boxed + ";")
+    emit("    " + hash_c + "_set(" + tt + ", " + tk + ", " + tg + ");")
     emit("  }")
     tg
   end
