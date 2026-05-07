@@ -20854,6 +20854,27 @@ class Compiler
       end
       return "(" + vref + " " + op + "= " + val + ")"
     end
+    if t == "InstanceVariableOperatorWriteNode"
+      # `@x OP= expr` used as an expression — typically the RHS of a
+      # chained ivar write like `@b = @a &= 0x80`. Without this arm
+      # compile_expr falls through to the catch-all `0`, so the inner
+      # `@a &=` write never emits and the outer `@b = ...` zeros the
+      # slot. Mirror the LocalVariableOperatorWriteNode shape — return
+      # a parenthesized C-style compound assignment so the side effect
+      # fires AND the value is the result.
+      op_iow = @nd_binop[nid]
+      val_iow = compile_expr(@nd_expression[nid])
+      lhs_iow = ivar_lhs(@nd_name[nid])
+      ivar_t_iow = ""
+      if @current_class_idx >= 0
+        ivar_t_iow = cls_ivar_type(@current_class_idx, @nd_name[nid])
+      end
+      disp_iow = obj_op_dispatch_expr(ivar_t_iow, lhs_iow, op_iow, val_iow)
+      if disp_iow != ""
+        return "(" + lhs_iow + " = " + disp_iow + ")"
+      end
+      return "(" + lhs_iow + " " + op_iow + "= " + val_iow + ")"
+    end
     if t == "LocalVariableOrWriteNode"
       # `local ||= expr` in expression context. Lower as
       # `(local = local ? local : expr)` so the side effect runs
@@ -29992,11 +30013,38 @@ class Compiler
         emit("  " + lhs + " = " + disp + ";")
         return
       end
+      # Bitwise / shift / arithmetic op-assigns map directly onto C
+      # `OP=`. Without these arms `@a &= v`, `@a |= v`, etc. were
+      # silently dropped — the function emit fell through with no
+      # `iv_<name>` write, so every read after kept the pre-call
+      # value. Mirror the LocalVariableOperatorWriteNode arm.
       if op == "+"
-        emit("  " + lhs + " += " + val + ";")
+        if ivar_t == "string" && infer_type(@nd_expression[nid]) == "string"
+          emit("  " + lhs + " = sp_str_concat(" + lhs + ", " + val + ");")
+        else
+          emit("  " + lhs + " += " + val + ";")
+        end
+        return
       end
       if op == "-"
         emit("  " + lhs + " -= " + val + ";")
+        return
+      end
+      if op == "*"
+        emit("  " + lhs + " *= " + val + ";")
+        return
+      end
+      if op == "/"
+        emit("  " + lhs + " = sp_idiv(" + lhs + ", " + val + ");")
+        return
+      end
+      if op == "%"
+        emit("  " + lhs + " = sp_imod(" + lhs + ", " + val + ");")
+        return
+      end
+      if op == "<<" || op == ">>" || op == "&" || op == "|" || op == "^"
+        emit("  " + lhs + " " + op + "= " + val + ";")
+        return
       end
       return
     end
