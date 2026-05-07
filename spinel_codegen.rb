@@ -10198,6 +10198,45 @@ class Compiler
             end
           end
         end
+        # Issue #341: when the receiver is poly (e.g. a method param
+        # widened to accept multiple user classes), the per-class
+        # arms emitted by compile_poly_method_call call each class's
+        # `<mname>` C function with the same arg expressions. If
+        # callers pass a String key but the class methods' params
+        # are still at the default `int`, the arms produce
+        # `Wint-conversion` warnings or hard `incompatible pointer
+        # to integer conversion` errors (sp_A__aref(sp_A *, mrb_int)
+        # called with const char *). Walk every user class that
+        # defines mname and unify its ptypes with the call site's
+        # arg types; unify_call_types collapses to `poly` if any
+        # other call site disagrees.
+        if rt == "poly"
+          args_id_p = @nd_arguments[nid]
+          if args_id_p >= 0
+            arg_ids_p = get_args(args_id_p)
+            ci_p = 0
+            while ci_p < @cls_names.length
+              midx_p = cls_find_method_direct(ci_p, mname)
+              if midx_p >= 0
+                all_ptypes_p = @cls_meth_ptypes[ci_p].split("|")
+                if midx_p < all_ptypes_p.length
+                  ptypes_p = all_ptypes_p[midx_p].split(",")
+                  kk_p = 0
+                  while kk_p < arg_ids_p.length
+                    if kk_p < ptypes_p.length
+                      at_p = infer_type(arg_ids_p[kk_p])
+                      ptypes_p[kk_p] = unify_call_types(ptypes_p[kk_p], at_p, arg_ids_p[kk_p])
+                    end
+                    kk_p = kk_p + 1
+                  end
+                  all_ptypes_p[midx_p] = ptypes_p.join(",")
+                  @cls_meth_ptypes[ci_p] = all_ptypes_p.join("|")
+                end
+              end
+              ci_p = ci_p + 1
+            end
+          end
+        end
       end
       # Issue #207: `<Class>.cls_method(args)` — widen class
       # method parameter types from call-site argument types.
@@ -26222,9 +26261,14 @@ class Compiler
     # instructions etc.) must compile to `(pc >> 8) & 1`, not to
     # the array dispatch in the SP_TAG_OBJ block below — which
     # would silently leave the result at nil and miscount cycles.
-    if mname == "[]" && arg_compiled.length >= 1
+    # Issue #341: only emit the int-bit-extract fallback when the
+    # index argument is itself an int (or a poly we can unbox to
+    # int). For non-int keys (string, sym, etc.) the SP_TAG_INT
+    # branch is unreachable at runtime and `(recv.v.i >> key)`
+    # is invalid C — `>> const char *` won't compile.
+    if mname == "[]" && arg_compiled.length >= 1 && (arg_types[0] == "int" || arg_types[0] == "poly")
       a0_int = arg_compiled[0]
-      if arg_types.length > 0 && arg_types[0] == "poly"
+      if arg_types[0] == "poly"
         a0_int = "(" + a0_int + ").v.i"
       end
       bit = "((" + recv_tmp + ".v.i >> (" + a0_int + ")) & 1)"
@@ -26314,7 +26358,16 @@ class Compiler
     # temp at its default (`0`/empty) for that input, which is
     # acceptable since the caller's static type analysis already
     # picked a compatible result type.
-    if mname == "[]" && arg_compiled.length >= 1
+    #
+    # Issue #341: every built-in [] arm here passes the key to a
+    # function expecting `mrb_int`. Only emit the arms when the key
+    # type is int or poly (poly is unboxed via `.v.i` above). For
+    # non-int keys (string, sym), these arms are unreachable at
+    # runtime (a poly recv carrying a String key would be a hash,
+    # not an array) and emitting them produces Wint-conversion
+    # warnings — or hard errors under -Werror.
+    a0_is_int = arg_compiled.length >= 1 && (arg_types.length == 0 || arg_types[0] == "int" || arg_types[0] == "poly")
+    if mname == "[]" && arg_compiled.length >= 1 && a0_is_int
       ic = "sp_IntArray_get((sp_IntArray *)" + recv_tmp + ".v.p, " + a0 + ")"
       irhs = is_poly_ret == 1 ? "sp_box_int(" + ic + ")" : ic
       emit("    if (" + recv_tmp + ".cls_id == SP_BUILTIN_INT_ARRAY) " + result_tmp + " = " + irhs + ";")
