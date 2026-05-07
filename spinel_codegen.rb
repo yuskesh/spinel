@@ -33010,6 +33010,21 @@ class Compiler
       compile_poly_slice_assign(nid, recv, rc, arg_ids)
       return
     end
+    # Slice assignment with poly_array recv and poly src: the recv
+    # is statically typed (sp_PolyArray *) but src is sp_RbVal —
+    # fold into compile_poly_slice_assign by pre-boxing the recv to
+    # sp_RbVal so the runtime cls_id dispatch can pick the right
+    # copy loop. This is the shape `@bg_pixels[xfine, 8] =
+    # @bg_pattern_lut[@bg_pattern]` ends up in once a 3-level array
+    # constant (TILE_LUT) types its inner-of-inner reads as poly.
+    if arg_ids.length == 3 && rt == "poly_array"
+      src_t_check2 = infer_type(arg_ids[2])
+      if src_t_check2 == "poly"
+        @needs_rb_value = 1
+        compile_poly_slice_assign(nid, recv, "sp_box_poly_array(" + rc + ")", arg_ids)
+        return
+      end
+    end
     idx = "0"
     val = "0"
     if arg_ids.length >= 1
@@ -35212,9 +35227,19 @@ class Compiler
     end
     rt = infer_type(@nd_receiver[nid])
     rc_expr = compile_expr(@nd_receiver[nid])
-    # Store receiver in a temp to avoid re-evaluation
+    # Store receiver in a temp to avoid re-evaluation, and root it
+    # when the type is a GC-allocated pointer. Without the root, an
+    # array-literal receiver (`[1,2,3].map { ... }`) is held only as
+    # a C-stack local; a sp_gc_collect inside the block (e.g. when
+    # the block body itself does .map and grows allocations enough
+    # to cross the threshold) frees the receiver mid-loop, and the
+    # next `sp_*Array_length(rc)` reads a recycled IntArray's len.
     rc_tmp = new_temp
     emit("  " + c_type(rt) + " " + rc_tmp + " = " + rc_expr + ";")
+    if type_needs_transient_root(rt) == 1
+      @needs_gc = 1
+      emit("  SP_GC_ROOT(" + rc_tmp + ");")
+    end
     rc = rc_tmp
     bp1 = get_block_param(nid, 0)
     if bp1 == ""
