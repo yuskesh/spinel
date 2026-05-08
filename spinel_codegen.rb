@@ -2387,6 +2387,13 @@ class Compiler
         if rt_iow_t == "int_array" || rt_iow_t == "float_array" || rt_iow_t == "str_array" || rt_iow_t == "sym_array"
           return elem_type_of_array(rt_iow_t)
         end
+        # poly_array elements are sp_RbVal; chained IndexOrWriteNode
+        # over a poly_array recv (or a poly-typed recv that carries a
+        # poly_array at runtime) returns the element value as poly so
+        # the next chain link sees an sp_RbVal, not the int default.
+        if rt_iow_t == "poly_array" || rt_iow_t == "poly"
+          return "poly"
+        end
       end
       return "int"
     end
@@ -21273,6 +21280,22 @@ class Compiler
           tg = compile_typed_poly_hash_index_or_assign_to_temp(nid, rc_iow, arg_ids_iow, rt_iow)
           return tg
         end
+        if rt_iow == "poly_array"
+          rc_iow = compile_expr_gc_rooted(recv_iow)
+          arg_ids_iow = get_args(args_iow)
+          tg = compile_typed_array_index_or_assign_to_temp(nid, rc_iow, arg_ids_iow, rt_iow)
+          return tg
+        end
+        if rt_iow == "poly"
+          # `<poly>[i] ||= v` — recv carries a poly_array at runtime
+          # (the typical mid-chain shape, e.g. `(@h[k] ||= [])[i] ||=
+          # ...`). Inline the cls_id guard + auto-grow set so the
+          # chain produces an sp_RbVal value even when the initial
+          # `[]` literal was empty.
+          rc_iow = compile_expr_gc_rooted(recv_iow)
+          tg = compile_poly_value_array_index_or_assign_to_temp(nid, rc_iow)
+          return tg
+        end
       end
     end
     if t == "ConstantReadNode"
@@ -35356,6 +35379,14 @@ class Compiler
       compile_typed_poly_hash_index_or_assign_to_temp(nid, rc, arg_ids, rt)
       return
     end
+    if rt == "poly_array"
+      compile_typed_array_index_or_assign_to_temp(nid, rc, arg_ids, rt)
+      return
+    end
+    if rt == "poly"
+      compile_poly_value_array_index_or_assign_to_temp(nid, rc)
+      return
+    end
   end
 
   # Emit the get-then-set body for `recv[k] ||= v` against a
@@ -35370,7 +35401,7 @@ class Compiler
     emit("  sp_PolyPolyHash *" + tt + " = " + rc + ";")
     emit("  sp_RbVal " + tk + " = " + key_boxed + ";")
     emit("  sp_RbVal " + tg + " = sp_PolyPolyHash_get(" + tt + ", " + tk + ");")
-    val_boxed = box_expr_to_poly(@nd_expression[nid])
+    val_boxed = chained_or_assign_rhs_box(@nd_expression[nid])
     emit("  if (" + tg + ".tag == SP_TAG_NIL) {")
     emit("    " + tg + " = " + val_boxed + ";")
     emit("    sp_PolyPolyHash_set(" + tt + ", " + tk + ", " + tg + ");")
@@ -35399,10 +35430,99 @@ class Compiler
     emit("  " + hash_c + " *" + tt + " = " + rc + ";")
     emit("  " + key_t + " " + tk + " = " + key_expr + ";")
     emit("  sp_RbVal " + tg + " = " + hash_c + "_get(" + tt + ", " + tk + ");")
-    val_boxed = box_expr_to_poly(@nd_expression[nid])
+    val_boxed = chained_or_assign_rhs_box(@nd_expression[nid])
     emit("  if (" + tg + ".tag == SP_TAG_NIL) {")
     emit("    " + tg + " = " + val_boxed + ";")
     emit("    " + hash_c + "_set(" + tt + ", " + tk + ", " + tg + ");")
+    emit("  }")
+    tg
+  end
+
+  # Box the rhs of an `||=` whose lhs is a poly-element slot. For
+  # ArrayNode literals — `[]`, `[nil, nil]`, … — promote to
+  # poly_array (boxed) so the slot carries a uniformly poly shape;
+  # subsequent chain levels can then inspect the value's cls_id
+  # against `SP_BUILTIN_POLY_ARRAY` reliably. Without the promote,
+  # `[]` would lower to `sp_box_int_array(sp_IntArray_new())`, the
+  # next chain level's `cls_id == POLY_ARRAY` check would fail, and
+  # the back-set would skip silently. Non-ArrayNode rhs falls back
+  # to the existing `box_expr_to_poly` machinery.
+  def chained_or_assign_rhs_box(rhs_id)
+    if rhs_id >= 0 && @nd_type[rhs_id] == "ArrayNode"
+      @needs_rb_value = 1
+      @needs_gc = 1
+      return "sp_box_poly_array(" + compile_array_literal_as_poly(rhs_id) + ")"
+    end
+    box_expr_to_poly(rhs_id)
+  end
+
+  # `recv[i] ||= v` against a typed-array receiver whose element
+  # slot is a boxed sp_RbVal — i.e. poly_array. The miss probe is
+  # the same `tag == SP_TAG_NIL` pivot used by the *_poly_hash
+  # forms, but indexed access has two extra wrinkles:
+  #
+  #   - the key must be in-bounds before `_get` is safe to call
+  #     (sp_PolyArray_get reads `data[i]` without a length check),
+  #   - on miss the slot may be beyond `len`, so before `_set` we
+  #     pad the array with nil entries up to `i` inclusive.
+  #
+  # Mirrors CRuby's `arr[i] = v` auto-grow semantics for the gap.
+  # Scalar-element typed arrays (int_array, float_array, …) need a
+  # different probe (out-of-bounds check, no SP_TAG_NIL) and are
+  # not handled here; the caller falls back to the existing stmt
+  # path for those.
+  def compile_typed_array_index_or_assign_to_temp(nid, rc, arg_ids, recv_type)
+    tt = new_temp
+    ti = new_temp
+    tg = new_temp
+    arr_c = "sp_PolyArray"
+    emit("  " + arr_c + " *" + tt + " = " + rc + ";")
+    emit("  mrb_int " + ti + " = " + compile_expr(arg_ids[0]) + ";")
+    emit("  sp_RbVal " + tg + " = sp_box_nil();")
+    emit("  if (" + ti + " >= 0 && " + ti + " < sp_" + arr_c.sub("sp_", "") + "_length(" + tt + ")) {")
+    emit("    " + tg + " = " + arr_c + "_get(" + tt + ", " + ti + ");")
+    emit("  }")
+    val_boxed = chained_or_assign_rhs_box(@nd_expression[nid])
+    emit("  if (" + tg + ".tag == SP_TAG_NIL) {")
+    emit("    " + tg + " = " + val_boxed + ";")
+    emit("    while (sp_" + arr_c.sub("sp_", "") + "_length(" + tt + ") <= " + ti + ") { " + arr_c + "_push(" + tt + ", sp_box_nil()); }")
+    emit("    " + arr_c + "_set(" + tt + ", " + ti + ", " + tg + ");")
+    emit("  }")
+    tg
+  end
+
+  # `<poly>[i] ||= v` where the recv is an sp_RbVal carrying — at
+  # runtime — a poly_array. Common in chains like
+  # `(@h[k] ||= [])[i] ||= ...`: spinel types `(@h[k] ||= [])` as
+  # poly because the hash leaf type is poly, and the inner `||=`
+  # sees a poly recv even though the value is concretely a
+  # poly_array.
+  #
+  # The miss probe needs an extra `tag == SP_TAG_OBJ &&
+  # cls_id == SP_BUILTIN_POLY_ARRAY` guard so the runtime falls
+  # through cleanly when the poly carries a non-array shape. The
+  # body otherwise mirrors `compile_typed_array_index_or_assign_to_temp`.
+  def compile_poly_value_array_index_or_assign_to_temp(nid, rc)
+    tr = new_temp
+    tp = new_temp
+    ti = new_temp
+    tg = new_temp
+    args_id = @nd_arguments[nid]
+    arg0 = args_id >= 0 ? get_args(args_id)[0] : -1
+    emit("  sp_RbVal " + tr + " = " + rc + ";")
+    emit("  sp_PolyArray *" + tp + " = (" + tr + ".tag == SP_TAG_OBJ && " + tr + ".cls_id == SP_BUILTIN_POLY_ARRAY) ? (sp_PolyArray *)" + tr + ".v.p : NULL;")
+    emit("  mrb_int " + ti + " = " + compile_expr(arg0) + ";")
+    emit("  sp_RbVal " + tg + " = sp_box_nil();")
+    emit("  if (" + tp + " && " + ti + " >= 0 && " + ti + " < sp_PolyArray_length(" + tp + ")) {")
+    emit("    " + tg + " = sp_PolyArray_get(" + tp + ", " + ti + ");")
+    emit("  }")
+    val_boxed = chained_or_assign_rhs_box(@nd_expression[nid])
+    emit("  if (" + tg + ".tag == SP_TAG_NIL) {")
+    emit("    " + tg + " = " + val_boxed + ";")
+    emit("    if (" + tp + ") {")
+    emit("      while (sp_PolyArray_length(" + tp + ") <= " + ti + ") { sp_PolyArray_push(" + tp + ", sp_box_nil()); }")
+    emit("      sp_PolyArray_set(" + tp + ", " + ti + ", " + tg + ");")
+    emit("    }")
     emit("  }")
     tg
   end
