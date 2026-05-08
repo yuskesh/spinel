@@ -4655,7 +4655,7 @@ class Compiler
           if mname == "read" || mname == "binread"
             return "string"
           end
-          if mname == "exist?"
+          if mname == "exist?" || mname == "readable?"
             return "bool"
           end
           if mname == "join"
@@ -26311,6 +26311,28 @@ class Compiler
         end
         return "sp_IntArray_sort(" + rc + ")"
       end
+      # `pack("C*")` — the only format Spinel implements: each
+      # int element is written as a byte into a freshly allocated
+      # NUL-terminated string. Sufficient for the optcarrot save-
+      # RAM `@wrk.pack("C*")` shape and the symmetric inverse of
+      # `String#bytes` we already support. Other format strings
+      # fall through to the unresolved-call warning.
+      if mname == "pack" && recv_type == "int_array"
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          a_pk = get_args(args_id)
+          if a_pk.length == 1 && @nd_type[a_pk[0]] == "StringNode" && @nd_content[a_pk[0]] == "C*"
+            tmp = new_temp
+            ntmp = new_temp
+            itmp = new_temp
+            emit("  mrb_int " + ntmp + " = sp_IntArray_length(" + rc + ");")
+            emit("  char *" + tmp + " = sp_str_alloc(" + ntmp + ");")
+            emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < " + ntmp + "; " + itmp + "++) " + tmp + "[" + itmp + "] = (char)sp_IntArray_get(" + rc + ", " + itmp + ");")
+            emit("  " + tmp + "[" + ntmp + "] = 0;")
+            return tmp
+          end
+        end
+      end
       # take_while / drop_while: block-driven prefix scan. take_while
       # collects elements from the front while the block stays truthy;
       # drop_while skips them and returns the rest. Mirrors the
@@ -27563,8 +27585,31 @@ class Compiler
         if mname == "exist?"
           return "sp_file_exist(" + compile_arg0(nid) + ")"
         end
+        if mname == "readable?"
+          # Reuse the exist check: on every platform Spinel
+          # targets, a fopen-able file is also readable from
+          # the same process. Distinguishing the two would
+          # need access(2), which isn't worth a runtime fn for
+          # the dead-code optcarrot battery-save path that
+          # surfaced this.
+          return "sp_file_exist(" + compile_arg0(nid) + ")"
+        end
         if mname == "delete"
           return "(sp_file_delete(" + compile_arg0(nid) + "), 0)"
+        end
+        if mname == "binwrite"
+          # NOTE: `sp_file_write` uses fputs, so an embedded NUL
+          # in the payload truncates the write — fine for the
+          # optcarrot save-RAM dead-code path that surfaced
+          # this, not safe for general binary use.
+          args_id_bw = @nd_arguments[nid]
+          if args_id_bw >= 0
+            a_bw = get_args(args_id_bw)
+            if a_bw.length >= 2
+              return "(sp_file_write(" + compile_expr(a_bw[0]) + ", " + compile_expr(a_bw[1]) + "), 0)"
+            end
+          end
+          return "0"
         end
         if mname == "join"
           args_id = @nd_arguments[nid]
