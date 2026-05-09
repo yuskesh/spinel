@@ -24180,6 +24180,14 @@ class Compiler
     end
     mi = find_method_idx(mname)
     if mi >= 0
+      # Issue #396: yield-bearing fn called with a literal block in
+      # expression position (e.g. `x = measure { ... }`). The default
+      # `, NULL, NULL` yargs path below produces `sp_measure(, NULL, NULL)`
+      # which doesn't compile. Mirror compile_yield_call_stmt's inline
+      # path but capture the body's last expression into a result temp.
+      if @meth_has_yield[mi] == 1 && has_literal_block(nid) == 1
+        return compile_yield_call_expr(nid, mi)
+      end
       yargs = ""
       if @meth_has_yield[mi] == 1
         yargs = ", NULL, NULL"
@@ -39661,6 +39669,104 @@ class Compiler
         k = k + 1
       end
     end
+  end
+
+  # Issue #396: expression-context counterpart of compile_yield_call_stmt.
+  # `x = measure { puts "block" }` where measure has `yield` in its body
+  # previously fell through to compile_no_recv_call_expr's default, which
+  # emitted `sp_measure(, NULL, NULL)` -- empty leading arg slot + 1 trailing
+  # NULL too many. Mirror the inlining the stmt-form does, but capture the
+  # body's last expression into a result temp and return that as the
+  # expression value.
+  def compile_yield_call_expr(nid, mi)
+    blk = @nd_block[nid]
+    if blk < 0
+      return "0"
+    end
+    bp_names = "".split(",")
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        kbp = 0
+        while kbp < reqs.length
+          bp_names.push(@nd_name[reqs[kbp]])
+          kbp = kbp + 1
+        end
+      end
+    end
+    args_id_yc = @nd_arguments[nid]
+    arg_ids_yc = []
+    if args_id_yc >= 0
+      arg_ids_yc = get_args(args_id_yc)
+    end
+    pnames = @meth_param_names[mi].split(",")
+    ptypes = @meth_param_types[mi].split(",")
+    @block_counter = @block_counter + 1
+    suffix = "_y" + @block_counter.to_s
+    param_map_from = "".split(",")
+    param_map_to = "".split(",")
+    kp = 0
+    while kp < pnames.length
+      pt_yc = "int"
+      if kp < ptypes.length
+        pt_yc = ptypes[kp]
+      end
+      tname = pnames[kp] + suffix
+      val_yc = "0"
+      if kp < arg_ids_yc.length
+        val_yc = compile_expr(arg_ids_yc[kp])
+      end
+      emit("  " + c_type(pt_yc) + " lv_" + tname + " = " + val_yc + ";")
+      param_map_from.push(pnames[kp])
+      param_map_to.push(tname)
+      declare_var(tname, pt_yc)
+      kp = kp + 1
+    end
+    bid = @meth_body_ids[mi]
+    if bid >= 0
+      flocals_n = "".split(",")
+      flocals_t = "".split(",")
+      scan_locals(bid, flocals_n, flocals_t, pnames)
+      kf = 0
+      while kf < flocals_n.length
+        tname = flocals_n[kf] + suffix
+        emit("  " + c_type(flocals_t[kf]) + " lv_" + tname + " = " + c_default_val(flocals_t[kf]) + ";")
+        param_map_from.push(flocals_n[kf])
+        param_map_to.push(tname)
+        declare_var(tname, flocals_t[kf])
+        kf = kf + 1
+      end
+    end
+    rt_yc = @meth_return_types[mi]
+    result_tmp = new_temp
+    emit("  " + c_type(rt_yc) + " " + result_tmp + " = " + c_return_default(rt_yc) + ";")
+    if bid >= 0
+      stmts = get_stmts(bid)
+      n = stmts.length
+      ks = 0
+      while ks < n - 1
+        compile_stmt_with_block(stmts[ks], blk, bp_names, param_map_from, param_map_to)
+        ks = ks + 1
+      end
+      if n > 0
+        last_y = stmts.last
+        last_t = @nd_type[last_y]
+        if last_t == "YieldNode" || last_t == "IfNode" || last_t == "CaseNode" ||
+           last_t == "WhileNode" || last_t == "BeginNode" || last_t == "ReturnNode" ||
+           last_t == "LocalVariableWriteNode" || last_t == "InstanceVariableWriteNode" ||
+           last_t == "ClassVariableWriteNode" || last_t == "GlobalVariableWriteNode"
+          # Statement-shaped last expression: emit as stmt; result_tmp
+          # keeps its default value.
+          compile_stmt_with_block(last_y, blk, bp_names, param_map_from, param_map_to)
+        else
+          # Expression-shaped: capture the value via compile_expr_remap.
+          emit("  " + result_tmp + " = " + compile_expr_remap(last_y, param_map_from, param_map_to) + ";")
+        end
+      end
+    end
+    result_tmp
   end
 
   def compile_stmt_with_block(nid, blk, bp_names, map_from, map_to)
