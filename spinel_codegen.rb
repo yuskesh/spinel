@@ -24946,45 +24946,50 @@ class Compiler
       cname = lt[4, lt.length - 4]
       ci = find_class_idx(cname)
       if ci >= 0
-        owner = find_method_owner(ci, mname)
+        # MRI's default `!=` is `!(self == other)`. Synthesize when
+        # the class defines `==` but not `!=` -- otherwise this call
+        # falls into compile_eq's raw fallback and breaks under
+        # -Werror.
+        synth_neq = mname == "!=" &&
+                    find_method_owner(ci, "!=") == "" &&
+                    find_method_owner(ci, "==") != ""
+        target_mname = synth_neq ? "==" : mname
+
+        owner = find_method_owner(ci, target_mname)
         if owner != ""
-          ca = compile_call_args(nid)
+          # Box args to match the dispatched method's param types. A
+          # widened `==(sp_RbVal other)` called with raw `mrb_int` /
+          # `const char *` is the original -Werror failure.
+          ca = compile_typed_call_args_by_name(nid, owner, target_mname)
           rc = compile_expr_gc_rooted(recv)
-          if owner == cname
-            if ca != ""
-              return "sp_" + owner + "_" + sanitize_name(mname) + "(" + rc + ", " + ca + ")"
-            else
-              return "sp_" + owner + "_" + sanitize_name(mname) + "(" + rc + ")"
-            end
-          else
-            if ca != ""
-              return "sp_" + owner + "_" + sanitize_name(mname) + "((sp_" + owner + " *)" + rc + ", " + ca + ")"
-            else
-              return "sp_" + owner + "_" + sanitize_name(mname) + "((sp_" + owner + " *)" + rc + ")"
-            end
+          recv_arg = owner == cname ? rc : "(sp_" + owner + " *)" + rc
+          tail = ca != "" ? ", " + ca : ""
+          call = "sp_" + owner + "_" + sanitize_name(target_mname) + "(" + recv_arg + tail + ")"
+          return synth_neq ? "(!" + call + ")" : call
+        end
+
+        cmp_owner = find_method_owner(ci, "<=>")
+        if cmp_owner != ""
+          ca = compile_typed_call_args_by_name(nid, cmp_owner, "<=>")
+          rc = compile_expr_gc_rooted(recv)
+          cmp_call = "sp_" + cmp_owner + "__cmp(" + rc + ", " + ca + ")"
+          if mname == "<"
+            return "(" + cmp_call + " < 0)"
           end
-        else
-          # Check if class has <=> (Comparable) for comparison operators
-          cmp_owner = find_method_owner(ci, "<=>")
-          if cmp_owner != ""
-            ca = compile_call_args(nid)
-            rc = compile_expr_gc_rooted(recv)
-            cmp_call = "sp_" + cmp_owner + "__cmp(" + rc + ", " + ca + ")"
-            if mname == "<"
-              return "(" + cmp_call + " < 0)"
-            end
-            if mname == ">"
-              return "(" + cmp_call + " > 0)"
-            end
-            if mname == "<="
-              return "(" + cmp_call + " <= 0)"
-            end
-            if mname == ">="
-              return "(" + cmp_call + " >= 0)"
-            end
-            if mname == "=="
-              return "(" + cmp_call + " == 0)"
-            end
+          if mname == ">"
+            return "(" + cmp_call + " > 0)"
+          end
+          if mname == "<="
+            return "(" + cmp_call + " <= 0)"
+          end
+          if mname == ">="
+            return "(" + cmp_call + " >= 0)"
+          end
+          if mname == "=="
+            return "(" + cmp_call + " == 0)"
+          end
+          if mname == "!="
+            return "(" + cmp_call + " != 0)"
           end
         end
       end
@@ -30060,6 +30065,39 @@ class Compiler
     if arg_id >= 0
       at = infer_type(arg_id)
     end
+    # Cross-type prim-vs-obj. Integer#== / Float#== fall back to
+    # `other == self` via num_equal (numeric.c); String, Symbol,
+    # Nil, True, False are type-strict with no fallback. obj-LHS
+    # is handled in compile_obj_operator_expr -- this path is
+    # `prim == obj` plus the obj-LHS no-`==`-no-`<=>` fall-through.
+    lhs_obj = is_obj_type(lt)
+    rhs_obj = is_obj_type(at)
+    if lhs_obj != rhs_obj
+      other_t = lhs_obj == 1 ? at : lt
+      if lhs_obj == 0 && (other_t == "int" || other_t == "float")
+        cname = at[4, at.length - 4]
+        ci = find_class_idx(cname)
+        if ci >= 0
+          owner = find_method_owner(ci, "==")
+          if owner != ""
+            owner_ci = find_class_idx(owner)
+            midx = cls_find_method_direct(owner_ci, "==")
+            ptypes = cls_meth_ptypes_get(owner_ci, midx)
+            boxed = ptypes.length > 0 ? compile_expr_for_expected_type(recv, ptypes[0]) : compile_expr(recv)
+            obj_expr = compile_expr_gc_rooted(arg_id)
+            recv_arg = owner == cname ? obj_expr : "(sp_" + owner + " *)" + obj_expr
+            call = "sp_" + owner + "_" + sanitize_name("==") + "(" + recv_arg + ", " + boxed + ")"
+            return op == "==" ? call : "(!" + call + ")"
+          end
+        end
+      end
+      # Type-strict primitive, or Numeric vs an obj with no user `==`
+      # (BasicObject#== identity -> false in MRI).
+      if other_t == "int" || other_t == "float" || other_t == "bool" || other_t == "nil" ||
+         other_t == "string" || other_t == "mutable_str" || other_t == "symbol"
+        return op == "==" ? "FALSE" : "TRUE"
+      end
+    end
     lc = compile_expr(recv)
     rc = "0"
     if arg_id >= 0
@@ -31285,6 +31323,16 @@ class Compiler
     emit("  " + c_type(arg_type) + " " + tmp + " = " + expr + ";")
     emit("  SP_GC_ROOT(" + tmp + ");")
     tmp
+  end
+
+  # compile_typed_call_args for callers that hold the owner / method
+  # names rather than pre-resolved indices. Untyped fallback on miss.
+  def compile_typed_call_args_by_name(nid, owner, mname, omit_trailing = 0)
+    owner_ci = find_class_idx(owner)
+    return compile_call_args(nid) if owner_ci < 0
+    midx = cls_find_method_direct(owner_ci, mname)
+    return compile_call_args(nid) if midx < 0
+    compile_typed_call_args(nid, owner_ci, midx, omit_trailing)
   end
 
   def compile_typed_call_args(nid, target_ci, target_midx, omit_trailing, root_constructor_args = 0)
