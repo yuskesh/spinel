@@ -3640,6 +3640,31 @@ class Compiler
   end
 
   def infer_method_name_type(nid, mname, recv)
+    # Issue #407: when recv is a class/module constant ref whose
+    # class/module defines a class method of the given name, defer
+    # to the receiver-aware resolution that
+    # infer_constant_recv_type runs later. Without this guard, the
+    # name-based hardcodes below (`hash -> int`, `to_s -> string`,
+    # etc.) would pre-empt user-defined `def self.hash(plain) ->
+    # String` cmeths, widening downstream local types to int and
+    # cascading into incompatible-pointer C errors at the next
+    # use site. Return "" so the caller falls through to
+    # infer_constant_recv_type, which already does the
+    # cls_cmethod_return_inherited / `<Mod>_cls_<m>` lookup.
+    if recv >= 0 && (@nd_type[recv] == "ConstantReadNode" || @nd_type[recv] == "ConstantPathNode")
+      rcname_407 = constructor_class_name(recv)
+      if rcname_407 != ""
+        ci_407 = find_class_idx(rcname_407)
+        if ci_407 >= 0 && cls_cmethod_owner(ci_407, mname) >= 0
+          return ""
+        end
+        if module_name_exists(rcname_407) == 1
+          if find_method_idx(rcname_407 + "_cls_" + mname) >= 0
+            return ""
+          end
+        end
+      end
+    end
     if mname == "length"
       return "int"
     end
