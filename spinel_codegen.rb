@@ -26083,6 +26083,17 @@ class Compiler
       return rc
     end
     if mname == "index"
+      args_id_idx = @nd_arguments[nid]
+      if args_id_idx >= 0
+        a_idx = get_args(args_id_idx)
+        if a_idx.length >= 2
+          # `s.index(sub, start)` -- 2-arg form. Pre-fix this branch
+          # silently dropped `start` and re-emitted the 1-arg call,
+          # so successive `s.index(sub, dot1+1)` walks all returned
+          # the first match (instead of the next one after `dot1`).
+          return "sp_str_index_from(" + rc + ", " + compile_expr(a_idx[0]) + ", " + compile_expr(a_idx[1]) + ")"
+        end
+      end
       return "sp_str_index(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "rindex"
