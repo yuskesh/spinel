@@ -120,11 +120,12 @@ PRISM_OBJ    = $(patsubst $(PRISM_DIR)/src/%.c,build/prism/%.o,$(PRISM_SRC))
 PRISM_LIB    = build/libprism.a
 
 CODEGEN_STAMP := build/stamps/spinel_codegen.rb.stamp
+ANALYZE_STAMP := build/stamps/spinel_analyze.rb.stamp
 PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
 
 .PHONY: all parse bootstrap codegen test retest clean-test-results regen-expected bench optcarrot clean install uninstall deps
 
-all: parse regexp spinel_codegen$(EXE)
+all: parse regexp spinel_analyze$(EXE) spinel_codegen$(EXE)
 
 # ---- Dependencies ----
 # Clone Prism into vendor/prism at the pinned version. Run this once
@@ -210,32 +211,52 @@ $(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o
 regexp: $(SP_RT_LIB)
 
 # ---- Build the codegen binary (fast path) ----
-# `make spinel_codegen` (or the alias `make codegen`) compiles
-# spinel_codegen.rb once via CRuby and links the result. This is
-# enough to use the binary; for the full self-hosting fixed-point
-# check (gen2.c == gen3.c), use `make bootstrap`.
+# Build both binaries via CRuby (the bootstrap "round 1"). Each
+# spinel_<phase>.rb is its own ~20K-line source; we compile each
+# through the same parse → analyze → codegen → cc pipeline. Use
+# `make bootstrap` for the full self-hosting fixed-point check.
 
-codegen: spinel_codegen$(EXE)
+codegen: spinel_analyze$(EXE) spinel_codegen$(EXE)
+
+spinel_analyze$(EXE): $(ANALYZE_STAMP) spinel_parse$(EXE)
+	./spinel_parse$(EXE) spinel_analyze.rb build/analyze.ast
+	ruby spinel_analyze.rb build/analyze.ast build/analyze.ir
+	ruby spinel_codegen.rb build/analyze.ast build/analyze.ir build/analyze1.c
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/analyze1.c $(LDFLAGS) -lm -o spinel_analyze$(EXE)
 
 spinel_codegen$(EXE): $(CODEGEN_STAMP) spinel_parse$(EXE)
 	./spinel_parse$(EXE) spinel_codegen.rb build/codegen.ast
-	ruby spinel_codegen.rb build/codegen.ast build/gen1.c
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/gen1.c $(LDFLAGS) -lm -o spinel_codegen$(EXE)
+	ruby spinel_analyze.rb build/codegen.ast build/codegen.ir
+	ruby spinel_codegen.rb build/codegen.ast build/codegen.ir build/codegen1.c
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/codegen1.c $(LDFLAGS) -lm -o spinel_codegen$(EXE)
 
-# ---- Self-hosting verification (slow path) ----
-# Re-runs the binary on its own AST to produce gen2.c, compiles bin2,
-# re-runs bin2 to produce gen3.c, asserts gen2.c == gen3.c (the
-# self-hosting fixed point). On success, replaces spinel_codegen with
-# the verified bin2.
+# ---- Self-hosting verification ----
+# After CRuby builds spinel_{analyze,codegen}, run them on each
+# source file to produce a "round 2" pair of binaries. Then run
+# bin2_{analyze,codegen} on each source again to produce "round 3"
+# outputs and assert byte equality. The fixpoint covers both the
+# analysis IR and the emitted C, so any drift in either phase is
+# caught.
 
-bootstrap: spinel_codegen$(EXE)
-	@echo "=== Bootstrap: gen2 (via spinel_codegen) ==="
-	./spinel_codegen$(EXE) build/codegen.ast build/gen2.c
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/gen2.c $(LDFLAGS) -lm -o build/bin2$(EXE)
-	@echo "=== Bootstrap: gen3 (via bin2) - verify ==="
-	./build/bin2$(EXE) build/codegen.ast build/gen3.c
-	@diff build/gen2.c build/gen3.c > /dev/null && echo "gen2.c == gen3.c (bootstrap OK)" || (echo "BOOTSTRAP FAILED: gen2.c != gen3.c" && exit 1)
-	cp build/bin2$(EXE) spinel_codegen$(EXE)
+bootstrap: spinel_analyze$(EXE) spinel_codegen$(EXE)
+	@echo "=== Bootstrap round 2: analyze + codegen with spinel_{analyze,codegen} ==="
+	./spinel_analyze$(EXE) build/analyze.ast build/analyze2.ir
+	./spinel_codegen$(EXE) build/analyze.ast build/analyze2.ir build/analyze2.c
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/analyze2.c $(LDFLAGS) -lm -o build/bin2_analyze$(EXE)
+	./spinel_analyze$(EXE) build/codegen.ast build/codegen2.ir
+	./spinel_codegen$(EXE) build/codegen.ast build/codegen2.ir build/codegen2.c
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/codegen2.c $(LDFLAGS) -lm -o build/bin2_codegen$(EXE)
+	@echo "=== Bootstrap round 3: analyze + codegen with bin2_* — verify ==="
+	./build/bin2_analyze$(EXE) build/analyze.ast build/analyze3.ir
+	./build/bin2_codegen$(EXE) build/analyze.ast build/analyze3.ir build/analyze3.c
+	./build/bin2_analyze$(EXE) build/codegen.ast build/codegen3.ir
+	./build/bin2_codegen$(EXE) build/codegen.ast build/codegen3.ir build/codegen3.c
+	@diff build/analyze2.ir build/analyze3.ir > /dev/null && echo "analyze.rb: IR fixpoint OK" || (echo "BOOTSTRAP FAILED: analyze.rb IR diverged" && exit 1)
+	@diff build/analyze2.c  build/analyze3.c  > /dev/null && echo "analyze.rb: C fixpoint OK"  || (echo "BOOTSTRAP FAILED: analyze.rb C diverged"  && exit 1)
+	@diff build/codegen2.ir build/codegen3.ir > /dev/null && echo "codegen.rb: IR fixpoint OK" || (echo "BOOTSTRAP FAILED: codegen.rb IR diverged" && exit 1)
+	@diff build/codegen2.c  build/codegen3.c  > /dev/null && echo "codegen.rb: C fixpoint OK"  || (echo "BOOTSTRAP FAILED: codegen.rb C diverged"  && exit 1)
+	cp build/bin2_analyze$(EXE) spinel_analyze$(EXE)
+	cp build/bin2_codegen$(EXE) spinel_codegen$(EXE)
 
 # ---- Test ----
 
@@ -267,12 +288,13 @@ retest: clean-test-results
 	@$(MAKE) --no-print-directory test
 
 # The .ok target is the test's stamp; mtime tracking gives per-test
-# caching for free. Order-only spinel_parse$(EXE) / spinel_codegen$(EXE)
-# stop a bootstrap relink from invalidating every test.
-build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(CODEGEN_STAMP) $(PARSE_STAMP) | spinel_parse$(EXE) spinel_codegen$(EXE)
+# caching for free. Order-only spinel_parse$(EXE) / spinel_analyze$(EXE)
+# / spinel_codegen$(EXE) stop a bootstrap relink from invalidating every test.
+build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(CODEGEN_STAMP) $(ANALYZE_STAMP) $(PARSE_STAMP) | spinel_parse$(EXE) spinel_analyze$(EXE) spinel_codegen$(EXE)
 	@mkdir -p build/test-results
 	@tmpdir=$$(mktemp -d /tmp/spinel-test.XXXXXX); \
 	ast=$$tmpdir/test.ast; \
+	ir=$$tmpdir/test.ir; \
 	cfile=$$tmpdir/test.c; \
 	bin=$$tmpdir/test_bin$(EXE); \
 	exp=$$tmpdir/expected; \
@@ -281,7 +303,8 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(CODEGEN_STAMP) $(PARSE_STAMP) 
 	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 	rm -f "$@.diff"; \
 	./spinel_parse$(EXE) "$<" "$$ast" 2>/dev/null && \
-	./spinel_codegen$(EXE) "$$ast" "$$cfile" 2>/dev/null && \
+	./spinel_analyze$(EXE) "$$ast" "$$ir" 2>/dev/null && \
+	./spinel_codegen$(EXE) "$$ast" "$$ir" "$$cfile" 2>/dev/null && \
 	$(CC) $(CFLAGS) -Werror $(SEC_FLAGS) -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
 	$(CC) $(CFLAGS) "$$cfile.o" $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
 	if [ $$? -eq 0 ]; then \
@@ -334,7 +357,7 @@ test/%.rb.expected: test/%.rb
 	LC_ALL=C sed 's/\r$$//' $@.tmp > $@; \
 	rm -f $@.tmp
 
-bench: spinel_parse$(EXE) $(SP_RT_LIB) spinel_codegen$(EXE)
+bench: spinel_parse$(EXE) $(SP_RT_LIB) spinel_analyze$(EXE) spinel_codegen$(EXE)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@total=$$(ls benchmark/*.rb | wc -l); \
 	if [ -t 1 ]; then tty=1; else tty=0; fi; \
@@ -344,7 +367,8 @@ bench: spinel_parse$(EXE) $(SP_RT_LIB) spinel_codegen$(EXE)
 	  bn=$$(basename "$$f" .rb); \
 	  if [ "$$tty" = 1 ]; then printf '\r\033[K  [%d/%d] %s' "$$i" "$$total" "$$bn"; fi; \
 	  $(TIMEOUT10) ./spinel_parse$(EXE) "$$f" /tmp/_sp_b.ast 2>/dev/null && \
-	  $(TIMEOUT10) ./spinel_codegen$(EXE) /tmp/_sp_b.ast /tmp/_sp_b.c 2>/dev/null && \
+	  $(TIMEOUT10) ./spinel_analyze$(EXE) /tmp/_sp_b.ast /tmp/_sp_b.ir 2>/dev/null && \
+	  $(TIMEOUT10) ./spinel_codegen$(EXE) /tmp/_sp_b.ast /tmp/_sp_b.ir /tmp/_sp_b.c 2>/dev/null && \
 	  $(CC) $(CFLAGS) -Werror $(SEC_FLAGS) -Ilib -c /tmp/_sp_b.c -o /tmp/_sp_b.c.o 2>/dev/null && \
 	  $(CC) $(CFLAGS) /tmp/_sp_b.c.o $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_b_bin$(EXE) 2>/dev/null; \
 	  if [ $$? -eq 0 ]; then \
@@ -376,7 +400,7 @@ bench: spinel_parse$(EXE) $(SP_RT_LIB) spinel_codegen$(EXE)
 	  fi; \
 	done; \
 	if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
-	rm -f /tmp/_sp_b.ast /tmp/_sp_b.c /tmp/_sp_b.c.o /tmp/_sp_b_bin$(EXE) /tmp/_sp_b_exp /tmp/_sp_b_act /tmp/_sp_b_exp.n /tmp/_sp_b_act.n; \
+	rm -f /tmp/_sp_b.ast /tmp/_sp_b.ir /tmp/_sp_b.c /tmp/_sp_b.c.o /tmp/_sp_b_bin$(EXE) /tmp/_sp_b_exp /tmp/_sp_b_act /tmp/_sp_b_exp.n /tmp/_sp_b_act.n; \
 	echo "Benchmarks: $$pass pass, $$fail fail, $$err error, $$skip skip"; \
 	if [ $$fail -ne 0 ] || [ $$err -ne 0 ]; then exit 1; fi
 
@@ -393,7 +417,7 @@ OPTCARROT_DIR  := build/optcarrot
 OPTCARROT_REPO := https://github.com/mame/optcarrot.git
 OPTCARROT_BRANCH := experiment/spinel
 
-optcarrot: spinel_parse$(EXE) $(SP_RT_LIB) spinel_codegen$(EXE)
+optcarrot: spinel_parse$(EXE) $(SP_RT_LIB) spinel_analyze$(EXE) spinel_codegen$(EXE)
 	@if [ ! -d $(OPTCARROT_DIR) ]; then \
 	  git clone --depth=1 --branch=$(OPTCARROT_BRANCH) $(OPTCARROT_REPO) $(OPTCARROT_DIR); \
 	fi
@@ -417,7 +441,9 @@ install: all
 	install -d $(SPNLDIR)/lib
 	install -m 755 spinel                $(SPNLDIR)/
 	install -m 755 spinel_parse$(EXE)    $(SPNLDIR)/
+	install -m 755 spinel_analyze$(EXE)  $(SPNLDIR)/
 	install -m 755 spinel_codegen$(EXE)  $(SPNLDIR)/
+	install -m 644 spinel_analyze.rb     $(SPNLDIR)/
 	install -m 644 spinel_codegen.rb     $(SPNLDIR)/
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
@@ -433,4 +459,4 @@ uninstall:
 
 clean:
 	rm -rf build/
-	rm -f spinel_parse$(EXE) spinel_codegen$(EXE)
+	rm -f spinel_parse$(EXE) spinel_analyze$(EXE) spinel_codegen$(EXE)

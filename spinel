@@ -19,6 +19,8 @@
 
 DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
 PARSE_BIN="$DIR/spinel_parse"
+ANALYZE_RB="$DIR/spinel_analyze.rb"
+ANALYZE_BIN="$DIR/spinel_analyze"
 CODEGEN_RB="$DIR/spinel_codegen.rb"
 CODEGEN_BIN="$DIR/spinel_codegen"
 
@@ -27,6 +29,7 @@ CODEGEN_BIN="$DIR/spinel_codegen"
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
     [ ! -x "$PARSE_BIN"   ] && [ -x "$PARSE_BIN.exe"   ] && PARSE_BIN="$PARSE_BIN.exe"
+    [ ! -x "$ANALYZE_BIN" ] && [ -x "$ANALYZE_BIN.exe" ] && ANALYZE_BIN="$ANALYZE_BIN.exe"
     [ ! -x "$CODEGEN_BIN" ] && [ -x "$CODEGEN_BIN.exe" ] && CODEGEN_BIN="$CODEGEN_BIN.exe"
     ;;
 esac
@@ -106,7 +109,8 @@ else
   BASENAME="$(basename "$SOURCE" .rb)"
 fi
 AST_TMP="$(mktemp /tmp/spinel_ast.XXXXXX)"
-trap 'rm -f "$AST_TMP" "$C_TMP" "$EVAL_TMP"' EXIT
+IR_TMP="$(mktemp /tmp/spinel_ir.XXXXXX)"
+trap 'rm -f "$AST_TMP" "$IR_TMP" "$C_TMP" "$EVAL_TMP"' EXIT
 
 # Step 1: Parse. spinel_parse is C-only; build it via `make parse`
 # (or `make all`) before invoking spinel.
@@ -120,12 +124,23 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
-# Step 2: Codegen
+# Step 2: Analyze (whole-program type inference; emits .ir)
+if [ -x "$ANALYZE_BIN" ]; then
+  "$ANALYZE_BIN" "$AST_TMP" "$IR_TMP"
+else
+  ruby "$ANALYZE_RB" "$AST_TMP" "$IR_TMP"
+fi
+if [ $? -ne 0 ]; then
+  echo "spinel: analyze failed" >&2
+  exit 1
+fi
+
+# Step 3: Codegen
 if [ $STDOUT_MODE -eq 1 ]; then
   if [ -x "$CODEGEN_BIN" ]; then
-    "$CODEGEN_BIN" "$AST_TMP"
+    "$CODEGEN_BIN" "$AST_TMP" "$IR_TMP"
   else
-    ruby "$CODEGEN_RB" "$AST_TMP"
+    ruby "$CODEGEN_RB" "$AST_TMP" "$IR_TMP"
   fi
   exit $?
 fi
@@ -138,9 +153,9 @@ else
 fi
 
 if [ -x "$CODEGEN_BIN" ]; then
-  "$CODEGEN_BIN" "$AST_TMP" "$C_FILE"
+  "$CODEGEN_BIN" "$AST_TMP" "$IR_TMP" "$C_FILE"
 else
-  ruby "$CODEGEN_RB" "$AST_TMP" "$C_FILE"
+  ruby "$CODEGEN_RB" "$AST_TMP" "$IR_TMP" "$C_FILE"
 fi
 if [ $? -ne 0 ]; then
   echo "spinel: codegen failed" >&2
