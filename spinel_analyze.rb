@@ -12633,14 +12633,17 @@ class Compiler
           cpk = cpk + 1
         end
         if bid >= 0
+          # Issue #411: route through refine_method_body_locals so a
+          # `result = nil; ...; result = obj` shape upgrades the
+          # local from "nil" to `obj_<C>?` before infer_body_return
+          # reads the tail expression. Without this, the cmeth's
+          # return type stays "nil" -> `mrb_int` even though the
+          # actually-emitted local is correctly typed `sp_<C> *`,
+          # so the function signature and the body's `return`
+          # statement disagree at the C boundary.
           ml = "".split(",")
           mt = "".split(",")
-          scan_locals(bid, ml, mt, cpnames)
-          lk = 0
-          while lk < ml.length
-            declare_var(ml[lk], mt[lk])
-            lk = lk + 1
-          end
+          refine_method_body_locals(bid, ml, mt, cpnames)
         end
         rt = infer_body_return(bid)
         if j < cm_returns.length
