@@ -3163,6 +3163,16 @@ class Compiler
     if mname == "to_f"
       return "float"
     end
+    # Issue #414: Time#iso8601 and Time#strftime — both return a
+    # formatted string. Gated on recv_type so unrelated user-class
+    # methods sharing the names (rare in idiomatic Ruby; possible
+    # if a class wraps date arithmetic) still flow through normal
+    # resolution.
+    if mname == "iso8601" || mname == "strftime"
+      if recv >= 0 && infer_type(recv) == "time"
+        return "string"
+      end
+    end
     # Kernel coercion methods: Integer(x) / Float(x) return their class.
     # Only treat as a Kernel call when there's no explicit receiver — with
     # a receiver, "Integer" / "Float" would be ConstantReadNode lookups,

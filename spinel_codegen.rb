@@ -10970,6 +10970,18 @@ class Compiler
       if mname == "to_f"
         return "({ sp_Time _t = " + rc + "; (mrb_float)_t.tv_sec + (mrb_float)_t.tv_nsec / 1e9; })"
       end
+      # Issue #414: Time#iso8601 / Time#strftime — format the time as a
+      # string. iso8601 is a no-arg fixed format (the canonical
+      # "%Y-%m-%dT%H:%M:%S%z" with the colon-separated offset
+      # CRuby uses), strftime takes the format string as an arg.
+      # Both delegate to sp_time_iso8601 / sp_time_strftime in the
+      # runtime, which use libc's strftime under the hood.
+      if mname == "iso8601"
+        return "sp_time_iso8601(" + rc + ")"
+      end
+      if mname == "strftime"
+        return "sp_time_strftime(" + rc + ", " + compile_arg0(nid) + ")"
+      end
     end
 
     # Complex (value-type sp_Complex)

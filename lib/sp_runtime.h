@@ -146,6 +146,7 @@ static inline sp_Time sp_time_at_float(mrb_float epoch) {
   return (sp_Time){ sec, (int32_t)(frac * 1e9) };
 }
 
+
 typedef struct sp_gc_hdr { struct sp_gc_hdr *next; void (*finalize)(void *); void (*scan)(void *); size_t size; unsigned marked : 1; } sp_gc_hdr;
 static sp_gc_hdr *sp_gc_heap = NULL; static size_t sp_gc_bytes = 0; static size_t sp_gc_threshold = 256*1024;
 
@@ -238,6 +239,51 @@ static void sp_str_sweep(void) {
       free(h);
     }
   }
+}
+
+/* Issue #414: Time#strftime — format the time per `fmt` using libc
+   strftime against the local-time broken-down value. Returns a
+   freshly-allocated string (sp_str_dup_external'd into the str heap
+   so GC tracks it). The 256-byte buffer is enough for every format
+   CRuby builds in (the longest is %c which produces ~25 bytes);
+   custom formats that exceed it get truncated. */
+static const char *sp_time_strftime(sp_Time t, const char *fmt) {
+  char buf[256];
+  time_t s = (time_t)t.tv_sec;
+  struct tm *lt = localtime(&s);
+  if (lt == NULL) return SPL("");
+  size_t n = strftime(buf, sizeof(buf), fmt, lt);
+  if (n == 0) return SPL("");
+  buf[n] = 0;
+  return sp_str_dup_external(buf);
+}
+
+/* Issue #414: Time#iso8601 — RFC 3339 style "%Y-%m-%dT%H:%M:%S%:z".
+   strftime's %z gives the offset as ±HHMM, so we splice in the colon
+   manually to match CRuby's iso8601 output. Sub-second precision is
+   intentionally omitted: CRuby's iso8601 also drops it unless the
+   caller passes a precision arg, which Phase 1 doesn't support. */
+static const char *sp_time_iso8601(sp_Time t) {
+  char buf[64];
+  time_t s = (time_t)t.tv_sec;
+  struct tm *lt = localtime(&s);
+  if (lt == NULL) return SPL("");
+  size_t n = strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S%z", lt);
+  if (n == 0) return SPL("");
+  /* Insert a colon between the offset's hour and minute halves
+     (e.g. "-0400" -> "-04:00"). strftime %z always emits 5 chars at
+     the tail; if it's missing for some libc, leave the buffer alone. */
+  if (n >= 5 && (buf[n - 5] == '+' || buf[n - 5] == '-')) {
+    char m1 = buf[n - 2], m2 = buf[n - 1];
+    buf[n - 2] = ':';
+    buf[n - 1] = m1;
+    buf[n] = m2;
+    buf[n + 1] = 0;
+    n++;
+  } else {
+    buf[n] = 0;
+  }
+  return sp_str_dup_external(buf);
 }
 
 #define SP_GC_STACK_MAX 65536
