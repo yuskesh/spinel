@@ -6110,6 +6110,11 @@ class Compiler
     emit_global_constants
     emit_raw("/*LAMBDA_INSERT_POINT*/")
     emit_class_methods
+    # Issue #404 Tier 5: per-class new-adapter + dispatch table.
+    # Emits after constructors so adapters can reference sp_<C>_new
+    # directly. Hooked from the runtime `sp_class_new_dispatch(c)`
+    # which a `<sp_Class>.new` site lowers to.
+    emit_class_new_dispatch
     emit_ieval_funcs
     emit_toplevel_methods
     # `END { ... }` -- emit one zero-arg static C function per
@@ -7913,6 +7918,132 @@ class Compiler
   end
 
   # ---- Emit class methods ----
+  # Issue #404 Tier 5: dynamic `<Class>.new` over a sp_Class value.
+  # Per-user-class adapter + function-pointer table indexed by
+  # unified cls_id. Adapters cover only the no-arg shape (the
+  # most common case for `klass.new` from a Class-typed local in
+  # delegated_type / STI style code). Classes whose initialize
+  # requires positional args without defaults get a nil-returning
+  # placeholder; callers that need arg-passing still go through
+  # the static `Foo.new(...)` dispatch unchanged.
+  def emit_class_new_dispatch
+    if @cls_names.length == 0
+      return
+    end
+    has_any_no_arg = 0
+    i = 0
+    while i < @cls_names.length
+      if cls_supports_noarg_new(i) == 1
+        has_any_no_arg = 1
+        i = @cls_names.length
+      else
+        i = i + 1
+      end
+    end
+    if has_any_no_arg == 0
+      return
+    end
+    # Per-class adapters: only emit for classes that actually
+    # support a no-arg constructor. Other slots default to
+    # `sp_class_new_nil_fallback` (declared inline below).
+    emit_raw("/* sp_Class new-dispatch table (issue #404 Tier 5) */")
+    emit_raw("typedef sp_RbVal (*sp_class_new_fn)(void);")
+    emit_raw("static sp_RbVal sp_class_new_nil_fallback(void) __attribute__((unused));")
+    emit_raw("static sp_RbVal sp_class_new_nil_fallback(void){return sp_box_nil();}")
+    i = 0
+    while i < @cls_names.length
+      if cls_supports_noarg_new(i) == 1
+        cname = @cls_names[i]
+        uid = cls_id_for_user_internal(i)
+        emit_raw("static sp_RbVal sp_" + cname + "_new_dispatch_adapter(void) __attribute__((unused));")
+        emit_raw("static sp_RbVal sp_" + cname + "_new_dispatch_adapter(void){return sp_box_obj(sp_" + cname + "_new(), " + uid.to_s + ");}")
+      end
+      i = i + 1
+    end
+    # Table indexed by unified cls_id. Built-ins (0..BC-1) and
+    # modules (>=BC+N) point at the nil fallback so calling
+    # `Integer.new` returns nil rather than miscompiling.
+    table_line = "static const sp_class_new_fn sp_class_constructors[SP_CLASS_COUNT] __attribute__((unused)) = {"
+    bi = 0
+    while bi < @builtin_class_count
+      if bi > 0
+        table_line = table_line + ","
+      end
+      table_line = table_line + "sp_class_new_nil_fallback"
+      bi = bi + 1
+    end
+    ui = 0
+    while ui < @cls_names.length
+      if @builtin_class_count + ui > 0
+        table_line = table_line + ","
+      end
+      if cls_supports_noarg_new(ui) == 1
+        table_line = table_line + "sp_" + @cls_names[ui] + "_new_dispatch_adapter"
+      else
+        table_line = table_line + "sp_class_new_nil_fallback"
+      end
+      ui = ui + 1
+    end
+    mi = 0
+    while mi < @module_names.length
+      if @builtin_class_count + @cls_names.length + mi > 0
+        table_line = table_line + ","
+      end
+      table_line = table_line + "sp_class_new_nil_fallback"
+      mi = mi + 1
+    end
+    table_line = table_line + "};"
+    emit_raw(table_line)
+    emit_raw("static sp_RbVal sp_class_new_dispatch(sp_Class c) __attribute__((unused));")
+    emit_raw("static sp_RbVal sp_class_new_dispatch(sp_Class c){if(c.cls_id<0||c.cls_id>=SP_CLASS_COUNT)return sp_box_nil();return sp_class_constructors[c.cls_id]();}")
+    emit_raw("")
+  end
+
+  # Tier 5: does class ci support a no-arg `new()` call? Either
+  # no initialize defined (default Ruby new takes no args), or
+  # initialize has zero params, or every param has a default.
+  # Value-type classes are excluded -- their constructor returns
+  # a struct (not a pointer), which sp_box_obj can't carry.
+  def cls_supports_noarg_new(ci)
+    if ci < 0 || ci >= @cls_names.length
+      return 0
+    end
+    if @cls_is_value_type[ci] == 1
+      return 0
+    end
+    # Walk the inheritance chain: M_Sub doesn't define initialize
+    # itself but inherits initialize(x) from Base. sp_M_Sub_new's
+    # signature comes from the inherited initialize, so the
+    # no-arg adapter would mismatch unless we check the
+    # parent-chain owner.
+    # Walk the inheritance chain: M_Sub doesn't define initialize
+    # itself but inherits initialize(x) from Base. sp_M_Sub_new's
+    # signature comes from the inherited initialize, so we
+    # consult the owner of the chain.
+    init_ci = find_init_class(ci)
+    if init_ci < 0
+      return 1
+    end
+    init_idx = cls_find_method_direct(init_ci, "initialize")
+    if init_idx < 0
+      return 1
+    end
+    pnames = cls_meth_pnames_get(init_ci, init_idx)
+    # Only emit the adapter when the constructor's emitted
+    # signature is truly zero-arg. Even an all-default-args
+    # initialize (`def initialize(hash = {})`) still produces a
+    # constructor whose C signature lists every param; default
+    # filling happens at the static call site via
+    # compile_call_args_with_defaults, not in the constructor
+    # itself. The adapter would compile a no-arg call against a
+    # one-arg sp_<C>_new and fail. Future tiers can synthesize
+    # per-class arg-bridging helpers; the MVP stays conservative.
+    if pnames.length == 0
+      return 1
+    end
+    0
+  end
+
   def emit_class_methods
     i = 0
     while i < @cls_names.length
@@ -16539,6 +16670,24 @@ class Compiler
         @needs_class_table = 1
         @needs_class_ancestors = 1
         return "sp_class_le(" + compile_arg0(nid) + ", " + rc + ")"
+      end
+      # Issue #404 Tier 5: `<sp_Class>.new` over a *dynamic*
+      # Class value (Class-typed local / param / ivar). Routes
+      # through the per-cls_id adapter table. The static constant
+      # path (`Foo.new(...)`) keeps using constructor_class_name
+      # / direct sp_<C>_new dispatch -- we only want dynamic
+      # recv here.
+      if mname == "new"
+        recv_id_new = @nd_receiver[nid]
+        recv_ty_new = recv_id_new >= 0 ? @nd_type[recv_id_new] : ""
+        if recv_ty_new != "ConstantReadNode" && recv_ty_new != "ConstantPathNode"
+          nargs_id = @nd_arguments[nid]
+          if nargs_id < 0 || get_args(nargs_id).length == 0
+            @needs_class_table = 1
+            @needs_rb_value = 1
+            return "sp_class_new_dispatch(" + rc + ")"
+          end
+        end
       end
       # Issue #419: `<obj>.class.<cmeth>(...)` lowering. The recv
       # here is itself a `<X>.class` CallNode -- the outer

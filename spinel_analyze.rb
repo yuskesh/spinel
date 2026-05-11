@@ -3205,6 +3205,21 @@ class Compiler
         return "bool"
       end
     end
+    # Issue #404 Tier 5: `<sp_Class>.new` returns a poly value
+    # (boxed user instance) only when the recv is a *dynamic*
+    # sp_Class -- a local / param / ivar carrying a class value.
+    # Constant-path receivers (Foo, M::Sub, etc.) still go through
+    # the static constructor path so `obj = Foo.new(args)` stays
+    # typed obj_Foo and the existing argful-construction emit
+    # works unchanged.
+    if mname == "new"
+      if recv >= 0 && infer_type(recv) == "class"
+        rty_404n = @nd_type[recv]
+        if rty_404n != "ConstantReadNode" && rty_404n != "ConstantPathNode"
+          return "poly"
+        end
+      end
+    end
     if mname == "to_i"
       return "int"
     end
