@@ -1,0 +1,6 @@
+Greeting
+Polite,Politeness,Greeting,Base
+polite<=Greeting
+polite<=Politeness
+base!<=Greeting
+neq

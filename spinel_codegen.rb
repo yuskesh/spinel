@@ -149,6 +149,11 @@ class Compiler
     # ---- Classes (parallel arrays) ----
     @cls_names = "".split(",")
     @cls_parents = "".split(",")
+    # Issue #404 Phase 3 Tier 2: parallel to @cls_names. Semicolon-
+    # separated list of included module names per class. Populated
+    # by spinel_analyze and shipped through the IR; codegen
+    # resolves the names to module indices for ancestors / parents.
+    @cls_includes = "".split(",")
     # Issue #404 Phase 1: emit-time toggle for the per-program
     # sp_class_names[] table + sp_class_to_s helper. compile_expr's
     # ConstantReadNode arm and any class.to_s lowering set this to 1
@@ -6274,8 +6279,12 @@ class Compiler
     # sentinel 1-slot array carries the empty case (ISO C forbids
     # zero-length array initializers).
     emit_raw("/* sp_Class names table (issue #404) */")
-    emit_raw("#define SP_CLASS_COUNT " + @cls_names.length.to_s)
-    arr_len = @cls_names.length
+    # Phase 3 Tier 2: unified cls_id space across classes +
+    # modules. Classes occupy [0 .. N-1], modules occupy
+    # [N .. N+M-1].
+    total_count = unified_class_count
+    emit_raw("#define SP_CLASS_COUNT " + total_count.to_s)
+    arr_len = total_count
     if arr_len == 0
       arr_len = 1
     end
@@ -6288,7 +6297,15 @@ class Compiler
       line = line + c_string_literal(@cls_names[i])
       i = i + 1
     end
-    if @cls_names.length == 0
+    mi = 0
+    while mi < @module_names.length
+      if @cls_names.length + mi > 0
+        line = line + ","
+      end
+      line = line + c_string_literal(@module_names[mi])
+      mi = mi + 1
+    end
+    if total_count == 0
       line = line + "\"\""
     end
     line = line + "};"
@@ -6308,8 +6325,8 @@ class Compiler
     # link-time DCE'd when nothing consumes them; the residual
     # cost is the array bytes, which is small for typical
     # programs and zero for programs that never declare a class.
-    if @cls_names.length > 0
-      parents_line = "static const mrb_int sp_class_parents[" + @cls_names.length.to_s + "] __attribute__((unused)) = {"
+    if unified_class_count > 0
+      parents_line = "static const mrb_int sp_class_parents[" + unified_class_count.to_s + "] __attribute__((unused)) = {"
       pi_pl = 0
       while pi_pl < @cls_names.length
         if pi_pl > 0
@@ -6323,14 +6340,23 @@ class Compiler
         parents_line = parents_line + ppidx.to_s + "LL"
         pi_pl = pi_pl + 1
       end
+      # Modules have no superclass: emit -1 for each module entry.
+      mi_pl = 0
+      while mi_pl < @module_names.length
+        if @cls_names.length + mi_pl > 0
+          parents_line = parents_line + ","
+        end
+        parents_line = parents_line + "-1LL"
+        mi_pl = mi_pl + 1
+      end
       parents_line = parents_line + "};"
       emit_raw(parents_line)
     end
-    if @cls_names.length > 0
+    if unified_class_count > 0
       emit_raw("static sp_Class sp_class_superclass(sp_Class c) __attribute__((unused));")
       emit_raw("static sp_Class sp_class_superclass(sp_Class c){if(c.cls_id<0||c.cls_id>=SP_CLASS_COUNT)return (sp_Class){-1};return (sp_Class){sp_class_parents[c.cls_id]};}")
     end
-    if @cls_names.length > 0
+    if unified_class_count > 0
       # Compute ancestors per class at codegen time (Ruby side),
       # emit as a flat array + per-class offset table. Lookup is
       # `sp_class_ancestors_flat[sp_class_ancestors_off[cid] ..
@@ -6340,9 +6366,9 @@ class Compiler
       off = []
       flat = []
       ai = 0
-      while ai < @cls_names.length
+      while ai < unified_class_count
         off.push(flat.length)
-        acc = compute_ancestors_for_class(ai)
+        acc = compute_ancestors_for_unified(ai)
         aj = 0
         while aj < acc.length
           flat.push(acc[aj])
@@ -6351,7 +6377,7 @@ class Compiler
         ai = ai + 1
       end
       off.push(flat.length)
-      off_line = "static const mrb_int sp_class_ancestors_off[" + (@cls_names.length + 1).to_s + "] __attribute__((unused)) = {"
+      off_line = "static const mrb_int sp_class_ancestors_off[" + (unified_class_count + 1).to_s + "] __attribute__((unused)) = {"
       oi = 0
       while oi < off.length
         if oi > 0
@@ -6396,39 +6422,113 @@ class Compiler
     emit_raw("")
   end
 
-  # Issue #404 Phase 3: compute the class's ancestors list at
-  # codegen time. Returns an array of cls_ids in MRO order:
-  # [self, ...parent ancestors]. Modules in @cls_names are not
-  # yet distinguished from classes here -- the Tier 1 scope
-  # walks parent chains only; module-include integration comes
-  # with the @cls_kinds + @cls_includes follow-up.
-  def compute_ancestors_for_class(ci)
+  # Issue #404 Phase 3 Tier 2: unified cls_id space spans
+  # @cls_names (0 .. N-1) followed by @module_names
+  # (N .. N+M-1). Helpers below resolve names and ids in that
+  # combined view; the standalone find_class_idx still works
+  # for class-only lookups.
+  def unified_class_count
+    @cls_names.length + @module_names.length
+  end
+
+  def find_module_idx_local(name)
+    mi = 0
+    while mi < @module_names.length
+      if @module_names[mi] == name
+        return mi
+      end
+      mi = mi + 1
+    end
+    -1
+  end
+
+  def find_class_or_module_unified_idx(name)
+    ci = find_class_idx(name)
+    if ci >= 0
+      return ci
+    end
+    mi = find_module_idx_local(name)
+    if mi >= 0
+      return @cls_names.length + mi
+    end
+    -1
+  end
+
+  def acc_includes(acc, uid)
+    k = 0
+    while k < acc.length
+      if acc[k] == uid
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
+  # Issue #404 Phase 3 Tier 2: MRO over unified cls_id space.
+  # For a class at index ci, the ancestors are
+  #   [self, ...reverse(includes), ...ancestors(parent)]
+  # with the includes resolved through @cls_includes and dedup
+  # at append. Modules in our model don't include other modules
+  # (the include collector only fires inside class bodies), so
+  # ancestors(module) is just [module] -- this matches CRuby for
+  # the include-only mixin shape.
+  def compute_ancestors_for_unified(uid)
+    if uid < 0 || uid >= unified_class_count
+      return []
+    end
     acc = []
-    cur = ci
-    while cur >= 0
-      already = 0
-      ck = 0
-      while ck < acc.length
-        if acc[ck] == cur
-          already = 1
-          ck = acc.length
-        else
-          ck = ck + 1
+    if uid >= @cls_names.length
+      # Module entry. Just itself.
+      acc.push(uid)
+      return acc
+    end
+    # Class. Walk down: self, includes (reverse), parent's ancestors.
+    cur = uid
+    acc.push(cur)
+    incs_str = ""
+    if cur < @cls_includes.length
+      incs_str = @cls_includes[cur]
+    end
+    incs = incs_str.split(";")
+    j = incs.length - 1
+    while j >= 0
+      if incs[j] != ""
+        mod_uid = find_class_or_module_unified_idx(incs[j])
+        if mod_uid >= 0
+          sub = compute_ancestors_for_unified(mod_uid)
+          sj = 0
+          while sj < sub.length
+            if acc_includes(acc, sub[sj]) == 0
+              acc.push(sub[sj])
+            end
+            sj = sj + 1
+          end
         end
       end
-      if already == 1
-        cur = -1
-      else
-        acc.push(cur)
-        pname = @cls_parents[cur]
-        if pname == ""
-          cur = -1
-        else
-          cur = find_class_idx(pname)
+      j = j - 1
+    end
+    pname = @cls_parents[cur]
+    if pname != ""
+      pp = find_class_idx(pname)
+      if pp >= 0
+        psub = compute_ancestors_for_unified(pp)
+        pj = 0
+        while pj < psub.length
+          if acc_includes(acc, psub[pj]) == 0
+            acc.push(psub[pj])
+          end
+          pj = pj + 1
         end
       end
     end
     acc
+  end
+
+  # Kept for any callers that still want a class-only view; routes
+  # through the unified MRO so behavior stays consistent.
+  def compute_ancestors_for_class(ci)
+    compute_ancestors_for_unified(ci)
   end
 
   def emit_sym_runtime
@@ -9427,6 +9527,16 @@ class Compiler
       if cls_idx_404 >= 0
         @needs_class_table = 1
         return "((sp_Class){" + cls_idx_404.to_s + "LL})"
+      end
+      # Issue #404 Phase 3 Tier 2: module name in value position.
+      # Resolved to the unified cls_id (@cls_names.length +
+      # @module_names_idx). Lets `Foo.include?(M)` /
+      # `Foo.ancestors.include?(M)` carry the module identity
+      # through.
+      mod_idx_404 = find_module_idx_local(rname)
+      if mod_idx_404 >= 0
+        @needs_class_table = 1
+        return "((sp_Class){" + (@cls_names.length + mod_idx_404).to_s + "LL})"
       end
       # Built-in module-like constants (Math, File, ENV, …) and
       # registered classes / modules legitimately reach here as a
@@ -29367,6 +29477,8 @@ class Compiler
       @cls_names = val
     elsif name == "@cls_parents"
       @cls_parents = val
+    elsif name == "@cls_includes"
+      @cls_includes = val
     elsif name == "@cls_ivar_names"
       @cls_ivar_names = val
     elsif name == "@cls_ivar_types"

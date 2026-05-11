@@ -133,6 +133,10 @@ class Compiler
     # ---- Classes (parallel arrays) ----
     @cls_names = "".split(",")
     @cls_parents = "".split(",")
+    # Issue #404 Phase 3 Tier 2: per-class list of included module
+    # names, semicolon-separated. Modules live in @module_names so
+    # the resolution from name -> id is deferred to codegen time.
+    @cls_includes = "".split(",")
     @cls_ivar_names = "".split(",")
     @cls_ivar_types = "".split(",")
     # Per-ivar flag: was the ivar's first scanned write a definite
@@ -2065,6 +2069,17 @@ class Compiler
         # find_class_idx directly via constructor_class_name and
         # never call infer_type on the receiver.
         return "class"
+      end
+      # Issue #404 Phase 3 Tier 2: module constant in value
+      # position. Modules share the sp_Class representation; the
+      # codegen mapping to the unified cls_id space happens on the
+      # emit side.
+      mx = 0
+      while mx < @module_names.length
+        if @module_names[mx] == rname
+          return "class"
+        end
+        mx = mx + 1
       end
       return "int"
     end
@@ -6314,7 +6329,9 @@ class Compiler
                   # name is `<prefix>_<name>`. Try the qualified form
                   # first; fall back to the bare name for top-level
                   # modules.
-                  collect_module_methods_into_class(ci, resolve_include_module_name(mod_name, module_prefix))
+                  resolved_mod_name = resolve_include_module_name(mod_name, module_prefix)
+                  collect_module_methods_into_class(ci, resolved_mod_name)
+                  record_class_include(ci, resolved_mod_name)
                 end
                 ik = ik + 1
               end
@@ -6402,6 +6419,7 @@ class Compiler
     @cls_is_value_type.push(0)
     @cls_is_sra.push(0)
     @cls_parents.push(parent)
+    @cls_includes.push("")
     # Initialize struct fields as ivars
     ivar_names = ""
     ivar_types = ""
@@ -6541,7 +6559,14 @@ class Compiler
                 # class-reopening branch -- the include arg is a
                 # bare name but the registered module's name is
                 # `<prefix>_<name>` when nested in a module.
-                collect_module_methods_into_class(ci, resolve_include_module_name(mod_name, module_prefix))
+                resolved_mod_name = resolve_include_module_name(mod_name, module_prefix)
+                collect_module_methods_into_class(ci, resolved_mod_name)
+                # Issue #404 Phase 3 Tier 2: record the include
+                # relationship for ancestors-table emission. The
+                # methods are already merged into the class above;
+                # this pass keeps the module link alive so the
+                # codegen can weave it into the MRO.
+                record_class_include(ci, resolved_mod_name)
               end
               ik = ik + 1
             end
@@ -6653,6 +6678,42 @@ class Compiler
   # unqualified `Helper`, but the registered module's name (from
   # collect_module_with_prefix) is `Ns_Helper`. Try the qualified
   # form first; fall back to the bare name for top-level modules.
+  # Issue #404 Phase 3 Tier 2: append a module name to the per-class
+  # includes list. Skipped when the module name doesn't resolve to
+  # a registered module (collect_module_methods_into_class already
+  # warns / no-ops in that case; the ancestors table only carries
+  # modules known to the program).
+  def record_class_include(ci, mod_name)
+    mi = 0
+    found = 0
+    while mi < @module_names.length
+      if @module_names[mi] == mod_name
+        found = 1
+        mi = @module_names.length
+      else
+        mi = mi + 1
+      end
+    end
+    if found == 0
+      return
+    end
+    cur = @cls_includes[ci]
+    # Dedup: a re-included module shouldn't duplicate in ancestors.
+    parts = cur.split(";")
+    pk = 0
+    while pk < parts.length
+      if parts[pk] == mod_name
+        return
+      end
+      pk = pk + 1
+    end
+    if cur == ""
+      @cls_includes[ci] = mod_name
+    else
+      @cls_includes[ci] = cur + ";" + mod_name
+    end
+  end
+
   def resolve_include_module_name(mod_name, module_prefix)
     if module_prefix != ""
       qualified = module_prefix + "_" + mod_name
@@ -8859,6 +8920,7 @@ class Compiler
     @cls_is_value_type.push(0)
     @cls_is_sra.push(0)
     @cls_parents.push("")
+    @cls_includes.push("")
     @cls_ivar_names.push("@self_obj;@fn_ptr")
     @cls_ivar_types.push("obj_Method;int")
     @cls_ivar_init_definite.push("1;1")
@@ -8888,6 +8950,7 @@ class Compiler
     @cls_is_value_type.push(0)
     @cls_is_sra.push(0)
     @cls_parents.push("")
+    @cls_includes.push("")
     @cls_ivar_names.push("")
     @cls_ivar_types.push("")
     @cls_ivar_init_definite.push("")
@@ -19224,6 +19287,7 @@ class Compiler
     # Class tables
     buf = ir_emit_sa(buf, "@cls_names", @cls_names)
     buf = ir_emit_sa(buf, "@cls_parents", @cls_parents)
+    buf = ir_emit_sa(buf, "@cls_includes", @cls_includes)
     buf = ir_emit_sa(buf, "@cls_ivar_names", @cls_ivar_names)
     buf = ir_emit_sa(buf, "@cls_ivar_types", @cls_ivar_types)
     buf = ir_emit_sa(buf, "@cls_ivar_init_definite", @cls_ivar_init_definite)
