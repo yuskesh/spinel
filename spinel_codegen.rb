@@ -9372,13 +9372,23 @@ class Compiler
           ai = ai + 1
         end
       end
- # Conservative: any LVR(lname) inside a block escapes (closure
- # capture concern). The block walks with a context tag that
- # rejects every read.
       blk = @nd_block[nid]
       if blk >= 0
-        if local_int_array_escapes(blk, lname, "block_body") == 1
-          return 1
+ # Synchronous-block iteration methods (each / map / inject /
+ # etc.) inline the block body at the call site, so references
+ # to the local inside the block are subject to the same
+ # context-based escape analysis we use at top level — descend
+ # with "stmt" ctx. Any other block-taking call (proc / lambda /
+ # user method that captures the block) is treated as a closure
+ # capture: descend with "block_body" so every LVR escapes.
+        if stack_ctx_is_sync_block_method(mname) == 1
+          if local_int_array_escapes(blk, lname, "stmt") == 1
+            return 1
+          end
+        else
+          if local_int_array_escapes(blk, lname, "block_body") == 1
+            return 1
+          end
         end
       end
       return 0
@@ -9462,19 +9472,20 @@ class Compiler
   end
 
   def stack_ctx_safe_recv_method(mname)
- # Conservative safe list for first PR. Limited to ops that don't
- # call sp_IntArray_set_slow / unshift / replace etc. — those grow
- # via realloc and access the GC header preceding the struct, which
- # would corrupt the stack frame for a stack-allocated array. Once
- # the helpers learn to skip the sp_gc_hdr update when is_stack is
- # set, []= / unshift / replace can be added back.
+ # Receiver-position methods we accept on a stack-allocated
+ # int_array. `[]=` / `unshift` are now safe because the grow paths
+ # in sp_IntArray_set_slow and sp_IntArray_unshift check is_stack
+ # and skip the sp_gc_hdr bookkeeping. The synchronous-block
+ # iteration family (each / map / inject etc.) is also fine: the
+ # block body is inlined at the call site, so the receiver doesn't
+ # escape via the block.
     if mname == "length" || mname == "size" || mname == "empty?" || mname == "first" || mname == "last"
       return 1
     end
-    if mname == "push" || mname == "<<" || mname == "pop" || mname == "shift"
+    if mname == "push" || mname == "<<" || mname == "pop" || mname == "shift" || mname == "unshift"
       return 1
     end
-    if mname == "[]" || mname == "at"
+    if mname == "[]" || mname == "[]=" || mname == "at"
       return 1
     end
     if mname == "include?" || mname == "index" || mname == "rindex"
@@ -9486,15 +9497,55 @@ class Compiler
     if mname == "any?" || mname == "all?" || mname == "none?" || mname == "count"
       return 1
     end
-    if mname == "clear"
+    if mname == "clear" || mname == "reverse!" || mname == "sort!" || mname == "concat"
+      return 1
+    end
+    if stack_ctx_is_sync_block_method(mname) == 1
       return 1
     end
     0
   end
 
- # Whitelist of user methods known not to escape an IntArray param.
- # For now: just `push_child_ids` (the Compiler internal helper that
- # only pushes ints into the given accumulator).
+ # Synchronous-block-taking iteration methods. The block body is
+ # inlined at the call site (no closure capture), so receiver
+ # references inside the block do not escape. Used both as a recv-
+ # method gate and as a relaxation point when walking block bodies.
+  def stack_ctx_is_sync_block_method(mname)
+    if mname == "each" || mname == "each_with_index" || mname == "each_with_object"
+      return 1
+    end
+    if mname == "map" || mname == "flat_map" || mname == "filter_map" || mname == "collect"
+      return 1
+    end
+    if mname == "select" || mname == "reject" || mname == "filter" || mname == "find_all"
+      return 1
+    end
+    if mname == "find" || mname == "detect" || mname == "find_index"
+      return 1
+    end
+    if mname == "inject" || mname == "reduce"
+      return 1
+    end
+    if mname == "min_by" || mname == "max_by" || mname == "sort_by"
+      return 1
+    end
+    if mname == "partition" || mname == "group_by" || mname == "tally"
+      return 1
+    end
+    if mname == "take_while" || mname == "drop_while"
+      return 1
+    end
+    if mname == "uniq"
+      return 1
+    end
+    0
+  end
+
+ # Whitelist of user methods known not to let an IntArray parameter
+ # escape (i.e. the callee only mutates the param via push / set
+ # etc. and doesn't store the pointer anywhere reachable after
+ # return). Hand-curated for now; a future pass could derive this
+ # from a transitive escape signature on each method body.
   def stack_ctx_safe_arg_method(mname)
     if mname == "push_child_ids"
       return 1
