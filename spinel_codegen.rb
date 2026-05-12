@@ -1432,6 +1432,21 @@ class Compiler
     ""
   end
 
+ # Like find_var_type but bypasses the is_a? narrow stack — returns
+ # the var's declared (C-level) type. Used by call-site arg lowering
+ # to detect cases where the narrow says "string" but the underlying
+ # storage is still sp_RbVal, so the arg needs an unbox cast.
+  def find_var_declared_type(name)
+    i = @scope_names.length - 1
+    while i >= 0
+      if @scope_names[i] == name
+        return @scope_types[i]
+      end
+      i = i - 1
+    end
+    ""
+  end
+
  # ---- is_a? type narrowing ----
  # `<expr>.is_a?(<Class>)` (or kind_of?) used as the predicate of
  # an if / ternary lets us treat <expr> as <Class>'s type inside
@@ -5033,6 +5048,42 @@ class Compiler
     end
     val = compile_expr(nid)
     at = infer_type(nid)
+ # `if v.is_a?(String); helper(v); end` (and analogues for int /
+ # float / sym / obj) — `v`'s C storage is sp_RbVal but the
+ # callee's param expects an unboxed concrete type. The user-level
+ # is_a? guard establishes the tag at runtime; we trust it and
+ # unbox via the matching union field. Without an explicit guard
+ # the C compiler still type-checks (the unbox is a memory pun);
+ # the same trust extends from the #438 unbox-on-IntStrHash-key
+ # pattern. Skip the unbox when the expected slot is itself poly
+ # — that path already widens via box_value_to_poly below.
+    if at == "poly" && expected_base != "poly"
+      if expected_base == "string" || expected_base == "mutable_str"
+        @needs_rb_value = 1
+        return "(" + val + ").v.s"
+      end
+      if expected_base == "int"
+        @needs_rb_value = 1
+        return "(" + val + ").v.i"
+      end
+      if expected_base == "float"
+        @needs_rb_value = 1
+        return "(" + val + ").v.f"
+      end
+      if expected_base == "bool"
+        @needs_rb_value = 1
+        return "(" + val + ").v.b"
+      end
+      if expected_base == "symbol"
+        @needs_rb_value = 1
+        return "(" + val + ").v.sym"
+      end
+      if is_obj_type(expected_base) == 1
+        @needs_rb_value = 1
+        cname = expected_base[4, expected_base.length - 4]
+        return "((sp_" + cname + " *)(" + val + ").v.p)"
+      end
+    end
     if expected_base == "poly" && at != "poly"
       return box_value_to_poly(at, val)
     end
@@ -19460,7 +19511,16 @@ class Compiler
               end
             end
           end
-          result = result + compile_expr(positional_ids[k])
+          if k < ptypes.length
+ # Route through compile_expr_for_expected_type so a poly arg
+ # passed to a typed param (after an is_a? guard, or whenever
+ # the caller is more general than the callee) is unboxed via
+ # the matching union field. Mirrors the #438 IntStrHash-key
+ # unbox and extends it to user-method args.
+            result = result + compile_expr_for_expected_type(positional_ids[k], ptypes[k])
+          else
+            result = result + compile_expr(positional_ids[k])
+          end
         else
  # Use default value
           if k < defaults.length
