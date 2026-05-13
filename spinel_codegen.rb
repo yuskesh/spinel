@@ -38,6 +38,8 @@ class Compiler
     @out = ""
     @deferred_tuple = ""
     @deferred_lambda = ""
+    @meth_blk_param_types = nil
+    @cls_cmeth_blk_param_types = nil
     @indent = 0
     @temp_counter = 0
     @label_counter = 0
@@ -1090,9 +1092,9 @@ class Compiler
  # (a literal block compiles to sp_proc_new(...); a `&proc_var` is
  # the captured `sp_Proc *` local), or "" if the call site provides
  # no block.
-  def block_forward_expr(nid)
+  def block_forward_expr(nid, blk_param_types = "")
     if has_literal_block(nid) == 1
-      return compile_proc_literal(nid)
+      return compile_proc_literal(nid, blk_param_types)
     end
  # Anonymous `&` forwarding (Ruby 3.1+): `inner(&)` where the
  # enclosing method declared `def outer(&)`. The BlockArgumentNode
@@ -12618,7 +12620,11 @@ class Compiler
  # optional positional params get their defaults filled in, and
  # pass omit_trailing=1 so the &block slot isn't default-padded
  # with "0" — we append the actual proc explicitly below.
-        block_proc = block_forward_expr(nid)
+        blk_types_128 = ""
+        if @meth_blk_param_types != nil && mi < @meth_blk_param_types.length
+          blk_types_128 = @meth_blk_param_types[mi]
+        end
+        block_proc = block_forward_expr(nid, blk_types_128)
         if block_proc != ""
           ca = compile_call_args_with_defaults(nid, mi, 1)
           if ca == ""
@@ -17121,6 +17127,32 @@ class Compiler
                 end
               end
               kk = kk + 1
+            end
+            has_block_param = (owner_pt.length > 0 && owner_pt.last == "proc") ? 1 : 0
+            if has_block_param == 1
+              blk_types = ""
+              if @cls_cmeth_blk_param_types != nil
+                flat_idx = 0
+                ci_walk = 0
+                while ci_walk < owner_ci
+                  if ci_walk < @cls_cmeth_names.length
+                    flat_idx = flat_idx + @cls_cmeth_names[ci_walk].split(";").length
+                  end
+                  ci_walk = ci_walk + 1
+                end
+                flat_idx = flat_idx + cmidx
+                if flat_idx < @cls_cmeth_blk_param_types.length
+                  blk_types = @cls_cmeth_blk_param_types[flat_idx]
+                end
+              end
+              block_proc = block_forward_expr(nid, blk_types)
+              if block_proc != ""
+                if ca != ""
+                  ca = ca + ", " + block_proc
+                else
+                  ca = block_proc
+                end
+              end
             end
           end
           if ca != ""
@@ -25360,17 +25392,23 @@ class Compiler
  # `lv_<bp>` locals — one `mrb_int lv_<bp> = args[<idx>];` line per
  # block param. Used at both proc-fn body emit sites (captures and
  # no-captures branches; identical shape).
-  def proc_fn_args_unpack(bps)
+  def proc_fn_args_unpack(bps, pts = "".split(","))
     s = ""
     bk = 0
     while bk < bps.length
-      s = s + "  mrb_int lv_" + bps[bk] + " = args[" + bk.to_s + "];\n"
+      ct = "mrb_int"
+      expr = "args[" + bk.to_s + "]"
+      if bk < pts.length && pts[bk] != "" && pts[bk] != "int"
+        ct = c_type(pts[bk])
+        expr = "(" + ct + ")(uintptr_t)args[" + bk.to_s + "]"
+      end
+      s = s + "  " + ct + " lv_" + bps[bk] + " = " + expr + ";\n"
       bk = bk + 1
     end
     s
   end
 
-  def compile_proc_literal(nid)
+  def compile_proc_literal(nid, blk_param_types = "")
     blk = @nd_block[nid]
     if blk < 0
       return "sp_proc_new(NULL, NULL, NULL)"
@@ -25439,9 +25477,17 @@ class Compiler
       @proc_capture_types = capture_types
     end
     push_scope
+    pts = "".split("|")
+    if blk_param_types != ""
+      pts = blk_param_types.split("|")
+    end
     di = 0
     while di < bps.length
-      declare_var(bps[di], "int")
+      pt = "int"
+      if di < pts.length && pts[di] != ""
+        pt = pts[di]
+      end
+      declare_var(bps[di], pt)
       di = di + 1
     end
     bexpr = "0"
@@ -25522,7 +25568,7 @@ class Compiler
       @lambda_funcs << "static mrb_int "
       @lambda_funcs << fname
       @lambda_funcs << "(void *_cap_raw, mrb_int *args) {\n"
-      @lambda_funcs << proc_fn_args_unpack(bps)
+      @lambda_funcs << proc_fn_args_unpack(bps, pts)
       @lambda_funcs << "  "
       @lambda_funcs << cap_name
       @lambda_funcs << " *_cap = ("
@@ -25585,7 +25631,7 @@ class Compiler
     @lambda_funcs << fname
     @lambda_funcs << "(void *_cap, mrb_int *args) {\n"
     @lambda_funcs << "  (void)_cap;\n"
-    @lambda_funcs << proc_fn_args_unpack(bps)
+    @lambda_funcs << proc_fn_args_unpack(bps, pts)
     if body_stmts != ""
       @lambda_funcs << body_stmts
     end
@@ -31017,6 +31063,10 @@ class Compiler
       @cls_cmeth_live = val
     elsif name == "@cls_meth_live"
       @cls_meth_live = val
+    elsif name == "@meth_blk_param_types"
+      @meth_blk_param_types = val.split("|")
+    elsif name == "@cls_cmeth_blk_param_types"
+      @cls_cmeth_blk_param_types = val.split("|")
     end
   end
 

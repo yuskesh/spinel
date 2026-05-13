@@ -1007,6 +1007,9 @@ class Compiler
   end
 
   def get_body_stmts(nid)
+    if @nd_type[nid] == "StatementsNode"
+      return get_stmts(nid)
+    end
     body = @nd_body[nid]
     if body < 0
       return []
@@ -11605,7 +11608,134 @@ class Compiler
  # `def []=(_, value); case ... when :a then @a = value;
  # when :b then @b = value; end` shapes where the param flows
  # into ivars of differing types — the param then needs to widen
- # to poly so each ivar-write arm can unbox/cast to its slot type.
+  # to poly so each ivar-write arm can unbox/cast to its slot type.
+
+  # Find the RHS type of the most recent write to `vname` in body
+  # rooted at `nid`. Returns "" if not found.
+  def find_var_write_rhs_type(nid, vname)
+    if nid < 0
+      return ""
+    end
+    if @nd_type[nid] == "LocalVariableWriteNode" && @nd_name[nid] == vname
+      rhs = @nd_expression[nid]
+      if rhs >= 0
+        rt = infer_type(rhs)
+        if rt != "" && rt != "int" && rt != "void"
+          return rt
+        end
+      end
+    end
+    stmts = get_body_stmts(nid)
+    k = 0
+    while k < stmts.length
+      rt = find_var_write_rhs_type(stmts[k], vname)
+      if rt != ""
+        return rt
+      end
+      k = k + 1
+    end
+    return ""
+  end
+
+  def infer_proc_blk_param_types
+    @meth_blk_param_types = "".split(",")
+    mi = 0
+    while mi < @meth_param_names.length
+      types = @meth_param_types[mi].split(",")
+      if types.length > 0 && types.last == "proc"
+        bpname = @meth_param_names[mi].split(",").last
+        acc = "".split(",")
+        collect_blk_call_arg_types(@meth_body_ids[mi], bpname, acc, @meth_body_ids[mi])
+        @meth_blk_param_types.push(acc.join("|"))
+      else
+        @meth_blk_param_types.push("")
+      end
+      mi = mi + 1
+    end
+    @cls_cmeth_blk_param_types = "".split(",")
+    ci = 0
+    while ci < @cls_names.length
+      if ci < @cls_cmeth_names.length
+        cmnames = @cls_cmeth_names[ci].split(";")
+        cm_bodies = @cls_cmeth_bodies[ci].split(";")
+        cm_ptypes = @cls_cmeth_ptypes[ci].split("|")
+        cmidx = 0
+        while cmidx < cmnames.length
+          if cmidx < cm_ptypes.length
+            cpts = cm_ptypes[cmidx].split(",")
+            if cpts.length > 0 && cpts.last == "proc"
+              cpnames = cls_cmeth_pnames_get(ci, cmidx)
+              bpname = cpnames[cpnames.length - 1]
+              acc = "".split(",")
+              body_id = cm_bodies[cmidx].to_i
+              collect_blk_call_arg_types(body_id, bpname, acc, body_id)
+              @cls_cmeth_blk_param_types.push(acc.join("|"))
+            else
+              @cls_cmeth_blk_param_types.push("")
+            end
+          else
+            @cls_cmeth_blk_param_types.push("")
+          end
+          cmidx = cmidx + 1
+        end
+      end
+      ci = ci + 1
+    end
+  end
+
+  def collect_blk_call_arg_types(nid, bpname, acc, body_id = -1)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "call"
+      recv = @nd_receiver[nid]
+      if recv >= 0 && @nd_type[recv] == "LocalVariableReadNode" && @nd_name[recv] == bpname
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          arg_ids = get_args(args_id)
+          pi = 0
+          while pi < arg_ids.length
+            t = infer_type(arg_ids[pi])
+            if t == "" || t == "int"
+              arg_node = arg_ids[pi]
+              if arg_node >= 0 && @nd_type[arg_node] == "LocalVariableReadNode"
+                lvname = @nd_name[arg_node]
+                lvt = find_var_type(lvname)
+                if lvt != "" && lvt != "int"
+                  t = lvt
+                end
+                if t == "int" && body_id >= 0
+                  wtt = find_var_write_rhs_type(body_id, lvname)
+                  if wtt != ""
+                    t = wtt
+                  end
+                end
+              end
+            end
+            while acc.length <= pi
+              acc.push("")
+            end
+            if acc[pi] == ""
+              acc[pi] = t
+            elsif acc[pi] != t
+              acc[pi] = "poly"
+              @needs_rb_value = 1 if acc[pi] == "poly"
+            end
+            pi = pi + 1
+          end
+        end
+        return
+      end
+    end
+    stmts = get_body_stmts(nid)
+    k = 0
+    while k < stmts.length
+      collect_blk_call_arg_types(stmts[k], bpname, acc, body_id)
+      k = k + 1
+    end
+  end
+
+  # Used by widen_param_types_from_body_writes to detect
   def collect_param_ivar_write_slot_types(nid, pname, ci, ivt_set)
     if nid < 0
       return
@@ -13818,7 +13948,7 @@ class Compiler
  # so the slot becomes poly).
     widen_param_types_from_body_writes
 
- # Top-level methods
+  # Top-level methods
     i = 0
     while i < @meth_names.length
       push_scope
@@ -16170,6 +16300,7 @@ class Compiler
     @analysis_frozen = 1
     precompute_all_scope_decls
     annotate_all_node_types
+    infer_proc_blk_param_types
     if ENV["SP_POLY_REPORT"] == "1"
       emit_poly_report
     end
@@ -16472,6 +16603,7 @@ class Compiler
       bci = bci + 1
     end
     $stderr.puts "-----------------"
+  end
   end
 
 
@@ -21155,6 +21287,8 @@ class Compiler
  # Non-array string ivars (computed in analyze, consumed by emit)
     buf = buf + "STR @cls_cmeth_live " + ir_escape(@cls_cmeth_live) + "\n"
     buf = buf + "STR @cls_meth_live " + ir_escape(@cls_meth_live) + "\n"
+    buf = buf + "STR @meth_blk_param_types " + ir_escape(@meth_blk_param_types.join("|")) + "\n"
+    buf = buf + "STR @cls_cmeth_blk_param_types " + ir_escape(@cls_cmeth_blk_param_types.join("|")) + "\n"
 
  # Per-AST-node records (T / NM / NB / SN / ST) get accumulated
  # into a StrArray and joined once. Building them with `buf + ...`
