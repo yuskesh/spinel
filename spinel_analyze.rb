@@ -7404,7 +7404,59 @@ class Compiler
   end
 
   def append_cls_meth(ci, name, params, ptypes, ret, body_id, defaults)
+ # Class re-open (#489): when `class Foo` is defined in multiple
+ # files / multiple top-level blocks, methods with the same name
+ # collide and produce duplicate C symbols (sp_Foo_<m> appearing
+ # twice in the emitted unit). CRuby's semantics for class
+ # re-open are "last definition wins" for methods with matching
+ # name; methods unique to either copy keep their entry. Mirror
+ # that: if a method named `name` already exists on this class,
+ # replace its row in the parallel arrays instead of appending.
     if @cls_meth_names[ci] != ""
+      existing_mi = cls_find_method_direct(ci, name)
+      if existing_mi >= 0
+        cur_names = @cls_meth_names[ci].split(";")
+        cur_params = @cls_meth_params[ci].split("|")
+        cur_ptypes = @cls_meth_ptypes[ci].split("|")
+        cur_returns = @cls_meth_returns[ci].split(";")
+        cur_bodies = @cls_meth_bodies[ci].split(";")
+        cur_defaults = @cls_meth_defaults[ci].split("|")
+        cur_pempty = @cls_meth_ptypes_empty[ci].split("|")
+        while cur_pempty.length < cur_names.length
+          cur_pempty.push("")
+        end
+        cur_names[existing_mi] = name
+        if existing_mi < cur_params.length
+          cur_params[existing_mi] = params
+        end
+        if existing_mi < cur_ptypes.length
+          cur_ptypes[existing_mi] = ptypes
+        end
+        if existing_mi < cur_returns.length
+          cur_returns[existing_mi] = ret
+        end
+        if existing_mi < cur_bodies.length
+          cur_bodies[existing_mi] = body_id.to_s
+        end
+        if existing_mi < cur_defaults.length
+          cur_defaults[existing_mi] = defaults
+        end
+        if existing_mi < cur_pempty.length
+          cur_pempty[existing_mi] = ""
+        end
+        @cls_meth_names[ci] = cur_names.join(";")
+        @cls_meth_params[ci] = cur_params.join("|")
+        @cls_meth_params_version = @cls_meth_params_version + 1
+        @cls_meth_ptypes[ci] = cur_ptypes.join("|")
+        @cls_meth_ptypes_version = @cls_meth_ptypes_version + 1
+        @cls_meth_returns[ci] = cur_returns.join(";")
+        @cls_meth_bodies[ci] = cur_bodies.join(";")
+        @cls_meth_defaults[ci] = cur_defaults.join("|")
+        @cls_meth_ptypes_empty[ci] = cur_pempty.join("|")
+        @cls_meth_idx_cache = {}
+        @cls_meth_return_cache = {}
+        return
+      end
       @cls_meth_names[ci] = @cls_meth_names[ci] + ";" + name
       @cls_meth_params[ci] = @cls_meth_params[ci] + "|" + params
       @cls_meth_params_version = @cls_meth_params_version + 1
@@ -7431,7 +7483,52 @@ class Compiler
   end
 
   def append_cls_cmeth(ci, name, params, ptypes, ret, body_id, defaults = "")
+ # Class re-open semantics for `def self.<m>` (#489).
+ # Last-definition-wins, same shape as append_cls_meth above.
     if @cls_cmeth_names[ci] != ""
+      cm_names_re = @cls_cmeth_names[ci].split(";")
+      existing_cmi = 0
+      found_cmi = -1
+      while existing_cmi < cm_names_re.length
+        if cm_names_re[existing_cmi] == name
+          found_cmi = existing_cmi
+          existing_cmi = cm_names_re.length
+        else
+          existing_cmi = existing_cmi + 1
+        end
+      end
+      if found_cmi >= 0
+        cur_cm_params = @cls_cmeth_params[ci].split("|")
+        cur_cm_ptypes = @cls_cmeth_ptypes[ci].split("|")
+        cur_cm_returns = @cls_cmeth_returns[ci].split(";")
+        cur_cm_bodies = @cls_cmeth_bodies[ci].split(";")
+        cur_cm_defaults = @cls_cmeth_defaults[ci].split("|")
+        cm_names_re[found_cmi] = name
+        if found_cmi < cur_cm_params.length
+          cur_cm_params[found_cmi] = params
+        end
+        if found_cmi < cur_cm_ptypes.length
+          cur_cm_ptypes[found_cmi] = ptypes
+        end
+        if found_cmi < cur_cm_returns.length
+          cur_cm_returns[found_cmi] = ret
+        end
+        if found_cmi < cur_cm_bodies.length
+          cur_cm_bodies[found_cmi] = body_id.to_s
+        end
+        if found_cmi < cur_cm_defaults.length
+          cur_cm_defaults[found_cmi] = defaults
+        end
+        @cls_cmeth_names[ci] = cm_names_re.join(";")
+        @cls_cmeth_params[ci] = cur_cm_params.join("|")
+        @cls_cmeth_params_version = @cls_cmeth_params_version + 1
+        @cls_cmeth_ptypes[ci] = cur_cm_ptypes.join("|")
+        @cls_cmeth_ptypes_version = @cls_cmeth_ptypes_version + 1
+        @cls_cmeth_returns[ci] = cur_cm_returns.join(";")
+        @cls_cmeth_bodies[ci] = cur_cm_bodies.join(";")
+        @cls_cmeth_defaults[ci] = cur_cm_defaults.join("|")
+        return
+      end
       @cls_cmeth_names[ci] = @cls_cmeth_names[ci] + ";" + name
       @cls_cmeth_params[ci] = @cls_cmeth_params[ci] + "|" + params
       @cls_cmeth_params_version = @cls_cmeth_params_version + 1
