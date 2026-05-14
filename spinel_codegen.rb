@@ -2447,7 +2447,10 @@ class Compiler
  # outer `.to_s` emit `sp_int_to_s(...)` instead of the bool
  # ternary `(... ? "true" : "false")`.
       cmp_mname = @nd_name[nid]
-      if cmp_mname == "<" || cmp_mname == ">" || cmp_mname == "<=" || cmp_mname == ">=" || cmp_mname == "==" || cmp_mname == "!=" || cmp_mname == "===" || cmp_mname == "eql?" || cmp_mname == "equal?" || cmp_mname == "is_a?" || cmp_mname == "kind_of?" || cmp_mname == "instance_of?" || cmp_mname == "respond_to?" || cmp_mname == "include?" || cmp_mname == "start_with?" || cmp_mname == "end_with?" || cmp_mname == "match?" || cmp_mname == "empty?" || cmp_mname == "nil?" || cmp_mname == "zero?" || cmp_mname == "even?" || cmp_mname == "odd?" || cmp_mname == "frozen?"
+      if cmp_mname == "block_given?"
+        return "bool"
+      end
+      if cmp_mname == "<" || cmp_mname == ">" || cmp_mname == "<=" || cmp_mname == ">=" || cmp_mname == "==" || cmp_mname == "!=" || cmp_mname == "===" || cmp_mname == "eql?" || cmp_mname == "equal?" || cmp_mname == "is_a?" || cmp_mname == "kind_of?" || cmp_mname == "instance_of?" || cmp_mname == "respond_to?" || cmp_mname == "include?" || cmp_mname == "start_with?" || cmp_mname == "end_with?" || cmp_mname == "match?" || cmp_mname == "=~" || cmp_mname == "empty?" || cmp_mname == "nil?" || cmp_mname == "zero?" || cmp_mname == "even?" || cmp_mname == "odd?" || cmp_mname == "frozen?"
         return "bool"
       end
  # `+` on string recv returns string — walk_and_cache skips
@@ -10042,6 +10045,22 @@ class Compiler
     if t == "poly"
       return "sp_poly_truthy(" + expr + ")"
     end
+    if t == "bool"
+      return expr
+    end
+    cond_nid = nid
+    if cond_nid >= 0 && @nd_type[cond_nid] == "ParenthesesNode"
+      cond_body = @nd_body[cond_nid]
+      if cond_body >= 0
+        cond_stmts = get_stmts(cond_body)
+        if cond_stmts.length == 1
+          cond_nid = cond_stmts[0]
+        end
+      end
+    end
+    if cond_nid >= 0 && @nd_type[cond_nid] == "CallNode" && @nd_name[cond_nid] == "=~"
+      return "(" + expr + " != 0)"
+    end
     if t == "nil"
       return "FALSE"
     end
@@ -10051,7 +10070,7 @@ class Compiler
     if nid >= 0 && is_value_type_obj(t) == 1
       return "((" + expr + "), 1)"
     end
-    expr
+    truthy_c_expr(t, expr)
   end
 
   def truthy_c_expr(t, expr)
@@ -10500,8 +10519,8 @@ class Compiler
       rt = infer_type(right_nid)
       le = compile_expr(left_nid)
       re = compile_expr(right_nid)
-      le_t = lt == "poly" ? "sp_poly_truthy(" + le + ")" : le
-      re_t = rt == "poly" ? "sp_poly_truthy(" + re + ")" : re
+      le_t = truthy_c_expr(lt, le)
+      re_t = truthy_c_expr(rt, re)
       return "(" + le_t + " && " + re_t + ")"
     end
     if t == "OrNode"

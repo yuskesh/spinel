@@ -2585,6 +2585,10 @@ class Compiler
     mname = @nd_name[nid]
     recv = @nd_receiver[nid]
 
+    if recv < 0 && mname == "block_given?"
+      return "bool"
+    end
+
  # Methods on a `rescue => e` bound exception variable. The variable
  # itself is string-typed but .class / .message / .to_s / .inspect /
  # .full_message return strings; .backtrace returns nil for now.
@@ -3087,7 +3091,7 @@ class Compiler
       return "int"
     end
     if mname == "=~"
-      return "int"
+      return "bool"
     end
     if mname == "<<"
       if recv >= 0
