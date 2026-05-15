@@ -971,9 +971,13 @@ class Compiler
  # ::C -> C
  # M::C -> M_C
  # A::B::C -> A_B_C
-  def const_ref_flat_name(nid)
+  def const_ref_flat_name(nid, depth = 32)
     if nid < 0
       return ""
+    end
+    if depth <= 0
+      $stderr.puts "Error: const_ref_flat_name exceeded depth 32 -- pathological ConstantPath nesting"
+      exit(1)
     end
     t = @nd_type[nid]
     if t == "ConstantReadNode"
@@ -985,7 +989,7 @@ class Compiler
       if parent < 0
         return leaf
       end
-      base = const_ref_flat_name(parent)
+      base = const_ref_flat_name(parent, depth - 1)
       if base == ""
         return ""
       end
@@ -1136,9 +1140,13 @@ class Compiler
     name
   end
 
-  def resolve_const_ref_name(nid)
+  def resolve_const_ref_name(nid, depth = 32)
     if nid < 0
       return ""
+    end
+    if depth <= 0
+      $stderr.puts "Error: resolve_const_ref_name exceeded depth 32 -- pathological ConstantPath nesting"
+      exit(1)
     end
     t = @nd_type[nid]
     if t == "ConstantReadNode"
@@ -1150,7 +1158,7 @@ class Compiler
       if parent < 0
         return leaf
       end
-      base = resolve_const_ref_name(parent)
+      base = resolve_const_ref_name(parent, depth - 1)
       if base == ""
         return ""
       end
@@ -14737,7 +14745,14 @@ class Compiler
  # Second pass: scan method bodies for parameters used as lambda receivers
  # or passed to functions that expect lambda args (transitive closure)
     changed = 1
+    iter = 0
+    sig_hist = "".split(",")
     while changed == 1
+      iter = iter + 1
+      if iter > 256
+        $stderr.puts "Error: infer_lambda_param_types did not converge after 256 iterations"
+        exit(1)
+      end
       changed = 0
       mi = 0
       while mi < @meth_names.length
@@ -14762,6 +14777,23 @@ class Compiler
           @meth_param_types[mi] = ptypes.join(",")
         end
         mi = mi + 1
+      end
+ # Oscillation guard: only run when this iteration claims progress
+ # (changed == 1, so the loop will iterate again). A repeated
+ # @meth_param_types signature under changed=1 means the lambda
+ # flag is flip-flopping -- a bug in param_used_as_lambda, not a
+ # "needs more iterations" situation. Fail loudly.
+      if changed == 1
+        sig = @meth_param_types.join("|")
+        sh = 0
+        while sh < sig_hist.length
+          if sig_hist[sh] == sig
+            $stderr.puts "Error: infer_lambda_param_types oscillating (iter=" + iter.to_s + ", cycle len=" + (iter - sh - 1).to_s + ")"
+            exit(1)
+          end
+          sh = sh + 1
+        end
+        sig_hist.push(sig)
       end
     end
   end
@@ -18189,11 +18221,37 @@ class Compiler
 
   def scan_bigint_propagate(stmts, names, types)
     changed = 1
+    iter = 0
+    sig_hist = "".split(",")
     while changed == 1
+      iter = iter + 1
+      if iter > 256
+        $stderr.puts "Error: scan_bigint_propagate did not converge after 256 iterations"
+        exit(1)
+      end
       changed = 0
       stmts.each { |sid|
         changed = propagate_bigint_node(sid, names, types, changed)
       }
+ # Oscillation guard: only run when this iteration claims progress
+ # (changed == 1, so the loop will iterate again). A repeated `types`
+ # signature under changed=1 means propagate_bigint_node reported a
+ # change it didn't actually make, or a cycle is in flight. Use `|`
+ # as the field separator because type tokens can contain commas
+ # (e.g. `tuple:int,int`) -- a comma join would alias distinct
+ # length-N and length-(N+1) states.
+      if changed == 1
+        sig = types.join("|")
+        sh = 0
+        while sh < sig_hist.length
+          if sig_hist[sh] == sig
+            $stderr.puts "Error: scan_bigint_propagate oscillating (iter=" + iter.to_s + ", cycle len=" + (iter - sh - 1).to_s + ")"
+            exit(1)
+          end
+          sh = sh + 1
+        end
+        sig_hist.push(sig)
+      end
     end
   end
 
