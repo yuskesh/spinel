@@ -2439,6 +2439,27 @@ class Compiler
           return "obj_" + implicit
         end
       end
+ # Bare class-method call inside a class-method body (`def
+ # self.last; all[-1]; end` — both `all` and `last` are cmeths
+ # on the same class hierarchy). analyze skips the cache for
+ # these nodes (see analyze's walk_and_cache skip_cache arm)
+ # because inherited bodies share AST node ids across subclass
+ # copies; the resolution must follow the *current* emit-time
+ # @current_class_idx, not whichever class walked last during
+ # annotate. Mirror analyze's @cls_cmeth_returns lookup so the
+ # cache-miss path picks up the subclass's override. Issue #523.
+      if @nd_receiver[nid] < 0 && @current_class_idx >= 0 && @current_method_has_self == 0
+        mn_cmeth = @nd_name[nid]
+        cmnames_cm_dispatch = @cls_cmeth_names[@current_class_idx].split(";")
+        cmreturns_cm_dispatch = @cls_cmeth_returns[@current_class_idx].split(";")
+        kk_cm = 0
+        while kk_cm < cmnames_cm_dispatch.length
+          if cmnames_cm_dispatch[kk_cm] == mn_cmeth && kk_cm < cmreturns_cm_dispatch.length
+            return cmreturns_cm_dispatch[kk_cm]
+          end
+          kk_cm = kk_cm + 1
+        end
+      end
  # Comparison / boolean operators always return bool, regardless
  # of recv type. scan_lambda_ret_types calls infer_type on a
  # lambda body's last expr — when that's `a > b` inside a

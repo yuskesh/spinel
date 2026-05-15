@@ -23103,6 +23103,34 @@ class Compiler
     if nt == "CallNode" && @nd_receiver[nid] < 0 && @nd_name[nid] == "new"
       skip_cache = 1
     end
+ # Bare class-method call inside an inherited class-method body
+ # resolves to the *calling* subclass's override at emit time. The
+ # body's AST id is shared across the propagated subclass copies
+ # (see `propagate_inherited_class_methods`), so walk_and_cache
+ # sees the same node id once per class and the last writer wins.
+ # When a subclass overrides a class method that the inherited
+ # body calls (e.g. Base.last calls `all`, Sub overrides `all` to
+ # return a different type), the cache must NOT freeze the parent's
+ # signature — codegen needs to re-resolve under the subclass's
+ # @current_class_idx. Issue #523, sibling to #516. Triggered only
+ # for bare calls that resolve to a cmeth on the current class
+ # (find_method_idx < 0 rules out true top-level methods, which
+ # are stable across walks).
+    if nt == "CallNode" && @nd_receiver[nid] < 0 && @nd_name[nid] != "new" && @current_class_idx >= 0
+      mn_check = @nd_name[nid]
+      if find_method_idx(mn_check) < 0
+        cmnames_check = @cls_cmeth_names[@current_class_idx].split(";")
+        ccheck = 0
+        while ccheck < cmnames_check.length
+          if cmnames_check[ccheck] == mn_check
+            skip_cache = 1
+            ccheck = cmnames_check.length
+          else
+            ccheck = ccheck + 1
+          end
+        end
+      end
+    end
  # `lambda.call(...)` — the return type comes from
  # @lambda_var_ret_types which is built at codegen time
  # multi-arg lambda). Caching at analyze would freeze the type as
@@ -23117,6 +23145,17 @@ class Compiler
       end
     end
     if skip_cache == 0
+ # Invalidate any prior cache before recompute. Inherited cmeth
+ # bodies are walked once per class that holds a propagated copy
+ # (Base.last's body is also walked under Sub's @current_class_idx,
+ # etc.). infer_type's own cache-hit short-circuit would otherwise
+ # return the first walker's answer and silently swallow the
+ # second walker's recompute under the subclass context. Issue
+ # #523 made this user-visible: Sub.last calls bare `all`, the
+ # node's cached type was frozen at Base.all's int_array, and
+ # codegen emitted `sp_IntArray *` for a slot now receiving
+ # `sp_PtrArray *`.
+      @nd_inferred_type[nid] = ""
       @nd_inferred_type[nid] = infer_type(nid)
     end
   end
