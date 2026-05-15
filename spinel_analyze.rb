@@ -10840,25 +10840,56 @@ class Compiler
  # default-`int`-typed param produces a Wint-conversion or
  # incompatible-pointer error. unify_call_types collapses to
  # `poly` if another call site disagrees.
+ #
+ # Narrowing (issue #513): when the receiver reads an ivar
+ # whose observed-types set is a closed set of obj classes,
+ # restrict the walk to that set so unrelated same-named
+ # methods (e.g. `Server#run` when the dispatch is through
+ # a `@worker` slot that only ever holds Worker* instances)
+ # don't get their params widened. observed_class_ids_for_recv
+ # returns "" when no narrowing is possible (unknown shape,
+ # non-obj observations, or empty set).
         if rt == "poly"
           args_id_p = @nd_arguments[nid]
           if args_id_p >= 0
             arg_ids_p = get_args(args_id_p)
+            obs_ids = observed_class_ids_for_recv(@nd_receiver[nid], @current_class_idx)
+            obs_filter = (obs_ids != "")
+            obs_list = "".split(",")
+            if obs_filter
+              obs_list = obs_ids.split(",")
+            end
             ci_p = 0
             while ci_p < @cls_names.length
-              midx_p = cls_find_method_direct(ci_p, mname)
-              if midx_p >= 0
-                ptypes_p = cls_meth_ptypes_get(ci_p, midx_p)
-                if ptypes_p.length > 0
-                  kk_p = 0
-                  while kk_p < arg_ids_p.length
-                    if kk_p < ptypes_p.length
-                      at_p = infer_type(arg_ids_p[kk_p])
-                      ptypes_p[kk_p] = unify_call_types(ptypes_p[kk_p], at_p, arg_ids_p[kk_p])
-                    end
-                    kk_p = kk_p + 1
+              skip_p = 0
+              if obs_filter
+                in_set = 0
+                ol = 0
+                while ol < obs_list.length
+                  if obs_list[ol].to_i == ci_p
+                    in_set = 1
                   end
-                  cls_meth_ptypes_put(ci_p, midx_p, ptypes_p)
+                  ol = ol + 1
+                end
+                if in_set == 0
+                  skip_p = 1
+                end
+              end
+              if skip_p == 0
+                midx_p = cls_find_method_direct(ci_p, mname)
+                if midx_p >= 0
+                  ptypes_p = cls_meth_ptypes_get(ci_p, midx_p)
+                  if ptypes_p.length > 0
+                    kk_p = 0
+                    while kk_p < arg_ids_p.length
+                      if kk_p < ptypes_p.length
+                        at_p = infer_type(arg_ids_p[kk_p])
+                        ptypes_p[kk_p] = unify_call_types(ptypes_p[kk_p], at_p, arg_ids_p[kk_p])
+                      end
+                      kk_p = kk_p + 1
+                    end
+                    cls_meth_ptypes_put(ci_p, midx_p, ptypes_p)
+                  end
                 end
               end
               ci_p = ci_p + 1
@@ -21628,6 +21659,281 @@ class Compiler
       k = k + 1
     end
     ""
+  end
+
+ # For a `recv.mname(...)` call where `recv` reads a poly-typed
+ # slot, return the comma-separated list of class indices that
+ # observation/inference suggests can actually flow into the
+ # slot. Returns "" when the analysis can't narrow (unknown
+ # receiver shape, no observations, or the set is too wide to
+ # filter usefully). The caller — both the analyze poly-recv
+ # widening pass and the codegen cls_id-switch emitter — uses
+ # the result to skip arms for classes that source-level can't
+ # reach the dispatch site. Issue #513.
+ #
+ # Currently supports InstanceVariableReadNode receivers (the
+ # roundhouse / tep shape). When @cls_ivar_observed_types shows
+ # "poly" rather than a concrete set (because the rhs of
+ # `@x = expr` was a poly-typed param), fall back to an
+ # on-demand walk that finds the ivar's writers, traces
+ # param-sourced rhs back through the class's call sites, and
+ # collects concrete obj types from those arg positions.
+  def observed_class_ids_for_recv(recv_nid, ci_context)
+    if recv_nid < 0
+      return ""
+    end
+    if @nd_type[recv_nid] != "InstanceVariableReadNode"
+      return ""
+    end
+    if ci_context < 0
+      return ""
+    end
+    iname = @nd_name[recv_nid]
+    obs = cls_ivar_observed_types_for(ci_context, iname)
+    out = ""
+    have_poly = 0
+    seen_non_obj = 0
+    if obs != ""
+      parts = obs.split(",")
+      k = 0
+      while k < parts.length
+        t = parts[k]
+        if is_obj_type(t) == 1
+          cname = t[4, t.length - 4]
+          cidx = find_class_idx(cname)
+          if cidx >= 0
+            out = obs_add(out, cidx.to_s)
+          end
+        elsif t == "poly"
+          have_poly = 1
+        else
+          seen_non_obj = 1
+        end
+        k = k + 1
+      end
+    end
+ # If only obj_X entries (no poly / non-obj noise), return what
+ # we have. Empty obs string and a "poly" entry both trigger the
+ # source walk below.
+    if have_poly == 0 && obs != ""
+      if seen_non_obj == 1
+        return ""
+      end
+      return out
+    end
+    if seen_non_obj == 1
+      return ""
+    end
+ # Source walk: find every `@<iname> = expr` write in the
+ # class's method bodies. For each, if expr is a
+ # LocalVariableRead of a known param of the enclosing method,
+ # walk the AST for call sites of `<Class>.new(...)` (or the
+ # enclosing method) and add the concrete obj types observed at
+ # the matching arg position. Any rhs that isn't param-sourced
+ # or that we can't trace bails out (returns ""), so the caller
+ # falls back to the existing all-classes enumeration.
+    walked = recover_concrete_classes_for_ivar(ci_context, iname)
+    if walked == "?"
+      return ""
+    end
+    if walked != ""
+      walked.split(",").each { |w| out = obs_add(out, w) }
+    end
+    if out == ""
+      return ""
+    end
+    out
+  end
+
+ # Helper: append `cidx_str` to a comma-separated list, dedup'd.
+  def obs_add(out, cidx_str)
+    if out == ""
+      return cidx_str
+    end
+    cur = out.split(",")
+    k = 0
+    while k < cur.length
+      if cur[k] == cidx_str
+        return out
+      end
+      k = k + 1
+    end
+    out + "," + cidx_str
+  end
+
+ # On-demand AST walk: for ivar `@<iname>` on class `ci`,
+ # find every write site, and for the param-sourced ones,
+ # collect concrete obj types from the enclosing method's
+ # call sites. Returns:
+ #   - comma-separated class indices when every write site
+ #     traces cleanly to a finite obj-typed set
+ #   - "?" when any write site has a non-param-sourced rhs we
+ #     can't analyze (poison; caller bails)
+ #   - "" when no writes were found at all
+ # Memoized by (ci, iname) so repeated dispatch-site queries
+ # don't re-walk the AST.
+  def recover_concrete_classes_for_ivar(ci, iname)
+    if @ivar_concrete_recover_cache == nil
+      @ivar_concrete_recover_cache = {}
+    end
+    ck = ci.to_s + ":" + iname
+    if @ivar_concrete_recover_cache.key?(ck)
+      return @ivar_concrete_recover_cache[ck]
+    end
+    out = ""
+    mnames_w = @cls_meth_names[ci].split(";")
+    bodies_w = @cls_meth_bodies[ci].split(";")
+    mi_w = 0
+    while mi_w < mnames_w.length
+      bid_w = -1
+      if mi_w < bodies_w.length
+        bid_w = bodies_w[mi_w].to_i
+      end
+      if bid_w >= 0
+        meth_name_w = mnames_w[mi_w]
+        pnames_w = cls_meth_pnames_get(ci, mi_w)
+        result_for_meth = walk_ivar_writes_for_param_sources(bid_w, iname, pnames_w, ci, meth_name_w)
+        if result_for_meth == "?"
+          @ivar_concrete_recover_cache[ck] = "?"
+          return "?"
+        end
+        if result_for_meth != ""
+          result_for_meth.split(",").each { |w| out = obs_add(out, w) }
+        end
+      end
+      mi_w = mi_w + 1
+    end
+    @ivar_concrete_recover_cache[ck] = out
+    out
+  end
+
+ # Walks `bid` for `@<iname> = expr` writes. For each, classifies
+ # rhs as param-sourced (returns the param name and we trace
+ # call sites) or other (poison "?"). Aggregates concrete obj
+ # types found at the call sites' matching arg positions.
+  def walk_ivar_writes_for_param_sources(bid, iname, pnames, ci, meth_name)
+    out = ""
+    poison = 0
+    walk_stack = [bid]
+    while walk_stack.length > 0
+      n = walk_stack.pop
+      if n < 0
+        next
+      end
+      if @nd_type[n] == "InstanceVariableWriteNode" && @nd_name[n] == iname
+        expr_w = @nd_expression[n]
+        if expr_w < 0 || @nd_type[expr_w] != "LocalVariableReadNode"
+          poison = 1
+        else
+          rhs_name = @nd_name[expr_w]
+          param_idx = -1
+          k = 0
+          while k < pnames.length
+            if pnames[k] == rhs_name
+              param_idx = k
+            end
+            k = k + 1
+          end
+          if param_idx < 0
+            poison = 1
+          else
+            call_obs = walk_call_sites_for_class_method(ci, meth_name, param_idx)
+            if call_obs == "?"
+              poison = 1
+            elsif call_obs != ""
+              call_obs.split(",").each { |w| out = obs_add(out, w) }
+            end
+          end
+        end
+      end
+ # Recurse into child slots. Mirror scan_ivars's set of fields.
+      if @nd_body[n] >= 0
+        walk_stack.push(@nd_body[n])
+      end
+      if @nd_expression[n] >= 0
+        walk_stack.push(@nd_expression[n])
+      end
+      if @nd_predicate[n] >= 0
+        walk_stack.push(@nd_predicate[n])
+      end
+      if @nd_subsequent[n] >= 0
+        walk_stack.push(@nd_subsequent[n])
+      end
+      if @nd_else_clause[n] >= 0
+        walk_stack.push(@nd_else_clause[n])
+      end
+      if @nd_left[n] >= 0
+        walk_stack.push(@nd_left[n])
+      end
+      if @nd_right[n] >= 0
+        walk_stack.push(@nd_right[n])
+      end
+      stmts_w = parse_id_list(@nd_stmts[n])
+      sk = 0
+      while sk < stmts_w.length
+        walk_stack.push(stmts_w[sk])
+        sk = sk + 1
+      end
+    end
+    if poison == 1
+      return "?"
+    end
+    out
+  end
+
+ # For method `meth_name` on class index `ci`, walk the entire
+ # AST for `<Class>.new(...)` or `<Class>.<meth>(...)` call
+ # sites and return concrete obj class indices observed at
+ # position `param_idx`. `?` if any site supplies a non-obj
+ # type (poison). Only invocations of `initialize` translate to
+ # `<Class>.new(args)` shape; non-initialize methods don't need
+ # the .new->initialize remap.
+  def walk_call_sites_for_class_method(ci, meth_name, param_idx)
+    cname = @cls_names[ci]
+    want_new = (meth_name == "initialize")
+    out = ""
+    poison = 0
+    nid = 0
+    while nid < @nd_type.length
+      if @nd_type[nid] == "CallNode"
+        recv_cs = @nd_receiver[nid]
+        cs_mname = @nd_name[nid]
+        match = 0
+        if recv_cs >= 0 && @nd_type[recv_cs] == "ConstantReadNode" && @nd_name[recv_cs] == cname
+          if want_new && cs_mname == "new"
+            match = 1
+          elsif !want_new && cs_mname == meth_name
+            match = 1
+          end
+        end
+        if match == 1
+          args_cs_id = @nd_arguments[nid]
+          if args_cs_id >= 0
+            a_cs = get_args(args_cs_id)
+            if param_idx < a_cs.length
+              at_cs = infer_type(a_cs[param_idx])
+              if is_obj_type(at_cs) == 1
+                cn = at_cs[4, at_cs.length - 4]
+                cidx_cs = find_class_idx(cn)
+                if cidx_cs >= 0
+                  out = obs_add(out, cidx_cs.to_s)
+                end
+              elsif at_cs == "poly"
+ # Caller's arg is already poly — can't narrow further.
+                poison = 1
+              else
+                poison = 1
+              end
+            end
+          end
+        end
+      end
+      nid = nid + 1
+    end
+    if poison == 1
+      return "?"
+    end
+    out
   end
 
   def poly_dispatch_return_type(mname)
