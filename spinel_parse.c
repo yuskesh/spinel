@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <limits.h>
 #include <prism.h>
 
 /* ---- Output buffer ---- */
@@ -142,16 +143,26 @@ static void emit_node_array(int id, const char *field, pm_node_list_t *list) {
 
 /* ---- Integer value extraction ---- */
 static long long pm_int_value(pm_integer_t *integer) {
-  long long val = 0;
-  if (integer->length == 0) {
-    val = (long long)integer->value;
+  uint64_t val = 0;
+  uint64_t max_positive = (uint64_t)LLONG_MAX;
+  uint64_t max_negative = max_positive + 1ULL;
+
+  if (integer->values == NULL) {
+    val = (uint64_t)integer->value;
+  } else if (integer->length <= 2) {
+    for (size_t i = 0; i < integer->length; i++) {
+      val |= ((uint64_t)integer->values[i]) << (i * 32);
+    }
   } else {
-    /* Large integer - approximate with first word */
-    val = (long long)integer->value;
-    /* TODO: proper bignum support */
+    val = integer->negative ? max_negative : max_positive;
   }
-  if (integer->negative) val = -val;
-  return val;
+
+  if (integer->negative) {
+    if (val >= max_negative) return LLONG_MIN;
+    return -(long long)val;
+  }
+  if (val > max_positive) return LLONG_MAX;
+  return (long long)val;
 }
 
 /* ---- Main flattening ---- */
