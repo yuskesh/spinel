@@ -17802,11 +17802,15 @@ class Compiler
         if mname == "delete"
           return "(sp_file_delete(" + compile_arg0(nid) + "), 0)"
         end
-        if mname == "binwrite"
+        if mname == "binwrite" || mname == "write"
  # NOTE: `sp_file_write` uses fputs, so an embedded NUL
- # in the payload truncates the write — fine for the
+ # in the payload truncates the write; fine for the
  # optcarrot save-RAM dead-code path that surfaced
- # this, not safe for general binary use.
+ # this, not safe for general binary use. File.write
+ # in CRuby returns the number of bytes written; we
+ # return 0 to match the statement-context lowering at
+ # compile_control_call_stmt (which also discards the
+ # byte count).
           args_id_bw = @nd_arguments[nid]
           if args_id_bw >= 0
             a_bw = get_args(args_id_bw)
