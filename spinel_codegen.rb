@@ -6780,6 +6780,7 @@ class Compiler
     emit_raw("static sp_IntArray*sp_SymIntHash_keys(sp_SymIntHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,(mrb_int)h->order[i]);return a;}")
     emit_raw("static sp_IntArray*sp_SymIntHash_values(sp_SymIntHash*h){sp_IntArray*a=sp_IntArray_new();for(mrb_int i=0;i<h->len;i++)sp_IntArray_push(a,sp_SymIntHash_get(h,h->order[i]));return a;}")
     emit_raw("static sp_SymIntHash*sp_SymIntHash_dup(sp_SymIntHash*h){sp_SymIntHash*r=sp_SymIntHash_new();for(mrb_int i=0;i<h->len;i++)sp_SymIntHash_set(r,h->order[i],sp_SymIntHash_get(h,h->order[i]));return r;}")
+    emit_raw("static sp_SymIntHash*sp_SymIntHash_merge(sp_SymIntHash*a,sp_SymIntHash*b){sp_SymIntHash*r=sp_SymIntHash_new();for(mrb_int i=0;i<a->len;i++)sp_SymIntHash_set(r,a->order[i],sp_SymIntHash_get(a,a->order[i]));if(b){for(mrb_int i=0;i<b->len;i++)sp_SymIntHash_set(r,b->order[i],sp_SymIntHash_get(b,b->order[i]));}return r;}")
  # Hash inspect — Ruby's modern shorthand `{k: v, ...}`. All keys
  # in a sym_int_hash are valid identifier symbols (the parser only
  # routes literal symbol keys here), so the bare-name form always
@@ -16801,6 +16802,44 @@ class Compiler
           emit("  }")
           return tmp
         end
+      end
+ # merge / dup / delete -- sibling of #510 (which fixed
+ # sym_str_hash / sym_poly_hash) but for sym_int_hash. Issue
+ # #546.
+      if mname == "merge"
+        args_id_m546 = @nd_arguments[nid]
+        if args_id_m546 >= 0
+          a_m546 = get_args(args_id_m546)
+          if a_m546.length >= 1 && @nd_type[a_m546[0]] == "KeywordHashNode"
+ # `h.merge(c: 3)` shorthand: the arg is a KeywordHashNode,
+ # not a regular HashNode. compile_expr on a KeywordHashNode
+ # falls through to 0 / NULL, so build the matching
+ # sp_SymIntHash inline from the kwarg pairs. Mirrors the
+ # kwarg-as-bundle path in compile_constructor_args.
+            tmp_kw = new_temp
+            emit("  sp_SymIntHash *" + tmp_kw + " = sp_SymIntHash_new();")
+            elems_kw = parse_id_list(@nd_elements[a_m546[0]])
+            ek_kw = 0
+            while ek_kw < elems_kw.length
+              if @nd_type[elems_kw[ek_kw]] == "AssocNode"
+                key_kw = @nd_key[elems_kw[ek_kw]]
+                val_kw = @nd_expression[elems_kw[ek_kw]]
+                if key_kw >= 0 && val_kw >= 0 && @nd_type[key_kw] == "SymbolNode"
+                  emit("  sp_SymIntHash_set(" + tmp_kw + ", " + compile_expr(key_kw) + ", " + compile_expr(val_kw) + ");")
+                end
+              end
+              ek_kw = ek_kw + 1
+            end
+            return "sp_SymIntHash_merge(" + rc + ", " + tmp_kw + ")"
+          end
+        end
+        return "sp_SymIntHash_merge(" + rc + ", " + compile_arg0(nid) + ")"
+      end
+      if mname == "dup" || mname == "clone"
+        return "sp_SymIntHash_dup(" + rc + ")"
+      end
+      if mname == "delete"
+        return "(sp_SymIntHash_delete(" + rc + ", " + compile_arg0(nid) + "), 0)"
       end
     end
     if recv_type == "sym_str_hash"
