@@ -5379,8 +5379,21 @@ class Compiler
         end
  # Scan every user class that defines this method. If they all
  # agree on the return type, the call has that concrete type.
- # If they disagree, the call is genuinely polymorphic.
-        return poly_dispatch_return_type(mname)
+ # If they disagree, the call is genuinely polymorphic. The
+ # narrow set + arg_types parameters let the scan skip arms
+ # that the dispatch site source-level can't reach (mirrors
+ # codegen-side narrow). Issue #549.
+        args_id_pdrt = @nd_arguments[nid]
+        arg_types_pdrt = "".split(",")
+        if args_id_pdrt >= 0
+          a_ids_pdrt = get_args(args_id_pdrt)
+          kp_pdrt = 0
+          while kp_pdrt < a_ids_pdrt.length
+            arg_types_pdrt.push(infer_type(a_ids_pdrt[kp_pdrt]))
+            kp_pdrt = kp_pdrt + 1
+          end
+        end
+        return poly_dispatch_return_type(mname, nid, arg_types_pdrt)
       end
  # Method call on int (possible IntArray element storing object pointers)
  # when recv is a LocalVariableReadNode whose
@@ -22641,7 +22654,10 @@ class Compiler
     out
   end
 
-  def poly_dispatch_return_type(mname)
+  def poly_dispatch_return_type(mname, nid = -1, arg_types = nil)
+    if arg_types == nil
+      arg_types = "".split(",")
+    end
     if mname == "[]"
       @needs_rb_value = 1
       return "poly"
@@ -22658,6 +22674,15 @@ class Compiler
       @needs_rb_value = 1
       return "poly"
     end
+ # Source-level narrow set from ivar observations: when the
+ # receiver reads from an ivar whose observed type set is all
+ # obj_X (no poly / no primitives), the dispatch can only ever
+ # land on those classes. Issue #549. Mirrors the codegen-side
+ # narrow in compile_poly_method_call so both sides agree on
+ # the return type — otherwise the analyze-side stays poly and
+ # the codegen-side narrows the temp, producing an
+ # sp_RbVal-vs-scalar mismatch on the wrapping return path.
+    narrow_set = poly_dispatch_narrow_class_set(nid)
  # Setters: mname ends with "=" and at least one class has an
  # attr_writer for the bare name. Return type is the ivar type
  # (Ruby returns the rhs from `x = v`); without this, the result
@@ -22670,26 +22695,145 @@ class Compiler
     common = ""
     ci = 0
     while ci < @cls_names.length
-      rt = ""
-      if cls_find_method_direct(ci, mname) >= 0
-        rt = cls_method_return(ci, mname)
-      elsif cls_has_attr_reader(ci, mname) == 1
+      if narrow_set != "" && poly_dispatch_class_in_set(narrow_set, ci) == 0
+        ci = ci + 1
+      else
+        rt = ""
+        if cls_find_method_direct(ci, mname) >= 0
+ # Skip arms whose param types can't accept the dispatch
+ # site's arg types -- mirrors the arm_incompat check in
+ # the emit loop. Issue #549.
+          if poly_dispatch_arm_param_compat(ci, mname, arg_types) == 0
+            rt = ""
+          else
+            rt = cls_method_return(ci, mname)
+          end
+        elsif cls_has_attr_reader(ci, mname) == 1
  # An attr_reader returns the ivar type. .
-        rt = cls_ivar_type(ci, "@" + mname)
-      elsif setter_bname != "" && cls_has_attr_writer(ci, setter_bname) == 1
+          rt = cls_ivar_type(ci, "@" + mname)
+        elsif setter_bname != "" && cls_has_attr_writer(ci, setter_bname) == 1
  # An attr_writer setter returns the ivar's type.
-        rt = cls_ivar_type(ci, "@" + setter_bname)
-      end
-      if rt != ""
-        if common == ""
-          common = rt
-        elsif common != rt
-          return "poly"
+          rt = cls_ivar_type(ci, "@" + setter_bname)
         end
+        if rt != ""
+          if common == ""
+            common = rt
+          elsif common != rt
+            return "poly"
+          end
+        end
+        ci = ci + 1
       end
-      ci = ci + 1
     end
     common == "" ? "int" : common
+  end
+
+ # Returns the narrow class-index set for a poly-recv dispatch
+ # site. Mirrors the codegen-side. Issue #549.
+  def poly_dispatch_narrow_class_set(nid)
+    if nid < 0
+      return ""
+    end
+    if @current_class_idx < 0
+      return ""
+    end
+    recv_id = @nd_receiver[nid]
+    if recv_id < 0
+      return ""
+    end
+    if @nd_type[recv_id] != "InstanceVariableReadNode"
+      return ""
+    end
+    iname = @nd_name[recv_id]
+    obs = cls_ivar_observed_types_for(@current_class_idx, iname)
+    if obs == ""
+      return ""
+    end
+    out = ""
+    parts = obs.split(",")
+    k = 0
+    while k < parts.length
+      t = parts[k]
+      if t == ""
+ # blank slot - uninformative
+      elsif is_obj_type(t) == 1
+        cname = t[4, t.length - 4]
+        cidx = find_class_idx(cname)
+        if cidx >= 0
+          s_idx = cidx.to_s
+          if out == ""
+            out = s_idx
+          else
+            already = 0
+            seen = out.split(",")
+            sk = 0
+            while sk < seen.length
+              if seen[sk] == s_idx
+                already = 1
+              end
+              sk = sk + 1
+            end
+            if already == 0
+              out = out + "," + s_idx
+            end
+          end
+        end
+      else
+ # Any non-obj observation poisons the narrow set.
+        return ""
+      end
+      k = k + 1
+    end
+    out
+  end
+
+  def poly_dispatch_class_in_set(set, ci)
+    if set == ""
+      return 1
+    end
+    target = ci.to_s
+    parts = set.split(",")
+    k = 0
+    while k < parts.length
+      if parts[k] == target
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
+  def poly_dispatch_arm_param_compat(ci, mname, arg_types)
+    midx = cls_find_method_direct(ci, mname)
+    owner_idx = ci
+    if midx < 0
+      owner_name = find_method_owner(ci, mname)
+      if owner_name != ""
+        owner_idx = find_class_idx(owner_name)
+        if owner_idx >= 0
+          midx = cls_find_method_direct(owner_idx, mname)
+        end
+      end
+    end
+    if midx < 0
+      return 1
+    end
+    arm_ptypes = cls_meth_ptypes_get(owner_idx, midx)
+    pk = 0
+    while pk < arm_ptypes.length && pk < arg_types.length
+      at_b = base_type(arg_types[pk])
+      pt_b = base_type(arm_ptypes[pk])
+      if at_b != "" && pt_b != "" && at_b != "poly" && pt_b != "poly" && at_b != pt_b
+        if (at_b == "int" && pt_b == "symbol") || (at_b == "symbol" && pt_b == "int") ||
+           (at_b == "int" && pt_b == "bool")   || (at_b == "bool"   && pt_b == "int")
+ # compatible
+        else
+          return 0
+        end
+      end
+      pk = pk + 1
+    end
+    1
   end
 
  # Runtime tag-check for `<poly>.is_a?(<klass>)` / `kind_of?` /

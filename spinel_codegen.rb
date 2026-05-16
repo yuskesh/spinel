@@ -19050,7 +19050,7 @@ class Compiler
     ""
   end
 
-  def poly_dispatch_return_type(mname)
+  def poly_dispatch_return_type(mname, nid, arg_types)
     if mname == "[]"
       @needs_rb_value = 1
       return "poly"
@@ -19076,6 +19076,14 @@ class Compiler
       @needs_rb_value = 1
       return "poly"
     end
+ # Source-level narrow set from ivar observations: when the
+ # receiver reads from an ivar whose observed type set is all
+ # obj_X (no poly / no primitives), the dispatch can only ever
+ # land on those classes. Combined with the param-incompat
+ # check below, this prunes arms whose return type would
+ # otherwise widen the dispatch result to sp_RbVal even though
+ # they can never fire at runtime. Issues #549, #531.
+    narrow_set = poly_dispatch_narrow_class_set(nid)
  # Built-in string methods that compile_poly_method_call also
  # lowers via a SP_TAG_STR arm — their result temp needs to be
  # at least string-typed so the per-tag dispatch assignment
@@ -19086,14 +19094,18 @@ class Compiler
       ci_s = 0
       diverges = 0
       while ci_s < @cls_names.length
-        if cls_find_method(ci_s, mname) >= 0
-          urt = cls_method_return(ci_s, mname)
-          if urt != "" && urt != "string"
-            diverges = 1
-            ci_s = @cls_names.length
+        if narrow_set != "" && poly_dispatch_class_in_set(narrow_set, ci_s) == 0
+          ci_s = ci_s + 1
+        else
+          if cls_find_method(ci_s, mname) >= 0 && poly_dispatch_arm_param_compat(ci_s, mname, arg_types) == 1
+            urt = cls_method_return(ci_s, mname)
+            if urt != "" && urt != "string"
+              diverges = 1
+              ci_s = @cls_names.length
+            end
           end
+          ci_s = ci_s + 1
         end
-        ci_s = ci_s + 1
       end
       if diverges == 1
         @needs_rb_value = 1
@@ -19113,26 +19125,157 @@ class Compiler
     common = ""
     ci = 0
     while ci < @cls_names.length
-      rt = ""
-      if cls_find_method(ci, mname) >= 0
-        rt = cls_method_return(ci, mname)
-      elsif cls_has_attr_reader(ci, mname) == 1
+      if narrow_set != "" && poly_dispatch_class_in_set(narrow_set, ci) == 0
+        ci = ci + 1
+      else
+        rt = ""
+        if cls_find_method(ci, mname) >= 0
+ # Skip arms whose param types can't accept the dispatch
+ # site's arg types — mirrors the arm_incompat check in
+ # the emit loop so the result-type union doesn't see
+ # return types from arms the runtime can't reach.
+          if poly_dispatch_arm_param_compat(ci, mname, arg_types) == 0
+            rt = ""
+          else
+            rt = cls_method_return(ci, mname)
+          end
+        elsif cls_has_attr_reader(ci, mname) == 1
  # An attr_reader returns the ivar type. .
-        rt = cls_ivar_type(ci, "@" + mname)
-      elsif setter_bname != "" && cls_has_attr_writer(ci, setter_bname) == 1
+          rt = cls_ivar_type(ci, "@" + mname)
+        elsif setter_bname != "" && cls_has_attr_writer(ci, setter_bname) == 1
  # An attr_writer setter returns the ivar's type.
-        rt = cls_ivar_type(ci, "@" + setter_bname)
-      end
-      if rt != ""
-        if common == ""
-          common = rt
-        elsif common != rt
-          return "poly"
+          rt = cls_ivar_type(ci, "@" + setter_bname)
         end
+        if rt != ""
+          if common == ""
+            common = rt
+          elsif common != rt
+            return "poly"
+          end
+        end
+        ci = ci + 1
       end
-      ci = ci + 1
     end
     common == "" ? "int" : common
+  end
+
+ # Returns a comma-separated list of class indices the dispatch
+ # site can possibly land on, derived from the receiver ivar's
+ # observed type set. Returns "" when no narrowing is safe
+ # (non-ivar receiver, partial observation, or any non-obj
+ # observation like "poly" / "int" / "string"). Issue #549.
+  def poly_dispatch_narrow_class_set(nid)
+    if nid < 0
+      return ""
+    end
+    if @current_class_idx < 0
+      return ""
+    end
+    recv_id = @nd_receiver[nid]
+    if recv_id < 0
+      return ""
+    end
+    if @nd_type[recv_id] != "InstanceVariableReadNode"
+      return ""
+    end
+    iname = @nd_name[recv_id]
+    obs = cls_ivar_observed_types_for(@current_class_idx, iname)
+    if obs == ""
+      return ""
+    end
+    out = ""
+    parts = obs.split(",")
+    k = 0
+    while k < parts.length
+      t = parts[k]
+      if t == ""
+ # blank slot — uninformative, skip
+      elsif is_obj_type(t) == 1
+        cname = t[4, t.length - 4]
+        cidx = find_class_idx(cname)
+        if cidx >= 0
+          s_idx = cidx.to_s
+          if out == ""
+            out = s_idx
+          else
+ # dedup
+            already = 0
+            seen = out.split(",")
+            sk = 0
+            while sk < seen.length
+              if seen[sk] == s_idx
+                already = 1
+              end
+              sk = sk + 1
+            end
+            if already == 0
+              out = out + "," + s_idx
+            end
+          end
+        end
+      else
+ # Any non-obj observation ("poly", "int", "string", etc.)
+ # means the ivar can hold values whose dispatch is broader
+ # than the obj-class set we can enumerate. Bail out so we
+ # don't unsoundly prune.
+        return ""
+      end
+      k = k + 1
+    end
+    out
+  end
+
+  def poly_dispatch_class_in_set(set, ci)
+    if set == ""
+      return 1
+    end
+    target = ci.to_s
+    parts = set.split(",")
+    k = 0
+    while k < parts.length
+      if parts[k] == target
+        return 1
+      end
+      k = k + 1
+    end
+    0
+  end
+
+ # Mirrors the arm_incompat check inside compile_poly_method_call's
+ # emit loop. Returns 1 when the arm's param types are compatible
+ # with the dispatch site's arg types, 0 when at least one slot
+ # has a base-type mismatch outside the int/symbol/bool family.
+  def poly_dispatch_arm_param_compat(ci, mname, arg_types)
+    midx = cls_find_method_direct(ci, mname)
+    owner_idx = ci
+    if midx < 0
+      owner_name = find_method_owner(ci, mname)
+      if owner_name != ""
+        owner_idx = find_class_idx(owner_name)
+        if owner_idx >= 0
+          midx = cls_find_method_direct(owner_idx, mname)
+        end
+      end
+    end
+    if midx < 0
+      return 1
+    end
+    arm_ptypes = cls_meth_ptypes_get(owner_idx, midx)
+    pk = 0
+    while pk < arm_ptypes.length && pk < arg_types.length
+      at_b = base_type(arg_types[pk])
+      pt_b = base_type(arm_ptypes[pk])
+      if at_b != "" && pt_b != "" && at_b != "poly" && pt_b != "poly" && at_b != pt_b
+        if (at_b == "int" && pt_b == "symbol") || (at_b == "symbol" && pt_b == "int") ||
+           (at_b == "int" && pt_b == "bool")   || (at_b == "bool"   && pt_b == "int")
+ # compatible
+        else
+          return 0
+        end
+      end
+      pk = pk + 1
+    end
+    1
   end
 
  # Runtime tag-check for `<poly>.is_a?(<klass>)` / `kind_of?` /
@@ -19296,7 +19439,22 @@ class Compiler
  # The result temp is typed by the method's return type. If user
  # classes disagree on that type, the result is sp_RbVal and each
  # branch boxes its concrete return value.
-    ret_type = poly_dispatch_return_type(mname)
+ # Pre-compute arg base types (just `infer_type`, no emit) so the
+ # return-type analysis can apply the same param-incompat
+ # suppression the emit loop uses below. Without this the
+ # result temp widens to sp_RbVal whenever an unreachable arm
+ # has a different return type. Issue #549.
+    args_id_pre = @nd_arguments[nid]
+    arg_types_pre = "".split(",")
+    if args_id_pre >= 0
+      aargs_pre = get_args(args_id_pre)
+      kp = 0
+      while kp < aargs_pre.length
+        arg_types_pre.push(infer_type(aargs_pre[kp]))
+        kp = kp + 1
+      end
+    end
+    ret_type = poly_dispatch_return_type(mname, nid, arg_types_pre)
  # Approach 2 narrowing: `<poly>[k]` defaults to poly because the
  # static `[]` dispatch can't pin the return; check whether the
  # poly receiver here came from `<poly_array>[i]` whose every
