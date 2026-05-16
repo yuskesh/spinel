@@ -20106,8 +20106,19 @@ class Compiler
     if hcid != ""
       return "sp_box_obj((void *)(" + val + "), " + hcid + ")"
     end
- # Other pointer types (mutable strings, etc.) — box with a
- # neutral cls_id of 0 rather than truncating the pointer to int.
+ # A `sp_String *` (mutable_str) is a heap buffer with a `data`
+ # field of const char *. Box it as a string (SP_TAG_STR) so
+ # consumers that dispatch on the tag (sp_poly_to_s, write_response
+ # in roundhouse's Tep::Server, etc.) read the string content
+ # instead of falling through to the SP_TAG_OBJ cls_id=0 case
+ # which matches no arm. Issue #541. Spill the recv to a temp via
+ # a statement-expression so side effects fire exactly once.
+    if at == "mutable_str"
+      mtmp = new_temp
+      return "({ sp_String *" + mtmp + " = " + val + "; " + mtmp + " ? sp_box_str(" + mtmp + "->data) : sp_box_nil(); })"
+    end
+ # Other pointer types — box with a neutral cls_id of 0 rather
+ # than truncating the pointer to int.
     if type_is_pointer(at) == 1
       return "sp_box_obj((void *)(" + val + "), 0)"
     end
