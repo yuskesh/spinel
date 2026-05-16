@@ -13183,6 +13183,178 @@ class Compiler
  # Used by parameter type inference to find the class that satisfies
  # ALL accesses, avoiding a single-reader match that ignores later
  # method calls on the same parameter.
+ # Issue #542. Scan a body for `pname[key_node]` accesses to
+ # infer whether `pname` is used as a hash. Returns the kind of
+ # the FIRST keyed lookup found: "string" (literal/interpolated
+ # string key), "symbol" (literal symbol key), or "" (no keyed
+ # access). `pname["id"]` -> "string"; `pname[:id]` -> "symbol";
+ # `pname[i]` (int key) intentionally returns "" because
+ # `int_array` and `int_*_hash` are ambiguous from int-keyed
+ # bracket access alone.
+  def infer_param_hash_key_kind(nid, pname)
+    if nid < 0
+      return ""
+    end
+    if @nd_type[nid] == "DefNode" || @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
+      return ""
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "[]"
+      recv = @nd_receiver[nid]
+      if recv >= 0 && @nd_type[recv] == "LocalVariableReadNode" && @nd_name[recv] == pname
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          arg_ids = get_args(args_id)
+          if arg_ids.length >= 1
+            k = arg_ids[0]
+            if @nd_type[k] == "StringNode" || @nd_type[k] == "InterpolatedStringNode"
+              return "string"
+            end
+            if @nd_type[k] == "SymbolNode"
+              return "symbol"
+            end
+          end
+        end
+      end
+    end
+    if @nd_body[nid] >= 0
+      r = infer_param_hash_key_kind(@nd_body[nid], pname)
+      if r != ""
+        return r
+      end
+    end
+    stmts_h = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts_h.length
+      r = infer_param_hash_key_kind(stmts_h[k], pname)
+      if r != ""
+        return r
+      end
+      k = k + 1
+    end
+    if @nd_expression[nid] >= 0
+      r = infer_param_hash_key_kind(@nd_expression[nid], pname)
+      if r != ""
+        return r
+      end
+    end
+    if @nd_predicate[nid] >= 0
+      r = infer_param_hash_key_kind(@nd_predicate[nid], pname)
+      if r != ""
+        return r
+      end
+    end
+    if @nd_receiver[nid] >= 0
+      r = infer_param_hash_key_kind(@nd_receiver[nid], pname)
+      if r != ""
+        return r
+      end
+    end
+    if @nd_arguments[nid] >= 0
+      r = infer_param_hash_key_kind(@nd_arguments[nid], pname)
+      if r != ""
+        return r
+      end
+    end
+    args_w = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < args_w.length
+      r = infer_param_hash_key_kind(args_w[k], pname)
+      if r != ""
+        return r
+      end
+      k = k + 1
+    end
+    ""
+  end
+
+ # Body-usage hash inference for un-widened params. Issue #542:
+ # when a method's param has no concretely-typed call site
+ # (all callers untyped/RbVal), the analyzer defaulted the slot
+ # to `int` and the body's `param["k"]` emitted the literal `0`
+ # with a "cannot resolve" warning, silently producing wrong
+ # output. Detect the body's keyed-access shape and widen the
+ # int param to `str_poly_hash` (string keys) or
+ # `sym_poly_hash` (symbol keys). The companion compile_call_args
+ # cast + sp_StrPolyHash_get NULL-guard handle the untyped-caller
+ # composition problem Sam Ruby called out: callers that still
+ # pass int/nil/poly to the now-typed param get a NULL cast at
+ # the call site and the body's lookup safely returns nil
+ # instead of segfaulting.
+  def infer_hash_param_from_body
+    mi = 0
+    while mi < @meth_names.length
+      bid = @meth_body_ids[mi]
+      if bid >= 0
+        pnames = @meth_param_names[mi].split(",")
+        ptypes = @meth_param_types[mi].split(",")
+        changed_top = 0
+        pk = 0
+        while pk < pnames.length
+          if pk < ptypes.length && (ptypes[pk] == "int" || ptypes[pk] == "nil")
+            kind = infer_param_hash_key_kind(bid, pnames[pk])
+            if kind == "string"
+              @needs_rb_value = 1
+              ptypes[pk] = "str_poly_hash"
+              changed_top = 1
+            elsif kind == "symbol"
+              @needs_rb_value = 1
+              ptypes[pk] = "sym_poly_hash"
+              changed_top = 1
+            end
+          end
+          pk = pk + 1
+        end
+        if changed_top == 1
+          @meth_param_types[mi] = ptypes.join(",")
+        end
+      end
+      mi = mi + 1
+    end
+    ci = 0
+    while ci < @cls_names.length
+      mnames = @cls_meth_names[ci].split(";")
+      bodies = @cls_meth_bodies[ci].split(";")
+      cls_changed = 0
+      mj = 0
+      while mj < mnames.length
+        pnames_j = cls_meth_pnames_get(ci, mj)
+        ptypes_j = cls_meth_ptypes_get(ci, mj)
+        bid_j = -1
+        if mj < bodies.length
+          bid_j = bodies[mj].to_i
+        end
+        if bid_j >= 0
+          m_changed = 0
+          pk = 0
+          while pk < pnames_j.length
+            if pk < ptypes_j.length && (ptypes_j[pk] == "int" || ptypes_j[pk] == "nil")
+              kind = infer_param_hash_key_kind(bid_j, pnames_j[pk])
+              if kind == "string"
+                @needs_rb_value = 1
+                ptypes_j[pk] = "str_poly_hash"
+                m_changed = 1
+              elsif kind == "symbol"
+                @needs_rb_value = 1
+                ptypes_j[pk] = "sym_poly_hash"
+                m_changed = 1
+              end
+            end
+            pk = pk + 1
+          end
+          if m_changed == 1
+            cls_meth_ptypes_put(ci, mj, ptypes_j)
+            cls_changed = 1
+          end
+        end
+        mj = mj + 1
+      end
+      if cls_changed == 1
+        @cls_meth_ptypes_version = @cls_meth_ptypes_version + 1
+      end
+      ci = ci + 1
+    end
+  end
+
   def collect_param_methods(nid, pname, acc)
     if nid < 0
       return
@@ -17798,6 +17970,13 @@ class Compiler
       infer_param_array_type_from_body
       narrow_param_types_from_body_method_calls
       infer_string_param_from_body
+ # Body-usage hash inference (#542). Lifts int-defaulted params
+ # to str_poly_hash / sym_poly_hash when the body keyed-accesses
+ # the param. Runs after the string-param lift so the
+ # is_string_only_method check fires first for plain-string
+ # consumers and the hash-shape inference only claims the param
+ # when the body actually treats it as a hash.
+      infer_hash_param_from_body
       widen_nil_default_params_used_as_hash
       widen_params_from_ivar_hash_aset
       infer_param_type_from_callee_slot

@@ -6773,7 +6773,7 @@ class Compiler
     emit_raw("static void sp_SymIntHash_fin(void*p){sp_SymIntHash*h=(sp_SymIntHash*)p;free(h->keys);free(h->vals);free(h->order);}")
     emit_raw("static sp_SymIntHash*sp_SymIntHash_new(void){sp_SymIntHash*h=(sp_SymIntHash*)sp_gc_alloc(sizeof(sp_SymIntHash),sp_SymIntHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;return h;}")
     emit_raw("static void sp_SymIntHash_grow(sp_SymIntHash*h){mrb_int oc=h->cap;sp_sym*ok=h->keys;mrb_int*ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)realloc(h->order,sizeof(sp_sym)*h->cap);h->len=0;for(mrb_int i=0;i<oc;i++){if(ok[i]>=0){mrb_int idx=(mrb_int)(((mrb_int)ok[i])&h->mask);while(h->keys[idx]>=0)idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}free(ok);free(ov);}")
-    emit_raw("static mrb_int sp_SymIntHash_get(sp_SymIntHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return 0;}")
+    emit_raw("static mrb_int sp_SymIntHash_get(sp_SymIntHash*h,sp_sym k){if(!h)return 0;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return 0;}")
     emit_raw("static void sp_SymIntHash_set(sp_SymIntHash*h,sp_sym k,mrb_int v){if(h->len*2>=h->cap)sp_SymIntHash_grow(h);mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}")
     emit_raw("static mrb_bool sp_SymIntHash_has_key(sp_SymIntHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}")
     emit_raw("static mrb_int sp_SymIntHash_length(sp_SymIntHash*h){return h->len;}")
@@ -6802,7 +6802,7 @@ class Compiler
     emit_raw("static void sp_SymStrHash_fin(void*p){sp_SymStrHash*h=(sp_SymStrHash*)p;free(h->keys);free(h->vals);free(h->order);}")
     emit_raw("static sp_SymStrHash*sp_SymStrHash_new(void){sp_SymStrHash*h=(sp_SymStrHash*)sp_gc_alloc(sizeof(sp_SymStrHash),sp_SymStrHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(const char**)calloc(h->cap,sizeof(const char*));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;return h;}")
     emit_raw("static void sp_SymStrHash_grow(sp_SymStrHash*h){mrb_int oc=h->cap;sp_sym*ok=h->keys;const char**ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(const char**)calloc(h->cap,sizeof(const char*));h->order=(sp_sym*)realloc(h->order,sizeof(sp_sym)*h->cap);h->len=0;for(mrb_int i=0;i<oc;i++){if(ok[i]>=0){mrb_int idx=(mrb_int)(((mrb_int)ok[i])&h->mask);while(h->keys[idx]>=0)idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}free(ok);free(ov);}")
-    emit_raw("static const char*sp_SymStrHash_get(sp_SymStrHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return\"\";}")
+    emit_raw("static const char*sp_SymStrHash_get(sp_SymStrHash*h,sp_sym k){if(!h)return sp_str_empty;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return sp_str_empty;}")
     emit_raw("static void sp_SymStrHash_set(sp_SymStrHash*h,sp_sym k,const char*v){if(h->len*2>=h->cap)sp_SymStrHash_grow(h);mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}")
     emit_raw("static mrb_bool sp_SymStrHash_has_key(sp_SymStrHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}")
     emit_raw("static mrb_int sp_SymStrHash_length(sp_SymStrHash*h){return h->len;}")
@@ -20870,6 +20870,28 @@ class Compiler
                 bt_arg = base_type(ptypes[k])
                 arg_cname = bt_arg[4, bt_arg.length - 4]
                 result = result + "(sp_" + arg_cname + " *)" + compile_expr(positional_ids[k])
+                k = k + 1
+                next
+              end
+            end
+ # Issue #542: param body-inferred as a hash variant
+ # (str_poly_hash / sym_poly_hash / ...) but the caller's arg
+ # is int/nil because the source (uninitialized ivar, untyped
+ # registry getter, etc.) never got widened. Cast the int/nil
+ # value to NULL of the param's hash pointer type. The matching
+ # runtime NULL-guards in `sp_<X>Hash_get` return sp_box_nil()
+ # so the body's `param["k"]` produces nil instead of
+ # segfaulting -- closer to CRuby's NoMethodError (still wrong
+ # but at least defined and unlike the silent emit-0).
+            if is_hash_type(ptypes[k]) == 1
+              arg_at_h542 = infer_type(positional_ids[k])
+              if arg_at_h542 == "int" || arg_at_h542 == "nil"
+                result = result + "(" + c_type(ptypes[k]) + ")NULL"
+                k = k + 1
+                next
+              end
+              if arg_at_h542 == "poly"
+                result = result + "(" + c_type(ptypes[k]) + ")(" + compile_expr(positional_ids[k]) + ").v.p"
                 k = k + 1
                 next
               end
