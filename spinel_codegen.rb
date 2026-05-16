@@ -20980,6 +20980,26 @@ class Compiler
     end
     pnames = cls_meth_pnames_get(init_ci, init_idx)
     ptypes = cls_meth_ptypes_get(init_ci, init_idx)
+ # Kwarg-as-bundle: if the init has exactly one positional param,
+ # the kwargs don't match its name, and the param's inferred type
+ # is `str_poly_hash` (set by the matching analyze-side widening
+ # for the same shape), build a sp_StrPolyHash from the kwargs and
+ # pass it as the single arg. Sam Ruby's #530 segv: roundhouse's
+ # `Article.new(title: "", body: "...")` lowered to
+ # `sp_Article_new(0)` because no kwarg name matched the
+ # `attrs` positional, then `attrs["title"]` dereferenced NULL.
+    if pnames.length == 1 && pk_kwarg_name_matches?(kw_names, pnames) == 0 && ptypes.length >= 1 && ptypes[0] == "str_poly_hash"
+      @needs_rb_value = 1
+      hash_tmp_530 = new_temp
+      emit("  sp_StrPolyHash *" + hash_tmp_530 + " = sp_StrPolyHash_new();")
+      ki_530 = 0
+      while ki_530 < kw_names.length
+        key_c = "(&(\"\\xff\" \"" + kw_names[ki_530] + "\")[1])"
+        emit("  sp_StrPolyHash_set(" + hash_tmp_530 + ", " + key_c + ", " + box_expr_to_poly(kw_exprs[ki_530]) + ");")
+        ki_530 = ki_530 + 1
+      end
+      return hash_tmp_530
+    end
  # Build args in param order using keyword values
     result = ""
     pk = 0
@@ -21015,6 +21035,24 @@ class Compiler
       pk = pk + 1
     end
     result
+  end
+
+ # Returns 1 if any kw_name matches any pname, 0 otherwise. Helper
+ # for compile_constructor_args's kwarg-as-bundle detection. Issue
+ # #530.
+  def pk_kwarg_name_matches?(kw_names, pnames)
+    ki = 0
+    while ki < kw_names.length
+      pi = 0
+      while pi < pnames.length
+        if kw_names[ki] == pnames[pi]
+          return 1
+        end
+        pi = pi + 1
+      end
+      ki = ki + 1
+    end
+    0
   end
 
   def compile_call_args(nid)

@@ -10604,7 +10604,15 @@ class Compiler
     while ai < arg_ids.length
       aid = arg_ids[ai]
       if @nd_type[aid] == "KeywordHashNode"
+ # Try the existing per-key matching first: if a kwarg key name
+ # matches a param name, widen that param's slot. Track whether
+ # any key matched so we can fall back to "bundle the whole
+ # KeywordHashNode into the next positional slot" for the
+ # `Class.new(title: ...)` shape where the receiver's
+ # initialize is `def initialize(attrs)` -- a single
+ # positional param expecting the kwargs as a hash. Issue #530.
         elems = parse_id_list(@nd_elements[aid])
+        any_matched = 0
         ei = 0
         while ei < elems.length
           if @nd_type[elems[ei]] == "AssocNode"
@@ -10620,12 +10628,27 @@ class Compiler
                 if pnames[pi] == kname && pi < ptypes.length
                   at = infer_type(val_id)
                   ptypes[pi] = unify_call_types(ptypes[pi], at, val_id)
+                  any_matched = 1
                 end
                 pi = pi + 1
               end
             end
           end
           ei = ei + 1
+        end
+ # Bundle-as-positional fallback: no kwarg matched a param name
+ # AND there's an unfilled positional slot still at the default
+ # int type. Widen it to str_poly_hash (string keys from
+ # Symbol-to-s conversion; poly values for kwarg mixing). The
+ # body's `attrs[...]` accesses then resolve through the
+ # str_poly_hash poly-recv dispatch instead of the unresolved
+ # "[] on int" fallback.
+        if any_matched == 0 && pos_idx < ptypes.length
+          if ptypes[pos_idx] == "int" || ptypes[pos_idx] == "nil"
+            @needs_rb_value = 1
+            ptypes[pos_idx] = "str_poly_hash"
+          end
+          pos_idx = pos_idx + 1
         end
       else
         if pos_idx < ptypes.length
