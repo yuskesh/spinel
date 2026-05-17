@@ -16058,6 +16058,100 @@ class Compiler
     end
   end
 
+ # Sibling of unify_imeth_override_returns for param types.
+ # When a base imeth and a descendant override disagree on a
+ # param slot because the override widened to "poly" (mixed
+ # call-site arg types), widen every member of the family at
+ # that slot to "poly" as well. Without this the codegen
+ # override-dispatch gate cls_imeth_override_ptypes_match
+ # rejects the family (signatures differ), and a `self[k]=v`
+ # in the base body lands on the static raise-stub instead
+ # of dispatching to the override. Issue #567.
+  def unify_imeth_override_ptypes
+    ci = 0
+    while ci < @cls_names.length
+      mnames = @cls_meth_names[ci].split(";")
+      mi = 0
+      while mi < mnames.length
+        mname = mnames[mi]
+        if mname != ""
+          base_pt = cls_meth_ptypes_get(ci, mi)
+          fam_owners = []
+          fam_midxs  = []
+          fam_owners.push(ci)
+          fam_midxs.push(mi)
+          dci = 0
+          while dci < @cls_names.length
+            if dci != ci && cls_is_descendant(dci, ci) == 1
+              dmidx = cls_find_method_direct(dci, mname)
+              if dmidx >= 0
+                fam_owners.push(dci)
+                fam_midxs.push(dmidx)
+              end
+            end
+            dci = dci + 1
+          end
+          if fam_owners.length >= 2
+            n = base_pt.length
+ # Determine, per slot, whether at least one family member
+ # has "poly". If so, widen every member at that slot.
+            poly_slot = "".split(",")
+            k = 0
+            while k < n
+              poly_slot.push("0")
+              k = k + 1
+            end
+            fi = 0
+            while fi < fam_owners.length
+              pt = cls_meth_ptypes_get(fam_owners[fi], fam_midxs[fi])
+              if pt.length == n
+                kk = 0
+                while kk < n
+                  if pt[kk] == "poly"
+                    poly_slot[kk] = "1"
+                  end
+                  kk = kk + 1
+                end
+              end
+              fi = fi + 1
+            end
+            any_poly = 0
+            kk2 = 0
+            while kk2 < n
+              if poly_slot[kk2] == "1"
+                any_poly = 1
+              end
+              kk2 = kk2 + 1
+            end
+            if any_poly == 1
+              fi2 = 0
+              while fi2 < fam_owners.length
+                pt2 = cls_meth_ptypes_get(fam_owners[fi2], fam_midxs[fi2])
+                if pt2.length == n
+                  changed = 0
+                  kk3 = 0
+                  while kk3 < n
+                    if poly_slot[kk3] == "1" && pt2[kk3] != "poly"
+                      pt2[kk3] = "poly"
+                      changed = 1
+                    end
+                    kk3 = kk3 + 1
+                  end
+                  if changed == 1
+                    cls_meth_ptypes_put(fam_owners[fi2], fam_midxs[fi2], pt2)
+                  end
+                end
+                fi2 = fi2 + 1
+              end
+            end
+          end
+        end
+        mi = mi + 1
+      end
+      ci = ci + 1
+    end
+  end
+
   def infer_all_returns
  # Pre-pass: infer class method param types from body usage
     infer_cls_meth_param_from_body
@@ -18812,8 +18906,10 @@ class Compiler
  #      Base#[]'s own body return as "int" (raise default),
  #      clobbering step 1's write.
  #   3. unify again -- restore Base#[] to "string".
+    unify_imeth_override_ptypes
     unify_imeth_override_returns
     infer_all_returns
+    unify_imeth_override_ptypes
     unify_imeth_override_returns
     infer_all_returns
     unify_imeth_override_returns
