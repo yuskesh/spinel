@@ -435,35 +435,28 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
         }
     }
 
-    /* Required keywords, then optional keywords. Both are stored as
-     * rbs_hash mapping name-Symbol → function_param. The hash is
-     * insertion-ordered (head/tail linked list); RBS's parser inserts
-     * kwargs in source order. We walk in that order, mapping each
+    /* Required + optional keywords. Both are stored as rbs_hash
+     * mapping name-Symbol → function_param. The hash is insertion-
+     * ordered (head/tail linked list); RBS's parser inserts kwargs in
+     * source order. We walk required then optional, mapping each
      * param's value type. The arity adds up to (positionals +
      * required_kwargs + optional_kwargs), matching Ruby's def in
-     * source-order — same shape collect_all sees. Optionality is
-     * an arity-affecting source property and doesn't change the
-     * type slot the seed targets. */
-    if (fn->required_keywords != NULL) {
-        rbs_hash_node_t *cur = fn->required_keywords->head;
+     * source-order — same shape collect_all sees. Optionality is an
+     * arity-affecting source property and doesn't change the type
+     * slot the seed targets. */
+    const rbs_hash_t *kw_hashes[] = { fn->required_keywords, fn->optional_keywords };
+    for (size_t ki = 0; ki < sizeof(kw_hashes)/sizeof(kw_hashes[0]); ki++) {
+        const rbs_hash_t *hash = kw_hashes[ki];
+        if (hash == NULL) continue;
+        rbs_hash_node_t *cur = hash->head;
         while (cur != NULL) {
-            if (cur->value == NULL || cur->value->type != RBS_TYPES_FUNCTION_PARAM) {
-                sbuf_free(&ptypes); return;
-            }
-            rbs_types_function_param_t *pp = (rbs_types_function_param_t *) cur->value;
-            sbuf_t t;
-            sbuf_init(&t);
-            if (!map_type(p, pp->type, enclosing_scope, &t)) { sbuf_free(&t); sbuf_free(&ptypes); return; }
-            if (!first_p) sbuf_append_cstr(&ptypes, ",");
-            sbuf_append(&ptypes, t.buf, t.len);
-            first_p = false;
-            sbuf_free(&t);
-            cur = cur->next;
-        }
-    }
-    if (fn->optional_keywords != NULL) {
-        rbs_hash_node_t *cur = fn->optional_keywords->head;
-        while (cur != NULL) {
+            /* Defensive: an upstream rbs change adding a different
+             * value-node type would land here. Skipping the whole
+             * signature (rather than producing a partial seed) keeps
+             * the analyzer consistent — apply_rbs_seeds overwrites a
+             * method's ptype list wholesale, so a half-populated entry
+             * is worse than no entry. Same policy as the positional
+             * loop above and the existing out-of-subset early-return. */
             if (cur->value == NULL || cur->value->type != RBS_TYPES_FUNCTION_PARAM) {
                 sbuf_free(&ptypes); return;
             }
