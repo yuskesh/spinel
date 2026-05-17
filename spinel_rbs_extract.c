@@ -165,12 +165,31 @@ static const char *hash_tag_for_kv(const char *k, const char *v) {
 }
 
 /* Forward decl. Write a spinel type tag into out; return true on
- * success, false to signal "out of subset, caller should skip". */
-static bool map_type(rbs_parser_t *p, rbs_node_t *node, sbuf_t *out);
+ * success, false to signal "out of subset, caller should skip".
+ *
+ * `enclosing_scope` (may be NULL/"") is the qualified name of the
+ * declaration we're currently inside, e.g. `ActiveRecord` while
+ * traversing members of `module ActiveRecord; class RecordInvalid`.
+ * Used to resolve unqualified nominal type references: `Base` inside
+ * `ActiveRecord` becomes `obj_ActiveRecord_Base`. Without this, the
+ * extractor emits `obj_Base` and the seed misses any class actually
+ * stored at the qualified name in spinel's tables. */
+static bool map_type(rbs_parser_t *p, rbs_node_t *node,
+                     const char *enclosing_scope, sbuf_t *out);
+
+/* True if the type_name was written unqualified in source (no `::`
+ * separators, no leading `::`). RBS exposes this as an empty
+ * namespace path. */
+static bool type_name_is_unqualified(rbs_type_name_t *tn) {
+    if (tn == NULL || tn->rbs_namespace == NULL) return true;
+    if (tn->rbs_namespace->path == NULL) return true;
+    return tn->rbs_namespace->path->length == 0;
+}
 
 /* Map a ClassInstance node. Handles Array[T], Hash[K,V], primitives,
  * and nominal classes. */
-static bool map_class_instance(rbs_parser_t *p, rbs_types_class_instance_t *ci, sbuf_t *out) {
+static bool map_class_instance(rbs_parser_t *p, rbs_types_class_instance_t *ci,
+                                const char *enclosing_scope, sbuf_t *out) {
     sbuf_t name;
     sbuf_init(&name);
     name_of_type_name(p, ci->name, &name);
@@ -206,7 +225,7 @@ static bool map_class_instance(rbs_parser_t *p, rbs_types_class_instance_t *ci, 
     if (name.len >= 5 && strcmp(name.buf + name.len - 5, "Array") == 0 && argc == 1) {
         sbuf_t elem;
         sbuf_init(&elem);
-        if (!map_type(p, ci->args->head->node, &elem)) {
+        if (!map_type(p, ci->args->head->node, enclosing_scope, &elem)) {
             sbuf_free(&elem);
             sbuf_free(&name);
             return false;
@@ -232,8 +251,8 @@ static bool map_class_instance(rbs_parser_t *p, rbs_types_class_instance_t *ci, 
     if (name.len >= 4 && strcmp(name.buf + name.len - 4, "Hash") == 0 && argc == 2) {
         sbuf_t k, v;
         sbuf_init(&k); sbuf_init(&v);
-        if (!map_type(p, ci->args->head->node, &k)
-            || !map_type(p, ci->args->head->next->node, &v)) {
+        if (!map_type(p, ci->args->head->node, enclosing_scope, &k)
+            || !map_type(p, ci->args->head->next->node, enclosing_scope, &v)) {
             sbuf_free(&k); sbuf_free(&v); sbuf_free(&name); return false;
         }
         const char *tag = hash_tag_for_kv(k.buf, v.buf);
@@ -250,14 +269,28 @@ static bool map_class_instance(rbs_parser_t *p, rbs_types_class_instance_t *ci, 
         return false;
     }
 
-    /* Nominal class instance: emit obj_<QualifiedName>. */
+    /* Nominal class instance: emit obj_<QualifiedName>. If the source
+     * wrote the name unqualified AND we're inside a class/module scope,
+     * resolve relative to that scope so e.g. `Base` inside
+     * `module ActiveRecord; class RecordInvalid` becomes
+     * `obj_ActiveRecord_Base`. Heuristic: spinel will silently drop
+     * seeds for types it doesn't recognize, so a wrong guess (e.g.
+     * `StandardError` inside `ActiveRecord`) is a no-op rather than a
+     * miscompile. Full lexical-scope walk would require a symbol
+     * table; this single-level prefix covers the common case. */
     sbuf_set(out, "obj_", 4);
+    if (enclosing_scope != NULL && enclosing_scope[0] != '\0'
+        && type_name_is_unqualified(ci->name)) {
+        sbuf_append_cstr(out, enclosing_scope);
+        sbuf_append_cstr(out, "_");
+    }
     sbuf_append(out, name.buf, name.len);
     sbuf_free(&name);
     return true;
 }
 
-static bool map_type(rbs_parser_t *p, rbs_node_t *node, sbuf_t *out) {
+static bool map_type(rbs_parser_t *p, rbs_node_t *node,
+                     const char *enclosing_scope, sbuf_t *out) {
     if (node == NULL) return false;
     switch (node->type) {
         case RBS_TYPES_BASES_BOOL:
@@ -272,12 +305,12 @@ static bool map_type(rbs_parser_t *p, rbs_node_t *node, sbuf_t *out) {
             sbuf_set(out, "nil", 3);
             return true;
         case RBS_TYPES_CLASS_INSTANCE:
-            return map_class_instance(p, (rbs_types_class_instance_t *) node, out);
+            return map_class_instance(p, (rbs_types_class_instance_t *) node, enclosing_scope, out);
         case RBS_TYPES_OPTIONAL: {
             rbs_types_optional_t *opt = (rbs_types_optional_t *) node;
             sbuf_t inner;
             sbuf_init(&inner);
-            if (!map_type(p, opt->type, &inner)) { sbuf_free(&inner); return false; }
+            if (!map_type(p, opt->type, enclosing_scope, &inner)) { sbuf_free(&inner); return false; }
             /* Avoid double-?: nil? → just nil; obj_Foo?? → obj_Foo? */
             if (inner.len > 0 && inner.buf[inner.len - 1] == '?') {
                 sbuf_set(out, inner.buf, inner.len);
@@ -303,7 +336,7 @@ static bool map_type(rbs_parser_t *p, rbs_node_t *node, sbuf_t *out) {
             if (t == NULL) return false;
             sbuf_t inner;
             sbuf_init(&inner);
-            if (!map_type(p, t, &inner)) { sbuf_free(&inner); return false; }
+            if (!map_type(p, t, enclosing_scope, &inner)) { sbuf_free(&inner); return false; }
             if (inner.len > 0 && inner.buf[inner.len - 1] == '?') {
                 sbuf_set(out, inner.buf, inner.len);
             } else {
@@ -329,7 +362,8 @@ static bool map_type(rbs_parser_t *p, rbs_node_t *node, sbuf_t *out) {
  * class table (@cls_cmeth_*). SINGLETON_INSTANCE (def self?.foo)
  * emits both so seed_class_method on the analyzer side hits whichever
  * the source actually defined. */
-static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m, FILE *out) {
+static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
+                        const char *enclosing_scope, FILE *out) {
     if (m->overloads == NULL || m->overloads->head == NULL) return;
     /* Only the first overload; multiple overloads are out of subset
      * (spinel can't pick between them deterministically). */
@@ -374,7 +408,7 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
             rbs_types_function_param_t *pp = (rbs_types_function_param_t *) cur->node;
             sbuf_t t;
             sbuf_init(&t);
-            if (!map_type(p, pp->type, &t)) { sbuf_free(&t); sbuf_free(&ptypes); return; }
+            if (!map_type(p, pp->type, enclosing_scope, &t)) { sbuf_free(&t); sbuf_free(&ptypes); return; }
             if (!first_p) sbuf_append_cstr(&ptypes, ",");
             sbuf_append(&ptypes, t.buf, t.len);
             first_p = false;
@@ -386,7 +420,7 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
 
     sbuf_t ret;
     sbuf_init(&ret);
-    if (!map_type(p, fn->return_type, &ret)) { sbuf_free(&ret); sbuf_free(&ptypes); return; }
+    if (!map_type(p, fn->return_type, enclosing_scope, &ret)) { sbuf_free(&ret); sbuf_free(&ptypes); return; }
 
     sbuf_t mname;
     sbuf_init(&mname);
@@ -407,10 +441,11 @@ static void emit_method(rbs_parser_t *p, rbs_ast_members_method_definition_t *m,
 
 /* ---- emit attr_accessor / reader / writer ------------------ */
 
-static void emit_attr(rbs_parser_t *p, rbs_ast_symbol_t *name, rbs_node_t *type, FILE *out) {
+static void emit_attr(rbs_parser_t *p, rbs_ast_symbol_t *name, rbs_node_t *type,
+                      const char *enclosing_scope, FILE *out) {
     sbuf_t t;
     sbuf_init(&t);
-    if (!map_type(p, type, &t)) { sbuf_free(&t); return; }
+    if (!map_type(p, type, enclosing_scope, &t)) { sbuf_free(&t); return; }
     sbuf_t n;
     sbuf_init(&n);
     name_of_symbol(p, name, &n);
@@ -421,8 +456,20 @@ static void emit_attr(rbs_parser_t *p, rbs_ast_symbol_t *name, rbs_node_t *type,
 
 /* ---- traverse class/module body ---------------------------- */
 
+/* `qualified_scope` is this declaration's full path (used as the
+ * `class X` line). `lookup_scope` is the *parent* path (used to
+ * resolve unqualified type references inside the members). For
+ * `module ActiveRecord; class RecordInvalid; def record: () -> Base`:
+ * qualified_scope = "ActiveRecord_RecordInvalid",
+ * lookup_scope    = "ActiveRecord".
+ * That makes `Base` resolve to `obj_ActiveRecord_Base` — the sibling-
+ * in-module pattern, which dominates real RBS in practice. Ruby's
+ * actual constant lookup walks every enclosing scope outward; this
+ * single-level fallback covers the common case without a symbol
+ * table. */
 static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
-                             const char *qualified_scope, FILE *out) {
+                             const char *qualified_scope,
+                             const char *lookup_scope, FILE *out) {
     if (members == NULL || members->length == 0) return;
     fprintf(out, "class %s\n", qualified_scope);
     rbs_node_list_node_t *cur = members->head;
@@ -430,21 +477,21 @@ static void traverse_members(rbs_parser_t *p, rbs_node_list_t *members,
         rbs_node_t *n = cur->node;
         switch (n->type) {
             case RBS_AST_MEMBERS_METHOD_DEFINITION:
-                emit_method(p, (rbs_ast_members_method_definition_t *) n, out);
+                emit_method(p, (rbs_ast_members_method_definition_t *) n, lookup_scope, out);
                 break;
             case RBS_AST_MEMBERS_ATTR_ACCESSOR: {
                 rbs_ast_members_attr_accessor_t *a = (rbs_ast_members_attr_accessor_t *) n;
-                emit_attr(p, a->name, a->type, out);
+                emit_attr(p, a->name, a->type, lookup_scope, out);
                 break;
             }
             case RBS_AST_MEMBERS_ATTR_READER: {
                 rbs_ast_members_attr_reader_t *a = (rbs_ast_members_attr_reader_t *) n;
-                emit_attr(p, a->name, a->type, out);
+                emit_attr(p, a->name, a->type, lookup_scope, out);
                 break;
             }
             case RBS_AST_MEMBERS_ATTR_WRITER: {
                 rbs_ast_members_attr_writer_t *a = (rbs_ast_members_attr_writer_t *) n;
-                emit_attr(p, a->name, a->type, out);
+                emit_attr(p, a->name, a->type, lookup_scope, out);
                 break;
             }
             default:
@@ -491,7 +538,7 @@ static void traverse_decl(rbs_parser_t *p, rbs_node_t *node,
     }
     sbuf_append(&qualified, leaf.buf, leaf.len);
 
-    traverse_members(p, members, qualified.buf, out);
+    traverse_members(p, members, qualified.buf, parent_scope, out);
 
     /* Recurse into nested declarations. */
     if (members != NULL) {
