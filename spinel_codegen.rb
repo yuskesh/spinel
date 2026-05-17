@@ -15720,7 +15720,7 @@ class Compiler
       return "sp_sym_intern(sp_str_" + mname + "(sp_sym_to_s(" + rc + ")))"
     end
     if mname == "inspect"
-      return "sp_str_concat(\":\", sp_sym_to_s(" + rc + "))"
+      return "sp_str_concat(SPL(\":\"), sp_sym_to_s(" + rc + "))"
     end
     if mname == "length" || mname == "size"
       return "((mrb_int)strlen(sp_sym_to_s(" + rc + ")))"
@@ -28937,7 +28937,7 @@ class Compiler
       return "sp_str_inspect(" + val + "->data)"
     end
     if at == "symbol"
-      return "sp_str_concat(\":\", sp_sym_to_s(" + val + "))"
+      return "sp_str_concat(SPL(\":\"), sp_sym_to_s(" + val + "))"
     end
     if at == "bool"
       return "(" + val + " ? \"true\" : \"false\")"
