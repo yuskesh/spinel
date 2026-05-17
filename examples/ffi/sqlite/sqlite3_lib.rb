@@ -5,10 +5,12 @@
 #   - exec for DDL + INSERT/UPDATE/DELETE
 #   - prepare_v2 / step / finalize + column accessors for SELECT
 #
-# Strings are passed inline into SQL; bind_text would also work but
-# requires the SQLITE_TRANSIENT destructor sentinel which the Spinel FFI
-# can't construct as a `:ptr` value yet. For string columns we escape
-# single quotes ourselves (`Sql.q`).
+# Strings are passed inline into SQL: `Sql.q` doubles single quotes
+# to handle the demo's well-known inputs. `bind_text` is also
+# supported — pass `-1` as the destructor argument for
+# `SQLITE_TRANSIENT` (`((sqlite3_destructor_type)-1)`), the same
+# wire-shape ruby-ffi exposes via `FFI::Pointer.new(-1)`. See
+# test/ffi_ptr_int_literal.rb for the underlying primitive.
 module SQL
   ffi_lib "sqlite3"
 
@@ -21,6 +23,7 @@ module SQL
   ffi_func :sqlite3_close,             [:ptr],                                :int
   ffi_func :sqlite3_exec,              [:ptr, :str, :ptr, :ptr, :ptr],        :int
   ffi_func :sqlite3_prepare_v2,        [:ptr, :str, :int, :ptr, :ptr],        :int
+  ffi_func :sqlite3_bind_text,         [:ptr, :int, :str, :int, :ptr],        :int
   ffi_func :sqlite3_step,              [:ptr],                                :int
   ffi_func :sqlite3_finalize,          [:ptr],                                :int
   ffi_func :sqlite3_column_int,        [:ptr, :int],                          :int
