@@ -1015,12 +1015,17 @@ static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
   }
 }
 
+/* `=~` returns the match position (0-indexed) or -1 on miss.
+   Codegen's regex truthy check (regex_match_call_node? arm in
+   compile_cond_expr) compares against -1 so match-at-position-0
+   is correctly truthy. Direct value use lines up with CRuby's
+   `String#=~` int semantics: "abc" =~ /b/ -> 1, not 2. */
 static mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {
   int64_t slen = (int64_t)strlen(str);
   int ncaps = 32;
   int n = re_exec(pat, str, slen, 0, sp_re_caps, ncaps);
-  if (n > 0) { sp_re_set_captures(str, sp_re_caps, n/2); return sp_re_caps[0] + 1; }
-  return 0;
+  if (n > 0) { sp_re_set_captures(str, sp_re_caps, n/2); return sp_re_caps[0]; }
+  return -1;
 }
 
 /* `s.rindex(regex)` — last match start, in BYTE offset (matches

@@ -2816,8 +2816,16 @@ class Compiler
             end
             return "str_str_hash"
           end
-          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil" || first_vt == "symbol")
+          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil")
             return "sym_int_hash"
+          end
+ # Symbol values get sym_poly_hash storage so dig / lookup
+ # preserves the sp_TAG_SYM tag (sym_int_hash would
+ # round-trip through mrb_int and lose the symbol-ness).
+ # Issue #555 case 07.
+          if all_sym_keys == 1 && first_vt == "symbol"
+            @needs_rb_value = 1
+            return "sym_poly_hash"
           end
  # Every value already inferred as poly (the slot was
  # widened upstream — typically an ivar that
@@ -4238,6 +4246,16 @@ class Compiler
         return ""
       end
       rt = infer_type(recv)
+ # poly_array recv with multi-arg dig: result is sp_RbVal
+ # because the inner step walks a per-element cls_id
+ # dispatch. Issue #555 case 07.
+      if rt == "poly_array"
+        args_id_d2 = @nd_arguments[nid]
+        if args_id_d2 >= 0 && get_args(args_id_d2).length >= 2
+          @needs_rb_value = 1
+          return "poly"
+        end
+      end
       if is_hash_type(rt) != 1
         return ""
       end

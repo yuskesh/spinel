@@ -3206,8 +3206,14 @@ class Compiler
             end
             return "str_str_hash"
           end
-          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil" || first_vt == "symbol")
+          if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil")
             return "sym_int_hash"
+          end
+ # Symbol values get sym_poly_hash storage so dig / lookup
+ # preserves the SP_TAG_SYM tag. Issue #555 case 07.
+          if all_sym_keys == 1 && first_vt == "symbol"
+            @needs_rb_value = 1
+            return "sym_poly_hash"
           end
  # Every value already inferred as poly (the slot was
  # widened upstream — typically an ivar that
@@ -6665,6 +6671,7 @@ class Compiler
     if @needs_poly_poly_hash == 1
       @needs_method = 1
     end
+    scan_for_dig_usage(@root_id)
  # Same shape for the class-hierarchy tables / helpers:
  # @needs_class_table / @needs_class_parents /
  # @needs_class_ancestors / @needs_class_for_poly are set
@@ -10280,6 +10287,46 @@ class Compiler
     end
   end
 
+ # Pre-scan for `recv.dig(...)` calls so emit_dig_step's full
+ # arm set has every typedef it references. The compile-side
+ # arms set @needs flags too late: typedef emission runs
+ # before the body compile. Issue #555 case 07.
+  def scan_for_dig_usage(nid)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode" && @nd_name[nid] == "dig"
+      args_id_sd = @nd_arguments[nid]
+      if args_id_sd >= 0
+        aa_sd = get_args(args_id_sd)
+        if aa_sd.length >= 2
+ # emit_dig_step branches on the key type and emits arms for
+ # all hash variants matching that key family. Conservatively
+ # arm all variants so the runtime typedefs are present.
+          ki_sd = 1
+          while ki_sd < aa_sd.length
+            kt_sd = infer_type(aa_sd[ki_sd])
+            if kt_sd == "symbol"
+              @needs_sym_int_hash = 1
+              @needs_sym_str_hash = 1
+              @needs_sym_poly_hash = 1
+            elsif kt_sd == "string"
+              @needs_str_poly_hash = 1
+            end
+            ki_sd = ki_sd + 1
+          end
+        end
+      end
+    end
+    cs_sd = []
+    push_child_ids(nid, cs_sd)
+    k_sd = 0
+    while k_sd < cs_sd.length
+      scan_for_dig_usage(cs_sd[k_sd])
+      k_sd = k_sd + 1
+    end
+  end
+
   def emit_main
     stmts = get_body_stmts(@root_id)
  # Pre-scan the entire AST for ARGV ConstantReadNode references
@@ -10620,7 +10667,7 @@ class Compiler
       return expr
     end
     if regex_match_call_node?(nid)
-      return "(" + expr + " != 0)"
+      return "(" + expr + " >= 0)"
     end
  # `()` (empty parens) infers as "void" and lowers compile_expr
  # to "0". CRuby treats `()` as nil -- `while ()` never enters
@@ -10641,7 +10688,7 @@ class Compiler
 
   def truthy_node_expr(nid, t, expr)
     if regex_match_call_node?(nid)
-      return "(" + expr + " != 0)"
+      return "(" + expr + " >= 0)"
     end
     truthy_c_expr(t, expr)
   end
@@ -16036,6 +16083,45 @@ class Compiler
         aargs = get_args(args_id)
         if aargs.length == 1
           return compile_array_method_expr(nid, "[]", rc, recv_type)
+        end
+ # Multi-arg dig: get arr[idx0] then walk the remaining keys.
+ # poly_array elements are sp_RbVal, so the inner traversal
+ # reuses emit_dig_step's cls_id-aware Hash/Array dispatch.
+ # Typed arrays (int_array / str_array / etc.) can't contain
+ # nested containers so multi-arg dig is unreachable for
+ # them; only the poly_array case fires here. Issue #555 case 07.
+        if recv_type == "poly_array" && aargs.length >= 2
+          @needs_rb_value = 1
+          @needs_gc = 1
+          idx_tmp_d = new_temp
+          emit("  mrb_int " + idx_tmp_d + " = " + compile_expr(aargs[0]) + ";")
+          acc_d = new_temp
+          emit("  sp_RbVal " + acc_d + " = sp_PolyArray_get(" + rc + ", " + idx_tmp_d + ");")
+          si_d = 1
+          while si_d < aargs.length
+            kt_d = infer_type(aargs[si_d])
+            key_tmp_d = new_temp
+            if kt_d == "symbol"
+              emit("  sp_sym " + key_tmp_d + " = " + compile_expr(aargs[si_d]) + ";")
+ # emit_dig_step references all 3 sym-keyed hash variants;
+ # ensure each typedef is present so the cls_id dispatch
+ # compiles even when the program never instantiated all of
+ # them directly.
+              @needs_sym_int_hash = 1
+              @needs_sym_str_hash = 1
+              @needs_sym_poly_hash = 1
+            elsif kt_d == "string"
+              emit("  const char *" + key_tmp_d + " = " + compile_expr_as_string(aargs[si_d]) + ";")
+              @needs_str_poly_hash = 1
+            elsif kt_d == "int"
+              emit("  mrb_int " + key_tmp_d + " = " + compile_expr(aargs[si_d]) + ";")
+            else
+              emit("  mrb_int " + key_tmp_d + " = 0; (void)" + key_tmp_d + ";")
+            end
+            emit_dig_step(acc_d, key_tmp_d, kt_d)
+            si_d = si_d + 1
+          end
+          return acc_d
         end
       end
     end
