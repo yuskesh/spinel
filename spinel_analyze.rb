@@ -2949,8 +2949,10 @@ class Compiler
  # surface (narrowed in spinel to symbol keys + poly values via
  # sym_poly_hash). Placed right after the lambda `[]` arm so this
  # pre-empts the later constant-recv / name-based dispatches that
- # would default `Fiber[:k]` to int.
-    if mname == "[]" && recv >= 0
+ # would default `Fiber[:k]` to int. `[]=` is included so the
+ # expression form `(Fiber[:k] = v)` also types as poly — its
+ # value is the assigned poly RHS, not int.
+    if (mname == "[]" || mname == "[]=") && recv >= 0
       rcname = constructor_class_name(recv)
       if rcname == "Fiber"
         return "poly"

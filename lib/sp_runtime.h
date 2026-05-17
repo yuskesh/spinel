@@ -1091,6 +1091,13 @@ static void sp_mark_in_flight_exceptions(void);
    pointers in $1..$9, $&, $`, $'. sp_mark_string is null-safe and
    no-ops on non-heap strings (the empty-string default of
    sp_re_last_str), so it's safe to call unconditionally. */
+/* sp_fiber_root.storage needs marking here because sp_fiber_root is
+   a static (not sp_gc_alloc'd), so its normal sp_Fiber_scan never
+   runs via the heap walker. Without this, top-level `Fiber[:k] = v`
+   writes get prematurely collected. The forward declaration is
+   needed because sp_fiber_root is defined further down in the
+   Fiber runtime block. */
+static void sp_mark_fiber_root_storage(void);
 static void sp_re_mark_globals(void) {
   sp_mark_string(sp_re_last_str);
   for (int i = 0; i < 10; i++) sp_mark_string(sp_re_captures[i]);
@@ -1099,6 +1106,7 @@ static void sp_re_mark_globals(void) {
   sp_mark_string(sp_re_match_post);
   for (mrb_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
   sp_mark_in_flight_exceptions();
+  sp_mark_fiber_root_storage();
 }
 
 static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
@@ -1949,6 +1957,7 @@ static sp_RbVal sp_Fiber_yield(sp_RbVal val){sp_Fiber*f=sp_fiber_current;f->yiel
 static mrb_bool sp_Fiber_alive(sp_Fiber*f){return f->state!=3;}
 static sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_current=f;if(f->state==0){f->state=1;f->transferred=1;getcontext(&f->ctx);f->ctx.uc_stack.ss_sp=f->stack;f->ctx.uc_stack.ss_size=SP_FIBER_STACK_SIZE;f->ctx.uc_link=&prev->ctx;makecontext(&f->ctx,(void(*)(void))sp_fiber_trampoline,0);swapcontext(&prev->ctx,&f->ctx);}else{f->state=1;swapcontext(&prev->ctx,&f->ctx);}sp_fiber_current=prev;return prev->resumed_value;}
 #endif
+static void sp_mark_fiber_root_storage(void){if(sp_fiber_root.storage)sp_gc_mark(sp_fiber_root.storage);}
 
 /* Bigint (linked from sp_bigint.o) */
 typedef struct sp_Bigint sp_Bigint;

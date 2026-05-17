@@ -12770,6 +12770,31 @@ class Compiler
         end
       end
     end
+ # Fiber[:k] = v as an EXPRESSION (e.g. `x = (Fiber[:k] = 42)`).
+ # The statement form lands in compile_mutating_call_stmt; here we
+ # cover the expression-context use via a gcc statement-expression
+ # so the assignment's value (the RHS) reaches the outer
+ # assignment. Mirrors MRI's `(h[k]=v) => v` semantics.
+    if mname == "[]=" && recv >= 0
+      fiber_recv = ""
+      if constructor_class_name(recv) == "Fiber"
+        @needs_fiber = 1
+        fiber_recv = "sp_fiber_current"
+      elsif base_type(infer_type(recv)) == "fiber"
+        fiber_recv = "(sp_Fiber *)(" + compile_expr_gc_rooted(recv) + ")"
+      end
+      if fiber_recv != ""
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          arg_ids = get_args(args_id)
+          if arg_ids.length == 2
+            vtmp = new_temp
+            vexpr = box_expr_to_poly(arg_ids[1])
+            return "({ sp_RbVal " + vtmp + " = " + vexpr + "; sp_Fiber_storage_set(" + fiber_recv + ", " + compile_expr(arg_ids[0]) + ", " + vtmp + "); " + vtmp + "; })"
+          end
+        end
+      end
+    end
 
  # regex.match? / regex.match / regex =~ str — receiver is the regex
  # (typically a constant referring to a /…/ literal). Dispatched here
