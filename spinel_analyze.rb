@@ -6548,6 +6548,22 @@ class Compiler
  # instance instead of an `Article`.
     propagate_inherited_class_methods
 
+ # Pass 1.7: reconcile `include` against module reopens that
+ # registered after the include was first processed. When a class
+ # nested inside a module gets collected (during Pass 0's recursion
+ # into ModuleNode bodies), its `include Mod` statement resolves
+ # against whatever module entries exist in @module_body_ids at
+ # that moment. A subsequent `module Mod; def ...; end` reopen
+ # appears later in the top-level statement order and pushes a
+ # second entry that the earlier include never sees. Re-run the
+ # method collection for every recorded (class, included-module)
+ # pair now that all module entries are registered;
+ # collect_module_methods_into_class is idempotent (adds only when
+ # the class doesn't already have the method) and walks every
+ # @module_names entry with the matching name, so this picks up
+ # all reopens. Fixes #573.
+    reconcile_class_includes
+
  # Pass 2: top-level methods, constants, define_method
     stmts.each { |sid|
       if @nd_type[sid] == "DefNode"
@@ -7657,6 +7673,30 @@ class Compiler
         end
       end
       mi = mi + 1
+    end
+  end
+
+ # Re-run module-method collection for every recorded
+ # (class, included-module) pair so reopens that registered after
+ # the include site finally show up. See call-site comment for
+ # why the original include-time collection misses them. Idempotent
+ # by virtue of collect_module_methods_into_class' existing
+ # "don't add if class already has this method" guard.
+  def reconcile_class_includes
+    ci = 0
+    while ci < @cls_includes.length
+      includes_str = @cls_includes[ci]
+      if includes_str != ""
+        names = includes_str.split(";")
+        ni = 0
+        while ni < names.length
+          if names[ni] != ""
+            collect_module_methods_into_class(ci, names[ni])
+          end
+          ni = ni + 1
+        end
+      end
+      ci = ci + 1
     end
   end
 
