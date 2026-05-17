@@ -119,20 +119,41 @@ PRISM_SRC    = $(wildcard $(PRISM_DIR)/src/*.c) $(wildcard $(PRISM_DIR)/src/util
 PRISM_OBJ    = $(patsubst $(PRISM_DIR)/src/%.c,build/prism/%.o,$(PRISM_SRC))
 PRISM_LIB    = build/libprism.a
 
+# rbs C parser. Fetched via `make deps` from rubygems.org (the rbs
+# gem bundles its standalone C parser under src/ + include/, the same
+# way prism does). Consumed by spinel_rbs_extract to produce a seed
+# file for spinel_analyze when --rbs is passed.
+RBS_VERSION ?= 4.0.1
+RBS_DIR      = vendor/rbs
+RBS_INC      = $(RBS_DIR)/include
+RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c)
+RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
+RBS_LIB      = build/librbs.a
+
 CODEGEN_STAMP := build/stamps/spinel_codegen.rb.stamp
 ANALYZE_STAMP := build/stamps/spinel_analyze.rb.stamp
 NODE_TABLE_LOADER_STAMP := build/stamps/node_table_loader.rb.stamp
 COMPILER_HELPERS_STAMP := build/stamps/compiler_helpers.rb.stamp
 PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
 
-.PHONY: all parse bootstrap codegen test retest clean-test-results regen-expected bench optcarrot clean install uninstall deps
+.PHONY: all parse bootstrap codegen rbs_extract test retest clean-test-results regen-expected bench optcarrot clean install uninstall deps
 
-all: parse regexp spinel_analyze$(EXE) spinel_codegen$(EXE)
+# `make all` includes spinel_rbs_extract when vendor/rbs has been
+# fetched (via `make deps`). Without vendor/rbs the extractor is
+# silently omitted -- spinel still works; `spinel --rbs DIR` then
+# becomes a no-op (warns and proceeds without seeds).
+ifneq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+  RBS_EXTRACT_TARGET = spinel_rbs_extract$(EXE)
+else
+  RBS_EXTRACT_TARGET =
+endif
+
+all: parse regexp spinel_analyze$(EXE) spinel_codegen$(EXE) $(RBS_EXTRACT_TARGET)
 
 # ---- Dependencies ----
 # Clone Prism into vendor/prism at the pinned version. Run this once
 # after cloning Spinel if you don't have the Prism gem installed.
-deps: vendor/prism/include/prism/diagnostic.h
+deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
 
 # Download the pre-built Prism gem from rubygems.org and extract its C
 # sources. We use the .gem tarball instead of a git clone because it
@@ -147,6 +168,21 @@ vendor/prism/include/prism/diagnostic.h:
 	 tar -xzf $$tmpdir/data.tar.gz -C vendor/prism; \
 	 rm -rf $$tmpdir /tmp/prism-$(PRISM_VERSION).gem
 	@test -f $@ && echo "prism v$(PRISM_VERSION) ready at vendor/prism"
+
+# Same shape as the prism fetch above: download the rbs gem from
+# rubygems.org and extract its bundled C parser into vendor/rbs.
+# The gem ships src/ + include/ (the same files used to build the
+# Rust ruby-rbs binding and the Ruby C-extension) which is exactly
+# what spinel_rbs_extract needs.
+vendor/rbs/include/rbs/parser.h:
+	@mkdir -p vendor/rbs
+	@echo "Fetching rbs v$(RBS_VERSION) from rubygems.org..."
+	curl -sL -o /tmp/rbs-$(RBS_VERSION).gem https://rubygems.org/gems/rbs-$(RBS_VERSION).gem
+	@tmpdir=$$(mktemp -d); \
+	 tar -xf /tmp/rbs-$(RBS_VERSION).gem -C $$tmpdir data.tar.gz; \
+	 tar -xzf $$tmpdir/data.tar.gz -C vendor/rbs; \
+	 rm -rf $$tmpdir /tmp/rbs-$(RBS_VERSION).gem
+	@test -f $@ && echo "rbs v$(RBS_VERSION) ready at vendor/rbs"
 
 # If PRISM_DIR ended up empty (no vendor/prism, no gem), halt with a
 # clear message before trying to build anything that needs it.
@@ -170,6 +206,16 @@ build/prism/%.o: $(PRISM_DIR)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c -O2 -I$(PRISM_INC) -I$(PRISM_DIR)/src $< -o $@
 
+# ---- rbs static library ----
+
+build/librbs.a: $(RBS_OBJ)
+	@mkdir -p build
+	ar rcs $@ $^
+
+build/rbs/%.o: $(RBS_DIR)/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c -O2 -Wno-all -I$(RBS_INC) -I$(RBS_DIR)/src $< -o $@
+
 # ---- Content stamps ----
 # Content stamps: rules depend on `build/stamps/foo.stamp` instead of
 # `foo` directly, so `touch foo` (or `git checkout` of an identical
@@ -191,6 +237,23 @@ parse: spinel_parse$(EXE)
 
 spinel_parse$(EXE): $(PARSE_STAMP) $(PRISM_LIB)
 	$(CC) $(CFLAGS) -I$(PRISM_INC) spinel_parse.c $(PRISM_LIB) -lm -o $@
+
+# ---- RBS extractor ----
+# Reads sig/**/*.rbs, emits the seed-file format spinel_analyze
+# consumes when invoked with `spinel --rbs DIR`.
+
+ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+rbs_extract: rbs-missing
+rbs-missing:
+	@echo "Error: rbs C parser not found at $(RBS_INC)/rbs/parser.h."; \
+	 echo "  Run 'make deps' to fetch it from rubygems.org into vendor/rbs."; \
+	 exit 1
+else
+rbs_extract: spinel_rbs_extract$(EXE)
+
+spinel_rbs_extract$(EXE): spinel_rbs_extract.c $(RBS_LIB)
+	$(CC) $(CFLAGS) -I$(RBS_INC) spinel_rbs_extract.c $(RBS_LIB) -o $@
+endif
 
 # ---- Runtime library (regexp + bigint) ----
 

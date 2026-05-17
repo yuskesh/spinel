@@ -578,6 +578,12 @@ class Compiler
     @ieval_counter = 0
     @ieval_class_idxs = []
     @ieval_body_ids = []
+
+ # RBS-derived seed lines. Populated by load_rbs_seeds before
+ # analyze_phase; consumed by apply_rbs_seeds after collect_all
+ # has built the class/method tables. Empty when no seed file was
+ # passed -- inference behaves exactly as before.
+    @rbs_seed_lines = "".split(",")
   end
 
  # Backslash-n for C string literals - bootstrap-safe (avoids escape level issues)
@@ -18755,6 +18761,208 @@ class Compiler
   end
 
 
+ # Read a host-produced RBS seed file. Format is line-oriented; each
+ # non-blank line is one directive. The extractor (host-side, uses
+ # the rbs gem) writes this; the analyzer reads it without needing
+ # rbs at compile time. Format:
+ #   class <ClassName>           -- set current class scope
+ #   meth <name> <ret> <ptypes>  -- seed method (`-` means "leave alone";
+ #                                  ptypes is comma-separated or `-`)
+ #   ivar <name> <type>          -- seed ivar
+ # Any line whose first token isn't one of these keywords is ignored,
+ # which gives us comments (any non-keyword prefix works as one).
+  def load_rbs_seeds(path)
+    if !File.exist?(path)
+      return
+    end
+    data = File.read(path)
+    raw_lines = data.split("\n")
+    i = 0
+    while i < raw_lines.length
+      @rbs_seed_lines.push(raw_lines[i])
+      i = i + 1
+    end
+  end
+
+ # Walk @rbs_seed_lines and pre-fill the class/method/ivar tables.
+ # Called from analyze_phase right after collect_all. Classes or
+ # methods named in the seed file but absent from the source are
+ # silently skipped (the RBS may be future-looking or cover code
+ # not in this compilation unit).
+  def apply_rbs_seeds
+    if @rbs_seed_lines.length == 0
+      return
+    end
+    current_ci = -1
+    current_cls_name = ""
+    i = 0
+    while i < @rbs_seed_lines.length
+      raw = @rbs_seed_lines[i]
+      parts = raw.split(" ")
+      if parts.length == 0
+        i = i + 1
+      elsif parts[0] == "class" && parts.length >= 2
+        current_cls_name = parts[1]
+        current_ci = find_class_idx(current_cls_name)
+        i = i + 1
+      elsif parts[0] == "ivar" && parts.length >= 3 && current_ci >= 0
+        seed_class_ivar(current_ci, parts[1], parts[2])
+        i = i + 1
+      elsif parts[0] == "meth" && parts.length >= 3 && current_ci >= 0
+        mname = parts[1]
+        ret = parts[2]
+        ptypes_token = "-"
+        if parts.length >= 4
+          ptypes_token = parts[3]
+        end
+        seed_class_method(current_ci, mname, ret, ptypes_token)
+        i = i + 1
+      elsif parts[0] == "cmeth" && parts.length >= 3 && current_cls_name != ""
+        mname = parts[1]
+        ret = parts[2]
+        ptypes_token = "-"
+        if parts.length >= 4
+          ptypes_token = parts[3]
+        end
+        # Two possible storage sites for a class method:
+        # (a) `class Foo; def self.bar` lands in @cls_cmeth_* keyed by
+        #     class index. Try this first when current_ci >= 0.
+        # (b) `module Foo; def self.bar` (which collect_module emits
+        #     as a top-level @meth_names entry prefixed `Foo_cls_bar`).
+        #     This is the spinel storage convention for module-level
+        #     class methods. Try this as a fallback when (a) misses.
+        seeded = false
+        if current_ci >= 0
+          seeded = seed_class_cmethod(current_ci, mname, ret, ptypes_token)
+        end
+        if !seeded
+          seed_toplevel_module_method(current_cls_name, mname, ret, ptypes_token)
+        end
+        i = i + 1
+      else
+        i = i + 1
+      end
+    end
+  end
+
+ # Seed one method's param types and/or return type. `-` in either
+ # slot means "leave alone" (don't override what collect_all
+ # produced from `def` arity). Missing method = silent skip.
+  def seed_class_method(ci, mname, ret, ptypes_token)
+    midx = cls_find_method_direct(ci, mname)
+    if midx < 0
+      return
+    end
+    if ptypes_token != "-" && ptypes_token != ""
+      ptypes = ptypes_token.split(",")
+      cls_meth_ptypes_put(ci, midx, ptypes)
+    end
+    if ret != "-" && ret != ""
+      rets = @cls_meth_returns[ci].split(";")
+      if midx < rets.length
+        rets[midx] = ret
+        @cls_meth_returns[ci] = rets.join(";")
+        @cls_meth_return_cache = {}
+      end
+    end
+  end
+
+ # Class-method (singleton) variant of seed_class_method. Looks up
+ # the method in @cls_cmeth_names (this class only -- no parent walk),
+ # writes to @cls_cmeth_ptypes / @cls_cmeth_returns. Returns true when
+ # the method was found and seeded, false to signal "method not found
+ # in @cls_cmeth_names, try the fallback path". The two methods exist
+ # as separate paths because spinel stores `def foo`, `def self.foo`
+ # (on a class), and `def self.foo` (on a module) in three disjoint
+ # tables.
+  def seed_class_cmethod(ci, mname, ret, ptypes_token)
+    if ci < 0 || ci >= @cls_cmeth_names.length
+      return false
+    end
+    cmnames = @cls_cmeth_names[ci].split(";")
+    midx = -1
+    j = 0
+    while j < cmnames.length
+      if cmnames[j] == mname
+        midx = j
+        j = cmnames.length
+      else
+        j = j + 1
+      end
+    end
+    if midx < 0
+      return false
+    end
+    if ptypes_token != "-" && ptypes_token != ""
+      ptypes = ptypes_token.split(",")
+      cls_cmeth_ptypes_put(ci, midx, ptypes)
+    end
+    if ret != "-" && ret != ""
+      rets = @cls_cmeth_returns[ci].split(";")
+      if midx < rets.length
+        rets[midx] = ret
+        @cls_cmeth_returns[ci] = rets.join(";")
+      end
+    end
+    true
+  end
+
+ # Seed a top-level method that spinel registered with a module-name
+ # prefix. `module Foo; def self.bar(x); end; end` is stored in
+ # @meth_names as `Foo_cls_bar` (per collect_module). Look up that
+ # synthesized name and seed the parallel top-level arrays. Missing
+ # method = silent skip.
+  def seed_toplevel_module_method(scope_name, mname, ret, ptypes_token)
+    full = scope_name + "_cls_" + mname
+    mi = find_method_idx(full)
+    if mi < 0
+      return
+    end
+    if ptypes_token != "-" && ptypes_token != ""
+      if mi < @meth_param_types.length
+        @meth_param_types[mi] = ptypes_token
+      end
+    end
+    if ret != "-" && ret != ""
+      if mi < @meth_return_types.length
+        @meth_return_types[mi] = ret
+      end
+    end
+  end
+
+ # Seed one ivar's type. If the ivar wasn't observed by collect_all,
+ # append it via the existing add_ivar helper; otherwise overwrite
+ # the existing slot. Either way `definite = 1` so unify won't widen
+ # on the strength of a single later writer disagreement.
+ # Normalizes the ivar name: RBS spells attributes bare (`label`),
+ # spinel stores them with the leading `@` -- accept either form here.
+  def seed_class_ivar(ci, iname, itype)
+    if iname.length > 0 && !iname.start_with?("@")
+      iname = "@" + iname
+    end
+    names = @cls_ivar_names[ci].split(";")
+    types = @cls_ivar_types[ci].split(";")
+    j = 0
+    found = -1
+    while j < names.length
+      if names[j] == iname
+        found = j
+        j = names.length
+      else
+        j = j + 1
+      end
+    end
+    if found >= 0
+      if found < types.length
+        types[found] = itype
+        @cls_ivar_types[ci] = types.join(";")
+        @cls_ivar_types_version = @cls_ivar_types_version + 1
+      end
+    else
+      add_ivar(ci, iname, itype, 1)
+    end
+  end
+
  # End-to-end whole-program analysis. Splits cleanly out of `compile`
  # so the same work can be invoked once and its results serialized
  # into an IR file, then loaded by a separate codegen step that runs
@@ -18765,6 +18973,14 @@ class Compiler
  # treat its inputs as read-only.
   def analyze_phase
     collect_all
+ # RBS seeding (#6 / tep#3c5ab23): pre-fill class method ptypes,
+ # returns, and ivar types from a sidecar seed file produced by the
+ # host-side RBS extractor. Runs after collect_all built the tables
+ # so name->index lookups resolve; runs before any inference pass so
+ # the iterative fixpoint sees the seeds as its starting point and
+ # widens via unify_call_types only if observed usage contradicts.
+ # No-op when no seed file was passed.
+    apply_rbs_seeds
  # Pre-pass: which ivars are actually read with a nil predicate?
  # Gates the scan_writer_calls nil-scalar widening so an ivar
  # mixed-typed at the slot but never tested with `.nil?` /
@@ -25882,12 +26098,21 @@ end
 # ---- Main (analyze) ----
 ast_file = ARGV[0]
 ir_file = ARGV[1]
+# Optional ARGV[2]: path to an RBS-derived seed file. When present, its
+# entries pre-fill class method ptypes / returns / ivar types before the
+# inference fixpoint runs. Inference still authoritative (unify_call_types
+# widens on observed contradiction); seeding is advisory. Absent ARGV[2]
+# leaves analyzer behavior byte-identical to the no-RBS path.
+seed_file = ARGV[2]
 if ast_file == nil || ir_file == nil
-  $stderr.puts "Usage: ruby spinel_analyze.rb ast.txt out.ir"
+  $stderr.puts "Usage: ruby spinel_analyze.rb ast.txt out.ir [seed.txt]"
   exit(1)
 end
 data = File.read(ast_file)
 compiler = Compiler.new
 compiler.read_text_ast(data)
+if seed_file != nil
+  compiler.load_rbs_seeds(seed_file)
+end
 compiler.analyze_phase
 File.write(ir_file, compiler.dump_analysis_buf)

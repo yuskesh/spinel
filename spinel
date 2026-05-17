@@ -23,14 +23,16 @@ ANALYZE_RB="$DIR/spinel_analyze.rb"
 ANALYZE_BIN="$DIR/spinel_analyze"
 CODEGEN_RB="$DIR/spinel_codegen.rb"
 CODEGEN_BIN="$DIR/spinel_codegen"
+RBS_EXTRACT_BIN="$DIR/spinel_rbs_extract"
 
 # On Windows (MSYS2 / Cygwin / MinGW) the compiled binaries carry a .exe
 # suffix; fall back to that when the unsuffixed path is absent.
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
-    [ ! -x "$PARSE_BIN"   ] && [ -x "$PARSE_BIN.exe"   ] && PARSE_BIN="$PARSE_BIN.exe"
-    [ ! -x "$ANALYZE_BIN" ] && [ -x "$ANALYZE_BIN.exe" ] && ANALYZE_BIN="$ANALYZE_BIN.exe"
-    [ ! -x "$CODEGEN_BIN" ] && [ -x "$CODEGEN_BIN.exe" ] && CODEGEN_BIN="$CODEGEN_BIN.exe"
+    [ ! -x "$PARSE_BIN"       ] && [ -x "$PARSE_BIN.exe"       ] && PARSE_BIN="$PARSE_BIN.exe"
+    [ ! -x "$ANALYZE_BIN"     ] && [ -x "$ANALYZE_BIN.exe"     ] && ANALYZE_BIN="$ANALYZE_BIN.exe"
+    [ ! -x "$CODEGEN_BIN"     ] && [ -x "$CODEGEN_BIN.exe"     ] && CODEGEN_BIN="$CODEGEN_BIN.exe"
+    [ ! -x "$RBS_EXTRACT_BIN" ] && [ -x "$RBS_EXTRACT_BIN.exe" ] && RBS_EXTRACT_BIN="$RBS_EXTRACT_BIN.exe"
     ;;
 esac
 
@@ -46,12 +48,16 @@ C_TMP_DIR=""
 EVAL_SCRIPT=""
 EVAL_USED=0
 EVAL_TMP=""
+RBS_DIR=""
+SEED_TMP=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --source=*) SOURCE="${1#--source=}" ;;
     --output=*) OUTPUT="${1#--output=}" ;;
     --cc=*)     CC_CMD="${1#--cc=}" ;;
+    --rbs=*)    RBS_DIR="${1#--rbs=}" ;;
+    --rbs)      shift; RBS_DIR="$1" ;;
     -o)         shift; OUTPUT="$1" ;;
     -O)         shift; OPT_LEVEL="$1" ;;
     -e)         shift
@@ -96,6 +102,7 @@ if [ -z "$SOURCE" ]; then
   echo "  -O LEVEL    Optimization level (default: 2)" >&2
   echo "  --cc=CMD    C compiler (default: cc)" >&2
   echo "  -e STR      Inline Ruby source (repeatable; joined with newlines)" >&2
+  echo "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)" >&2
   exit 1
 fi
 
@@ -111,7 +118,7 @@ else
 fi
 AST_TMP="$(mktemp /tmp/spinel_ast.XXXXXX)"
 IR_TMP="$(mktemp /tmp/spinel_ir.XXXXXX)"
-trap 'rm -f "$AST_TMP" "$IR_TMP" "$EVAL_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"' EXIT
+trap 'rm -f "$AST_TMP" "$IR_TMP" "$EVAL_TMP" "$SEED_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"' EXIT
 
 # Step 1: Parse. spinel_parse is C-only; build it via `make parse`
 # (or `make all`) before invoking spinel.
@@ -125,11 +132,33 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
+# Optional RBS seed extraction. spinel_rbs_extract walks the given
+# dir for *.rbs files and emits seed lines on stdout that the
+# analyzer consumes via ARGV[2]. Per the design note, the seeded
+# types are *advisory* -- inference still widens on observed
+# disagreement -- so this is safe even when the RBS files contradict
+# the implementation.
+#
+# `--rbs DIR` is a silent no-op when DIR is absent or empty, or when
+# the extractor binary hasn't been built: spinel still compiles, just
+# without seeds. Real failures during extraction warn to stderr.
+if [ -n "$RBS_DIR" ] && [ -x "$RBS_EXTRACT_BIN" ] && [ -d "$RBS_DIR" ]; then
+  SEED_TMP="$(mktemp /tmp/spinel_seed.XXXXXX)"
+  if ! "$RBS_EXTRACT_BIN" "$RBS_DIR" > "$SEED_TMP"; then
+    echo "spinel: --rbs extraction failed; proceeding without seeds" >&2
+    rm -f "$SEED_TMP"
+    SEED_TMP=""
+  elif [ ! -s "$SEED_TMP" ]; then
+    rm -f "$SEED_TMP"
+    SEED_TMP=""
+  fi
+fi
+
 # Step 2: Analyze (whole-program type inference; emits .ir)
 if [ -x "$ANALYZE_BIN" ]; then
-  "$ANALYZE_BIN" "$AST_TMP" "$IR_TMP"
+  "$ANALYZE_BIN" "$AST_TMP" "$IR_TMP" $SEED_TMP
 else
-  ruby "$ANALYZE_RB" "$AST_TMP" "$IR_TMP"
+  ruby "$ANALYZE_RB" "$AST_TMP" "$IR_TMP" $SEED_TMP
 fi
 if [ $? -ne 0 ]; then
   echo "spinel: analyze failed" >&2

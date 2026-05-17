@@ -21,6 +21,8 @@
 /spinel_codegen.exe
 /spinel_parse
 /spinel_parse.exe
+/spinel_rbs_extract
+/spinel_rbs_extract.exe
 /perf.data
 /perf.data.old
 /lib/regexp/libspre.a
