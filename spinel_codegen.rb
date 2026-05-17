@@ -6807,6 +6807,11 @@ class Compiler
  # so the has_key? guard is redundant — drop it for two lookups per
  # element instead of three.
     emit_raw("static sp_SymIntHash*sp_SymArray_tally(sp_IntArray*a){sp_SymIntHash*h=sp_SymIntHash_new();for(mrb_int i=0;i<a->len;i++){sp_sym k=(sp_sym)a->data[a->start+i];sp_SymIntHash_set(h,k,sp_SymIntHash_get(h,k)+1);}return h;}")
+ # Cross-variant merge: sym_poly_hash receiver merging in a
+ # sym_int_hash arg boxes each int value into sp_RbVal so the
+ # result's poly slots are populated correctly. Sibling of
+ # sp_SymPolyHash_merge_str (#515). Issue #559.
+    emit_raw("static sp_SymPolyHash*sp_SymPolyHash_merge_int(sp_SymPolyHash*a,sp_SymIntHash*b){sp_SymPolyHash*r=sp_SymPolyHash_new();for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_box_int(sp_SymIntHash_get(b,b->order[i])));return r;}")
     emit_raw("")
   end
 
@@ -17341,6 +17346,12 @@ class Compiler
             elsif arg_t == "sym_str_hash"
               tmp = new_temp
               emit("  sp_SymPolyHash *" + tmp + " = sp_SymPolyHash_merge_str(" + rc + ", " + compile_expr(aargs[0]) + ");")
+              return tmp
+ # Cross-variant: sym_int_hash arg merged into a
+ # sym_poly_hash receiver. Issue #559.
+            elsif arg_t == "sym_int_hash"
+              tmp = new_temp
+              emit("  sp_SymPolyHash *" + tmp + " = sp_SymPolyHash_merge_int(" + rc + ", " + compile_expr(aargs[0]) + ");")
               return tmp
             elsif arg_t == "poly"
  # Poly-typed local whose runtime value is a sym_poly_hash
