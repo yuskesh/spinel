@@ -32883,6 +32883,20 @@ class Compiler
       lname = @nd_name[nid]
       rname = remap_local(lname, map_from, map_to)
       val = compile_expr_remap(@nd_expression[nid], map_from, map_to)
+ # Type-coerce the RHS to match the declared local type. Mirrors
+ # compile_stmt's LocalVariableWriteNode arm: a `content = nil`
+ # against a poly-typed `content` slot must lower to
+ # `lv_content = sp_box_nil()`, not `lv_content = 0` (which gcc
+ # rejects -- can't assign int to sp_RbVal struct). The inline
+ # body emit reached here through compile_stmt_with_block;
+ # without the boxing parity the inlined version's assignment
+ # type-mismatches even when the outer function's version was
+ # correctly emitting boxed values via the main LV-write arm.
+      vt_lv = find_var_type(lname)
+      rhs_t_lv = infer_type(@nd_expression[nid])
+      if vt_lv == "poly" && rhs_t_lv != "" && rhs_t_lv != "poly"
+        val = box_value_to_poly(rhs_t_lv, val)
+      end
       emit("  lv_" + rname + " = " + val + ";")
       return
     end
@@ -33277,8 +33291,21 @@ class Compiler
  # `self->iv_keys` -- but the inlining happens at a call site
  # whose enclosing function may not have `self` declared (e.g.
  # main()).
+ #
+ # Wrap the override with a cast to the callee's class pointer
+ # when the enclosing function's `self` is a different (subclass)
+ # type. Without the cast, inlined calls to other inherited
+ # methods inside the body emit `sp_<owner>_<m>(self, ...)`
+ # which gcc rejects on a `sp_<subclass> *` self. Skip the cast
+ # when the recv expression is already a pointer to cci's class
+ # (explicit recv compiled to a typed expr) or when cci is a
+ # value type (struct, not pointer).
     saved_self_override = @self_override
-    @self_override = rc
+    if cci >= 0 && cci < @cls_is_value_type.length && @cls_is_value_type[cci] != 1
+      @self_override = "((sp_" + @cls_names[cci] + " *)" + rc + ")"
+    else
+      @self_override = rc
+    end
 
     @block_counter = @block_counter + 1
     suffix = "_y" + @block_counter.to_s
@@ -33307,7 +33334,10 @@ class Compiler
         pt = ptypes[k]
       end
       tname = pnames[k] + suffix
-      val = "0"
+ # Pick a type-correct default when the caller omitted this arg
+ # so the local's C type and the initializer agree (`sp_RbVal x = 0`
+ # is invalid C; `sp_RbVal x = sp_box_nil()` is correct).
+      val = c_default_val(pt)
       if k < arg_ids.length
         val = compile_expr(arg_ids[k])
       end
@@ -33315,6 +33345,15 @@ class Compiler
       map_from.push(pnames[k])
       map_to.push(tname)
       declare_var(tname, pt)
+ # Also declare the ORIGINAL name with the same type. Body
+ # emission reads the AST's `LocalVariableReadNode "selector"`
+ # (original name) through compile_expr_remap, which maps the
+ # *emitted text* to "selector_y1" -- but infer_type during the
+ # same emit consults the scope by the original name. Without
+ # this, `selector[/regex/]` inside the inlined body misses
+ # the string-typed scope entry, falls through to the int
+ # default, and lowers to bit-extract on a const char *.
+      declare_var(pnames[k], pt)
       k = k + 1
     end
 
@@ -33334,6 +33373,7 @@ class Compiler
         map_from.push(flocals_n[k])
         map_to.push(tname)
         declare_var(tname, flocals_t[k])
+        declare_var(flocals_n[k], flocals_t[k])
         k = k + 1
       end
     end

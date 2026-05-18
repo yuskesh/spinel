@@ -12143,17 +12143,49 @@ class Compiler
                   called = "".split(",")
                   collect_param_methods(bid, pnames[pk], called)
                   if called.length > 0 && called_methods_only_on_container_builtins(called) == 0
-                    ci2 = 0
-                    best = -1
-                    while ci2 < @cls_names.length
-                      if best < 0 && class_has_all_methods(ci2, called) == 1
-                        best = ci2
-                      end
-                      ci2 = ci2 + 1
+ # Check the param's default expression first: if it's an
+ # ivar/local/call that NOW (after ivars are known) infers
+ # to a concrete `obj_<C>`, trust that over the
+ # "first class that has all called methods" heuristic --
+ # which silently picks the wrong sibling class when two
+ # classes define the same surface (e.g. `response.status`
+ # exists on both ActionController_Base and ActionResponse).
+                    default_obj_t = ""
+                    defs_str_cm = ""
+                    if j < @cls_meth_defaults[oci].split("|").length
+                      defs_str_cm = @cls_meth_defaults[oci].split("|")[j]
                     end
-                    if best >= 0
-                      ptypes[pk] = "obj_" + @cls_names[best]
+                    defs_arr_cm = defs_str_cm.split(",")
+                    if pk < defs_arr_cm.length
+                      def_id_cm = defs_arr_cm[pk].to_i
+                      if def_id_cm > 0
+                        saved_ci_pd = @current_class_idx
+                        @current_class_idx = oci
+                        push_scope
+                        dt_inferred = infer_type(def_id_cm)
+                        pop_scope
+                        @current_class_idx = saved_ci_pd
+                        if is_obj_type(dt_inferred) == 1
+                          default_obj_t = dt_inferred
+                        end
+                      end
+                    end
+                    if default_obj_t != ""
+                      ptypes[pk] = default_obj_t
                       cls_meth_ptypes_put(oci, j, ptypes)
+                    else
+                      ci2 = 0
+                      best = -1
+                      while ci2 < @cls_names.length
+                        if best < 0 && class_has_all_methods(ci2, called) == 1
+                          best = ci2
+                        end
+                        ci2 = ci2 + 1
+                      end
+                      if best >= 0
+                        ptypes[pk] = "obj_" + @cls_names[best]
+                        cls_meth_ptypes_put(oci, j, ptypes)
+                      end
                     end
                   end
                 end
@@ -12181,17 +12213,43 @@ class Compiler
               called = "".split(",")
               collect_param_methods(bid, pnames[pk], called)
               if called.length > 0 && called_methods_only_on_container_builtins(called) == 0
-                ci2 = 0
-                best = -1
-                while ci2 < @cls_names.length
-                  if best < 0 && class_has_all_methods(ci2, called) == 1
-                    best = ci2
-                  end
-                  ci2 = ci2 + 1
+ # Same precedence rule as the cls_meth side above: if the
+ # param's default expression infers to a concrete obj_<C>
+ # under the current scope, prefer that over the
+ # "first class with all called methods" walk.
+                default_obj_t = ""
+                defs_str_mp = ""
+                if mi < @meth_has_defaults.length
+                  defs_str_mp = @meth_has_defaults[mi]
                 end
-                if best >= 0
-                  ptypes[pk] = "obj_" + @cls_names[best]
+                defs_arr_mp = defs_str_mp.split(",")
+                if pk < defs_arr_mp.length
+                  def_id_mp = defs_arr_mp[pk].to_i
+                  if def_id_mp > 0
+                    push_scope
+                    dt_inferred_mp = infer_type(def_id_mp)
+                    pop_scope
+                    if is_obj_type(dt_inferred_mp) == 1
+                      default_obj_t = dt_inferred_mp
+                    end
+                  end
+                end
+                if default_obj_t != ""
+                  ptypes[pk] = default_obj_t
                   @meth_param_types[mi] = ptypes.join(",")
+                else
+                  ci2 = 0
+                  best = -1
+                  while ci2 < @cls_names.length
+                    if best < 0 && class_has_all_methods(ci2, called) == 1
+                      best = ci2
+                    end
+                    ci2 = ci2 + 1
+                  end
+                  if best >= 0
+                    ptypes[pk] = "obj_" + @cls_names[best]
+                    @meth_param_types[mi] = ptypes.join(",")
+                  end
                 end
               end
             end
@@ -13591,6 +13649,21 @@ class Compiler
         pnames = @meth_param_names[mi].split(",")
         ptypes = @meth_param_types[mi].split(",")
         ptypes_changed = 0
+ # Set up the method's scope so scan_param_body_write_unify's
+ # LV-read arm (used by is_reliable_literal_for_widen) can look
+ # up sibling params via find_var_type. Without this, an
+ # `opts = content_or_opts` assignment between two params
+ # never widened `opts` because the rhs's type was unknown.
+        push_scope
+        dpi = 0
+        while dpi < pnames.length
+          pt_dp = "int"
+          if dpi < ptypes.length
+            pt_dp = ptypes[dpi]
+          end
+          declare_var(pnames[dpi], pt_dp)
+          dpi = dpi + 1
+        end
         pk = 0
         while pk < pnames.length
           if pk < ptypes.length
@@ -13602,6 +13675,7 @@ class Compiler
           end
           pk = pk + 1
         end
+        pop_scope
         if ptypes_changed == 1
           @meth_param_types[mi] = ptypes.join(",")
         end
@@ -13625,6 +13699,18 @@ class Compiler
             pnames_j = all_params[mj].split(",")
             ptypes_j = all_ptypes[mj].split(",")
             inner_changed = 0
+ # Same scope setup as the top-level branch so the LV-read
+ # widening picks up sibling-param types.
+            push_scope
+            dpcj = 0
+            while dpcj < pnames_j.length
+              pt_cj = "int"
+              if dpcj < ptypes_j.length
+                pt_cj = ptypes_j[dpcj]
+              end
+              declare_var(pnames_j[dpcj], pt_cj)
+              dpcj = dpcj + 1
+            end
             pk = 0
             while pk < pnames_j.length
               if pk < ptypes_j.length
@@ -13652,6 +13738,7 @@ class Compiler
               end
               pk = pk + 1
             end
+            pop_scope
             if inner_changed == 1
               all_ptypes[mj] = ptypes_j.join(",")
               cls_changed = 1
@@ -13949,6 +14036,20 @@ class Compiler
     nt = @nd_type[nid]
     if nt == "StringNode" || nt == "IntegerNode" || nt == "FloatNode" || nt == "SymbolNode" || nt == "NilNode" || nt == "TrueNode" || nt == "FalseNode"
       return 1
+    end
+ # Reading another local that's already typed (typically a
+ # sibling param) is reliable enough -- the analyzer's scope
+ # holds the declared type for that name. Without this,
+ # `opts = content_or_opts` inside a method body (where both
+ # are params, one nil-defaulted int, the other poly-defaulted)
+ # left `opts` typed nil/int even though the body write
+ # delivered poly, and the C emit type-mismatched the
+ # assignment.
+    if nt == "LocalVariableReadNode"
+      vt = find_var_type(@nd_name[nid])
+      if vt != "" && vt != "int" && vt != "nil"
+        return 1
+      end
     end
     0
   end
