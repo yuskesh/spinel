@@ -10942,6 +10942,34 @@ class Compiler
         end
         return arr_tmp
       end
+ # `(a, b = call_returning_typed_array)[i]` -- the RHS is a
+ # CallNode (or anything not ArrayNode) whose static type is a
+ # typed array. Evaluate the RHS into a single temp, destructure
+ # the targets through array `_get`, and surface the temp as the
+ # expression value so the outer `[i]` lands on a real array
+ # instead of the int 0 fallback that the old "return 0" emit
+ # produced (which segv'd in `sp_IntArray_get(0, 0)`). Issue
+ # #584; sibling shape to the ArrayNode arm above.
+      if val_id_mw >= 0
+        val_t_mw_e = infer_type(val_id_mw)
+        if is_array_type(val_t_mw_e) == 1
+          @needs_gc = 1
+          rhs_arr_tmp = new_temp
+          emit("  " + c_type(val_t_mw_e) + " " + rhs_arr_tmp + " = " + compile_expr(val_id_mw) + ";")
+          if type_needs_transient_root(val_t_mw_e) == 1
+            emit("  SP_GC_ROOT(" + rhs_arr_tmp + ");")
+          end
+          elem_t_mw = elem_type_of_array(val_t_mw_e)
+          pfx_mw = array_c_prefix(val_t_mw_e)
+          kmw_e = 0
+          while kmw_e < targets_mw.length
+            slot_expr_mw = "sp_" + pfx_mw + "_get(" + rhs_arr_tmp + ", " + kmw_e.to_s + "LL)"
+            emit_multi_write_target(targets_mw[kmw_e], slot_expr_mw, elem_t_mw)
+            kmw_e = kmw_e + 1
+          end
+          return rhs_arr_tmp
+        end
+      end
       compile_multi_write(nid)
       return "0"
     end
