@@ -15499,6 +15499,41 @@ class Compiler
                 end
               end
             end
+ # Poly-receiver setter (`receiver.data = merged` where
+ # `receiver` is statically poly because it came from
+ # `case ... when X then A.new; when Y then B.new`).
+ # Codegen lowers this to a cls_id-switch dispatch over
+ # every class that has the attr_writer, so each candidate
+ # class's ivar slot receives the RHS at runtime. The
+ # analyzer's per-class ivar table needs to widen those
+ # candidates too -- otherwise A's iv_data stays at the
+ # empty-hash default (str_int_hash) and the per-arm
+ # `((sp_A *)_t.v.p)->iv_data = lv_merged` write mismatches
+ # at the C boundary. Issue #579.
+            if rt == "poly"
+              args_id_p = @nd_arguments[nid]
+              if args_id_p >= 0
+                arg_ids_p = get_args(args_id_p)
+                if arg_ids_p.length > 0
+                  at_p = infer_type(arg_ids_p[0])
+                  if at_p != "int" && at_p != "nil"
+                    iname_p = "@" + bname
+                    ci_p = 0
+                    while ci_p < @cls_names.length
+                      writers_p = @cls_attr_writers[ci_p].split(";")
+                      wk_p = 0
+                      while wk_p < writers_p.length
+                        if writers_p[wk_p] == bname
+                          update_ivar_type(ci_p, iname_p, at_p)
+                        end
+                        wk_p = wk_p + 1
+                      end
+                      ci_p = ci_p + 1
+                    end
+                  end
+                end
+              end
+            end
           end
         end
       end
