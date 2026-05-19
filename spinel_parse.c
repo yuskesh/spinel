@@ -1551,6 +1551,17 @@ static char *rewrite_syntax_sugar(char *source) {
       REWRITE_SEND_CALL(".send(\"", 7, 1);
       continue;
     }
+    /* .__send__(:foo, args) → .foo(args). CRuby's overrides-resistant
+       alias of send; semantically identical for Spinel's static dispatch. */
+    if (i + 11 < len && strncmp(source + i, ".__send__(:", 11) == 0) {
+      REWRITE_SEND_CALL(".__send__(:", 11, 0);
+      continue;
+    }
+    /* .__send__("foo", args) → .foo(args). String-form variant. */
+    if (i + 11 < len && strncmp(source + i, ".__send__(\"", 11) == 0) {
+      REWRITE_SEND_CALL(".__send__(\"", 11, 1);
+      continue;
+    }
     /* (&:symbol) → { |_spx| _spx.symbol } — also remove enclosing parens */
     if (i + 2 < len && source[i] == '&' && source[i + 1] == ':') {
       /* Check if preceded by ( and remove it */
