@@ -330,10 +330,21 @@ static mrb_int sp_str_count_chars(const char *s, size_t bl) {
   return n;
 }
 
+/* True when `s` carries one of spinel's own string markers in the
+   preceding byte (0xfe / 0xfc heap, 0xff rodata literal). FFI returns
+   a bare `const char *` whose preceding byte is whatever C variable
+   sits before the buffer in memory — using the pointer as a cache
+   key without this gate aliased subsequent FFI calls into the prior
+   call's cached length (#611). 0xfd (sp_String wrapper) is excluded
+   too because its buffer can move on append. */
+static inline int sp_str_cacheable(const char *s) {
+  unsigned char m = ((const unsigned char *)s)[-1];
+  return m == 0xfe || m == 0xfc || m == 0xff;
+}
+
 static mrb_int sp_str_length(const char*s){
   if (!s) return 0;
-  unsigned char m = ((const unsigned char *)s)[-1];
-  if (m == 0xfd) return sp_str_count_chars(s, sp_str_byte_len(s));
+  if (!sp_str_cacheable(s)) return sp_str_count_chars(s, sp_str_byte_len(s));
   unsigned h = sp_str_lcache_hash(s);
   if (sp_str_lcache[h].s == s) return sp_str_lcache[h].char_len;
   size_t bl = sp_str_byte_len(s);
@@ -353,8 +364,7 @@ static mrb_int sp_str_ord(const char*s){if(!*s)return 0;uint32_t cp;sp_utf8_deco
 static inline int sp_str_eq(const char*a,const char*b){if(!a||!b)return a==b;return strcmp(a,b)==0;}
 static size_t sp_utf8_byte_offset(const char*s,mrb_int char_idx){
   if (!s || char_idx <= 0) return 0;
-  unsigned char m = ((const unsigned char *)s)[-1];
-  if (m != 0xfd) {
+  if (sp_str_cacheable(s)) {
     unsigned h = sp_str_lcache_hash(s);
     if (sp_str_lcache[h].s == s
         && (size_t)sp_str_lcache[h].char_len == sp_str_lcache[h].byte_len) {
