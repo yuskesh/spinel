@@ -13737,8 +13737,28 @@ class Compiler
  # (`r + 1` when r is SP_INT_NIL) is the documented spec until the
  # narrow-on-nil-check path lands.
     if is_scalar_nullable_type(recv_type) == 1
-      if mname == "inspect" || mname == "to_s"
+ # CRuby's nil.to_s == "" but nil.inspect == "nil"; split the
+ # arms so the int? to_s wrapper short-circuits to the empty
+ # string for SP_INT_NIL while inspect emits "nil".
+      if mname == "inspect"
         return "sp_int_opt_inspect(" + rc + ")"
+      end
+      if mname == "to_s"
+        return "sp_int_opt_to_s(" + rc + ")"
+      end
+ # `<int?> == nil` / `<int?> != nil` compare against the sentinel
+ # value, not against integer 0. Without this arm compile_expr
+ # lowers NilNode -> "0" and the comparison silently matches when
+ # the int? holds a real 0 — the canonical false-positive on
+ # `h[:int_zero_key].nil?` shape.
+      if (mname == "==" || mname == "!=") && @nd_arguments[nid] >= 0
+        args_eq = get_args(@nd_arguments[nid])
+        if args_eq.length >= 1 && @nd_type[args_eq[0]] == "NilNode"
+          if mname == "=="
+            return "sp_int_is_nil(" + rc + ")"
+          end
+          return "(!sp_int_is_nil(" + rc + "))"
+        end
       end
       r = compile_int_method_expr(nid, mname, rc)
       if r != ""
@@ -15963,14 +15983,13 @@ class Compiler
       return rc
     end
     if mname == "index"
- # Issue #532: widen the return to sp_RbVal (boxed nil for the
- # -1 not-found sentinel, boxed int for found) so `pos.nil?`,
- # `pos == nil`, and `puts pos.inspect` all behave per CRuby.
- # Downstream callers that consume `pos` as a raw int unbox via
- # the existing poly-handling paths. The 2-arg `start` may itself
- # be poly when the loop idiom assigns from a prior index call
- # (`i = pos + 1`); unbox it via compile_expr_as_int.
-      @needs_rb_value = 1
+ # CRuby returns Integer | nil. Route through the int? _opt
+ # wrapper (SP_INT_NIL for not-found); the call result stays as
+ # int? at the static-type level, so `.nil?` / `.inspect` / a
+ # nil-guarded arithmetic chain all stay on the direct
+ # integer path. The 2-arg `start` may itself be poly when the
+ # loop idiom assigns from a prior index call (`i = pos + 1`);
+ # unbox via compile_expr_as_int.
       args_id_idx = @nd_arguments[nid]
       if args_id_idx >= 0
         a_idx = get_args(args_id_idx)
@@ -15979,10 +15998,10 @@ class Compiler
  # silently dropped `start` and re-emitted the 1-arg call,
  # so successive `s.index(sub, dot1+1)` walks all returned
  # the first match (instead of the next one after `dot1`).
-          return "sp_str_index_from_poly(" + rc + ", " + compile_expr(a_idx[0]) + ", " + compile_expr_as_int(a_idx[1]) + ")"
+          return "sp_str_index_from_opt(" + rc + ", " + compile_expr(a_idx[0]) + ", " + compile_expr_as_int(a_idx[1]) + ")"
         end
       end
-      return "sp_str_index_poly(" + rc + ", " + compile_arg0(nid) + ")"
+      return "sp_str_index_opt(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "rindex"
  # Same widening as String#index (#532).
@@ -21587,6 +21606,19 @@ class Compiler
     at = "int"
     if arg_id >= 0
       at = infer_type(arg_id)
+    end
+ # `<int?> == nil` / `<int?> != nil` compare against the int?
+ # sentinel, not against integer 0. Without this arm the
+ # fall-through emit lowers NilNode -> "0" and the comparison
+ # silently matches when the int? holds a real 0 — the canonical
+ # false-positive on `s.index(needle) == nil` when needle is at
+ # position 0.
+    if is_scalar_nullable_type(lt) == 1 && at == "nil"
+      lc_opt = compile_expr(recv)
+      if op == "=="
+        return "sp_int_is_nil(" + lc_opt + ")"
+      end
+      return "(!sp_int_is_nil(" + lc_opt + "))"
     end
  # Container-op `== nil` / `!= nil` shapes that the typed
  # returns can't represent at the value level (sp_IntArray_get

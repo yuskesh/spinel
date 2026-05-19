@@ -4547,6 +4547,15 @@ class Compiler
  # `sp_*Array_index_poly` runtime wrappers.
       if recv >= 0
         rt_idx = infer_type(recv)
+ # String#index uses the int? sentinel path (mname == "index"
+ # only; rindex still hits the regex-vs-string overload and
+ # stays on poly for a follow-up). String#rindex stays on poly
+ # because the regex-receiver branch of compile-side dispatch
+ # routes through sp_re_rindex_poly which can't fit the int?
+ # encoding cleanly yet.
+        if (rt_idx == "string" || rt_idx == "mutable_str") && mname == "index"
+          return "int?"
+        end
         if rt_idx == "string" || rt_idx == "mutable_str"
           @needs_rb_value = 1
           return "poly"

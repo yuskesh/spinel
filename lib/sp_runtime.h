@@ -1467,6 +1467,14 @@ static sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : 
 static sp_RbVal sp_str_index_poly(const char *s, const char *sub) { mrb_int n = sp_str_index(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 static sp_RbVal sp_str_index_from_poly(const char *s, const char *sub, mrb_int start) { mrb_int n = sp_str_index_from(s, sub, start); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 static sp_RbVal sp_str_rindex_poly(const char *s, const char *sub) { mrb_int n = sp_str_rindex(s, sub); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+/* int? siblings of the String#index family. Same not-found
+   semantics as the _poly variants, but the result is the int?
+   sentinel (SP_INT_NIL) rather than a boxed sp_RbVal — keeps the
+   `i = s.index(sub); return ... if i.nil?; i + 1` idiom on the
+   direct integer arithmetic path. */
+static mrb_int sp_str_index_opt(const char *s, const char *sub)                          { mrb_int n = sp_str_index(s, sub);              return n < 0 ? SP_INT_NIL : n; }
+static mrb_int sp_str_index_from_opt(const char *s, const char *sub, mrb_int start)      { mrb_int n = sp_str_index_from(s, sub, start);  return n < 0 ? SP_INT_NIL : n; }
+static mrb_int sp_str_rindex_opt(const char *s, const char *sub)                         { mrb_int n = sp_str_rindex(s, sub);             return n < 0 ? SP_INT_NIL : n; }
 static sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 /* CRuby-compatible =~ wrapper: SP_TAG_INT(pos) on match, SP_TAG_NIL
    on miss. Codegen routes the `=~` operator here so
@@ -1555,10 +1563,12 @@ static sp_RbVal sp_StrArray_rindex_poly(sp_StrArray *a, const char *v)    { mrb_
    i.nil? ? ... : <use i as int>` idiom. */
 static mrb_int sp_IntArray_index_opt(sp_IntArray *a, mrb_int v)           { mrb_int n = sp_IntArray_index(a, v);   return n < 0 ? SP_INT_NIL : n; }
 static mrb_int sp_IntArray_rindex_opt(sp_IntArray *a, mrb_int v)          { mrb_int n = sp_IntArray_rindex(a, v);  return n < 0 ? SP_INT_NIL : n; }
-/* Inspect/to_s for an int? value. CRuby renders the nil case as
-   "nil" and the integer case via Integer#to_s. sp_int_to_s already
-   handles the latter; the wrapper only adds the nil short-circuit. */
+/* Inspect / to_s for an int? value. CRuby distinguishes the two on
+   nil: `nil.to_s` is "" while `nil.inspect` is "nil". For a real
+   integer they agree (Integer#to_s and #inspect are both the decimal
+   form). Two wrappers keep call-site emit local. */
 static const char *sp_int_opt_inspect(mrb_int v) { return sp_int_is_nil(v) ? "nil" : sp_int_to_s(v); }
+static const char *sp_int_opt_to_s(mrb_int v)    { return sp_int_is_nil(v) ? "" : sp_int_to_s(v); }
 /* sp_Range is a 16-byte value type that doesn't fit in sp_RbVal's union
    (max 8 bytes). When a Range crosses into a poly slot (heterogeneous
    hash / array / param / ivar), copy it onto the GC heap and box the
