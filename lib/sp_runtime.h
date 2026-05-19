@@ -352,7 +352,20 @@ static size_t sp_utf8_byte_offset(const char*s,mrb_int char_idx){
       return off > sp_str_lcache[h].byte_len ? sp_str_lcache[h].byte_len : off;
     }
   }
-  size_t bl=sp_str_byte_len(s);const char*p=s;const char*end=s+bl;while(char_idx>0&&p<end){p+=sp_utf8_advance(p);char_idx--;}return(size_t)(p-s);
+  /* Walk char_idx code points or stop at the NUL terminator, whichever comes
+     first. The loop body is safe at any *p != 0: sp_utf8_advance only reads
+     past p[0] when the continuation-byte mask matches, and NUL doesn't match,
+     so a truncated multibyte sequence near end-of-string still terminates. By
+     bounding on char_idx instead of byte_len, sp_str_sub_range's second
+     byte_offset call (on a mid-string pointer that doesn't sit in the cache)
+     no longer pays the strlen that sp_str_byte_len would otherwise charge for
+     a 0xff literal. */
+  const char *p = s;
+  while (char_idx > 0 && *p) {
+    p += sp_utf8_advance(p);
+    char_idx--;
+  }
+  return (size_t)(p - s);
 }
 static uint32_t*sp_utf8_decode_all(const char*s,size_t*out_n){size_t cap=8,n=0;uint32_t*cps=(uint32_t*)malloc(cap*sizeof(uint32_t));const char*p=s;while(*p){if(n>=cap){cap*=2;cps=(uint32_t*)realloc(cps,cap*sizeof(uint32_t));}uint32_t cp;p+=sp_utf8_decode(p,&cp);cps[n++]=cp;}*out_n=n;return cps;}
 static int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp){for(size_t i=0;i<n;i++)if(cps[i]==cp)return 1;return 0;}
