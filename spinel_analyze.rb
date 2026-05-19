@@ -8946,6 +8946,143 @@ class Compiler
  # The dedup keeps the list short — a slot written with int from
  # twenty different `obj.length` call sites still records "int"
  # once.
+ # Forward-propagate constructor callsite arg types into ivar
+ # observations. For each class C whose initialize body has
+ # `@ivar = pname` writes (where pname is one of initialize's
+ # required params), walk every `<C>.new(args)` callsite and
+ # record each arg's concrete obj_X type as an observation on
+ # @ivar. This recovers the per-callsite obj types that
+ # param-type unification would otherwise collapse to "poly" by
+ # the time the writer-scan reaches `@ivar = w`.
+ #
+ # Without this, the dispatch site at `<ivar>.method` saw a
+ # "poly" observation and fell back to the unrestricted user-
+ # class dispatch table — issue #575's symptom where a same-name
+ # method on an unrelated class (never instantiated, never
+ # assigned to the ivar) still ended up in the dispatch.
+  def propagate_ctor_arg_types_to_ivar_observations
+ # Pass 1: build parallel arrays of (class_idx, arg_types_csv) entries,
+ # one per `<Class>.new(args)` callsite. Plain arrays instead of a Hash
+ # because the empty-hash-literal default type would land on
+ # str_int_hash and reject the string values.
+    ctor_class_idxs = "".split(",")
+    ctor_arg_csvs = "".split(",")
+    nid = 0
+    n = @nd_type.length
+    while nid < n
+      if @nd_type[nid] == "CallNode" && @nd_name[nid] == "new"
+        recv = @nd_receiver[nid]
+        if recv >= 0 && @nd_type[recv] == "ConstantReadNode"
+          cname = @nd_name[recv]
+          cls_idx = find_class_idx(cname)
+          if cls_idx >= 0
+            args_id = @nd_arguments[nid]
+            arg_types_csv = ""
+            if args_id >= 0
+              arg_ids = get_args(args_id)
+              ai = 0
+              while ai < arg_ids.length
+                at = infer_type(arg_ids[ai])
+                if ai == 0
+                  arg_types_csv = at
+                else
+                  arg_types_csv = arg_types_csv + "," + at
+                end
+                ai = ai + 1
+              end
+            end
+            ctor_class_idxs.push(cls_idx.to_s)
+            ctor_arg_csvs.push(arg_types_csv)
+          end
+        end
+      end
+      nid = nid + 1
+    end
+
+ # Pass 2: for each class with at least one ctor callsite, walk its
+ # initialize body for `@ivar = pname` writes and record each
+ # matching arg type as an observation.
+    ci = 0
+    while ci < @cls_names.length
+      callsites = "".split(",")
+      ki = 0
+      ci_str = ci.to_s
+      while ki < ctor_class_idxs.length
+        if ctor_class_idxs[ki] == ci_str
+          callsites.push(ctor_arg_csvs[ki])
+        end
+        ki = ki + 1
+      end
+      if callsites.length > 0
+        init_midx = cls_find_method_direct(ci, "initialize")
+        if init_midx >= 0
+          bodies = @cls_meth_bodies[ci].split(";")
+          if init_midx < bodies.length
+            init_body = bodies[init_midx].to_i
+            if init_body >= 0
+              pnames = cls_meth_pnames_get(ci, init_midx)
+              scan_ivar_param_writes_for_ctor_prop(init_body, ci, pnames, callsites)
+            end
+          end
+        end
+      end
+      ci = ci + 1
+    end
+  end
+
+ # Recursive walk under `nid` looking for `@ivar = lv_<pname>` writes
+ # in class C's initialize body. For each such write whose RHS is a
+ # LocalVariableReadNode bound to a param in `pnames`, record an
+ # ivar observation for every callsite's matching arg type.
+  def scan_ivar_param_writes_for_ctor_prop(nid, ci, pnames, callsites)
+    if nid < 0
+      return
+    end
+ # Skip nested DefNode / ClassNode / ModuleNode bodies — those have
+ # their own scopes, and any LV writes inside don't refer to
+ # initialize's params.
+    if @nd_type[nid] == "DefNode" || @nd_type[nid] == "ClassNode" || @nd_type[nid] == "ModuleNode"
+      return
+    end
+    if @nd_type[nid] == "InstanceVariableWriteNode"
+      iname = @nd_name[nid]
+      ex_id = @nd_expression[nid]
+      if ex_id >= 0 && @nd_type[ex_id] == "LocalVariableReadNode"
+        lv_name = @nd_name[ex_id]
+        param_idx = -1
+        pk = 0
+        while pk < pnames.length
+          if pnames[pk] == lv_name
+            param_idx = pk
+            pk = pnames.length
+          else
+            pk = pk + 1
+          end
+        end
+        if param_idx >= 0
+          si = 0
+          while si < callsites.length
+            site_args = callsites[si].split(",", -1)
+            if param_idx < site_args.length
+              at_site = site_args[param_idx]
+              if at_site != "" && is_obj_type(at_site) == 1
+                record_ivar_observation(ci, iname, at_site, ex_id)
+              end
+            end
+            si = si + 1
+          end
+        end
+      end
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      scan_ivar_param_writes_for_ctor_prop(cs[k], ci, pnames, callsites)
+      k = k + 1
+    end
+  end
+
   def record_ivar_observation(ci, iname, at, expr_id)
     is_concrete = 0
     if at != "int" && at != "nil"
@@ -20226,6 +20363,7 @@ class Compiler
  # later codegen step can rely on @cls_is_value_type, @needs_gc,
  # @sym_names, @toplevel_ivar_*, and @cls_cmeth_live being already
  # populated.
+    propagate_ctor_arg_types_to_ivar_observations
     detect_value_types
     recalc_needs_gc
     collect_sym_names

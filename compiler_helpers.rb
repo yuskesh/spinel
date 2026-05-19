@@ -288,6 +288,15 @@ class Compiler
       t = parts[k]
       if t == ""
  # blank slot -- uninformative, skip
+      elsif t == "poly"
+ # "poly" alone means the writer-scan saw a widened union value
+ # (typically a method param that received obj_X across multiple
+ # callsites and collapsed to poly). The companion ctor-arg
+ # propagation pass adds the concrete obj_X entries alongside,
+ # so when we ALSO see those, the obj_X set is sharper and we
+ # should keep the narrow. Skip the bare "poly" here; if no
+ # obj_X entries follow, `out` stays empty and the caller falls
+ # back to the unrestricted dispatch.
       elsif is_obj_type(t) == 1
         cname = t[4, t.length - 4]
         cidx = find_class_idx(cname)
@@ -312,10 +321,9 @@ class Compiler
           end
         end
       else
- # Any non-obj observation ("poly", "int", "string", etc.)
- # means the ivar can hold values whose dispatch is broader
- # than the obj-class set we can enumerate. Bail out so we
- # don't unsoundly prune.
+ # Truly broad non-obj observation ("int", "string", "float"
+ # etc.) — the ivar can hold a value whose dispatch isn't a
+ # user-class method call at all. Bail to avoid unsound pruning.
         return ""
       end
       k = k + 1
