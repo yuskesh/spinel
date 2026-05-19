@@ -607,6 +607,30 @@ class Compiler
  # has built the class/method tables. Empty when no seed file was
  # passed -- inference behaves exactly as before.
     @rbs_seed_lines = "".split(",")
+ # Set of "ci_midx" tokens for class instance methods whose ptypes
+ # were RBS-seeded. Heuristic narrowing passes (notably the
+ # `narrow_param_hash_types_from_body_writes` Option-B fallback
+ # that pins an iterated `poly_poly_hash` param to `str_str_hash`
+ # when no concrete writes signal a value type) consult this set
+ # and skip the narrowing -- the explicit RBS declaration is
+ # authoritative over heuristic inference. Issue #613.
+    @rbs_seeded_cls_meth = "".split(";")
+  end
+
+  def rbs_mark_cls_meth_seeded(ci, midx)
+    @rbs_seeded_cls_meth.push(ci.to_s + "_" + midx.to_s)
+  end
+
+  def rbs_is_cls_meth_seeded?(ci, midx)
+    key = ci.to_s + "_" + midx.to_s
+    j = 0
+    while j < @rbs_seeded_cls_meth.length
+      if @rbs_seeded_cls_meth[j] == key
+        return 1
+      end
+      j = j + 1
+    end
+    0
   end
 
  # Backslash-n for C string literals - bootstrap-safe (avoids escape level issues)
@@ -20001,6 +20025,7 @@ class Compiler
     end
     current_ci = -1
     current_cls_name = ""
+    current_is_module = 0
     i = 0
     while i < @rbs_seed_lines.length
       raw = @rbs_seed_lines[i]
@@ -20010,6 +20035,15 @@ class Compiler
       elsif parts[0] == "class" && parts.length >= 2
         current_cls_name = parts[1]
         current_ci = find_class_idx(current_cls_name)
+ # The extractor labels both classes and modules as `class`
+ # because RBS doesn't surface the distinction in its AST in a
+ # way the C-level walker uses. When the name doesn't resolve
+ # to a class index, check the module table and flag the block
+ # so `meth` lines seed every class that includes this module.
+        current_is_module = 0
+        if current_ci < 0 && module_name_exists(current_cls_name) == 1
+          current_is_module = 1
+        end
         i = i + 1
       elsif parts[0] == "ivar" && parts.length >= 3 && current_ci >= 0
         seed_class_ivar(current_ci, parts[1], parts[2])
@@ -20022,6 +20056,36 @@ class Compiler
           ptypes_token = parts[3]
         end
         seed_class_method(current_ci, mname, ret, ptypes_token)
+        i = i + 1
+      elsif parts[0] == "meth" && parts.length >= 3 && current_is_module == 1
+ # Module method seed: a class that includes this module ends
+ # up with the method in its @cls_meth_* after
+ # reconcile_class_includes. Seed each such class so the same
+ # RBS ptypes / return reach the per-class storage. Without
+ # this, `module Dispatch; def stringify_keys: (Hash[...]) -> ...`
+ # would only seed `class Dispatch` (which has no methods in
+ # spinel's table) and the include-attached copy stayed at
+ # collect_all's int defaults. Issue #613.
+        mname_m = parts[1]
+        ret_m = parts[2]
+        ptypes_token_m = "-"
+        if parts.length >= 4
+          ptypes_token_m = parts[3]
+        end
+        ck = 0
+        while ck < @cls_includes.length
+          incs = @cls_includes[ck].split(";")
+          ik = 0
+          while ik < incs.length
+            if incs[ik] == current_cls_name
+              seed_class_method(ck, mname_m, ret_m, ptypes_token_m)
+              ik = incs.length
+            else
+              ik = ik + 1
+            end
+          end
+          ck = ck + 1
+        end
         i = i + 1
       elsif parts[0] == "cmeth" && parts.length >= 3 && current_cls_name != ""
         mname = parts[1]
@@ -20062,6 +20126,7 @@ class Compiler
     if ptypes_token != "-" && ptypes_token != ""
       ptypes = ptypes_token.split(",")
       cls_meth_ptypes_put(ci, midx, ptypes)
+      rbs_mark_cls_meth_seeded(ci, midx)
     end
     if ret != "-" && ret != ""
       rets = @cls_meth_returns[ci].split(";")
@@ -26543,7 +26608,8 @@ class Compiler
           m_changed = 0
           pk2 = 0
           while pk2 < cm_pnames.length
-            if pk2 < cm_ptypes.length && is_hash_type(cm_ptypes[pk2]) == 1
+            if pk2 < cm_ptypes.length && is_hash_type(cm_ptypes[pk2]) == 1 &&
+               rbs_is_cls_meth_seeded?(ci, mj) == 0
               new_t = infer_param_hash_from_writes(bid_c, cm_pnames[pk2], cm_ptypes[pk2])
               if new_t != "" && new_t != cm_ptypes[pk2]
                 cm_ptypes[pk2] = new_t

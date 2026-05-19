@@ -166,6 +166,22 @@ static const char *hash_tag_for_kv(const char *k, const char *v) {
         if (strcmp(v, "string") == 0) return "sym_str_hash";
         return "sym_poly_hash";
     }
+    if (strcmp(k, "int") == 0) {
+        if (strcmp(v, "string") == 0) return "int_str_hash";
+    }
+    /* `Hash[untyped, untyped]` (and any leftover combination where
+     * one side is untyped without a matching concrete variant
+     * above) — map to bare "poly" rather than poly_poly_hash. The
+     * analyzer treats this slot as sp_RbVal (tagged union), which
+     * matches how a top-level `def f(h)` with no caller signal
+     * settles. Picking poly_poly_hash here forced a specific tagged
+     * struct pointer (sp_PolyPolyHash *) that doesn't accept the
+     * sp_RbVal arguments callers actually pass through poly
+     * narrowing branches (e.g. `v.is_a?(Hash) ? f(v) : v`). Issue
+     * #613. */
+    if (strcmp(k, "poly") == 0 || strcmp(v, "poly") == 0) {
+        return "poly";
+    }
     return NULL;
 }
 
@@ -308,6 +324,12 @@ static bool map_type(rbs_parser_t *p, rbs_node_t *node,
             /* void only appears as a return type; spinel uses "nil"
              * (which void-returning methods discard). */
             sbuf_set(out, "nil", 3);
+            return true;
+        case RBS_TYPES_BASES_ANY:
+            /* `untyped` in RBS == anything. Spinel's nearest is poly
+             * (sp_RbVal — tagged union). Hash[untyped, untyped] uses
+             * this in hash_tag_for_kv to land on poly_poly_hash. */
+            sbuf_set(out, "poly", 4);
             return true;
         case RBS_TYPES_CLASS_INSTANCE:
             return map_class_instance(p, (rbs_types_class_instance_t *) node, enclosing_scope, out);
