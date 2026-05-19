@@ -91,6 +91,12 @@ class Compiler
     if rt_eg == "string" || rt_eg == "mutable_str"
       return "int"
     end
+ # Array#index family on int_array now returns int? (sentinel-
+ # encoded). After `return if h.nil?` the live arm sees the value
+ # as a plain int, same as the String#index narrow above.
+    if rt_eg == "int_array"
+      return "int"
+    end
     ""
   end
 
