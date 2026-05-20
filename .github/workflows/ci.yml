@@ -45,6 +45,19 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
 
+      # When every input the test result depends on is unchanged
+      # (test/, compiler source, runtime source, Makefile), the
+      # prior run's `.ok` stamps are still valid. Pulling them down
+      # lets `make test` short-circuit each test via mtime tracking.
+      # The hash key is the sole invalidator — any change to any
+      # input file misses the cache and reruns every test. See
+      # the post-build `touch` step for why mtimes need a refresh.
+      - name: Restore test-results cache
+        uses: actions/cache@v4
+        with:
+          path: build/test-results
+          key: tests-${{ matrix.os }}-${{ matrix.cc }}-${{ hashFiles('test/**', 'spinel_parse.c', 'spinel_analyze.rb', 'spinel_codegen.rb', 'compiler_helpers.rb', 'node_table_loader.rb', 'lib/**', 'Makefile') }}
+
       - name: Fetch libprism sources
         run: make deps
 
@@ -53,6 +66,17 @@ jobs:
       # anything CI cares about. LTO=0 keeps the local-dev default.
       - name: Build (parse + regexp + codegen)
         run: make -j$(getconf _NPROCESSORS_ONLN) LTO=0 all
+
+      # `make all` just touched the compiler-binary stamps that every
+      # `.ok` depends on, so without this refresh, make would treat
+      # every cached `.ok` as stale and rerun each test. The cache
+      # key already covers every input that affects the test outcome,
+      # so bumping mtimes here is safe.
+      - name: Refresh test-results mtimes
+        run: |
+          if [ -d build/test-results ]; then
+            find build/test-results -name '*.ok' -exec touch {} +
+          fi
 
       - name: Run tests
         # OPT=-O0 cuts cc time per test (each .rb compiles its own
@@ -120,11 +144,26 @@ jobs:
           make --version | head -1
           sccache --version
 
+      # See the posix job for the cache contract. Windows is the
+      # biggest beneficiary because its per-test fork-exec cost
+      # dwarfs the cache-restore step.
+      - name: Restore test-results cache
+        uses: actions/cache@v4
+        with:
+          path: build/test-results
+          key: tests-windows-mingw-gcc-${{ hashFiles('test/**', 'spinel_parse.c', 'spinel_analyze.rb', 'spinel_codegen.rb', 'compiler_helpers.rb', 'node_table_loader.rb', 'lib/**', 'Makefile') }}
+
       - name: Fetch libprism sources
         run: make deps
 
       - name: Build (parse + regexp + codegen)
         run: make -j$(nproc) LTO=0 all
+
+      - name: Refresh test-results mtimes
+        run: |
+          if [ -d build/test-results ]; then
+            find build/test-results -name '*.ok' -exec touch {} +
+          fi
 
       - name: Run tests
         run: make -j$(nproc) test OPT=-O0
