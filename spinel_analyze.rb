@@ -24038,7 +24038,43 @@ class Compiler
                       end
                     end
                   end
-                  if mname == "times" || mname == "upto" || mname == "downto"
+                  pushed_block_param_628 = 0
+ # No-recv call to a user-defined top-level yield method: look up
+ # its body's yield arg type at position bk. Mirrors the obj-recv
+ # block above. Issue #628.
+                  if pushed_block_param_628 == 0 && @nd_receiver[nid] < 0
+                    mi_628 = find_method_idx(mname)
+                    if mi_628 >= 0 && mi_628 < @meth_has_yield.length && @meth_has_yield[mi_628] == 1
+                      ybid_628 = @meth_body_ids[mi_628]
+                      if ybid_628 >= 0
+                        arity_628 = method_yield_arity(mi_628)
+                        ytypes_628 = "".split(",")
+                        ka_628 = 0
+                        while ka_628 < arity_628
+                          ytypes_628.push("")
+                          ka_628 = ka_628 + 1
+                        end
+                        push_scope
+                        yl_names_628 = "".split(",")
+                        yl_types_628 = "".split(",")
+                        scan_locals(ybid_628, yl_names_628, yl_types_628, "".split(","))
+                        yj_628 = 0
+                        while yj_628 < yl_names_628.length
+                          declare_var(yl_names_628[yj_628], yl_types_628[yj_628])
+                          yj_628 = yj_628 + 1
+                        end
+                        body_yield_arg_types(ybid_628, ytypes_628)
+                        pop_scope
+                        if bk < ytypes_628.length && ytypes_628[bk] != "" && ytypes_628[bk] != "int"
+                          types.push(ytypes_628[bk])
+                          pushed_block_param_628 = 1
+                        end
+                      end
+                    end
+                  end
+                  if pushed_block_param_628 == 1
+ # Already pushed via the no-recv yield branch above.
+                  elsif mname == "times" || mname == "upto" || mname == "downto"
                     types.push("int")
  # `<source>.with_index(off).<consumer> { |elem, idx| }`:
  # block param at bk=1 is the idx counter (int), not another
@@ -26263,6 +26299,80 @@ class Compiler
     recv_t = "int"
     if recv >= 0
       recv_t = infer_type(recv)
+    end
+ # No-recv call to a user-defined top-level method that uses yield:
+ # look up the method body's yield arg type at position pi. Without
+ # this, `emit_rows { |row| ... }` against `def emit_rows; yield row;
+ # end` where `row` is sp_StrStrHash * gets the block-local declared
+ # as mrb_int (the int_array fallback), the typed pointer flows
+ # into an int slot and downstream `row["k"]` lookups dispatch on
+ # int. Mirrors the cls_method arm in scan_locals' each branch.
+ # Issue #628.
+    if recv < 0
+      mi_bp = find_method_idx(mname)
+      if mi_bp >= 0 && mi_bp < @meth_has_yield.length && @meth_has_yield[mi_bp] == 1
+        ybid_bp = @meth_body_ids[mi_bp]
+        if ybid_bp >= 0
+          arity_bp = method_yield_arity(mi_bp)
+          ytypes_bp = "".split(",")
+          ka_bp = 0
+          while ka_bp < arity_bp
+            ytypes_bp.push("")
+            ka_bp = ka_bp + 1
+          end
+          push_scope
+          yl_names_bp = "".split(",")
+          yl_types_bp = "".split(",")
+          scan_locals(ybid_bp, yl_names_bp, yl_types_bp, "".split(","))
+          yj_bp = 0
+          while yj_bp < yl_names_bp.length
+            declare_var(yl_names_bp[yj_bp], yl_types_bp[yj_bp])
+            yj_bp = yj_bp + 1
+          end
+          body_yield_arg_types(ybid_bp, ytypes_bp)
+          pop_scope
+          if pi < ytypes_bp.length && ytypes_bp[pi] != "" && ytypes_bp[pi] != "int"
+            return ytypes_bp[pi]
+          end
+        end
+      end
+    end
+ # No-recv call to a user-defined top-level method that uses yield:
+ # look up the method body's yield arg type at position pi. Without
+ # this, `emit_rows { |row| ... }` against `def emit_rows; yield row;
+ # end` where `row` is sp_StrStrHash * gets the block-local declared
+ # as mrb_int (the int_array fallback), the typed pointer flows
+ # into an int slot and downstream `row["k"]` lookups dispatch on
+ # int. Mirrors the cls_method arm a few hundred lines below.
+ # Issue #628.
+    if recv < 0
+      mi_bp = find_method_idx(mname)
+      if mi_bp >= 0 && mi_bp < @meth_has_yield.length && @meth_has_yield[mi_bp] == 1
+        ybid_bp = @meth_body_ids[mi_bp]
+        if ybid_bp >= 0
+          arity_bp = method_yield_arity(mi_bp)
+          ytypes_bp = "".split(",")
+          ka_bp = 0
+          while ka_bp < arity_bp
+            ytypes_bp.push("")
+            ka_bp = ka_bp + 1
+          end
+          push_scope
+          yl_names_bp = "".split(",")
+          yl_types_bp = "".split(",")
+          scan_locals(ybid_bp, yl_names_bp, yl_types_bp, "".split(","))
+          yj_bp = 0
+          while yj_bp < yl_names_bp.length
+            declare_var(yl_names_bp[yj_bp], yl_types_bp[yj_bp])
+            yj_bp = yj_bp + 1
+          end
+          body_yield_arg_types(ybid_bp, ytypes_bp)
+          pop_scope
+          if pi < ytypes_bp.length && ytypes_bp[pi] != "" && ytypes_bp[pi] != "int"
+            return ytypes_bp[pi]
+          end
+        end
+      end
     end
  # `<source>.with_index(off).<consumer> { |elem, idx| }` -- the
  # block sees the source's element shape at pi=0 and the int idx
