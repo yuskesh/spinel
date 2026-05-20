@@ -11011,10 +11011,12 @@ class Compiler
   def collect_scoped_multi_const(scope_name, nid)
     targets = parse_id_list(@nd_targets[nid])
     val_id = @nd_expression[nid]
+    has_const_target = 0
     ti = 0
     while ti < targets.length
       tid = targets[ti]
       if @nd_type[tid] == "ConstantTargetNode"
+        has_const_target = 1
         cname = @nd_name[tid]
         if scope_name != ""
           cname = scope_name + "_" + cname
@@ -11047,7 +11049,13 @@ class Compiler
       end
     end
  # Record the multi-write as a single deferred init: the RHS is
- # evaluated once and each constant takes one element.
+ # evaluated once and each constant takes one element. Skip when
+ # no target is a constant (top-level `y, z = call_returning_pair`
+ # would otherwise plant a bogus pre-body emit that fires before
+ # the locals it reads from are assigned, #630).
+    if has_const_target == 0
+      return
+    end
     if @multi_const_inits == nil
       @multi_const_inits = "".split(",")
     end
