@@ -121,6 +121,35 @@ static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;
 static void sp_raise_cls(const char *cls, const char *msg);
 static const char *sp_sprintf(const char *fmt, ...);
 
+/* CRuby's `String#to_i` accepts a leading sign, then digits with
+   `_` between consecutive digits, and stops at the first non-digit
+   (returning what it has so far rather than raising). `"1_2_3asdf"`
+   -> 123. spinel previously emitted `(mrb_int)atoll(s)` which stops
+   at the first `_`, returning 1 instead. Issue #619. */
+static mrb_int sp_str_to_i_cruby(const char *s) {
+  if (!s) return 0;
+  const char *p = s;
+  while (isspace((unsigned char)*p)) p++;
+  int neg = 0;
+  if (*p == '+') p++;
+  else if (*p == '-') { neg = 1; p++; }
+  mrb_int v = 0;
+  int any = 0;
+  while (*p) {
+    if (*p >= '0' && *p <= '9') {
+      v = v * 10 + (*p - '0');
+      any = 1;
+      p++;
+    } else if (*p == '_' && any && p[1] >= '0' && p[1] <= '9') {
+      p++;
+    } else {
+      break;
+    }
+  }
+  if (!any) return 0;
+  return neg ? -v : v;
+}
+
 /* CRuby's `Integer(s)` raises ArgumentError for unparseable input
    (empty string, leading/trailing junk, all-whitespace). The bare
    `(mrb_int)strtoll(s, NULL, 10)` spinel previously emitted silently

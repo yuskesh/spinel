@@ -14304,7 +14304,7 @@ class Compiler
           return "sp_str_chomp(self)"
         end
         if mname == "to_i"
-          return "((mrb_int)atoll(self))"
+          return "sp_str_to_i_cruby(self)"
         end
         if mname == "split"
           @needs_str_array = 1
@@ -15845,7 +15845,7 @@ class Compiler
       return "sp_str_length(" + rc + ")"
     end
     if mname == "to_i"
-      return "((mrb_int)atoll(" + rc + "))"
+      return "sp_str_to_i_cruby(" + rc + ")"
     end
     if mname == "to_f"
       return "atof(" + rc + ")"
