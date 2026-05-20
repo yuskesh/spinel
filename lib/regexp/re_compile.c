@@ -205,6 +205,12 @@ parse_escape(re_compiler *c)
   case 'v': return '\v';
   case 'a': return '\a';
   case 'e': return 0x1b;
+  /* `\b` is a word boundary outside a character class, but inside
+     `[...]` it means backspace (U+0008). The outer compile loop
+     consumes `\b` as RE_WBOUND before reaching parse_escape, so
+     this arm only fires from read_class_atom -- i.e. always the
+     character-class meaning. Issue #632. */
+  case 'b': return 0x08;
   default: return ch;  /* literal: \., \\, \/, \(, etc. */
   }
 }
