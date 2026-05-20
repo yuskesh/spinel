@@ -15357,6 +15357,36 @@ class Compiler
  # Array `<<` is push, not bit-shift. The compile_call_expr path
  # also has a push branch for direct `arr.push(x)` style calls,
  # but the operator form lands here.
+ # `<int_array literal> << <non-int>` shape (`[1, 2] << "c"`):
+ # pushing a non-int onto a literal int_array would emit
+ # sp_IntArray_push with a pointer-from-int-conversion warning
+ # and produce a broken array at runtime. Re-emit the recv's
+ # elements as a poly_array and push the boxed arg, matching
+ # CRuby's heterogeneous-array semantic. Scoped to direct
+ # ArrayNode literals so a stored ivar / local
+ # (`@slots = [nil] * N; @slots << ...`) keeps the existing
+ # observation-widening path and doesn't cascade into typed
+ # ivar reads landing as poly. Issue #619 puzzle 7.
+      if lt == "int_array" && recv >= 0 && @nd_type[recv] == "ArrayNode" && @nd_arguments[nid] >= 0
+        arg_ids_p7 = get_args(@nd_arguments[nid])
+        if arg_ids_p7.length > 0
+          arg_t_p7 = infer_type(arg_ids_p7[0])
+          if arg_t_p7 != "int" && arg_t_p7 != "bool" && arg_t_p7 != "nil"
+            @needs_rb_value = 1
+            @needs_gc = 1
+            elems_p7 = parse_id_list(@nd_elements[recv])
+            tmp_pa = new_temp
+            emit("  sp_PolyArray *" + tmp_pa + " = sp_PolyArray_new();")
+            ek_p7 = 0
+            while ek_p7 < elems_p7.length
+              emit("  sp_PolyArray_push(" + tmp_pa + ", " + box_expr_to_poly(elems_p7[ek_p7]) + ");")
+              ek_p7 = ek_p7 + 1
+            end
+            emit("  sp_PolyArray_push(" + tmp_pa + ", " + box_expr_to_poly(arg_ids_p7[0]) + ");")
+            return tmp_pa
+          end
+        end
+      end
       if lt == "int_array"
         @needs_int_array = 1
         rc = compile_expr_gc_rooted(recv)
@@ -22113,26 +22143,26 @@ class Compiler
  # Issue #619 puzzle 4.
     if lt == "poly_array" && arg_id >= 0 && @nd_type[arg_id] == "ArrayNode"
       rhs_elems_p4 = parse_id_list(@nd_elements[arg_id])
-      if rhs_elems_p4.length > 0
-        all_nil_p4 = 1
-        rhs_k_p4 = 0
-        while rhs_k_p4 < rhs_elems_p4.length
-          if @nd_type[rhs_elems_p4[rhs_k_p4]] != "NilNode"
-            all_nil_p4 = 0
-          end
-          rhs_k_p4 = rhs_k_p4 + 1
+      all_nil_p4 = 1
+      rhs_k_p4 = 0
+      while rhs_k_p4 < rhs_elems_p4.length
+        if @nd_type[rhs_elems_p4[rhs_k_p4]] != "NilNode"
+          all_nil_p4 = 0
         end
-        if all_nil_p4 == 1
-          @needs_rb_value = 1
-          @needs_gc = 1
-          rhs_pa_tmp = new_temp
-          emit("  sp_PolyArray *" + rhs_pa_tmp + " = sp_PolyArray_new();")
+        rhs_k_p4 = rhs_k_p4 + 1
+      end
+      if all_nil_p4 == 1
+        @needs_rb_value = 1
+        @needs_gc = 1
+        rhs_pa_tmp = new_temp
+        emit("  sp_PolyArray *" + rhs_pa_tmp + " = sp_PolyArray_new();")
+        if rhs_elems_p4.length > 0
           emit("  { mrb_int _n_pa = " + rhs_elems_p4.length.to_s + "; for (mrb_int _i_pa = 0; _i_pa < _n_pa; _i_pa++) sp_PolyArray_push(" + rhs_pa_tmp + ", sp_box_nil()); }")
-          if op == "=="
-            return "sp_PolyArray_eq(" + lc + ", " + rhs_pa_tmp + ")"
-          else
-            return "(!sp_PolyArray_eq(" + lc + ", " + rhs_pa_tmp + "))"
-          end
+        end
+        if op == "=="
+          return "sp_PolyArray_eq(" + lc + ", " + rhs_pa_tmp + ")"
+        else
+          return "(!sp_PolyArray_eq(" + lc + ", " + rhs_pa_tmp + "))"
         end
       end
     end

@@ -3672,6 +3672,25 @@ class Compiler
           return "string"
         end
  # Array `<<` returns the recv (so `(arr << x) << y` chains).
+ # `<int_array literal> << <non-int>` (`[1, 2] << "c"`) lifts to
+ # poly_array at codegen so the result holds the heterogeneous
+ # elements; mirror that in inference so the surrounding `==`
+ # picks the poly_array dispatch arm rather than treating one
+ # side as int_array. Issue #619 puzzle 7.
+        if lt == "int_array" && @nd_type[recv] == "ArrayNode"
+          args_id_p7 = @nd_arguments[nid]
+          if args_id_p7 >= 0
+            aa_p7 = get_args(args_id_p7)
+            if aa_p7.length > 0
+              at_p7 = infer_type(aa_p7[0])
+              if at_p7 != "int" && at_p7 != "bool" && at_p7 != "nil"
+                @needs_rb_value = 1
+                @needs_gc = 1
+                return "poly_array"
+              end
+            end
+          end
+        end
         if is_array_type(lt) == 1
           return lt
         end
