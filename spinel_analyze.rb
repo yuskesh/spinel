@@ -3638,6 +3638,13 @@ class Compiler
       return "int"
     end
     if mname == "to_s"
+ # `to_s` on a bigint recv always dispatches to sp_bigint_to_s
+ # (defined in lib/sp_runtime.h), regardless of whether any user
+ # class also defines a `to_s` method. The user-method dispatch
+ # only matters when the recv could actually be a user obj.
+      if recv >= 0 && infer_type(recv) == "bigint"
+        return "string"
+      end
       if recv_could_be_obj(recv) == 1 && any_user_class_defines_imeth(mname) == 1
         return ""
       end

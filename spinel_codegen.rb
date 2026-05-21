@@ -5721,6 +5721,10 @@ class Compiler
       if at == "int"
         return "sp_int_to_s(" + val + ")"
       end
+      if at == "bigint"
+        @needs_bigint = 1
+        return "sp_bigint_to_s((sp_Bigint *)" + val + ")"
+      end
       if at == "float"
         return "sp_float_to_s(" + val + ")"
       end
