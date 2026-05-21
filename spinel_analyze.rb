@@ -20399,6 +20399,16 @@ class Compiler
  # RBS as needed. Restores the RBS-declared type as the final
  # inferred type either way.
   def arbitrate_rbs_vs_inferred_methods
+ # Definite-conflict detection for returns. A LITERAL return whose
+ # type can't unify with the RBS-declared return errors out before
+ # we silently restore. Same confidence model as the ivar pass
+ # (#634 phase 1): the user has written something concrete that
+ # contradicts their own RBS line, and only they can fix it. The
+ # literal-arg-at-param-call-site sibling check needs the
+ # node-type annotation cache populated (so the recv's class
+ # resolves), so it runs in its own pass after
+ # annotate_all_node_types.
+    arbitrate_rbs_method_returns_definite_conflict
  # Class instance methods.
     @cls_meth_rbs_ptypes.each_pair { |k, rbs_pt|
       parts = k.split("|")
@@ -20469,6 +20479,313 @@ class Compiler
         @meth_return_types[mi] = rbs_ret
       end
     }
+  end
+
+ # Returns the literal type if `nid` is an AST literal expression,
+ # else "". Mirrors the relevant arms of `infer_ivar_init_type`
+ # but stays focused on the literal-node shapes we want to treat
+ # as high-confidence (no transitive inference). Used by the
+ # method-arbitration definite-conflict check.
+  def rbs_literal_expr_type(nid)
+    if nid < 0
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "IntegerNode"
+      return "int"
+    end
+    if t == "FloatNode"
+      return "float"
+    end
+    if t == "StringNode"
+      return "string"
+    end
+    if t == "SymbolNode"
+      return "symbol"
+    end
+    if t == "TrueNode" || t == "FalseNode"
+      return "bool"
+    end
+    if t == "NilNode"
+      return "nil"
+    end
+    ""
+  end
+
+ # Walk a method body and collect literal-expr types for every
+ # `return X` node, plus the body's implicit final-expr type if
+ # it's a literal. Output is appended to `acc` (caller-owned).
+  def collect_rbs_literal_returns(nid, acc)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "DefNode"
+      return
+    end
+    if @nd_type[nid] == "ReturnNode"
+      args_id = @nd_arguments[nid]
+      if args_id >= 0
+        arg_ids = get_args(args_id)
+        if arg_ids.length == 1
+          lt = rbs_literal_expr_type(arg_ids[0])
+          if lt != ""
+            acc.push(lt)
+          end
+        end
+      end
+      return
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      collect_rbs_literal_returns(cs[k], acc)
+      k = k + 1
+    end
+  end
+
+ # Returns the literal type of a body's implicit final expression
+ # (the last statement when no explicit return covers the path).
+ # "" when the final stmt isn't a literal node, when the body is
+ # empty, or when the body's last stmt is itself a return (in which
+ # case collect_rbs_literal_returns already covers it).
+  def rbs_body_implicit_return_literal(body_id)
+    if body_id < 0
+      return ""
+    end
+    stmts = get_stmts(body_id)
+    if stmts.length == 0
+      return ""
+    end
+    last = stmts.last
+    rbs_literal_expr_type(last)
+  end
+
+  def arbitrate_rbs_method_returns_definite_conflict
+    @cls_meth_rbs_returns.each_pair { |k, rbs_ret|
+      parts = k.split("|")
+      ci = parts[0].to_i
+      midx = parts[1].to_i
+      if ci < 0 || ci >= @cls_meth_bodies.length
+        next
+      end
+      bodies = @cls_meth_bodies[ci].split(";")
+      if midx >= bodies.length
+        next
+      end
+      bid = bodies[midx].to_i
+      if bid < 0
+        next
+      end
+      lits = "".split(",")
+      collect_rbs_literal_returns(bid, lits)
+      implicit = rbs_body_implicit_return_literal(bid)
+      if implicit != ""
+        lits.push(implicit)
+      end
+      mnames = @cls_meth_names[ci].split(";")
+      mname = midx < mnames.length ? mnames[midx] : "?"
+      li = 0
+      while li < lits.length
+        lt = lits[li]
+        if rbs_inferred_incompatible?(rbs_ret, lt)
+          $stderr.puts "Spinel: RBS conflict on " + @cls_names[ci] + "#" + mname + " return: declared \"" + rbs_ret + "\" but a literal expression infers \"" + lt + "\""
+          exit(1)
+        end
+        li = li + 1
+      end
+    }
+    @cls_cmeth_rbs_returns.each_pair { |k, rbs_ret|
+      parts = k.split("|")
+      ci = parts[0].to_i
+      midx = parts[1].to_i
+      if ci < 0 || ci >= @cls_cmeth_bodies.length
+        next
+      end
+      bodies = @cls_cmeth_bodies[ci].split(";")
+      if midx >= bodies.length
+        next
+      end
+      bid = bodies[midx].to_i
+      if bid < 0
+        next
+      end
+      lits = "".split(",")
+      collect_rbs_literal_returns(bid, lits)
+      implicit = rbs_body_implicit_return_literal(bid)
+      if implicit != ""
+        lits.push(implicit)
+      end
+      cmnames = @cls_cmeth_names[ci].split(";")
+      mname = midx < cmnames.length ? cmnames[midx] : "?"
+      li = 0
+      while li < lits.length
+        lt = lits[li]
+        if rbs_inferred_incompatible?(rbs_ret, lt)
+          $stderr.puts "Spinel: RBS conflict on " + @cls_names[ci] + ".#" + mname + " return: declared \"" + rbs_ret + "\" but a literal expression infers \"" + lt + "\""
+          exit(1)
+        end
+        li = li + 1
+      end
+    }
+    @meth_rbs_returns.each_pair { |k, rbs_ret|
+      mi = k.to_i
+      if mi < 0 || mi >= @meth_body_ids.length
+        next
+      end
+      bid = @meth_body_ids[mi]
+      if bid < 0
+        next
+      end
+      lits = "".split(",")
+      collect_rbs_literal_returns(bid, lits)
+      implicit = rbs_body_implicit_return_literal(bid)
+      if implicit != ""
+        lits.push(implicit)
+      end
+      mname = mi < @meth_names.length ? @meth_names[mi] : "?"
+      li = 0
+      while li < lits.length
+        lt = lits[li]
+        if rbs_inferred_incompatible?(rbs_ret, lt)
+          $stderr.puts "Spinel: RBS conflict on " + mname + " return: declared \"" + rbs_ret + "\" but a literal expression infers \"" + lt + "\""
+          exit(1)
+        end
+        li = li + 1
+      end
+    }
+  end
+
+ # Scan every CallNode in the program. For each call that targets
+ # an RBS-pinned method, check each positional arg: if the arg is
+ # a literal whose type is incompatible with the RBS-declared
+ # param at that index, error. Single full-tree walk; the cost is
+ # amortized across all RBS-pinned methods.
+  def arbitrate_rbs_method_params_definite_conflict
+    if @cls_meth_rbs_ptypes.length == 0 &&
+       @cls_cmeth_rbs_ptypes.length == 0 &&
+       @meth_rbs_ptypes.length == 0
+      return
+    end
+    rbs_scan_callsites(@root_id)
+  end
+
+  def rbs_scan_callsites(nid)
+    if nid < 0
+      return
+    end
+    if @nd_type[nid] == "CallNode"
+      rbs_check_callsite(nid)
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      rbs_scan_callsites(cs[k])
+      k = k + 1
+    end
+  end
+
+  def rbs_check_callsite(nid)
+    mname = @nd_name[nid]
+    if mname == ""
+      return
+    end
+    args_id = @nd_arguments[nid]
+    if args_id < 0
+      return
+    end
+    arg_ids = get_args(args_id)
+    if arg_ids.length == 0
+      return
+    end
+ # Build a (rbs_ptypes_token, label) pair from the matching shadow
+ # entry. Three lookups are tried in order; the first match wins.
+    rbs_pt = ""
+    label = ""
+    recv = @nd_receiver[nid]
+    if recv < 0
+ # Top-level method call.
+      mi = find_method_idx(mname)
+      if mi >= 0
+        key = mi.to_s
+        if @meth_rbs_ptypes.key?(key)
+          rbs_pt = @meth_rbs_ptypes[key]
+          label = mname
+        end
+      end
+    end
+    if rbs_pt == "" && recv >= 0
+ # Instance method call against a class-typed recv. Note:
+ # `infer_type(recv)` for a `LocalVariableReadNode` resolves
+ # through `find_var_type`, which needs a scope stack
+ # populated. The arbitration walker runs outside any scope
+ # context, so a `c.add(literal)` where `c` is a local variable
+ # falls through to the default "int" path and the RBS lookup
+ # misses. That case is the most common in practice but
+ # exercising it correctly requires the scope-aware walk
+ # `infer_main_call_types` / `scan_writer_calls` build up;
+ # adding that here would double the pass's footprint without
+ # changing the constant- and toplevel-recv coverage. Leaving
+ # it as a known gap for now.
+      rt = infer_type(recv)
+      if rt.length > 4 && rt[0, 4] == "obj_"
+        rcname = rt[4, rt.length - 4]
+        rci = find_class_idx(rcname)
+        if rci >= 0
+          rmidx = cls_find_method_direct(rci, mname)
+          if rmidx >= 0
+            key2 = rci.to_s + "|" + rmidx.to_s
+            if @cls_meth_rbs_ptypes.key?(key2)
+              rbs_pt = @cls_meth_rbs_ptypes[key2]
+              label = rcname + "#" + mname
+            end
+          end
+        end
+      end
+    end
+    if rbs_pt == "" && recv >= 0
+ # Class-method call against a ConstantReadNode recv (Foo.bar).
+      if @nd_type[recv] == "ConstantReadNode"
+        rcname = @nd_name[recv]
+        rci = find_class_idx(rcname)
+        if rci >= 0
+          mnames_c = @cls_cmeth_names[rci].split(";")
+          cmidx = -1
+          mc = 0
+          while mc < mnames_c.length
+            if mnames_c[mc] == mname
+              cmidx = mc
+              mc = mnames_c.length
+            else
+              mc = mc + 1
+            end
+          end
+          if cmidx >= 0
+            key3 = rci.to_s + "|" + cmidx.to_s
+            if @cls_cmeth_rbs_ptypes.key?(key3)
+              rbs_pt = @cls_cmeth_rbs_ptypes[key3]
+              label = rcname + "." + mname
+            end
+          end
+        end
+      end
+    end
+    if rbs_pt == ""
+      return
+    end
+    rbs_ptypes = rbs_pt.split(",")
+    ak = 0
+    while ak < arg_ids.length && ak < rbs_ptypes.length
+      arg_id = arg_ids[ak]
+      lt = rbs_literal_expr_type(arg_id)
+      rbs_t = rbs_ptypes[ak]
+      if lt != "" && rbs_t != "" && rbs_inferred_incompatible?(rbs_t, lt)
+        $stderr.puts "Spinel: RBS conflict on " + label + " param " + (ak + 1).to_s + ": declared \"" + rbs_t + "\" but a literal arg infers \"" + lt + "\""
+        exit(1)
+      end
+      ak = ak + 1
+    end
   end
 
   def seed_class_method(ci, mname, ret, ptypes_token)
@@ -20838,6 +21155,13 @@ class Compiler
     @analysis_frozen = 1
     precompute_all_scope_decls
     annotate_all_node_types
+ # Now that @nd_inferred_type is populated for every reachable
+ # node, we can resolve `recv.method(...)`'s receiver class
+ # cheaply. Check each RBS-pinned method's positional args at
+ # every call site: a literal arg whose type contradicts the
+ # RBS-declared param errors. The sibling return-conflict check
+ # already ran inside arbitrate_rbs_vs_inferred_methods.
+    arbitrate_rbs_method_params_definite_conflict
     infer_proc_blk_param_types
     if ENV["SP_POLY_REPORT"] == "1"
       emit_poly_report
