@@ -24997,13 +24997,13 @@ class Compiler
         end
       end
       if vt == "bigint"
-        rhs_t = infer_type(@nd_expression[nid])
-        val = compile_expr(@nd_expression[nid])
-        if rhs_t == "bigint"
-          emit("  " + vref + " = " + val + ";")
-        else
-          emit("  " + vref + " = sp_bigint_new_int(" + val + ");")
-        end
+ # Route through compile_expr_for_expected_type so the cache-
+ # override for arith CallNode on a bigint recv kicks in. This
+ # avoids the double-wrap `sp_bigint_new_int(sp_bigint_mul(...))`
+ # when the rhs is a bigint expression whose cached annotation
+ # is stale at "int".
+        val = compile_expr_for_expected_type(@nd_expression[nid], "bigint")
+        emit("  " + vref + " = " + val + ";")
  # Trigger GC after bigint statement (safe point - all results stored in vars)
         emit("  if(sp_gc_bytes>sp_gc_threshold){size_t _b=sp_gc_bytes;sp_gc_collect();size_t _f=_b-sp_gc_bytes;if(_f<_b/4)sp_gc_threshold=_b*2;else if(sp_gc_bytes>0){sp_gc_threshold=sp_gc_bytes*4;if(sp_gc_threshold<sp_gc_threshold_init)sp_gc_threshold=sp_gc_threshold_init;}else sp_gc_threshold=sp_gc_threshold_init;}")
         return
@@ -34183,7 +34183,14 @@ class Compiler
       aids = get_args(args_id)
       k = 0
       while k < aids.length
-        emitted.push(compile_expr(aids[k]))
+ # The block's C ABI is `(mrb_int, ..., void *)`; promote-mode
+ # widened args are sp_Bigint * locally and need unboxing.
+        yarg_ev = compile_expr(aids[k])
+        if infer_type(aids[k]) == "bigint"
+          @needs_bigint = 1
+          yarg_ev = "sp_bigint_to_int((sp_Bigint *)" + yarg_ev + ")"
+        end
+        emitted.push(yarg_ev)
         k = k + 1
       end
     end
@@ -34249,14 +34256,26 @@ class Compiler
         pt = ptypes[k]
       end
       tname = pnames[k] + suffix
-      val = "0"
+      val = c_default_val(pt)
       if k < arg_ids.length
         val = compile_expr(arg_ids[k])
+        arg_t_inline = infer_type(arg_ids[k])
+        if base_type(pt) == "bigint" && arg_t_inline == "int"
+          @needs_bigint = 1
+          val = "sp_bigint_new_int(" + val + ")"
+        elsif base_type(pt) == "int" && arg_t_inline == "bigint"
+          @needs_bigint = 1
+          val = "sp_bigint_to_int((sp_Bigint *)" + val + ")"
+        end
       end
       emit("  " + c_type(pt) + " lv_" + tname + " = " + val + ";")
       param_map_from.push(pnames[k])
       param_map_to.push(tname)
       declare_var(tname, pt)
+ # Also expose the original name so infer_type's scope lookup
+ # inside the inlined body (which still sees the AST's
+ # LocalVariableReadNode "x", not "x_y1") finds the right type.
+      declare_var(pnames[k], pt)
       k = k + 1
     end
 
@@ -34343,9 +34362,17 @@ class Compiler
         pt_yc = ptypes[kp]
       end
       tname = pnames[kp] + suffix
-      val_yc = "0"
+      val_yc = c_default_val(pt_yc)
       if kp < arg_ids_yc.length
         val_yc = compile_expr(arg_ids_yc[kp])
+        arg_t_yc = infer_type(arg_ids_yc[kp])
+        if base_type(pt_yc) == "bigint" && arg_t_yc == "int"
+          @needs_bigint = 1
+          val_yc = "sp_bigint_new_int(" + val_yc + ")"
+        elsif base_type(pt_yc) == "int" && arg_t_yc == "bigint"
+          @needs_bigint = 1
+          val_yc = "sp_bigint_to_int((sp_Bigint *)" + val_yc + ")"
+        end
       end
       emit("  " + c_type(pt_yc) + " lv_" + tname + " = " + val_yc + ";")
       param_map_from.push(pnames[kp])
@@ -34464,6 +34491,14 @@ class Compiler
       rhs_t_lv = infer_type(@nd_expression[nid])
       if vt_lv == "poly" && rhs_t_lv != "" && rhs_t_lv != "poly"
         val = box_value_to_poly(rhs_t_lv, val)
+      end
+      if vt_lv == "bigint" && rhs_t_lv == "int"
+        @needs_bigint = 1
+        val = "sp_bigint_new_int(" + val + ")"
+      end
+      if vt_lv == "int" && rhs_t_lv == "bigint"
+        @needs_bigint = 1
+        val = "sp_bigint_to_int((sp_Bigint *)" + val + ")"
       end
       emit("  lv_" + rname + " = " + val + ";")
       return
@@ -34698,6 +34733,61 @@ class Compiler
       mname = @nd_name[nid]
       recv = @nd_receiver[nid]
       if recv >= 0
+ # promote-mode-widened recv: route arith / cmp through the
+ # sp_bigint_* helpers. Mirrors compile_operator_expr's bigint
+ # branch but for the remapped (inlined yield body) emit path.
+        recv_t_rm = base_type(infer_type(recv))
+        if recv_t_rm == "bigint" && (mname == "+" || mname == "-" || mname == "*" || mname == "/" || mname == "%" || mname == "<" || mname == ">" || mname == "<=" || mname == ">=" || mname == "==" || mname == "!=")
+          @needs_bigint = 1
+          rc_b_rm = "(sp_Bigint *)" + compile_expr_remap(recv, map_from, map_to)
+          args_id_rm = @nd_arguments[nid]
+          arg_b_rm = "sp_bigint_new_int(0)"
+          if args_id_rm >= 0
+            arg_ids_rm = get_args(args_id_rm)
+            if arg_ids_rm.length > 0
+              arg_raw_rm = compile_expr_remap(arg_ids_rm[0], map_from, map_to)
+              arg_t_rm = infer_type(arg_ids_rm[0])
+              if arg_t_rm == "bigint"
+                arg_b_rm = "(sp_Bigint *)" + arg_raw_rm
+              else
+                arg_b_rm = "sp_bigint_new_int(" + arg_raw_rm + ")"
+              end
+            end
+          end
+          if mname == "+"
+            return "sp_bigint_add(" + rc_b_rm + ", " + arg_b_rm + ")"
+          end
+          if mname == "-"
+            return "sp_bigint_sub(" + rc_b_rm + ", " + arg_b_rm + ")"
+          end
+          if mname == "*"
+            return "sp_bigint_mul(" + rc_b_rm + ", " + arg_b_rm + ")"
+          end
+          if mname == "/"
+            return "sp_bigint_div(" + rc_b_rm + ", " + arg_b_rm + ")"
+          end
+          if mname == "%"
+            return "sp_bigint_mod(" + rc_b_rm + ", " + arg_b_rm + ")"
+          end
+          if mname == "<"
+            return "(sp_bigint_cmp(" + rc_b_rm + ", " + arg_b_rm + ") < 0)"
+          end
+          if mname == ">"
+            return "(sp_bigint_cmp(" + rc_b_rm + ", " + arg_b_rm + ") > 0)"
+          end
+          if mname == "<="
+            return "(sp_bigint_cmp(" + rc_b_rm + ", " + arg_b_rm + ") <= 0)"
+          end
+          if mname == ">="
+            return "(sp_bigint_cmp(" + rc_b_rm + ", " + arg_b_rm + ") >= 0)"
+          end
+          if mname == "=="
+            return "(sp_bigint_cmp(" + rc_b_rm + ", " + arg_b_rm + ") == 0)"
+          end
+          if mname == "!="
+            return "(sp_bigint_cmp(" + rc_b_rm + ", " + arg_b_rm + ") != 0)"
+          end
+        end
         if mname == "+"
           return "(" + compile_expr_remap(recv, map_from, map_to) + " + " + compile_expr_remap_arg0(nid, map_from, map_to) + ")"
         end
@@ -34952,6 +35042,14 @@ class Compiler
       val = c_default_val(pt)
       if k < arg_ids.length
         val = compile_expr(arg_ids[k])
+        arg_t_ym = infer_type(arg_ids[k])
+        if base_type(pt) == "bigint" && arg_t_ym == "int"
+          @needs_bigint = 1
+          val = "sp_bigint_new_int(" + val + ")"
+        elsif base_type(pt) == "int" && arg_t_ym == "bigint"
+          @needs_bigint = 1
+          val = "sp_bigint_to_int((sp_Bigint *)" + val + ")"
+        end
       end
       emit("  " + c_type(pt) + " lv_" + tname + " = " + val + ";")
       map_from.push(pnames[k])
