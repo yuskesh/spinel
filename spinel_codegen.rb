@@ -11867,11 +11867,11 @@ class Compiler
       emit("  " + c_type(rt) + " " + tmp + " = " + c_default_val(rt) + ";")
       emit("  sp_exc_top++;")
       emit("  if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {")
-      emit("    " + tmp + " = " + compile_expr(@nd_expression[nid]) + ";")
+      emit("    " + tmp + " = " + compile_expr_for_expected_type(@nd_expression[nid], rt) + ";")
       emit("    sp_exc_top--;")
       emit("  } else {")
       emit("    sp_exc_top--;")
-      emit("    " + tmp + " = " + compile_expr(@nd_else_clause[nid]) + ";")
+      emit("    " + tmp + " = " + compile_expr_for_expected_type(@nd_else_clause[nid], rt) + ";")
       emit("  }")
       return tmp
     end
@@ -16628,7 +16628,7 @@ class Compiler
       return "sp_str_dup(" + rc + ")"
     end
     if mname == "getbyte"
-      return "((mrb_int)(unsigned char)(" + rc + ")[" + compile_arg0(nid) + "])"
+      return "((mrb_int)(unsigned char)(" + rc + ")[" + compile_arg0_as_int(nid) + "])"
     end
     if mname == "setbyte"
  # `s.setbyte(i, v)` mutates the receiver in place. Spinel
