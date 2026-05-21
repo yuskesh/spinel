@@ -25732,10 +25732,21 @@ class Compiler
       if recv_t.start_with?("obj_")
         cls_n = recv_t[4, recv_t.length - 4]
         ci_w = find_class_idx(cls_n)
+        ve_call_t = value_expr
+        if ci_w >= 0
+          slot_t_ct = cls_ivar_type(ci_w, "@" + mname)
+          if slot_t_ct == "bigint" && value_type == "int"
+            @needs_bigint = 1
+            ve_call_t = "sp_bigint_new_int(" + value_expr + ")"
+          elsif slot_t_ct == "int" && value_type == "bigint"
+            @needs_bigint = 1
+            ve_call_t = "sp_bigint_to_int((sp_Bigint *)" + value_expr + ")"
+          end
+        end
         if cls_has_attr_writer(ci_w, mname) == 1
-          emit("  " + recv_c + "->iv_" + mname + " = " + value_expr + ";")
+          emit("  " + recv_c + "->iv_" + mname + " = " + ve_call_t + ";")
         else
-          emit("  sp_" + cls_n + "_" + mname + "_eq(" + recv_c + ", " + value_expr + ");")
+          emit("  sp_" + cls_n + "_" + mname + "_eq(" + recv_c + ", " + ve_call_t + ");")
         end
       end
     end
