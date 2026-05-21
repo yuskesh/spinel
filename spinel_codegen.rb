@@ -24547,7 +24547,12 @@ class Compiler
       emit("  sp_SymIntHash *" + tmp + " = sp_SymIntHash_new();")
       elems.each { |el|
         if @nd_type[el] == "AssocNode"
-          emit("  sp_SymIntHash_set(" + tmp + ", " + compile_expr(@nd_key[el]) + ", " + compile_expr(@nd_expression[el]) + ");")
+          v_syh = compile_expr(@nd_expression[el])
+          if infer_type(@nd_expression[el]) == "bigint"
+            @needs_bigint = 1
+            v_syh = "sp_bigint_to_int((sp_Bigint *)" + v_syh + ")"
+          end
+          emit("  sp_SymIntHash_set(" + tmp + ", " + compile_expr(@nd_key[el]) + ", " + v_syh + ");")
         end
       }
       return tmp
@@ -24605,7 +24610,12 @@ class Compiler
     emit("  sp_StrIntHash *" + tmp + " = sp_StrIntHash_new();")
     elems.each { |el|
       if @nd_type[el] == "AssocNode"
-        emit("  sp_StrIntHash_set(" + tmp + ", " + compile_expr_as_string(@nd_key[el]) + ", " + compile_expr(@nd_expression[el]) + ");")
+        v_sih = compile_expr(@nd_expression[el])
+        if infer_type(@nd_expression[el]) == "bigint"
+          @needs_bigint = 1
+          v_sih = "sp_bigint_to_int((sp_Bigint *)" + v_sih + ")"
+        end
+        emit("  sp_StrIntHash_set(" + tmp + ", " + compile_expr_as_string(@nd_key[el]) + ", " + v_sih + ");")
       end
     }
     tmp
@@ -29894,6 +29904,11 @@ class Compiler
         if idx_t == "poly" && rt == "int_str_hash"
           idx = "(" + idx + ").v.i"
         end
+ # promote-mode-widened idx for int-keyed receivers.
+        if idx_t == "bigint" && (rt == "int_array" || rt == "float_array" || rt == "str_array" || rt == "sym_array" || is_ptr_array_type(rt) == 1 || rt == "poly_array" || rt == "int_str_hash")
+          @needs_bigint = 1
+          idx = "sp_bigint_to_int((sp_Bigint *)" + idx + ")"
+        end
       end
     end
     if arg_ids.length >= 2
@@ -29922,7 +29937,12 @@ class Compiler
       return
     end
     if rt == "sym_int_hash"
-      emit("  sp_SymIntHash_set(" + rc + ", " + idx + ", " + val + ");")
+      val_sih = val
+      if arg_ids.length >= 2 && infer_type(arg_ids[1]) == "bigint"
+        @needs_bigint = 1
+        val_sih = "sp_bigint_to_int((sp_Bigint *)" + val + ")"
+      end
+      emit("  sp_SymIntHash_set(" + rc + ", " + idx + ", " + val_sih + ");")
       return
     end
     if rt == "sym_str_hash"
