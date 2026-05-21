@@ -25209,6 +25209,13 @@ class Compiler
         val = box_expr_to_poly(expr_id)
       else
         val = compile_expr(expr_id)
+ # `--int-overflow=promote` widens ivar slots to bigint; an
+ # int-typed RHS (literal, arithmetic, etc.) needs the
+ # sp_bigint_new_int wrap before assignment.
+        if ivt == "bigint" && infer_type(expr_id) == "int"
+          @needs_bigint = 1
+          val = "sp_bigint_new_int(" + val + ")"
+        end
       end
  # Check if we're in a module class method
       mod_ivar = 0
@@ -26834,13 +26841,8 @@ class Compiler
  # `--int-overflow=promote` widens return slots to bigint; an
  # explicit `return <int_expr>` needs sp_bigint_new_int wrap.
  # Reverse covers callers that still want mrb_int.
-        elsif base_type(@current_method_return) == "bigint" && rt == "int"
-          @needs_bigint = 1
-          ret_val = "sp_bigint_new_int(" + ret_val + ")"
-          ret_ctype = c_type(@current_method_return)
-        elsif base_type(@current_method_return) == "int" && rt == "bigint"
-          @needs_bigint = 1
-          ret_val = "sp_bigint_to_int((sp_Bigint *)" + ret_val + ")"
+        elsif (base_type(@current_method_return) == "bigint" && rt == "int") || (base_type(@current_method_return) == "int" && rt == "bigint")
+          ret_val = maybe_bigint_coerce(ret_val, rt, @current_method_return)
           ret_ctype = c_type(@current_method_return)
         end
         if @in_gc_scope == 1
@@ -34984,6 +34986,22 @@ class Compiler
     end
   end
 
+ # `--int-overflow=promote` widens return slots to bigint while
+ # some surrounding slots (cvars, gvars, lvars in arms that don't
+ # carry through the promotion) stay int. Coerce when the value's
+ # source type differs from the function's declared return type.
+  def maybe_bigint_coerce(c_expr, src_t, ret_t)
+    if base_type(ret_t) == "bigint" && src_t == "int"
+      @needs_bigint = 1
+      return "sp_bigint_new_int(" + c_expr + ")"
+    end
+    if base_type(ret_t) == "int" && src_t == "bigint"
+      @needs_bigint = 1
+      return "sp_bigint_to_int((sp_Bigint *)" + c_expr + ")"
+    end
+    c_expr
+  end
+
   def compile_body_return_inner(body_id, return_type)
     if body_id < 0
       if return_type != "void"
@@ -35237,28 +35255,47 @@ class Compiler
     if lt == "ClassVariableWriteNode" || lt == "ClassVariableOperatorWriteNode" || lt == "ClassVariableOrWriteNode" || lt == "ClassVariableAndWriteNode"
       compile_stmt(last)
       if return_type != "void"
-        emit("  return cvar_" + cvar_qname(@current_class_idx, @nd_name[last]) + ";")
+        qname_cv = cvar_qname(@current_class_idx, @nd_name[last])
+        cv_slot_t = "int"
+        ci_cv = find_cvar_idx(qname_cv)
+        if ci_cv >= 0
+          cv_slot_t = @cvar_types[ci_cv]
+        end
+        emit("  return " + maybe_bigint_coerce("cvar_" + qname_cv, cv_slot_t, return_type) + ";")
       end
       return
     end
     if lt == "GlobalVariableWriteNode"
       compile_stmt(last)
       if return_type != "void"
-        emit("  return " + sanitize_gvar(@nd_name[last]) + ";")
+        gname_cv = @nd_name[last]
+        gv_slot_t = "int"
+        gi_cv = 0
+        while gi_cv < @gvar_names.length
+          if @gvar_names[gi_cv] == gname_cv
+            gv_slot_t = @gvar_types[gi_cv]
+            gi_cv = @gvar_names.length
+          else
+            gi_cv = gi_cv + 1
+          end
+        end
+        emit("  return " + maybe_bigint_coerce(sanitize_gvar(gname_cv), gv_slot_t, return_type) + ";")
       end
       return
     end
     if lt == "LocalVariableWriteNode"
       compile_stmt(last)
       if return_type != "void"
-        emit("  return lv_" + @nd_name[last] + ";")
+        lv_slot_t = find_var_type(@nd_name[last])
+        emit("  return " + maybe_bigint_coerce("lv_" + @nd_name[last], lv_slot_t, return_type) + ";")
       end
       return
     end
     if lt == "LocalVariableOperatorWriteNode"
       compile_stmt(last)
       if return_type != "void"
-        emit("  return lv_" + @nd_name[last] + ";")
+        lv_slot_t = find_var_type(@nd_name[last])
+        emit("  return " + maybe_bigint_coerce("lv_" + @nd_name[last], lv_slot_t, return_type) + ";")
       end
       return
     end
@@ -35330,15 +35367,7 @@ class Compiler
  # type) to bigint at analyze time, so a literal/int-typed
  # fall-through last expression must be wrapped before return.
  # The reverse direction covers callers that still want mrb_int.
-        if base_type(return_type) == "bigint" && expr_type == "int"
-          @needs_bigint = 1
-          emit("  return sp_bigint_new_int(" + val + ");")
-        elsif base_type(return_type) == "int" && expr_type == "bigint"
-          @needs_bigint = 1
-          emit("  return sp_bigint_to_int((sp_Bigint *)" + val + ");")
-        else
-          emit("  return " + val + ";")
-        end
+        emit("  return " + maybe_bigint_coerce(val, expr_type, return_type) + ";")
       end
     else
       compile_stmt(last)
