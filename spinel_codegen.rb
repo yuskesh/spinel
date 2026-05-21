@@ -19641,7 +19641,16 @@ class Compiler
             while kk < owner_pn.length
               slot_expr_cm = ""
               if pos_idx_cm < positional_cm.length
-                slot_expr_cm = cast_away_volatile_arg(positional_cm[pos_idx_cm], compile_expr(positional_cm[pos_idx_cm]))
+ # Route through compile_expr_for_expected_type when the
+ # slot's declared type needs an int<->bigint cast (promote
+ # mode often promotes the param while the call site still
+ # passes a literal int / int-typed local).
+                slot_pt_pos_cm = kk < owner_pt.length ? owner_pt[kk] : ""
+                if slot_pt_pos_cm != "" && (base_type(slot_pt_pos_cm) == "bigint" || base_type(slot_pt_pos_cm) == "int")
+                  slot_expr_cm = compile_expr_for_expected_type(positional_cm[pos_idx_cm], slot_pt_pos_cm)
+                else
+                  slot_expr_cm = cast_away_volatile_arg(positional_cm[pos_idx_cm], compile_expr(positional_cm[pos_idx_cm]))
+                end
                 pos_idx_cm = pos_idx_cm + 1
               else
  # Try kwarg by name.
