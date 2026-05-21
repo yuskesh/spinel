@@ -26408,11 +26408,22 @@ class Compiler
           vname = @nd_name[tgt]
         end
       end
+      slot_t_for = find_var_type(vname)
       if @nd_type[coll] == "RangeNode"
         left = compile_expr(@nd_left[coll])
         right = compile_expr(@nd_right[coll])
         cmp = range_excl_end(coll) == 1 ? "<" : "<="
-        emit("  for (lv_" + vname + " = " + left + "; lv_" + vname + " " + cmp + " " + right + "; lv_" + vname + "++) {")
+        if slot_t_for == "bigint"
+ # promote-mode-widened loop var: use a fresh mrb_int counter
+ # and wrap into the bigint slot at each iteration so the body
+ # sees a bigint LV but `++` still works on the C counter.
+          @needs_bigint = 1
+          ftmp = new_temp
+          emit("  for (mrb_int " + ftmp + " = " + left + "; " + ftmp + " " + cmp + " " + right + "; " + ftmp + "++) {")
+          emit("    lv_" + vname + " = sp_bigint_new_int(" + ftmp + ");")
+        else
+          emit("  for (lv_" + vname + " = " + left + "; lv_" + vname + " " + cmp + " " + right + "; lv_" + vname + "++) {")
+        end
         @indent = @indent + 1
         redo_label = push_redo_label
         emit_redo_label(redo_label)
@@ -26429,7 +26440,13 @@ class Compiler
         emit("  for (mrb_int " + tmp + " = 0; " + tmp + " < sp_" + pfx + "_length(" + rc + "); " + tmp + "++) {")
  # Loop-var assignment stays OUTSIDE the redo label so `redo` re-runs
  # the body with the same value (matches MRI: `redo` does not advance).
-        emit("    lv_" + vname + " = sp_" + pfx + "_get(" + rc + ", " + tmp + ");")
+        et_for = elem_type_of_array(ct)
+        if slot_t_for == "bigint" && et_for == "int"
+          @needs_bigint = 1
+          emit("    lv_" + vname + " = sp_bigint_new_int(sp_" + pfx + "_get(" + rc + ", " + tmp + "));")
+        else
+          emit("    lv_" + vname + " = sp_" + pfx + "_get(" + rc + ", " + tmp + ");")
+        end
 
         @indent = @indent + 1
         redo_label = push_redo_label
@@ -31647,17 +31664,30 @@ class Compiler
   def compile_times_block(nid)
     old = @in_loop
     @in_loop = 1
-    rc = compile_expr_gc_rooted(@nd_receiver[nid])
+    rc_recv = @nd_receiver[nid]
+    rc = compile_expr_gc_rooted(rc_recv)
     bp1 = get_block_param(nid, 0)
     tmp = new_temp
+ # With promote mode the receiver of `times` is itself sp_Bigint *,
+ # so the loop bound needs to be unboxed to mrb_int.
+    if rc_recv >= 0 && infer_type(rc_recv) == "bigint"
+      @needs_bigint = 1
+      rc = "sp_bigint_to_int((sp_Bigint *)" + rc + ")"
+    end
     emit("  for (mrb_int " + tmp + " = 0; " + tmp + " < " + rc + "; " + tmp + "++) {")
+    bp_t_tb = bp1 != "" ? find_var_type(bp1) : ""
     if bp1 != ""
-      emit("    lv_" + bp1 + " = " + tmp + ";")
+      if bp_t_tb == "bigint"
+        @needs_bigint = 1
+        emit("    lv_" + bp1 + " = sp_bigint_new_int(" + tmp + ");")
+      else
+        emit("    lv_" + bp1 + " = " + tmp + ";")
+      end
     end
     @indent = @indent + 1
     push_scope
     if bp1 != ""
-      declare_var(bp1, "int")
+      declare_var(bp1, bp_t_tb == "bigint" ? "bigint" : "int")
     end
     redo_label = push_redo_label
     emit_redo_label(redo_label)
@@ -31733,18 +31763,29 @@ class Compiler
   def compile_downto_block(nid)
     old = @in_loop
     @in_loop = 1
-    rc = compile_expr_gc_rooted(@nd_receiver[nid])
-    lim = compile_arg0(nid)
+    rc_recv_d = @nd_receiver[nid]
+    rc = compile_expr_gc_rooted(rc_recv_d)
+    if rc_recv_d >= 0 && infer_type(rc_recv_d) == "bigint"
+      @needs_bigint = 1
+      rc = "sp_bigint_to_int((sp_Bigint *)" + rc + ")"
+    end
+    lim = compile_arg0_as_int(nid)
     bp1 = get_block_param(nid, 0)
     tmp = new_temp
     emit("  for (mrb_int " + tmp + " = " + rc + "; " + tmp + " >= " + lim + "; " + tmp + "--) {")
+    bp_t_dd = bp1 != "" ? find_var_type(bp1) : ""
     if bp1 != ""
-      emit("    lv_" + bp1 + " = " + tmp + ";")
+      if bp_t_dd == "bigint"
+        @needs_bigint = 1
+        emit("    lv_" + bp1 + " = sp_bigint_new_int(" + tmp + ");")
+      else
+        emit("    lv_" + bp1 + " = " + tmp + ";")
+      end
     end
     @indent = @indent + 1
     push_scope
     if bp1 != ""
-      declare_var(bp1, "int")
+      declare_var(bp1, bp_t_dd == "bigint" ? "bigint" : "int")
     end
     redo_label = push_redo_label
     emit_redo_label(redo_label)
