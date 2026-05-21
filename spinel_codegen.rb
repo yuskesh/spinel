@@ -13354,7 +13354,15 @@ class Compiler
           aargs = get_args(args_id)
           k = 0
           while k < aargs.length
-            joined = joined + ", " + compile_expr(aargs[k])
+ # Method's bound C function has the fixed `(void *self,
+ # mrb_int...)` ABI; promote-widened bigint args need
+ # unbox before being passed through.
+            arg_v_bm = compile_expr(aargs[k])
+            if infer_type(aargs[k]) == "bigint"
+              @needs_bigint = 1
+              arg_v_bm = "sp_bigint_to_int((sp_Bigint *)" + arg_v_bm + ")"
+            end
+            joined = joined + ", " + arg_v_bm
             sig_args = sig_args + ", mrb_int"
             k = k + 1
           end
@@ -21784,6 +21792,9 @@ class Compiler
           ai_val = arg_compiled[mi]
           if mi < arg_types.length && arg_types[mi] == "poly"
             ai_val = "(" + ai_val + ").v.i"
+          elsif mi < arg_types.length && arg_types[mi] == "bigint"
+            @needs_bigint = 1
+            ai_val = "sp_bigint_to_int((sp_Bigint *)" + ai_val + ")"
           end
           call_args = call_args + ", " + ai_val
           mi = mi + 1
