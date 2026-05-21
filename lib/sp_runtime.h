@@ -103,6 +103,31 @@ static inline mrb_int sp_imod(mrb_int a, mrb_int b) {
   if ((r != 0) && ((r ^ b) < 0)) r += b;
   return r;
 }
+/* Overflow-checked integer arithmetic (BIGINT.md option β: raise on
+   overflow, keep locals at native mrb_int width). __builtin_*_overflow
+   compiles to a single ALU op + conditional branch on every supported
+   platform; the branch is well-predicted in hot loops so the cost is
+   close to one extra instruction per op.
+
+   Implemented as GCC statement-expression macros rather than static
+   inline functions: the inline variant produces wrong optcarrot
+   output even with __attribute__((always_inline)) (observed: checksum
+   diverges from 59662 to 4096, with no overflow ever firing). I
+   suspect a UB-assumption interaction between the optimizer and the
+   function-call-shaped expression that the macro form bypasses by
+   keeping every operand in its surrounding expression context. */
+#define sp_int_add(a, b) ({ mrb_int _sp_a = (a), _sp_b = (b), _sp_r; \
+  if (__builtin_add_overflow(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in +"); \
+  _sp_r; })
+#define sp_int_sub(a, b) ({ mrb_int _sp_a = (a), _sp_b = (b), _sp_r; \
+  if (__builtin_sub_overflow(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in -"); \
+  _sp_r; })
+#define sp_int_mul(a, b) ({ mrb_int _sp_a = (a), _sp_b = (b), _sp_r; \
+  if (__builtin_mul_overflow(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in *"); \
+  _sp_r; })
+#define sp_int_neg(a) ({ mrb_int _sp_a = (a), _sp_r; \
+  if (__builtin_sub_overflow((mrb_int)0, _sp_a, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in -@"); \
+  _sp_r; })
 
 static mrb_int sp_gcd(mrb_int a,mrb_int b){if(a<0)a=-a;if(b<0)b=-b;while(b){mrb_int t=b;b=a%b;a=t;}return a;}
 static mrb_int sp_lcm(mrb_int a,mrb_int b){if(a==0||b==0)return 0;mrb_int g=sp_gcd(a,b);if(a<0)a=-a;if(b<0)b=-b;return (a/g)*b;}

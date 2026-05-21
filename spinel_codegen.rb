@@ -14923,12 +14923,23 @@ class Compiler
       if lt == "time"
         return "sp_time_add(" + compile_expr(recv) + ", (mrb_float)(" + compile_arg0(nid) + "))"
       end
+      args_id_add = @nd_arguments[nid]
+      if args_id_add >= 0 && lt == "int"
+        arg_ids_add = get_args(args_id_add)
+        if arg_ids_add.length > 0 && infer_type(arg_ids_add[0]) == "int"
+          return "sp_int_add(" + compile_expr(recv) + ", " + compile_arg0_as_int(nid) + ")"
+        end
+      end
       return "(" + compile_expr(recv) + " + " + compile_arg0_as_int(nid) + ")"
     end
     if mname == "-"
       lt = infer_type(recv)
       args_id = @nd_arguments[nid]
       if args_id < 0
+ # Unary minus on int. `-INT64_MIN` overflows; the helper raises.
+        if lt == "int"
+          return "sp_int_neg(" + compile_expr(recv) + ")"
+        end
         return "(-" + compile_expr(recv) + ")"
       end
       if lt == "poly"
@@ -14955,6 +14966,13 @@ class Compiler
       r = compile_array_setop_expr(nid, recv, "difference", lt)
       if r != ""
         return r
+      end
+ # Overflow-checked int - int (BIGINT.md option β). See `+` arm.
+      if lt == "int"
+        arg_ids_sub = get_args(args_id)
+        if arg_ids_sub.length > 0 && infer_type(arg_ids_sub[0]) == "int"
+          return "sp_int_sub(" + compile_expr(recv) + ", " + compile_arg0_as_int(nid) + ")"
+        end
       end
       return "(" + compile_expr(recv) + " - " + compile_arg0_as_int(nid) + ")"
     end
@@ -14987,6 +15005,14 @@ class Compiler
         rhs_id_cm = @nd_arguments[nid] >= 0 ? get_args(@nd_arguments[nid])[0] : -1
         if rhs_id_cm >= 0 && infer_type(rhs_id_cm) == "complex"
           return "sp_complex_mul(" + compile_expr(recv) + ", " + compile_expr(rhs_id_cm) + ")"
+        end
+      end
+ # Overflow-checked int * int (BIGINT.md option β). See `+` arm.
+      args_id_mul = @nd_arguments[nid]
+      if args_id_mul >= 0 && lt == "int"
+        arg_ids_mul = get_args(args_id_mul)
+        if arg_ids_mul.length > 0 && infer_type(arg_ids_mul[0]) == "int"
+          return "sp_int_mul(" + compile_expr(recv) + ", " + compile_arg0_as_int(nid) + ")"
         end
       end
       return "(" + compile_expr(recv) + " * " + compile_arg0_as_int(nid) + ")"
