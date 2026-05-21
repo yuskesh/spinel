@@ -5560,6 +5560,32 @@ class Compiler
           end
         end
       end
+ # Same shape for an `obj.method` call: cached type may be the
+ # pre-promotion "int", but cls_method_return is now bigint after
+ # the global promote. Mirror infer_call_type's obj-arm so the
+ # emitted call's actual return type drives the coerce decision.
+      if at != "bigint" && cm_recv_p >= 0
+        recv_t_p = base_type(infer_type(cm_recv_p))
+        if is_obj_type(recv_t_p) == 1
+          rcname_p = recv_t_p[4, recv_t_p.length - 4]
+          rci_p = find_class_idx(rcname_p)
+          if rci_p >= 0
+            mr_p = cls_method_return(rci_p, cm_mn_p)
+            if base_type(mr_p) == "bigint"
+              at = "bigint"
+            end
+          end
+        end
+      end
+ # Bare call inside a class body (recv < 0) — same staleness
+ # for `target` inside `def foo(opt = target)` where target's
+ # return slot got promoted.
+      if at != "bigint" && cm_recv_p < 0 && @current_class_idx >= 0
+        mr_b = cls_method_return(@current_class_idx, cm_mn_p)
+        if base_type(mr_b) == "bigint"
+          at = "bigint"
+        end
+      end
     end
  # `if v.is_a?(String); helper(v); end` (and analogues for int /
  # float / sym / obj) — `v`'s C storage is sp_RbVal but the
