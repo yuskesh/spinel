@@ -4601,6 +4601,54 @@ class Compiler
     $stderr.puts "warning: in " + ctx + ": uninitialized constant '" + rname + "' (emitting 0)"
   end
 
+ # Issue #646: warn when a class's body reads a top-level const that
+ # the program assigns via `<const> = <ThisClass>.new(...)` — i.e.
+ # the read happens during the const's own RHS evaluation. The slot
+ # is NULL during init; any `.method` / `->iv_` deref will segfault.
+ # Pattern-match the const-init RHS for `<ThisClass>.new` (the
+ # canonical shape that triggers the bug). Dedupes through the same
+ # warning stash as warn_unresolved_call / warn_unresolved_const.
+  def warn_self_ref_const_init(rname)
+    if @current_class_idx < 0
+      return
+    end
+    cur_cname = @cls_names[@current_class_idx]
+    ci_self = find_const_idx(rname)
+    if ci_self < 0 || ci_self >= @const_expr_ids.length
+      return
+    end
+    eid_self = @const_expr_ids[ci_self]
+    if eid_self < 0
+      return
+    end
+ # RHS must be a `<Class>.new(...)` shape: CallNode with mname
+ # "new" whose recv is a ConstantReadNode naming the current
+ # class.
+    if @nd_type[eid_self] != "CallNode"
+      return
+    end
+    if @nd_name[eid_self] != "new"
+      return
+    end
+    recv_self = @nd_receiver[eid_self]
+    if recv_self < 0 || @nd_type[recv_self] != "ConstantReadNode"
+      return
+    end
+    if @nd_name[recv_self] != cur_cname
+      return
+    end
+    key_self = "_self_ref_:" + rname + ":" + cur_cname
+    j_self = 0
+    while j_self < @unresolved_call_warnings.length
+      if @unresolved_call_warnings[j_self] == key_self
+        return
+      end
+      j_self = j_self + 1
+    end
+    @unresolved_call_warnings.push(key_self)
+    $stderr.puts "warning: in " + cur_cname + "#" + @current_method_name + ": reading constant '" + rname + "' from within '" + rname + " = " + cur_cname + ".new' — slot is NULL during init; MRI raises NameError"
+  end
+
  # Walk every class's parent chain. A cycle anywhere on the chain is
  # a fatal program error: bail with a clear message instead of letting
  # the recursive helpers loop forever. Self-inheritance (`class A < A`)
@@ -11829,6 +11877,15 @@ class Compiler
         if lv != ""
           return lv
         end
+ # Issue #646: detect the self-referential init shape — a class
+ # whose `initialize` reads a top-level const that's being
+ # initialized via `<const> = <ThisClass>.new(...)`. The slot
+ # is NULL during init; the read returns NULL and any subsequent
+ # `.method` / `->iv_` dereference segfaults. Warn at compile
+ # time so the user catches this before runtime. (MRI raises
+ # NameError; closing the runtime gap would need lifecycle
+ # tracking — see #646 discussion.)
+        warn_self_ref_const_init(rname)
         return "cst_" + rname
       end
  # a class constant in value position
