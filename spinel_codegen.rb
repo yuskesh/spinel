@@ -1398,6 +1398,54 @@ class Compiler
     ""
   end
 
+ # Recognize `<lv> == nil`, `<lv> != nil`, `<lv>.nil?` predicates
+ # for flow-sensitive narrowing in if/ternary arms. Returns
+ # [var_name, then_is_nil] where then_is_nil is "nil" when the
+ # then-arm sees `<lv>` as nil (i.e. `== nil` / `.nil?`) or
+ # "non_nil" when the then-arm sees it as non-nil (i.e. `!= nil`).
+ # Returns ["", ""] when the predicate doesn't match.
+  def parse_nil_check_predicate(pred_id)
+    if pred_id < 0
+      return ["", ""]
+    end
+    pt = @nd_type[pred_id]
+    if pt != "CallNode"
+      return ["", ""]
+    end
+    pname = @nd_name[pred_id]
+    if pname == "nil?"
+      recv_nc = @nd_receiver[pred_id]
+      if recv_nc >= 0 && @nd_type[recv_nc] == "LocalVariableReadNode"
+        return [@nd_name[recv_nc], "nil"]
+      end
+      return ["", ""]
+    end
+    if pname == "==" || pname == "!="
+      recv_nc = @nd_receiver[pred_id]
+      args_nc = @nd_arguments[pred_id]
+      if recv_nc < 0 || args_nc < 0
+        return ["", ""]
+      end
+      arg_ids_nc = get_args(args_nc)
+      if arg_ids_nc.length < 1
+        return ["", ""]
+      end
+ # Either side may be the nil; the other must be a bare LV read.
+      lv_side = -1
+      if @nd_type[recv_nc] == "LocalVariableReadNode" && @nd_type[arg_ids_nc[0]] == "NilNode"
+        lv_side = recv_nc
+      elsif @nd_type[arg_ids_nc[0]] == "LocalVariableReadNode" && @nd_type[recv_nc] == "NilNode"
+        lv_side = arg_ids_nc[0]
+      end
+      if lv_side < 0
+        return ["", ""]
+      end
+      tag = pname == "==" ? "nil" : "non_nil"
+      return [@nd_name[lv_side], tag]
+    end
+    ["", ""]
+  end
+
   def parse_is_a_predicate(pred_id)
     if pred_id < 0
       return ["", ""]
@@ -2374,6 +2422,22 @@ class Compiler
  # for codegen's own infer_type to handle).
     cached = @nd_inferred_type[nid]
     if cached != ""
+ # LocalVariableReadNode: a `<lv> == nil ? T : F` ternary's else
+ # arm pushes a narrowed type onto @type_narrow_names; the cache
+ # was filled by annotate_all_node_types without seeing the
+ # narrow, so consult find_var_type whenever a narrow for this
+ # var is in effect. Same pattern as the existing `is_a?`-based
+ # narrowing.
+      if @nd_type[nid] == "LocalVariableReadNode" && @type_narrow_names.length > 0
+        lv_name_nch = @nd_name[nid]
+        ni_nch = @type_narrow_names.length - 1
+        while ni_nch >= 0
+          if @type_narrow_names[ni_nch] == lv_name_nch
+            return @type_narrow_types[ni_nch]
+          end
+          ni_nch = ni_nch - 1
+        end
+      end
       return cached
     end
     t = @nd_type[nid]
@@ -24610,13 +24674,41 @@ class Compiler
 
  # Fast path: every branch is at most one statement, so the
  # whole if-expression collapses to a C ternary.
+ # Flow-sensitive narrowing for `<lv> == nil ? T : F` and
+ # `<lv> != nil ? T : F` shapes: the arm that sees `<lv>` as
+ # non-nil narrows the var's type from `T?` to `T`, so reads
+ # inside that arm pick the unboxed slot. Issue #645.
+    nc_pred_ie = parse_nil_check_predicate(@nd_predicate[nid])
+    nc_var_ie = nc_pred_ie[0]
+    nc_then_narrow_ie = ""
+    nc_else_narrow_ie = ""
+    if nc_var_ie != ""
+      slot_t_ie = find_var_type(nc_var_ie)
+      stripped_t_ie = ""
+      if is_nullable_type(slot_t_ie) == 1
+        stripped_t_ie = slot_t_ie[0, slot_t_ie.length - 1]
+      end
+      if stripped_t_ie != ""
+        if nc_pred_ie[1] == "non_nil"
+          nc_then_narrow_ie = stripped_t_ie
+        elsif nc_pred_ie[1] == "nil"
+          nc_else_narrow_ie = stripped_t_ie
+        end
+      end
+    end
     then_val = "0"
     then_t = "nil"
     if body >= 0
       stmts = get_stmts(body)
       if stmts.length > 0
+        if nc_then_narrow_ie != ""
+          push_type_narrow(nc_var_ie, nc_then_narrow_ie)
+        end
         then_t = infer_type(stmts.last)
         then_val = compile_expr(stmts.last)
+        if nc_then_narrow_ie != ""
+          pop_type_narrow
+        end
       end
     end
     else_val = "0"
@@ -24627,8 +24719,14 @@ class Compiler
         if eb >= 0
           es = get_stmts(eb)
           if es.length > 0
+            if nc_else_narrow_ie != ""
+              push_type_narrow(nc_var_ie, nc_else_narrow_ie)
+            end
             else_t = infer_type(es.last)
             else_val = compile_expr(es.last)
+            if nc_else_narrow_ie != ""
+              pop_type_narrow
+            end
           end
         end
       else
