@@ -21560,7 +21560,8 @@ class Compiler
  # Promote-mode safety: annotate may have produced stale "int"
  # entries for nodes whose inferred type derived from cached
  # state captured before promote_int_to_bigint_globally landed
- # (SuperNode reading cls_method_return's pre-promotion result).
+ # (SuperNode reading cls_method_return's pre-promotion result,
+ # CallNode chains whose mid-tree return type was cached).
  # Sweep `@nd_inferred_type` again and rewrite "int" -> "bigint"
  # for node kinds whose concrete C emit is always bigint when the
  # underlying slot is promoted.
@@ -21572,6 +21573,25 @@ class Compiler
           ntp = @nd_type[ni_p]
           if ntp == "SuperNode" || ntp == "ForwardingSuperNode"
             @nd_inferred_type[ni_p] = "bigint"
+          elsif ntp == "CallNode"
+ # Only re-resolve when there's a concrete recv class to consult
+ # and the resolved method's return slot is bigint. Avoids the
+ # global rewrite that previously regressed self-host (which used
+ # `int` defaults for unresolved CallNodes).
+            rcv_pn = @nd_receiver[ni_p]
+            if rcv_pn >= 0
+              rcv_t_pn = base_type(@nd_inferred_type[rcv_pn])
+              if is_obj_type(rcv_t_pn) == 1
+                cn_pn = rcv_t_pn[4, rcv_t_pn.length - 4]
+                ci_pn = find_class_idx(cn_pn)
+                if ci_pn >= 0
+                  mr_pn = cls_method_return(ci_pn, @nd_name[ni_p])
+                  if base_type(mr_pn) == "bigint"
+                    @nd_inferred_type[ni_p] = "bigint"
+                  end
+                end
+              end
+            end
           end
         end
         ni_p = ni_p + 1
