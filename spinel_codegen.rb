@@ -23300,7 +23300,9 @@ class Compiler
           if coerced != ""
             result = result + coerced
           else
-            result = result + compile_expr(positional_ids[k])
+ # Route through compile_expr_for_expected_type so int<->
+ # bigint coerce fires for promote-mode-widened params.
+            result = result + compile_expr_for_expected_type(positional_ids[k], pt)
           end
         end
         k = k + 1
@@ -23317,9 +23319,19 @@ class Compiler
       slots_left_for_splat = n_fixed - prefix_count
       if idx_in_splat < slots_left_for_splat
         ge = array_get_native_expr(src_t, src_v, idx_in_splat.to_s)
+ # Coerce when the splat source's elem type doesn't match the
+ # callee's param slot — promote-mode IntArray element (mrb_int)
+ # into a bigint-promoted param.
+        elem_t_spl = elem_type_of_array(src_t)
         if pt == "poly"
  # The splat element itself isn't a node id, so wrap manually.
           result = result + ge
+        elsif base_type(pt) == "bigint" && elem_t_spl == "int"
+          @needs_bigint = 1
+          result = result + "sp_bigint_new_int(" + ge + ")"
+        elsif base_type(pt) == "int" && elem_t_spl == "bigint"
+          @needs_bigint = 1
+          result = result + "sp_bigint_to_int((sp_Bigint *)" + ge + ")"
         else
           result = result + ge
         end
