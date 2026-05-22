@@ -4332,18 +4332,25 @@ class Compiler
  # `sp_*Array_index_poly` runtime wrappers.
       if recv >= 0
         rt_idx = infer_type(recv)
- # String#index uses the int? sentinel path (mname == "index"
- # only; rindex still hits the regex-vs-string overload and
- # stays on poly for a follow-up). String#rindex stays on poly
- # because the regex-receiver branch of compile-side dispatch
- # routes through sp_re_rindex_poly which can't fit the int?
- # encoding cleanly yet.
-        if (rt_idx == "string" || rt_idx == "mutable_str") && mname == "index"
-          return "int?"
-        end
+ # String#index / String#rindex with a plain string arg use the
+ # int? sentinel path (SP_INT_NIL for not-found) — the codegen
+ # routes through sp_str_index_opt / sp_str_rindex_opt. With a
+ # regex arg, the dispatch picks sp_re_*index_poly which returns
+ # sp_RbVal, so the static return stays "poly".
         if rt_idx == "string" || rt_idx == "mutable_str"
-          @needs_rb_value = 1
-          return "poly"
+          arg_t_idx_645 = "string"
+          arg_ids_idx_645 = []
+          if @nd_arguments[nid] >= 0
+            arg_ids_idx_645 = get_args(@nd_arguments[nid])
+          end
+          if arg_ids_idx_645.length > 0 && @nd_type[arg_ids_idx_645[0]] == "RegularExpressionNode"
+            arg_t_idx_645 = "regex"
+          end
+          if arg_t_idx_645 == "regex"
+            @needs_rb_value = 1
+            return "poly"
+          end
+          return "int?"
         end
  # int_array uses the int? sentinel path (returns mrb_int with
  # SP_INT_NIL marking not-found). str_array still goes through

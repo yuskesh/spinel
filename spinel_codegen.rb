@@ -16698,8 +16698,6 @@ class Compiler
       return "sp_str_index_opt(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "rindex"
- # Same widening as String#index (#532).
-      @needs_rb_value = 1
       args_id_ri = @nd_arguments[nid]
       if args_id_ri >= 0
         a_ri = get_args(args_id_ri)
@@ -16709,11 +16707,17 @@ class Compiler
  # pat to `0` and crashed at strlen(NULL). Issue #504.
           rpat_ri = regex_pat_c_expr(a_ri[0])
           if rpat_ri != ""
+            @needs_rb_value = 1
             return "sp_re_rindex_poly(" + rpat_ri + ", " + rc + ")"
           end
         end
       end
-      return "sp_str_rindex_poly(" + rc + ", " + compile_arg0(nid) + ")"
+ # Plain `s.rindex("needle")` returns int? via sp_str_rindex_opt
+ # (SP_INT_NIL sentinel for not-found). The matching analyze-side
+ # arm at spinel_analyze.rb returns "int?" for this shape so the
+ # caller's `pos = s.rindex(x); pos == nil ? ... : ... pos+1 ...`
+ # narrowing works the same as `s.index`. Issue #645.
+      return "sp_str_rindex_opt(" + rc + ", " + compile_arg0(nid) + ")"
     end
     if mname == "tr"
       args_id = @nd_arguments[nid]
