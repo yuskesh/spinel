@@ -31732,6 +31732,50 @@ class Compiler
     while k < arg_ids.length
       aid = arg_ids[k]
       at = infer_type(aid)
+ # Issue #640: `puts cond ? :sym : int` ternary's unify_return_type
+ # picks one arm's type (e.g. "symbol") and the other arm's emit
+ # gets dispatched through the wrong puts variant — `sp_sym_to_s
+ # (an_int)` prints garbage. Detect the mixed-type ternary at the
+ # puts boundary and route through sp_poly_puts so each arm's
+ # value is boxed to its real tag.
+      mixed_ternary = 0
+      if at != "poly" && aid >= 0 && @nd_type[aid] == "IfNode"
+        if_then_t_pt = "nil"
+        if_body_pt = @nd_body[aid]
+        if if_body_pt >= 0
+          if_stmts_pt = get_stmts(if_body_pt)
+          if if_stmts_pt.length > 0
+            if_then_t_pt = base_type(infer_type(if_stmts_pt.last))
+          end
+        end
+        if_else_t_pt = "nil"
+        if_sub_pt = @nd_subsequent[aid]
+        if if_sub_pt >= 0 && @nd_type[if_sub_pt] == "ElseNode"
+          eb_pt = @nd_body[if_sub_pt]
+          if eb_pt >= 0
+            es_pt = get_stmts(eb_pt)
+            if es_pt.length > 0
+              if_else_t_pt = base_type(infer_type(es_pt.last))
+            end
+          end
+        end
+        if if_then_t_pt != if_else_t_pt
+ # Only fire when both arms have a concrete type. nil-arms are
+ # the implicit `if cond; X; end` (no else) shape — leaving them
+ # alone preserves the existing puts dispatch (`nil` on the
+ # missing branch goes through the int/string fallback path).
+          if if_then_t_pt != "nil" && if_else_t_pt != "nil" &&
+             if_then_t_pt != "void" && if_else_t_pt != "void"
+            mixed_ternary = 1
+          end
+        end
+      end
+      if mixed_ternary == 1
+        @needs_rb_value = 1
+        emit("  sp_poly_puts(" + box_expr_to_poly(aid) + ");")
+        k = k + 1
+        next
+      end
       val = compile_expr(aid)
       if at == "poly"
         @needs_rb_value = 1
