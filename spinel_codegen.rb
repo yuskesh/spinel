@@ -5765,7 +5765,21 @@ class Compiler
  # the same trust extends from the #438 unbox-on-IntStrHash-key
  # pattern. Skip the unbox when the expected slot is itself poly
  # — that path already widens via box_value_to_poly below.
-    if at == "poly" && expected_base != "poly"
+ # When the source is a LV-read whose declared storage is poly
+ # and `at` is an obj_<C> / hash / array narrow (these primitives
+ # — int/string/float/bool/sym — get unboxed inline by compile
+ # _expr's LV-read arm, so they reach here already unboxed and
+ # mustn't be unboxed twice). For the pointer-shaped narrows
+ # compile_expr returns the raw sp_RbVal slot, so the unbox
+ # below must still fire.
+    src_storage_poly_pft = 0
+    if nid >= 0 && @nd_type[nid] == "LocalVariableReadNode"
+      if find_var_declared_type(@nd_name[nid]) == "poly" &&
+         (is_obj_type(at) == 1 || is_hash_type(at) == 1 || is_array_type(at) == 1)
+        src_storage_poly_pft = 1
+      end
+    end
+    if (at == "poly" || src_storage_poly_pft == 1) && expected_base != "poly"
       if expected_base == "string" || expected_base == "mutable_str"
         @needs_rb_value = 1
         return "(" + val + ").v.s"
@@ -23320,6 +23334,20 @@ class Compiler
  # wrapper picks the right `sp_box_nullable_*` variant before
  # falling back to base-type dispatch.
     at = infer_type(nid)
+ # `is_a?(<C>)`-narrowed LV read where declared storage is poly:
+ # `compile_expr` returns the raw sp_RbVal slot (`lv_x`), so we
+ # already have a boxed value. `box_value_to_poly("obj_<C>",
+ # "lv_x")` would emit `sp_box_obj(lv_x, <cls_id>)` — type-clash
+ # at the void* arg. Short-circuit: declared-poly LV with an
+ # obj-narrow stays as the existing slot value (already sp_RbVal,
+ # the runtime tag/cls_id match the narrow).
+    if nid >= 0 && @nd_type[nid] == "LocalVariableReadNode"
+      lvname_bep = @nd_name[nid]
+      declared_bep = find_var_declared_type(lvname_bep)
+      if declared_bep == "poly" && is_obj_type(at) == 1
+        return compile_expr(nid)
+      end
+    end
     val = compile_expr(nid)
     box_value_to_poly(at, val)
   end
