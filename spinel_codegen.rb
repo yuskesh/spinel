@@ -8614,6 +8614,56 @@ class Compiler
       declare_var(lnames[j], ltypes[j])
       j = j + 1
     end
+ # Also declare the enclosing method's params — they're stored
+ # separately from @nd_scope_names but are very much in scope for
+ # any yield args. Without this, a `def f(n); yield n; end` lookup
+ # of n via infer_type falls back to "int" (the default), masking
+ # the param's promote-mode bigint slot and emitting a stale
+ # `_block(mrb_int, ...)` signature.
+    pi_byc = 0
+    while pi_byc < @meth_body_ids.length
+      if @meth_body_ids[pi_byc] == bid
+        pnames_byc = @meth_param_names[pi_byc].split(",")
+        ptypes_byc = @meth_param_types[pi_byc].split(",")
+        pp_byc = 0
+        while pp_byc < pnames_byc.length
+          if pp_byc < ptypes_byc.length && pnames_byc[pp_byc] != ""
+            declare_var(pnames_byc[pp_byc], ptypes_byc[pp_byc])
+          end
+          pp_byc = pp_byc + 1
+        end
+        pi_byc = @meth_body_ids.length
+      else
+        pi_byc = pi_byc + 1
+      end
+    end
+ # Class instance methods: same lookup via the per-class tables.
+    ci_byc2 = 0
+    while ci_byc2 < @cls_meth_bodies.length
+      bodies_byc2 = @cls_meth_bodies[ci_byc2].split(";")
+      midx_byc2 = 0
+      while midx_byc2 < bodies_byc2.length
+        if bodies_byc2[midx_byc2].to_i == bid
+          pt_byc2 = cls_meth_ptypes_get(ci_byc2, midx_byc2)
+          all_params_byc2 = @cls_meth_params[ci_byc2].split("|", -1)
+          if midx_byc2 < all_params_byc2.length
+            pnames_byc2 = all_params_byc2[midx_byc2].split(",")
+            pp_byc2 = 0
+            while pp_byc2 < pnames_byc2.length
+              if pp_byc2 < pt_byc2.length && pnames_byc2[pp_byc2] != ""
+                declare_var(pnames_byc2[pp_byc2], pt_byc2[pp_byc2])
+              end
+              pp_byc2 = pp_byc2 + 1
+            end
+          end
+          ci_byc2 = @cls_meth_bodies.length
+          midx_byc2 = bodies_byc2.length
+        else
+          midx_byc2 = midx_byc2 + 1
+        end
+      end
+      ci_byc2 = ci_byc2 + 1
+    end
     body_yield_arg_types(bid, types)
     pop_scope
     parts = "".split(",")

@@ -21489,6 +21489,36 @@ class Compiler
     compute_live_instance_methods
     @analysis_frozen = 1
     precompute_all_scope_decls
+ # precompute_all_scope_decls re-derives scope_types from
+ # @meth_param_types and from the local refinement pass; in promote
+ # mode, the latter may have left some method-body locals as "int"
+ # despite the globally-promoted param table. Re-run the scope
+ # types int -> bigint sweep so the IR-exported `ST` lines (and
+ # thus the codegen-side block_params_csig_for_body) see promoted
+ # slot types.
+    if @int_overflow_mode == "promote"
+      sj = 0
+      while sj < @nd_scope_types.length
+        stj = @nd_scope_types[sj]
+        if stj != ""
+          psj = stj.split("|")
+          chj = 0
+          ppj = 0
+          while ppj < psj.length
+            if psj[ppj] == "int"
+              psj[ppj] = "bigint"
+              @needs_bigint = 1
+              chj = 1
+            end
+            ppj = ppj + 1
+          end
+          if chj == 1
+            @nd_scope_types[sj] = psj.join("|")
+          end
+        end
+        sj = sj + 1
+      end
+    end
     annotate_all_node_types
  # Now that @nd_inferred_type is populated for every reachable
  # node, we can resolve `recv.method(...)`'s receiver class
