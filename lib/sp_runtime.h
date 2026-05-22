@@ -1393,6 +1393,19 @@ static void sp_re_mark_globals(void) {
   sp_mark_fiber_root_storage();
 }
 
+/* `$+` / `$LAST_PAREN_MATCH` — contents of the highest-indexed group
+   that participated in the match. Walks sp_re_captures[] from 9 down
+   and returns the first non-NULL entry. NULL when no group matched
+   (codegen ternary falls back to ""). Matches CRuby's behaviour:
+   for /(a)(b)?/ matching "a", $+ is "a"; for /(a)(b)/ matching "ab",
+   $+ is "b". */
+static const char *sp_re_last_paren_match(void) {
+  for (int i = 9; i >= 1; i--) {
+    if (sp_re_captures[i]) return sp_re_captures[i];
+  }
+  return NULL;
+}
+
 static void sp_re_set_captures(const char *str, int *caps, int ncaps) {
   sp_re_last_str = str;
   for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;

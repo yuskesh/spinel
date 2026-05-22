@@ -11556,12 +11556,13 @@ class Compiler
       return compile_interpolated(nid)
     end
     if t == "BackReferenceReadNode"
- # `$&`, `$~`, `$'`, `$`. Spinel populates sp_re_match_str /
+ # `$&`, `$~`, `$'`, `$`, `$+`. Spinel populates sp_re_match_str /
  # _pre / _post in sp_re_set_captures alongside sp_re_captures
  # (used by NumberedReferenceReadNode for $1..$9). Each accessor
  # is null-guarded so unused reads return "" -- matches CRuby's
  # post-no-match behavior. $~ falls back to $& since Spinel
- # has no MatchData wrapper to expose.
+ # has no MatchData wrapper to expose. $+ walks the captures
+ # backward via sp_re_last_paren_match.
       n = @nd_name[nid]
       if n == "$&" || n == "$~"
         return "(sp_re_match_str ? sp_re_match_str : \"\")"
@@ -11571,6 +11572,9 @@ class Compiler
       end
       if n == "$'"
         return "(sp_re_match_post ? sp_re_match_post : \"\")"
+      end
+      if n == "$+"
+        return "(sp_re_last_paren_match() ? sp_re_last_paren_match() : \"\")"
       end
       $stderr.puts "Spinel: BackReferenceReadNode `" + n + "` not supported"
       exit(1)
@@ -12280,14 +12284,18 @@ class Compiler
       if gname == "$?"
         return "sp_last_status"
       end
- # Regex match globals -- Prism delivers `$~`, `$&`, `$``, `$'`
+ # Regex match globals -- Prism delivers `$~`, `$&`, `$``, `$'`, `$+`
  # as GlobalVariableReadNode rather than BackReferenceReadNode.
  # spinel populates sp_re_match_str / _pre / _post in
  # sp_re_set_captures; $~ falls back to $& since there's no
  # MatchData wrapper. Null-guards match the BackReferenceReadNode
  # arm above so unused reads return "" (CRuby returns nil for
  # post-no-match $~; that divergence is the same one this arm
- # already had for the BackReferenceReadNode path).
+ # already had for the BackReferenceReadNode path). $+ walks the
+ # captures backward via sp_re_last_paren_match. The English-name
+ # aliases ($LAST_MATCH_INFO, $LAST_PAREN_MATCH) are intentionally
+ # not auto-resolved here -- in CRuby they require `require 'English'`
+ # and arriving without that should match CRuby's "unset global" nil.
       if gname == "$&" || gname == "$~"
         return "(sp_re_match_str ? sp_re_match_str : \"\")"
       end
@@ -12296,6 +12304,9 @@ class Compiler
       end
       if gname == "$'"
         return "(sp_re_match_post ? sp_re_match_post : \"\")"
+      end
+      if gname == "$+"
+        return "(sp_re_last_paren_match() ? sp_re_last_paren_match() : \"\")"
       end
  # General global variable
       return sanitize_gvar(gname)
