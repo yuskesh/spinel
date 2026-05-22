@@ -14591,7 +14591,19 @@ class Compiler
         if cidx >= 0
           owner = find_method_owner(target_ci, mname)
           cast_recv = "(sp_" + owner + " *)" + @instance_eval_self_var
-          tail = build_call_tail(compile_call_args(nid), "")
+ # Use compile_typed_call_args so the per-arg expected-type
+ # coerce (incl. promote-mode int -> bigint) fires; without
+ # it, an int literal arg flows raw into a promoted bigint
+ # param slot.
+          owner_ci_ie = find_class_idx(owner)
+          owner_midx_ie = owner_ci_ie >= 0 ? cls_find_method_direct(owner_ci_ie, mname) : -1
+          ca_ie = ""
+          if owner_midx_ie >= 0
+            ca_ie = compile_typed_call_args(nid, owner_ci_ie, owner_midx_ie, 0)
+          else
+            ca_ie = compile_call_args(nid)
+          end
+          tail = build_call_tail(ca_ie, "")
           return "sp_" + owner + "_" + sanitize_name(mname) + "(" + cast_recv + tail + ")"
         end
       end
