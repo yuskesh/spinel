@@ -15766,11 +15766,24 @@ class Compiler
     if lt == "bigint"
       args_fp = @nd_arguments[nid]
       arg0_fp_t = ""
+      arg0_fp_nid = -1
       if args_fp >= 0
         aargs_fp = get_args(args_fp)
         if aargs_fp.length > 0
           arg0_fp_t = infer_type(aargs_fp[0])
+          arg0_fp_nid = aargs_fp[0]
         end
+      end
+ # `bigint == nil` / `bigint != nil` (and float / bool / etc.)
+ # Ruby semantics: only nil equals nil. Constant-fold so the
+ # bigint cmp path doesn't compare against sp_bigint_new_int(0)
+ # (which would conflate a stored 0 with nil — see compile_eq).
+      if (mname == "==" || mname == "!=") && arg0_fp_nid >= 0 && @nd_type[arg0_fp_nid] == "NilNode"
+        rc_nil_b = compile_expr(recv)
+        if mname == "=="
+          return "(((void)(" + rc_nil_b + ")), FALSE)"
+        end
+        return "(((void)(" + rc_nil_b + ")), TRUE)"
       end
       recv_fp_t = infer_type(recv)
       if (recv_fp_t == "float" && arg0_fp_t == "bigint") || (recv_fp_t == "bigint" && arg0_fp_t == "float") || (recv_fp_t == "float" && arg0_fp_t == "float")
@@ -23203,7 +23216,8 @@ class Compiler
  # Type-strict primitive, or Numeric vs an obj with no user `==`
  # (BasicObject#== identity -> false in MRI).
       if other_t == "int" || other_t == "float" || other_t == "bool" || other_t == "nil" ||
-         other_t == "string" || other_t == "mutable_str" || other_t == "symbol"
+         other_t == "string" || other_t == "mutable_str" || other_t == "symbol" ||
+         other_t == "bigint"
         return op == "==" ? "FALSE" : "TRUE"
       end
     end
@@ -23285,7 +23299,7 @@ class Compiler
  # Note: this does NOT fix the underlying hash-missing-key problem
  # (sp_StrIntHash_get still returns 0 for both stored 0 and miss);
  # use Hash#has_key? / Hash#fetch when distinguishing matters.
-      if lt == "int" || lt == "float" || lt == "bool"
+      if lt == "int" || lt == "float" || lt == "bool" || lt == "bigint"
         if op == "=="
           return "(((void)(" + lc + ")), FALSE)"
         else
@@ -23296,7 +23310,7 @@ class Compiler
     if lt == "nil"
  # Symmetric arm for `nil == int` / `nil != int` (and float/bool).
  # Same reasoning as the LHS-typed-int arm above.
-      if at == "int" || at == "float" || at == "bool"
+      if at == "int" || at == "float" || at == "bool" || at == "bigint"
         if op == "=="
           return "(((void)(" + rc + ")), FALSE)"
         else
