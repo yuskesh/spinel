@@ -2624,14 +2624,18 @@ class Compiler
       eid = elems[0]
       if @nd_type[eid] == "AssocNode"
         first_vt = infer_type(@nd_expression[eid])
- # Check if all values have the same type
+ # Same int/bigint normalization as the codegen-side
+ # infer_hash_val_type: both lower to mrb_int hash storage with
+ # sp_bigint_to_int at the boundaries.
+        first_vt_norm = (first_vt == "bigint") ? "int" : first_vt
         all_same = 1
         k = 1
         while k < elems.length
           eid2 = elems[k]
           if @nd_type[eid2] == "AssocNode"
             vt2 = infer_type(@nd_expression[eid2])
-            if vt2 != first_vt
+            vt2_norm = (vt2 == "bigint") ? "int" : vt2
+            if vt2_norm != first_vt_norm
               all_same = 0
             end
           end
@@ -2675,6 +2679,15 @@ class Compiler
             return "str_str_hash"
           end
           if all_sym_keys == 1 && (first_vt == "int" || first_vt == "bool" || first_vt == "nil")
+            return "sym_int_hash"
+          end
+ # promote-mode bigint values map onto sym_int_hash storage by
+ # unboxing each bigint via sp_bigint_to_int at the codegen
+ # set/get sites (mirrors the codegen-side infer_hash_val_type).
+ # Keeping the analyzer/codegen inferences aligned avoids a
+ # set_var_type widening to sym_poly_hash that would mis-cast
+ # the SymIntHash slot at read sites.
+          if all_sym_keys == 1 && first_vt == "bigint"
             return "sym_int_hash"
           end
  # Symbol values get sym_poly_hash storage so dig / lookup

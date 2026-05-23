@@ -3278,14 +3278,21 @@ class Compiler
       eid = elems[0]
       if @nd_type[eid] == "AssocNode"
         first_vt = infer_type(@nd_expression[eid])
- # Check if all values have the same type
+ # Check if all values have the same type. Treat int and bigint
+ # as compatible under promote mode (both lower to mrb_int slot
+ # storage with sp_bigint_to_int unboxing at the set/get sites)
+ # so a `{n:, sum: 18}` literal where n is bigint and 18 is an
+ # int literal stays sym_int_hash instead of escalating to
+ # sym_poly_hash and mismatching the analyzer's scan_locals slot.
+        first_vt_norm = (first_vt == "bigint") ? "int" : first_vt
         all_same = 1
         k = 1
         while k < elems.length
           eid2 = elems[k]
           if @nd_type[eid2] == "AssocNode"
             vt2 = infer_type(@nd_expression[eid2])
-            if vt2 != first_vt
+            vt2_norm = (vt2 == "bigint") ? "int" : vt2
+            if vt2_norm != first_vt_norm
               all_same = 0
             end
           end
