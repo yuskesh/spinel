@@ -11964,8 +11964,21 @@ class Compiler
           return "(" + lhs_iow + " = " + big_op_iow + "((sp_Bigint *)" + lhs_iow + ", " + rhs_big_iow + "))"
         end
         if op_iow == "&" || op_iow == "|" || op_iow == "^" || op_iow == "<<" || op_iow == ">>"
-          rhs_int_iow = rhs_t_iow == "bigint" ? "sp_bigint_to_int(" + rhs_big_iow + ")" : "(" + val_iow + ")"
-          return "(" + lhs_iow + " = sp_bigint_new_int(sp_bigint_to_int((sp_Bigint *)" + lhs_iow + ") " + op_iow + " " + rhs_int_iow + "))"
+ # Promote-mode op-assign on a bigint ivar: route through the
+ # sp_bigint_<op> helpers so both `bigint &= int` and
+ # `bigint &= bigint_expr` shapes type-check. The legacy inline
+ # `sp_bigint_to_int(lhs) <op> sp_bigint_to_int(rhs)` only
+ # handled the int-rhs case cleanly; a bigint-emitting rhs (a
+ # `^` chain etc.) left the rhs as sp_Bigint * and the inline
+ # `&` rejected at C compile.
+          rhs_big_iow_arg = rhs_big_iow
+          if op_iow == "<<" || op_iow == ">>"
+            shamt_iow = rhs_t_iow == "bigint" ? "sp_bigint_to_int(" + rhs_big_iow + ")" : "(" + val_iow + ")"
+            helper_iow = op_iow == "<<" ? "sp_bigint_shl" : "sp_bigint_shr"
+            return "(" + lhs_iow + " = " + helper_iow + "((sp_Bigint *)" + lhs_iow + ", " + shamt_iow + "))"
+          end
+          big_bitop_iow = op_iow == "&" ? "sp_bigint_and" : (op_iow == "|" ? "sp_bigint_or" : "sp_bigint_xor")
+          return "(" + lhs_iow + " = " + big_bitop_iow + "((sp_Bigint *)" + lhs_iow + ", " + rhs_big_iow_arg + "))"
         end
       end
       return "(" + lhs_iow + " " + op_iow + "= " + val_iow + ")"
@@ -16473,14 +16486,8 @@ class Compiler
  # `Array.new(N) { i * 2 }` with bigint i caches "int" but
  # emits sp_bigint_mul.
                     arrnew_tail_t = infer_type(arrnew_stmts2.last)
-                    if arrnew_tail_t != "bigint" && @nd_type[arrnew_stmts2.last] == "CallNode"
-                      an_mn = @nd_name[arrnew_stmts2.last]
-                      if an_mn == "+" || an_mn == "-" || an_mn == "*" || an_mn == "/" || an_mn == "%" || an_mn == "**"
-                        an_recv = @nd_receiver[arrnew_stmts2.last]
-                        if an_recv >= 0 && base_type(infer_type(an_recv)) == "bigint"
-                          arrnew_tail_t = "bigint"
-                        end
-                      end
+                    if arrnew_tail_t != "bigint" && expr_emit_is_bigint(arrnew_stmts2.last) == 1
+                      arrnew_tail_t = "bigint"
                     end
                     if arrnew_tail_t == "bigint"
                       @needs_bigint = 1
@@ -26595,6 +26602,13 @@ class Compiler
       if ivar_t == "bigint"
         @needs_bigint = 1
         rhs_t_iov = infer_type(@nd_expression[nid])
+ # Stale "int" infer with a bigint-emitting rhs (a `^` or other
+ # bitop chain whose operands include bigint): the rhs is
+ # already sp_Bigint *, so wrapping it in sp_bigint_new_int is
+ # the wrong shape. Use the emit walker to upgrade.
+        if rhs_t_iov != "bigint" && expr_emit_is_bigint(@nd_expression[nid]) == 1
+          rhs_t_iov = "bigint"
+        end
         rhs_big_iov = rhs_t_iov == "bigint" ? "(sp_Bigint *)(" + val + ")" : "sp_bigint_new_int(" + val + ")"
         if op == "+"
           emit("  " + lhs + " = sp_bigint_add((sp_Bigint *)" + lhs + ", " + rhs_big_iov + ");")
@@ -26616,9 +26630,15 @@ class Compiler
           emit("  " + lhs + " = sp_bigint_mod((sp_Bigint *)" + lhs + ", " + rhs_big_iov + ");")
           return
         end
-        if op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>"
-          rhs_int_iov = rhs_t_iov == "bigint" ? "sp_bigint_to_int(" + rhs_big_iov + ")" : "(" + val + ")"
-          emit("  " + lhs + " = sp_bigint_new_int(sp_bigint_to_int((sp_Bigint *)" + lhs + ") " + op + " " + rhs_int_iov + ");")
+        if op == "<<" || op == ">>"
+          shamt_iov = rhs_t_iov == "bigint" ? "sp_bigint_to_int(" + rhs_big_iov + ")" : "(" + val + ")"
+          h_iov = op == "<<" ? "sp_bigint_shl" : "sp_bigint_shr"
+          emit("  " + lhs + " = " + h_iov + "((sp_Bigint *)" + lhs + ", " + shamt_iov + ");")
+          return
+        end
+        if op == "&" || op == "|" || op == "^"
+          h_bitop_iov = op == "&" ? "sp_bigint_and" : (op == "|" ? "sp_bigint_or" : "sp_bigint_xor")
+          emit("  " + lhs + " = " + h_bitop_iov + "((sp_Bigint *)" + lhs + ", " + rhs_big_iov + ");")
           return
         end
       end
@@ -28767,11 +28787,15 @@ class Compiler
             end
           end
           if a0id >= 0
-            if infer_type(a0id) == "lambda"
+            at_iaip = infer_type(a0id)
+            if at_iaip == "lambda"
               av = "(mrb_int)" + av
-            elsif infer_type(a0id) == "bigint"
+            elsif at_iaip == "bigint" || expr_emit_is_bigint(a0id) == 1
               @needs_bigint = 1
               av = "sp_bigint_to_int((sp_Bigint *)" + av + ")"
+            elsif at_iaip == "poly"
+              @needs_rb_value = 1
+              av = "(" + av + ").v.i"
             end
           end
           emit("  sp_IntArray_push(" + rc + ", " + av + ");")
@@ -28998,11 +29022,15 @@ class Compiler
             end
           end
           if a0id >= 0
-            if infer_type(a0id) == "lambda"
+            at_iaip = infer_type(a0id)
+            if at_iaip == "lambda"
               av = "(mrb_int)" + av
-            elsif infer_type(a0id) == "bigint"
+            elsif at_iaip == "bigint" || expr_emit_is_bigint(a0id) == 1
               @needs_bigint = 1
               av = "sp_bigint_to_int((sp_Bigint *)" + av + ")"
+            elsif at_iaip == "poly"
+              @needs_rb_value = 1
+              av = "(" + av + ").v.i"
             end
           end
           emit("  sp_IntArray_push(" + rc + ", " + av + ");")
