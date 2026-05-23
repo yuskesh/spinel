@@ -24522,6 +24522,9 @@ class Compiler
               warn_missing_positional_arg(mi, k, pnames[k])
               if k < ptypes.length && ptypes[k] == "poly"
                 result = result + "sp_box_nil()"
+              elsif k < ptypes.length && base_type(ptypes[k]) == "bigint"
+                @needs_bigint = 1
+                result = result + "sp_bigint_new_int(0)"
               else
                 result = result + "0"
               end
@@ -24530,6 +24533,9 @@ class Compiler
             warn_missing_positional_arg(mi, k, pnames[k])
             if k < ptypes.length && ptypes[k] == "poly"
               result = result + "sp_box_nil()"
+            elsif k < ptypes.length && base_type(ptypes[k]) == "bigint"
+              @needs_bigint = 1
+              result = result + "sp_bigint_new_int(0)"
             else
               result = result + "0"
             end
