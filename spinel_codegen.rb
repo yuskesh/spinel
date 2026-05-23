@@ -22400,7 +22400,15 @@ class Compiler
               elsif arm_pt_base == "bool"
                 @needs_rb_value = 1
                 arg_v = "(" + arg_v + ").v.b"
+              elsif arm_pt_base == "bigint"
+                @needs_rb_value = 1
+                @needs_bigint = 1
+                arg_v = "sp_bigint_new_int((" + arg_v + ").v.i)"
               end
+ # Mark arg as already coerced so the post-step int↔bigint
+ # bridge below doesn't double-wrap.
+              arg_types_v = arg_types[pk]
+              arg_types[pk] = arm_pt_base
             end
             if arm_pt_base == "poly" && pk < arg_types.length && arg_types[pk] != "poly" && arg_types[pk] != ""
               arg_v = box_value_to_poly(arg_types[pk], arg_v)
