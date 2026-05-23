@@ -8505,6 +8505,15 @@ class Compiler
     if @cls_meth_names[ci] != ""
       existing_mi = cls_find_method_direct(ci, name)
       if existing_mi >= 0
+ # Issue #667: method redefinition is a subset limitation. spinel
+ # is an AOT compiler with static dispatch; preserving CRuby's
+ # "call site binds to the version current at the source position"
+ # semantics would require source-order call-site versioning across
+ # analyze + codegen. We follow the simpler "last def wins" rule
+ # (matches class reopen for adding new methods) and warn so the
+ # user can spot the divergence from CRuby's intermediate-version
+ # behaviour.
+        $stderr.puts "warning: method '" + name + "' on " + @cls_names[ci] + " is being redefined; spinel uses last-def-wins semantics (calls before the redefinition won't see the original body — subset limitation)"
         cur_names = @cls_meth_names[ci].split(";")
         cur_params = @cls_meth_params[ci].split("|")
         cur_ptypes = @cls_meth_ptypes[ci].split("|")
