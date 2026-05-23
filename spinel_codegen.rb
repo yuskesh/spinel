@@ -15627,21 +15627,23 @@ class Compiler
   def compile_operator_expr(nid, mname, recv)
  # Bigint operators
     lt = infer_type(recv)
- # Don't widen lt to "bigint" via the arg-side promote when the
- # recv is genuinely poly — the poly recv dispatch (sp_poly_shl
- # / sp_poly_band etc.) is the correct path. `(@h[k] ||= []) <<
- # v` where v is a promoted bigint LV would otherwise emit
- # sp_bigint_shl on the poly recv. The legacy widening predates
- # promote mode and assumed the arg-side bigint implied both
- # operands were numeric.
-    if lt != "bigint" && lt != "poly" && lt != "string" && lt != "mutable_str"
- # Check if argument is bigint (direct type or via emit walker).
-      args_id = @nd_arguments[nid]
-      if args_id >= 0
-        aargs = get_args(args_id)
-        if aargs.length > 0
-          if infer_type(aargs[0]) == "bigint" || expr_emit_is_bigint(aargs[0]) == 1
-            lt = "bigint"
+ # Widen lt to "bigint" only when recv is itself a numeric type
+ # (int, float, bigint, or nullable variants). Other recv shapes
+ # (poly / typed containers like int_array / str_array / strings /
+ # ptr_array / hashes) have their own per-type dispatch arms
+ # later in the file -- forcing them through the bigint block
+ # would emit sp_bigint_shl on an sp_IntArray * receiver and the
+ # like. The legacy widening predates promote mode.
+    if lt != "bigint"
+      lt_b = base_type(lt)
+      if lt_b == "int" || lt_b == "float" || lt_b == "bigint"
+        args_id = @nd_arguments[nid]
+        if args_id >= 0
+          aargs = get_args(args_id)
+          if aargs.length > 0
+            if infer_type(aargs[0]) == "bigint" || expr_emit_is_bigint(aargs[0]) == 1
+              lt = "bigint"
+            end
           end
         end
       end
