@@ -20083,6 +20083,13 @@ class Compiler
             if def_at_f == "string" || def_at_f == "mutable_str"
               return "(sp_SymIntHash_has_key(" + rc + ", " + key + ") ? sp_int_to_s(sp_SymIntHash_get(" + rc + ", " + key + ")) : " + defval + ")"
             end
+ # Sibling of the str_int_hash coerce below (#671). Int-leaf
+ # hash + nil default in an RBS-pinned nullable-pointer return
+ # collapses to NULL — the int values can't satisfy the
+ # declared pointer return type.
+            if def_at_f == "nil" && is_nullable_pointer_type(@current_method_return) == 1
+              return "((" + c_type(@current_method_return) + ")NULL)"
+            end
             return "(sp_SymIntHash_has_key(" + rc + ", " + key + ") ? sp_SymIntHash_get(" + rc + ", " + key + ") : " + defval + ")"
           end
           return "sp_SymIntHash_get((sp_SymIntHash *)(" + rc + "), " + key + ")"
@@ -20611,6 +20618,17 @@ class Compiler
               @needs_rb_value = 1
               boxed_def = box_value_to_poly(def_at_f, defval)
               return "(sp_StrIntHash_has_key(" + rc + ", " + key + ") ? sp_box_int(sp_StrIntHash_get(" + rc + ", " + key + ")) : " + boxed_def + ")"
+            end
+ # int-leaf + nil default inside a method whose RBS-declared
+ # return is a nullable pointer (e.g. `-> String?`): the int
+ # hash can never carry pointer values, so the only
+ # RBS-consistent outcome is nil (NULL). The literal empty
+ # `@slots = {}` shape that motivated this issue has no
+ # observed string writes, so we never reach a get that would
+ # need to surface a real value. Emit NULL. Sibling of the
+ # `hash[k] || rhs` coerce added by #660. Issue #671.
+            if def_at_f == "nil" && is_nullable_pointer_type(@current_method_return) == 1
+              return "((" + c_type(@current_method_return) + ")NULL)"
             end
             return "(sp_StrIntHash_has_key(" + rc + ", " + key + ") ? sp_StrIntHash_get(" + rc + ", " + key + ") : " + defval + ")"
           end
