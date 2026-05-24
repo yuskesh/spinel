@@ -474,12 +474,6 @@ class Compiler
  # in-flight exception after an ensure body runs on the
  # exception path of a `begin..ensure..end`.
     @ensure_emit_depth = 0
- # Exception variable bindings: parallel stacks of (var_name, cls_var).
- # A `rescue => e` binds `e` to the message string and registers it
- # here so that `e.message`, `e.class`, `e.to_s`, and `e.inspect`
- # dispatch correctly. Pushed at rescue body entry, popped at exit.
-    @exc_var_names = "".split(",")
-    @exc_var_cls_vars = "".split(",")
     @needs_mutable_str = 0
     @needs_rb_value = 0
     @needs_regexp = 0
@@ -921,7 +915,7 @@ class Compiler
 
  # Mirror of spinel_analyze's is_builtin_exception_class_name -- gates
  # the compile_constructor_expr arm that lowers `CLS.new("msg")` to
- # the message expression. Phase 1C.
+ # sp_exc_new("CLS", msg).
   def is_builtin_exception_class_name(name)
     if name == "Exception" || name == "StandardError" || name == "RuntimeError"
       return 1
@@ -1167,27 +1161,13 @@ class Compiler
     0
   end
 
- # Returns the snapshot class-name C variable for an exception
- # variable currently bound by an enclosing `rescue => name`, or
- # empty string if `name` is not an active exception binding.
-  def find_exc_var_cls(name)
-    i = @exc_var_names.length - 1
-    while i >= 0
-      if @exc_var_names[i] == name
-        return @exc_var_cls_vars[i]
-      end
-      i = i - 1
-    end
-    ""
-  end
-
  # Emit a 1-arg `raise <arg>` -- handle three shapes:
  #   raise ClassName                       -> sp_raise("ClassName")
  #   raise <BuiltinExc>.new("msg")         -> sp_raise_cls("ClsName", "msg")
- #   raise lv                              -> sp_raise_cls(<lv's exc cls>, lv)
- #                                            if lv is in exc_var table
+ #   raise lv                              -> sp_raise_exc(lv) when lv is
+ #                                            typed sp_Exception *
  #   raise "msg"                           -> sp_raise("msg")
- # Used by both the stmt-form and expr-form raise arms. Phase 1C / 1D.
+ # Used by both the stmt-form and expr-form raise arms.
   def emit_raise_one_arg(arg_id)
     if @nd_type[arg_id] == "ConstantReadNode"
       emit("  sp_raise(\"" + @nd_name[arg_id] + "\");")
@@ -1213,21 +1193,13 @@ class Compiler
         end
       end
     end
- # `raise lv` -- two shapes:
- #   - LV typed `exception` (Phase 2 sp_Exception *): sp_raise_exc(lv).
- #   - LV in the Phase 1 side-channel (rescue => e binding):
- #     sp_raise_cls(<saved_cls>, lv).
- # Side-channel arm stays until Phase 2.3 migrates rescue too.
+ # `raise lv` where lv is typed `exception` (sp_Exception *): emit
+ # sp_raise_exc directly so cls + msg both flow through.
     if @nd_type[arg_id] == "LocalVariableReadNode"
       lname = @nd_name[arg_id]
       lv_t = find_var_type(lname)
       if lv_t == "exception"
         emit("  sp_raise_exc(lv_" + lname + ");")
-        return
-      end
-      lv_cls = find_exc_var_cls(lname)
-      if lv_cls != ""
-        emit("  sp_raise_cls(" + lv_cls + ", lv_" + lname + ");")
         return
       end
     end
@@ -2624,25 +2596,6 @@ class Compiler
             if cls_has_attr_reader(nci_nt, mname_nt) == 1
               return cls_ivar_type(nci_nt, "@" + mname_nt)
             end
-          end
-        end
-      end
-    end
- # `<lv>.class` / `<lv>.message` / `<lv>.to_s` etc. where `<lv>` is
- # an exception-bound LV (`err = RuntimeError.new("msg")` or
- # `rescue => err`). compile_call_expr's exc_var arm returns the
- # class-name C string literal / the message string -- both
- # const char *. analyze cached this CallNode as int (default) so
- # we have to override BEFORE the cache lookup. find_exc_var_cls
- # is a stateful codegen-side table; the analyze side has no
- # equivalent. Issue: Phase 1C.
-    if @nd_type[nid] == "CallNode"
-      mname_xv_chk = @nd_name[nid]
-      if mname_xv_chk == "class" || mname_xv_chk == "message" || mname_xv_chk == "to_s" || mname_xv_chk == "inspect" || mname_xv_chk == "full_message"
-        recv_xv_chk = @nd_receiver[nid]
-        if recv_xv_chk >= 0 && @nd_type[recv_xv_chk] == "LocalVariableReadNode"
-          if find_exc_var_cls(@nd_name[recv_xv_chk]) != ""
-            return "string"
           end
         end
       end
@@ -4159,9 +4112,8 @@ class Compiler
     if t == "bigint"
       return "sp_Bigint *"
     end
- # First-class exception object (Phase 2). Replaces Phase 1's
- # const char * + side-channel cls-name pair. Lowers to a
- # heap-allocated sp_Exception { cls_name; msg }.
+ # First-class exception object: heap-allocated sp_Exception
+ # { cls_name; msg }.
     if t == "exception"
       return "sp_Exception *"
     end
@@ -13519,7 +13471,7 @@ class Compiler
  # `"#{e}"` on an sp_Exception * implicitly calls
  # to_s, which returns the message. Without this
  # arm the default int path printed the pointer as
- # a long long. Phase 2.3.
+ # a long long.
                         fmt = fmt + "%s"
                         arg_exprs.push("sp_exc_message(" + compile_expr(inner) + ")")
                       else
@@ -14498,54 +14450,6 @@ class Compiler
       end
     end
 
- # Exception variable bound by `rescue => e`: spinel binds `e` to
- # the message string but tracks it as an exception in
- # @exc_var_names so .class / .message / .to_s / .inspect dispatch
- # correctly. The variable's static type is still "string", so any
- # other method call falls through to string method dispatch — this
- # preserves backward compatibility for the common `puts e` shape.
-    if recv >= 0 && @nd_type[recv] == "LocalVariableReadNode"
-      exc_cls = find_exc_var_cls(@nd_name[recv])
-      if exc_cls != ""
-        recv_name = @nd_name[recv]
-        if mname == "message" || mname == "to_s"
-          return "lv_" + recv_name
-        end
-        if mname == "class"
-          return exc_cls
-        end
-        if mname == "inspect"
-          return "sp_sprintf(\"#<%s: %s>\", " + exc_cls + ", lv_" + recv_name + ")"
-        end
-        if mname == "backtrace"
- # Spinel doesn't track per-exception backtraces; return nil.
-          return "0"
-        end
-        if mname == "full_message"
-          return "sp_sprintf(\"%s: %s\", " + exc_cls + ", lv_" + recv_name + ")"
-        end
- # `e.is_a?(X)` / `.kind_of?(X)` on an exception binding walks
- # the class-name parent chain so a `rescue => e` catching a
- # subclass instance still answers true for the parent class.
- # Issue #627. The class-snapshot string `exc_cls` carries the
- # raised class name (set by sp_raise_cls); sp_exc_class_le
- # walks the parent table emitted from emit_class_runtime.
-        if mname == "is_a?" || mname == "kind_of?"
-          args_id_is = @nd_arguments[nid]
-          if args_id_is >= 0
-            ais = get_args(args_id_is)
-            if ais.length > 0
-              arg_name_is = resolve_introspection_arg_name(ais[0])
-              if arg_name_is != ""
-                @needs_exc_class_hierarchy = 1
-                return "sp_exc_class_le(" + exc_cls + ", \"" + arg_name_is + "\")"
-              end
-            end
-          end
-        end
-      end
-    end
-
  # `Module.accessor.<method>` where the slot was resolved by
  # `resolve_module_singleton_accessors`. With a single constant
  # in the resolved set, inline the call directly. With two or
@@ -15359,8 +15263,8 @@ class Compiler
       end
     end
 
- # Exception methods (Phase 2). Recv is sp_Exception *; dispatch
- # through sp_exc_* helpers.
+ # Exception methods: recv is sp_Exception *; dispatch through
+ # sp_exc_* helpers.
     if recv_type == "exception"
       if mname == "class"
         return "sp_exc_class_name(" + rc + ")"
@@ -17601,12 +17505,10 @@ class Compiler
       cname = implicit_new_class_name(recv)
     end
     if cname != ""
- # Built-in exception class `.new("msg")` (Phase 2): lower to a
- # heap-allocated sp_Exception { cls_name; msg } via sp_exc_new.
- # The LV slot type is "exception" (sp_Exception *); subsequent
- # `.class` / `.message` / `.is_a?` / `raise <e>` dispatch through
- # sp_exc_*. Replaces Phase 1's "return msg string + side-channel
- # cls name" pattern.
+ # Built-in exception class `.new("msg")`: lower to a heap-allocated
+ # sp_Exception { cls_name; msg } via sp_exc_new. The LV slot type
+ # is "exception" (sp_Exception *); subsequent `.class` / `.message`
+ # / `.is_a?` / `raise <e>` dispatch through sp_exc_*.
       if is_builtin_exception_class_name(cname) == 1
         @needs_exc_class_hierarchy = 1
         @needs_setjmp = 1   # pulls in sp_exc_* runtime helpers
@@ -27446,11 +27348,6 @@ class Compiler
     end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
- # Phase 1C used a side-channel push here for `err = RuntimeError
- # .new(...)`. Phase 2 makes the LV slot itself sp_Exception * --
- # the type carries the class via `e->cls_name`, so no side-channel
- # registration is needed. The `rescue => e` binding still uses
- # the side channel until Phase 2.3 migrates it.
  # `var = method(:name)` (no receiver, top-level) is the legacy
  # static-alias path: the call_expr handler returns a `0`
  # placeholder, we record (lname, mref) here, and a later
@@ -33958,9 +33855,8 @@ class Compiler
       emit("  { const char *_ps = (const char *)(" + val + "); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '" + bsl_n + "') putchar('" + bsl_n + "'); } else putchar('" + bsl_n + "'); }")
       return
     end
- # `puts <exc>` in Ruby implicitly calls .to_s -> message. Print the
- # sp_Exception's message field so the Phase 1 shape (`e` was the
- # raw message string) keeps working.
+ # `puts <exc>` in Ruby implicitly calls .to_s -> message. Print
+ # the sp_Exception's message field.
     if at == "exception"
       emit("  { const char *_ps = sp_exc_message(" + val + "); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '" + bsl_n + "') putchar('" + bsl_n + "'); } else putchar('" + bsl_n + "'); }")
       return
@@ -34068,7 +33964,7 @@ class Compiler
         k = k + 1
         next
       end
- # Phase 2.3: `puts <exc>` -- print the message (CRuby calls to_s).
+ # `puts <exc>` -- print the message (CRuby calls to_s).
       if at == "exception"
         emit("  { const char *_ps = sp_exc_message(" + val + "); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '" + bsl_n + "') putchar('" + bsl_n + "'); } else putchar('" + bsl_n + "'); }")
         k = k + 1
@@ -37356,8 +37252,7 @@ class Compiler
  # `begin..rescue..else..end`: the else body runs only when the
  # body completed without exception. Place it inside the
  # setjmp-success branch, after the body. The exception path
- # (`else { ... rescue ... }` below) doesn't run else. Phase 1B
- # of the exception handling gap fixes.
+ # (`else { ... rescue ... }` below) doesn't run else.
       else_id_b = @nd_else_clause[nid]
       if else_id_b >= 0
         else_body_b = @nd_body[else_id_b]
@@ -37505,10 +37400,9 @@ class Compiler
     bound_rname = ""
     if ref >= 0
       bound_rname = @nd_name[ref]
- # Phase 2.3: bind `e` to a first-class sp_Exception * (was the
- # raw message string in Phase 1). saved_cls / saved_msg snapshot
- # the in-flight exception above; wrap them in sp_exc_new so the
- # LV holds a typed object that dispatch / re-raise can use.
+ # Bind `e` to a first-class sp_Exception *. saved_cls / saved_msg
+ # snapshot the in-flight exception above; wrap them in sp_exc_new
+ # so the LV holds a typed object that dispatch / re-raise can use.
       emit("  lv_" + bound_rname + " = sp_exc_new(" + saved_cls + ", " + saved_msg + ");")
     end
     compile_rescue_body(@nd_body[rc], has_retry)
@@ -39181,7 +39075,7 @@ class Compiler
     bound_rname = ""
     if ref >= 0
       bound_rname = @nd_name[ref]
- # Phase 2.3: see compile_rescue_chain — same sp_Exception * lower.
+ # See compile_rescue_chain -- same sp_Exception * lower.
       emit("  lv_" + bound_rname + " = sp_exc_new(" + saved_cls + ", " + saved_msg + ");")
     end
     compile_body_into(@nd_body[rc], ret_tmp, return_type)
@@ -39363,7 +39257,7 @@ class Compiler
  # begin body's value is discarded -- Ruby semantics says the
  # else body's last expression becomes the method's return.
  # Run begin body as a void-shaped block, then else body with
- # ret_tmp capture. Phase 1B of the exception handling gap fixes.
+ # ret_tmp capture.
       else_id_bri = @nd_else_clause[last]
       if else_id_bri >= 0
         compile_stmts_body(@nd_body[last])

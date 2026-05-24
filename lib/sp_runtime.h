@@ -288,7 +288,7 @@ static mrb_bool sp_range_include(sp_Range *r, mrb_int x){return r->first<=x && x
    a bare C identifier, and `c.to_s` lower to a names-table lookup.
    Other Class methods (`.name`, `.inspect`, `.==`, `.!=`,
    `.superclass`, `.ancestors`, dynamic `is_a?(c)` against a
-   variable, etc.) are out of scope for Phase 1. */
+   variable, etc.) are not yet supported. */
 typedef struct{mrb_int cls_id;}sp_Class;
 
 /* ---- Complex runtime ---- */
@@ -575,7 +575,7 @@ static const char *sp_time_strftime(sp_Time t, const char *fmt) {
    difference gives the same answer on every libc we target.
    Sub-second precision is intentionally omitted: CRuby's iso8601
    also drops it unless the caller passes a precision arg, which
-   Phase 1 doesn't support.
+   we don't support here.
    when is_utc is set, format against gmtime and emit the
    trailing "Z" suffix CRuby uses for UTC iso8601. */
 static const char *sp_time_iso8601(sp_Time t) {
@@ -2180,9 +2180,7 @@ static void sp_mark_in_flight_exceptions(void) { for (int i = 0; i < sp_exc_top;
 /* sp_Exception: first-class exception object. cls_name is a pointer
    to the per-class const string literal emitted by codegen
    (sp_class_names[] entry; not GC-managed). msg is GC-managed
-   (sp_str_alloc'd). Phase 2 of the exception modernization plan --
-   replaces the side-channel `@exc_var_*` table that Phase 1
-   relied on. */
+   (sp_str_alloc'd). */
 typedef struct sp_Exception_s {
   const char *cls_name;
   const char *msg;

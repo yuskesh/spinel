@@ -454,12 +454,6 @@ class Compiler
  # in-flight exception after an ensure body runs on the
  # exception path of a `begin..ensure..end`.
     @ensure_emit_depth = 0
- # Exception variable bindings: parallel stacks of (var_name, cls_var).
- # A `rescue => e` binds `e` to the message string and registers it
- # here so that `e.message`, `e.class`, `e.to_s`, and `e.inspect`
- # dispatch correctly. Pushed at rescue body entry, popped at exit.
-    @exc_var_names = "".split(",")
-    @exc_var_cls_vars = "".split(",")
     @needs_mutable_str = 0
     @needs_rb_value = 0
     @needs_regexp = 0
@@ -1099,20 +1093,6 @@ class Compiler
     @scope_types.push(vtype)
     @scope_ivar_alias.push("")
     0
-  end
-
- # Returns the snapshot class-name C variable for an exception
- # variable currently bound by an enclosing `rescue => name`, or
- # empty string if `name` is not an active exception binding.
-  def find_exc_var_cls(name)
-    i = @exc_var_names.length - 1
-    while i >= 0
-      if @exc_var_names[i] == name
-        return @exc_var_cls_vars[i]
-      end
-      i = i - 1
-    end
-    ""
   end
 
  # Emit a bare `raise` (no message arg). Inside a rescue body the
@@ -2860,25 +2840,10 @@ class Compiler
       return "regexp"
     end
 
- # Methods on a `rescue => e` bound exception variable. The variable
- # itself is string-typed but .class / .message / .to_s / .inspect /
- # .full_message return strings; .backtrace returns nil for now.
-    if recv >= 0 && @nd_type[recv] == "LocalVariableReadNode"
-      if find_exc_var_cls(@nd_name[recv]) != ""
-        if mname == "message" || mname == "to_s" || mname == "class" || mname == "inspect" || mname == "full_message"
-          return "string"
-        end
-        if mname == "backtrace"
-          return "nil"
-        end
-      end
-    end
-
- # Phase 2: methods on first-class sp_Exception * values
- # (`BuiltinExc.new(...)` chains, LVs holding the result, etc.).
- # codegen's recv_type == "exception" arm lowers these to
- # sp_exc_class_name / sp_exc_message / sp_exc_class_le -- their
- # return shapes here must match.
+ # Methods on first-class sp_Exception * values (`BuiltinExc.new(...)`
+ # chains, LVs holding the result, etc.). codegen's recv_type ==
+ # "exception" arm lowers these to sp_exc_class_name / sp_exc_message
+ # / sp_exc_class_le -- their return shapes here must match.
  #
  # Gate the (potentially recursive) infer_type(recv) on the
  # method name first, so non-exception-related calls don't pay
@@ -3244,9 +3209,8 @@ class Compiler
           return "fiber"
         end
  # Built-in exception class .new (RuntimeError, StandardError,
- # ArgumentError, etc.): Phase 2 lowers to a first-class
- # sp_Exception * (cls_name + msg in a single heap allocation).
- # Replaces Phase 1's const char * + side-channel cls name.
+ # ArgumentError, etc.) lowers to a first-class sp_Exception *
+ # (cls_name + msg in a single heap allocation).
         if is_builtin_exception_class_name(rcname) == 1
           return "exception"
         end
@@ -5561,9 +5525,8 @@ class Compiler
           if module_name_exists(rn) == 1
             return ""
           end
- # Built-in exception class `.new`: Phase 2 promotes to a first-
- # class sp_Exception *. Returns the new type token "exception"
- # so the LV slot lowers to sp_Exception *.
+ # Built-in exception class `.new` returns "exception" so the LV
+ # slot lowers to sp_Exception *.
           if is_builtin_exception_class_name(rn) == 1
             return "exception"
           end
@@ -7436,10 +7399,8 @@ class Compiler
  # support — return the block's last expression — is a v2 follow-up.
 
 
- # Built-in exception class names that get `.new("msg")` support
- # via the existing rescue side-channel (find_exc_var_cls). The
- # constructed value lowers to just the message string; the LV
- # gets registered for class-name lookup. Phase 1C.
+ # Built-in exception class names. `<Cls>.new("msg")` lowers to a
+ # first-class sp_Exception * via compile_constructor_expr.
   def is_builtin_exception_class_name(name)
     if name == "Exception" || name == "StandardError" || name == "RuntimeError"
       return 1
@@ -25861,10 +25822,9 @@ class Compiler
         end
       end
     end
- # Rescue reference (=> e) needs to be declared as a local. Phase 2
- # promotes the binding to a first-class sp_Exception * (was const
- # char * in Phase 1); compile_rescue_chain emits the
- # `lv_<name> = sp_exc_new(<cls>, <msg>);` assignment that fills it.
+ # Rescue reference (=> e) needs to be declared as a local. The
+ # binding is a first-class sp_Exception *; compile_rescue_chain
+ # emits the `lv_<name> = sp_exc_new(<cls>, <msg>);` assignment.
     if @nd_type[nid] == "RescueNode"
       ref = @nd_reference[nid]
       if ref >= 0
@@ -28049,9 +28009,9 @@ class Compiler
     if @nd_type[nid] == "DefNode"
       return
     end
- # RescueNode: the bound exception var is typed "exception" (Phase 2.3),
- # so infer_call_type's recv_type == "exception" arm handles dispatch
- # without needing the @exc_var_names side-channel.
+ # RescueNode: the bound exception var is typed "exception", so
+ # infer_call_type's recv_type == "exception" arm handles method
+ # dispatch on it.
     if @nd_type[nid] == "RescueNode"
       cs_re = []
       push_child_ids(nid, cs_re)
