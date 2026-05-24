@@ -16141,6 +16141,12 @@ class Compiler
       @needs_rb_value = 1
       return "poly_array"
     end
+    if elem_acc[0] == "ptr"
+ # Raw `:ptr` (FFI handles, dlopen returns, ...) elements: use the
+ # noscan PtrArray so the collector treats the slots as opaque
+ # word-sized values without walking element headers. Issue #688.
+      return "ptr_ptr_array"
+    end
     if is_obj_type(elem_acc[0]) == 1
  # Homogeneous obj array — use a typed `<obj>_ptr_array` so reads
  # return a typed pointer (no sp_RbVal unbox needed at the call
@@ -25604,6 +25610,22 @@ class Compiler
                   if names[ki] == arr_name
                     if types[ki] == "int_array"
                       types[ki] = "poly_array"
+                    end
+                  end
+                  ki = ki + 1
+                end
+              elsif arg_type == "ptr"
+ # Raw :ptr (FFI handles, dlopen returns, ...). The empty
+ # `[]` default of int_array can't hold opaque pointer-sized
+ # values without -Wint-conversion; promote to the noscan
+ # ptr_ptr_array so reads / pushes carry the void *. Issue
+ # #688.
+                @needs_gc = 1
+                ki = 0
+                while ki < names.length
+                  if names[ki] == arr_name
+                    if types[ki] == "int_array"
+                      types[ki] = "ptr_ptr_array"
                     end
                   end
                   ki = ki + 1
