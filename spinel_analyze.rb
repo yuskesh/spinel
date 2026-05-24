@@ -3217,6 +3217,18 @@ class Compiler
         if rcname == "Fiber"
           return "fiber"
         end
+ # Built-in exception class .new (RuntimeError, StandardError,
+ # ArgumentError, etc.): the constructed value carries just a
+ # message string at the runtime level; spinel's `rescue => e`
+ # path already binds the captured exception as a string with a
+ # side-channel for the class name (find_exc_var_cls). Type the
+ # constructor return as "string" so the receiving LV gets a
+ # const char * slot; the codegen pushes the LV name into the
+ # same side-channel table. Phase 1C of the exception handling
+ # gap fixes.
+        if is_builtin_exception_class_name(rcname) == 1
+          return "string"
+        end
       end
     end
  # fiber.resume returns poly
@@ -5528,6 +5540,13 @@ class Compiler
           if module_name_exists(rn) == 1
             return ""
           end
+ # Built-in exception class `.new`: the constructed value is just
+ # the message string (spinel models exception objects as message
+ # + side-channel class name, mirroring the `rescue => e` binding).
+ # Type as "string" so the LV slot lowers to const char *. Phase 1C.
+          if is_builtin_exception_class_name(rn) == 1
+            return "string"
+          end
           return "obj_" + rn
         end
       end
@@ -7396,6 +7415,35 @@ class Compiler
  # `if obj.instance_eval { ... }` still type-check. Real expression
  # support — return the block's last expression — is a v2 follow-up.
 
+
+ # Built-in exception class names that get `.new("msg")` support
+ # via the existing rescue side-channel (find_exc_var_cls). The
+ # constructed value lowers to just the message string; the LV
+ # gets registered for class-name lookup. Phase 1C.
+  def is_builtin_exception_class_name(name)
+    if name == "Exception" || name == "StandardError" || name == "RuntimeError"
+      return 1
+    end
+    if name == "ArgumentError" || name == "TypeError" || name == "IndexError" || name == "KeyError"
+      return 1
+    end
+    if name == "RangeError" || name == "FloatDomainError" || name == "NameError" || name == "NoMethodError"
+      return 1
+    end
+    if name == "ZeroDivisionError" || name == "IOError" || name == "EOFError" || name == "FrozenError"
+      return 1
+    end
+    if name == "NotImplementedError" || name == "StopIteration" || name == "RegexpError" || name == "LocalJumpError"
+      return 1
+    end
+    if name == "ScriptError" || name == "LoadError" || name == "SyntaxError"
+      return 1
+    end
+    if name == "EncodingError" || name == "SystemCallError" || name == "FiberError"
+      return 1
+    end
+    0
+  end
 
   def is_builtin_type_name(name)
     if name == "Integer"

@@ -919,6 +919,34 @@ class Compiler
     0
   end
 
+ # Mirror of spinel_analyze's is_builtin_exception_class_name -- gates
+ # the compile_constructor_expr arm that lowers `CLS.new("msg")` to
+ # the message expression. Phase 1C.
+  def is_builtin_exception_class_name(name)
+    if name == "Exception" || name == "StandardError" || name == "RuntimeError"
+      return 1
+    end
+    if name == "ArgumentError" || name == "TypeError" || name == "IndexError" || name == "KeyError"
+      return 1
+    end
+    if name == "RangeError" || name == "FloatDomainError" || name == "NameError" || name == "NoMethodError"
+      return 1
+    end
+    if name == "ZeroDivisionError" || name == "IOError" || name == "EOFError" || name == "FrozenError"
+      return 1
+    end
+    if name == "NotImplementedError" || name == "StopIteration" || name == "RegexpError" || name == "LocalJumpError"
+      return 1
+    end
+    if name == "ScriptError" || name == "LoadError" || name == "SyntaxError"
+      return 1
+    end
+    if name == "EncodingError" || name == "SystemCallError" || name == "FiberError"
+      return 1
+    end
+    0
+  end
+
   def current_lexical_scope_name
     if @current_lexical_scope != ""
       return @current_lexical_scope
@@ -1151,6 +1179,50 @@ class Compiler
       i = i - 1
     end
     ""
+  end
+
+ # Emit a 1-arg `raise <arg>` -- handle three shapes:
+ #   raise ClassName                       -> sp_raise("ClassName")
+ #   raise <BuiltinExc>.new("msg")         -> sp_raise_cls("ClsName", "msg")
+ #   raise lv                              -> sp_raise_cls(<lv's exc cls>, lv)
+ #                                            if lv is in exc_var table
+ #   raise "msg"                           -> sp_raise("msg")
+ # Used by both the stmt-form and expr-form raise arms. Phase 1C / 1D.
+  def emit_raise_one_arg(arg_id)
+    if @nd_type[arg_id] == "ConstantReadNode"
+      emit("  sp_raise(\"" + @nd_name[arg_id] + "\");")
+      return
+    end
+ # `raise <BuiltinExc>.new(<msg>)` -- ConstantReadNode is the exc
+ # class, msg comes from the .new args.
+    if @nd_type[arg_id] == "CallNode" && @nd_name[arg_id] == "new"
+      r_inner = @nd_receiver[arg_id]
+      if r_inner >= 0 && @nd_type[r_inner] == "ConstantReadNode"
+        cname_inner = @nd_name[r_inner]
+        if is_builtin_exception_class_name(cname_inner) == 1
+          args_id_inner = @nd_arguments[arg_id]
+          if args_id_inner >= 0
+            aa_inner = get_args(args_id_inner)
+            if aa_inner.length >= 1
+              emit("  sp_raise_cls(\"" + cname_inner + "\", " + compile_expr(aa_inner[0]) + ");")
+              return
+            end
+          end
+          emit("  sp_raise(\"" + cname_inner + "\");")
+          return
+        end
+      end
+    end
+ # `raise lv` -- lv tagged as exception via find_exc_var_cls.
+    if @nd_type[arg_id] == "LocalVariableReadNode"
+      lv_cls = find_exc_var_cls(@nd_name[arg_id])
+      if lv_cls != ""
+        emit("  sp_raise_cls(" + lv_cls + ", lv_" + @nd_name[arg_id] + ");")
+        return
+      end
+    end
+ # Fallback: raise <msg-expression>; sp_raise treats as RuntimeError.
+    emit("  sp_raise(" + compile_expr(arg_id) + ");")
   end
 
  # Emit a bare `raise` (no message arg). Inside a rescue body the
@@ -2534,6 +2606,25 @@ class Compiler
             if cls_has_attr_reader(nci_nt, mname_nt) == 1
               return cls_ivar_type(nci_nt, "@" + mname_nt)
             end
+          end
+        end
+      end
+    end
+ # `<lv>.class` / `<lv>.message` / `<lv>.to_s` etc. where `<lv>` is
+ # an exception-bound LV (`err = RuntimeError.new("msg")` or
+ # `rescue => err`). compile_call_expr's exc_var arm returns the
+ # class-name C string literal / the message string -- both
+ # const char *. analyze cached this CallNode as int (default) so
+ # we have to override BEFORE the cache lookup. find_exc_var_cls
+ # is a stateful codegen-side table; the analyze side has no
+ # equivalent. Issue: Phase 1C.
+    if @nd_type[nid] == "CallNode"
+      mname_xv_chk = @nd_name[nid]
+      if mname_xv_chk == "class" || mname_xv_chk == "message" || mname_xv_chk == "to_s" || mname_xv_chk == "inspect" || mname_xv_chk == "full_message"
+        recv_xv_chk = @nd_receiver[nid]
+        if recv_xv_chk >= 0 && @nd_type[recv_xv_chk] == "LocalVariableReadNode"
+          if find_exc_var_cls(@nd_name[recv_xv_chk]) != ""
+            return "string"
           end
         end
       end
@@ -15649,14 +15740,6 @@ class Compiler
       args_id = @nd_arguments[nid]
       if args_id >= 0
         arg_ids = get_args(args_id)
- # `raise ClassName, "msg"` (2-arg form): emit sp_raise_cls with
- # the class name + message. Mirrors compile_control_call_stmt's
- # 2-arg arm. Pre-fix the expr-form emitted only the first arg
- # (the class), which sp_raise accepted as `(const char *)` and
- # blew up at C compile when the class lowered to an sp_Class
- # compound literal. Issue: bare-raise re-raise (#A in exception
- # handling gaps) surfaced this because compile_body_into routes
- # the body's last raise stmt through compile_expr.
         if arg_ids.length >= 2
           if @nd_type[arg_ids[0]] == "ConstantReadNode"
             emit("  sp_raise_cls(\"" + @nd_name[arg_ids[0]] + "\", " + compile_expr(arg_ids[1]) + ");")
@@ -15664,11 +15747,7 @@ class Compiler
             emit("  sp_raise(" + compile_expr(arg_ids[1]) + ");")
           end
         elsif arg_ids.length == 1
-          if @nd_type[arg_ids[0]] == "ConstantReadNode"
-            emit("  sp_raise(\"" + @nd_name[arg_ids[0]] + "\");")
-          else
-            emit("  sp_raise(" + compile_expr(arg_ids[0]) + ");")
-          end
+          emit_raise_one_arg(arg_ids[0])
         else
           emit_bare_raise
         end
@@ -17441,6 +17520,26 @@ class Compiler
       cname = implicit_new_class_name(recv)
     end
     if cname != ""
+ # Built-in exception class `.new("msg")` (RuntimeError, ArgumentError,
+ # etc.). Spinel models exception objects as their message string plus
+ # a side-channel cls name (find_exc_var_cls). The constructor just
+ # returns the message expression; the LV-write codegen registers the
+ # binding's class for later `.class` / `.message` / `.is_a?` dispatch.
+ # Phase 1C.
+      if is_builtin_exception_class_name(cname) == 1
+        @needs_exc_class_hierarchy = 1
+        args_id_be = @nd_arguments[nid]
+        if args_id_be >= 0
+          aa_be = get_args(args_id_be)
+          if aa_be.length >= 1
+            return compile_expr(aa_be[0])
+          end
+        end
+ # `RuntimeError.new` with no msg: empty string. Matches the
+ # behaviour of `rescue => e` for a `raise CLS` (no msg) which
+ # binds `e` as "".
+        return "(&(\"\\xff\")[1])"
+      end
       if cname == "Proc"
         if @nd_block[nid] >= 0
           return compile_proc_literal(nid)
@@ -27267,6 +27366,25 @@ class Compiler
     end
     if t == "LocalVariableWriteNode"
       lname = @nd_name[nid]
+ # `err = RuntimeError.new("msg")` (and other built-in exception
+ # constructors): register the LV name in the @exc_var_* side-
+ # channel so subsequent `err.class` / `err.message` / `err.is_a?`
+ # dispatch through find_exc_var_cls -- same path the
+ # `rescue => e` binding uses. The RHS itself lowers to just the
+ # message string via compile_constructor_expr's exception arm.
+ # No matching pop -- LV bindings persist for the program's
+ # remaining static scope. Phase 1C.
+      expr_id_exc_check = @nd_expression[nid]
+      if expr_id_exc_check >= 0 && @nd_type[expr_id_exc_check] == "CallNode" && @nd_name[expr_id_exc_check] == "new"
+        recv_exc_check = @nd_receiver[expr_id_exc_check]
+        if recv_exc_check >= 0 && @nd_type[recv_exc_check] == "ConstantReadNode"
+          cname_exc_check = @nd_name[recv_exc_check]
+          if is_builtin_exception_class_name(cname_exc_check) == 1
+            @exc_var_names.push(lname)
+            @exc_var_cls_vars.push("\"" + cname_exc_check + "\"")
+          end
+        end
+      end
  # `var = method(:name)` (no receiver, top-level) is the legacy
  # static-alias path: the call_expr handler returns a `0`
  # placeholder, we record (lname, mref) here, and a later
@@ -31080,12 +31198,7 @@ class Compiler
             end
           else
             if arg_ids.length == 1
- # raise "message" or raise ClassName
-              if @nd_type[arg_ids[0]] == "ConstantReadNode"
-                emit("  sp_raise(\"" + @nd_name[arg_ids[0]] + "\");")
-              else
-                emit("  sp_raise(" + compile_expr(arg_ids[0]) + ");")
-              end
+              emit_raise_one_arg(arg_ids[0])
             else
               emit_bare_raise
             end

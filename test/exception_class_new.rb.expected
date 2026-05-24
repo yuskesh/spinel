@@ -1,0 +1,10 @@
+RuntimeError
+created
+true
+true
+true
+caught: RuntimeError: created
+inline: ArgumentError: inline ae
+TypeError
+bad type
+NoMethodError

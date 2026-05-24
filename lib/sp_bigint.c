@@ -5423,6 +5423,7 @@ sp_Bigint *sp_bigint_not(sp_Bigint *a) {
 }
 
 const char *sp_bigint_to_s(sp_Bigint *b) {
+  if (!b) return "0";   /* defensive: NULL bigint surfaces as "0" rather than segfault */
   sp_bigint_init_ctx();
   mpz_t *z = &b->mpz;
   /* Small number fast path. Two limbs (DIG_SIZE=32) hold up to 64
