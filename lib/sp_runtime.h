@@ -236,9 +236,19 @@ static mrb_int sp_str_to_i_cruby(const char *s) {
   else if (*p == '-') { neg = 1; p++; }
   mrb_int v = 0;
   int any = 0;
+  int saturated = 0;
   while (*p) {
     if (*p >= '0' && *p <= '9') {
-      v = v * 10 + (*p - '0');
+      /* Issue #743: signed-overflow on `v * 10 + digit` is undefined
+         behavior. Detect via __builtin_*_overflow and clamp to
+         MRB_INT_MAX (CRuby returns a bignum here; spinel's int model
+         is int64-only, so saturate as the next-best approximation). */
+      mrb_int t;
+      if (__builtin_mul_overflow(v, 10, &t) ||
+          __builtin_add_overflow(t, (mrb_int)(*p - '0'), &v)) {
+        v = INT64_MAX;
+        saturated = 1;
+      }
       any = 1;
       p++;
     } else if (*p == '_' && any && p[1] >= '0' && p[1] <= '9') {
@@ -248,6 +258,7 @@ static mrb_int sp_str_to_i_cruby(const char *s) {
     }
   }
   if (!any) return 0;
+  if (saturated) return neg ? INT64_MIN : INT64_MAX;
   return neg ? -v : v;
 }
 
@@ -913,8 +924,11 @@ static sp_IntArray*sp_IntArray_shuffle(sp_IntArray*a){sp_IntArray*b=sp_IntArray_
    (0 / 0.0 / NULL / sp_box_nil for poly). Guards rand()%0, which
    raises SIGFPE under -O0 and silently UBs under -O2+. Issue #536. */
 static mrb_int sp_IntArray_sample(sp_IntArray*a){if(a->len<=0)return 0;return a->data[a->start+(mrb_int)(rand()%a->len)];}
-static mrb_int sp_IntArray_min(sp_IntArray*a){mrb_int m=a->data[a->start];for(mrb_int i=1;i<a->len;i++)if(a->data[a->start+i]<m)m=a->data[a->start+i];return m;}
-static mrb_int sp_IntArray_max(sp_IntArray*a){mrb_int m=a->data[a->start];for(mrb_int i=1;i<a->len;i++)if(a->data[a->start+i]>m)m=a->data[a->start+i];return m;}
+/* Issue #745: guard the initial read on empty arrays. CRuby's [].min /
+   .max return nil; spinel's int-typed slot collapses nil to 0. Without
+   the guard, the first read is uninitialized memory. */
+static mrb_int sp_IntArray_min(sp_IntArray*a){if(!a||a->len<=0)return 0;mrb_int m=a->data[a->start];for(mrb_int i=1;i<a->len;i++)if(a->data[a->start+i]<m)m=a->data[a->start+i];return m;}
+static mrb_int sp_IntArray_max(sp_IntArray*a){if(!a||a->len<=0)return 0;mrb_int m=a->data[a->start];for(mrb_int i=1;i<a->len;i++)if(a->data[a->start+i]>m)m=a->data[a->start+i];return m;}
 static mrb_int sp_IntArray_sum(sp_IntArray*a,mrb_int init){mrb_int s=init;for(mrb_int i=0;i<a->len;i++)s+=a->data[a->start+i];return s;}
 static mrb_bool sp_IntArray_include(sp_IntArray*a,mrb_int v){for(mrb_int i=0;i<a->len;i++)if(a->data[a->start+i]==v)return TRUE;return FALSE;}
 static mrb_int sp_IntArray_index(sp_IntArray*a,mrb_int v){for(mrb_int i=0;i<a->len;i++)if(a->data[a->start+i]==v)return i;return -1;}
