@@ -21922,11 +21922,26 @@ class Compiler
               slot_expr_cm = ""
               if pos_idx_cm < positional_cm.length
  # Route through compile_expr_for_expected_type when the
- # slot's declared type needs an int<->bigint cast (promote
- # mode often promotes the param while the call site still
- # passes a literal int / int-typed local).
+ # slot's declared type needs a coercion: int<->bigint
+ # promote mode, OR when arg type and param type disagree
+ # in a way the helper can bridge (poly->concrete unbox via
+ # tag-field, concrete->poly box, etc.). #685 surfaces this
+ # whenever an sp_RbVal ivar flows into a typed-hash /
+ # typed-obj / mrb_int callee param.
                 slot_pt_pos_cm = kk < owner_pt.length ? owner_pt[kk] : ""
-                if slot_pt_pos_cm != "" && (base_type(slot_pt_pos_cm) == "bigint" || base_type(slot_pt_pos_cm) == "int")
+                at_pos_cm = infer_type(positional_cm[pos_idx_cm])
+                slot_pt_base_cm = base_type(slot_pt_pos_cm)
+                needs_coerce_cm = 0
+                if slot_pt_pos_cm != ""
+                  if slot_pt_base_cm == "bigint" || slot_pt_base_cm == "int"
+                    needs_coerce_cm = 1
+                  elsif at_pos_cm == "poly" && slot_pt_base_cm != "poly" && slot_pt_base_cm != ""
+                    needs_coerce_cm = 1
+                  elsif at_pos_cm != "poly" && slot_pt_base_cm == "poly"
+                    needs_coerce_cm = 1
+                  end
+                end
+                if needs_coerce_cm == 1
                   slot_expr_cm = compile_expr_for_expected_type(positional_cm[pos_idx_cm], slot_pt_pos_cm)
                 else
                   slot_expr_cm = cast_away_volatile_arg(positional_cm[pos_idx_cm], compile_expr(positional_cm[pos_idx_cm]))
