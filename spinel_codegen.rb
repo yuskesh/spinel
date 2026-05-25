@@ -40030,6 +40030,12 @@ class Compiler
  # const-char-*-typed return signature matches.
         @needs_rb_value = 1
         emit("  return (" + val + ").v.s;")
+      elsif expr_type == "mutable_str" && base_type(return_type) == "string"
+ # Body builds an sp_String * via `<<` chain (the `io = ""; io
+ # << "..."; io;` idiom) but the function's declared return
+ # type is `const char *`. Read the underlying buffer via
+ # `->data` so the return value matches the sig.
+        emit("  return (" + val + ")->data;")
       elsif (expr_type == "int" || expr_type == "nil") && is_nullable_pointer_type(return_type) == 1 && fetch_with_nil_default?(last) == 1
  # Issue #671: `hash.fetch(k, nil)` against an int-leaf hash
  # (typically empty `@slots = {}`) returns int but the
