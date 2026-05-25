@@ -2002,6 +2002,20 @@ static sp_PolyArray *sp_PolyArray_slice_bang(sp_PolyArray *a, mrb_int from, mrb_
 static sp_PolyArray *sp_PolyArray_dup(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_new(); for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(b, a->data[i]); return b; }
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */
 static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_new(); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
+/* Array#flatten -- walk into nested array values recursively. Each
+   array-tagged element (IntArray / StrArray / SymArray / FloatArray /
+   PolyArray) is expanded inline; scalars are appended as-is. Issue
+   #739. */
+static void sp_PolyArray_flatten_into(sp_PolyArray *dst, sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ) { sp_PolyArray_push(dst, v); return; }
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY) { sp_IntArray *ia = (sp_IntArray *)v.v.p; for (mrb_int i = 0; i < ia->len; i++) sp_PolyArray_push(dst, sp_box_int(ia->data[ia->start + i])); return; }
+  if (v.cls_id == SP_BUILTIN_STR_ARRAY) { sp_StrArray *sa = (sp_StrArray *)v.v.p; for (mrb_int i = 0; i < sa->len; i++) sp_PolyArray_push(dst, sp_box_str(sa->data[i])); return; }
+  if (v.cls_id == SP_BUILTIN_POLY_ARRAY) { sp_PolyArray *pa = (sp_PolyArray *)v.v.p; for (mrb_int i = 0; i < pa->len; i++) sp_PolyArray_flatten_into(dst, pa->data[i]); return; }
+  /* Other array variants fall through as opaque elements; rare for
+     deep-flatten use cases. */
+  sp_PolyArray_push(dst, v);
+}
+static sp_PolyArray *sp_PolyArray_flatten(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_new(); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into(b, a->data[i]); return b; }
 /* Sum the integer-tagged elements of a poly_array. Used by
    `Array#sum` on a poly_array whose runtime tags are uniform int
    (e.g. the result of `arr.map { _1[:int_key] }`). Non-int tags

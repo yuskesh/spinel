@@ -20651,6 +20651,20 @@ class Compiler
  # by `sp_IntArray_cmp`. Empty recv falls through to the
  # unresolved-call warning (CRuby would return nil; we don't
  # have a poly-aware nil to return in this typed path).
+ # `arr.flatten` on int_array_ptr_array -- concatenate all inner
+ # IntArrays into a single IntArray. Issue #739.
+      if mname == "flatten" && elem_type == "int_array"
+        @needs_int_array = 1
+        @needs_gc = 1
+        tmp_f = new_temp
+        idx_f = new_temp
+        emit("  sp_IntArray *" + tmp_f + " = sp_IntArray_new();")
+        emit("  for (mrb_int " + idx_f + " = 0; " + idx_f + " < sp_PtrArray_length(" + rc + "); " + idx_f + "++) {")
+        emit("    sp_IntArray *_ia = (sp_IntArray *)sp_PtrArray_get(" + rc + ", " + idx_f + ");")
+        emit("    if (_ia) { for (mrb_int _j = 0; _j < _ia->len; _j++) sp_IntArray_push(" + tmp_f + ", _ia->data[_ia->start + _j]); }")
+        emit("  }")
+        return tmp_f
+      end
       if (mname == "max" || mname == "min") && elem_type == "int_array" && @nd_block[nid] < 0
         @needs_int_array = 1
         tmp_w = new_temp
@@ -20830,6 +20844,10 @@ class Compiler
  # Strip SP_TAG_NIL elements. The runtime helper handles the
  # tag-table walk. Issue #725.
         return "sp_PolyArray_compact(" + rc + ")"
+      end
+      if mname == "flatten"
+ # Recursive flatten into nested array-typed elements. Issue #739.
+        return "sp_PolyArray_flatten(" + rc + ")"
       end
       if mname == "empty?"
         return "(sp_PolyArray_length(" + rc + ") == 0)"

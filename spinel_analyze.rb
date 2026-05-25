@@ -4951,7 +4951,13 @@ class Compiler
     end
     if mname == "flatten"
       if recv >= 0
-        return infer_type(recv)
+        rt_fl = infer_type(recv)
+ # int_array_ptr_array (typed-array-of-int_array, common shape
+ # from `[[1,2],[3,4]]`) flattens to int_array. Issue #739.
+        if rt_fl == "int_array_ptr_array"
+          return "int_array"
+        end
+        return rt_fl
       end
       return "int_array"
     end
