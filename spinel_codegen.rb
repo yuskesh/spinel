@@ -12449,9 +12449,20 @@ class Compiler
     end
     if t == "UnsupportedNode"
  # The parser emitted this sentinel because it hit a Prism node
- # type it doesn't know how to serialize. Refusing to compile is
- # far better than the historical silent "0".
-      $stderr.puts "Spinel: cannot compile " + @nd_content[nid] + " at line " + @nd_value[nid].to_s + " (unsupported Ruby syntax)"
+ # type it doesn't know how to serialize. RationalNode /
+ # ComplexNode appear in literal positions where a hard exit
+ # would prevent the rest of the file from compiling at all; warn
+ # and emit 0 so the program runs (with wrong arithmetic for that
+ # literal). Everything else still hard-errors. Issue #728.
+      kind_us = @nd_content[nid]
+      if kind_us == "RationalNode" || kind_us == "ComplexNode" || kind_us == "ImaginaryNode"
+ # Emit `1` (not `0`) so the common `N / Mr` shape doesn't turn
+ # into a runtime divide-by-zero. The result is still wrong, but
+ # the program continues. Issue #728.
+        $stderr.puts "warning: spinel does not support " + kind_us + " at line " + @nd_value[nid].to_s + " (emitting 1)"
+        return "1"
+      end
+      $stderr.puts "Spinel: cannot compile " + kind_us + " at line " + @nd_value[nid].to_s + " (unsupported Ruby syntax)"
       exit(1)
     end
     if t == "IntegerNode"
@@ -18641,6 +18652,12 @@ class Compiler
     end
     if mname == "encode" || mname == "force_encoding" || mname == "b"
       return rc
+    end
+ # `.encoding` -- spinel doesn't model Encoding objects; return a
+ # plain string label so `puts s.encoding` prints "UTF-8". Issue
+ # #723.
+    if mname == "encoding"
+      return "((const char*)\"UTF-8\")"
     end
     if mname == "strip"
       return "sp_str_strip(" + rc + ")"
@@ -28040,8 +28057,15 @@ class Compiler
     end
     t = @nd_type[nid]
     if t == "UnsupportedNode"
- # Same loud-error path as compile_expr's UnsupportedNode arm.
-      $stderr.puts "Spinel: cannot compile " + @nd_content[nid] + " at line " + @nd_value[nid].to_s + " (unsupported Ruby syntax)"
+ # Same softer path as compile_expr's UnsupportedNode arm: warn
+ # + no-op for Rational/Complex/Imaginary literals so the rest of
+ # the file still compiles. Issue #728.
+      kind_us2 = @nd_content[nid]
+      if kind_us2 == "RationalNode" || kind_us2 == "ComplexNode" || kind_us2 == "ImaginaryNode"
+        $stderr.puts "warning: spinel does not support " + kind_us2 + " at line " + @nd_value[nid].to_s + " (no-op)"
+        return
+      end
+      $stderr.puts "Spinel: cannot compile " + kind_us2 + " at line " + @nd_value[nid].to_s + " (unsupported Ruby syntax)"
       exit(1)
     end
     if t == "MultiWriteNode"

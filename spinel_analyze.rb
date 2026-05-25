@@ -4068,6 +4068,16 @@ class Compiler
  # colliding with user-defined methods of the same name (`b` is
  # the shortest collision target; struct field accessors etc.
  # commonly take that single-letter shape).
+    if mname == "encoding"
+ # spinel doesn't model Encoding objects; treat the return as a
+ # plain string label (`"UTF-8"`). Issue #723.
+      if recv >= 0
+        rt_enc = infer_type(recv)
+        if rt_enc == "string" || rt_enc == "mutable_str"
+          return "string"
+        end
+      end
+    end
     if mname == "force_encoding" || mname == "encode" || mname == "b"
       if recv >= 0
         rt_fe = infer_type(recv)
