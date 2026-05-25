@@ -38424,6 +38424,11 @@ class Compiler
  # the inverse), matching the coercion the expression-shaped branch
  # of compile_yield_call_expr already does.
   def compile_yield_inline_capture(yield_nid, blk, bp_names, map_from, map_to, result_tmp, rt_yc)
+ # Pure stmt helper (only emit() side effects, no value). Explicit
+ # `return 0` on every exit so spinel doesn't widen the function's
+ # inferred return type to the union of `compile_stmt`'s returns
+ # (which trips a -Wint-conversion on Windows when an if-branch's
+ # tail call to compile_stmt becomes the function's implicit return).
     args_id_yic = @nd_arguments[yield_nid]
     assigned_yic = 0
     if args_id_yic >= 0
@@ -38489,6 +38494,7 @@ class Compiler
         end
       end
     end
+    0
   end
 
   def compile_stmt_with_block(nid, blk, bp_names, map_from, map_to)
