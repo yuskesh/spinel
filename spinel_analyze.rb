@@ -16346,6 +16346,13 @@ class Compiler
       end
       @current_class_idx = -1
     end
+ # Issue #806: warn on non-convergence after the cap. changed == 1
+ # means the last iteration still mutated state and would have run
+ # again. Indicates types may remain widened beyond what a converged
+ # fixpoint would have produced.
+    if changed == 1
+      $stderr.puts "warning: param-array type inference did not converge after 4 iterations; some types may be widened to poly"
+    end
   end
 
  # Body-side param narrowing (Stage 1 of the callee→caller direction
