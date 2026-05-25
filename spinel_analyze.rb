@@ -7884,6 +7884,17 @@ class Compiler
               end
             end
           end
+          if @nd_name[sid] == "extend"
+            ext_args = @nd_arguments[sid]
+            if ext_args >= 0
+              ext_ids = get_args(ext_args)
+              ek = 0
+              while ek < ext_ids.length
+                extend_module_on_class(ci, ext_ids[ek], module_prefix)
+                ek = ek + 1
+              end
+            end
+          end
         end
       }
  # Pin lexical scope while collecting ivars. See longer comment
@@ -8123,6 +8134,19 @@ class Compiler
  # the include for ancestors-table emission.
               include_module_on_class(ci, inc_ids[ik], module_prefix)
               ik = ik + 1
+            end
+          end
+        end
+ # `extend M` -- M's instance methods become class methods on
+ # this class. Issue #721.
+        if @nd_name[sid] == "extend"
+          ext_args = @nd_arguments[sid]
+          if ext_args >= 0
+            ext_ids = get_args(ext_args)
+            ek = 0
+            while ek < ext_ids.length
+              extend_module_on_class(ci, ext_ids[ek], module_prefix)
+              ek = ek + 1
             end
           end
         end
@@ -8393,6 +8417,70 @@ class Compiler
                 existing = cls_find_method_direct(ci, mname)
                 if existing < 0
                   collect_class_method(ci, sid)
+                end
+              end
+            end
+            mk = mk + 1
+          end
+        end
+      end
+      mi = mi + 1
+    end
+  end
+
+ # `extend M` -- copy M's instance methods (`def X`) onto the
+ # extending class as class methods (`def self.X`). Module class
+ # methods (`def self.X` on the module) are skipped: those stay on
+ # the module itself in CRuby's semantics. Issue #721.
+  def extend_module_on_class(ci, ext_nid, module_prefix)
+    ext_t = @nd_type[ext_nid]
+    if ext_t != "ConstantReadNode" && ext_t != "ConstantPathNode"
+      return
+    end
+    mod_name = const_ref_flat_name(ext_nid)
+    if mod_name == ""
+      return
+    end
+    effective_prefix = module_prefix
+    if const_ref_is_relative(ext_nid) == 0
+      effective_prefix = ""
+    end
+    resolved_mod_name = resolve_include_module_name(mod_name, effective_prefix)
+    mi = 0
+    while mi < @module_names.length
+      if @module_names[mi] == resolved_mod_name
+        mbody = @module_body_ids[mi]
+        if mbody >= 0
+          mstmts = get_stmts(mbody)
+          mk = 0
+          while mk < mstmts.length
+            sid = mstmts[mk]
+            if @nd_type[sid] == "DefNode"
+              is_cls_def_e = 0
+              if @nd_receiver[sid] >= 0 && @nd_type[@nd_receiver[sid]] == "SelfNode"
+                is_cls_def_e = 1
+              end
+              if is_cls_def_e == 0
+                mname_e = @nd_name[sid]
+ # Only add if this class doesn't already have a class
+ # method with that name.
+                cm_names_e = @cls_cmeth_names[ci].split(";")
+                already_e = 0
+                ki_e = 0
+                while ki_e < cm_names_e.length
+                  if cm_names_e[ki_e] == mname_e
+                    already_e = 1
+                    ki_e = cm_names_e.length
+                  else
+                    ki_e = ki_e + 1
+                  end
+                end
+                if already_e == 0
+                  params_e = collect_params_str(sid)
+                  ptypes_e = collect_ptypes_str(sid, ci)
+                  defs_e = collect_defaults_str(sid)
+                  body_e = @nd_body[sid]
+                  append_cls_cmeth(ci, mname_e, params_e, ptypes_e, "int", body_e, defs_e)
                 end
               end
             end
