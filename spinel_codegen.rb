@@ -12694,11 +12694,16 @@ class Compiler
       return "sp_re_dyn_" + idx.to_s + "(" + pat_c + ")"
     end
     if t == "NumberedReferenceReadNode"
+ # Issue #848: an out-of-range or unmatched capture should be
+ # nil (NULL on the C side), not "". Return the raw slot so
+ # downstream NULL-safe paths (.inspect, puts, ||) treat it as
+ # nil. sp_re_captures[N] is NULL when the group didn't match
+ # OR when N exceeds the pattern's capture count.
       num = @nd_value[nid]
       if num >= 1 && num <= 9
-        return "(sp_re_captures[" + num.to_s + "] ? sp_re_captures[" + num.to_s + "] : \"\")"
+        return "sp_re_captures[" + num.to_s + "]"
       end
-      return "\"\""
+      return "NULL"
     end
     if t == "MatchWriteNode"
  # $1 = ... pattern match

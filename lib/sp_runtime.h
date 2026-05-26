@@ -1895,6 +1895,13 @@ static mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {
   int ncaps = 32;
   int n = re_exec(pat, str, slen, 0, sp_re_caps, ncaps);
   if (n > 0) { sp_re_set_captures(str, sp_re_caps, n/2); return sp_re_caps[0]; }
+  /* Issue #848: clear backrefs on no-match so a subsequent `$1`
+     reads as nil rather than the previous match's group. */
+  for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
+  sp_re_last_str = NULL;
+  sp_re_match_str = NULL;
+  sp_re_match_pre = NULL;
+  sp_re_match_post = NULL;
   return -1;
 }
 
