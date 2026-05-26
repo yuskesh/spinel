@@ -14159,14 +14159,53 @@ class Compiler
   end
 
   def c_string_literal(s)
+ # Issue #722: NUL-containing literals can't ride the static
+ # `(&("\xff" "...")[1])` form: sp_str_byte_len falls back to
+ # strlen for that marker and stops at the embedded NUL, so
+ # downstream `.length` / `.bytes` would report a short length.
+ # Emit a heap-allocated copy with sp_str_set_len recording the
+ # full byte length. NUL inside literals is rare; the per-call
+ # alloc is acceptable.
+    has_nul = 0
+    nul_check_i = 0
+    while nul_check_i < s.length
+      if s[nul_check_i] == 0.chr
+        has_nul = 1
+        nul_check_i = s.length
+      end
+      nul_check_i = nul_check_i + 1
+    end
+    if has_nul == 1
+ # Build the C string literal with `\000` escapes, then wrap
+ # in a stmt-expression that allocates a GC string and copies.
+      inner = ""
+      ii = 0
+      while ii < s.length
+        ch = s[ii]
+        if ch == bsl
+          inner = inner + bsl + bsl
+        elsif ch == "\""
+          inner = inner + bsl + "\""
+        elsif ch == 10.chr
+          inner = inner + bsl_n
+        elsif ch == 13.chr
+          inner = inner + bsl + "r"
+        elsif ch == 9.chr
+          inner = inner + bsl + "t"
+        elsif ch == 0.chr
+          inner = inner + bsl + "000"
+        else
+          inner = inner + ch
+        end
+        ii = ii + 1
+      end
+      n = s.length.to_s
+      return "({ char *_s = sp_str_alloc(" + n + "); memcpy(_s, \"" + inner + "\", " + n + "); _s[" + n + "] = 0; sp_str_set_len(_s, " + n + "); (const char *)_s; })"
+    end
  # Input `s` is the runtime Ruby string content (already-cooked: any
  # backslash in `s` is a literal backslash, NOT an escape introducer).
  # We C-escape the small set that needs it: backslash, double-quote,
  # newline, carriage return, tab. Everything else copies through.
- # The previous version treated `s` as if it still carried Ruby
- # escapes, so a 2-char input "\\n" (backslash + n) wrongly collapsed
- # to a C newline; that bug is what made `"hello\\nworld\\n".lines`
- # emit invalid C with a literal newline inside a string literal.
     result = "\""
     i = 0
     while i < s.length
@@ -14186,7 +14225,17 @@ class Compiler
               if ch == 9.chr
                 result = result + bsl + "t"
               else
-                result = result + ch
+                if ch == 0.chr
+ # Issue #722: NUL byte inside the literal. Octal `\000` always
+ # consumes exactly 3 digits so a following digit char doesn't
+ # extend the escape. sp_str_byte_len falls back to strlen for
+ # static literals so the in-string-NUL length still reports
+ # short; full length-preserving static literals would need a
+ # new marker -- deferred.
+                  result = result + bsl + "000"
+                else
+                  result = result + ch
+                end
               end
             end
           end

@@ -121,6 +121,9 @@ class NodeTableLoader
             result = result + " "
           when "25"
             result = result + "%"
+          when "00"
+ # Issue #722: NUL byte (literal embedded in a Ruby string).
+            result = result + 0.chr
           else
             result = result + "%" + hex
           end

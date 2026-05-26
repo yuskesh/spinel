@@ -71,6 +71,11 @@ static char *escape_str(const uint8_t *src, size_t len) {
     else if (c == '\r') { out[j++]='%'; out[j++]='0'; out[j++]='D'; }
     else if (c == '\t') { out[j++]='%'; out[j++]='0'; out[j++]='9'; }
     else if (c == ' ')  { out[j++]='%'; out[j++]='2'; out[j++]='0'; }
+    /* Issue #722: NUL byte inside a string literal would truncate
+       the field at the AST text-serialization layer (lines split
+       on '\n' and the loader uses strlen on fields). Encode as %00
+       so the byte survives the round-trip. */
+    else if (c == 0)    { out[j++]='%'; out[j++]='0'; out[j++]='0'; }
     else out[j++] = c;
   }
   out[j] = '\0';
