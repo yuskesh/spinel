@@ -4311,6 +4311,9 @@ class Compiler
     if mname == "cover?"
       return "bool"
     end
+    if mname == "const_defined?"
+      return "bool"
+    end
     if mname == "==="
       return "bool"
     end

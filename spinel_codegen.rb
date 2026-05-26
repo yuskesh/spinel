@@ -24304,6 +24304,27 @@ class Compiler
         @needs_class_table = 1
         return "sp_class_to_s(" + rc + ")"
       end
+ # Module#const_defined?(:X) — static-class + literal-symbol-arg
+ # fast path. Spinel emits one C global per user-class constant
+ # named `cst_<Class>_<X>`, and the analyzer tracks those names
+ # in `@const_names`. Look up via `find_const_idx` to fold to
+ # TRUE / FALSE at compile time. Dynamic receivers or non-
+ # literal symbol args (or builtin classes whose constants live
+ # outside @const_names — Math::PI etc.) keep falling through.
+      if mname == "const_defined?"
+        recv_id_cd = @nd_receiver[nid]
+        args_id_cd = @nd_arguments[nid]
+        if recv_id_cd >= 0 && @nd_type[recv_id_cd] == "ConstantReadNode" && args_id_cd >= 0
+          aa_cd = get_args(args_id_cd)
+          if aa_cd.length >= 1 && @nd_type[aa_cd[0]] == "SymbolNode"
+            qname_cd = @nd_name[recv_id_cd] + "_" + @nd_content[aa_cd[0]]
+            if find_const_idx(qname_cd) >= 0
+              return "TRUE"
+            end
+            return "FALSE"
+          end
+        end
+      end
       if mname == "==" || mname == "eql?"
         rhs_eq = compile_arg0(nid)
         return "sp_class_eq(" + rc + ", " + rhs_eq + ")"
