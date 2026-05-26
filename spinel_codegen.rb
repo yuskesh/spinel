@@ -18248,7 +18248,11 @@ class Compiler
         return "(sp_String_append(" + rc + ", " + val + "), " + rc + ")"
       end
       if lt == "string"
-        return "sp_str_concat(" + compile_expr(recv) + ", " + compile_arg0(nid) + ")"
+ # `s << x` on a frozen string literal raises FrozenError per MRI.
+ # spinel string literals are always frozen. The mutable_str arm
+ # above handles the legal case. Issue #886.
+        @needs_exc_class_hierarchy = 1
+        return "({ sp_raise_cls(\"FrozenError\", \"can't modify frozen String\"); " + compile_expr(recv) + "; })"
       end
  # Array `<<` is push, not bit-shift. The compile_call_expr path
  # also has a push branch for direct `arr.push(x)` style calls,
@@ -18859,6 +18863,20 @@ class Compiler
  # in the bootstrap build). Issue #619 puzzle 10.
     if mname == "chomp!"
       return compile_string_method_expr(nid, "chomp", rc)
+    end
+ # String mutating methods called on a frozen string literal (recv
+ # type "string", not "mutable_str"). MRI raises FrozenError;
+ # spinel string literals are always frozen. The mutable_str arm
+ # at compile_call_expr handles the legal case before reaching
+ # here. Issue #886. The expression still yields a value so
+ # downstream type inference doesn't break -- the raise is a
+ # non-returning C call inside a stmt-expression.
+    if mname == "insert" || mname == "prepend" || mname == "<<" || mname == "concat" || mname == "replace" || mname == "clear" ||
+       mname == "chop!" || mname == "upcase!" || mname == "downcase!" || mname == "swapcase!" || mname == "capitalize!" ||
+       mname == "sub!" || mname == "gsub!" || mname == "squeeze!" || mname == "strip!" || mname == "lstrip!" || mname == "rstrip!" ||
+       mname == "tr!" || mname == "tr_s!" || mname == "delete!" || mname == "reverse!" || mname == "succ!" || mname == "next!"
+      @needs_exc_class_hierarchy = 1
+      return "({ sp_raise_cls(\"FrozenError\", \"can't modify frozen String\"); " + rc + "; })"
     end
  # String#<=> dispatches to strcmp clamped to -1/0/1.
  # Issue #900. Symmetric to the int / sym arms.

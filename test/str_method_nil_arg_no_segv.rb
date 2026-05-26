@@ -16,7 +16,12 @@ p "foo".count    # CRuby: ArgumentError. spinel: 0 (was: SEGV)
 p "foo".delete   # CRuby: ArgumentError. spinel: "foo" unchanged (was: SEGV)
 p "foo".rindex(/missing/)  # CRuby + spinel post-#532: nil. (was: -1)
 p "abcdabcd".rindex(/c/)   # CRuby & spinel: 6 (new sp_re_rindex helper)
-p "foo".send(:<<)          # CRuby: ArgumentError. spinel: "foo" (was: meaningless int)
+begin
+  "foo".send(:<<)          # CRuby: ArgumentError. spinel: FrozenError (after #886)
+  puts "no raise"
+rescue FrozenError => e
+  puts "send-lshift: " + e.message
+end
 
 # setbyte on a literal: spinel adopts frozen-string-literal: true
 # semantics globally, so literals raise FrozenError on mutation.

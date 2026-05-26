@@ -2,6 +2,6 @@
 "foo"
 nil
 6
-"foo"
+send-lshift: can't modify frozen String
 frozen literal: can't modify frozen String
 b
