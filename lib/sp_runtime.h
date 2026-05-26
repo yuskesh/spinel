@@ -362,6 +362,33 @@ static sp_str_hdr *sp_str_heap = NULL;
 static const char sp_str_empty_data[] = "\xff";
 #define sp_str_empty (sp_str_empty_data + 1)
 
+/* RUBY_PLATFORM string -- host arch + OS. Detected at C compile time
+   so cross-builds report the target platform. Issue #890. */
+#if defined(__x86_64__) || defined(_M_X64)
+#  define SP_RUBY_ARCH "x86_64"
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#  define SP_RUBY_ARCH "aarch64"
+#elif defined(__i386__) || defined(_M_IX86)
+#  define SP_RUBY_ARCH "i686"
+#elif defined(__arm__)
+#  define SP_RUBY_ARCH "arm"
+#else
+#  define SP_RUBY_ARCH "unknown"
+#endif
+#if defined(__linux__)
+#  define SP_RUBY_OS "linux"
+#elif defined(__APPLE__)
+#  define SP_RUBY_OS "darwin"
+#elif defined(_WIN32) || defined(_WIN64)
+#  define SP_RUBY_OS "mingw32"
+#elif defined(__FreeBSD__)
+#  define SP_RUBY_OS "freebsd"
+#else
+#  define SP_RUBY_OS "unknown"
+#endif
+static const char sp_ruby_platform_data[] = "\xff" SP_RUBY_ARCH "-" SP_RUBY_OS;
+static inline const char *sp_ruby_platform_str(void) { return sp_ruby_platform_data + 1; }
+
 static void sp_oom_die(void);
 static char *sp_str_alloc(size_t len) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;

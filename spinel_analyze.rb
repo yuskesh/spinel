@@ -2264,6 +2264,11 @@ class Compiler
       if @nd_name[nid] == "ARGV"
         return "argv"
       end
+ # Issue #890: RUBY_VERSION / RUBY_PLATFORM / RUBY_ENGINE are
+ # built-in string constants provided by the runtime.
+      if @nd_name[nid] == "RUBY_VERSION" || @nd_name[nid] == "RUBY_PLATFORM" || @nd_name[nid] == "RUBY_ENGINE"
+        return "string"
+      end
       rname = resolve_const_read_name(@nd_name[nid])
       ci = find_const_idx(rname)
       if ci >= 0
@@ -5807,6 +5812,9 @@ class Compiler
         if rcname == "Process"
           if mname == "clock_gettime"
             return "float"
+          end
+          if mname == "pid" || mname == "ppid"
+            return "int"
           end
         end
         if rcname == "Time"

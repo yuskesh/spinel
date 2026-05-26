@@ -13159,6 +13159,18 @@ class Compiler
  # to wrong-but-running C. Warn keeps the diagnostic surface
  # consistent: every unresolved name produces one stderr line
  # plus a `0` placeholder, leaving the user a clear punch list.
+ # Built-in Ruby pseudo-constants spinel-the-runtime can answer
+ # without a per-host build step. spinel uses the host platform
+ # detected by the C preprocessor at build time. Issue #890.
+      if rname == "RUBY_VERSION"
+        return "(&(\"\\xff\" \"4.0.0\")[1])"
+      end
+      if rname == "RUBY_ENGINE"
+        return "(&(\"\\xff\" \"spinel\")[1])"
+      end
+      if rname == "RUBY_PLATFORM"
+        return "sp_ruby_platform_str()"
+      end
       if is_known_constant_name(rname) == 0
         warn_unresolved_const(rname)
         return "0"
@@ -22674,6 +22686,14 @@ class Compiler
       if rcname == "Process"
         if mname == "clock_gettime"
           return "({ struct timespec _ts; clock_gettime(CLOCK_MONOTONIC, &_ts); (mrb_float)_ts.tv_sec + (mrb_float)_ts.tv_nsec / 1e9; })"
+        end
+ # Process.pid / .ppid: direct syscall lowering. unistd.h is
+ # already included in the runtime. Issue #893.
+        if mname == "pid"
+          return "((mrb_int)getpid())"
+        end
+        if mname == "ppid"
+          return "((mrb_int)getppid())"
         end
       end
  # Regexp.escape / Regexp.quote -- single-string-arg form. Routes
