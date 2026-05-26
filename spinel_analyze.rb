@@ -2102,6 +2102,18 @@ class Compiler
       end
       return infer_type(@nd_expression[nid])
     end
+    if t == "LocalVariableOrWriteNode" || t == "LocalVariableAndWriteNode"
+ # `var ||= expr` / `var &&= expr` as expression value lowers to
+ # the slot's type after widening (which scan_locals already did
+ # via the merge rules below). Falling back to the rhs type made
+ # the surrounding LV slot type for `y = (x ||= 7)` mismatch
+ # when scan_locals widened x to poly. Issue #702.
+      vt_oa = find_var_type(@nd_name[nid])
+      if vt_oa != ""
+        return vt_oa
+      end
+      return infer_type(@nd_expression[nid])
+    end
     if t == "MultiWriteNode"
  # `(a, b = 10, 11)` as an expression returns the RHS array.
  # The rhs ArrayNode's type infers normally; the wrapping
@@ -26068,6 +26080,48 @@ class Compiler
               end
             end
             ki = ki + 1
+          end
+        end
+      end
+    end
+ # `a ||= rhs` / `a &&= rhs` -- the conditional write can switch
+ # `a` from its initial type to the rhs type. Widen the slot
+ # so reads downstream see the union (poly for incompatible
+ # base types). Same merge rules as LocalVariableWriteNode.
+ # Issue #702.
+    if @nd_type[nid] == "LocalVariableOrWriteNode" || @nd_type[nid] == "LocalVariableAndWriteNode"
+      lname = @nd_name[nid]
+      if not_in(lname, names) == 1
+        if not_in(lname, params) == 1
+          names.push(lname)
+          types.push(infer_type(@nd_expression[nid]))
+          @scan_literal_flags.push("")
+          @scan_empty_flags.push("")
+          @scan_empty_hash_flags.push("")
+        end
+      else
+        if not_in(lname, params) == 1
+          at_oa = infer_type(@nd_expression[nid])
+          koa = 0
+          while koa < names.length
+            if names[koa] == lname && types[koa] != at_oa && types[koa] != "poly"
+              if at_oa == "nil" && is_nullable_pointer_type(types[koa]) == 1
+                if types[koa][types[koa].length - 1] != "?"
+                  types[koa] = types[koa] + "?"
+                end
+              elsif types[koa] == "nil" && is_nullable_pointer_type(at_oa) == 1
+                types[koa] = is_nullable_type(at_oa) == 1 ? at_oa : (at_oa + "?")
+              elsif base_type(types[koa]) == at_oa || base_type(at_oa) == types[koa] || base_type(types[koa]) == base_type(at_oa)
+ # compatible — leave the richer one
+                if base_type(at_oa) == types[koa]
+                  types[koa] = at_oa
+                end
+              else
+                types[koa] = "poly"
+                @needs_rb_value = 1
+              end
+            end
+            koa = koa + 1
           end
         end
       end

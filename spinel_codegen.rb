@@ -13001,12 +13001,26 @@ class Compiler
  # only on a falsy current value.
       vref = fiber_var_ref(@nd_name[nid])
       val = compile_expr(@nd_expression[nid])
+      lvw_t_or = find_var_declared_type(@nd_name[nid])
+      rhs_t_or = infer_type(@nd_expression[nid])
+      if lvw_t_or == "poly" || is_scalar_nullable_type(lvw_t_or) == 1
+        cond_or = truthy_c_expr(lvw_t_or, vref)
+        val_or = (lvw_t_or == "poly" && rhs_t_or != "" && rhs_t_or != "poly") ? box_value_to_poly(rhs_t_or, val) : val
+        return "(" + vref + " = " + cond_or + " ? " + vref + " : (" + val_or + "))"
+      end
       return "(" + vref + " = " + vref + " ? " + vref + " : (" + val + "))"
     end
     if t == "LocalVariableAndWriteNode"
  # `local &&= expr` in expression context.
       vref = fiber_var_ref(@nd_name[nid])
       val = compile_expr(@nd_expression[nid])
+      lvw_t_an = find_var_declared_type(@nd_name[nid])
+      rhs_t_an = infer_type(@nd_expression[nid])
+      if lvw_t_an == "poly" || is_scalar_nullable_type(lvw_t_an) == 1
+        cond_an = truthy_c_expr(lvw_t_an, vref)
+        val_an = (lvw_t_an == "poly" && rhs_t_an != "" && rhs_t_an != "poly") ? box_value_to_poly(rhs_t_an, val) : val
+        return "(" + vref + " = " + cond_an + " ? (" + val_an + ") : " + vref + ")"
+      end
       return "(" + vref + " = " + vref + " ? (" + val + ") : " + vref + ")"
     end
     if t == "IndexOrWriteNode"
