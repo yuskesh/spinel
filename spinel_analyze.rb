@@ -2206,6 +2206,11 @@ class Compiler
       if gname == "$~" || gname == "$&" || gname == "$`" || gname == "$'"
         return "string"
       end
+ # Issue #831: $! is the currently-rescued exception. Read as
+ # the rescue message string (NULL outside rescue → .inspect = "nil").
+      if gname == "$!" || gname == "$;" || gname == "$," || gname == "$/"
+        return "string"
+      end
       gi = 0
       while gi < @gvar_names.length
         if @gvar_names[gi] == gname

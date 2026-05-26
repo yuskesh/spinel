@@ -4855,9 +4855,48 @@ class Compiler
     name = resolve_gvar_alias(name)
  # $last → gv_last, $1 → gv_1
     if name.length > 0 && name[0] == "$"
-      return "gv_" + name[1, name.length - 1]
+      suf = name[1, name.length - 1]
+ # Issue #831: punctuation globals like `$!`, `$;`, `$,`, `$/`,
+ # `$:`, `$\\`, `$<`, `$>` would emit `gv_!`, etc., which aren't
+ # valid C identifiers. Map each punctuation char to a stable
+ # word so the same Ruby global maps to one C name throughout.
+      mapped = ""
+      i_sg = 0
+      while i_sg < suf.length
+        c_sg = suf[i_sg]
+        if (c_sg >= "a" && c_sg <= "z") || (c_sg >= "A" && c_sg <= "Z") || (c_sg >= "0" && c_sg <= "9") || c_sg == "_"
+          mapped = mapped + c_sg
+        else
+          mapped = mapped + "_" + gvar_punct_word(c_sg)
+        end
+        i_sg = i_sg + 1
+      end
+      return "gv_" + mapped
     end
     "gv_" + name
+  end
+
+  def gvar_punct_word(c)
+    return "bang" if c == "!"
+    return "semi" if c == ";"
+    return "comma" if c == ","
+    return "slash" if c == "/"
+    return "colon" if c == ":"
+    return "bslash" if c == "\\"
+    return "lt" if c == "<"
+    return "gt" if c == ">"
+    return "eq" if c == "="
+    return "qmark" if c == "?"
+    return "amp" if c == "&"
+    return "quote" if c == "'"
+    return "btick" if c == "`"
+    return "tilde" if c == "~"
+    return "plus" if c == "+"
+    return "minus" if c == "-"
+    return "at" if c == "@"
+    return "star" if c == "*"
+    return "dollar" if c == "$"
+    "x"
   end
 
   def resolve_gvar_alias(name)
@@ -13642,6 +13681,23 @@ class Compiler
       end
       if gname == "$+"
         return "(sp_re_last_paren_match() ? sp_re_last_paren_match() : \"\")"
+      end
+ # Issue #831: `$!` is the currently-rescued exception. Return
+ # its message string when in a rescue (depth > 0) else NULL,
+ # so `$!.inspect` reads as "nil" outside rescue and round-trips
+ # the message inside one.
+      if gname == "$!"
+        return "(sp_exc_top > 0 ? sp_exc_msg[sp_exc_top-1] : (const char *)0)"
+      end
+ # Punctuation globals beyond $! / $/ etc. that spinel doesn't
+ # have a runtime view for: read as NULL string (Ruby's nil) so
+ # compilation succeeds and `.inspect` round-trips through
+ # sp_str_inspect's NULL handler to "nil".
+      if gname == "$;" || gname == "$,"
+        return "(const char *)0"
+      end
+      if gname == "$/"
+        return "\"\\n\""
       end
  # General global variable
       return sanitize_gvar(gname)
