@@ -5948,6 +5948,21 @@ class Compiler
     nil
   end
 
+ # Per-variant info for typed-hash iteration: returns a 5-tuple
+ # [key_type, val_type, key_c_type, val_c_type, value_getter] or
+ # nil for the unsupported variants (poly_poly_hash is handled
+ # by its own slot-based walker). Used by each_key / each_value.
+  def hash_iter_variant_info(t)
+    if t == "sym_int_hash"; return ["symbol", "int", "sp_sym", "mrb_int", "sp_SymIntHash_get"]; end
+    if t == "sym_str_hash"; return ["symbol", "string", "sp_sym", "const char *", "sp_SymStrHash_get"]; end
+    if t == "sym_poly_hash"; return ["symbol", "poly", "sp_sym", "sp_RbVal", "sp_SymPolyHash_get"]; end
+    if t == "str_int_hash"; return ["string", "int", "const char *", "mrb_int", "sp_StrIntHash_get"]; end
+    if t == "str_str_hash"; return ["string", "string", "const char *", "const char *", "sp_StrStrHash_get"]; end
+    if t == "str_poly_hash"; return ["string", "poly", "const char *", "sp_RbVal", "sp_StrPolyHash_get"]; end
+    if t == "int_str_hash"; return ["int", "string", "mrb_int", "const char *", "sp_IntStrHash_get"]; end
+    if t == "int_poly_hash"; return ["int", "poly", "mrb_int", "sp_RbVal", "sp_IntPolyHash_get"]; end
+    nil
+  end
 
  # CRuby returns nil for static mismatches (e.g. `{a: 1}.dig("a")`)
  # since no key compares equal — Hash#dig short-circuits to nil here.
@@ -39772,6 +39787,46 @@ class Compiler
         push_scope
         declare_var(bp_ev2, vtag_ev)
         compile_stmts_body(@nd_body[@nd_block[nid]])
+        pop_scope
+        @indent = @indent - 1
+        emit("  }")
+        return 1
+      end
+    end
+
+ # `hash.each_key { |k| ... }` for typed hash variants. Walks
+ # h->order in insertion order and binds the key. Sym-keyed
+ # variants cast back to sp_sym (order stores the underlying
+ # mrb_int); str-keyed pass through as const char *.
+    if mname == "each_key" && recv >= 0 && @nd_block[nid] >= 0
+      rt_ek = infer_type(recv)
+      hv_ek = hash_iter_variant_info(rt_ek)
+      if hv_ek != nil
+        rc_ek = compile_expr_gc_rooted(recv)
+        bp_ek = get_block_param(nid, 0)
+        has_bp_ek = 1
+        if bp_ek == ""
+          has_bp_ek = 0
+          bp_ek = "_k"
+        end
+        tmp_ek = new_temp
+        emit("  for (mrb_int " + tmp_ek + " = 0; " + tmp_ek + " < " + rc_ek + "->len; " + tmp_ek + "++) {")
+        if has_bp_ek == 1
+          if hv_ek[0] == "symbol"
+            emit("    sp_sym lv_" + bp_ek + " = (sp_sym)" + rc_ek + "->order[" + tmp_ek + "];")
+          else
+            emit("    " + hv_ek[2] + " lv_" + bp_ek + " = " + rc_ek + "->order[" + tmp_ek + "];")
+          end
+        end
+        @indent = @indent + 1
+        push_scope
+        if has_bp_ek == 1
+          declare_var(bp_ek, hv_ek[0])
+        end
+        redo_label_ek = push_redo_label
+        emit_redo_label(redo_label_ek)
+        compile_stmts_body(@nd_body[@nd_block[nid]])
+        pop_redo_label
         pop_scope
         @indent = @indent - 1
         emit("  }")
