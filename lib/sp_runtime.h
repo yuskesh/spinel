@@ -2007,9 +2007,49 @@ static mrb_bool sp_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_i
   return re_exec(pat, str, slen, (mrb_int)pos, caps, 2) > 0;
 }
 
+/* Issue #855: expand `\1`..`\9` / `\&` / `\0` backreferences in
+   the replacement string against the current caps[] array. `\\`
+   is a literal backslash. Writes to *out_io at *olen_io, growing
+   *out_io / *cap_io as needed. */
+static void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io,
+                             const char *rep, size_t rlen,
+                             const char *src, int *caps, int ncaps) {
+  size_t olen = *olen_io;
+  char *out = *out_io;
+  size_t cap = *cap_io;
+  size_t i = 0;
+  while (i < rlen) {
+    char c = rep[i];
+    if (c == '\\' && i + 1 < rlen) {
+      char d = rep[i+1];
+      if ((d >= '0' && d <= '9') || d == '&') {
+        int gi = (d == '&') ? 0 : (d - '0');
+        if (gi*2 + 1 < ncaps && caps[gi*2] >= 0 && caps[gi*2+1] >= 0) {
+          int g_len = caps[gi*2+1] - caps[gi*2];
+          if (olen + g_len + 1 >= cap) { cap = (olen + g_len) * 2 + 64; out = (char*)realloc(out, cap); }
+          memcpy(out+olen, src + caps[gi*2], g_len);
+          olen += g_len;
+        }
+        i += 2;
+        continue;
+      } else if (d == '\\') {
+        if (olen + 1 >= cap) { cap = cap * 2 + 64; out = (char*)realloc(out, cap); }
+        out[olen++] = '\\';
+        i += 2;
+        continue;
+      }
+    }
+    if (olen + 1 >= cap) { cap = cap * 2 + 64; out = (char*)realloc(out, cap); }
+    out[olen++] = c;
+    i++;
+  }
+  *out_io = out; *olen_io = olen; *cap_io = cap;
+}
+
 static const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep) {
   int64_t slen = (int64_t)strlen(str); size_t rlen = strlen(rep);
-  size_t cap = slen * 2 + 64; char *out = sp_str_alloc_raw(cap); size_t olen = 0;
+  size_t cap = slen * 2 + rlen * 4 + 64;
+  char *out = sp_str_alloc_raw(cap); size_t olen = 0;
   int64_t pos = 0; int caps[64];
   while (pos <= slen) {
     int n = re_exec(pat, str, slen, pos, caps, 64);
@@ -2017,11 +2057,11 @@ static const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const ch
     size_t before = caps[0] - pos;
     if (olen+before+rlen >= cap) { cap = (olen+before+rlen)*2+64; out = (char*)realloc(out, cap); }
     memcpy(out+olen, str+pos, before); olen += before;
-    memcpy(out+olen, rep, rlen); olen += rlen;
+    sp_re_expand_rep(&out, &olen, &cap, rep, rlen, str, caps, n);
     pos = caps[1]; if (caps[0] == caps[1]) pos++;
   }
   size_t rest = slen - pos;
-  if (olen+rest >= cap) { cap = olen+rest+1; out = (char*)realloc(out, cap); }
+  if (olen+rest+1 >= cap) { cap = olen+rest+64; out = (char*)realloc(out, cap); }
   memcpy(out+olen, str+pos, rest); olen += rest;
   out[olen] = 0; return out;
 }
@@ -2063,11 +2103,16 @@ static const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const cha
   int caps[64];
   int n = re_exec(pat, str, slen, 0, caps, 64);
   if (n <= 0 || caps[0] < 0) return str;
-  size_t out_len = caps[0] + rlen + (slen - caps[1]);
-  char *out = sp_str_alloc_raw(out_len + 1);
+  /* Issue #855: expand `\1`..`\9` / `\&` from rep against caps. */
+  size_t cap = caps[0] + rlen * 4 + (slen - caps[1]) + 64;
+  char *out = sp_str_alloc_raw(cap);
   memcpy(out, str, caps[0]);
-  memcpy(out+caps[0], rep, rlen);
-  memcpy(out+caps[0]+rlen, str+caps[1], slen-caps[1]+1);
+  size_t olen = caps[0];
+  sp_re_expand_rep(&out, &olen, &cap, rep, rlen, str, caps, n);
+  size_t rest = slen - caps[1];
+  if (olen + rest + 1 >= cap) { cap = olen + rest + 64; out = (char*)realloc(out, cap); }
+  memcpy(out+olen, str+caps[1], rest);
+  out[olen+rest] = 0;
   return out;
 }
 
