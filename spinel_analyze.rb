@@ -5967,7 +5967,7 @@ class Compiler
           if mname == "join"
             return "string"
           end
-          if mname == "basename"
+          if mname == "basename" || mname == "dirname" || mname == "extname"
             return "string"
           end
         end
@@ -5980,7 +5980,7 @@ class Compiler
           end
         end
         if rcname == "Dir"
-          if mname == "home"
+          if mname == "home" || mname == "pwd" || mname == "getwd"
             return "string"
           end
         end

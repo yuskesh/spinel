@@ -23178,6 +23178,18 @@ class Compiler
         if mname == "basename"
           return "sp_file_basename(" + compile_arg0(nid) + ")"
         end
+ # Issue #892.
+        if mname == "dirname"
+          return "sp_file_dirname(" + compile_arg0(nid) + ")"
+        end
+        if mname == "extname"
+          return "sp_file_extname(" + compile_arg0(nid) + ")"
+        end
+      end
+      if rcname == "Dir"
+        if mname == "pwd" || mname == "getwd"
+          return "sp_dir_pwd()"
+        end
       end
       if rcname == "Time"
         if mname == "now"

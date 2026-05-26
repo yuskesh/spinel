@@ -2975,6 +2975,36 @@ static const char *sp_file_basename(const char *path) {
   memcpy(buf, base, n + 1);
   return buf;
 }
+/* Issue #892: File.dirname / File.extname / Dir.pwd. */
+static const char *sp_file_dirname(const char *path) {
+  const char *s = strrchr(path, '/');
+  if (!s) { char *r = sp_str_alloc(1); r[0] = '.'; r[1] = 0; return r; }
+  if (s == path) { char *r = sp_str_alloc(1); r[0] = '/'; r[1] = 0; return r; }
+  size_t n = (size_t)(s - path);
+  char *buf = sp_str_alloc(n);
+  memcpy(buf, path, n); buf[n] = 0;
+  return buf;
+}
+static const char *sp_file_extname(const char *path) {
+  const char *base = strrchr(path, '/');
+  base = base ? base + 1 : path;
+  const char *dot = strrchr(base, '.');
+  /* CRuby: leading-dot files (".bashrc") return "". Trailing-dot
+     paths ("foo.") keep the dot since Ruby 2.7. */
+  if (!dot || dot == base) return sp_str_empty;
+  size_t n = strlen(dot);
+  char *buf = sp_str_alloc(n);
+  memcpy(buf, dot, n + 1);
+  return buf;
+}
+static const char *sp_dir_pwd(void) {
+  char tmp[4096];
+  if (!getcwd(tmp, sizeof(tmp))) { return sp_str_empty; }
+  size_t n = strlen(tmp);
+  char *buf = sp_str_alloc(n);
+  memcpy(buf, tmp, n + 1);
+  return buf;
+}
 
 /* Read a file's bytes into a fresh IntArray. Distinct from
    `sp_str_bytes(sp_file_read(path))` because plain sp_str_bytes uses
