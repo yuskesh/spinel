@@ -19713,6 +19713,15 @@ class Compiler
       args_id_clp = @nd_arguments[nid]
       if args_id_clp >= 0
         a_clp = get_args(args_id_clp)
+ # Range arg: extract literal lo/hi. Half-open forms not handled.
+        if a_clp.length == 1 && @nd_type[a_clp[0]] == "RangeNode"
+          rlo_sc = @nd_left[a_clp[0]]
+          rhi_sc = @nd_right[a_clp[0]]
+          if rlo_sc >= 0 && rhi_sc >= 0
+            tmp_clp_r = new_temp
+            return "({ const char *" + tmp_clp_r + " = " + rc + "; const char *_lo = " + compile_expr(rlo_sc) + "; const char *_hi = " + compile_expr(rhi_sc) + "; strcmp(" + tmp_clp_r + ", _lo) < 0 ? _lo : (strcmp(" + tmp_clp_r + ", _hi) > 0 ? _hi : " + tmp_clp_r + "); })"
+          end
+        end
         if a_clp.length >= 2
           lo = compile_expr(a_clp[0])
           hi = compile_expr(a_clp[1])
@@ -21052,6 +21061,19 @@ class Compiler
         a = get_args(args_id)
         if a.length >= 2
           return "sp_int_clamp(" + rc + ", " + compile_expr(a[0]) + ", " + compile_expr(a[1]) + ")"
+        end
+ # Range arg: `n.clamp(lo..hi)` — extract literal range bounds.
+ # `..hi` / `lo..` half-open forms aren't handled here.
+        if a.length == 1 && @nd_type[a[0]] == "RangeNode"
+          rlo = @nd_left[a[0]]
+          rhi = @nd_right[a[0]]
+          if rlo >= 0 && rhi >= 0
+            hi_expr = compile_expr(rhi)
+            if range_excl_end(a[0]) == 1
+              hi_expr = "(" + hi_expr + ") - 1"
+            end
+            return "sp_int_clamp(" + rc + ", " + compile_expr(rlo) + ", " + hi_expr + ")"
+          end
         end
       end
     end
