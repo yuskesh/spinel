@@ -1542,6 +1542,109 @@ class Compiler
     1
   end
 
+  def regexp_source_has_capture_group(src)
+    in_class = 0
+    escaped = 0
+    i = 0
+    while i < src.length
+      ch = src[i, 1]
+      if escaped == 1
+        escaped = 0
+      elsif ch == "\\"
+        escaped = 1
+      elsif in_class == 1
+        if ch == "]"
+          in_class = 0
+        end
+      elsif ch == "["
+        in_class = 1
+      elsif ch == "("
+        if src[i + 1, 1] == "?"
+          q = src[i + 2, 1]
+          if q == "<"
+            la = src[i + 3, 1]
+            if la != "=" && la != "!"
+              return 1
+            end
+          elsif q == "'"
+            return 1
+          end
+        else
+          return 1
+        end
+      end
+      i = i + 1
+    end
+    0
+  end
+
+  def local_regex_static_index(name)
+    i = 0
+    while i < @local_regex_names.length
+      if @local_regex_names[i] == name
+        return @local_regex_idx[i]
+      end
+      i = i + 1
+    end
+    -1
+  end
+
+  def regexp_static_source(nid, depth = 0)
+    if nid < 0 || depth > 4
+      return ""
+    end
+    t = @nd_type[nid]
+    if t == "RegularExpressionNode"
+      return @nd_unescaped[nid]
+    end
+    if t == "CallNode" && @nd_name[nid] == "freeze"
+      return regexp_static_source(@nd_receiver[nid], depth + 1)
+    end
+    lit = regexp_new_literal_pattern(nid)
+    if lit != ""
+      return lit
+    end
+    if t == "ConstantReadNode" || t == "ConstantPathNode"
+      cname = resolve_const_ref_name(nid)
+      if cname != ""
+        ci = find_const_idx(cname)
+        if ci >= 0 && ci < @const_expr_ids.length
+          return regexp_static_source(@const_expr_ids[ci], depth + 1)
+        end
+      end
+    end
+    if t == "LocalVariableReadNode"
+      ri = local_regex_static_index(@nd_name[nid])
+      if ri >= 0 && ri < @regexp_patterns.length
+        return @regexp_patterns[ri]
+      end
+    end
+    ""
+  end
+
+  def regexp_capture_status(nid)
+    src = regexp_static_source(nid)
+    if src != ""
+      return regexp_source_has_capture_group(src)
+    end
+    if @nd_type[nid] == "InterpolatedRegularExpressionNode"
+      return -1
+    end
+    if regexp_new_dynamic?(nid) == 1
+      return -1
+    end
+    if @nd_type[nid] == "LocalVariableReadNode"
+      i = 0
+      while i < @local_regex_names.length
+        if @local_regex_names[i] == @nd_name[nid] && @local_regex_call_nids[i] >= 0
+          return -1
+        end
+        i = i + 1
+      end
+    end
+    0
+  end
+
  # Index of an InterpolatedRegularExpressionNode in @dyn_regex_node_ids,
  # or -1 if scan_features hasn't registered it (defensive — should not
  # happen for any reachable node).
@@ -4783,6 +4886,14 @@ class Compiler
       end
     end
     if mname == "scan"
+      args_id_scan = @nd_arguments[nid]
+      if args_id_scan >= 0
+        arg_ids_scan = get_args(args_id_scan)
+        if arg_ids_scan.length > 0 && regexp_capture_status(arg_ids_scan[0]) != 0
+          @needs_rb_value = 1
+          return "poly_array"
+        end
+      end
       return "str_array"
     end
     if mname == "match"

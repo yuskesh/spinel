@@ -2711,6 +2711,43 @@ static void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; fo
 static void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
 static sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } return a; }
 static void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; a->cap = a->cap * 2 + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } a->data[a->len++] = v; }
+static sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
+  sp_PolyArray *arr = sp_PolyArray_new();
+  SP_GC_ROOT(arr);
+  int64_t slen = (int64_t)strlen(str);
+  int64_t pos = 0;
+  int ncaps = 64;
+  int caps[64];
+  while (pos <= slen) {
+    int n = re_exec(pat, str, slen, pos, caps, ncaps);
+    if (n <= 0 || caps[0] < 0) break;
+    int pairs = (n > ncaps ? ncaps : n) / 2;
+    if (pairs <= 1) {
+      int len = caps[1] - caps[0];
+      char *m = sp_str_alloc_raw(len + 1);
+      memcpy(m, str + caps[0], len);
+      m[len] = 0;
+      sp_PolyArray_push(arr, sp_box_str(m));
+    } else {
+      sp_PolyArray *row = sp_PolyArray_new();
+      for (int gi = 1; gi < pairs; gi++) {
+        if (caps[gi * 2] >= 0 && caps[gi * 2 + 1] >= 0) {
+          int glen = caps[gi * 2 + 1] - caps[gi * 2];
+          char *gm = sp_str_alloc_raw(glen + 1);
+          memcpy(gm, str + caps[gi * 2], glen);
+          gm[glen] = 0;
+          sp_PolyArray_push(row, sp_box_str(gm));
+        } else {
+          sp_PolyArray_push(row, sp_box_nil());
+        }
+      }
+      sp_PolyArray_push(arr, sp_box_poly_array(row));
+    }
+    pos = caps[1];
+    if (caps[0] == caps[1]) pos++;
+  }
+  return arr;
+}
 static sp_PolyArray *sp_re_match_data(mrb_regexp_pattern *pat, const char *str) {
   int64_t slen = (int64_t)strlen(str);
   int ncaps = 64;
