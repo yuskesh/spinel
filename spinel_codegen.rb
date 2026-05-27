@@ -40521,8 +40521,16 @@ class Compiler
  # best and update when the comparator says the new element wins.
  # 1-param block is the legacy min_by-style scoring function.
     if bp2 != ""
+ # Declare lv_<bp1> / lv_<bp2> fresh inside the loop body so we
+ # shadow any function-scope slot (the same `a` / `b` names may
+ # have been widened to a different type by other call sites).
+ # Without the shadow, emit_iter_open's bare assignment hits a
+ # type mismatch at -O0 (the optimizer elides at -O3, masking
+ # the bug from local testing).
       emit("  " + c_type(elem_type) + " " + tmp_res + " = " + c_default_val(elem_type) + ";")
-      emit_iter_open(rc, recv_type, "lv_" + bp1, tmp_i)
+      pfx_mm = array_c_prefix(recv_type)
+      emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < sp_" + pfx_mm + "_length(" + rc + "); " + tmp_i + "++) {")
+      emit("    " + c_type(elem_type) + " lv_" + bp1 + " = sp_" + pfx_mm + "_get(" + rc + ", " + tmp_i + ");")
       push_scope
       declare_var(bp1, elem_type)
       declare_var(bp2, elem_type)
