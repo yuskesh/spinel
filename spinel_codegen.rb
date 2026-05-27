@@ -22299,6 +22299,12 @@ class Compiler
       if mname == "uniq"
         return "sp_IntArray_uniq(" + rc + ")"
       end
+      if mname == "compact" || mname == "compact!"
+ # int_array elements can't be nil, so compact is a no-op that
+ # returns self (compact! would return nil in CRuby when nothing
+ # was removed; the typed array can't carry that signal).
+        return rc
+      end
       if mname == "uniq!"
  # Mutate in place. sp_IntArray_uniq returns a fresh array; copy
  # its contents back. The return is the (now-deduped) receiver,
@@ -22926,6 +22932,15 @@ class Compiler
  # Strip SP_TAG_NIL elements. The runtime helper handles the
  # tag-table walk. Issue #725.
         return "sp_PolyArray_compact(" + rc + ")"
+      end
+      if mname == "compact!"
+ # In-place compaction: shift non-nil elements to the front and
+ # truncate. Returns the receiver (CRuby returns nil when nothing
+ # was removed; the typed poly_array can't carry that signal so
+ # we always return self).
+        tmp_ca = new_temp
+        emit("  { sp_PolyArray *" + tmp_ca + " = " + rc + "; mrb_int _w = 0; for (mrb_int _i = 0; _i < " + tmp_ca + "->len; _i++) if (" + tmp_ca + "->data[_i].tag != SP_TAG_NIL) " + tmp_ca + "->data[_w++] = " + tmp_ca + "->data[_i]; " + tmp_ca + "->len = _w; }")
+        return rc
       end
       if mname == "flatten"
  # Recursive flatten into nested array-typed elements. With a
