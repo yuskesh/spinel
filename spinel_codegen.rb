@@ -29402,6 +29402,35 @@ class Compiler
       rest_param_idx = -1
     end
 
+ # Splat-only call: `foo(**h)` with no other args. Emit
+ # `splat[:p1], splat[:p2], ...` for each callee param. Only
+ # sym-keyed splat hashes; issue #917.
+    if arg_ids.length == 1 && @nd_type[arg_ids[0]] == "KeywordHashNode"
+      sole_ke = parse_id_list(@nd_elements[arg_ids[0]])
+      if sole_ke.length == 1 && @nd_type[sole_ke[0]] == "AssocSplatNode"
+        sh_id = @nd_expression[sole_ke[0]]
+        if sh_id >= 0
+          sh_t = infer_type(sh_id)
+          if sh_t == "sym_int_hash" || sh_t == "sym_str_hash" || sh_t == "sym_poly_hash"
+            sh_pfx = "SymIntHash"
+            sh_pfx = "SymStrHash" if sh_t == "sym_str_hash"
+            sh_pfx = "SymPolyHash" if sh_t == "sym_poly_hash"
+            sh_rc = compile_expr(sh_id)
+            sb_w = ""
+            j_w = 0
+            while j_w < pnames.length
+              if j_w > 0
+                sb_w = sb_w + ", "
+              end
+              sb_w = sb_w + "sp_" + sh_pfx + "_get(" + sh_rc + ", " + compile_symbol_literal(pnames[j_w]) + ")"
+              j_w = j_w + 1
+            end
+            return sb_w
+          end
+        end
+      end
+    end
+
  # Check if args contain a KeywordHashNode - extract kw pairs.
  # Track kw_arg_ids parallel to kw_vals so the poly-boxing branch
  # below () can pick the right box helper from the arg's
@@ -30274,6 +30303,36 @@ class Compiler
     arg_ids = []
     kw_name_to_arg = "".split(",", -1)
     kw_name_keys  = "".split(",", -1)
+ # AssocSplatNode `**h` inside the KeywordHashNode: emit
+ # `splat_hash[:p_name]` directly for each callee param. Only the
+ # single-arg shape (`foo(**h)` with no other args) and sym-keyed
+ # splats are supported here. Issue #917.
+    if raw_arg_ids.length == 1 && @nd_type[raw_arg_ids[0]] == "KeywordHashNode"
+      sole_kelems = parse_id_list(@nd_elements[raw_arg_ids[0]])
+      if sole_kelems.length == 1 && @nd_type[sole_kelems[0]] == "AssocSplatNode"
+        splat_h = @nd_expression[sole_kelems[0]]
+        if splat_h >= 0
+          splat_t = infer_type(splat_h)
+          if splat_t == "sym_int_hash" || splat_t == "sym_str_hash" || splat_t == "sym_poly_hash"
+            splat_pfx = "SymIntHash"
+            splat_pfx = "SymStrHash" if splat_t == "sym_str_hash"
+            splat_pfx = "SymPolyHash" if splat_t == "sym_poly_hash"
+            splat_rc = compile_expr(splat_h)
+            sb = ""
+            ki_sp = 0
+            while ki_sp < pnames_t.length
+              if ki_sp > 0
+                sb = sb + ", "
+              end
+              sname_sp = pnames_t[ki_sp]
+              sb = sb + "sp_" + splat_pfx + "_get(" + splat_rc + ", " + compile_symbol_literal(sname_sp) + ")"
+              ki_sp = ki_sp + 1
+            end
+            return sb
+          end
+        end
+      end
+    end
     kak = 0
     while kak < raw_arg_ids.length
       if @nd_type[raw_arg_ids[kak]] == "KeywordHashNode"

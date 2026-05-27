@@ -989,6 +989,15 @@ static int flatten(pm_node_t *node) {
     R("expression", n->expression);
     break;
   }
+  case PM_ASSOC_SPLAT_NODE: {
+    /* `**h` in argument position — splice a hash's entries as
+       keyword args. Wraps the inner hash expression; codegen
+       handles the expansion at call sites. Issue #917. */
+    pm_assoc_splat_node_t *n = (pm_assoc_splat_node_t *)node;
+    N("AssocSplatNode");
+    R("value", n->value);
+    break;
+  }
   case PM_SUPER_NODE: {
     pm_super_node_t *n = (pm_super_node_t *)node;
     N("SuperNode");
