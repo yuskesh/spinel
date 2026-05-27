@@ -22069,6 +22069,11 @@ class Compiler
       if mname == "empty?"
         return "sp_IntArray_empty(" + rc + ")"
       end
+      if mname == "one?" && @nd_arguments[nid] >= 0 && get_args(@nd_arguments[nid]).length > 0
+ # `arr.one?(x)` — true iff exactly one element equals x. The
+ # block form is handled by compile_array_predicate_block.
+        return "({ mrb_int _v = " + compile_arg0_as_int(nid) + ", _c = 0; sp_IntArray *_a = " + rc + "; for (mrb_int _i = 0; _i < _a->len; _i++) if (sp_IntArray_get(_a, _i) == _v) _c++; _c == 1 ? TRUE : FALSE; })"
+      end
       if mname == "include?" || mname == "member?"
  # Issue #911: cross-type include? returns false (CRuby). Sym_array
  # shares the int_array dispatch (sym ids stored as ints), so allow
