@@ -23582,6 +23582,78 @@ class Compiler
       if mname == "value?" || mname == "has_value?"
         return "({ sp_SymStrHash *_h = " + rc + "; const char *_v = " + compile_str_arg0(nid) + "; mrb_bool _r = FALSE; for (mrb_int _ki = 0; _ki < _h->len; _ki++) { const char *_vv = sp_SymStrHash_get(_h, _h->order[_ki]); if (_vv && _v && strcmp(_vv, _v) == 0) { _r = TRUE; break; } } _r; })"
       end
+      if mname == "transform_values" && @nd_block[nid] >= 0
+        bp_v_tv = get_block_param(nid, 0)
+        bp_v_tv = "_v" if bp_v_tv == ""
+        blk_tv = @nd_block[nid]
+        bbody_tv = @nd_body[blk_tv]
+        out_tv = new_temp
+        i_tv = new_temp
+        emit("  sp_SymStrHash *" + out_tv + " = sp_SymStrHash_new();")
+        emit("  SP_GC_ROOT(" + out_tv + ");")
+        emit("  for (mrb_int " + i_tv + " = 0; " + i_tv + " < " + rc + "->len; " + i_tv + "++) {")
+        emit("    const char *lv_" + bp_v_tv + " = sp_SymStrHash_get(" + rc + ", " + rc + "->order[" + i_tv + "]);")
+        push_scope
+        declare_var(bp_v_tv, "string")
+        bs_tv = bbody_tv >= 0 ? get_stmts(bbody_tv) : []
+        bexpr_tv = "NULL"
+        if bs_tv.length > 0
+          k_tv = 0
+          while k_tv < bs_tv.length - 1
+            compile_stmt(bs_tv[k_tv])
+            k_tv = k_tv + 1
+          end
+          bexpr_tv = compile_expr(bs_tv.last)
+        end
+        emit("    sp_SymStrHash_set(" + out_tv + ", " + rc + "->order[" + i_tv + "], " + bexpr_tv + ");")
+        pop_scope
+        emit("  }")
+        return out_tv
+      end
+      if mname == "map" && @nd_block[nid] >= 0
+        bp_k = get_block_param(nid, 0)
+        bp_k = "_k" if bp_k == ""
+        bp_v = get_block_param(nid, 1)
+        bp_v = "_v" if bp_v == ""
+        blk = @nd_block[nid]
+        bbody = @nd_body[blk]
+        bstmts = bbody >= 0 ? get_stmts(bbody) : []
+ # Probe-scope so infer_type on the body sees bp_v as string —
+ # otherwise the default-int path picks IntArray and stores
+ # garbage when the block returns a string.
+        push_scope
+        declare_var(bp_k, "symbol")
+        declare_var(bp_v, "string")
+        bret_t = bstmts.length > 0 ? infer_type(bstmts.last) : "int"
+        pop_scope
+        out_pfx = "IntArray"
+        if bret_t == "string"; out_pfx = "StrArray"; @needs_str_array = 1; end
+        if bret_t == "float"; out_pfx = "FloatArray"; @needs_float_array = 1; end
+        @needs_int_array = 1 if out_pfx == "IntArray"
+        out_tmp = new_temp
+        it_tmp = new_temp
+        emit("  sp_" + out_pfx + " *" + out_tmp + " = sp_" + out_pfx + "_new();")
+        emit("  SP_GC_ROOT(" + out_tmp + ");")
+        emit("  for (mrb_int " + it_tmp + " = 0; " + it_tmp + " < " + rc + "->len; " + it_tmp + "++) {")
+        emit("    sp_sym lv_" + bp_k + " = " + rc + "->order[" + it_tmp + "];")
+        emit("    const char *lv_" + bp_v + " = sp_SymStrHash_get(" + rc + ", lv_" + bp_k + ");")
+        push_scope
+        declare_var(bp_k, "symbol")
+        declare_var(bp_v, "string")
+        bexpr = "0"
+        if bstmts.length > 0
+          k = 0
+          while k < bstmts.length - 1
+            compile_stmt(bstmts[k])
+            k = k + 1
+          end
+          bexpr = compile_expr(bstmts.last)
+        end
+        emit("    sp_" + out_pfx + "_push(" + out_tmp + ", " + bexpr + ");")
+        pop_scope
+        emit("  }")
+        return out_tmp
+      end
     end
     if recv_type == "sym_poly_hash"
       if mname == "[]"
@@ -23886,6 +23958,57 @@ class Compiler
       end
     end
     if recv_type == "str_int_hash"
+      if mname == "map" && @nd_block[nid] >= 0
+ # Hash#map { |k, v| ... } walks the hash and accumulates the
+ # block's return into a result array. Block return type drives the
+ # output array variant (mirrors sym_int_hash arm above).
+        bp_k = get_block_param(nid, 0)
+        bp_k = "_k" if bp_k == ""
+        bp_v = get_block_param(nid, 1)
+        bp_v = "_v" if bp_v == ""
+        blk_id = @nd_block[nid]
+        body_id = @nd_body[blk_id]
+        body_stmts = body_id >= 0 ? get_stmts(body_id) : []
+        body_ret_t = "int"
+        if body_stmts.length > 0
+          body_ret_t = infer_type(body_stmts.last)
+        end
+        out_tmp = new_temp
+        iter_tmp = new_temp
+        out_pfx_sm = "IntArray"
+        if body_ret_t == "string"
+          out_pfx_sm = "StrArray"
+          @needs_str_array = 1
+        elsif body_ret_t == "float"
+          out_pfx_sm = "FloatArray"
+          @needs_float_array = 1
+        else
+          @needs_int_array = 1
+        end
+        emit("  sp_" + out_pfx_sm + " *" + out_tmp + " = sp_" + out_pfx_sm + "_new();")
+        emit("  SP_GC_ROOT(" + out_tmp + ");")
+        emit("  for (mrb_int " + iter_tmp + " = 0; " + iter_tmp + " < " + rc + "->len; " + iter_tmp + "++) {")
+        emit("    const char *lv_" + bp_k + " = " + rc + "->order[" + iter_tmp + "];")
+        emit("    mrb_int lv_" + bp_v + " = sp_StrIntHash_get(" + rc + ", lv_" + bp_k + ");")
+        @indent = @indent + 1
+        push_scope
+        declare_var(bp_k, "string")
+        declare_var(bp_v, "int")
+        bexpr_sm = "0"
+        if body_stmts.length > 0
+          k_sm = 0
+          while k_sm < body_stmts.length - 1
+            compile_stmt(body_stmts[k_sm])
+            k_sm = k_sm + 1
+          end
+          bexpr_sm = compile_expr(body_stmts.last)
+        end
+        emit("    sp_" + out_pfx_sm + "_push(" + out_tmp + ", " + bexpr_sm + ");")
+        pop_scope
+        @indent = @indent - 1
+        emit("  }")
+        return out_tmp
+      end
       if mname == "[]"
         return "sp_StrIntHash_get(" + rc + ", " + compile_str_arg0(nid) + ")"
       end
@@ -24273,6 +24396,77 @@ class Compiler
       if mname == "replace"
         emit("  { sp_StrStrHash *_d = " + rc + "; sp_StrStrHash *_s = " + compile_arg0(nid) + "; for (mrb_int _ci = 0; _ci < _d->cap; _ci++) _d->keys[_ci] = NULL; _d->len = 0; for (mrb_int _ri = 0; _ri < _s->len; _ri++) sp_StrStrHash_set(_d, _s->order[_ri], sp_StrStrHash_get(_s, _s->order[_ri])); }")
         return rc
+      end
+      if mname == "transform_values" && @nd_block[nid] >= 0
+        bp_v = get_block_param(nid, 0)
+        bp_v = "_v" if bp_v == ""
+        blk = @nd_block[nid]
+        bbody = @nd_body[blk]
+        out_tmp = new_temp
+        it_tmp = new_temp
+        emit("  sp_StrStrHash *" + out_tmp + " = sp_StrStrHash_new();")
+        emit("  SP_GC_ROOT(" + out_tmp + ");")
+        emit("  for (mrb_int " + it_tmp + " = 0; " + it_tmp + " < " + rc + "->len; " + it_tmp + "++) {")
+        emit("    const char *lv_" + bp_v + " = sp_StrStrHash_get(" + rc + ", " + rc + "->order[" + it_tmp + "]);")
+        push_scope
+        declare_var(bp_v, "string")
+        bs = bbody >= 0 ? get_stmts(bbody) : []
+        bexpr = "NULL"
+        if bs.length > 0
+          k = 0
+          while k < bs.length - 1
+            compile_stmt(bs[k])
+            k = k + 1
+          end
+          bexpr = compile_expr(bs.last)
+        end
+        emit("    sp_StrStrHash_set(" + out_tmp + ", " + rc + "->order[" + it_tmp + "], " + bexpr + ");")
+        pop_scope
+        emit("  }")
+        return out_tmp
+      end
+      if mname == "map" && @nd_block[nid] >= 0
+        bp_k = get_block_param(nid, 0)
+        bp_k = "_k" if bp_k == ""
+        bp_v = get_block_param(nid, 1)
+        bp_v = "_v" if bp_v == ""
+        blk = @nd_block[nid]
+        bbody = @nd_body[blk]
+        bstmts = bbody >= 0 ? get_stmts(bbody) : []
+ # Probe-scope so infer_type sees bp_v as string before we pick
+ # the accumulator's array variant.
+        push_scope
+        declare_var(bp_k, "string")
+        declare_var(bp_v, "string")
+        bret_t = bstmts.length > 0 ? infer_type(bstmts.last) : "int"
+        pop_scope
+        out_pfx = "IntArray"
+        if bret_t == "string"; out_pfx = "StrArray"; @needs_str_array = 1; end
+        if bret_t == "float"; out_pfx = "FloatArray"; @needs_float_array = 1; end
+        @needs_int_array = 1 if out_pfx == "IntArray"
+        out_tmp = new_temp
+        it_tmp = new_temp
+        emit("  sp_" + out_pfx + " *" + out_tmp + " = sp_" + out_pfx + "_new();")
+        emit("  SP_GC_ROOT(" + out_tmp + ");")
+        emit("  for (mrb_int " + it_tmp + " = 0; " + it_tmp + " < " + rc + "->len; " + it_tmp + "++) {")
+        emit("    const char *lv_" + bp_k + " = " + rc + "->order[" + it_tmp + "];")
+        emit("    const char *lv_" + bp_v + " = sp_StrStrHash_get(" + rc + ", lv_" + bp_k + ");")
+        push_scope
+        declare_var(bp_k, "string")
+        declare_var(bp_v, "string")
+        bexpr = "0"
+        if bstmts.length > 0
+          k = 0
+          while k < bstmts.length - 1
+            compile_stmt(bstmts[k])
+            k = k + 1
+          end
+          bexpr = compile_expr(bstmts.last)
+        end
+        emit("    sp_" + out_pfx + "_push(" + out_tmp + ", " + bexpr + ");")
+        pop_scope
+        emit("  }")
+        return out_tmp
       end
       if mname == "key"
         return "({ sp_StrStrHash *_h = " + rc + "; const char *_v = " + compile_str_arg0(nid) + "; const char *_r = NULL; for (mrb_int _ki = 0; _ki < _h->len; _ki++) { const char *_vv = sp_StrStrHash_get(_h, _h->order[_ki]); if (_vv && _v && strcmp(_vv, _v) == 0) { _r = _h->order[_ki]; break; } } _r; })"

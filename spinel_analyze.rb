@@ -5523,9 +5523,22 @@ class Compiler
             if bbs.length > 0
               recv_t = infer_type(recv)
               bp1 = get_block_param(nid, 0)
+              bp2_map = get_block_param(nid, 1)
               push_scope
               if bp1 != ""
                 declare_var(bp1, iter_elem_type(recv_t))
+              end
+ # Hash#map { |k, v| ... } — value param `v` needs its hash-value
+ # type, not the iter elem type (which for sym_int_hash is "symbol").
+ # Without this, infer_type on the body sees `v` as int (default)
+ # and the result array variant comes out wrong (e.g. str values
+ # get pushed into IntArray). hash_value_part uses short names
+ # ("str", "int", "poly"); translate "str" → "string" since
+ # declare_var expects the long form.
+              if bp2_map != "" && is_hash_type(recv_t) == 1
+                vt_map = hash_value_part(recv_t)
+                vt_map = "string" if vt_map == "str"
+                declare_var(bp2_map, vt_map)
               end
               bret = infer_type(bbs.last)
               pop_scope
