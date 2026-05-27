@@ -8567,6 +8567,8 @@ class Compiler
       ["SystemCallError", "StandardError"],
       ["LocalJumpError", "StandardError"],
       ["FiberError", "StandardError"],
+      ["NoMatchingPatternError", "StandardError"],
+      ["NoMatchingPatternKeyError", "NoMatchingPatternError"],
       ["Exception", ""],
     ]
     bp = 0
@@ -33061,6 +33063,17 @@ class Compiler
       @indent = @indent + 1
       compile_stmts_body(@nd_body[ec])
       @indent = @indent - 1
+    elsif conds.length > 0
+ # No `else` clause: CRuby raises NoMatchingPatternError when no
+ # `in` arm matched. The message includes the inspected scrutinee
+ # value (we drop the `=== val does not return true` tail since
+ # spinel doesn't carry the pattern's source text at codegen).
+      ins_msg = compile_inspect_for(pred_type, tmp)
+      if ins_msg != ""
+        emit("  } else { sp_raise_cls(\"NoMatchingPatternError\", " + ins_msg + ");")
+      else
+        emit("  } else { sp_raise_cls(\"NoMatchingPatternError\", \"no matching pattern\");")
+      end
     end
     if conds.length > 0
       emit("  }")
