@@ -39559,6 +39559,66 @@ class Compiler
       emit("  " + result + " = lv_" + bp2 + ";")
       @indent = @indent - 1
       emit("  }")
+    elsif is_hash_type(rt) == 1
+ # Hash#each_with_object — yields `(pair, memo)` where pair is
+ # [key, value]. Common idiom destructures `|(k,v), memo|`; the
+ # MultiTargetNode for `(k,v)` carries the two names. The
+ # bp1 / bp2 we already extracted are the destructured names
+ # when the user writes `|k, v, memo|` (rare, 3 flat params) or
+ # we look at the MultiTargetNode directly.
+      key_name = "_k"
+      val_name = "_v"
+      blk_id = @nd_block[nid]
+      params_h = blk_id >= 0 ? @nd_parameters[blk_id] : -1
+      inner_h = params_h >= 0 ? @nd_parameters[params_h] : -1
+      reqs_h = inner_h >= 0 ? parse_id_list(@nd_requireds[inner_h]) : []
+      memo_name = bp2
+      if reqs_h.length == 2 && @nd_type[reqs_h[0]] == "MultiTargetNode"
+        mt_targets = parse_id_list(@nd_targets[reqs_h[0]])
+        if mt_targets.length >= 1 && @nd_name[mt_targets[0]] != ""
+          key_name = @nd_name[mt_targets[0]]
+        end
+        if mt_targets.length >= 2 && @nd_name[mt_targets[1]] != ""
+          val_name = @nd_name[mt_targets[1]]
+        end
+        memo_name = @nd_name[reqs_h[1]]
+      elsif reqs_h.length >= 3
+        key_name = @nd_name[reqs_h[0]]
+        val_name = @nd_name[reqs_h[1]]
+        memo_name = @nd_name[reqs_h[2]]
+      end
+      key_t = (rt == "sym_int_hash" || rt == "sym_str_hash" || rt == "sym_poly_hash") ? "symbol" : ((rt == "str_int_hash" || rt == "str_str_hash" || rt == "str_poly_hash") ? "string" : "int")
+      val_t = (rt == "sym_int_hash" || rt == "str_int_hash" || rt == "int_int_hash") ? "int" : ((rt == "sym_str_hash" || rt == "str_str_hash" || rt == "int_str_hash") ? "string" : "poly")
+      hash_pfx = ""
+      hash_pfx = "SymIntHash" if rt == "sym_int_hash"
+      hash_pfx = "SymStrHash" if rt == "sym_str_hash"
+      hash_pfx = "SymPolyHash" if rt == "sym_poly_hash"
+      hash_pfx = "StrIntHash" if rt == "str_int_hash"
+      hash_pfx = "StrStrHash" if rt == "str_str_hash"
+      hash_pfx = "StrPolyHash" if rt == "str_poly_hash"
+      hash_pfx = "IntIntHash" if rt == "int_int_hash"
+      hash_pfx = "IntStrHash" if rt == "int_str_hash"
+      emit("  {")
+      @indent = @indent + 1
+      emit("  " + obj_ct + " lv_" + memo_name + " = " + result + ";")
+      emit("  for (mrb_int " + tmp_i + " = 0; " + tmp_i + " < " + rc + "->len; " + tmp_i + "++) {")
+      emit("    " + c_type(key_t) + " lv_" + key_name + " = " + rc + "->order[" + tmp_i + "];")
+      emit("    " + c_type(val_t) + " lv_" + val_name + " = sp_" + hash_pfx + "_get(" + rc + ", lv_" + key_name + ");")
+      @indent = @indent + 1
+      push_scope
+      declare_var(key_name, key_t)
+      declare_var(val_name, val_t)
+      declare_var(memo_name, obj_t)
+      redo_label = push_redo_label
+      emit_redo_label(redo_label)
+      compile_stmts_body(@nd_body[@nd_block[nid]])
+      pop_redo_label
+      pop_scope
+      @indent = @indent - 1
+      emit("  }")
+      emit("  " + result + " = lv_" + memo_name + ";")
+      @indent = @indent - 1
+      emit("  }")
     end
     @in_loop = old
     result
