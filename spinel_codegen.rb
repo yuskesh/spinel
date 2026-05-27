@@ -24725,19 +24725,16 @@ class Compiler
           end
           return "sp_time_at_int(" + arg_id + ")"
         end
- # Time.new(y[,mo[,d[,h[,mi[,s]]]]]) — local construction with
- # compile-time arity resolution (same shape as Time.at). Missing
- # positions get C-literal defaults; 0 args is the current time.
- # 7+ args is the fixed-offset form (a separate Issue): this arm
- # does not emit for it. analyze still types Time.new as "time",
- # so the call surfaces as an unresolved-call warning and then a
- # hard C type error — Time.new with an offset is unsupported and
- # fails to build by design, not silently.
-        if mname == "new"
+ # Time.new / Time.mktime / Time.local — all three name the same
+ # local-zone constructor. Compile-time arity resolution like
+ # Time.at; missing positions get C-literal defaults; 0 args of
+ # Time.new is the current time. Time.utc shares the shape but
+ # flips is_utc via sp_time_utc on the result.
+        if mname == "new" || mname == "mktime" || mname == "local" || mname == "utc" || mname == "gm"
           nargs_id = @nd_arguments[nid]
           na = nargs_id >= 0 ? get_args(nargs_id) : []
           nn = na.length
-          if nn == 0
+          if nn == 0 && mname == "new"
             return "sp_time_now()"
           end
           if nn >= 1 && nn <= 6
@@ -24747,6 +24744,9 @@ class Compiler
             nh = nn >= 4 ? compile_expr(na[3]) : "0"
             nmi = nn >= 5 ? compile_expr(na[4]) : "0"
             ns = nn >= 6 ? compile_expr(na[5]) : "0"
+            if mname == "utc" || mname == "gm"
+              return "sp_time_new_utc(" + ny + ", " + nmo + ", " + nd + ", " + nh + ", " + nmi + ", " + ns + ")"
+            end
             return "sp_time_new(" + ny + ", " + nmo + ", " + nd + ", " + nh + ", " + nmi + ", " + ns + ")"
           end
         end

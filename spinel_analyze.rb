@@ -6091,13 +6091,8 @@ class Compiler
           end
         end
         if rcname == "Time"
-          if mname == "now"
-            return "time"
-          end
-          if mname == "at"
-            return "time"
-          end
-          if mname == "new"
+          if mname == "now" || mname == "at" || mname == "new" ||
+             mname == "mktime" || mname == "local" || mname == "utc" || mname == "gm"
             return "time"
           end
         end
