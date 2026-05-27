@@ -16103,7 +16103,9 @@ class Compiler
               @needs_rb_value = 1
               return "sp_re_match_poly(" + rpat + ", " + sc + ")"
             end
-            return "sp_re_match(" + rpat + ", " + sc + ")"
+            @needs_rb_value = 1
+            @needs_gc = 1
+            return "sp_re_match_data(" + rpat + ", " + sc + ")"
           end
         end
       end
@@ -19858,6 +19860,20 @@ class Compiler
               @needs_str_array = 1
               return "sp_re_scan(" + rpat + ", " + rc + ")"
             end
+          end
+        end
+      end
+    end
+    if mname == "match"
+      re_args_id_m = @nd_arguments[nid]
+      if re_args_id_m >= 0
+        argl_m = get_args(re_args_id_m)
+        if argl_m.length > 0
+          rpat_m = regex_pat_c_expr(argl_m[0])
+          if rpat_m != ""
+            @needs_rb_value = 1
+            @needs_gc = 1
+            return "sp_re_match_data(" + rpat_m + ", " + rc + ")"
           end
         end
       end

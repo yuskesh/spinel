@@ -4741,6 +4741,16 @@ class Compiler
     if mname == "scan"
       return "str_array"
     end
+    if mname == "match"
+      if recv >= 0
+        rt_match = base_type(infer_type(recv))
+        if rt_match == "string" || rt_match == "regexp"
+          @needs_rb_value = 1
+          @needs_gc = 1
+          return "poly_array?"
+        end
+      end
+    end
     if mname == "gets" || mname == "readline"
       return "string"
     end
