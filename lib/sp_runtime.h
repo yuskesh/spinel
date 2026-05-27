@@ -3466,6 +3466,13 @@ static sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int
   a->len -= n;
   return r;
 }
+/* at_exit hooks: a static LIFO of registered procs. Initialized
+   zero-len in BSS; main()'s tail walks it in reverse-registration
+   order before returning. */
+#define SP_AT_EXIT_MAX 256
+struct sp_Proc;
+static struct sp_Proc *sp_at_exit_hooks[SP_AT_EXIT_MAX];
+static mrb_int sp_at_exit_count = 0;
 static sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int n) {
   if (from < 0) from += a->len;
   if (from < 0) from = 0;

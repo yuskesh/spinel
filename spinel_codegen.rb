@@ -490,6 +490,7 @@ class Compiler
     @needs_rb_value = 0
     @needs_regexp = 0
     @needs_rand = 0
+    @needs_at_exit = 0
  # sp_argv is declared in lib/sp_runtime.h as a static global,
  # zero-initialized in BSS. main() only needs to malloc + dup
  # the argv strings when user code actually reaches for ARGV;
@@ -12719,6 +12720,9 @@ class Compiler
       end
     }
 
+    if @needs_at_exit == 1
+      emit_raw("  for (mrb_int _ax = sp_at_exit_count - 1; _ax >= 0; _ax--) sp_proc_call(sp_at_exit_hooks[_ax], NULL);")
+    end
     emit_raw("  return 0;")
     emit_raw("}")
 
@@ -34160,12 +34164,16 @@ class Compiler
         return 1
       end
     end
- # `at_exit { ... }` -- spinel doesn't model atexit hooks; emit
- # nothing and let the block be ignored. A real implementation
- # would push the block onto a static registry called from main's
- # exit path; not worth the runtime plumbing for a generally-
- # uncommon pattern. Issue #734.
+ # `at_exit { ... }` — register the block in a static array;
+ # main's tail walks the array in reverse-registration order
+ # before returning, matching CRuby's LIFO at_exit semantics.
     if mname == "at_exit"
+      if recv < 0 && @nd_block[nid] >= 0
+        @needs_at_exit = 1
+        proc_expr_ax = compile_proc_literal(nid)
+        emit("  sp_at_exit_hooks[sp_at_exit_count++] = " + proc_expr_ax + ";")
+        return 1
+      end
       if recv < 0
         return 1
       end
