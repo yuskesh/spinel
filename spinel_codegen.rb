@@ -20878,13 +20878,28 @@ class Compiler
       return "FALSE"
     end
     if mname == "to_a"
+      range_nid = resolve_literal_range_recv(nid)
+ # String range: ("a".."c").to_a → str_array via single-char ASCII
+ # succ. Multi-char string ranges need full String#succ (carry
+ # across positions) and fall through to the int path that fails
+ # to compile, surfacing the gap.
+      if range_nid >= 0
+        lt_sr = @nd_left[range_nid]
+        rt_sr = @nd_right[range_nid]
+        if lt_sr >= 0 && rt_sr >= 0 &&
+           @nd_type[lt_sr] == "StringNode" && @nd_type[rt_sr] == "StringNode"
+          @needs_str_array = 1
+          @needs_gc = 1
+          excl_sr = range_excl_end(range_nid) == 1 ? "1" : "0"
+          return "sp_StrArray_from_string_range(" + compile_expr(lt_sr) + ", " + compile_expr(rt_sr) + ", " + excl_sr + ")"
+        end
+      end
       @needs_int_array = 1
       @needs_gc = 1
  # Honour `...` exclusive Range when the receiver is a literal
  # RangeNode (or wrapped in parens). For non-literal Range values
  # held in sp_Range structs, exclude_end is not tracked at runtime
  # and the inclusive form is used.
-      range_nid = resolve_literal_range_recv(nid)
       if range_nid >= 0
         rright = compile_expr(@nd_right[range_nid])
         if range_excl_end(range_nid) == 1
@@ -25660,14 +25675,31 @@ class Compiler
       end
     end
     if range_nid >= 0
+ # String range: ("a".."c").to_a → str_array via succ-iteration.
+ # CRuby's String#succ is complex (carry across positions); for
+ # the subset, handle single-char ASCII ranges inline (the common
+ # case). Multi-char ranges fall through to the int path and fail
+ # at C compile, surfacing the gap.
+      lt_range = @nd_left[range_nid]
+      rt_range = @nd_right[range_nid]
+      if lt_range >= 0 && rt_range >= 0 &&
+         (infer_type(lt_range) == "string" || @nd_type[lt_range] == "StringNode") &&
+         (infer_type(rt_range) == "string" || @nd_type[rt_range] == "StringNode")
+        @needs_str_array = 1
+        @needs_gc = 1
+        l_expr = compile_expr(lt_range)
+        r_expr = compile_expr(rt_range)
+        excl_sr = range_excl_end(range_nid) == 1 ? "1" : "0"
+        return "sp_StrArray_from_string_range(" + l_expr + ", " + r_expr + ", " + excl_sr + ")"
+      end
       @needs_int_array = 1
       @needs_gc = 1
-      right_expr = compile_expr(@nd_right[range_nid])
+      right_expr = compile_expr(rt_range)
  # sp_IntArray_from_range is inclusive; for `1...3` shave the upper end.
       if range_excl_end(range_nid) == 1
         right_expr = "(" + right_expr + ") - 1"
       end
-      return "sp_IntArray_from_range(" + compile_expr(@nd_left[range_nid]) + ", " + right_expr + ")"
+      return "sp_IntArray_from_range(" + compile_expr(lt_range) + ", " + right_expr + ")"
     end
     ""
   end

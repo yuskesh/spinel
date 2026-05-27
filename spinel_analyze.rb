@@ -6440,6 +6440,23 @@ class Compiler
       if recv >= 0
         rt = infer_type(recv)
         if rt == "range"
+ # String literal range like ("a".."c").to_a returns a str_array.
+ # Walk through ParenthesesNode to find the underlying RangeNode
+ # so we can probe its left endpoint's type.
+          rnid_ta = recv
+          if @nd_type[rnid_ta] == "ParenthesesNode"
+            pb_ta = @nd_body[rnid_ta]
+            if pb_ta >= 0
+              ps_ta = get_stmts(pb_ta)
+              rnid_ta = ps_ta.first if ps_ta.length > 0
+            end
+          end
+          if rnid_ta >= 0 && @nd_type[rnid_ta] == "RangeNode"
+            lt_ta = @nd_left[rnid_ta]
+            if lt_ta >= 0 && @nd_type[lt_ta] == "StringNode"
+              return "str_array"
+            end
+          end
           return "int_array"
         end
         if rt == "int_array"
