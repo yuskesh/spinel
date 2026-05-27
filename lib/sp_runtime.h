@@ -1663,6 +1663,7 @@ static const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;v
    on allocation failure. Match the perror+exit pattern used elsewhere
    (see sp_IntArray_replace) instead of returning a partial result. */
 static const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){size_t cap=strlen(fmt)+64;char*buf=(char*)malloc(cap);if(!buf){perror("malloc");exit(1);}size_t out=0;mrb_int idx=0;const char*p=fmt;while(*p){if(*p=='%'){if(p[1]=='s'){const char*s=(idx<a->len)?a->data[idx]:"";size_t sl=strlen(s);if(out+sl>=cap){size_t nc=(out+sl)*2+1;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}memcpy(buf+out,s,sl);out+=sl;idx++;p+=2;}else if(p[1]=='%'){if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]='%';p+=2;}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}buf[out]=0;char*r=sp_str_alloc(out);memcpy(r,buf,out);free(buf);return r;}
+
 static const char*sp_str_reverse(const char*s){if(!s)return sp_str_empty;size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t end=bl;const char*p=s;while(*p){int cn=sp_utf8_advance(p);end-=cn;memcpy(r+end,p,cn);p+=cn;}r[bl]=0;return r;}
 static const char*sp_str_sub(const char*s,const char*pat,const char*rep){if(!s)return sp_str_empty;if(!pat||!rep)return s;const char*f=strstr(s,pat);if(!f)return s;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl+1);return r;}
 static const char*sp_str_capitalize(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++)r[i]=tolower((unsigned char)s[i]);if(l>0)r[0]=toupper((unsigned char)r[0]);return r;}
@@ -2710,6 +2711,93 @@ static void sp_PolyArray_flatten_into(sp_PolyArray *dst, sp_RbVal v) {
   sp_PolyArray_push(dst, v);
 }
 static sp_PolyArray *sp_PolyArray_flatten(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_new(); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into(b, a->data[i]); return b; }
+
+/* Box-into-poly converters used by the printf-with-array codegen
+   (`"%fmt" % typed_array`). The format helper expects sp_RbVal
+   slots so it can dispatch per-element. */
+static sp_PolyArray *sp_IntArray_to_poly(sp_IntArray *a) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  if (!a) return r;
+  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_int(a->data[a->start + i]));
+  return r;
+}
+static sp_PolyArray *sp_StrArray_to_poly_fmt(sp_StrArray *a) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  if (!a) return r;
+  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_str(a->data[i]));
+  return r;
+}
+
+/* String#% with a poly_array argument. Walks the format and for
+   each spec ("%s", "%d", "%f", "%x", "%o", etc.) pulls the next
+   array element. Width / flag chars between `%` and the conv
+   letter (`-+0 #`, digits, `.`) are copied verbatim so printf
+   does the substitution work. */
+static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
+  size_t cap = strlen(fmt) + 64;
+  char *buf = (char *)malloc(cap);
+  if (!buf) { perror("malloc"); exit(1); }
+  size_t out = 0; mrb_int idx = 0; const char *p = fmt;
+  while (*p) {
+    if (*p != '%') {
+      if (out + 1 >= cap) { cap = cap * 2; buf = (char *)realloc(buf, cap); }
+      buf[out++] = *p++; continue;
+    }
+    if (p[1] == '%') {
+      if (out + 1 >= cap) { cap = cap * 2; buf = (char *)realloc(buf, cap); }
+      buf[out++] = '%'; p += 2; continue;
+    }
+    char spec[64]; size_t sl = 0; spec[sl++] = *p++;
+    while (*p && sl < sizeof(spec) - 4) {
+      char c = *p;
+      if (c == '-' || c == '+' || c == ' ' || c == '#' || c == '0' || c == '.' || (c >= '0' && c <= '9')) { spec[sl++] = c; p++; }
+      else break;
+    }
+    if (!*p) break;
+    char conv = *p++; spec[sl++] = conv;
+    char fmt_use[80];
+    if (conv == 'd' || conv == 'i' || conv == 'x' || conv == 'X' || conv == 'o') {
+      memcpy(fmt_use, spec, sl - 1);
+      fmt_use[sl - 1] = 'l'; fmt_use[sl] = 'l'; fmt_use[sl + 1] = conv; fmt_use[sl + 2] = 0;
+    } else {
+      memcpy(fmt_use, spec, sl); fmt_use[sl] = 0;
+    }
+    char tmp[256]; int wn = 0;
+    sp_RbVal v = (idx < a->len) ? a->data[idx] : sp_box_nil();
+    idx++;
+    if (conv == 'd' || conv == 'i' || conv == 'x' || conv == 'X' || conv == 'o') {
+      long long lv = 0;
+      if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
+      else if (v.tag == SP_TAG_FLT) lv = (long long)v.v.f;
+      else if (v.tag == SP_TAG_STR && v.v.s) lv = strtoll(v.v.s, NULL, 10);
+      wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
+    } else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G') {
+      double dv = 0;
+      if (v.tag == SP_TAG_FLT) dv = v.v.f;
+      else if (v.tag == SP_TAG_INT) dv = (double)v.v.i;
+      wn = snprintf(tmp, sizeof(tmp), fmt_use, dv);
+    } else if (conv == 's') {
+      const char *sv = "";
+      char num_buf[32];
+      if (v.tag == SP_TAG_STR) sv = v.v.s ? v.v.s : "";
+      else if (v.tag == SP_TAG_INT) { snprintf(num_buf, sizeof(num_buf), "%lld", (long long)v.v.i); sv = num_buf; }
+      else if (v.tag == SP_TAG_FLT) { snprintf(num_buf, sizeof(num_buf), "%g", v.v.f); sv = num_buf; }
+      wn = snprintf(tmp, sizeof(tmp), fmt_use, sv);
+    } else if (conv == 'c') {
+      int cv = 0;
+      if (v.tag == SP_TAG_INT) cv = (int)v.v.i;
+      else if (v.tag == SP_TAG_STR && v.v.s && v.v.s[0]) cv = (unsigned char)v.v.s[0];
+      wn = snprintf(tmp, sizeof(tmp), fmt_use, cv);
+    } else {
+      memcpy(tmp, spec, sl); tmp[sl] = 0; wn = (int)sl; idx--;
+    }
+    if (wn < 0) continue;
+    if (out + (size_t)wn + 1 >= cap) { cap = (out + wn) * 2 + 64; buf = (char *)realloc(buf, cap); }
+    memcpy(buf + out, tmp, wn); out += wn;
+  }
+  buf[out] = 0;
+  char *r = sp_str_alloc(out); memcpy(r, buf, out); free(buf); return r;
+}
 
 /* Array#assoc — return the first sub-array (poly_array element)
    whose first element equals `key`. Returns NULL when no match

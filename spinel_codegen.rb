@@ -5034,6 +5034,33 @@ class Compiler
     pat == "" ? compile_expr(a_ss[0]) : pat
   end
 
+ # Check whether the format string uses only plain `%s`
+ # placeholders (and literals / `%%`). Used to short-circuit
+ # `"fmt" % str_array` to the simpler strarr helper instead of
+ # boxing through poly_array.
+  def str_format_only_simple_s_p(s)
+    i = 0
+    while i < s.length
+      if s[i] == "%"
+        i = i + 1
+        if i >= s.length
+          return 0
+        end
+        if s[i] == "%"
+          i = i + 1
+          next
+        end
+        if s[i] == "s"
+          i = i + 1
+          next
+        end
+        return 0
+      end
+      i = i + 1
+    end
+    1
+  end
+
   def gvar_punct_word(c)
     return "bang" if c == "!"
     return "semi" if c == ";"
@@ -18523,7 +18550,37 @@ class Compiler
               if lt == "mutable_str"
                 recv_c = recv_c + "->data"
               end
-              return "sp_str_format_strarr(" + recv_c + ", " + compile_expr(aargs[0]) + ")"
+ # The simple all-%s helper is fine when the format string
+ # uses only bare %s placeholders. For anything richer
+ # (`%-3s`, `%5s`, ...) box through the poly_array path.
+              if @nd_type[recv] == "StringNode"
+                lit_recv = @nd_unescaped[recv]
+                lit_recv = @nd_content[recv] if lit_recv == ""
+                if str_format_only_simple_s_p(lit_recv) == 1
+                  return "sp_str_format_strarr(" + recv_c + ", " + compile_expr(aargs[0]) + ")"
+                end
+              end
+              @needs_rb_value = 1
+              return "sp_str_format_polyarr(" + recv_c + ", sp_StrArray_to_poly_fmt(" + compile_expr(aargs[0]) + "))"
+            end
+ # Heterogeneous / int: poly_array helper handles per-element
+ # type via the runtime box tag. int_array is boxed inline so
+ # the helper sees SP_TAG_INT slots.
+            if rt == "poly_array"
+              recv_pa = compile_expr(recv)
+              if lt == "mutable_str"
+                recv_pa = recv_pa + "->data"
+              end
+              @needs_rb_value = 1
+              return "sp_str_format_polyarr(" + recv_pa + ", " + compile_expr(aargs[0]) + ")"
+            end
+            if rt == "int_array"
+              recv_ia = compile_expr(recv)
+              if lt == "mutable_str"
+                recv_ia = recv_ia + "->data"
+              end
+              @needs_rb_value = 1
+              return "sp_str_format_polyarr(" + recv_ia + ", sp_IntArray_to_poly(" + compile_expr(aargs[0]) + "))"
             end
           end
         end
