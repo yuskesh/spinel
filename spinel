@@ -200,27 +200,13 @@ AST_TMP="$(mktemp /tmp/spinel_ast.XXXXXX)"
 IR_TMP="$(mktemp /tmp/spinel_ir.XXXXXX)"
 trap 'rm -f "$AST_TMP" "$IR_TMP" "$EVAL_TMP" "$SEED_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"; [ -n "$RUN_TMP_DIR" ] && rm -rf "$RUN_TMP_DIR"' EXIT
 
-# Walk up from the source file looking for a Spinelfile.loadpaths
-# sidecar (written by `spinel-gem install`). Stop at the first hit or
-# the filesystem root. Found path is passed to the parser as
-# --loadpaths=FILE so gem `require`s resolve against the gem cache.
-LOADPATHS_ARG=""
-LP_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
-while [ "$LP_DIR" != "/" ] && [ -n "$LP_DIR" ]; do
-  if [ -f "$LP_DIR/Spinelfile.loadpaths" ]; then
-    LOADPATHS_ARG="--loadpaths=$LP_DIR/Spinelfile.loadpaths"
-    break
-  fi
-  LP_DIR="$(dirname "$LP_DIR")"
-done
-
 # Step 1: Parse. spinel_parse is C-only; build it via `make parse`
 # (or `make all`) before invoking spinel.
 if [ ! -x "$PARSE_BIN" ]; then
   echo "spinel: parser binary not found at $PARSE_BIN; run 'make parse' or 'make all' first" >&2
   exit 1
 fi
-"$PARSE_BIN" $LOADPATHS_ARG "$SOURCE" "$AST_TMP"
+"$PARSE_BIN" "$SOURCE" "$AST_TMP"
 if [ $? -ne 0 ]; then
   echo "spinel: parse failed" >&2
   exit 1

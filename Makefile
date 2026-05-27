@@ -136,7 +136,7 @@ NODE_TABLE_LOADER_STAMP := build/stamps/node_table_loader.rb.stamp
 COMPILER_HELPERS_STAMP := build/stamps/compiler_helpers.rb.stamp
 PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
 
-.PHONY: all parse bootstrap codegen rbs_extract test retest test-gems clean-test-results regen-expected bench optcarrot clean install uninstall deps
+.PHONY: all parse bootstrap codegen rbs_extract test retest clean-test-results regen-expected bench optcarrot clean install uninstall deps
 
 # `make all` includes spinel_rbs_extract when vendor/rbs has been
 # fetched (via `make deps`). Without vendor/rbs the extractor is
@@ -414,13 +414,6 @@ test: $(TEST_TARGETS)
 
 retest: clean-test-results
 	@$(MAKE) --no-print-directory test
-
-# spinel-gem POC tests: unit tests for the Spinelfile DSL + shell-driven
-# end-to-end scenarios (basic resolution, walk-up discovery, negative,
-# dedup, invalid config). Depends on the parser binary being current so
-# the E2E flow exercises the loadpath sidecar plumbing for real.
-test-gems: spinel_parse$(EXE)
-	@sh test_gem/run_all.sh
 
 # The .ok target is the test's stamp; mtime tracking gives per-test
 # caching for free. Order-only spinel_parse$(EXE) / spinel_analyze$(EXE)

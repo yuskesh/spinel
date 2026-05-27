@@ -21,7 +21,6 @@
 #include <string.h>
 #include <stdarg.h>
 #include <limits.h>
-#include <unistd.h>
 #include <prism.h>
 
 /* ---- Output buffer ---- */
@@ -1442,57 +1441,6 @@ static void sp_includes_free(void) {
   sp_included_cap = 0;
 }
 
-/* Extra search dirs for `require` (gems / vendor / explicit -I).
-   Populated from a `--loadpaths=FILE` sidecar at startup. Searched in
-   order *before* the built-in <exe_dir>/lib so gems can shadow stdlib
-   when the user asks for it; flip the order if that policy changes. */
-static char **sp_loadpaths = NULL;
-static int sp_loadpath_count = 0;
-static int sp_loadpath_cap = 0;
-
-static void sp_loadpath_add(const char *dir) {
-  if (sp_loadpath_count >= sp_loadpath_cap) {
-    sp_loadpath_cap = sp_loadpath_cap == 0 ? 8 : sp_loadpath_cap * 2;
-    sp_loadpaths = (char **)realloc(sp_loadpaths, sizeof(char *) * sp_loadpath_cap);
-  }
-  sp_loadpaths[sp_loadpath_count++] = strdup(dir);
-}
-
-static void sp_loadpaths_free(void) {
-  for (int i = 0; i < sp_loadpath_count; i++) free(sp_loadpaths[i]);
-  free(sp_loadpaths);
-  sp_loadpaths = NULL;
-  sp_loadpath_count = 0;
-  sp_loadpath_cap = 0;
-}
-
-/* Read a newline-separated list of absolute directory paths and append each
-   to the loadpath. Blank lines and `#`-prefix lines are skipped so a
-   generator can leave breadcrumbs. Warn (don't fail) on entries that don't
-   resolve to an existing directory: a typo'd sidecar otherwise produces no
-   diagnostic and every `require` silently misses. */
-static void sp_load_loadpaths_file(const char *path) {
-  FILE *f = fopen(path, "rb");
-  if (!f) {
-    fprintf(stderr, "spinel_parse: --loadpaths file '%s' not readable\n", path);
-    return;
-  }
-  char line[1024];
-  while (fgets(line, sizeof line, f)) {
-    size_t n = strlen(line);
-    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
-    if (n == 0 || line[0] == '#') continue;
-    if (access(line, R_OK | X_OK) != 0) {
-      fprintf(stderr,
-              "spinel_parse: warning: loadpath '%s' (from %s) is missing or unreadable; skipping\n",
-              line, path);
-      continue;
-    }
-    sp_loadpath_add(line);
-  }
-  fclose(f);
-}
-
 /* Simple require_relative resolver: replace lines matching
    require_relative "path" with the file content. Files that have
    already been included once are silently skipped on subsequent
@@ -1614,20 +1562,10 @@ static char *resolve_plain_requires(char *source, const char *exe_path) {
 
   char *result = source;
   char *pos;
-  while (1) {
-    /* `require` lines start either at the very beginning of the buffer or
-       immediately after a newline. Check both every iteration: the original
-       single-shot bootstrap only matched when `result == source`, which
-       silently dropped top-of-file requires once any splice rebuilt the
-       buffer (then result != source and the bootstrap never fired again). */
-    char *nl_match = strstr(result, "\nrequire ");
-    if (nl_match) {
-      pos = nl_match + 1; /* skip \n so pos points at `require` */
-    } else if (strncmp(result, "require ", 8) == 0) {
-      pos = result;
-    } else {
-      break;
-    }
+  while ((pos = strstr(result, "\nrequire ")) != NULL ||
+         (pos == NULL && result == source && strncmp(result, "require ", 8) == 0 && (pos = result))) {
+    if (pos != result) pos++; /* skip \n */
+    if (pos != result && *(pos - 1) != '\n') break;
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
 
@@ -1644,23 +1582,8 @@ static char *resolve_plain_requires(char *source, const char *exe_path) {
     char lib_name[256];
     snprintf(lib_name, sizeof(lib_name), "%.*s", (int)(end - start), start);
     char lib_path[1024];
-
-    /* Try gem loadpaths first, then the built-in stdlib dir. First hit
-       wins; the gem CLI is expected to order the sidecar so that direct
-       deps appear before transitive ones, matching Ruby's load-path
-       precedence rules. */
-    int resolved_path = 0;
-    for (int li = 0; li < sp_loadpath_count; li++) {
-      snprintf(lib_path, sizeof(lib_path), "%s/%s", sp_loadpaths[li], lib_name);
-      {
-        size_t fl = strlen(lib_path);
-        if (fl < sizeof(lib_path) - 4 && (fl < 3 || strcmp(lib_path + fl - 3, ".rb") != 0))
-          strcat(lib_path, ".rb");
-      }
-      if (access(lib_path, R_OK) == 0) { resolved_path = 1; break; }
-    }
-    if (!resolved_path) {
-      snprintf(lib_path, sizeof(lib_path), "%s/%s", lib_dir, lib_name);
+    snprintf(lib_path, sizeof(lib_path), "%s/%s", lib_dir, lib_name);
+    {
       size_t fl = strlen(lib_path);
       if (fl < sizeof(lib_path) - 4 && (fl < 3 || strcmp(lib_path + fl - 3, ".rb") != 0))
         strcat(lib_path, ".rb");
@@ -1861,28 +1784,11 @@ static char *rewrite_syntax_sugar(char *source) {
 /* ---- Main ---- */
 int main(int argc, char **argv) {
   if (argc < 2) {
-    fprintf(stderr, "Usage: spinel_parse [--loadpaths=FILE] input.rb [output.ast]\n");
+    fprintf(stderr, "Usage: spinel_parse input.rb [output.ast]\n");
     return 1;
   }
 
-  /* Pull out --loadpaths=FILE before positional handling. Keeping option
-     parsing here (rather than in the shell driver alone) means tools that
-     call spinel_parse directly still benefit. */
-  const char *positional[8];
-  int positional_count = 0;
-  for (int ai = 1; ai < argc && positional_count < 8; ai++) {
-    if (strncmp(argv[ai], "--loadpaths=", 12) == 0) {
-      sp_load_loadpaths_file(argv[ai] + 12);
-    } else {
-      positional[positional_count++] = argv[ai];
-    }
-  }
-  if (positional_count < 1) {
-    fprintf(stderr, "Usage: spinel_parse [--loadpaths=FILE] input.rb [output.ast]\n");
-    return 1;
-  }
-
-  const char *source_file = positional[0];
+  const char *source_file = argv[1];
   char *source = read_file(source_file);
   if (!source) {
     fprintf(stderr, "spinel_parse: cannot open '%s'\n", source_file);
@@ -1931,11 +1837,14 @@ int main(int argc, char **argv) {
 
   /* Output */
   FILE *out = stdout;
-  if (positional_count >= 2) {
-    out = fopen(positional[1], "wb");
+  if (argc >= 3) {
+    out = fopen(argv[2], "wb");
     if (!out) {
-      fprintf(stderr, "spinel_parse: cannot write '%s'\n", positional[1]);
-      /* Clean up before bailing on the output-open failure. */
+      fprintf(stderr, "spinel_parse: cannot write '%s'\n", argv[2]);
+      /* Issue #764: clean up before bailing on the output-open
+         failure. We've allocated source, g_source_file_escaped,
+         lines[], plus parser/root, and registered sp_included_paths
+         entries -- free all to avoid leaking on the way out. */
       for (int i = 0; i < line_count; i++) free(lines[i]);
       free(lines);
       pm_node_destroy(&parser, root);
@@ -1968,6 +1877,5 @@ int main(int argc, char **argv) {
   free(g_source_file_escaped);  /* paired with the escape_str() in init */
   g_source_file_escaped = NULL;
   sp_includes_free();
-  sp_loadpaths_free();
   return 0;
 }
