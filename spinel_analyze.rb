@@ -5063,7 +5063,8 @@ class Compiler
         if rt_clr == "int_array" || rt_clr == "sym_array" ||
            rt_clr == "str_array" || rt_clr == "float_array" ||
            rt_clr == "poly_array" || is_ptr_array_type(rt_clr) == 1 ||
-           rt_clr == "string" || rt_clr == "mutable_str"
+           rt_clr == "string" || rt_clr == "mutable_str" ||
+           is_hash_type(rt_clr) == 1
           return rt_clr
         end
       end

@@ -5223,6 +5223,28 @@ class Compiler
     ""
   end
 
+ # Hash#clear: emit a GCC compound expression that wipes the
+ # open-addressing probe table back to its post-_new shape, sets
+ # len = 0, and yields the receiver (Hash#clear returns self).
+ # The per-variant empty-slot marker differs: sym-keyed and
+ # int-keyed variants store the key inline (-1 sentinel for sym,
+ # used[]/occ[] bitmap for int), str-keyed variants use NULL.
+  def hash_clear_c_expr(t, rc)
+    if t == "sym_int_hash" || t == "sym_str_hash" || t == "sym_poly_hash"
+      return "({ for (mrb_int _i = 0; _i < (" + rc + ")->cap; _i++) (" + rc + ")->keys[_i] = -1; (" + rc + ")->len = 0; (" + rc + "); })"
+    end
+    if t == "str_int_hash" || t == "str_str_hash" || t == "str_poly_hash"
+      return "({ for (mrb_int _i = 0; _i < (" + rc + ")->cap; _i++) (" + rc + ")->keys[_i] = NULL; (" + rc + ")->len = 0; (" + rc + "); })"
+    end
+    if t == "int_str_hash" || t == "int_int_hash" || t == "int_poly_hash"
+      return "({ memset((" + rc + ")->used, 0, (" + rc + ")->cap); (" + rc + ")->len = 0; (" + rc + "); })"
+    end
+    if t == "poly_poly_hash"
+      return "({ memset((" + rc + ")->occ, 0, (" + rc + ")->cap); (" + rc + ")->len = 0; (" + rc + "); })"
+    end
+    ""
+  end
+
  # Per-variant info for the shared Hash#fetch(k) { block } arm.
  # Returns a 4-tuple [value_type, value_c_type, has_key_fn,
  # get_fn] or nil for unsupported variants. The block-form
@@ -5236,6 +5258,7 @@ class Compiler
     if t == "str_poly_hash"; return ["poly", "sp_RbVal", "sp_StrPolyHash_has_key", "sp_StrPolyHash_get"]; end
     nil
   end
+
 
  # CRuby returns nil for static mismatches (e.g. `{a: 1}.dig("a")`)
  # since no key compares equal — Hash#dig short-circuits to nil here.
@@ -22499,6 +22522,17 @@ class Compiler
       ins_h = compile_inspect_for(recv_type, rc)
       if ins_h != ""
         return ins_h
+      end
+    end
+ # Hash#clear mutates in place and returns the now-empty receiver.
+ # Per-variant empty-slot reset (-1 for sym/int keys, NULL for str
+ # keys, occ/used array for variants that track occupancy
+ # separately) so subsequent inserts don't collide with stale
+ # slots in the open-addressing probe chain.
+    if mname == "clear" && is_hash_type(recv_type) == 1
+      ce = hash_clear_c_expr(recv_type, rc)
+      if ce != ""
+        return ce
       end
     end
  # Hash#fetch(k) { |k| default } — block form. `compile_body_into`
