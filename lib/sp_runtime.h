@@ -1207,10 +1207,31 @@ static inline const char*sp_StrArray_get(sp_StrArray*a,mrb_int i){if(i<0)i+=a->l
  * length-clamping semantics as sp_IntArray_slice. Out-of-bounds start
  * returns an empty StrArray (we don't have a nullable form). */
 static sp_StrArray*sp_StrArray_slice(sp_StrArray*a,mrb_int start,mrb_int len){if(start<0)start+=a->len;if(start<0)start=0;sp_StrArray*b=sp_StrArray_new();if(start>=a->len||len<=0)return b;if(start+len>a->len)len=a->len-start;for(mrb_int i=0;i<len;i++)sp_StrArray_push(b,a->data[start+i]);return b;}
-/* String range to_a — single-char ASCII only. CRuby's String#succ
-   handles multi-char + carry; the subset surfaces multi-char cases
-   via the C-side int-from-range fallback failing to compile. */
-static sp_StrArray*sp_StrArray_from_string_range(const char*s,const char*e,mrb_int excl){sp_StrArray*a=sp_StrArray_new();if(!s||!e||strlen(s)!=1||strlen(e)!=1)return a;char lo=s[0],hi=e[0];if(excl)hi--;for(char c=lo;c<=hi;c++){char*r=sp_str_alloc(1);r[0]=c;sp_StrArray_push(a,r);}return a;}
+/* Forward decl — sp_str_succ is defined further down (it uses
+   sp_utf8_decode); the StrArray_from_string_range loop below needs
+   it visible early. */
+static const char *sp_str_succ(const char *s);
+/* String range to_a — single-char and multi-char ASCII ranges via
+   sp_str_succ. The 4096-iteration cap stops a pathological prepend-
+   style infinite loop before it eats memory. */
+static sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, mrb_int excl) {
+  sp_StrArray *a = sp_StrArray_new();
+  if (!s || !e) return a;
+  const char *cur = s;
+  int iters = 0;
+  while (iters < 4096) {
+    int cmp = strcmp(cur, e);
+    if (cmp > 0) break;
+    if (cmp == 0 && excl) break;
+    char *copy = sp_str_alloc(strlen(cur));
+    strcpy(copy, cur);
+    sp_StrArray_push(a, copy);
+    if (cmp == 0) break;
+    cur = sp_str_succ(cur);
+    iters++;
+  }
+  return a;
+}
 /* See sp_IntArray_slice_range -- same shape, issue #496. */
 static sp_StrArray*sp_StrArray_slice_range(sp_StrArray*a,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=a->len;if(start<0)start+=a->len;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_StrArray_slice(a,start,n);}
 static inline void sp_StrArray_set(sp_StrArray*a,mrb_int i,const char*v){if(!a)return;mrb_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));while(i>=a->len)sp_StrArray_push(a,sp_str_empty);a->data[i]=v;}
