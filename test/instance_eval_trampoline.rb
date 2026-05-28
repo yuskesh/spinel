@@ -85,4 +85,21 @@ end
 puts b2.total             #=> 42
 puts c2.get               #=> 2
 
+# 4. Ivar read/write inside the block body. The block body splices
+#    into the call site with `self` rebound, so `@n = ...` must
+#    write the rebound receiver's `iv_n`, not the outer scope's
+#    self. Without @self_override routing, the ivar would resolve
+#    to a toplevel static-global slot -- broken silently because no
+#    prior trampoline test exercises direct ivar access inside the
+#    spliced block (existing tests only call methods like `bump`).
+#    Counter is reused here (two instances above) so value-type
+#    promotion stays disabled; the direct-ivar path needs heap
+#    receivers.
+c3 = Counter.new
+c3.with do
+  @n = @n + 5
+  @n = @n + 3
+end
+puts c3.get               #=> 8
+
 puts "done"

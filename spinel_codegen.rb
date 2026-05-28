@@ -5019,6 +5019,26 @@ class Compiler
     if mod_slot != ""
       return mod_slot
     end
+ # Rebound self (instance_eval / instance_exec splice): route ivar
+ # access through the receiver's struct via self_arrow(), not the
+ # toplevel static-global slot. Without this, a block body that
+ # writes `@x = ...` at a toplevel call site (where
+ # @current_class_idx == -1) falls into the toplevel-ivar fallback
+ # below and emits a bare global write -- never touching the
+ # receiver's iv_x. Detected by the section-4 regression added to
+ # test/instance_eval_trampoline.rb.
+ #
+ # Gate on @instance_eval_self_var (the rebind signal from
+ # splice_block_with_self_rebound), NOT @self_override --
+ # @self_override is also set by compile_yield_method_call_stmt
+ # for inlined-method-body locals + default-arg substitution, where
+ # ivars must still resolve against the enclosing class's struct,
+ # not the override expression. Conflating them silently mis-routes
+ # ivar reads everywhere yield methods are inlined (including
+ # spinel_codegen.rb's own methods during bootstrap).
+    if @instance_eval_self_var != nil && @instance_eval_self_var != ""
+      return self_arrow + sanitize_ivar(name)
+    end
     if @current_class_idx < 0 && toplevel_ivar_type(name) != ""
       return sanitize_ivar(name)
     end
@@ -9330,8 +9350,6 @@ class Compiler
     end
     "self"
   end
-
-
 
 
 
@@ -44945,11 +44963,24 @@ class Compiler
     end
     rc = compile_expr_gc_rooted(recv)
     self_var = new_temp
+ # Value-typed receivers (@cls_is_value_type[ci] == 1) are returned
+ # by-value from sp_<C>_new(), so (sp_<C> *)<rc> is an invalid cast
+ # of a struct value. Handling them requires the value-vs-pointer
+ # branch from emit_ieval_func and is tracked separately.
     emit("  sp_" + cname + " *" + self_var + " = (sp_" + cname + " *)" + rc + ";")
     if @in_gc_scope == 1
       emit("  SP_GC_ROOT(" + self_var + ");")
     end
+ # Route bare `@ivar` reads/writes inside the spliced block to the
+ # rebound receiver. Without this, ivar_lhs's toplevel-fallback
+ # branch returns the bare static-global slot when the splice
+ # happens at toplevel scope — broken silently because no prior
+ # trampoline test exercised direct ivar access inside the spliced
+ # block (existing tests only call methods like `add` / `bump`).
+    saved_self_override = @self_override
+    @self_override = self_var
     splice_block_with_self_rebound(@nd_body[blk], self_var, cname)
+    @self_override = saved_self_override
   end
 
   def compile_yield_method_call_stmt(nid, cci, midx, mname)
