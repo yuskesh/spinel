@@ -18921,14 +18921,24 @@ class Compiler
           emit("  { for (mrb_int _i = 0; _i < sp_" + rt_pfx_p + "_length(" + arg + "); _i++) sp_PolyArray_push(" + tmp + ", " + rt_box + "); }")
           return tmp
         end
+ # Array `lhs + rhs` (same element type). Issue #1020: the dup'd
+ # destination must be GC-rooted across the push loop, and the rhs
+ # must be evaluated ONCE into a rooted temp — emitting it inline in
+ # the loop header re-ran a side-effecting/allocating rhs (e.g.
+ # `[x] + foo()`) every iteration, and any allocation freed the
+ # unrooted destination mid-loop, corrupting the result length.
+        @needs_gc = 1
         rc = compile_expr_gc_rooted(recv)
-        arg = compile_arg0(nid)
         pfx = array_c_prefix(lt)
         tmp = new_temp
+        argt = new_temp
         itmp = new_temp
+        emit("  " + c_type(lt) + argt + " = " + compile_arg0(nid) + ";")
+        emit("  SP_GC_ROOT(" + argt + ");")
         emit("  " + c_type(lt) + tmp + " = sp_" + pfx + "_dup(" + rc + ");")
-        emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < sp_" + pfx + "_length(" + arg + "); " + itmp + "++)")
-        emit("    sp_" + pfx + "_push(" + tmp + ", sp_" + pfx + "_get(" + arg + ", " + itmp + "));")
+        emit("  SP_GC_ROOT(" + tmp + ");")
+        emit("  for (mrb_int " + itmp + " = 0; " + itmp + " < sp_" + pfx + "_length(" + argt + "); " + itmp + "++)")
+        emit("    sp_" + pfx + "_push(" + tmp + ", sp_" + pfx + "_get(" + argt + ", " + itmp + "));")
         return tmp
       end
       if lt == "complex"
