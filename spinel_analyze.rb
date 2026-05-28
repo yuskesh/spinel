@@ -3106,10 +3106,35 @@ class Compiler
         return ft if rt_file == "file"
       end
     end
+
+ # Random instance method return types.
+    if recv >= 0
+      if mname == "rand"
+        rt_rnd = infer_type(recv)
+        if rt_rnd == "random"
+ # rand(int) -> int, rand(float)/rand() -> float.
+          args_id_rnd = @nd_arguments[nid]
+          if args_id_rnd >= 0
+            a_rnd = get_args(args_id_rnd)
+            if a_rnd.length >= 1 && infer_type(a_rnd[0]) == "int"
+              return "int"
+            end
+          end
+          return "float"
+        end
+      elsif mname == "bytes"
+        if infer_type(recv) == "random"
+          return "string"
+        end
+      end
+    end
  # `StringScanner.new(s)` constructs an sp_StringScanner * — return
  # the primitive type, not the (non-existent) user-class type.
     if mname == "new" && recv >= 0 && @nd_type[recv] == "ConstantReadNode" && @nd_name[recv] == "StringScanner"
       return "stringscanner"
+    end
+    if mname == "new" && recv >= 0 && @nd_type[recv] == "ConstantReadNode" && @nd_name[recv] == "Random"
+      return "random"
     end
 
  # `Regexp.new(<arg>)` / `Regexp.compile(<arg>)` returns a compiled
@@ -4995,6 +5020,16 @@ class Compiler
       return "str_array"
     end
     if mname == "bytes"
+ # `Random.bytes(n)` / `<random>.bytes(n)` returns a binary String,
+ # not String#bytes' int_array. Defer to the recv-aware path.
+      if recv >= 0
+        if @nd_type[recv] == "ConstantReadNode" && @nd_name[recv] == "Random"
+          return ""
+        end
+        if infer_type(recv) == "random"
+          return ""
+        end
+      end
       return "int_array"
     end
  # Issue #903: String#codepoints returns an int_array of codepoints.
@@ -6371,6 +6406,21 @@ class Compiler
         if rcname == "Integer"
           if mname == "sqrt"
             return "int"
+          end
+        end
+        if rcname == "Random"
+          if mname == "bytes"
+            return "string"
+          end
+          if mname == "rand"
+            args_id_rcr = @nd_arguments[nid]
+            if args_id_rcr >= 0
+              a_rcr = get_args(args_id_rcr)
+              if a_rcr.length >= 1 && infer_type(a_rcr[0]) == "int"
+                return "int"
+              end
+            end
+            return "float"
           end
         end
       end

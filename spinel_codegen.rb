@@ -4646,6 +4646,10 @@ class Compiler
     if t == "file"
       return "sp_File *"
     end
+ # Random — per-instance xorshift PRNG.
+    if t == "random"
+      return "sp_Random *"
+    end
  # FFI raw C pointer (void *). See type_is_pointer for GC rules.
     if t == "ptr"
       return "void *"
@@ -25312,6 +25316,27 @@ class Compiler
           return "sp_StringScanner_new(" + compile_arg0(nid) + ")"
         end
       end
+      if rcname == "Random"
+        if mname == "new"
+          args_id_rn = @nd_arguments[nid]
+          if args_id_rn >= 0 && get_args(args_id_rn).length >= 1
+            return "sp_Random_new(" + compile_arg0_as_int(nid) + ")"
+          end
+ # Seedless Random.new — seed from the wall clock.
+          return "sp_Random_new((mrb_int)time(NULL))"
+        end
+ # Class-method forms route through the shared default instance.
+        if mname == "rand"
+          args_id_rc = @nd_arguments[nid]
+          if args_id_rc >= 0 && get_args(args_id_rc).length >= 1
+            return "sp_Random_rand_int(sp_random_default_get(), " + compile_arg0_as_int(nid) + ")"
+          end
+          return "sp_Random_rand_float(sp_random_default_get())"
+        end
+        if mname == "bytes"
+          return "sp_Random_bytes(sp_random_default_get(), " + compile_arg0_as_int(nid) + ")"
+        end
+      end
       if rcname == "Time"
         if mname == "now"
           return "sp_time_now()"
@@ -26504,6 +26529,27 @@ class Compiler
       end
       if mname == "path" || mname == "to_path"
         return "sp_File_path(" + rc + ")"
+      end
+    end
+ # Random instance methods.
+    if recv_type == "random"
+      if mname == "rand"
+        args_id_rr = @nd_arguments[nid]
+        if args_id_rr >= 0
+          a_rr = get_args(args_id_rr)
+          if a_rr.length >= 1
+            at_rr = infer_type(a_rr[0])
+            if at_rr == "float"
+ # rand(float-limit) — scale the [0,1) float by the limit.
+              return "(sp_Random_rand_float(" + rc + ") * " + compile_expr(a_rr[0]) + ")"
+            end
+            return "sp_Random_rand_int(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+          end
+        end
+        return "sp_Random_rand_float(" + rc + ")"
+      end
+      if mname == "bytes"
+        return "sp_Random_bytes(" + rc + ", " + compile_arg0_as_int(nid) + ")"
       end
     end
  # Object method calls

@@ -3500,6 +3500,48 @@ static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
    alongside the hash type it closes over. */
 static void sp_hashproc_cap_scan(void *p) { sp_gc_mark(p); }
 
+/* Random — per-instance PRNG. CRuby uses MT19937; spinel uses a
+   portable xorshift64 (rand_r is POSIX-only, absent on MinGW), so
+   the *sequence* differs from MRI but each Random object keeps its
+   own reproducible stream from its seed. Issue #898. */
+typedef struct { uint64_t state; } sp_Random;
+static uint64_t sp_random_next(sp_Random *r) {
+  uint64_t x = r->state ? r->state : 0x9E3779B97F4A7C15ULL;
+  x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+  r->state = x;
+  return x;
+}
+static sp_Random *sp_Random_new(mrb_int seed) {
+  sp_Random *r = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
+  r->state = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
+  return r;
+}
+static mrb_int sp_Random_rand_int(sp_Random *r, mrb_int n) {
+  if (!r || n <= 0) return 0;
+  return (mrb_int)(sp_random_next(r) % (uint64_t)n);
+}
+static mrb_float sp_Random_rand_float(sp_Random *r) {
+  if (!r) return 0.0;
+  return (mrb_float)(sp_random_next(r) >> 11) / (mrb_float)(1ULL << 53);
+}
+/* Class-method forms (`Random.rand` / `Random.bytes`) share one
+   lazily-seeded default instance, mirroring CRuby's Random::DEFAULT. */
+static sp_Random sp_random_default = { 0 };
+static sp_Random *sp_random_default_get(void) {
+  if (sp_random_default.state == 0) sp_random_default.state = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ULL;
+  return &sp_random_default;
+}
+/* Random#bytes(n) — n random bytes as a String. Uses sp_str_set_len
+   so embedded NULs are preserved and #length reports n. */
+static const char *sp_Random_bytes(sp_Random *r, mrb_int n) {
+  if (n < 0) n = 0;
+  char *b = sp_str_alloc((size_t)n);
+  for (mrb_int i = 0; i < n; i++) b[i] = (char)(sp_random_next(r) & 0xff);
+  b[n] = 0;
+  sp_str_set_len(b, (size_t)n);
+  return b;
+}
+
 /* ---- StringIO runtime ---- */
 typedef struct { char *buf; int64_t len; int64_t cap; int64_t pos; int64_t lineno; int closed; } sp_StringIO;
 static void sio_grow(sp_StringIO *sio, int64_t need) { int64_t req = sio->pos + need; if (req <= sio->cap) return; int64_t nc = sio->cap ? sio->cap : 64; while (nc < req) nc *= 2; sio->buf = (char *)realloc(sio->buf, nc + 1); sio->cap = nc; }
