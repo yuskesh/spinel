@@ -19784,6 +19784,18 @@ class Compiler
       if cname == "Hash"
         @needs_str_int_hash = 1
         @needs_gc = 1
+ # `Hash.new { |hash, key| ... }` — store a default-proc fn on a
+ # str_poly_hash; _get calls it on a miss. Issue #912.
+        if @nd_block[nid] >= 0
+          dproc_fn = compile_hash_default_proc(nid)
+          @needs_str_poly_hash = 1
+          @needs_rb_value = 1
+          if dproc_fn != ""
+            return "sp_StrPolyHash_new_dproc(" + dproc_fn + ")"
+          end
+ # Block captured outer locals — fall back to a plain poly hash.
+          return "sp_StrPolyHash_new()"
+        end
         args_id = @nd_arguments[nid]
         if args_id >= 0
           aargs = get_args(args_id)
@@ -37571,6 +37583,74 @@ class Compiler
       bk = bk + 1
     end
     s
+  end
+
+ # Hash.new { |hash, key| ... } default block. Lowered to a dedicated
+ # C fn `sp_RbVal (*)(sp_StrPolyHash *self, const char *key)` with the
+ # params typed (hash: str_poly_hash, key: string) so the body's use
+ # of `key` as a string (interpolation etc.) compiles correctly. The
+ # fn is stored on the hash and called by _get on a miss. Returns the
+ # fn name, or "" if the block captures outer locals (a top-level fn
+ # can't see them — caller falls back to a plain default hash).
+ # Issue #912.
+  def compile_hash_default_proc(nid)
+    blk = @nd_block[nid]
+    if blk < 0
+      return ""
+    end
+    bbody = @nd_body[blk]
+    p0 = get_block_param(nid, 0)
+    p1 = get_block_param(nid, 1)
+    bps = "".split(",", -1)
+    bps.push(p0) if p0 != ""
+    bps.push(p1) if p1 != ""
+    free_vars = "".split(",", -1)
+    if bbody >= 0
+      proc_locals = "".split(",", -1)
+      scan_lambda_free_vars(bbody, bps, proc_locals, free_vars)
+    end
+    if free_vars.length > 0
+      return ""
+    end
+    @proc_counter = @proc_counter + 1
+    fname = "_sp_hash_dproc_" + @proc_counter.to_s
+    save_out = @out_lines
+    @out_lines = "".split(",", -1)
+    saved_indent = @indent
+    @indent = 1
+    push_scope
+    declare_var(p0, "str_poly_hash") if p0 != ""
+    declare_var(p1, "string") if p1 != ""
+    bexpr = "sp_box_nil()"
+    if bbody >= 0
+      bs = get_stmts(bbody)
+      k = 0
+      while k < bs.length - 1
+        compile_stmt(bs[k])
+        k = k + 1
+      end
+      if bs.length > 0
+        bexpr = box_expr_to_poly(bs.last)
+      end
+    end
+    body_lines = @out_lines.join(10.chr)
+    pop_scope
+    @indent = saved_indent
+    @out_lines = save_out
+    fn = "static sp_RbVal " + fname + "(sp_StrPolyHash *_self_h, const char *_key) {" + 10.chr
+    fn = fn + "  (void)_self_h; (void)_key;" + 10.chr
+    if p0 != ""
+      fn = fn + "  sp_StrPolyHash *lv_" + p0 + " = _self_h; (void)lv_" + p0 + ";" + 10.chr
+    end
+    if p1 != ""
+      fn = fn + "  const char *lv_" + p1 + " = _key; (void)lv_" + p1 + ";" + 10.chr
+    end
+    if body_lines != ""
+      fn = fn + body_lines + 10.chr
+    end
+    fn = fn + "  return " + bexpr + ";" + 10.chr + "}" + 10.chr
+    @deferred_lambda = @deferred_lambda + fn
+    fname
   end
 
   def compile_proc_literal(nid, blk_param_types = "", lambda_flag = 0)

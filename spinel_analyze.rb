@@ -6263,8 +6263,16 @@ class Compiler
  # str_int_hash unconditionally and the codegen-side variant
  # picker (compile_constructor_expr's Hash arm) emitted
  # `sp_StrStrHash_new()` for `Hash.new("missing")` -- pointer
- # type mismatch on the LV. Block-form `Hash.new { ... }`
- # (proc default) is deferred and stays str_int_hash.
+ # type mismatch on the LV.
+ # Block-form `Hash.new { |h,k| ... }` uses the poly-valued
+ # str_poly_hash (sym keys are stringified) with a default-proc
+ # fn stored on the hash; the block's value can be any type so
+ # the value slot is poly. Issue #912.
+            if @nd_block[nid] >= 0
+              @needs_str_poly_hash = 1
+              @needs_rb_value = 1
+              return "str_poly_hash"
+            end
             args_id_hn = @nd_arguments[nid]
             if args_id_hn >= 0 && @nd_block[nid] < 0
               aa_hn = get_args(args_id_hn)
@@ -30422,6 +30430,13 @@ class Compiler
  # param. Fiber.new uses compile_fiber_new which declares the
  # param as poly — descending there is safe.
         if cnk == "Proc" || cnk == "Lambda"
+          descend_blk = 0
+        end
+ # Hash.new { |hash, key| ... }: the block becomes a dedicated
+ # default-proc fn whose params codegen types itself (hash:
+ # str_poly_hash, key: string). Don't descend with the generic
+ # int-defaulted block-param scan. Issue #912.
+        if cnk == "Hash"
           descend_blk = 0
         end
       end
