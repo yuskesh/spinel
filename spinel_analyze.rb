@@ -8253,6 +8253,55 @@ class Compiler
     -1
   end
 
+ # Resolve the receiver of a rebind-and-splice call (instance_eval,
+ # instance_exec) to a class index using the same LocalVar / IVar
+ # cascade that ieval_rewrite_call shipped with. Returns -1 if the
+ # receiver type can't be statically classified.
+ #
+ # Factored from ieval_rewrite_call so iexec_rewrite_call (and any
+ # future rebind-and-splice detector) can reuse it byte-identically.
+ # The cascade is non-trivial -- find_var_type fallback for the
+ # LocalVar branch, cls_ivar_type lookup for the IVar branch with
+ # the obj_-prefix strip -- and duplicating it would silently
+ # diverge as one path is patched without the other.
+  def recv_class_idx_for_rebind(recv, local_class)
+    if @nd_type[recv] == "LocalVariableReadNode"
+      vname = @nd_name[recv]
+      if local_class.key?(vname)
+        return local_class[vname]
+      end
+ # Inside a class instance method, the top-level local_class
+ # map is intentionally empty. Fall back to find_var_type so a
+ # method param (or scan_locals-typed local) resolves through
+ # the scope chain that ieval_walk_class_methods sets up. The
+ # is_obj_type / base_type strip is the same shape used in the
+ # ivar branch and at every other obj_-prefix site in this file.
+      vt = find_var_type(vname)
+      bt = base_type(vt)
+      if is_obj_type(bt) == 1
+        return find_class_idx(bt[4, bt.length - 4])
+      end
+      return -1
+    end
+    if @nd_type[recv] == "InstanceVariableReadNode"
+ # `@ivar.instance_eval { }` inside a class method. ieval_walk_class_methods
+ # sets @current_class_idx so cls_ivar_type returns the ivar's stored
+ # type -- "obj_<Class>" when the ivar was bound to `Class.new` (and
+ # not since widened to poly). Strip the "obj_" prefix to look up
+ # the class index, the same shape `is_obj_type` / `base_type`
+ # gates use elsewhere in the codegen for object-typed values.
+      if @current_class_idx >= 0
+        it = cls_ivar_type(@current_class_idx, @nd_name[recv])
+        bt = base_type(it)
+        if is_obj_type(bt) == 1
+          return find_class_idx(bt[4, bt.length - 4])
+        end
+      end
+      return -1
+    end
+    -1
+  end
+
   def ieval_rewrite_call(nid, local_class)
     if @nd_name[nid] != "instance_eval"
       return
@@ -8302,39 +8351,7 @@ class Compiler
         end
       end
     end
-    ci = -1
-    if @nd_type[recv] == "LocalVariableReadNode"
-      vname = @nd_name[recv]
-      if local_class.key?(vname)
-        ci = local_class[vname]
-      else
- # Inside a class instance method, the v1 top-level local_class
- # map is intentionally empty. Fall back to find_var_type so a
- # method param (or scan_locals-typed local) resolves through
- # the scope chain that ieval_walk_class_methods sets up. The
- # is_obj_type / base_type strip is the same shape used in the
- # ivar branch and at every other obj_-prefix site in this file.
-        vt = find_var_type(vname)
-        bt = base_type(vt)
-        if is_obj_type(bt) == 1
-          ci = find_class_idx(bt[4, bt.length - 4])
-        end
-      end
-    elsif @nd_type[recv] == "InstanceVariableReadNode"
- # `@ivar.instance_eval { }` inside a class method. ieval_walk_class_methods
- # sets @current_class_idx so cls_ivar_type returns the ivar's stored
- # type — "obj_<Class>" when the ivar was bound to `Class.new` (and
- # not since widened to poly). Strip the "obj_" prefix to look up
- # the class index, the same shape `is_obj_type` / `base_type`
- # gates use elsewhere in the codegen for object-typed values.
-      if @current_class_idx >= 0
-        it = cls_ivar_type(@current_class_idx, @nd_name[recv])
-        bt = base_type(it)
-        if is_obj_type(bt) == 1
-          ci = find_class_idx(bt[4, bt.length - 4])
-        end
-      end
-    end
+    ci = recv_class_idx_for_rebind(recv, local_class)
     if ci < 0
       return
     end
