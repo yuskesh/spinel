@@ -3440,6 +3440,13 @@ class Compiler
       if cmp_mname == "to_s"
         return "string"
       end
+ # `.inspect` returns string for every recv type. Without this
+ # arm a proc/lambda body's `"#{a.inspect}"` got typed int by
+ # the fallback, the interp dispatcher picked %lld, and the
+ # string pointer printed as a decimal address.
+      if cmp_mname == "inspect"
+        return "string"
+      end
  # `lv.call(...)` / `lv.()` on a lambda local — recover the
  # lambda's recorded return type from @lambda_var_ret_*.
  # walk_and_cache skips lambda bodies, so the call itself isn't
@@ -30252,12 +30259,9 @@ class Compiler
   def compile_proc_call_args(nid)
     args_id = @nd_arguments[nid]
     if args_id < 0
-      return "0"
+      return "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
     end
     arg_ids = get_args(args_id)
-    if arg_ids.length == 0
-      return "0"
-    end
     result = ""
     k = 0
     while k < arg_ids.length
@@ -30278,6 +30282,17 @@ class Compiler
       else
         result = result + val
       end
+      k = k + 1
+    end
+ # Pad the compound literal to 16 zero slots so a proc body that
+ # reads `args[i]` past the caller-supplied arity sees 0 instead
+ # of past-the-end stack garbage. Matches sp_proc_call's noargs
+ # fast-path which already uses a 16-element zero-init buffer.
+    while k < 16
+      if k > 0
+        result = result + ", "
+      end
+      result = result + "0"
       k = k + 1
     end
     result
