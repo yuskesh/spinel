@@ -43678,7 +43678,10 @@ class Compiler
         @needs_bigint = 1
         emit("  lv_" + bp_names[assigned_ye] + " = sp_bigint_new_int(0);")
       else
-        emit("  lv_" + bp_names[assigned_ye] + " = 0;")
+ # Block param with no yield-arg slot — Ruby fills with nil. Use
+ # c_default_val so int? lands on SP_INT_NIL (.inspect/.nil?
+ # dispatch correctly). Issue #997.
+        emit("  lv_" + bp_names[assigned_ye] + " = " + c_default_val(bp_rt_ye) + ";")
       end
       assigned_ye = assigned_ye + 1
     end
@@ -43755,7 +43758,7 @@ class Compiler
         @needs_bigint = 1
         emit("  lv_" + bp_names[assigned_yic] + " = sp_bigint_new_int(0);")
       else
-        emit("  lv_" + bp_names[assigned_yic] + " = 0;")
+        emit("  lv_" + bp_names[assigned_yic] + " = " + c_default_val(bp_rt_yic) + ";")
       end
       assigned_yic = assigned_yic + 1
     end
@@ -43840,7 +43843,7 @@ class Compiler
           @needs_bigint = 1
           emit("  lv_" + bp_names[assigned] + " = sp_bigint_new_int(0);")
         else
-          emit("  lv_" + bp_names[assigned] + " = 0;")
+          emit("  lv_" + bp_names[assigned] + " = " + c_default_val(bp_reset_t) + ";")
         end
         assigned = assigned + 1
       end

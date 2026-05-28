@@ -6008,15 +6008,16 @@ class Compiler
           end
           return tuple_elem_type_at(rt, 0)
         end
- # Issue #833: *StrHash get now returns NULL for missing keys
- # (was sp_str_empty). *IntHash analyze widening to int? is
- # deferred -- body-usage widening cascades the change through
- # declare_var et al., crashing the self-host build. The current
- # change ships NULL for missing string keys (already nullable
- # C-side) and SP_INT_NIL for int keys at the runtime level;
- # int values surface as "int" at analyze, so `h[k].inspect`
- # of a missing int key prints INT64_MIN's decimal until the
- # follow-up phase that widens the LV slot.
+ # *StrHash get returns NULL for missing keys (was sp_str_empty).
+ # *IntHash `h[k]` still surfaces as "int" here, not "int?": every
+ # such read would widen, and unlike the always-nil block params in
+ # #997 (which are nullable on every path), a typed-int-hash read is
+ # usually a hit, so widening the whole slot to int? cascades
+ # int-sentinel arithmetic through legitimate values (the #801
+ # Phase 4 concern). So `h[k].inspect` of a *missing* int key prints
+ # INT64_MIN's decimal until that narrower follow-up lands. (Block
+ # params CAN be int? — see method_yield_min_argc — because there
+ # the slot is genuinely never filled.)
         if rt == "str_int_hash"
           return "int"
         end
@@ -28202,6 +28203,15 @@ class Compiler
                       ybid_628 = @meth_body_ids[mi_628]
                       if ybid_628 >= 0
                         arity_628 = method_yield_arity(mi_628)
+ # Block param past the number of args the method's `yield`
+ # actually passes is never filled; Ruby gives it nil. Type as
+ # int? so codegen pads with SP_INT_NIL and .inspect/.nil?
+ # dispatch correctly. Use the true argc (a bare `yield` passes
+ # 0, even though the C-signature arity floors to 1). Issue #997.
+                        if bk >= method_yield_min_argc(mi_628)
+                          types.push("int?")
+                          pushed_block_param_628 = 1
+                        end
                         ytypes_628 = "".split(",", -1)
                         ka_628 = 0
                         while ka_628 < arity_628
@@ -29516,6 +29526,46 @@ class Compiler
     current
   end
 
+ # The MIN arg count over all `yield`s in the method (a bare `yield`
+ # passes 0). A block param at index >= this is left nil by at least
+ # the smallest yield, so it must be nullable; the per-yield inline
+ # pad then fills it (for the larger yields) or nil-pads it (for the
+ # smaller). Using min, not max, makes mixed-arity methods
+ # (`yield 1,2; yield 3`) correct. Returns 0 if no yield is found
+ # (callers gate on @meth_has_yield). Issue #997.
+  def method_yield_min_argc(mi)
+    if mi < 0 || mi >= @meth_body_ids.length
+      return 0
+    end
+    r = body_min_yield_argc(@meth_body_ids[mi], -1)
+    r < 0 ? 0 : r
+  end
+  def body_min_yield_argc(nid, current)
+    if nid < 0
+      return current
+    end
+    if @nd_type[nid] == "YieldNode"
+      n = 0
+      if @nd_arguments[nid] >= 0
+        n = get_args(@nd_arguments[nid]).length
+      end
+      if current < 0 || n < current
+        current = n
+      end
+    end
+    if @nd_type[nid] == "DefNode"
+      return current
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      current = body_min_yield_argc(cs[k], current)
+      k = k + 1
+    end
+    current
+  end
+
  # ---- Return type inference ----
 
  # Narrow pre-pass for `rewrite_instance_eval_calls`: walk top-level
@@ -30610,6 +30660,13 @@ class Compiler
         ybid_bp = @meth_body_ids[mi_bp]
         if ybid_bp >= 0
           arity_bp = method_yield_arity(mi_bp)
+ # Param past the number of args the method's `yield` actually
+ # passes is never filled; Ruby fills it with nil. Type int? so
+ # the pad uses SP_INT_NIL. Bare `yield` passes 0 args (the
+ # C-signature arity floors to 1). Issue #997. Mirrors scan_locals.
+          if pi >= method_yield_min_argc(mi_bp)
+            return "int?"
+          end
           ytypes_bp = "".split(",", -1)
           ka_bp = 0
           while ka_bp < arity_bp
@@ -30647,6 +30704,13 @@ class Compiler
         ybid_bp = @meth_body_ids[mi_bp]
         if ybid_bp >= 0
           arity_bp = method_yield_arity(mi_bp)
+ # Param past the number of args the method's `yield` actually
+ # passes is never filled; Ruby fills it with nil. Type int? so
+ # the pad uses SP_INT_NIL. Bare `yield` passes 0 args (the
+ # C-signature arity floors to 1). Issue #997. Mirrors scan_locals.
+          if pi >= method_yield_min_argc(mi_bp)
+            return "int?"
+          end
           ytypes_bp = "".split(",", -1)
           ka_bp = 0
           while ka_bp < arity_bp

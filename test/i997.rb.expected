@@ -1,0 +1,6 @@
+a=nil b=nil
+a=1 b=nil c=nil
+p=1 q=2
+p=3 q=nil
+false
+true
