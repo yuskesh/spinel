@@ -12404,6 +12404,80 @@ class Compiler
 
  # Extract a string literal from a SymbolNode or StringNode arg. Returns
  # "" if the arg is not a literal we recognize.
+ # Source-file directory, analyze-side (mirrors codegen's
+ # source_file_dirname). Used to fold __dir__ in FFI decl args.
+  def ffi_source_dirname
+    path = ""
+    if @source_file_path != nil
+      path = @source_file_path
+    end
+    if path == ""
+      i = 0
+      while i < @nd_type.length
+        if @nd_type[i] == "SourceFileNode"
+          path = @nd_content[i]
+          i = @nd_type.length
+        else
+          i = i + 1
+        end
+      end
+    end
+    if path == ""
+      return "."
+    end
+    last_slash = -1
+    j = 0
+    while j < path.length
+      if path[j] == "/"
+        last_slash = j
+      end
+      j = j + 1
+    end
+    if last_slash < 0
+      return "."
+    end
+    if last_slash == 0
+      return "/"
+    end
+    path[0, last_slash]
+  end
+
+ # Resolve `rel` against `base` like File.expand_path: absolute rel
+ # wins; otherwise join and collapse `.` / `..` segments. Enough for
+ # the FFI-decl path-folding use (Issue #1011); not a full realpath
+ # (no `~` expansion, no symlink resolution).
+  def ffi_expand_path(rel, base)
+    joined = ""
+    if rel.length > 0 && rel[0] == "/"
+      joined = rel
+    elsif base.length > 0 && base[0] == "/"
+      joined = base + "/" + rel
+    else
+      joined = base + "/" + rel
+    end
+    parts = joined.split("/", -1)
+    stack = "".split(",", -1)
+    pi = 0
+    while pi < parts.length
+      seg = parts[pi]
+      if seg == "" || seg == "."
+ # skip empty (from leading / or //) and current-dir
+      elsif seg == ".."
+        if stack.length > 0
+          stack.pop
+        end
+      else
+        stack.push(seg)
+      end
+      pi = pi + 1
+    end
+    "/" + stack.join("/")
+  end
+
+ # Fold an FFI decl string argument: literals, plus the compile-time
+ # forms __dir__ / __FILE__ / File.expand_path(rel, base) / String#+
+ # over foldable strings. Returns "" when the arg isn't foldable.
+ # Issue #1011.
   def ffi_arg_str(nid)
     if nid < 0
       return ""
@@ -12411,6 +12485,45 @@ class Compiler
     t = @nd_type[nid]
     if t == "SymbolNode" || t == "StringNode"
       return @nd_content[nid]
+    end
+ # __FILE__ lowers to SourceFileNode (its content is the path).
+    if t == "SourceFileNode"
+      return @nd_content[nid]
+    end
+    if t == "CallNode"
+      mn = @nd_name[nid]
+      recv = @nd_receiver[nid]
+ # __dir__ -- compile-time source directory.
+      if mn == "__dir__" && recv < 0
+        return ffi_source_dirname
+      end
+ # File.expand_path(rel, base=__dir__) -- fold when rel folds.
+      if mn == "expand_path" && recv >= 0 && @nd_type[recv] == "ConstantReadNode" && @nd_name[recv] == "File"
+        ea = get_args(@nd_arguments[nid])
+        if ea.length >= 1
+          rel = ffi_arg_str(ea[0])
+          if rel != ""
+            base = ea.length >= 2 ? ffi_arg_str(ea[1]) : ffi_source_dirname
+            if base == ""
+              base = ffi_source_dirname
+            end
+            return ffi_expand_path(rel, base)
+          end
+        end
+      end
+ # String#+ over two foldable strings.
+      if mn == "+" && recv >= 0
+        lhs = ffi_arg_str(recv)
+        if lhs != ""
+          pa = get_args(@nd_arguments[nid])
+          if pa.length >= 1
+            rhs = ffi_arg_str(pa[0])
+            if rhs != ""
+              return lhs + rhs
+            end
+          end
+        end
+      end
     end
     ""
   end
