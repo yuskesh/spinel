@@ -89,7 +89,7 @@ static const char *sp_sym_to_s(sp_sym id);
    `a / 0`, `a % 0`, `a.divmod(0)`, `a.ceildiv(0)`, and `a.pow(e, 0)` all
    raise ZeroDivisionError instead of triggering C undefined behaviour
    (SIGFPE on x86) or silently returning 0. */
-static void sp_raise_cls(const char *cls, const char *msg);
+void sp_raise_cls(const char *cls, const char *msg);
 
 static inline mrb_int sp_idiv(mrb_int a, mrb_int b) {
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
@@ -218,203 +218,14 @@ static mrb_int sp_int_sqrt(mrb_int n){if(n<0)return 0;if(n<2)return n;mrb_int x=
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
 static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;return s;}
 
-/* Forward decls so sp_str_to_i_strict can use them. */
-static void sp_raise_cls(const char *cls, const char *msg);
-static const char *sp_sprintf(const char *fmt, ...);
+/* Forward decls for helpers used across this header (and by the
+   string->number parsers that now live in libspinel_rt.a). */
+void sp_raise_cls(const char *cls, const char *msg);
+const char *sp_sprintf(const char *fmt, ...);
 
-/* CRuby's `String#to_i` accepts a leading sign, then digits with
-   `_` between consecutive digits, and stops at the first non-digit
-   (returning what it has so far rather than raising). `"1_2_3asdf"`
-   -> 123. spinel previously emitted `(mrb_int)atoll(s)` which stops
-   at the first `_`, returning 1 instead. Issue #619. */
-static mrb_int sp_str_to_i_cruby(const char *s) {
-  if (!s) return 0;
-  const char *p = s;
-  while (isspace((unsigned char)*p)) p++;
-  int neg = 0;
-  if (*p == '+') p++;
-  else if (*p == '-') { neg = 1; p++; }
-  mrb_int v = 0;
-  int any = 0;
-  while (*p) {
-    if (*p >= '0' && *p <= '9') {
-      /* Signed-overflow on `v * 10 + digit` is undefined behavior;
-         detect via __builtin_*_overflow. CRuby promotes to Bignum
-         on overflow but spinel's int model is int64-only — raise
-         RangeError instead of silently saturating, so a user-side
-         `rescue` can react. */
-      mrb_int t;
-      if (__builtin_mul_overflow(v, 10, &t) ||
-          __builtin_add_overflow(t, (mrb_int)(*p - '0'), &v)) {
-        sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
-      }
-      any = 1;
-      p++;
-    } else if (*p == '_' && any && p[1] >= '0' && p[1] <= '9') {
-      p++;
-    } else {
-      break;
-    }
-  }
-  if (!any) return 0;
-  return neg ? -v : v;
-}
+/* String -> number parsers now live in libspinel_rt.a (lib/sp_core.c). */
+#include "sp_core.h"
 
-/* `String#to_i(base)` with a non-decimal base. Accepts bases 2..36
-   like MRI; `_` is allowed between digits the same way as base 10.
-   Stops at the first invalid digit and returns what's parsed so
-   far. Issue #883. */
-static mrb_int sp_str_to_i_base(const char *s, mrb_int base) {
-  if (!s) return 0;
-  /* base 0 = auto-detect from prefix (0x → 16, 0b → 2, 0/0o → 8,
-     otherwise 10). Per CRuby, only base 0 enables prefix-based
-     dispatch — explicit bases just *accept* the matching prefix. */
-  if (base != 0 && (base < 2 || base > 36)) base = 10;
-  const char *p = s;
-  while (isspace((unsigned char)*p)) p++;
-  int neg = 0;
-  if (*p == '+') p++;
-  else if (*p == '-') { neg = 1; p++; }
-  if (base == 0) {
-    if (*p == '0') {
-      if (p[1] == 'x' || p[1] == 'X') { base = 16; p += 2; }
-      else if (p[1] == 'b' || p[1] == 'B') { base = 2; p += 2; }
-      else if (p[1] == 'o' || p[1] == 'O') { base = 8; p += 2; }
-      else if (p[1] == 'd' || p[1] == 'D') { base = 10; p += 2; }
-      else if (p[1] >= '0' && p[1] <= '7') { base = 8; p++; }
-      else { base = 10; }
-    } else {
-      base = 10;
-    }
-  } else if (*p == '0' && p[1] != 0) {
-    /* Explicit base accepts the matching prefix. */
-    if ((base == 16) && (p[1] == 'x' || p[1] == 'X')) p += 2;
-    else if ((base == 2) && (p[1] == 'b' || p[1] == 'B')) p += 2;
-    else if ((base == 8) && (p[1] == 'o' || p[1] == 'O')) p += 2;
-  }
-  mrb_int v = 0;
-  int any = 0;
-  while (*p) {
-    int d = -1;
-    if (*p >= '0' && *p <= '9') d = *p - '0';
-    else if (*p >= 'a' && *p <= 'z') d = *p - 'a' + 10;
-    else if (*p >= 'A' && *p <= 'Z') d = *p - 'A' + 10;
-    if (d < 0 || d >= (int)base) {
-      if (*p == '_' && any) {
-        /* Lookahead: only consume `_` between digits. */
-        int n = -1;
-        char c = p[1];
-        if (c >= '0' && c <= '9') n = c - '0';
-        else if (c >= 'a' && c <= 'z') n = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'Z') n = c - 'A' + 10;
-        if (n >= 0 && n < (int)base) { p++; continue; }
-      }
-      break;
-    }
-    mrb_int t;
-    if (__builtin_mul_overflow(v, base, &t) ||
-        __builtin_add_overflow(t, (mrb_int)d, &v)) {
-      sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
-    }
-    any = 1;
-    p++;
-  }
-  if (!any) return 0;
-  return neg ? -v : v;
-}
-
-/* CRuby's `Integer(s)` raises ArgumentError for unparseable input
-   (empty string, leading/trailing junk, all-whitespace). The bare
-   `(mrb_int)strtoll(s, NULL, 10)` spinel previously emitted silently
-   returned 0 instead, which made `Integer(s) rescue 0` always take
-   the main branch. This helper matches CRuby semantics: skips
-   leading/trailing whitespace, requires at least one valid digit,
-   rejects trailing junk. Accepts an optional leading `+` / `-`. */
-static mrb_int sp_str_to_i_strict(const char *s) {
-  if (!s) sp_raise_cls("ArgumentError", "invalid value for Integer(): nil");
-  const char *p = s;
-  while (isspace((unsigned char)*p)) p++;
-  if (*p == '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  char *endptr;
-  errno = 0;
-  long long v = strtoll(p, &endptr, 10);
-  if (endptr == p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  /* strtoll signals overflow via errno=ERANGE and clamps to
-     LLONG_MAX/MIN — raise rather than silently saturate so the
-     caller can distinguish "fits in int64" from "too big". */
-  if (errno == ERANGE) sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
-  while (isspace((unsigned char)*endptr)) endptr++;
-  if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  return (mrb_int)v;
-}
-
-/* `Integer(s, base)` with explicit base. Bases 2..36, MRI-compatible
-   prefix recognition (0x / 0b / 0o when the base matches). Raises
-   ArgumentError on invalid input or unsupported base. Issue #887. */
-static mrb_int sp_str_to_i_strict_base(const char *s, mrb_int base) {
-  if (!s) sp_raise_cls("ArgumentError", "invalid value for Integer(): nil");
-  if (base < 2 || base > 36) sp_raise_cls("ArgumentError", sp_sprintf("invalid radix %lld", (long long)base));
-  const char *p = s;
-  while (isspace((unsigned char)*p)) p++;
-  int neg = 0;
-  if (*p == '+') p++;
-  else if (*p == '-') { neg = 1; p++; }
-  if (*p == '0' && p[1] != 0) {
-    if ((base == 16) && (p[1] == 'x' || p[1] == 'X')) p += 2;
-    else if ((base == 2) && (p[1] == 'b' || p[1] == 'B')) p += 2;
-    else if ((base == 8) && (p[1] == 'o' || p[1] == 'O')) p += 2;
-  }
-  if (*p == '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  mrb_int v = 0;
-  int any = 0;
-  while (*p) {
-    int d = -1;
-    if (*p >= '0' && *p <= '9') d = *p - '0';
-    else if (*p >= 'a' && *p <= 'z') d = *p - 'a' + 10;
-    else if (*p >= 'A' && *p <= 'Z') d = *p - 'A' + 10;
-    if (d < 0 || d >= (int)base) {
-      if (*p == '_' && any) {
-        int n = -1;
-        char c = p[1];
-        if (c >= '0' && c <= '9') n = c - '0';
-        else if (c >= 'a' && c <= 'z') n = c - 'a' + 10;
-        else if (c >= 'A' && c <= 'Z') n = c - 'A' + 10;
-        if (n >= 0 && n < (int)base) { p++; continue; }
-      }
-      break;
-    }
-    {
-      mrb_int t;
-      if (__builtin_mul_overflow(v, base, &t) ||
-          __builtin_add_overflow(t, (mrb_int)d, &v)) {
-        sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
-      }
-    }
-    any = 1;
-    p++;
-  }
-  if (!any) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  while (isspace((unsigned char)*p)) p++;
-  if (*p != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  return neg ? -v : v;
-}
-
-/* Kernel#Float() raises ArgumentError on unparseable input. strtod
-   on its own would silently return 0.0 for "abc" or empty input;
-   match MRI semantics by validating at-least-one-digit + no-trailing-
-   junk. Whitespace flanking is fine. Issue #888. */
-static mrb_float sp_str_to_f_strict(const char *s) {
-  if (!s) sp_raise_cls("ArgumentError", "invalid value for Float(): nil");
-  const char *p = s;
-  while (isspace((unsigned char)*p)) p++;
-  if (*p == '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
-  char *endptr;
-  double v = strtod(p, &endptr);
-  if (endptr == p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
-  while (isspace((unsigned char)*endptr)) endptr++;
-  if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
-  return (mrb_float)v;
-}
 typedef struct{mrb_int first;mrb_int last;}sp_Range;
 static sp_Range sp_range_new(mrb_int f,mrb_int l){sp_Range r;r.first=f;r.last=l;return r;}
 /* Inclusive-form `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ
@@ -1556,7 +1367,7 @@ static const char*sp_str_sub_range_len(const char*s,mrb_int cl,mrb_int start,mrb
    endpoints. Mirrors sp_IntArray_slice_range; issue #496. */
 static const char*sp_str_sub_range_r(const char*s,mrb_int start,mrb_int end_,mrb_int excl){mrb_int cl=sp_str_length(s);if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 static const char*sp_str_sub_range_len_r(const char*s,mrb_int cl,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
-static const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;va_start(ap,fmt);int _sp_n=vsnprintf(_sp_tmp,sizeof(_sp_tmp),fmt,ap);va_end(ap);if(_sp_n<0)_sp_n=0;if(_sp_n>=(int)sizeof(_sp_tmp))_sp_n=(int)sizeof(_sp_tmp)-1;char*b=sp_str_alloc(_sp_n);memcpy(b,_sp_tmp,_sp_n);return b;}
+const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;va_start(ap,fmt);int _sp_n=vsnprintf(_sp_tmp,sizeof(_sp_tmp),fmt,ap);va_end(ap);if(_sp_n<0)_sp_n=0;if(_sp_n>=(int)sizeof(_sp_tmp))_sp_n=(int)sizeof(_sp_tmp)-1;char*b=sp_str_alloc(_sp_n);memcpy(b,_sp_tmp,_sp_n);return b;}
 /* Use a temp pointer for realloc so the original buffer is not leaked
    on allocation failure. Match the perror+exit pattern used elsewhere
    (see sp_IntArray_replace) instead of returning a partial result. */
@@ -3268,7 +3079,7 @@ static const char *sp_exc_msg[SP_EXC_STACK_MAX];
 static volatile int sp_exc_top = 0;
 static const char *sp_exc_cls[SP_EXC_STACK_MAX];
 static volatile const char *sp_last_exc_cls = sp_str_empty;
-static void sp_raise_cls(const char *cls, const char *msg) { if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
+void sp_raise_cls(const char *cls, const char *msg) { if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
 /* Issue #781: bridge between the regex compile-error path (which lives

@@ -284,9 +284,13 @@ build/sp_time.o: lib/sp_time.c lib/sp_time.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_time.c -o build/sp_time.o
 
+build/sp_core.o: lib/sp_core.c lib/sp_core.h
+	@mkdir -p build
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_core.c -o build/sp_core.o
+
 SP_RT_LIB = lib/libspinel_rt.a
 
-$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o
+$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o
 	ar rcs $@ $^
 
 regexp: $(SP_RT_LIB)
@@ -327,10 +331,10 @@ build/codegen1.c: build/codegen.ast build/codegen.ir $(CODEGEN_STAMP) $(NODE_TAB
 	ruby spinel_codegen.rb build/codegen.ast build/codegen.ir build/codegen1.c
 
 spinel_analyze$(EXE): build/analyze1.c $(SP_RT_LIB)
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/analyze1.c $(LDFLAGS) -lm -o spinel_analyze$(EXE)
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/analyze1.c $(SP_RT_LIB) $(LDFLAGS) -lm -o spinel_analyze$(EXE)
 
 spinel_codegen$(EXE): build/codegen1.c $(SP_RT_LIB)
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/codegen1.c $(LDFLAGS) -lm -o spinel_codegen$(EXE)
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/codegen1.c $(SP_RT_LIB) $(LDFLAGS) -lm -o spinel_codegen$(EXE)
 
 # ---- Self-hosting verification ----
 # After CRuby builds spinel_{analyze,codegen}, run them on each
@@ -353,7 +357,7 @@ build/analyze2.c: build/analyze.ast build/analyze2.ir spinel_codegen$(EXE)
 	./spinel_codegen$(EXE) build/analyze.ast build/analyze2.ir build/analyze2.c
 
 build/bin2_analyze$(EXE): build/analyze2.c $(SP_RT_LIB)
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/analyze2.c $(LDFLAGS) -lm -o build/bin2_analyze$(EXE)
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/analyze2.c $(SP_RT_LIB) $(LDFLAGS) -lm -o build/bin2_analyze$(EXE)
 
 build/codegen2.ir: build/codegen.ast spinel_analyze$(EXE)
 	./spinel_analyze$(EXE) build/codegen.ast build/codegen2.ir
@@ -362,7 +366,7 @@ build/codegen2.c: build/codegen.ast build/codegen2.ir spinel_codegen$(EXE)
 	./spinel_codegen$(EXE) build/codegen.ast build/codegen2.ir build/codegen2.c
 
 build/bin2_codegen$(EXE): build/codegen2.c $(SP_RT_LIB)
-	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/codegen2.c $(LDFLAGS) -lm -o build/bin2_codegen$(EXE)
+	$(CC) $(BOOTSTRAP_CFLAGS) -Ilib build/codegen2.c $(SP_RT_LIB) $(LDFLAGS) -lm -o build/bin2_codegen$(EXE)
 
 build/analyze3.ir: build/analyze.ast build/bin2_analyze$(EXE)
 	./build/bin2_analyze$(EXE) build/analyze.ast build/analyze3.ir
@@ -588,6 +592,8 @@ install: all
 	install -m 644 spinel_codegen.rb     $(SPNLDIR)/
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
+	install -m 644 lib/sp_core.h         $(SPNLDIR)/lib/
+	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/
 	install -m 644 lib/*.rb              $(SPNLDIR)/lib/
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
