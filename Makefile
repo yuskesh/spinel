@@ -288,9 +288,13 @@ build/sp_core.o: lib/sp_core.c lib/sp_core.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_core.c -o build/sp_core.o
 
+build/sp_net.o: lib/sp_net.c lib/sp_net.h
+	@mkdir -p build
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_net.c -o build/sp_net.o
+
 SP_RT_LIB = lib/libspinel_rt.a
 
-$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o
+$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o build/sp_net.o
 	ar rcs $@ $^
 
 regexp: $(SP_RT_LIB)
@@ -396,6 +400,12 @@ TESTS := $(wildcard test/*.rb)
 # auto-promotes to bigint and the expected output diverges by design.
 ifeq ($(SPINEL_INT_OVERFLOW),promote)
 TESTS := $(filter-out test/int_overflow_raises.rb,$(TESTS))
+endif
+# sp_net is POSIX-only; on Windows the TU compiles to stubs, so the
+# sp_net smoke's output diverges. Skip it there (the POSIX surface is
+# exercised by consumer suites on POSIX targets).
+ifeq ($(OS),Windows_NT)
+TESTS := $(filter-out test/sp_net_basic.rb,$(TESTS))
 endif
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
@@ -594,6 +604,7 @@ install: all
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_core.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/
+	install -m 644 lib/sp_net.h          $(SPNLDIR)/lib/
 	install -m 644 lib/*.rb              $(SPNLDIR)/lib/
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
