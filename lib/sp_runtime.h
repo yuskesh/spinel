@@ -507,7 +507,7 @@ static mrb_int sp_str_length(const char*s){
   sp_str_lcache[h].char_len = n;
   return n;
 }
-static mrb_int sp_str_ord(const char*s){if(!*s)return 0;uint32_t cp;sp_utf8_decode(s,&cp);return(mrb_int)cp;}
+static mrb_int sp_str_ord(const char*s){if(!s)sp_raise_cls("ArgumentError","empty string");unsigned char m=((const unsigned char*)s)[-1];size_t blen;if(m==0xfe||m==0xfc){blen=(((const sp_str_hdr*)(s-1))-1)->len;if(blen==0)sp_raise_cls("ArgumentError","empty string");}else{blen=strlen(s);if(blen==0)sp_raise_cls("ArgumentError","empty string");}uint32_t cp;sp_utf8_decode(s,&cp);return(mrb_int)cp;}
 /* NULL-safe string equality. ENV[] returns NULL for unset vars
    (the dispatch is `sp_str_dup_external(getenv(...))`, which propagates
    NULL), so emitted strcmp(...) on the result of `ENV["X"] == "1"` would
@@ -1324,7 +1324,7 @@ static mrb_int sp_str_rindex(const char*s,const char*sub){if(!sub)sp_raise_cls("
 static char sp_char_cache[256][3];
 static int sp_char_cache_init = 0;
 /* start/len are codepoint indices/counts. */
-static const char*sp_str_sub_range(const char*s,mrb_int start,mrb_int len){mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;return r;}
+static const char*sp_str_sub_range(const char*s,mrb_int start,mrb_int len){mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;return r;}
 /* Single-character form of `s[i]`. Returns NULL on out-of-bounds to
    match CRuby's `"hello"[20] -> nil`. The two-arg `s[i, len]` /
    range forms keep returning "" on OOB via sp_str_sub_range; only
@@ -1333,7 +1333,7 @@ static const char*sp_str_char_at_or_nil(const char*s,mrb_int i){mrb_int cl=sp_st
 /* Char-indexed variant; the second arg used to be a hoisted byte length, now a
    hoisted codepoint count.  We don't need it for correctness, but keeping the
    ABI lets callers pass it without a wrapper. */
-static const char*sp_str_sub_range_len(const char*s,mrb_int cl,mrb_int start,mrb_int len){if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;return r;}
+static const char*sp_str_sub_range_len(const char*s,mrb_int cl,mrb_int start,mrb_int len){if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;return r;}
 /* String s[start..end] / s[start...end] with possibly negative
    endpoints. Mirrors sp_IntArray_slice_range; issue #496. */
 static const char*sp_str_sub_range_r(const char*s,mrb_int start,mrb_int end_,mrb_int excl){mrb_int cl=sp_str_length(s);if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
