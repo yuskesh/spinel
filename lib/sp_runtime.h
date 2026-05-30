@@ -187,35 +187,13 @@ static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
     _sp_r; })
 #endif
 
-static mrb_int sp_gcd(mrb_int a,mrb_int b){if(a<0)a=-a;if(b<0)b=-b;while(b){mrb_int t=b;b=a%b;a=t;}return a;}
-static mrb_int sp_lcm(mrb_int a,mrb_int b){if(a==0||b==0)return 0;mrb_int g=sp_gcd(a,b);if(a<0)a=-a;if(b<0)b=-b;return (a/g)*b;}
-static mrb_int sp_powmod(mrb_int base,mrb_int exp,mrb_int mod){if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");mrb_int r=1;mrb_int m=mod<0?-mod:mod;if(m==1){r=0;}else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=r*base%m;exp=exp/2;base=base*base%m;}}if(mod<0&&r>0)r-=m;return r;}
-static mrb_int sp_ceildiv(mrb_int a,mrb_int b){if(b==0)sp_raise_cls("ZeroDivisionError","divided by 0");if(b==-1)return -a;mrb_int q=a/b;if(a%b!=0&&((a^b)>=0))q++;return q;}
-static mrb_int sp_int_clamp(mrb_int v,mrb_int lo,mrb_int hi){return v<lo?lo:v>hi?hi:v;}
-/* Integer square root via Newton's method — exact for the full mrb_int
-   range (no double-precision rounding loss for n > 2^53). CRuby raises
-   on negative input; we mirror Spinel's other arithmetic helpers and
-   return 0 to avoid an exception path. */
-static mrb_int sp_int_sqrt(mrb_int n){if(n<0)return 0;if(n<2)return n;mrb_int x=n,y=(x+1)/2;while(y<x){x=y;y=(x+n/x)/2;}return x;}
+/* sp_gcd / sp_lcm / sp_powmod / sp_ceildiv / sp_int_clamp / sp_int_sqrt
+   now live in libspinel_rt.a (lib/sp_core.c); declared via sp_core.h. */
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
 static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;return s;}
-/* Integer#round(ndigits): round to nearest 10^(-ndigits) (half away
-   from zero). Integer#ceil/floor/truncate at 10^(-ndigits). Positive
-   ndigits are a no-op on integers. Pure integer arithmetic: converting
-   to double would lose precision above 2^53, and casting pow(10,-nd)
-   to mrb_int is undefined once 10^(-nd) exceeds MRB_INT_MAX (-nd>=19).
-   10^p fits mrb_int only for p<=18, so p>=19 collapses to 0 (the exact
-   result is unrepresentable in 64-bit); the round-up multiply is
-   overflow-guarded and falls back to the truncated value. */
-static mrb_int sp_ipow10(mrb_int p){mrb_int f=1;mrb_int i=0;while(i<p){f*=10;i++;}return f;}
-static mrb_int sp_int_round(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f,half=f/2;if(v>=0){if(r>=half&&q<INT64_MAX/f)return(q+1)*f;return q*f;}if(-r>=half&&q>INT64_MIN/f)return(q-1)*f;return q*f;}
-static mrb_int sp_int_ceil(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f;if(r!=0&&v>0&&q<INT64_MAX/f)return(q+1)*f;return q*f;}
-static mrb_int sp_int_floor(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f;if(r!=0&&v<0&&q>INT64_MIN/f)return(q-1)*f;return q*f;}
-static mrb_int sp_int_truncate(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);return(v/f)*f;}
-/* String#oct: parse with prefix auto-detection (0x=hex, 0b=bin,
-   0o=oct, 0=oct, otherwise decimal), then fall back to base-8
-   if no prefix. Matches CRuby behavior. */
-static mrb_int sp_str_oct(const char*s){if(!s)return 0;const char*p=s;while(*p==' '||*p=='\t')p++;if(p[0]=='0'){if(p[1]=='x'||p[1]=='X')return(mrb_int)strtoll(p,NULL,16);if(p[1]=='b'||p[1]=='B')return(mrb_int)strtoll(p+2,NULL,2);if(p[1]=='o'||p[1]=='O')return(mrb_int)strtoll(p+2,NULL,8);return(mrb_int)strtoll(p,NULL,8);}return(mrb_int)strtoll(p,NULL,8);}
+/* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
+   sp_int_truncate / sp_str_oct now live in libspinel_rt.a
+   (lib/sp_core.c); declared via sp_core.h. */
 
 /* Forward decls for helpers used across this header (and by the
    string->number parsers that now live in libspinel_rt.a). */

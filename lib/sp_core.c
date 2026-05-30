@@ -206,3 +206,28 @@ mrb_float sp_str_to_f_strict(const char *s) {
   if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
   return (mrb_float)v;
 }
+
+/* Cold integer-math and String#oct helpers, moved out of sp_runtime.h
+ * so they're compiled once into libspinel_rt.a rather than re-parsed
+ * in every generated translation unit. Leaf functions: arithmetic +
+ * libc + sp_raise_cls only. */
+mrb_int sp_gcd(mrb_int a,mrb_int b){if(a<0)a=-a;if(b<0)b=-b;while(b){mrb_int t=b;b=a%b;a=t;}return a;}
+mrb_int sp_lcm(mrb_int a,mrb_int b){if(a==0||b==0)return 0;mrb_int g=sp_gcd(a,b);if(a<0)a=-a;if(b<0)b=-b;return (a/g)*b;}
+mrb_int sp_powmod(mrb_int base,mrb_int exp,mrb_int mod){if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");mrb_int r=1;mrb_int m=mod<0?-mod:mod;if(m==1){r=0;}else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=r*base%m;exp=exp/2;base=base*base%m;}}if(mod<0&&r>0)r-=m;return r;}
+mrb_int sp_ceildiv(mrb_int a,mrb_int b){if(b==0)sp_raise_cls("ZeroDivisionError","divided by 0");if(b==-1)return -a;mrb_int q=a/b;if(a%b!=0&&((a^b)>=0))q++;return q;}
+mrb_int sp_int_clamp(mrb_int v,mrb_int lo,mrb_int hi){return v<lo?lo:v>hi?hi:v;}
+/* Integer square root via Newton's method -- exact for the full
+   mrb_int range. Negative input returns 0 (no exception path). */
+mrb_int sp_int_sqrt(mrb_int n){if(n<0)return 0;if(n<2)return n;mrb_int x=n,y=(x+1)/2;while(y<x){x=y;y=(x+n/x)/2;}return x;}
+/* Integer#round/ceil/floor/truncate at 10^(-ndigits). Pure integer
+   arithmetic (no double precision loss above 2^53). 10^p fits mrb_int
+   only for p<=18; p>=19 collapses to 0. Round-up multiply is overflow-
+   guarded and falls back to the truncated value. */
+mrb_int sp_ipow10(mrb_int p){mrb_int f=1;mrb_int i=0;while(i<p){f*=10;i++;}return f;}
+mrb_int sp_int_round(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f,half=f/2;if(v>=0){if(r>=half&&q<INT64_MAX/f)return(q+1)*f;return q*f;}if(-r>=half&&q>INT64_MIN/f)return(q-1)*f;return q*f;}
+mrb_int sp_int_ceil(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f;if(r!=0&&v>0&&q<INT64_MAX/f)return(q+1)*f;return q*f;}
+mrb_int sp_int_floor(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);mrb_int q=v/f,r=v%f;if(r!=0&&v<0&&q>INT64_MIN/f)return(q-1)*f;return q*f;}
+mrb_int sp_int_truncate(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=19)return 0;mrb_int f=sp_ipow10(p);return(v/f)*f;}
+/* String#oct: prefix auto-detection (0x=hex, 0b=bin, 0o/0=oct, else
+   base-8). Matches CRuby. */
+mrb_int sp_str_oct(const char*s){if(!s)return 0;const char*p=s;while(*p==' '||*p=='\t')p++;if(p[0]=='0'){if(p[1]=='x'||p[1]=='X')return(mrb_int)strtoll(p,NULL,16);if(p[1]=='b'||p[1]=='B')return(mrb_int)strtoll(p+2,NULL,2);if(p[1]=='o'||p[1]=='O')return(mrb_int)strtoll(p+2,NULL,8);return(mrb_int)strtoll(p,NULL,8);}return(mrb_int)strtoll(p,NULL,8);}
