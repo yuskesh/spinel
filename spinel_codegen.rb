@@ -21758,9 +21758,17 @@ class Compiler
       return "sp_IntArray_from_range(" + rc + ".first, " + rc + ".last)"
     end
     if mname == "length"
+      range_nid_l = resolve_literal_range_recv(nid)
+      if range_nid_l >= 0 && range_excl_end(range_nid_l) == 1
+        return "(" + rc + ".last - " + rc + ".first)"
+      end
       return "(" + rc + ".last - " + rc + ".first + 1)"
     end
     if mname == "size"
+      range_nid_s = resolve_literal_range_recv(nid)
+      if range_nid_s >= 0 && range_excl_end(range_nid_s) == 1
+        return "(" + rc + ".last - " + rc + ".first)"
+      end
       return "(" + rc + ".last - " + rc + ".first + 1)"
     end
     if mname == "min"
