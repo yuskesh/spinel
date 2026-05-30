@@ -21570,6 +21570,12 @@ class Compiler
       return "sp_str_scrub(" + rc + ", " + rep_sc + ")"
     end
     if mname == "squeeze"
+      if @nd_arguments[nid] >= 0
+        ap_sq = get_args(@nd_arguments[nid])
+        if ap_sq.length > 0
+          return "sp_str_squeeze_chars(" + rc + ", " + compile_expr(ap_sq[0]) + ")"
+        end
+      end
       return "sp_str_squeeze(" + rc + ")"
     end
     if mname == "size"
