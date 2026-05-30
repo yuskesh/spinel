@@ -21140,6 +21140,11 @@ class Compiler
           if @nd_type[a[0]] == "NilNode"
             return "sp_str_split_ws(" + rc + ")"
           end
+ # CRuby special case: split(" ") is whitespace-split mode (strips
+ # leading whitespace, collapses consecutive), not literal " " split.
+          if @nd_type[a[0]] == "StringNode" && @nd_content[a[0]] == " "
+            return "sp_str_split_ws(" + rc + ")"
+          end
  # Two-arg split(sep, limit) -- positive limit caps the result at
  # that many elements with the last one holding the unsplit
  # remainder. Issue #619 puzzle 2.
