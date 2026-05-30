@@ -1302,6 +1302,7 @@ static sp_StrArray*sp_str_split_ws(const char*s){sp_StrArray*a=sp_StrArray_new()
    `end` is computed once at entry so a string with no newlines avoids
    a redundant strlen call on the trailing piece. */
 static sp_StrArray*sp_str_lines(const char*s){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;const char*end=s+strlen(s);const char*p=s;while(p<end){const char*nl=strchr(p,'\n');size_t n=nl?(size_t)(nl-p+1):(size_t)(end-p);char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);if(!nl)break;p=nl+1;}return a;}
+static sp_StrArray*sp_str_lines_chomp(const char*s){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;const char*end=s+strlen(s);const char*p=s;while(p<end){const char*nl=strchr(p,'\n');size_t n=nl?(size_t)(nl-p):(size_t)(end-p);if(nl&&nl>s&&nl[-1]=='\r')n--;char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);if(!nl)break;p=nl+1;}return a;}
 /* Issue #827: gsub previously returned a raw malloc buffer. The GC's
    sp_mark_string writes byte[-1] = 0xfc, which on a raw malloc buffer
    clobbers malloc metadata. Build into a scratch buffer, then copy

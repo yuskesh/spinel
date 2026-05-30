@@ -21144,6 +21144,23 @@ class Compiler
     end
     if mname == "lines"
       @needs_str_array = 1
+      if @nd_arguments[nid] >= 0
+        aargs = get_args(@nd_arguments[nid])
+        if aargs.length >= 1 && @nd_type[aargs[0]] == "KeywordHashNode"
+          elems = parse_id_list(@nd_elements[aargs[0]])
+          ek = 0
+          while ek < elems.length
+            if @nd_type[elems[ek]] == "AssocNode"
+              key_id = @nd_key[elems[ek]] >= 0 ? @nd_key[elems[ek]] : -1
+              val_id = @nd_expression[elems[ek]] >= 0 ? @nd_expression[elems[ek]] : -1
+              if key_id >= 0 && @nd_type[key_id] == "SymbolNode" && @nd_content[key_id] == "chomp" && val_id >= 0 && @nd_type[val_id] == "TrueNode"
+                return "sp_str_lines_chomp(" + rc + ")"
+              end
+            end
+            ek = ek + 1
+          end
+        end
+      end
       return "sp_str_lines(" + rc + ")"
     end
     if mname == "scan"
