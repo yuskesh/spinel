@@ -42178,6 +42178,16 @@ class Compiler
       idx_tmp = new_temp
       val_tmp = new_temp
       emit("  sp_RbVal " + poly_tmp + " = " + rc + ";")
+ # Root the receiver temp across the loop body. `rc` is frequently a
+ # fresh method-call result (e.g. `@article.comments`) held only in
+ # this temp; the loop body allocates (string append, nested render,
+ # box helpers), so an unrooted PtrArray/heap collection here can be
+ # collected mid-iteration, leaving sp_PtrArray_get to read a freed
+ # slot (observed as a SIGSEGV in sp_obj_cls_id_of on a garbage
+ # pointer under load). The cleanup-attributed root pops at end of
+ # poly_tmp's C scope, which is exactly the loop's extent.
+      @needs_gc = 1
+      emit_gc_root_for_expr(poly_tmp, "poly")
       emit("  if (" + poly_tmp + ".tag == SP_TAG_OBJ) {")
       emit("    mrb_int " + idx_tmp + "_len = 0;")
       emit("    if (" + poly_tmp + ".cls_id == SP_BUILTIN_RANGE) " + idx_tmp + "_len = ((sp_Range *)" + poly_tmp + ".v.p)->last - ((sp_Range *)" + poly_tmp + ".v.p)->first + 1;")
