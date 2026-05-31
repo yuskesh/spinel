@@ -23884,6 +23884,33 @@ class Compiler
         emit("  }")
         return tmp_f
       end
+ # Same shape for str / float element arrays: concatenate every inner
+ # typed array into a single flat one. sym_array-of-arrays stays
+ # unsupported (no sp_SymArray runtime helpers yet).
+      if mname == "flatten" && elem_type == "str_array"
+        @needs_str_array = 1
+        @needs_gc = 1
+        tmp_f = new_temp
+        idx_f = new_temp
+        emit("  sp_StrArray *" + tmp_f + " = sp_StrArray_new();")
+        emit("  for (mrb_int " + idx_f + " = 0; " + idx_f + " < sp_PtrArray_length(" + rc + "); " + idx_f + "++) {")
+        emit("    sp_StrArray *_sa = (sp_StrArray *)sp_PtrArray_get(" + rc + ", " + idx_f + ");")
+        emit("    if (_sa) { for (mrb_int _j = 0; _j < _sa->len; _j++) sp_StrArray_push(" + tmp_f + ", _sa->data[_j]); }")
+        emit("  }")
+        return tmp_f
+      end
+      if mname == "flatten" && elem_type == "float_array"
+        @needs_float_array = 1
+        @needs_gc = 1
+        tmp_f = new_temp
+        idx_f = new_temp
+        emit("  sp_FloatArray *" + tmp_f + " = sp_FloatArray_new();")
+        emit("  for (mrb_int " + idx_f + " = 0; " + idx_f + " < sp_PtrArray_length(" + rc + "); " + idx_f + "++) {")
+        emit("    sp_FloatArray *_fa = (sp_FloatArray *)sp_PtrArray_get(" + rc + ", " + idx_f + ");")
+        emit("    if (_fa) { for (mrb_int _j = 0; _j < _fa->len; _j++) sp_FloatArray_push(" + tmp_f + ", _fa->data[_j]); }")
+        emit("  }")
+        return tmp_f
+      end
       if (mname == "max" || mname == "min") && elem_type == "int_array" && @nd_block[nid] < 0
         @needs_int_array = 1
         tmp_w = new_temp

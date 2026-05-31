@@ -5773,10 +5773,17 @@ class Compiler
     if mname == "flatten"
       if recv >= 0
         rt_fl = infer_type(recv)
- # int_array_ptr_array (typed-array-of-int_array, common shape
- # from `[[1,2],[3,4]]`) flattens to int_array. Issue #739.
+ # A typed-array-of-<T>_array (e.g. `[[1,2],[3,4]]` ->
+ # int_array_ptr_array) flattens to a flat <T>_array. Issue #739
+ # added the int shape; str / float mirror it.
         if rt_fl == "int_array_ptr_array"
           return "int_array"
+        end
+        if rt_fl == "str_array_ptr_array"
+          return "str_array"
+        end
+        if rt_fl == "float_array_ptr_array"
+          return "float_array"
         end
         return rt_fl
       end
