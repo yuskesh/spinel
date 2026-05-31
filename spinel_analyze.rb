@@ -25448,6 +25448,277 @@ class Compiler
     end
   end
 
+ # ---- RBS export (inverse of spinel_rbs_extract's RBS->Spinel mapping) ----
+ # Emit the inferred whole-program signatures as RBS, reusing the same
+ # method/class signature tables emit_poly_report walks. Gated by
+ # SPINEL_EMIT_RBS in main. `untyped` marks a slot that degraded to the
+ # boxed poly slow path; such methods get an inline `# spinel:` comment.
+
+ # Replace every "_" with "::" (no gsub in the self-hosted subset).
+  def rbs_ns(s)
+    out = ""
+    i = 0
+    while i < s.length
+      if s[i] == "_"
+        out = out + "::"
+      else
+        out = out + s[i]
+      end
+      i = i + 1
+    end
+    out
+  end
+
+ # Map one Spinel type tag to its RBS type name.
+  def type_to_rbs(t)
+    if t == nil
+      return "untyped"
+    end
+    if t == ""
+      return "untyped"
+    end
+ # Nullable suffix -> RBS `T?`.
+    if t.length > 1 && t.end_with?("?")
+      return type_to_rbs(t[0, t.length - 1]) + "?"
+    end
+ # obj_Foo_ptr_array -> Array[Foo]
+    if t.start_with?("obj_") && t.end_with?("_ptr_array")
+      return "Array[" + rbs_ns(t[4, t.length - 14]) + "]"
+    end
+ # obj_Foo -> Foo (qualified; "_" was "::")
+    if t.start_with?("obj_")
+      return rbs_ns(t[4, t.length - 4])
+    end
+ # tuple:a,b -> [A, B]
+    if t.start_with?("tuple:")
+      parts = t[6, t.length - 6].split(",", -1)
+      acc = ""
+      i = 0
+      while i < parts.length
+        if i > 0
+          acc = acc + ", "
+        end
+        acc = acc + type_to_rbs(parts[i])
+        i = i + 1
+      end
+      return "[" + acc + "]"
+    end
+    if t == "int"
+      return "Integer"
+    end
+    if t == "bigint"
+      return "Integer"
+    end
+    if t == "float"
+      return "Float"
+    end
+    if t == "string"
+      return "String"
+    end
+    if t == "mutable_str"
+      return "String"
+    end
+    if t == "symbol"
+      return "Symbol"
+    end
+    if t == "bool"
+      return "bool"
+    end
+    if t == "nil"
+      return "nil"
+    end
+    if t == "void"
+      return "void"
+    end
+    if t == "proc"
+      return "Proc"
+    end
+    if t == "lambda"
+      return "Proc"
+    end
+    if t == "curried"
+      return "Proc"
+    end
+    if t == "int_array"
+      return "Array[Integer]"
+    end
+    if t == "float_array"
+      return "Array[Float]"
+    end
+    if t == "str_array"
+      return "Array[String]"
+    end
+    if t == "sym_array"
+      return "Array[Symbol]"
+    end
+    if t == "poly_array"
+      return "Array[untyped]"
+    end
+    if t == "str_int_hash"
+      return "Hash[String, Integer]"
+    end
+    if t == "str_str_hash"
+      return "Hash[String, String]"
+    end
+    if t == "str_poly_hash"
+      return "Hash[String, untyped]"
+    end
+    if t == "sym_int_hash"
+      return "Hash[Symbol, Integer]"
+    end
+    if t == "sym_str_hash"
+      return "Hash[Symbol, String]"
+    end
+    if t == "sym_poly_hash"
+      return "Hash[Symbol, untyped]"
+    end
+    if t == "int_int_hash"
+      return "Hash[Integer, Integer]"
+    end
+    if t == "int_str_hash"
+      return "Hash[Integer, String]"
+    end
+    if t == "poly_poly_hash"
+      return "Hash[untyped, untyped]"
+    end
+ # poly and anything unrecognized -> untyped.
+    "untyped"
+  end
+
+ # Build one RBS `def name: (params) -> ret` line at the given indent,
+ # appending a degrade comment when any slot widened to poly/untyped.
+  def rbs_method_line(defkw, ptypes, ret, indent)
+    degraded = 0
+    sig = indent + defkw + ": ("
+    i = 0
+    j = 0
+    while i < ptypes.length
+      if ptypes[i] != ""
+        if j > 0
+          sig = sig + ", "
+        end
+        sig = sig + type_to_rbs(ptypes[i])
+        if base_type(ptypes[i]) == "poly"
+          degraded = 1
+        end
+        j = j + 1
+      end
+      i = i + 1
+    end
+    rret = "void"
+    if ret != nil && ret != ""
+      rret = type_to_rbs(ret)
+      if base_type(ret) == "poly"
+        degraded = 1
+      end
+    end
+    sig = sig + ") -> " + rret
+    if degraded == 1
+      sig = sig + " # spinel: widened to untyped (slow path)"
+    end
+    sig + "\n"
+  end
+
+  def emit_rbs_class(ci, cname)
+    out = "class " + cname
+    parent = @cls_parents[ci]
+    if parent != nil && parent != "" && parent != "Object"
+      out = out + " < " + parent
+    end
+    out = out + "\n"
+ # Instance variables.
+    inames = @cls_ivar_names[ci].split(";", -1)
+    itypes = @cls_ivar_types[ci].split(";", -1)
+    k = 0
+    while k < inames.length
+      if inames[k] != ""
+        it = "untyped"
+        if k < itypes.length
+          it = type_to_rbs(itypes[k])
+        end
+        out = out + "  " + inames[k] + ": " + it + "\n"
+      end
+      k = k + 1
+    end
+ # Instance methods (names ;-sep, ptypes |-sep, returns ;-sep — index-aligned).
+    mnames = @cls_meth_names[ci].split(";", -1)
+    mptall = @cls_meth_ptypes[ci].split("|", -1)
+    mrets = @cls_meth_returns[ci].split(";", -1)
+    j = 0
+    while j < mnames.length
+      if mnames[j] != ""
+        pts = "".split(",", -1)
+        if j < mptall.length
+          pts = mptall[j].split(",", -1)
+        end
+        rr = ""
+        if j < mrets.length
+          rr = mrets[j]
+        end
+        out = out + rbs_method_line("def " + mnames[j], pts, rr, "  ")
+      end
+      j = j + 1
+    end
+ # Singleton (def self.x) methods.
+    cmnames = @cls_cmeth_names[ci].split(";", -1)
+    cmptall = @cls_cmeth_ptypes[ci].split("|", -1)
+    cmrets = @cls_cmeth_returns[ci].split(";", -1)
+    j2 = 0
+    while j2 < cmnames.length
+      if cmnames[j2] != ""
+        pts2 = "".split(",", -1)
+        if j2 < cmptall.length
+          pts2 = cmptall[j2].split(",", -1)
+        end
+        rr2 = ""
+        if j2 < cmrets.length
+          rr2 = cmrets[j2]
+        end
+        out = out + rbs_method_line("def self." + cmnames[j2], pts2, rr2, "  ")
+      end
+      j2 = j2 + 1
+    end
+    out + "end\n\n"
+  end
+
+  def emit_rbs
+    out = "# Generated by Spinel from whole-program type inference.\n"
+    out = out + "# `untyped` marks a slot that degraded to the boxed poly slow path.\n\n"
+ # Top-level methods live on Object in RBS (Ruby top-level defs are private
+ # Object instance methods); wrap them so the file validates.
+    has_top = 0
+    tmi = 0
+    while tmi < @meth_names.length
+      if @meth_names[tmi] != ""
+        has_top = 1
+      end
+      tmi = tmi + 1
+    end
+    if has_top == 1
+      out = out + "class Object\n"
+      mi = 0
+      while mi < @meth_names.length
+        nm = @meth_names[mi]
+        if nm != ""
+          pts = @meth_param_types[mi].split(",", -1)
+          out = out + rbs_method_line("def " + nm, pts, @meth_return_types[mi], "  ")
+        end
+        mi = mi + 1
+      end
+      out = out + "end\n\n"
+    end
+ # Classes (skip Spinel-injected builtins from register_builtin_classes —
+ # currently just `Method` — so the .rbs reflects only the user's program).
+    ci = 0
+    while ci < @cls_names.length
+      if @cls_names[ci] != "" && @cls_names[ci] != "Method"
+        out = out + emit_rbs_class(ci, @cls_names[ci])
+      end
+      ci = ci + 1
+    end
+    out
+  end
+
  # B1 discovery (STALIN.md §11): count slot types that landed on
  # poly / nullable-poly / *_poly_hash / poly_array. Output to
  # stderr after all analyze passes finish, gated by envvar to
@@ -33684,4 +33955,10 @@ if seed_file != nil
   compiler.load_rbs_seeds(seed_file)
 end
 compiler.analyze_phase
+ # RBS export: when SPINEL_EMIT_RBS names a path, dump the inferred
+ # whole-program signatures as RBS there (a developer/tooling action; the
+ # IR is still written so the same run can also feed codegen).
+if ENV["SPINEL_EMIT_RBS"] != nil && ENV["SPINEL_EMIT_RBS"] != ""
+  File.write(ENV["SPINEL_EMIT_RBS"], compiler.emit_rbs)
+end
 File.write(ir_file, compiler.dump_analysis_buf)

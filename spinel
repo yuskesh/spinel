@@ -43,6 +43,7 @@ esac
 SOURCE=""
 OUTPUT=""
 C_ONLY=0
+EMIT_RBS=0
 STDOUT_MODE=0
 RUN_MODE=0
 OPT_LEVEL="2"
@@ -107,6 +108,8 @@ $1"
                 EVAL_USED=1
                 shift ;;
     -c)         C_ONLY=1; shift ;;
+    --emit-rbs) # Analyze-only: dump inferred signatures as RBS, no binary.
+                EMIT_RBS=1; shift ;;
     -S)         STDOUT_MODE=1; shift ;;
     -E)         RUN_MODE=1; shift ;;
     *.rb)
@@ -145,6 +148,23 @@ if [ "$RUN_MODE" -eq 1 ]; then
   fi
 fi
 
+# --emit-rbs is analyze-only (stops before codegen), so the binary/C-output
+# modes would be silently ignored alongside it — reject the conflict up front.
+if [ "$EMIT_RBS" -eq 1 ]; then
+  if [ "$RUN_MODE" -eq 1 ]; then
+    echo "spinel: --emit-rbs cannot be combined with -E (run)" >&2
+    exit 2
+  fi
+  if [ "$C_ONLY" -eq 1 ]; then
+    echo "spinel: --emit-rbs cannot be combined with -c (C source only)" >&2
+    exit 2
+  fi
+  if [ "$STDOUT_MODE" -eq 1 ]; then
+    echo "spinel: --emit-rbs cannot be combined with -S (stdout)" >&2
+    exit 2
+  fi
+fi
+
 # `-e` mode: write the accumulated inline script to a temp file and
 # treat it as the source. Default output name is `a` since the
 # inline form has no .rb basename to derive from. If both -e and a
@@ -173,6 +193,7 @@ if [ -z "$SOURCE" ]; then
   echo "Options:" >&2
   echo "  -o FILE     Output file" >&2
   echo "  -c          C source only (don't compile)" >&2
+  echo "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary" >&2
   echo "  -S          Print C to stdout" >&2
   echo "  -E          Run the compiled binary; leftover args become its ARGV" >&2
   echo "  -O LEVEL    Optimization level (default: 2)" >&2
@@ -239,6 +260,12 @@ fi
 # int locals as bigint when mode == promote. Raise / wrap modes
 # only care about the cc-time preprocessor switch added below.
 export SPINEL_INT_OVERFLOW="$INT_OVERFLOW"
+# RBS export mode: tell the analyzer to also dump inferred signatures.
+# (Conflicting-mode checks are done up front with the other mode-conflict guards.)
+if [ "$EMIT_RBS" -eq 1 ]; then
+  RBS_OUT="${OUTPUT:-$BASENAME.rbs}"
+  export SPINEL_EMIT_RBS="$RBS_OUT"
+fi
 if [ -x "$ANALYZE_BIN" ]; then
   "$ANALYZE_BIN" "$AST_TMP" "$IR_TMP" $SEED_TMP
 else
@@ -247,6 +274,12 @@ fi
 if [ $? -ne 0 ]; then
   echo "spinel: analyze failed" >&2
   exit 1
+fi
+
+# --emit-rbs is analyze-only: the signatures are written, stop before codegen.
+if [ "$EMIT_RBS" -eq 1 ]; then
+  echo "Wrote $RBS_OUT" >&2
+  exit 0
 fi
 
 # Step 3: Codegen
