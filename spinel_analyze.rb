@@ -9519,16 +9519,33 @@ class Compiler
  # would assign a new body_id to the old slot but the alias slot
  # keeps the original.
   def collect_class_method_alias(ci, new_name, old_name)
+ # The source may be defined directly on this class or inherited from
+ # an ancestor (`class C < P; alias bar foo` where P defines foo). Walk
+ # the parent chain to the owning class and copy that class's slot.
+    src_ci = ci
     src = cls_find_method_direct(ci, old_name)
+    if src < 0
+      owner = find_method_owner(ci, old_name)
+      if owner != ""
+        oci = find_class_idx(owner)
+        if oci >= 0
+          osrc = cls_find_method_direct(oci, old_name)
+          if osrc >= 0
+            src = osrc
+            src_ci = oci
+          end
+        end
+      end
+    end
     if src < 0
       $stderr.puts "Spinel: alias `" + new_name + "` -> `" + old_name + "`: source method not found in class " + @cls_names[ci]
       exit(1)
     end
-    pnames_all = @cls_meth_params[ci].split("|", -1)
-    ptypes_all = @cls_meth_ptypes[ci].split("|", -1)
-    rets_all   = @cls_meth_returns[ci].split(";", -1)
-    bodies_all = @cls_meth_bodies[ci].split(";", -1)
-    defs_all   = @cls_meth_defaults[ci].split("|", -1)
+    pnames_all = @cls_meth_params[src_ci].split("|", -1)
+    ptypes_all = @cls_meth_ptypes[src_ci].split("|", -1)
+    rets_all   = @cls_meth_returns[src_ci].split(";", -1)
+    bodies_all = @cls_meth_bodies[src_ci].split(";", -1)
+    defs_all   = @cls_meth_defaults[src_ci].split("|", -1)
     params  = pnames_all[src] || ""
     ptypes  = ptypes_all[src] || ""
     ret     = rets_all[src] || "int"
