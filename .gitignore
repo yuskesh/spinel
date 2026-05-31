@@ -35,9 +35,14 @@ HANDOFF.md
 CLAUDE.local.md
 file_write_poly_arg
 
+# Scratch design notes and downloaded gems (not for commit)
+/BIGINT.md
+*.gem
+
 # Test binaries accidentally produced in repo root
 /hash_shorthand
 /pattern_pin
 /method_dispatch_poly_array
 /const_init_defers_for_main_local
 /array_new_block_typed_container
+/sp_split0
