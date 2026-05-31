@@ -1591,10 +1591,20 @@ static char *resolve_plain_requires(char *source, const char *exe_path) {
 
   char *result = source;
   char *pos;
-  while ((pos = strstr(result, "\nrequire ")) != NULL ||
-         (pos == NULL && result == source && strncmp(result, "require ", 8) == 0 && (pos = result))) {
-    if (pos != result) pos++; /* skip \n */
-    if (pos != result && *(pos - 1) != '\n') break;
+  /* Match a `require` at the very start of the buffer (offset 0) or
+     immediately after a newline. Re-checking offset 0 every iteration --
+     not just while `result == source` -- is what lets a first-line
+     `require` still be processed when a later `require` exists: once the
+     buffer is rebuilt below, `result != source`, and the old condition
+     stranded the line-1 require. */
+  for (;;) {
+    if (strncmp(result, "require ", 8) == 0) {
+      pos = result;
+    } else {
+      pos = strstr(result, "\nrequire ");
+      if (pos == NULL) break;
+      pos++; /* skip the matched newline */
+    }
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
 
@@ -1649,7 +1659,16 @@ static char *resolve_plain_requires(char *source, const char *exe_path) {
       }
     }
 
-    size_t line_len = (line_end - pos) + ((*line_end == '\n') ? 1 : 0);
+    /* Replace only the `require "name"` statement itself, not the whole
+       line, so `require "x"; code` keeps `code`. Consume trailing
+       horizontal whitespace and a single terminating newline (so a
+       require on its own line leaves no blank line); stop at `;` or any
+       other trailing code, which the inserted content's trailing newline
+       then pushes onto its own line. */
+    char *stmt_end = end + 1;  /* just past the closing quote */
+    while (*stmt_end == ' ' || *stmt_end == '\t') stmt_end++;
+    if (*stmt_end == '\n') stmt_end++;
+    size_t line_len = stmt_end - pos;
     size_t content_len = strlen(content);
     size_t result_len = strlen(result);
     size_t before_len = pos - result;
