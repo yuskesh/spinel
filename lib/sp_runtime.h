@@ -629,11 +629,15 @@ static void sp_str_sweep(void) {
 
 /* GC-aware Time trampolines. The libspinel_rt format helpers write
    into a local buffer; we sp_str_dup_external the result so the GC
-   tracks the lifetime. 256 bytes covers every format CRuby builds in
-   (the longest is %c at ~25 bytes); custom formats that exceed it get
-   truncated. */
+   tracks the lifetime. strftime returns 0 -- never overruns the buffer
+   -- when the formatted result would exceed it, which we surface as "".
+   The 4 KB buffer covers any realistic format (CRuby's built-ins are
+   ~25 bytes; this leaves room for long literal text or wide fields). A
+   pathological field width (`"%1000000000F"`, which CRuby rejects with
+   ERANGE) does not fit and yields "" -- a graceful empty string rather
+   than a crash. */
 static const char *sp_time_strftime(sp_Time t, const char *fmt) {
-  char buf[256];
+  char buf[4096];
   size_t n = sp_time_strftime_to(t, fmt, buf, sizeof(buf));
   if (n == 0) return SPL("");
   return sp_str_dup_external(buf);
