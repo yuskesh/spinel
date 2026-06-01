@@ -8893,8 +8893,8 @@ class Compiler
  # are merged in either direction, both result paths return a
  # fresh sym_poly_hash with the str entries boxed via sp_box_str.
  # Issue #515.
-    emit_raw("static sp_SymPolyHash*sp_SymStrHash_to_sym_poly(sp_SymStrHash*h){sp_SymPolyHash*r=sp_SymPolyHash_new();for(mrb_int i=0;i<h->len;i++)sp_SymPolyHash_set(r,h->order[i],sp_box_str(sp_SymStrHash_get(h,h->order[i])));return r;}")
-    emit_raw("static sp_SymPolyHash*sp_SymPolyHash_merge_str(sp_SymPolyHash*a,sp_SymStrHash*b){sp_SymPolyHash*r=sp_SymPolyHash_new();for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_box_str(sp_SymStrHash_get(b,b->order[i])));return r;}")
+    emit_raw("static sp_SymPolyHash*sp_SymStrHash_to_sym_poly(sp_SymStrHash*h){SP_GC_SAVE();SP_GC_ROOT(h);sp_SymPolyHash*r=sp_SymPolyHash_new();SP_GC_ROOT(r);for(mrb_int i=0;i<h->len;i++)sp_SymPolyHash_set(r,h->order[i],sp_box_str(sp_SymStrHash_get(h,h->order[i])));return r;}")
+    emit_raw("static sp_SymPolyHash*sp_SymPolyHash_merge_str(sp_SymPolyHash*a,sp_SymStrHash*b){SP_GC_SAVE();SP_GC_ROOT(a);SP_GC_ROOT(b);sp_SymPolyHash*r=sp_SymPolyHash_new();SP_GC_ROOT(r);for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_box_str(sp_SymStrHash_get(b,b->order[i])));return r;}")
     emit_raw("")
   end
 
@@ -9476,13 +9476,13 @@ class Compiler
  # Sym keys go through sp_sym_to_s; values are boxed to sp_RbVal.
     if @needs_str_poly_hash == 1
       if @needs_sym_int_hash == 1
-        emit_raw("static sp_StrPolyHash*sp_StrPolyHash_from_sym_int_hash(sp_SymIntHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;r->default_v=sp_box_int(h->default_v);for(mrb_int i=0;i<h->len;i++){sp_sym k=h->order[i];sp_StrPolyHash_set(r,sp_sym_to_s(k),sp_box_int(sp_SymIntHash_get(h,k)));}return r;}")
+        emit_raw("static sp_StrPolyHash*sp_StrPolyHash_from_sym_int_hash(sp_SymIntHash*h){SP_GC_SAVE();SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();SP_GC_ROOT(r);if(!h)return r;r->default_v=sp_box_int(h->default_v);for(mrb_int i=0;i<h->len;i++){sp_sym k=h->order[i];sp_StrPolyHash_set(r,sp_sym_to_s(k),sp_box_int(sp_SymIntHash_get(h,k)));}return r;}")
       end
       if @needs_sym_str_hash == 1
-        emit_raw("static sp_StrPolyHash*sp_StrPolyHash_from_sym_str_hash(sp_SymStrHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;if(h->default_v)r->default_v=sp_box_str(h->default_v);for(mrb_int i=0;i<h->len;i++){sp_sym k=h->order[i];sp_StrPolyHash_set(r,sp_sym_to_s(k),sp_box_str(sp_SymStrHash_get(h,k)));}return r;}")
+        emit_raw("static sp_StrPolyHash*sp_StrPolyHash_from_sym_str_hash(sp_SymStrHash*h){SP_GC_SAVE();SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();SP_GC_ROOT(r);if(!h)return r;if(h->default_v)r->default_v=sp_box_str(h->default_v);for(mrb_int i=0;i<h->len;i++){sp_sym k=h->order[i];sp_StrPolyHash_set(r,sp_sym_to_s(k),sp_box_str(sp_SymStrHash_get(h,k)));}return r;}")
       end
       if @needs_sym_poly_hash == 1
-        emit_raw("static sp_StrPolyHash*sp_StrPolyHash_from_sym_poly_hash(sp_SymPolyHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++){sp_sym k=h->order[i];sp_StrPolyHash_set(r,sp_sym_to_s(k),sp_SymPolyHash_get(h,k));}return r;}")
+        emit_raw("static sp_StrPolyHash*sp_StrPolyHash_from_sym_poly_hash(sp_SymPolyHash*h){SP_GC_SAVE();SP_GC_ROOT(h);sp_StrPolyHash*r=sp_StrPolyHash_new();SP_GC_ROOT(r);if(!h)return r;r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++){sp_sym k=h->order[i];sp_StrPolyHash_set(r,sp_sym_to_s(k),sp_SymPolyHash_get(h,k));}return r;}")
       end
     end
   end
@@ -19671,21 +19671,21 @@ class Compiler
           end
         end
  # Flatten chained string concat: a + b + c → sp_str_concat3(a,b,c)
+ # Hoist every part into a rooted temp before the concat call. The
+ # call-argument order (concat3 / concat4) and the compound-literal
+ # initializer order (concat_arr) are both unspecified, so a part
+ # that is a fresh GC string would otherwise sit unrooted on the C
+ # stack while a sibling part evaluates and triggers sp_gc_collect,
+ # leaving sp_str_concatN to read freed memory. Observed as a
+ # use-after-free in the layout's
+ # `stylesheet_link_tag(..) + "\n" + stylesheet_link_tag(..)` under
+ # load: the first tag is built, the second tag's render allocates
+ # and collects the first. The >=5 (concat_arr) path always hoisted;
+ # the 3- and 4-part paths inlined the parts and were exposed.
+ # @needs_gc is set in scan_features for any string `+`, so
+ # SP_GC_SAVE() is already in the function header.
         parts = collect_concat_chain(nid)
-        if parts.length == 3
-          return "sp_str_concat3(" + parts[0] + ", " + parts[1] + ", " + parts[2] + ")"
-        end
-        if parts.length == 4
-          return "sp_str_concat4(" + parts[0] + ", " + parts[1] + ", " + parts[2] + ", " + parts[3] + ")"
-        end
-        if parts.length >= 5
- # Variable-length: single malloc for N parts via sp_str_concat_arr.
- # Hoist each part into a rooted temp first — the compound-literal
- # initializer order is unspecified, and any part that is a fresh
- # GC string would otherwise sit unrooted on the C stack while
- # later parts evaluate (and may trigger sp_gc_collect).
- # @needs_gc is set in scan_features for any string `+`, ensuring
- # SP_GC_SAVE() is in the function header before we emit roots here.
+        if parts.length >= 3
           tnames = "".split(",", -1)
           k = 0
           while k < parts.length
@@ -19695,6 +19695,13 @@ class Compiler
             tnames.push(t)
             k = k + 1
           end
+          if parts.length == 3
+            return "sp_str_concat3(" + tnames[0] + ", " + tnames[1] + ", " + tnames[2] + ")"
+          end
+          if parts.length == 4
+            return "sp_str_concat4(" + tnames[0] + ", " + tnames[1] + ", " + tnames[2] + ", " + tnames[3] + ")"
+          end
+ # Variable-length: single malloc for N parts via sp_str_concat_arr.
           arr = "(const char *const[]){"
           k = 0
           while k < tnames.length
