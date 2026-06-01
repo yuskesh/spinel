@@ -21196,13 +21196,36 @@ class Compiler
       register_tuple_type(tt)
       @needs_gc = 1
       tname = tuple_c_name(tt)
-      sep = compile_arg0(nid)
       tmp = new_temp
       emit("  " + tname + " *" + tmp + " = (" + tname + " *)sp_gc_alloc(sizeof(" + tname + "), NULL, " + tuple_scan_name(tt) + ");")
-      emit("  { size_t _sl = strlen(" + rc + "), _pl = strlen(" + sep + "); const char *_last = NULL;")
-      emit("    for (const char *_p = " + rc + "; (_p = strstr(_p, " + sep + ")); _p += _pl) _last = _p;")
-      emit("    if (_last) { " + tmp + "->_0 = sp_str_substr(" + rc + ", 0, _last - " + rc + "); " + tmp + "->_1 = " + sep + "; " + tmp + "->_2 = sp_str_substr(" + rc + ", _last - " + rc + " + _pl, _sl - (_last - " + rc + ") - _pl); }")
-      emit("    else { " + tmp + "->_0 = \"\"; " + tmp + "->_1 = \"\"; " + tmp + "->_2 = " + rc + "; } }")
+ # Regex arg locates the last match via re_exec scanning forward and
+ # keeping the rightmost; a plain separator path would pass the regex
+ # pattern pointer to strstr/strlen and segfault (mirrors the
+ # partition regex branch above).
+      arg0_rpart = -1
+      if @nd_arguments[nid] >= 0
+        a_rpart = get_args(@nd_arguments[nid])
+        if a_rpart.length > 0
+          arg0_rpart = a_rpart[0]
+        end
+      end
+      rpat_rpart = arg0_rpart >= 0 ? regex_pat_c_expr(arg0_rpart) : ""
+      if rpat_rpart != ""
+        @needs_regexp = 1
+        emit("  { size_t _sl = strlen(" + rc + "); int _caps[2]; int _ms = -1, _me = -1; mrb_int _off = 0;")
+ # rpartition keeps the rightmost match by start position. \d+ in
+ # "hello123world" matches at 5/6/7, so advance by start+1 (not
+ # end) to visit every start and retain the last (CRuby: "3").
+        emit("    while (_off <= (mrb_int)_sl && re_exec(" + rpat_rpart + ", " + rc + ", _sl, _off, _caps, 2) > 0) { _ms = _caps[0]; _me = _caps[1]; _off = _caps[0] + 1; }")
+        emit("    if (_ms >= 0) { " + tmp + "->_0 = sp_str_substr(" + rc + ", 0, _ms); " + tmp + "->_1 = sp_str_substr(" + rc + ", _ms, _me - _ms); " + tmp + "->_2 = sp_str_substr(" + rc + ", _me, _sl - _me); }")
+        emit("    else { " + tmp + "->_0 = sp_str_empty; " + tmp + "->_1 = sp_str_empty; " + tmp + "->_2 = " + rc + "; } }")
+      else
+        sep = compile_arg0(nid)
+        emit("  { size_t _sl = strlen(" + rc + "), _pl = strlen(" + sep + "); const char *_last = NULL;")
+        emit("    for (const char *_p = " + rc + "; (_p = strstr(_p, " + sep + ")); _p += _pl) _last = _p;")
+        emit("    if (_last) { " + tmp + "->_0 = sp_str_substr(" + rc + ", 0, _last - " + rc + "); " + tmp + "->_1 = " + sep + "; " + tmp + "->_2 = sp_str_substr(" + rc + ", _last - " + rc + " + _pl, _sl - (_last - " + rc + ") - _pl); }")
+        emit("    else { " + tmp + "->_0 = sp_str_empty; " + tmp + "->_1 = sp_str_empty; " + tmp + "->_2 = " + rc + "; } }")
+      end
       return tmp
     end
     if mname == "hash"
