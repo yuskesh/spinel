@@ -4304,6 +4304,29 @@ class Compiler
     0
   end
 
+ # Resolve the literal RangeNode behind a method receiver, peeking
+ # through a single ParenthesesNode wrap. Returns -1 when the receiver
+ # isn't a literal range.
+  def resolve_literal_range_recv(nid)
+    recv = @nd_receiver[nid]
+    if recv < 0
+      return -1
+    end
+    if @nd_type[recv] == "RangeNode"
+      return recv
+    end
+    if @nd_type[recv] == "ParenthesesNode"
+      pb = @nd_body[recv]
+      if pb >= 0
+        ps = get_stmts(pb)
+        if ps.length > 0 && @nd_type[ps.first] == "RangeNode"
+          return ps.first
+        end
+      end
+    end
+    -1
+  end
+
   def infer_method_name_type(nid, mname, recv)
  # when recv is a class/module constant ref whose
  # class/module defines a class method of the given name, defer
@@ -5356,6 +5379,13 @@ class Compiler
       return "int"
     end
     if mname == "size"
+ # A String range like ("a".."z") has no integer size; CRuby
+ # Range#size returns nil. Type the result as a nullable int so
+ # the nil renders correctly. (Int ranges keep returning int.)
+      srr_sz = resolve_literal_range_recv(nid)
+      if srr_sz >= 0 && @nd_left[srr_sz] >= 0 && infer_type(@nd_left[srr_sz]) == "string"
+        return "int?"
+      end
       if recv_could_be_obj(recv) == 1 && any_user_class_defines_imeth(mname) == 1
         return ""
       end

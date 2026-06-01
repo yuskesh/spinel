@@ -22247,6 +22247,16 @@ class Compiler
  # uniform form is `last - first + 1 - excl` (excl is 0 or 1). The
  # runtime `excl` flag covers both literal and non-literal receivers.
     if mname == "length" || mname == "size" || mname == "count"
+ # A literal String range like ("a".."z") has no integer size;
+ # CRuby Range#size returns nil. sp_Range only holds int bounds,
+ # so rc (a malformed sp_range_new on string args) is unusable
+ # here — emit nil instead. Only `size` matches CRuby's nil.
+      if mname == "size"
+        lit_sz = resolve_literal_range_recv(nid)
+        if lit_sz >= 0 && @nd_left[lit_sz] >= 0 && infer_type(@nd_left[lit_sz]) == "string"
+          return "SP_INT_NIL"
+        end
+      end
       rtmp_sz = new_temp
       emit("  sp_Range " + rtmp_sz + " = " + rc + ";")
       return "(" + rtmp_sz + ".last - " + rtmp_sz + ".first + 1 - " + rtmp_sz + ".excl)"
