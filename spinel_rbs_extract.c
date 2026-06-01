@@ -431,26 +431,46 @@ static bool map_type(rbs_parser_t *p, rbs_node_t *node,
             return true;
         }
         case RBS_TYPES_UNION: {
-            /* Only support `T | nil` shape (equivalent to T?). Any
-             * other union → out-of-subset, skip. */
+            /* `T | nil` (the nilable shape) maps to `T?`. Every other
+             * union has no single concrete C representation, so it
+             * maps to poly (sp_RbVal, the tagged union) -- the same
+             * target `untyped` uses. This boxes the value correctly.
+             *
+             * Previously any non-`T | nil` union returned false, which
+             * dropped the *entire* method seed (the caller bails on a
+             * false return type), letting inference collapse e.g.
+             * {int, string} to a single C type and mis-compile
+             * heterogeneous returns (matz/spinel#1255). Mapping to poly
+             * is the faithful choice: spinel's only representation for
+             * "one of several incompatible types" is the tagged union.
+             *
+             * This touches only the RBS-seed layer. The self-host build
+             * ships no `.rbs`, so the inference-level unify_return_type
+             * heuristic (load-bearing for stage-2) is unaffected. */
             rbs_types_union_t *u = (rbs_types_union_t *) node;
-            if (u->types == NULL || u->types->length != 2) return false;
-            rbs_node_t *a = u->types->head->node;
-            rbs_node_t *b = u->types->head->next->node;
-            rbs_node_t *t = NULL;
-            if (a->type == RBS_TYPES_BASES_NIL) t = b;
-            else if (b->type == RBS_TYPES_BASES_NIL) t = a;
-            if (t == NULL) return false;
-            sbuf_t inner;
-            sbuf_init(&inner);
-            if (!map_type(p, t, enclosing_scope, &inner)) { sbuf_free(&inner); return false; }
-            if (inner.len > 0 && inner.buf[inner.len - 1] == '?') {
-                sbuf_set(out, inner.buf, inner.len);
-            } else {
-                sbuf_set(out, inner.buf, inner.len);
-                sbuf_append_cstr(out, "?");
+            if (u->types != NULL && u->types->length == 2) {
+                rbs_node_t *a = u->types->head->node;
+                rbs_node_t *b = u->types->head->next->node;
+                rbs_node_t *t = NULL;
+                if (a->type == RBS_TYPES_BASES_NIL) t = b;
+                else if (b->type == RBS_TYPES_BASES_NIL) t = a;
+                if (t != NULL) {
+                    sbuf_t inner;
+                    sbuf_init(&inner);
+                    if (map_type(p, t, enclosing_scope, &inner)) {
+                        sbuf_set(out, inner.buf, inner.len);
+                        if (inner.len == 0 || inner.buf[inner.len - 1] != '?') {
+                            sbuf_append_cstr(out, "?");
+                        }
+                        sbuf_free(&inner);
+                        return true;
+                    }
+                    /* `T | nil` where T is itself out-of-subset →
+                     * fall through to poly below. */
+                    sbuf_free(&inner);
+                }
             }
-            sbuf_free(&inner);
+            sbuf_set(out, "poly", 4);
             return true;
         }
         default:
