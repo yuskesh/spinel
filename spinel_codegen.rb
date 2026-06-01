@@ -23412,6 +23412,44 @@ class Compiler
         end
       end
     end
+ # Array#product(other) with a single array argument, for mixed element
+ # types: a poly_array of [recv_elem, arg_elem] pairs. Two int arrays
+ # keep the faster homogeneous sp_IntArray_product path below.
+    if mname == "product" && @nd_block[nid] < 0 && @nd_arguments[nid] >= 0
+      args_pr2 = get_args(@nd_arguments[nid])
+      if args_pr2.length == 1
+        arg_pr2 = args_pr2[0]
+        arg_t2 = infer_type(arg_pr2)
+        if is_array_type(recv_type) == 1 && is_array_type(arg_t2) == 1 && (recv_type != "int_array" || arg_t2 != "int_array")
+          @needs_gc = 1
+          @needs_rb_value = 1
+          ra2 = new_temp
+          rb2 = new_temp
+          out2 = new_temp
+          i2 = new_temp
+          j2 = new_temp
+          pair2 = new_temp
+          rget2 = "sp_" + array_c_prefix(recv_type) + "_get"
+          aget2 = "sp_" + array_c_prefix(arg_t2) + "_get"
+          emit("  " + c_type(recv_type) + " " + ra2 + " = " + rc + ";")
+          emit("  SP_GC_ROOT(" + ra2 + ");")
+          emit("  " + c_type(arg_t2) + " " + rb2 + " = " + compile_expr(arg_pr2) + ";")
+          emit("  SP_GC_ROOT(" + rb2 + ");")
+          emit("  sp_PolyArray *" + out2 + " = sp_PolyArray_new();")
+          emit("  SP_GC_ROOT(" + out2 + ");")
+          emit("  for (mrb_int " + i2 + " = 0; " + i2 + " < " + ra2 + "->len; " + i2 + "++) {")
+          emit("    for (mrb_int " + j2 + " = 0; " + j2 + " < " + rb2 + "->len; " + j2 + "++) {")
+          emit("      sp_PolyArray *" + pair2 + " = sp_PolyArray_new();")
+          emit("      SP_GC_ROOT(" + pair2 + ");")
+          emit("      sp_PolyArray_push(" + pair2 + ", " + elem_to_poly_box(recv_type, rget2 + "(" + ra2 + ", " + i2 + ")") + ");")
+          emit("      sp_PolyArray_push(" + pair2 + ", " + elem_to_poly_box(arg_t2, aget2 + "(" + rb2 + ", " + j2 + ")") + ");")
+          emit("      sp_PolyArray_push(" + out2 + ", sp_box_poly_array(" + pair2 + "));")
+          emit("    }")
+          emit("  }")
+          return out2
+        end
+      end
+    end
  # Array#dig with a single index reduces to []. Multi-arg dig that
  # walks into nested arrays/hashes isn't supported here yet — fall
  # through to the unsupported-call warning.

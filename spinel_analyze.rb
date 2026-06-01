@@ -4985,6 +4985,20 @@ class Compiler
       return "poly_array"
     end
     if mname == "product"
+ # Mixed element types (e.g. int_array.product(str_array)) yield a
+ # poly_array of poly_array pairs; two int arrays keep the homogeneous
+ # int_array_ptr_array (kept in sync with codegen's product handling).
+      if recv >= 0 && @nd_block[nid] < 0 && @nd_arguments[nid] >= 0
+        rt_pr = infer_type(recv)
+        args_pr = get_args(@nd_arguments[nid])
+        if args_pr.length == 1
+          at_pr = infer_type(args_pr[0])
+          if is_array_type(rt_pr) == 1 && is_array_type(at_pr) == 1 && (rt_pr != "int_array" || at_pr != "int_array")
+            @needs_rb_value = 1
+            return "poly_array"
+          end
+        end
+      end
       return "int_array_ptr_array"
     end
     if mname == "slice_when" || mname == "chunk_while" || mname == "slice_before" || mname == "slice_after"
