@@ -393,6 +393,12 @@ class Compiler
  # reverse-of-source-order END execution.
     @post_execution_blocks = []
 
+ # Class/module nodes whose body has definition-time side effects
+ # (emitted as `sp_clsbody_<nid>()` functions, called from main at
+ # the definition site). Parallel arrays: node id and lexical scope.
+    @clsbody_func_ids = "".split(",", -1)
+    @clsbody_func_scopes = "".split(",", -1)
+
  # ---- Scope stack for local variables ----
     @scope_names = "".split(",", -1)
     @scope_types = "".split(",", -1)
@@ -8723,6 +8729,9 @@ class Compiler
  # them in source order; atexit invokes handlers LIFO, matching
  # CRuby's reverse-order END execution.
     emit_post_execution_funcs
+ # Definition-time class/module body side effects: emit one function
+ # per body so emit_main can run them at the definition site.
+    emit_clsbody_funcs
  # poly_poly_hash needs eql?-aware OBJ-tag dispatch. Emit a
  # cls_id-keyed shim that knows about Method specifically (compares
  # bound receiver + fn_ptr) and falls through to pointer identity
@@ -12351,6 +12360,202 @@ class Compiler
     end
   end
 
+ # Names a class/module body call resolves at compile time (definition
+ # macros). Analysis already consumes these, so they must not re-run as
+ # definition-time side effects.
+  def clsbody_call_is_macro(mn)
+    if mn == "attr_accessor" || mn == "attr_reader" || mn == "attr_writer" || mn == "attr"
+      return 1
+    end
+    if mn == "include" || mn == "extend" || mn == "prepend"
+      return 1
+    end
+    if mn == "private" || mn == "public" || mn == "protected" || mn == "module_function"
+      return 1
+    end
+    if mn == "define_method" || mn == "alias_method" || mn == "alias"
+      return 1
+    end
+    if mn == "private_constant" || mn == "private_class_method" || mn == "public_class_method"
+      return 1
+    end
+    if mn == "using" || mn == "refine"
+      return 1
+    end
+    if mn == "require" || mn == "require_relative" || mn == "load" || mn == "autoload"
+      return 1
+    end
+    0
+  end
+
+ # Does this class/module body statement run at definition time? Only
+ # genuine side-effecting method calls qualify (e.g. `puts`).
+ # Definitions, constants, and class macros are handled elsewhere, and
+ # a call to one of the class's own methods is treated as a
+ # compile-time DSL (analysis interprets it, e.g. optcarrot's `op`),
+ # so it stays unemitted to avoid double execution.
+  def clsbody_stmt_emittable(sid, ci)
+    if @nd_type[sid] != "CallNode"
+      return 0
+    end
+ # Only bare calls (no explicit receiver) run as definition-time side
+ # effects -- e.g. `puts`. A call with a receiver (`M.use(...)`,
+ # `self.x = ...`) is a self-referential / metaprogramming shape left
+ # to the existing compile-time handling.
+    recv = @nd_receiver[sid]
+    if recv >= 0
+      return 0
+    end
+    mn = @nd_name[sid]
+    if clsbody_call_is_macro(mn) == 1
+      return 0
+    end
+ # A bare call to one of the class's own methods is a compile-time DSL
+ # that analysis already interprets (e.g. optcarrot's `op`); leave it
+ # unemitted so it does not run twice.
+    if ci >= 0
+      if cls_method_owner_for(ci, mn, "cmeth") >= 0
+        return 0
+      end
+      if cls_method_owner_for(ci, mn, "imeth") >= 0
+        return 0
+      end
+    end
+    1
+  end
+
+ # The fully scoped name (`Outer_Inner`) of a class/module node given
+ # its enclosing lexical scope, used for the class-index lookup.
+  def clsbody_scoped_name(nid, scope)
+    cpath = @nd_constant_path[nid]
+    simple = ""
+    if cpath >= 0
+      simple = @nd_name[cpath]
+    end
+    if simple == ""
+      return scope
+    end
+    if scope == ""
+      return simple
+    end
+    scope + "_" + simple
+  end
+
+  def clsbody_has_func(nid)
+    j = 0
+    while j < @clsbody_func_ids.length
+      if @clsbody_func_ids[j] == nid.to_s
+        return 1
+      end
+      j = j + 1
+    end
+    0
+  end
+
+ # Collect (depth-first, source order) every class/module node whose
+ # body has definition-time side effects, directly or via a nested
+ # class/module. Children are pushed before parents so a parent's
+ # forward-declared call always resolves. Returns 1 if `nid` got a func.
+  def collect_clsbody_funcs(nid, scope)
+    t = @nd_type[nid]
+    if t != "ClassNode" && t != "ModuleNode"
+      return 0
+    end
+    body = @nd_body[nid]
+    if body < 0
+      return 0
+    end
+    cscoped = clsbody_scoped_name(nid, scope)
+    ci = find_class_idx(cscoped)
+    stmts = get_stmts(body)
+    has_emittable = 0
+    k = 0
+    while k < stmts.length
+      sid = stmts[k]
+      st = @nd_type[sid]
+      if st == "ClassNode" || st == "ModuleNode"
+        if collect_clsbody_funcs(sid, cscoped) == 1
+          has_emittable = 1
+        end
+      else
+        if clsbody_stmt_emittable(sid, ci) == 1
+          has_emittable = 1
+        end
+      end
+      k = k + 1
+    end
+    if has_emittable == 1
+      @clsbody_func_ids.push(nid.to_s)
+      @clsbody_func_scopes.push(scope)
+      return 1
+    end
+    0
+  end
+
+  def emit_clsbody_func_body(nid, scope)
+    body = @nd_body[nid]
+    if body < 0
+      return
+    end
+    cscoped = clsbody_scoped_name(nid, scope)
+    ci = find_class_idx(cscoped)
+    emit_raw("static void sp_clsbody_" + nid.to_s + "(void) {")
+    @indent = 1
+    @in_main = 1
+    saved_ci = @current_class_idx
+    saved_lex = @current_lexical_scope
+    @current_class_idx = ci
+    @current_lexical_scope = cscoped
+    push_scope
+    stmts = get_stmts(body)
+    k = 0
+    while k < stmts.length
+      sid = stmts[k]
+      st = @nd_type[sid]
+      if st == "ClassNode" || st == "ModuleNode"
+        if clsbody_has_func(sid) == 1
+          emit("  sp_clsbody_" + sid.to_s + "();")
+        end
+      else
+        if clsbody_stmt_emittable(sid, ci) == 1
+          compile_stmt(sid)
+        end
+      end
+      k = k + 1
+    end
+    pop_scope
+    @current_class_idx = saved_ci
+    @current_lexical_scope = saved_lex
+    @in_main = 0
+    emit_raw("}")
+    emit_raw("")
+  end
+
+ # Emit one `static void sp_clsbody_<nid>(void)` per class/module body
+ # with definition-time side effects. emit_main calls them at each
+ # definition site so the body runs in source order, in its own scope.
+  def emit_clsbody_funcs
+    stmts = get_body_stmts(@root_id)
+    k = 0
+    while k < stmts.length
+      collect_clsbody_funcs(stmts[k], "")
+      k = k + 1
+    end
+    if @clsbody_func_ids.length == 0
+      return
+    end
+    fi = 0
+    while fi < @clsbody_func_ids.length
+      emit_raw("static void sp_clsbody_" + @clsbody_func_ids[fi] + "(void);")
+      fi = fi + 1
+    end
+    fi = 0
+    while fi < @clsbody_func_ids.length
+      emit_clsbody_func_body(@clsbody_func_ids[fi].to_i, @clsbody_func_scopes[fi])
+      fi = fi + 1
+    end
+  end
+
   def emit_toplevel_method(mi)
     mfullname = @meth_names[mi]
     @current_method_name = mfullname
@@ -13502,7 +13707,13 @@ class Compiler
  # an RHS that reads from a main local, so the pre-loop deliberately
  # left them out and we emit them here in source order.
     stmts.each { |sid|
-      if @nd_type[sid] != "DefNode"
+      if @nd_type[sid] == "ClassNode" || @nd_type[sid] == "ModuleNode"
+ # The class/module is defined statically; run its definition-time
+ # body side effects (if any) at this source position.
+        if clsbody_has_func(sid) == 1
+          emit("  sp_clsbody_" + sid.to_s + "();")
+        end
+      elsif @nd_type[sid] != "DefNode"
         if @nd_type[sid] != "ClassNode"
           if @nd_type[sid] != "ConstantWriteNode"
             compile_stmt(sid)
