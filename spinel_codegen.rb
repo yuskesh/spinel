@@ -21397,6 +21397,64 @@ class Compiler
       emit("  }")
       return rc
     end
+ # String#each_line returns the receiver per CRuby. The statement form
+ # lives in compile_block_iteration_stmt; the expression form (e.g.
+ # `r = s.each_line { ... }`) needs to emit the same line-splitting loop
+ # and then return the receiver. Issue #1221.
+    if mname == "each_line" && @nd_block[nid] >= 0
+      bp_el = get_block_param(nid, 0)
+      if bp_el == ""
+        bp_el = "_l"
+      end
+      chomp_el = 0
+      if @nd_arguments[nid] >= 0
+        aargs_el = get_args(@nd_arguments[nid])
+        if aargs_el.length >= 1 && @nd_type[aargs_el[0]] == "KeywordHashNode"
+          kelems_el = parse_id_list(@nd_elements[aargs_el[0]])
+          kk_el = 0
+          while kk_el < kelems_el.length
+            if @nd_type[kelems_el[kk_el]] == "AssocNode"
+              key_el = @nd_key[kelems_el[kk_el]]
+              val_el = @nd_expression[kelems_el[kk_el]]
+              if key_el >= 0 && @nd_type[key_el] == "SymbolNode" && @nd_content[key_el] == "chomp" && val_el >= 0 && @nd_type[val_el] == "TrueNode"
+                chomp_el = 1
+              end
+            end
+            kk_el = kk_el + 1
+          end
+        end
+      end
+      base_el = new_temp
+      start_el = new_temp
+      pos_el = new_temp
+      slen_el = new_temp
+      buf_el = new_temp
+      llen_el = new_temp
+      emit("  const char *" + base_el + " = " + rc + ";")
+      emit("  mrb_int " + slen_el + " = sp_str_length(" + base_el + ");")
+      emit("  mrb_int " + start_el + " = 0;")
+      emit("  mrb_int " + pos_el + " = 0;")
+      emit("  while (" + start_el + " < " + slen_el + ") {")
+      emit("    while (" + pos_el + " < " + slen_el + " && " + base_el + "[" + pos_el + "] != '\\n') " + pos_el + "++;")
+      emit("    if (" + pos_el + " < " + slen_el + ") " + pos_el + "++;")
+      emit("    mrb_int " + llen_el + " = " + pos_el + " - " + start_el + ";")
+      if chomp_el == 1
+        emit("    if (" + llen_el + " > 0 && " + base_el + "[" + start_el + " + " + llen_el + " - 1] == '\\n') { " + llen_el + "--; if (" + llen_el + " > 0 && " + base_el + "[" + start_el + " + " + llen_el + " - 1] == '\\r') " + llen_el + "--; }")
+      end
+      emit("    char *" + buf_el + " = sp_str_alloc(" + llen_el + ");")
+      emit("    memcpy(" + buf_el + ", " + base_el + " + " + start_el + ", " + llen_el + ");")
+      emit("    " + buf_el + "[" + llen_el + "] = 0;")
+      emit("    const char *lv_" + bp_el + " = " + buf_el + ";")
+      @indent = @indent + 1
+      push_scope
+      declare_var(bp_el, "string")
+      compile_stmts_body(@nd_body[@nd_block[nid]])
+      pop_scope
+      @indent = @indent - 1
+      emit("    " + start_el + " = " + pos_el + ";")
+      emit("  }")
+      return rc
+    end
  # `chars`/`bytes`/`codepoints`/`lines` with a block: CRuby yields each
  # element and returns the receiver (self), unlike the no-block form
  # which returns the element array. Build the array, iterate it yielding

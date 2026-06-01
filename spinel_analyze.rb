@@ -4922,10 +4922,12 @@ class Compiler
       end
       return "int"
     end
- # String#each_byte returns the receiver per CRuby. The block-bearing
- # form is handled in compile_string_method_expr; the inference rule
- # here is what makes `ret = "hi".each_byte { ... }` typed as string.
-    if mname == "each_byte" || mname == "each_char"
+ # String#each_byte / each_char / each_line all return the receiver per
+ # CRuby. The block-bearing form is handled in compile_string_method_expr;
+ # the inference rule here is what makes `ret = "hi".each_byte { ... }`
+ # typed as string (and the same for the expression form of each_line,
+ # whose statement form already works via compile_block_iteration_stmt).
+    if mname == "each_byte" || mname == "each_char" || mname == "each_line"
       if recv >= 0 && @nd_block[nid] >= 0
         rt = infer_type(recv)
         if rt == "string" || rt == "mutable_str"
