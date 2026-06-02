@@ -15052,10 +15052,25 @@ class Compiler
           end
         end
         if cpname != ""
-          return cpname
+          if is_known_constant_name(cpname) == 1
+            return cpname
+          end
+ # Unresolved qualified constant (e.g. a const supplied by an
+ # ignored require). The flat fall-through used to emit the bare
+ # `Mylib_VERSION` identifier, which is undeclared C and fails to
+ # compile. Degrade to a runtime NameError carrying the inferred
+ # type, mirroring the ConstantReadNode arm above.
+          @needs_setjmp = 1
+          rt_cpn = infer_type(nid)
+          return "({ sp_raise_cls(\"NameError\", \"uninitialized constant " + rname + "::" + nname + "\"); " + c_default_val(rt_cpn) + "; })"
         end
       end
-      return @nd_name[nid]
+      if is_known_constant_name(@nd_name[nid]) == 1
+        return @nd_name[nid]
+      end
+      @needs_setjmp = 1
+      rt_cpn2 = infer_type(nid)
+      return "({ sp_raise_cls(\"NameError\", \"uninitialized constant " + @nd_name[nid] + "\"); " + c_default_val(rt_cpn2) + "; })"
     end
     if t == "LambdaNode"
       return compile_lambda_expr(nid)
