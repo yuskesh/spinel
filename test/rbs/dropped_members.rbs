@@ -1,0 +1,13 @@
+# Member kinds that are not modeled: mixins (include/extend/prepend),
+# visibility (public/private), alias, and `@@cvar` class-variable
+# declarations. `kept` confirms emission resumes after them.
+class DroppedMembers
+  include Enumerable
+  extend Forwardable
+  prepend Helper
+  public
+  private
+  alias foo bar
+  @@count: Integer
+  def kept: (Integer) -> Integer
+end

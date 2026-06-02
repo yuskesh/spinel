@@ -1,0 +1,14 @@
+# Type-level shapes with no spinel tag. Any one of these in a required
+# positional (or as the return) drops the whole method. `kept` confirms
+# emission resumes. Note: `untyped` is NOT here -- it maps to poly.
+class DroppedTypes
+  def a: (self) -> void
+  def b: (instance) -> void
+  def c: (_Each) -> void
+  def d: (Integer & String) -> void
+  def e: (:sym) -> void
+  def f: (Integer, String) -> [Integer, String]
+  def g: ({ name: String }) -> void
+  def h: (^(Integer) -> void) -> void
+  def kept: (Integer) -> Integer
+end

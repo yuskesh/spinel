@@ -1,0 +1,11 @@
+# Hash[K, V] is supported only when K is String or Symbol. The value
+# type collapses to int / string / poly. A non-String/Symbol key takes
+# the whole signature out of subset (see dropped_types.rbs).
+class Hashes
+  def si: (Hash[String, Integer]) -> Hash[String, Integer]
+  def ss: (Hash[String, String]) -> Hash[String, String]
+  def sp: (Hash[String, Float]) -> Hash[String, Float]
+  def yi: (Hash[Symbol, Integer]) -> Hash[Symbol, Integer]
+  def ys: (Hash[Symbol, String]) -> Hash[Symbol, String]
+  def yp: (Hash[Symbol, Float]) -> Hash[Symbol, Float]
+end

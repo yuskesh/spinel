@@ -160,7 +160,7 @@ NODE_TABLE_LOADER_STAMP := build/stamps/node_table_loader.rb.stamp
 COMPILER_HELPERS_STAMP := build/stamps/compiler_helpers.rb.stamp
 PARSE_STAMP   := build/stamps/spinel_parse.c.stamp
 
-.PHONY: all parse bootstrap codegen rbs_extract test retest fast-test clean-test-results regen-expected bench optcarrot clean install uninstall deps FORCE
+.PHONY: all parse bootstrap codegen rbs_extract rbs-test regen-rbs-expected test retest fast-test clean-test-results regen-expected bench optcarrot clean install uninstall deps FORCE
 
 # `make all` includes spinel_rbs_extract when vendor/rbs has been
 # fetched (via `make deps`). Without vendor/rbs the extractor is
@@ -441,8 +441,9 @@ endif
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
 # `make test` is incremental via mtime tracking on .ok files;
-# `make retest` wipes them for a forced rerun.
-test: $(TEST_TARGETS)
+# `make retest` wipes them for a forced rerun. The rbs-test prereq
+# golden-checks the RBS extractor (cheap, runs every invocation).
+test: rbs-test $(TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
 	@pass=$$(grep -l '^PASS' build/test-results/*.ok 2>/dev/null | wc -l); \
@@ -466,6 +467,46 @@ retest: clean-test-results
 
 fast-test: clean-test-results
 	@$(MAKE) --no-print-directory test OPT=-O0 LTO=0
+
+# ---- RBS extractor golden tests ----
+# spinel_rbs_extract is a pure text transform (*.rbs -> seed lines on
+# stdout), so it golden-tests cleanly without Ruby at test time. Each
+# test/rbs/<name>.rbs has a committed test/rbs/<name>.seed.expected;
+# `rbs-test` diffs live output against it. Regenerate after intentional
+# extractor changes with `make regen-rbs-expected` and commit the diff.
+# Skips (rather than fails) when vendor/rbs hasn't been fetched, so a
+# `make deps`-less checkout can still run the rest of `make test`.
+RBS_TEST_SRCS := $(sort $(wildcard test/rbs/*.rbs))
+
+ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+rbs-test:
+	@echo "rbs-test: skipped (vendor/rbs not fetched; run 'make deps')"
+regen-rbs-expected:
+	@echo "regen-rbs-expected: skipped (vendor/rbs not fetched; run 'make deps')"
+else
+rbs-test: spinel_rbs_extract$(EXE)
+	@fail=0; n=0; \
+	for f in $(RBS_TEST_SRCS); do \
+	  n=$$((n+1)); \
+	  exp="$${f%.rbs}.seed.expected"; \
+	  if [ ! -f "$$exp" ]; then echo "rbs-test: MISSING golden $$exp"; fail=1; continue; fi; \
+	  d=$$(./spinel_rbs_extract$(EXE) "$$f" 2>/dev/null | diff -u "$$exp" - 2>&1); \
+	  if [ -z "$$d" ]; then \
+	    if [ -t 1 ]; then printf .; fi; \
+	  else \
+	    echo; echo "rbs-test FAIL: $$f"; echo "$$d"; fail=1; \
+	  fi; \
+	done; \
+	if [ -t 1 ]; then printf '\n'; fi; \
+	if [ $$fail -ne 0 ]; then echo "RBS extractor tests: FAIL"; exit 1; fi; \
+	echo "RBS extractor tests: $$n pass"
+
+regen-rbs-expected: spinel_rbs_extract$(EXE)
+	@for f in $(RBS_TEST_SRCS); do \
+	  ./spinel_rbs_extract$(EXE) "$$f" > "$${f%.rbs}.seed.expected"; \
+	  echo "regen: $${f%.rbs}.seed.expected"; \
+	done
+endif
 
 # The .ok target is the test's stamp; mtime tracking gives per-test
 # caching for free. Order-only spinel_parse$(EXE) / spinel_analyze$(EXE)

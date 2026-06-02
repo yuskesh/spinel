@@ -1,0 +1,5 @@
+class Members
+meth inst string int
+cmeth cls string int
+meth both string int
+cmeth both string int

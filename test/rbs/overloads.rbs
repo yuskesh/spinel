@@ -1,0 +1,13 @@
+# Only the first overload is considered. `first_ok`'s first overload is
+# in-subset, so it is emitted (the String overload is ignored).
+# `first_bad`'s first overload is a proc type (out of subset), so the
+# whole method is dropped even though a later overload is in-subset.
+class Overloads
+  def first_ok: (Integer) -> Integer
+              | (String) -> String
+
+  def first_bad: (^(Integer) -> void) -> void
+               | (Integer) -> Integer
+
+  def kept: (Integer) -> Integer
+end

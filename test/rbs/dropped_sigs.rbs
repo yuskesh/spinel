@@ -1,0 +1,14 @@
+# Method signature shapes that take the whole method out of subset:
+# anything other than plain required positional params. `kept` confirms
+# emission resumes after each dropped method.
+#
+# (Keyword and block params are handled separately and are intentionally
+# NOT exercised here -- see the PR description.)
+class DroppedSigs
+  def opt: (?String) -> void
+  def rest: (*Integer) -> void
+  def trailing: (Integer, ?String, Integer) -> void
+  def restkw: (**Integer) -> void
+  def generic: [X] (X) -> X
+  def kept: (Integer) -> Integer
+end

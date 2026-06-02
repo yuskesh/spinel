@@ -1,0 +1,9 @@
+# Heterogeneous unions (anything other than the two-arm `T | nil`
+# nilable shape) have no single concrete C representation, so they map
+# to the bare `poly` tag (sp_RbVal, the tagged union) rather than
+# dropping the whole seed. Regression guard for matz/spinel#1255.
+class Unions
+  def two: (Integer | String) -> (Integer | String)
+  def three: (Integer | String | Symbol) -> void
+  def with_nil: (Integer | String | nil) -> void
+end

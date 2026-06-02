@@ -1,0 +1,12 @@
+# Scalar type vocabulary: every primitive RBS type that reduces to a
+# single spinel tag, plus the return-only `void`.
+class Scalars
+  def i: (Integer) -> Integer
+  def f: (Float) -> Float
+  def s: (String) -> String
+  def y: (Symbol) -> Symbol
+  def b: (bool) -> bool
+  def t: (TrueClass) -> FalseClass
+  def n: (NilClass) -> nil
+  def v: () -> void
+end

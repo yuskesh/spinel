@@ -1,0 +1,9 @@
+class Scalars
+meth i int int
+meth f float float
+meth s string string
+meth y symbol symbol
+meth b bool bool
+meth t bool bool
+meth n nil nil
+meth v nil -

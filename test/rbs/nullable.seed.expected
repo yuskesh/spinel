@@ -1,0 +1,5 @@
+class Nullable
+meth a int? string?
+meth b int? string?
+meth c obj_Foo? obj_Foo?
+meth d int_array? str_array?

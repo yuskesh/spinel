@@ -1,0 +1,8 @@
+# `T?` and the two-arm `T | nil` / `nil | T` unions both reduce to the
+# nilable tag `<T>?`. Doubled nullability and `nil?` are normalized.
+class Nullable
+  def a: (String?) -> Integer?
+  def b: (String | nil) -> (nil | Integer)
+  def c: (Foo?) -> Foo?
+  def d: (Array[String]?) -> Array[Integer]?
+end

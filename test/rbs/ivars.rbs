@@ -1,0 +1,8 @@
+# All four ivar sources emit an `ivar` line: attr_accessor / attr_reader
+# / attr_writer and a bare `@name: Type` instance-variable declaration.
+class Ivars
+  attr_accessor acc: String
+  attr_reader rd: Integer
+  attr_writer wr: Symbol
+  @direct: Float
+end

@@ -1,0 +1,7 @@
+# Member kinds: instance method (meth), singleton method (cmeth via
+# `def self.`), and `def self?.` which emits BOTH a meth and a cmeth.
+class Members
+  def inst: (Integer) -> String
+  def self.cls: (Integer) -> String
+  def self?.both: (Integer) -> String
+end

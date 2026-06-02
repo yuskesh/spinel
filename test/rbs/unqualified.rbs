@@ -1,0 +1,13 @@
+# Unqualified type resolution: inside `module Geo; class Point`, a bare
+# `Base` resolves to obj_Geo_Base via single-level parent fallback, and
+# `Point` resolves to obj_Geo_Point. The enclosing class name is
+# flattened to Geo_Point.
+module Geo
+  class Base
+  end
+
+  class Point
+    def base: () -> Base
+    def twin: (Point) -> Point
+  end
+end

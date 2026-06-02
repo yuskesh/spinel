@@ -1,0 +1,10 @@
+# Array[T] maps to a per-element-type array tag; element types outside
+# the int/float/string/symbol/nominal set fall back to poly_array.
+class Arrays
+  def i: (Array[Integer]) -> Array[Integer]
+  def f: (Array[Float]) -> Array[Float]
+  def s: (Array[String]) -> Array[String]
+  def y: (Array[Symbol]) -> Array[Symbol]
+  def o: (Array[Foo]) -> Array[Foo]
+  def p: (Array[bool]) -> Array[bool]
+end

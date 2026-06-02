@@ -1,0 +1,4 @@
+class Geo
+class Geo_Point
+meth base obj_Geo_Base -
+meth twin obj_Geo_Point obj_Geo_Point

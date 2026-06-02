@@ -1,0 +1,7 @@
+class Arrays
+meth i int_array int_array
+meth f float_array float_array
+meth s str_array str_array
+meth y sym_array sym_array
+meth o obj_Foo_ptr_array obj_Foo_ptr_array
+meth p poly_array poly_array

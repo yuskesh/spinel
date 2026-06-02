@@ -1,0 +1,7 @@
+# Nominal class types map to obj_<QualifiedName>, with `::` flattened
+# to `_`. No symbol table is consulted; the mapping is purely
+# structural.
+class Holder
+  def a: (Foo) -> Foo
+  def b: (Foo::Bar) -> Foo::Bar
+end

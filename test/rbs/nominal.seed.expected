@@ -1,0 +1,3 @@
+class Holder
+meth a obj_Foo obj_Foo
+meth b obj_Foo_Bar obj_Foo_Bar

@@ -1,0 +1,5 @@
+class Ivars
+ivar acc string
+ivar rd int
+ivar wr symbol
+ivar @direct float
