@@ -20004,7 +20004,9 @@ class Compiler
         end
       end
       if lt == "int"
-        return "((mrb_int)pow((double)" + compile_expr(recv) + ", (double)" + compile_arg0_as_int(nid) + "))"
+ # Integer ** : route through sp_int_pow so a negative exponent raises
+ # RangeError (no Rational) instead of truncating to 0.
+        return "sp_int_pow(" + compile_expr(recv) + ", " + compile_arg0_as_int(nid) + ")"
       end
       return "pow(" + compile_expr(recv) + ", " + compile_arg0(nid) + ")"
     end

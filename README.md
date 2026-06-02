@@ -534,6 +534,11 @@ them behind compile-time switches.
 - **No encoding**: assumes UTF-8/ASCII
 - **No general lambda calculus**: deeply nested `-> x { }` with `[]` calls
 
+A few cases deliberately diverge from CRuby because the CRuby behavior needs a
+feature Spinel does not implement (e.g. `Integer#**` with a negative exponent
+raises instead of returning a `Rational`). These are listed in
+[docs/INCOMPATIBILITIES.md](docs/INCOMPATIBILITIES.md).
+
 ## Dependencies
 
 - **Build time**: [libprism](https://github.com/ruby/prism) (C library),

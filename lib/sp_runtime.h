@@ -2563,7 +2563,13 @@ static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_in
 static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp >= 0) : FALSE; }
 static sp_RbVal sp_poly_div(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_poly_to_f(a) / sp_poly_to_f(b)); return sp_box_int(sp_idiv(sp_poly_to_i(a), sp_poly_to_i(b))); }
 static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(fmod(sp_poly_to_f(a), sp_poly_to_f(b))); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }
-static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) { double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b)); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i >= 0) return sp_box_int((mrb_int)r); return sp_box_float((mrb_float)r); }
+/* Integer #** : Spinel has no Rational, so a negative integer exponent --
+   which CRuby evaluates to a Rational like (1/2) -- raises RangeError rather
+   than silently truncating toward 0. Float ** negative stays a float
+   (CRuby-compatible: 2.0 ** -1 == 0.5). See docs/INCOMPATIBILITIES.md. */
+static mrb_int sp_int_pow(mrb_int base, mrb_int exp) __attribute__((unused));
+static mrb_int sp_int_pow(mrb_int base, mrb_int exp) { if (exp < 0) sp_raise_cls("RangeError", "negative exponent"); return (mrb_int)pow((double)base, (double)exp); }
+static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i < 0) sp_raise_cls("RangeError", "negative exponent"); double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b)); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i >= 0) return sp_box_int((mrb_int)r); return sp_box_float((mrb_float)r); }
 /* sp_poly_shl is defined after sp_PolyArray_push (below) so the
    push-dispatch path can call it directly. The Integer-bit-shift
    semantics fall through when the recv isn't an array. */

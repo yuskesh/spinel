@@ -14,6 +14,10 @@
 #include <string.h>
 #include "sp_bigint.h"
 
+/* Defined in sp_runtime.h (linked into the final program); forward-declared
+   here so the bigint object can raise without pulling in the whole header. */
+extern void sp_raise_cls(const char *cls, const char *msg);
+
 #define DIG_SIZE (MPZ_DIG_SIZE)
 #define DIG_BASE (1ULL << DIG_SIZE)
 #define DIG_MASK (DIG_BASE - 1)
@@ -5352,6 +5356,9 @@ sp_Bigint *sp_bigint_mod(sp_Bigint *a, sp_Bigint *b) {
 }
 
 sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp) {
+  /* No Rational: a negative integer exponent raises RangeError rather than
+     truncating to 0 (mirrors sp_int_pow). See docs/INCOMPATIBILITIES.md. */
+  if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
   sp_Bigint *r = sp_bigint_alloc();
   mpz_init(sp_mpz_ctx, &r->mpz);
   mpz_pow(sp_mpz_ctx, &r->mpz, &base->mpz, exp);
