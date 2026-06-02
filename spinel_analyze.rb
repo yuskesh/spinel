@@ -5341,15 +5341,23 @@ class Compiler
       end
     end
     if mname == "scan"
-      args_id_scan = @nd_arguments[nid]
-      if args_id_scan >= 0
-        arg_ids_scan = get_args(args_id_scan)
-        if arg_ids_scan.length > 0 && regexp_capture_status(arg_ids_scan[0]) != 0
-          @needs_rb_value = 1
-          return "poly_array"
+ # String#scan returns an array of matches. Gate on a string-like
+ # receiver so StringScanner#scan (which returns a single matched
+ # string, handled by the strscan dispatch above) isn't mis-typed as
+ # str_array -- the receiver can still be unresolved during scan_locals,
+ # when the strscan arm hasn't fired yet.
+      rt_scan_recv = recv >= 0 ? base_type(infer_type(recv)) : ""
+      if recv < 0 || rt_scan_recv == "string" || rt_scan_recv == "mutable_str"
+        args_id_scan = @nd_arguments[nid]
+        if args_id_scan >= 0
+          arg_ids_scan = get_args(args_id_scan)
+          if arg_ids_scan.length > 0 && regexp_capture_status(arg_ids_scan[0]) != 0
+            @needs_rb_value = 1
+            return "poly_array"
+          end
         end
+        return "str_array"
       end
-      return "str_array"
     end
     if mname == "match"
       if recv >= 0
