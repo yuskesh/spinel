@@ -107,6 +107,21 @@ static char *sc_substr(const char *src, int64_t start, int64_t len) {
   return out;
 }
 
+/* Byte length of the UTF-8 character starting at src[pos], clamped so a
+   truncated or invalid lead byte near the end never reads past `len`.
+   Mirrors sp_utf8_advance in sp_runtime.h, which isn't visible from here
+   (this file includes only mruby_shim.h). */
+static int64_t sc_char_len(const char *src, int64_t pos, int64_t len) {
+  unsigned char c = (unsigned char)src[pos];
+  int64_t n = 1;
+  if (c >= 0xF0) n = 4;
+  else if (c >= 0xE0) n = 3;
+  else if (c >= 0xC0) n = 2;
+  int64_t i = 1;
+  while (i < n && pos + i < len && ((unsigned char)src[pos + i] & 0xC0) == 0x80) i++;
+  return i;
+}
+
 const char *sp_StringScanner_scan(sp_StringScanner *sc, mrb_regexp_pattern *pat) {
   if (!sc || !pat) return sp_ext_str_empty();
   int64_t slen = (int64_t)sp_ext_str_byte_len(sc->source);
@@ -212,11 +227,12 @@ const char *sp_StringScanner_getch(sp_StringScanner *sc) {
     sc->matched_p = 0;
     return sp_ext_str_empty();
   }
-  char *c = sc_substr(sc->source, sc->pos, 1);
+  int64_t clen = sc_char_len(sc->source, sc->pos, slen);
+  char *c = sc_substr(sc->source, sc->pos, clen);
   sc->last_pos = sc->pos;
   sc->matched = c;
   sc->matched_p = 1;
-  sc->pos += 1;
+  sc->pos += clen;
   return c;
 }
 
