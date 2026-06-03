@@ -26,9 +26,11 @@
 #include <setjmp.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
+#include <direct.h>
 /* POSIX compat shims for MinGW */
 #define mmap(a,l,p,f,fd,off) VirtualAlloc(NULL,(l),MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)
 #define munmap(a,l) (VirtualFree((a),0,MEM_RELEASE)?0:-1)
@@ -3586,6 +3588,99 @@ static const char *sp_dir_pwd(void) {
   char *buf = sp_str_alloc(n);
   memcpy(buf, tmp, n + 1);
   return buf;
+}
+/* Dir singleton methods. mkdir/rmdir/chdir use the platform call (the
+   Windows _-prefixed variants take a single path argument); each returns
+   0 on success, matching CRuby's `Dir.mkdir` etc. */
+static mrb_int sp_dir_mkdir(const char *path) {
+#ifdef _WIN32
+  return (mrb_int)_mkdir(path);
+#else
+  return (mrb_int)mkdir(path, 0777);
+#endif
+}
+static mrb_int sp_dir_rmdir(const char *path) {
+#ifdef _WIN32
+  return (mrb_int)_rmdir(path);
+#else
+  return (mrb_int)rmdir(path);
+#endif
+}
+static mrb_int sp_dir_chdir(const char *path) {
+#ifdef _WIN32
+  return (mrb_int)_chdir(path);
+#else
+  return (mrb_int)chdir(path);
+#endif
+}
+static const char *sp_dir_home(void) {
+  const char *h = getenv("HOME");
+#ifdef _WIN32
+  if (!h || !*h) h = getenv("USERPROFILE");
+#endif
+  if (!h) return sp_str_empty;
+  return sp_str_dup_external(h);
+}
+/* Wildcard match for a single path component: `*` (any run, no `/`),
+   `?` (one char). Recursive over `*`; adequate for the common
+   single-directory glob patterns. */
+static int sp_fnmatch1(const char *pat, const char *str) {
+  while (*pat) {
+    if (*pat == '*') {
+      pat++;
+      if (!*pat) return 1;
+      while (*str) { if (sp_fnmatch1(pat, str)) return 1; str++; }
+      return sp_fnmatch1(pat, str);
+    } else if (*pat == '?') {
+      if (!*str) return 0;
+      pat++; str++;
+    } else {
+      if (*pat != *str) return 0;
+      pat++; str++;
+    }
+  }
+  return *str == 0;
+}
+/* Dir.glob(pattern): list directory entries matching the last component
+   of `pattern` (an optional leading `dir/` selects the directory). Hidden
+   entries match only when the pattern itself begins with `.`. Results are
+   sorted, matching Ruby 3.0+ default glob ordering. */
+static sp_StrArray *sp_dir_glob(const char *pattern) {
+  sp_StrArray *a = sp_StrArray_new();
+  if (!pattern) return a;
+  const char *slash = strrchr(pattern, '/');
+  char dirbuf[1024];
+  const char *dirpath;
+  const char *base_pat;
+  if (slash) {
+    size_t dl = (size_t)(slash - pattern);
+    if (dl >= sizeof(dirbuf)) return a;
+    memcpy(dirbuf, pattern, dl);
+    dirbuf[dl] = 0;
+    dirpath = (dl == 0) ? "/" : dirbuf;
+    base_pat = slash + 1;
+  } else {
+    dirpath = ".";
+    base_pat = pattern;
+  }
+  DIR *d = opendir(dirpath);
+  if (!d) return a;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    const char *name = e->d_name;
+    if (name[0] == '.' && base_pat[0] != '.') continue;
+    if (sp_fnmatch1(base_pat, name)) {
+      char full[2048];
+      if (slash) snprintf(full, sizeof(full), "%s/%s", dirbuf, name);
+      else snprintf(full, sizeof(full), "%s", name);
+      char *copy = sp_str_alloc(strlen(full));
+      strcpy(copy, full);
+      sp_StrArray_push(a, copy);
+    }
+  }
+  closedir(d);
+  sp_StrArray_sort_bang(a);
+  return a;
 }
 
 /* File.expand_path(path[, base]) -- CRuby-compatible pure-string

@@ -28040,8 +28040,25 @@ class Compiler
         if mname == "pwd" || mname == "getwd"
           return "sp_dir_pwd()"
         end
-        if mname == "exist?"
+        if mname == "exist?" || mname == "exists?"
           return "sp_file_directory(" + compile_arg0(nid) + ")"
+        end
+        if mname == "home"
+          return "sp_dir_home()"
+        end
+        if mname == "mkdir"
+          return "sp_dir_mkdir(" + compile_arg0(nid) + ")"
+        end
+        if mname == "rmdir" || mname == "delete" || mname == "unlink"
+          return "sp_dir_rmdir(" + compile_arg0(nid) + ")"
+        end
+        if mname == "chdir" && @nd_block[nid] < 0
+          return "sp_dir_chdir(" + compile_arg0(nid) + ")"
+        end
+        if mname == "glob" || mname == "[]"
+          @needs_str_array = 1
+          @needs_gc = 1
+          return "sp_dir_glob(" + compile_arg0(nid) + ")"
         end
       end
       if rcname == "StringScanner"
@@ -28245,7 +28262,7 @@ class Compiler
  # Dir
       if rcname == "Dir"
         if mname == "home"
-          return "sp_str_dup_external(getenv(\"HOME\"))"
+          return "sp_dir_home()"
         end
       end
  # Module class method dispatch

@@ -7123,8 +7123,18 @@ class Compiler
           if mname == "home" || mname == "pwd" || mname == "getwd"
             return "string"
           end
-          if mname == "exist?"
+          if mname == "exist?" || mname == "exists?"
             return "bool"
+          end
+          if mname == "glob" || mname == "[]"
+            @needs_str_array = 1
+            @needs_gc = 1
+            return "str_array"
+          end
+ # mkdir / rmdir / chdir / delete return 0 (mrb_int).
+          if mname == "mkdir" || mname == "rmdir" || mname == "delete" ||
+             mname == "unlink" || (mname == "chdir" && @nd_block[nid] < 0)
+            return "int"
           end
         end
         if rcname == "Integer"
