@@ -5312,6 +5312,42 @@ class Compiler
         return ""
       end
       rt = infer_type(recv)
+ # Struct#dig(key, ...): the first key is member access, typed as
+ # that member's ivar type. With further keys the result digs deeper
+ # and is dynamic (poly). Mirrors the Struct#[] arm + the codegen
+ # emit_dig_step chain.
+      sci_dg = struct_recv_ci(recv)
+      if sci_dg >= 0
+        args_id_dg = @nd_arguments[nid]
+        if args_id_dg >= 0
+          a_dg = get_args(args_id_dg)
+          if a_dg.length >= 1
+            readers_dg = @cls_attr_readers[sci_dg].split(";", -1)
+            fld_dg = ""
+            if @nd_type[a_dg[0]] == "SymbolNode" || @nd_type[a_dg[0]] == "StringNode"
+              fld_dg = @nd_content[a_dg[0]]
+            elsif @nd_type[a_dg[0]] == "IntegerNode"
+              idx_dg = @nd_value[a_dg[0]].to_i
+              if idx_dg < 0
+                idx_dg = idx_dg + readers_dg.length
+              end
+              if idx_dg >= 0 && idx_dg < readers_dg.length
+                fld_dg = readers_dg[idx_dg]
+              end
+            end
+            if fld_dg != ""
+              ft_dg = cls_ivar_type(sci_dg, "@" + fld_dg)
+              if ft_dg != ""
+                if a_dg.length == 1
+                  return ft_dg
+                end
+                @needs_rb_value = 1
+                return "poly"
+              end
+            end
+          end
+        end
+      end
  # poly_array recv with multi-arg dig: result is sp_RbVal
  # because the inner step walks a per-element cls_id
  # dispatch. Issue #555 case 07.

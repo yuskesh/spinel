@@ -24057,7 +24057,7 @@ class Compiler
  # Array#dig with a single index reduces to []. Multi-arg dig that
  # walks into nested arrays/hashes isn't supported here yet — fall
  # through to the unsupported-call warning.
-    if mname == "dig"
+    if mname == "dig" && is_array_type(recv_type) == 1
       args_id = @nd_arguments[nid]
       if args_id >= 0
         aargs = get_args(args_id)
@@ -25889,7 +25889,7 @@ class Compiler
 
   def compile_hash_method_expr(nid, mname, rc, recv_type)
  # Hash methods
-    if mname == "dig"
+    if mname == "dig" && is_hash_type(recv_type) == 1
       return compile_hash_dig(nid, rc, recv_type)
     end
  # `to_h` on a Hash variant is identity — return the receiver
@@ -29423,6 +29423,62 @@ class Compiler
               end
               if fld_st != "" && cls_has_attr_reader(ci, fld_st) == 1
                 return rc + arrow + sanitize_ivar(fld_st)
+              end
+            end
+          end
+        end
+ # Struct#dig(key, ...) -- the first key is member access (same
+ # resolution as Struct#[]); any further keys dig into the member's
+ # value via emit_dig_step's cls_id-aware traversal, mirroring the
+ # poly_array multi-arg dig path. Gated on no user-defined dig.
+        if mname == "dig" && cls_find_method(ci, "dig") < 0
+          args_id_dg = @nd_arguments[nid]
+          if args_id_dg >= 0
+            a_dg = get_args(args_id_dg)
+            if a_dg.length >= 1
+              readers_dg = @cls_attr_readers[ci].split(";", -1)
+              fld_dg = ""
+              if @nd_type[a_dg[0]] == "SymbolNode" || @nd_type[a_dg[0]] == "StringNode"
+                fld_dg = @nd_content[a_dg[0]]
+              elsif @nd_type[a_dg[0]] == "IntegerNode"
+                idx_dg = @nd_value[a_dg[0]].to_i
+                if idx_dg < 0
+                  idx_dg = idx_dg + readers_dg.length
+                end
+                if idx_dg >= 0 && idx_dg < readers_dg.length
+                  fld_dg = readers_dg[idx_dg]
+                end
+              end
+              if fld_dg != "" && cls_has_attr_reader(ci, fld_dg) == 1
+                member_dg = rc + arrow + sanitize_ivar(fld_dg)
+                if a_dg.length == 1
+                  return member_dg
+                end
+                @needs_rb_value = 1
+                @needs_gc = 1
+                acc_dg = new_temp
+                emit("  sp_RbVal " + acc_dg + " = " + box_value_to_poly(cls_ivar_type(ci, "@" + fld_dg), member_dg) + ";")
+                si_dg = 1
+                while si_dg < a_dg.length
+                  kt_dg = infer_type(a_dg[si_dg])
+                  key_tmp_dg = new_temp
+                  if kt_dg == "symbol"
+                    emit("  sp_sym " + key_tmp_dg + " = " + compile_expr(a_dg[si_dg]) + ";")
+                    @needs_sym_int_hash = 1
+                    @needs_sym_str_hash = 1
+                    @needs_sym_poly_hash = 1
+                  elsif kt_dg == "string"
+                    emit("  const char *" + key_tmp_dg + " = " + compile_expr_as_string(a_dg[si_dg]) + ";")
+                    @needs_str_poly_hash = 1
+                  elsif kt_dg == "int"
+                    emit("  mrb_int " + key_tmp_dg + " = " + compile_expr(a_dg[si_dg]) + ";")
+                  else
+                    emit("  mrb_int " + key_tmp_dg + " = 0; (void)" + key_tmp_dg + ";")
+                  end
+                  emit_dig_step(acc_dg, key_tmp_dg, kt_dg)
+                  si_dg = si_dg + 1
+                end
+                return acc_dg
               end
             end
           end
