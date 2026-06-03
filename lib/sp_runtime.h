@@ -1027,6 +1027,12 @@ static mrb_float sp_FloatArray_sum(sp_FloatArray*a,mrb_float init){mrb_float s=i
 static void sp_FloatArray_replace(sp_FloatArray*dst,sp_FloatArray*src){dst->len=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*dst->cap;h->size-=sizeof(mrb_float)*dst->cap;void*nd=realloc(dst->data,sizeof(mrb_float)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(mrb_float*)nd;dst->cap=src->len;h->size+=sizeof(mrb_float)*dst->cap;sp_gc_bytes+=sizeof(mrb_float)*dst->cap;}memcpy(dst->data,src->data,sizeof(mrb_float)*src->len);dst->len=src->len;}
 static inline mrb_float sp_FloatArray_pop(sp_FloatArray*a){if(!a||a->len<=0)return 0.0;if(a->frozen){sp_raise_frozen_array();return 0.0;}return a->data[--a->len];}
 static inline mrb_float sp_FloatArray_shift(sp_FloatArray*a){if(!a||a->len==0)return 0.0;if(a->frozen){sp_raise_frozen_array();return 0.0;}mrb_float v=a->data[0];for(mrb_int i=0;i+1<a->len;i++)a->data[i]=a->data[i+1];a->len--;return v;}
+/* delete_at for float arrays -- the IntArray/StrArray peers existed but
+   FloatArray lacked it, so `[1.0].delete_at(0)` raised NoMethodError at runtime
+   (surfaced by the tep openai_server embeddings path). FloatArray is 0-based (no
+   `start` offset, unlike IntArray). Returns 0.0 on out-of-range (delete_at's nil
+   there). (join lives further down, where sp_float_to_s / sp_String are in scope.) */
+static inline mrb_float sp_FloatArray_delete_at(sp_FloatArray*a,mrb_int i){if(!a)return 0.0;if(a->frozen){sp_raise_frozen_array();return 0.0;}if(i<0)i+=a->len;if(i<0||i>=a->len)return 0.0;mrb_float v=a->data[i];for(mrb_int j=i;j+1<a->len;j++)a->data[j]=a->data[j+1];a->len--;return v;}
 static inline mrb_int sp_FloatArray_length(sp_FloatArray*a){return a->len;}
 static inline mrb_bool sp_FloatArray_empty(sp_FloatArray*a){return a->len==0;}
 static inline mrb_float sp_FloatArray_get(sp_FloatArray*a,mrb_int i){if(!a)return 0.0;if(i<0)i+=a->len;if(i<0||i>=a->len)return 0.0;return a->data[i];}
@@ -1878,6 +1884,12 @@ static inline const char *sp_File_path(sp_File *f) { return f && f->path ? f->pa
    the same shape as the empty-array case. */
 static const char*sp_IntArray_inspect(sp_IntArray*a){if(!a)return "[]";sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(a->data[a->start+i]));}sp_String_append(s,"]");return s->data;}
 static const char*sp_FloatArray_inspect(sp_FloatArray*a){if(!a)return "[]";sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_float_inspect(a->data[i]));}sp_String_append(s,"]");return s->data;}
+/* Array#join for float arrays -- each element via the Ruby-faithful
+   sp_float_to_s ("1.0", not "1"). Mirrors sp_IntArray_join exactly: build in a
+   malloc buffer, return an sp_str_alloc'd copy. (Not sp_String#data, whose owner
+   isn't GC-rooted across the return.) sp_float_to_s's result is copied
+   immediately, before the next call can reuse its buffer. */
+static const char*sp_FloatArray_join(sp_FloatArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;if(a){for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}const char*es=sp_float_to_s(a->data[i]);size_t el=strlen(es);if(len+el>=cap){while(len+el>=cap)cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,es,el);len+=el;}}buf[len]=0;char*r=sp_str_alloc(len);memcpy(r,buf,len);free(buf);return r;}
 static mrb_bool sp_FloatArray_eq(sp_FloatArray*a,sp_FloatArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(a->data[i]!=b->data[i])return FALSE;return TRUE;}
 static const char*sp_StrArray_inspect(sp_StrArray*a){if(!a)return "[]";sp_String*s=sp_String_new("[");for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(a->data[i]));}sp_String_append(s,"]");return s->data;}
 static mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}

@@ -25469,6 +25469,18 @@ class Compiler
         emit("  sp_FloatArray *" + tmp_ta + " = sp_FloatArray_new(); sp_FloatArray_replace(" + tmp_ta + ", " + rc + ");")
         return tmp_ta
       end
+      if mname == "delete_at"
+ # Remove and return the element at i (mirrors the IntArray peer;
+ # returns 0.0 on out-of-range, matching delete_at's nil there).
+        return "sp_FloatArray_delete_at(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+      end
+      if mname == "join"
+        jarg = compile_arg0(nid)
+        if jarg == "0"
+          jarg = "\"\""
+        end
+        return "sp_FloatArray_join(" + rc + ", " + jarg + ")"
+      end
     end
     if is_ptr_array_type(recv_type) == 1
       elem_type = ptr_array_elem_type(recv_type)
