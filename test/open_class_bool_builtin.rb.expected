@@ -1,0 +1,6 @@
+true:TrueClass
+false:FalseClass
+true:TrueClass
+false:FalseClass
+object:TrueClass
+object:FalseClass

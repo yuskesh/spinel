@@ -4057,12 +4057,16 @@ class Compiler
       return "void"
     end
     if t == "SelfNode"
-      if @current_class_idx >= 0
-        return "obj_" + @cls_names[@current_class_idx]
+      oc_st = open_class_self_type_for_method(@current_method_name)
+      if oc_st != ""
+        return oc_st
       end
       st = find_var_type("__self_type")
       if st != ""
         return st
+      end
+      if @current_class_idx >= 0
+        return "obj_" + @cls_names[@current_class_idx]
       end
       return "int"
     end
@@ -11195,6 +11199,73 @@ class Compiler
     ""
   end
 
+  def open_class_poly_self_method?(mfn)
+    if !mfn.start_with?("__oc_")
+      return 0
+    end
+    if mfn.start_with?("__oc_Integer_") || mfn.start_with?("__oc_String_") || mfn.start_with?("__oc_Float_")
+      return 0
+    end
+    1
+  end
+
+  def open_class_self_type_for_method(mfn)
+    if mfn.start_with?("__oc_Integer_")
+      return "int"
+    end
+    if mfn.start_with?("__oc_String_")
+      return "string"
+    end
+    if mfn.start_with?("__oc_Float_")
+      return "float"
+    end
+    if open_class_poly_self_method?(mfn) == 1
+      return "poly"
+    end
+    ""
+  end
+
+  def open_class_name_for_type(t)
+    bt = base_type(t)
+    if bt == "int" || bt == "bigint"
+      return "Integer"
+    end
+    if bt == "string" || bt == "mutable_str"
+      return "String"
+    end
+    if bt == "float"
+      return "Float"
+    end
+    if bt == "symbol"
+      return "Symbol"
+    end
+    if bt == "nil"
+      return "NilClass"
+    end
+    if is_array_type(bt) == 1
+      return "Array"
+    end
+    if is_hash_type(bt) == 1
+      return "Hash"
+    end
+    if bt == "range"
+      return "Range"
+    end
+    if bt == "time"
+      return "Time"
+    end
+    if bt == "proc" || bt == "lambda"
+      return "Proc"
+    end
+    if bt == "class"
+      return "Class"
+    end
+    if bt == "encoding"
+      return "Encoding"
+    end
+    ""
+  end
+
   def method_params_decl(mi)
     mfullname = @meth_names[mi]
     pnames = @meth_param_names[mi].split(",", -1)
@@ -11209,6 +11280,9 @@ class Compiler
     end
     if mfullname.start_with?("__oc_Float_")
       oc_self = "mrb_float self"
+    end
+    if open_class_poly_self_method?(mfullname) == 1
+      oc_self = "sp_RbVal self"
     end
     if oc_self != ""
       if pnames.length == 0
@@ -12782,6 +12856,9 @@ class Compiler
     if mfullname.start_with?("__oc_Float_")
       oc_type = "float"
     end
+    if open_class_poly_self_method?(mfullname) == 1
+      oc_type = "poly"
+    end
 
     if @meth_has_yield[mi] == 1
       @in_yield_method = 1
@@ -13383,8 +13460,11 @@ class Compiler
       if mname_ch == "class"
  # `.class` lowers to a sp_Class literal -- the names
  # table plus sp_class_to_s back the .to_s / .name / .inspect
- # chain that typically follows.
+ # chain that typically follows. Some `.class` receivers are boxed
+ # open-class `self` values, so make the poly helper available before
+ # method bodies are emitted.
         @needs_class_table = 1
+        @needs_class_for_poly = 1
       end
       if mname_ch == "sort" || mname_ch == "sort!"
  # `.sort` / `.sort!` on a sym_array compiles via
@@ -18944,16 +19024,10 @@ class Compiler
  # falls back to the stored cls_id. Avoids the
  # compile_poly_method_call warning + emit-0 path.
       if mname == "class"
-        int_cls_id_pc = builtin_class_id_for_name("Integer")
-        str_cls_id_pc = builtin_class_id_for_name("String")
-        flt_cls_id_pc = builtin_class_id_for_name("Float")
-        sym_cls_id_pc = builtin_class_id_for_name("Symbol")
-        nil_cls_id_pc = builtin_class_id_for_name("NilClass")
-        true_cls_id_pc = builtin_class_id_for_name("TrueClass")
-        false_cls_id_pc = builtin_class_id_for_name("FalseClass")
+        @needs_class_for_poly = 1
         tmp_pc_rb = new_temp
         emit("  sp_RbVal " + tmp_pc_rb + " = " + rc + ";")
-        return "((sp_Class){" + tmp_pc_rb + ".tag == SP_TAG_INT ? " + int_cls_id_pc.to_s + "LL : " + tmp_pc_rb + ".tag == SP_TAG_STR ? " + str_cls_id_pc.to_s + "LL : " + tmp_pc_rb + ".tag == SP_TAG_FLT ? " + flt_cls_id_pc.to_s + "LL : " + tmp_pc_rb + ".tag == SP_TAG_SYM ? " + sym_cls_id_pc.to_s + "LL : " + tmp_pc_rb + ".tag == SP_TAG_NIL ? " + nil_cls_id_pc.to_s + "LL : " + tmp_pc_rb + ".tag == SP_TAG_BOOL ? (" + tmp_pc_rb + ".v.b ? " + true_cls_id_pc.to_s + "LL : " + false_cls_id_pc.to_s + "LL) : " + tmp_pc_rb + ".cls_id})"
+        return "sp_class_for_poly(" + tmp_pc_rb + ")"
       end
       return compile_poly_method_call(nid, rc, mname)
     end
@@ -29081,18 +29155,15 @@ class Compiler
 
   def compile_open_class_dispatch_expr(nid, mname, rc, recv_type)
  # Open class method dispatch on built-in types
-    oc_prefix = ""
-    if recv_type == "int" || recv_type == "bigint"
-      oc_prefix = "__oc_Integer_"
+    if base_type(recv_type) == "bool"
+      bool_oc = compile_bool_open_class_dispatch_expr(nid, mname, rc)
+      if bool_oc != ""
+        return bool_oc
+      end
     end
-    if recv_type == "string"
-      oc_prefix = "__oc_String_"
-    end
-    if recv_type == "float"
-      oc_prefix = "__oc_Float_"
-    end
-    if oc_prefix != ""
-      oc_name = oc_prefix + mname
+    oc_cname = open_class_name_for_type(recv_type)
+    if oc_cname != ""
+      oc_name = "__oc_" + oc_cname + "_" + mname
       oc_mi = find_method_idx(oc_name)
       if oc_mi >= 0
  # Open-class `self` for Integer is always `mrb_int` (see
@@ -29104,14 +29175,69 @@ class Compiler
           rc_oc = "sp_bigint_to_int((sp_Bigint *)" + rc + ")"
         end
         ca = compile_call_args(nid)
-        if ca != ""
-          return "sp_" + sanitize_name(oc_name) + "(" + rc_oc + ", " + ca + ")"
-        else
-          return "sp_" + sanitize_name(oc_name) + "(" + rc_oc + ")"
-        end
+        return compile_open_class_call_expr(oc_name, oc_mi, recv_type, rc_oc, ca, infer_type(nid))
       end
     end
+    oc_name_obj = "__oc_Object_" + mname
+    oc_mi_obj = find_method_idx(oc_name_obj)
+    if oc_mi_obj >= 0
+      ca_obj = compile_call_args(nid)
+      return compile_open_class_call_expr(oc_name_obj, oc_mi_obj, recv_type, rc, ca_obj, infer_type(nid))
+    end
     ""
+  end
+
+  def compile_open_class_call_expr(oc_name, oc_mi, recv_type, recv_expr, ca, target_type)
+    rc_oc = recv_expr
+    if open_class_poly_self_method?(oc_name) == 1
+      rc_oc = box_value_to_poly(recv_type, recv_expr)
+    end
+    call = ""
+    if ca != ""
+      call = "sp_" + sanitize_name(oc_name) + "(" + rc_oc + ", " + ca + ")"
+    else
+      call = "sp_" + sanitize_name(oc_name) + "(" + rc_oc + ")"
+    end
+    mt = @meth_return_types[oc_mi]
+    if target_type == "poly" && mt != "" && mt != "poly" && mt != "void"
+      return box_value_to_poly(mt, call)
+    end
+    call
+  end
+
+  def compile_bool_open_class_branch_expr(mname, bool_expr, ca, target_type)
+    cname = bool_expr == "TRUE" ? "TrueClass" : "FalseClass"
+    oc_name = "__oc_" + cname + "_" + mname
+    oc_mi = find_method_idx(oc_name)
+    if oc_mi >= 0
+      return compile_open_class_call_expr(oc_name, oc_mi, "bool", bool_expr, ca, target_type)
+    end
+    oc_name_obj = "__oc_Object_" + mname
+    oc_mi_obj = find_method_idx(oc_name_obj)
+    if oc_mi_obj >= 0
+      return compile_open_class_call_expr(oc_name_obj, oc_mi_obj, "bool", bool_expr, ca, target_type)
+    end
+    c_default_val(target_type)
+  end
+
+  def compile_bool_open_class_dispatch_expr(nid, mname, rc)
+    has_true = find_method_idx("__oc_TrueClass_" + mname) >= 0
+    has_false = find_method_idx("__oc_FalseClass_" + mname) >= 0
+    has_obj = find_method_idx("__oc_Object_" + mname) >= 0
+    if has_true == false && has_false == false && has_obj == false
+      return ""
+    end
+    ca = compile_call_args(nid)
+    target_type = infer_type(nid)
+    if @nd_type[@nd_receiver[nid]] == "TrueNode"
+      return compile_bool_open_class_branch_expr(mname, "TRUE", ca, target_type)
+    end
+    if @nd_type[@nd_receiver[nid]] == "FalseNode"
+      return compile_bool_open_class_branch_expr(mname, "FALSE", ca, target_type)
+    end
+    true_expr = compile_bool_open_class_branch_expr(mname, "TRUE", ca, target_type)
+    false_expr = compile_bool_open_class_branch_expr(mname, "FALSE", ca, target_type)
+    "((" + rc + ") ? " + true_expr + " : " + false_expr + ")"
   end
 
   def is_static_const_ref(aid)

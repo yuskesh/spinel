@@ -2848,12 +2848,16 @@ class Compiler
       return "void"
     end
     if t == "SelfNode"
-      if @current_class_idx >= 0
-        return "obj_" + @cls_names[@current_class_idx]
+      oc_st = open_class_self_type_for_method(@current_method_name)
+      if oc_st != ""
+        return oc_st
       end
       st = find_var_type("__self_type")
       if st != ""
         return st
+      end
+      if @current_class_idx >= 0
+        return "obj_" + @cls_names[@current_class_idx]
       end
       return "int"
     end
@@ -7773,23 +7777,117 @@ class Compiler
  # Check open class methods for receiver type
     if recv >= 0
       rt = infer_type(recv)
-      oc_prefix = ""
-      if rt == "int"
-        oc_prefix = "__oc_Integer_"
+      if base_type(rt) == "bool"
+        brt = infer_bool_open_class_type(mname, recv)
+        if brt != ""
+          return brt
+        end
       end
-      if rt == "string"
-        oc_prefix = "__oc_String_"
-      end
-      if rt == "float"
-        oc_prefix = "__oc_Float_"
-      end
-      if oc_prefix != ""
-        oc_name = oc_prefix + mname
+      oc_cname = open_class_name_for_type(rt)
+      if oc_cname != ""
+        oc_name = "__oc_" + oc_cname + "_" + mname
         oc_mi = find_method_idx(oc_name)
         if oc_mi >= 0
           return @meth_return_types[oc_mi]
         end
       end
+      oc_name_obj = "__oc_Object_" + mname
+      oc_mi_obj = find_method_idx(oc_name_obj)
+      if oc_mi_obj >= 0
+        return @meth_return_types[oc_mi_obj]
+      end
+    end
+    ""
+  end
+
+  def infer_bool_open_class_type(mname, recv)
+    types = []
+    nt = @nd_type[recv]
+    if nt != "FalseNode"
+      mi_true = find_method_idx("__oc_TrueClass_" + mname)
+      if mi_true >= 0
+        types.push(@meth_return_types[mi_true])
+      end
+    end
+    if nt != "TrueNode"
+      mi_false = find_method_idx("__oc_FalseClass_" + mname)
+      if mi_false >= 0
+        types.push(@meth_return_types[mi_false])
+      end
+    end
+    mi_obj = find_method_idx("__oc_Object_" + mname)
+    if mi_obj >= 0
+      types.push(@meth_return_types[mi_obj])
+    end
+    if types.length == 0
+      return ""
+    end
+    unify_return_type(types)
+  end
+
+  def open_class_name_for_type(t)
+    bt = base_type(t)
+    if bt == "int" || bt == "bigint"
+      return "Integer"
+    end
+    if bt == "string" || bt == "mutable_str"
+      return "String"
+    end
+    if bt == "float"
+      return "Float"
+    end
+    if bt == "symbol"
+      return "Symbol"
+    end
+    if bt == "nil"
+      return "NilClass"
+    end
+    if is_array_type(bt) == 1
+      return "Array"
+    end
+    if is_hash_type(bt) == 1
+      return "Hash"
+    end
+    if bt == "range"
+      return "Range"
+    end
+    if bt == "time"
+      return "Time"
+    end
+    if bt == "proc" || bt == "lambda"
+      return "Proc"
+    end
+    if bt == "class"
+      return "Class"
+    end
+    if bt == "encoding"
+      return "Encoding"
+    end
+    ""
+  end
+
+  def open_class_poly_self_method?(mfn)
+    if !mfn.start_with?("__oc_")
+      return 0
+    end
+    if mfn.start_with?("__oc_Integer_") || mfn.start_with?("__oc_String_") || mfn.start_with?("__oc_Float_")
+      return 0
+    end
+    1
+  end
+
+  def open_class_self_type_for_method(mfn)
+    if mfn.start_with?("__oc_Integer_")
+      return "int"
+    end
+    if mfn.start_with?("__oc_String_")
+      return "string"
+    end
+    if mfn.start_with?("__oc_Float_")
+      return "float"
+    end
+    if open_class_poly_self_method?(mfn) == 1
+      return "poly"
     end
     ""
   end
@@ -9358,19 +9456,6 @@ class Compiler
     is_user_exception_subclass(name)
   end
 
-  def is_builtin_type_name(name)
-    if name == "Integer"
-      return 1
-    end
-    if name == "String"
-      return 1
-    end
-    if name == "Float"
-      return 1
-    end
-    0
-  end
-
  # built-in class / module names that
  # get a reserved cls_id. Kept in sync with
  # spinel_codegen.rb's @builtin_class_names array.
@@ -10612,7 +10697,7 @@ class Compiler
     end
 
  # Check for open class on built-in type
-    if is_builtin_type_name(cname) == 1
+    if is_builtin_class_const_name(cname) == 1
       @open_class_names.push(cname)
  # Collect methods as top-level functions with special naming
       body = @nd_body[nid]
@@ -22260,6 +22345,9 @@ class Compiler
       end
       if mfn.start_with?("__oc_Float_")
         declare_var("__self_type", "float")
+      end
+      if open_class_poly_self_method?(mfn) == 1
+        declare_var("__self_type", "poly")
       end
       pnames = @meth_param_names[i].split(",", -1)
       ptypes = @meth_param_types[i].split(",", -1)
