@@ -24606,6 +24606,17 @@ class Compiler
       pfx = array_c_prefix(recv_type)
       return "(sp_" + pfx + "_length(" + rc + ") == 0)"
     end
+ # Block-less all?/one? on a value-typed array. Elements (int/str/sym/float)
+ # are never nil or false, so all? is always true (empty array included) and
+ # one? is exactly a length of 1. Restricted to these element types; poly
+ # arrays can hold nil/false and need per-element truthiness, handled elsewhere.
+    if (mname == "all?" || mname == "one?") && @nd_block[nid] < 0 && (recv_type == "int_array" || recv_type == "str_array" || recv_type == "sym_array" || recv_type == "float_array")
+      if mname == "all?"
+        return "TRUE"
+      end
+      pfx = array_c_prefix(recv_type)
+      return "(sp_" + pfx + "_length(" + rc + ") == 1)"
+    end
     if mname == "count" && @nd_arguments[nid] >= 0 && @nd_block[nid] < 0
  # count(val) — count occurrences of a specific value
       pfx = array_c_prefix(recv_type)
