@@ -10104,6 +10104,36 @@ class Compiler
     0
   end
 
+ # A self-referential holder stores its own type (a cons cell whose tail is
+ # another cell, a tree node holding child nodes, an env chained to a parent
+ # env). Cloning such a class to a synthetic specialization leaves the
+ # constructor's self-typed parameter pointing at the original class while the
+ # rewritten call site passes the specialized type, so the generated C does not
+ # type-check (and the recursive method dispatch resolves to an undeclared
+ # base-class function). Specialization buys nothing measurable here, so skip
+ # the whole class when any of its construction sites takes its own type as an
+ # object argument.
+  def implicit_class_has_self_obj_holder_site?(cname, site_ids, site_classes)
+    k = 0
+    while k < site_ids.length
+      if site_classes[k] == cname
+        arg_types = implicit_new_site_arg_types(site_ids[k])
+        j = 0
+        while j < arg_types.length
+          bt = base_type(arg_types[j])
+          if is_obj_type(bt) == 1 && is_array_type(bt) == 0
+            if bt[4, bt.length - 4] == cname
+              return 1
+            end
+          end
+          j = j + 1
+        end
+      end
+      k = k + 1
+    end
+    0
+  end
+
   def implicit_new_site_obj_signature_key(cname, nid)
     arg_types = implicit_new_site_arg_types(nid)
     key = cname + "|" + arg_types.length.to_s
@@ -10365,6 +10395,7 @@ class Compiler
     while ci < original_class_count
       cname = @cls_names[ci]
       if count_implicit_new_sites_for_class(site_classes, cname) >= 2
+        holder_self_ref = implicit_class_has_self_obj_holder_site?(cname, site_ids, site_classes)
         k = 0
         while k < site_ids.length
           if site_classes[k] == cname
@@ -10372,7 +10403,7 @@ class Compiler
             holder_site = 0
             if implicit_specializable_class?(ci) == 1 && implicit_new_site_arg_count(site_ids[k]) == 0 && implicit_candidate_class_escaped?(escaping_classes, cname) == 0
               specialize_site = 1
-            elsif implicit_holder_specializable_class?(ci) == 1 && implicit_new_site_arg_count(site_ids[k]) > 0 && implicit_new_site_has_obj_arg?(site_ids[k]) == 1
+            elsif implicit_holder_specializable_class?(ci) == 1 && holder_self_ref == 0 && implicit_new_site_arg_count(site_ids[k]) > 0 && implicit_new_site_has_obj_arg?(site_ids[k]) == 1
               specialize_site = 1
               holder_site = 1
             end
