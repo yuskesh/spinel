@@ -48,6 +48,7 @@ OUTPUT=""
 C_ONLY=0
 EMIT_RBS=0
 EMIT_TYPES=0
+EMIT_SYMBOL_MAP=0
 STDOUT_MODE=0
 RUN_MODE=0
 OPT_LEVEL="2"
@@ -127,6 +128,10 @@ $1"
                   # diagnostics as JSON (for the ruby-lsp addon). Needs node
                   # positions, so it turns on SPINEL_DEBUG below.
                 EMIT_TYPES=1; DEBUG=1; shift ;;
+    --emit-symbol-map) # Dump emitted-symbol -> Ruby-name map as JSON (#1334).
+                  # Runs codegen (the mangling lives there) but writes no
+                  # binary. DEBUG on so node positions (file/line) are stamped.
+                EMIT_SYMBOL_MAP=1; DEBUG=1; shift ;;
     -S)         STDOUT_MODE=1; shift ;;
     -E)         RUN_MODE=1; shift ;;
     *.rb)
@@ -343,6 +348,28 @@ if [ "$EMIT_RBS" -eq 1 ]; then
 fi
 if [ "$EMIT_TYPES" -eq 1 ]; then
   echo "Wrote $TYPES_OUT" >&2
+  exit 0
+fi
+
+# --emit-symbol-map needs codegen (the C name-mangling lives there) but emits
+# no binary: run codegen with SPINEL_EMIT_SYMBOL_MAP set, route the C output
+# to a temp, and stop.
+if [ "$EMIT_SYMBOL_MAP" -eq 1 ]; then
+  SYM_OUT="${OUTPUT:-$BASENAME.symbols.json}"
+  export SPINEL_EMIT_SYMBOL_MAP="$SYM_OUT"
+  SYM_C_TMP="$(mktemp /tmp/spinel_symc.XXXXXX)"
+  if [ -x "$CODEGEN_BIN" ]; then
+    "$CODEGEN_BIN" "$AST_TMP" "$IR_TMP" "$SYM_C_TMP"
+  else
+    ruby "$CODEGEN_RB" "$AST_TMP" "$IR_TMP" "$SYM_C_TMP"
+  fi
+  cg_rc=$?
+  rm -f "$SYM_C_TMP"
+  if [ $cg_rc -ne 0 ]; then
+    echo "spinel: codegen failed" >&2
+    exit 1
+  fi
+  echo "Wrote $SYM_OUT" >&2
   exit 0
 fi
 

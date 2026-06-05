@@ -8759,6 +8759,138 @@ class Compiler
  # refines. Identical fingerprints between successive iterations means a
  # fixed point has been reached and further iterations are wasted work.
 
+ # Symbol-map export (#1334). Serialize the emitted C-symbol -> Ruby-name
+ # mapping as JSON, gated by SPINEL_EMIT_SYMBOL_MAP. Built here in codegen
+ # -- where the C name-mangling (`sanitize_name`, the `sp_<Class>_<m>`
+ # shape) actually lives -- so the map cannot drift from what is emitted,
+ # the way an out-of-process re-implementation (or an analyze-side rebuild)
+ # would. The METHOD name is exact (the original Ruby name, including
+ # `?`/`!`/operators that `sanitize_name` collapses one-way and the runtime
+ # `sp_bt_symbol` cannot reverse). The class path demangles `_` -> `::`
+ # like `sp_bt_symbol`, so a class with a literal underscore in a namespace
+ # is reported with `::` (a documented limitation shared with the runtime
+ # demangler; recovering it exactly would need the source constant path).
+ # Sibling export to `--emit-rbs` (#1276) / `--emit-types` (#1298).
+  def emit_symbol_map_json
+ # `{-1 => -1}` seed pins this to int_int_hash (an empty `{}` infers as
+ # str_int_hash in the self-hosted build, and the int node-id keys would
+ # then be passed to sp_StrIntHash_set as `const char *` and crash). -1 is
+ # never a real (body) node id. Same pattern as @cls_meth_idx_cache.
+    body_pos = {-1 => -1}
+    pn = 0
+    while pn < @nd_type.length
+      if @nd_type[pn] == "DefNode"
+        pbid = @nd_body[pn]
+        if pbid != nil && pbid >= 0
+          body_pos[pbid] = pn
+        end
+      end
+      pn = pn + 1
+    end
+    out = ""
+    n = 0
+    mi = 0
+    while mi < @meth_names.length
+      mn = @meth_names[mi]
+      if mn != nil && mn != ""
+        tbid = mi < @meth_body_ids.length ? @meth_body_ids[mi] : -1
+        out = symbol_map_row(out, n, "sp_" + sanitize_name(mn), mn, "toplevel", tbid, body_pos)
+        n = n + 1
+      end
+      mi = mi + 1
+    end
+    ci = 0
+    while ci < @cls_names.length
+      cn = @cls_names[ci]
+      if cn != nil && cn != ""
+        rcls = sym_class_ruby_name(cn)
+        inames = @cls_meth_names[ci].split(";", -1)
+        ibodies = @cls_meth_bodies[ci].split(";", -1)
+        j = 0
+        while j < inames.length
+          if inames[j] != ""
+            ibid = j < ibodies.length ? ibodies[j].to_i : -1
+            out = symbol_map_row(out, n, "sp_" + cn + "_" + sanitize_name(inames[j]), rcls + "#" + inames[j], "imeth", ibid, body_pos)
+            n = n + 1
+          end
+          j = j + 1
+        end
+        snames = @cls_cmeth_names[ci].split(";", -1)
+        sbodies = @cls_cmeth_bodies[ci].split(";", -1)
+        k = 0
+        while k < snames.length
+          if snames[k] != ""
+            sbid = k < sbodies.length ? sbodies[k].to_i : -1
+            out = symbol_map_row(out, n, "sp_" + cn + "_cls_" + sanitize_name(snames[k]), rcls + "." + snames[k], "cmeth", sbid, body_pos)
+            n = n + 1
+          end
+          k = k + 1
+        end
+      end
+      ci = ci + 1
+    end
+    "{\n  \"symbols\": [\n" + out + "\n  ]\n}\n"
+  end
+
+  def symbol_map_row(out, n, c_sym, ruby, kind, bid, body_pos)
+    pos = ",\"file\":null,\"line\":null"
+    if bid != nil && bid >= 0 && body_pos.key?(bid)
+      dn = body_pos[bid]
+      ln = @nd_line[dn]
+      if ln != nil && ln > 0
+        pos = ",\"file\":\"" + sym_json_escape(symbol_file_path(@nd_file[dn])) + "\",\"line\":" + ln.to_s
+      end
+    end
+    row = "    {\"c\":\"" + sym_json_escape(c_sym) + "\",\"ruby\":\"" + sym_json_escape(ruby) + "\",\"kind\":\"" + kind + "\"" + pos + "}"
+    if n > 0
+      return out + ",\n" + row
+    end
+    out + row
+  end
+
+ # C class name (`Tep_Url`) -> Ruby (`Tep::Url`). Lossy for a class with a
+ # literal underscore in a namespace; same assumption as sp_bt_symbol.
+  def sym_class_ruby_name(cn)
+    out = ""
+    i = 0
+    while i < cn.length
+      if cn[i] == "_"
+        out = out + "::"
+      else
+        out = out + cn[i]
+      end
+      i = i + 1
+    end
+    out
+  end
+
+  def symbol_file_path(fid)
+    if fid != nil && fid >= 0 && fid < @file_table.length
+      p = @file_table[fid]
+      if p != nil && p != ""
+        return p
+      end
+    end
+    if @source_file_path != nil && @source_file_path != ""
+      return @source_file_path
+    end
+    "source.rb"
+  end
+
+  def sym_json_escape(s)
+    out = ""
+    i = 0
+    while i < s.length
+      c = s[i]
+      if c == "\"" || c == "\\"
+        out = out + "\\" + c
+      else
+        out = out + c
+      end
+      i = i + 1
+    end
+    out
+  end
 
   def generate_code
  # Mirror analyze's pre-pass: rewrite constant-aliased `class CONST`
@@ -51957,6 +52089,12 @@ compiler.load_analysis_buf(File.read(ir_file))
 # absent from this file by design.
 compiler.generate_code
 result = compiler.build_output
+ # Symbol-map export (#1334): when SPINEL_EMIT_SYMBOL_MAP names a path, dump
+ # the emitted-symbol -> Ruby-name map there. generate_code has run, so the
+ # method/class tables and node positions are populated.
+if ENV["SPINEL_EMIT_SYMBOL_MAP"] != nil && ENV["SPINEL_EMIT_SYMBOL_MAP"] != ""
+  File.write(ENV["SPINEL_EMIT_SYMBOL_MAP"], compiler.emit_symbol_map_json)
+end
 if out_file != nil
   File.write(out_file, result)
 else
