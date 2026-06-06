@@ -5322,7 +5322,7 @@ class Compiler
  # variants and string-typed defaults; broader (poly leaf,
  # hash default, etc.) widening cascades through downstream
  # `is_a?(Hash)` narrowing in real-blog params and is deferred.
-        if rt == "str_int_hash" || rt == "sym_int_hash"
+        if rt == "str_int_hash" || rt == "sym_int_hash" || rt == "int_int_hash"
           fargs_id_f = @nd_arguments[nid]
           if fargs_id_f >= 0
             fargs_f = get_args(fargs_id_f)
@@ -6810,7 +6810,10 @@ class Compiler
           return "string"
         end
         if rt == "sym_int_hash"
-          return "int"
+          return "int?"
+        end
+        if rt == "int_int_hash"
+          return "int?"
         end
         if rt == "sym_str_hash"
           return "string"
@@ -6885,11 +6888,12 @@ class Compiler
  # puzzle 2.
     if mname == "default" && recv >= 0
       rt_d = infer_type(recv)
- # A str_int_hash with no explicit default carries SP_INT_NIL in
+ # An int-valued hash with no explicit default carries SP_INT_NIL in
  # default_v (#801 Phase 4), so `Hash#default` is maybe-nil -> int?,
  # letting `{}.default` surface Ruby nil instead of the raw sentinel.
  # Hash.new(N).default is a present int and prints normally.
-      if base_type(rt_d) == "str_int_hash"
+      bt_d = base_type(rt_d)
+      if bt_d == "str_int_hash" || bt_d == "sym_int_hash" || bt_d == "int_int_hash"
         return "int?"
       end
       if is_hash_type(rt_d) == 1
@@ -30303,7 +30307,10 @@ class Compiler
  # distinct-method-name count, so (ci, mid) pairs never collide.
     ck = ci * 10000000 + mname_to_id(mname)
     if @cls_meth_idx_cache.key?(ck)
-      return @cls_meth_idx_cache[ck]
+ # Checked read (guard proves presence): fetch keeps the cached method
+ # index int, not the maybe-missing int? the public `[]` now yields
+ # (#801 Phase 4), so this hot lookup stays out of the nullable flow.
+      return @cls_meth_idx_cache.fetch(ck)
     end
     mnames = @cls_meth_names[ci].split(";", -1)
     j = 0

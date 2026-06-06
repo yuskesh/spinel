@@ -9309,10 +9309,14 @@ class Compiler
   def emit_sym_int_hash_runtime
     emit_raw("typedef struct{sp_sym*keys;mrb_int*vals;sp_sym*order;mrb_int len;mrb_int cap;mrb_int mask;mrb_int default_v;}sp_SymIntHash;")
     emit_raw("static void sp_SymIntHash_fin(void*p){sp_SymIntHash*h=(sp_SymIntHash*)p;free(h->keys);free(h->vals);free(h->order);}")
-    emit_raw("static sp_SymIntHash*sp_SymIntHash_new(void){sp_SymIntHash*h=(sp_SymIntHash*)sp_gc_alloc(sizeof(sp_SymIntHash),sp_SymIntHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;h->default_v=0;return h;}")
+    emit_raw("static sp_SymIntHash*sp_SymIntHash_new(void){sp_SymIntHash*h=(sp_SymIntHash*)sp_gc_alloc(sizeof(sp_SymIntHash),sp_SymIntHash_fin,NULL);h->cap=16;h->mask=15;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);h->len=0;h->default_v=SP_INT_NIL;return h;}")
     emit_raw("static sp_SymIntHash*sp_SymIntHash_new_with_default(mrb_int d){sp_SymIntHash*h=sp_SymIntHash_new();h->default_v=d;return h;}")
     emit_raw("static void sp_SymIntHash_grow(sp_SymIntHash*h){mrb_int oc=h->cap;sp_sym*ok=h->keys;mrb_int*ov=h->vals;h->cap*=2;h->mask=h->cap-1;h->keys=(sp_sym*)malloc(sizeof(sp_sym)*h->cap);for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->vals=(mrb_int*)calloc(h->cap,sizeof(mrb_int));h->order=(sp_sym*)realloc(h->order,sizeof(sp_sym)*h->cap);h->len=0;for(mrb_int i=0;i<oc;i++){if(ok[i]>=0){mrb_int idx=(mrb_int)(((mrb_int)ok[i])&h->mask);while(h->keys[idx]>=0)idx=(idx+1)&h->mask;h->keys[idx]=ok[i];h->vals[idx]=ov[i];h->len++;}}free(ok);free(ov);}")
     emit_raw("static mrb_int sp_SymIntHash_get(sp_SymIntHash*h,sp_sym k){if(!h)return 0;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}")
+ # Issue #801: maybe-missing public `[]` read. default_v on a miss is
+ # SP_INT_NIL (Ruby nil) for a no-default hash, the explicit default for
+ # Hash.new(N). Proven-present reads keep using _get.
+    emit_raw("static mrb_int sp_SymIntHash_get_opt(sp_SymIntHash*h,sp_sym k){if(!h)return SP_INT_NIL;mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return h->vals[idx];idx=(idx+1)&h->mask;}return h->default_v;}")
     emit_raw("static void sp_SymIntHash_set(sp_SymIntHash*h,sp_sym k,mrb_int v){if(h->len*2>=h->cap)sp_SymIntHash_grow(h);mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}")
     emit_raw("static mrb_bool sp_SymIntHash_has_key(sp_SymIntHash*h,sp_sym k){mrb_int idx=(mrb_int)(((mrb_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}")
  # Hash#value? -- scan stored values for v. O(n) per CRuby. Issue #738.
@@ -9346,7 +9350,7 @@ class Compiler
  # hash key. sp_SymIntHash_get returns 0 for missing keys (line 10176)
  # so the has_key? guard is redundant — drop it for two lookups per
  # element instead of three.
-    emit_raw("static sp_SymIntHash*sp_SymArray_tally(sp_IntArray*a){sp_SymIntHash*h=sp_SymIntHash_new();for(mrb_int i=0;i<a->len;i++){sp_sym k=(sp_sym)a->data[a->start+i];sp_SymIntHash_set(h,k,sp_SymIntHash_get(h,k)+1);}return h;}")
+    emit_raw("static sp_SymIntHash*sp_SymArray_tally(sp_IntArray*a){sp_SymIntHash*h=sp_SymIntHash_new();for(mrb_int i=0;i<a->len;i++){sp_sym k=(sp_sym)a->data[a->start+i];mrb_int c=sp_SymIntHash_has_key(h,k)?sp_SymIntHash_get(h,k):0;sp_SymIntHash_set(h,k,c+1);}return h;}")
  # Cross-variant merge: sym_poly_hash receiver merging in a
  # sym_int_hash arg boxes each int value into sp_RbVal so the
  # result's poly slots are populated correctly. Sibling of
@@ -27145,11 +27149,12 @@ class Compiler
           if aa0.length > 0
             at0 = infer_type(aa0[0])
             if at0 != "symbol" && at0 != "poly"
-              return "((mrb_int)0)"
+ # Wrong-type key can never be present -> miss -> nil (#801 Phase 4).
+              return "SP_INT_NIL"
             end
           end
         end
-        return "sp_SymIntHash_get((sp_SymIntHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
+        return "sp_SymIntHash_get_opt((sp_SymIntHash *)(" + rc + "), " + compile_arg0_as_sym(nid) + ")"
       end
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         args_id1 = @nd_arguments[nid]
@@ -28239,7 +28244,7 @@ class Compiler
     end
     if recv_type == "int_int_hash"
       if mname == "[]"
-        return "sp_IntIntHash_get(" + rc + ", " + compile_arg0_as_int(nid) + ")"
+        return "sp_IntIntHash_get_opt(" + rc + ", " + compile_arg0_as_int(nid) + ")"
       end
       if mname == "has_key?" || mname == "key?" || mname == "include?" || mname == "member?"
         return "sp_IntIntHash_has_key(" + rc + ", " + compile_arg0_as_int(nid) + ")"
