@@ -42894,6 +42894,22 @@ class Compiler
       end
       fk = fk + 1
     end
+ # Capture `self` when the block body references the enclosing instance
+ # (explicit `self`, ivar access, or a no-receiver call resolving to
+ # `self.<m>`). A literal block forwarded into an explicit `&block`
+ # param is lowered here to a standalone proc fn that takes no `self`,
+ # so without this its body would emit a bare `self` that doesn't
+ # compile. Mirrors the fiber-body self capture; same value-type
+ # exclusion (those pass `self` by value, needing a different shape).
+ # Issue #1343.
+    self_captured_proc = 0
+    if @current_class_idx >= 0 && @cls_is_value_type[@current_class_idx] != 1
+      if bbody >= 0 && fiber_body_uses_self(bbody) == 1
+        captures.push("self")
+        capture_types.push("obj_" + @cls_names[@current_class_idx])
+        self_captured_proc = 1
+      end
+    end
     has_captures = 0
     if captures.length > 0
       has_captures = 1
@@ -42911,6 +42927,7 @@ class Compiler
     saved_proc_capture_types = @proc_capture_types
     saved_heap_hp_names_len = @heap_promoted_names.length
     saved_heap_hp_cells_len = @heap_promoted_cells.length
+    saved_self_override_proc = @self_override
     if has_captures == 1
       @in_proc_body = 1
       @proc_captures = captures
@@ -42919,6 +42936,9 @@ class Compiler
       @in_proc_body = 0
       @proc_captures = "".split(",", -1)
       @proc_capture_types = "".split(",", -1)
+    end
+    if self_captured_proc == 1
+      @self_override = "(*_cap->self)"
     end
     push_scope
     pts = "".split("|", -1)
@@ -43018,6 +43038,7 @@ class Compiler
     @in_proc_body = saved_in_proc_body
     @proc_captures = saved_proc_captures
     @proc_capture_types = saved_proc_capture_types
+    @self_override = saved_self_override_proc
     while @heap_promoted_names.length > saved_heap_hp_names_len
       @heap_promoted_names.pop
     end
@@ -43079,45 +43100,49 @@ class Compiler
  # a cell, copy current value into it, register so subsequent
  # references in the enclosing scope go through the cell), then
  # allocate the cap struct and populate its pointers.
+      local_cells = "".split(",", -1)
       k = 0
       while k < captures.length
         vn = captures[k]
         ct = c_type(capture_types[k])
-        already_promoted = 0
-        ci = 0
-        while ci < @heap_promoted_names.length
-          if @heap_promoted_names[ci] == vn
-            already_promoted = 1
+        cell = ""
+        if vn == "self"
+ # `self` resolves to the enclosing C function's parameter, distinct
+ # per method; allocate a dedicated cell and copy it in, bypassing the
+ # persistent heap-promotion map whose cells live in another scope.
+          cell = "_hcell_self_p" + pid.to_s
+          emit("  " + ct + " *" + cell + " = (" + ct + " *)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
+          emit("  *" + cell + " = " + self_expr + ";")
+        else
+          already_promoted = 0
+          ci = 0
+          while ci < @heap_promoted_names.length
+            if @heap_promoted_names[ci] == vn
+              already_promoted = 1
+              cell = @heap_promoted_cells[ci]
+            end
+            ci = ci + 1
           end
-          ci = ci + 1
-        end
-        if already_promoted == 0
-          if @in_proc_body == 1 && proc_capture_index(vn) >= 0
-            cell = "_cap->" + vn
-          else
-            cell = "_hcell_" + vn + "_p" + pid.to_s
-            emit("  " + ct + " *" + cell + " = (" + ct + " *)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
-            emit("  *" + cell + " = " + fiber_var_ref(vn) + ";")
+          if already_promoted == 0
+            if @in_proc_body == 1 && proc_capture_index(vn) >= 0
+              cell = "_cap->" + vn
+            else
+              cell = "_hcell_" + vn + "_p" + pid.to_s
+              emit("  " + ct + " *" + cell + " = (" + ct + " *)sp_gc_alloc(sizeof(" + ct + "), NULL, NULL);")
+              emit("  *" + cell + " = " + fiber_var_ref(vn) + ";")
+            end
+            @heap_promoted_names.push(vn)
+            @heap_promoted_cells.push(cell)
           end
-          @heap_promoted_names.push(vn)
-          @heap_promoted_cells.push(cell)
         end
+        local_cells.push(cell)
         k = k + 1
       end
       cap_ptr = "_cap_ptr_p" + pid.to_s
       emit("  " + cap_name + " *" + cap_ptr + " = (" + cap_name + " *)sp_gc_alloc(sizeof(" + cap_name + "), NULL, " + cap_scan_name + ");")
       k = 0
       while k < captures.length
-        vn = captures[k]
-        ci = 0
-        cell = ""
-        while ci < @heap_promoted_names.length
-          if @heap_promoted_names[ci] == vn
-            cell = @heap_promoted_cells[ci]
-          end
-          ci = ci + 1
-        end
-        emit("  " + cap_ptr + "->" + vn + " = " + cell + ";")
+        emit("  " + cap_ptr + "->" + captures[k] + " = " + local_cells[k] + ";")
         k = k + 1
       end
       return "sp_proc_new_meta(" + fname + ", " + cap_ptr + ", " + cap_scan_name + ", " + meta_args + ")"
