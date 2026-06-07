@@ -3564,6 +3564,15 @@ class Compiler
       if yci_t != ""
         return yci_t
       end
+ # Sibling of the yield path for `&block`-param methods (`def m(&b);
+ # b.call(...); end`) called with a literal block: type the result as
+ # the block body's return type so a pointer value isn't printed as a
+ # raw int. yield_call_inline_type returns "" for these (it gates on
+ # no block param), so the two are mutually exclusive.
+      bpc_t = block_param_call_type(nid)
+      if bpc_t != ""
+        return bpc_t
+      end
     end
  # Cache lookup. analyze.rb's annotate_all_node_types fills
  # @nd_inferred_type for every reachable node OUTSIDE block bodies
@@ -51744,6 +51753,139 @@ class Compiler
     rt_inf = infer_type(st.last)
     @inline_yield_blk = sv_iyb
     @inline_yield_bp_names = sv_iybp
+    rt_inf
+  end
+
+ # Locate the `<bpname>.call(...)` whose value is the return of method
+ # body `bid` (the last statement, optionally wrapped in `return`).
+ # Returns the CallNode id or -1. This is the call whose result type a
+ # literal-block caller can refine.
+  def find_block_param_call_expr(bid, bpname)
+    st = get_stmts(bid)
+    if st.length == 0
+      return -1
+    end
+    last = st.last
+    if @nd_type[last] == "ReturnNode"
+      ra = @nd_arguments[last]
+      if ra >= 0
+        ras = get_args(ra)
+        if ras.length == 1
+          last = ras[0]
+        end
+      end
+    end
+    if @nd_type[last] == "CallNode" && @nd_name[last] == "call"
+      r = @nd_receiver[last]
+      if r >= 0 && @nd_type[r] == "LocalVariableReadNode" && @nd_name[r] == bpname
+        return last
+      end
+    end
+    -1
+  end
+
+ # An `&block`-param method called with a literal block returns the
+ # block's value through sp_proc_call, which carries it in a uniform
+ # `mrb_int` slot — the method's C signature never changes. When the
+ # block body yields a pointer type (string, etc.) the result is
+ # mistyped as int and printed as a raw address. Refine the call's type
+ # per call site to the literal block's return type so readers cast the
+ # carried pointer back. Because the ABI is unchanged, distinct literal
+ # blocks at different call sites coexist. (The carried pointer is
+ # GC-safe for immediate use; a result held across an allocation can be
+ # collected -- a known #1362 limitation shared with the lam_box path.)
+  def block_param_call_type(nid)
+    blk = @nd_block[nid]
+    if blk < 0
+      return ""
+    end
+    mname = @nd_name[nid]
+    recv = @nd_receiver[nid]
+    bid = -1
+    bpname = ""
+    decl_rt = "int"
+    if recv < 0
+      mi = find_method_idx(mname)
+      if mi >= 0 && meth_has_block_param(mi) == 1
+        bid = @meth_body_ids[mi]
+        decl_rt = @meth_return_types[mi]
+        bpname = find_block_param_name(@meth_param_names[mi].split(",", -1), @meth_param_types[mi].split(",", -1))
+      end
+    else
+      rt = base_type(infer_type(recv))
+      if is_obj_type(rt) == 1
+        cn = rt[4, rt.length - 4]
+        cci = find_class_idx(cn)
+        if cci >= 0
+          owner = find_method_owner(cci, mname)
+          if owner != ""
+            oci = find_class_idx(owner)
+            midx = -1
+            if oci >= 0
+              midx = cls_find_method_direct(oci, mname)
+            end
+            if oci >= 0 && midx >= 0 && cls_method_has_block_param(oci, midx) == 1
+              bodies = @cls_meth_bodies[oci].split(";", -1)
+              if midx < bodies.length
+                bid = bodies[midx].to_i
+              end
+              decl_rt = cls_method_return(oci, mname)
+              bpname = find_block_param_name(cls_meth_pnames_get(oci, midx), cls_meth_ptypes_get(oci, midx))
+            end
+          end
+        end
+      end
+    end
+    if bid < 0 || bpname == ""
+      return ""
+    end
+ # Only refine the unhelpful int default; a concrete analyze return
+ # type is authoritative (recomputing here lacks the method's scope).
+    if base_type(decl_rt) != "int"
+      return ""
+    end
+    callx = find_block_param_call_expr(bid, bpname)
+    if callx < 0
+      return ""
+    end
+    bbody = @nd_body[blk]
+    if bbody < 0
+      return ""
+    end
+    bst = get_stmts(bbody)
+    if bst.length == 0
+      return ""
+    end
+    bp_names = "".split(",", -1)
+    bp = @nd_parameters[blk]
+    if bp >= 0
+      inner = @nd_parameters[bp]
+      if inner >= 0
+        reqs = parse_id_list(@nd_requireds[inner])
+        kbp = 0
+        while kbp < reqs.length
+          bp_names.push(@nd_name[reqs[kbp]])
+          kbp = kbp + 1
+        end
+      end
+    end
+    arg_ids = []
+    aid = @nd_arguments[callx]
+    if aid >= 0
+      arg_ids = get_args(aid)
+    end
+    push_scope
+    kp = 0
+    while kp < bp_names.length
+      at = "int"
+      if kp < arg_ids.length
+        at = infer_type(arg_ids[kp])
+      end
+      declare_var(bp_names[kp], at)
+      kp = kp + 1
+    end
+    rt_inf = infer_type(bst.last)
+    pop_scope
     rt_inf
   end
 
