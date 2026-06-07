@@ -51839,6 +51839,58 @@ class Compiler
     rt_inf
   end
 
+ # True when `nid` is a CallNode that resolves to a user-defined method
+ # with a trailing `&block` param (top-level, a self-call in the current
+ # class, or a method on an obj-typed receiver). Restricted to &block-
+ # param methods: those forward the literal block as an sp_Proc and
+ # carry blk.call's value out, so a block-bearing TAIL call to one is
+ # the method's return value (e.g. the recursive `countdown(n - 1) { ...
+ # }`) and must not be dropped. yield-using methods are deliberately
+ # excluded -- their literal-block tail call is already inlined by the
+ # statement path, and rerouting it through compile_expr changes the
+ # block's emit (it broke yield_method_call_in_method_body). Builtin
+ # iterators (`each` / `times`) also fall through to the drop path.
+  def block_bearing_tail_is_user_call(nid)
+    if @nd_type[nid] != "CallNode"
+      return 0
+    end
+    mname = @nd_name[nid]
+    recv = @nd_receiver[nid]
+    if recv < 0
+      mi = find_method_idx(mname)
+      if mi >= 0
+        return meth_has_block_param(mi)
+      end
+      if @current_class_idx >= 0
+        owner_sc = find_method_owner(@current_class_idx, mname)
+        if owner_sc != ""
+          oci_sc = find_class_idx(owner_sc)
+          midx_sc = oci_sc >= 0 ? cls_find_method_direct(oci_sc, mname) : -1
+          if oci_sc >= 0 && midx_sc >= 0
+            return cls_method_has_block_param(oci_sc, midx_sc)
+          end
+        end
+      end
+      return 0
+    end
+    rt = base_type(infer_type(recv))
+    if is_obj_type(rt) == 1
+      cn = rt[4, rt.length - 4]
+      cci = find_class_idx(cn)
+      if cci >= 0
+        owner_rc = find_method_owner(cci, mname)
+        if owner_rc != ""
+          oci_rc = find_class_idx(owner_rc)
+          midx_rc = oci_rc >= 0 ? cls_find_method_direct(oci_rc, mname) : -1
+          if oci_rc >= 0 && midx_rc >= 0
+            return cls_method_has_block_param(oci_rc, midx_rc)
+          end
+        end
+      end
+    end
+    0
+  end
+
  # Find the `vname = proc { ... }` / `vname = lambda { ... }` assignment
  # in body `bid` and return the proc-literal CallNode id (or -1). Used
  # to trace `pv.call` back to the proc body so a method returning a
@@ -51861,14 +51913,51 @@ class Compiler
     -1
   end
 
- # Locate the `<bpname>.call(...)` whose value is the return of the
- # method whose tail lives in `stmts_body_id`, following a proc-var
- # indirection (`p = proc { blk.call }; p.call`) up to a small depth.
- # `decl_body_id` is the method body where proc-var assignments live
- # (it stays fixed as we recurse into proc bodies, since the procs are
- # declared there). Returns the CallNode id or -1.
+ # Is `expr` a governing `<bpname>.call(...)` — directly, or through a
+ # `pv = proc { ... blk.call ... }` proc-var indirection (the proc
+ # literal's own tail is followed)? `decl_body_id` is the method body
+ # where proc-var assignments live. Returns the CallNode id or -1.
+  def check_block_call_expr(expr, bpname, decl_body_id, depth)
+    if expr < 0 || depth > 4
+      return -1
+    end
+    if @nd_type[expr] != "CallNode" || @nd_name[expr] != "call"
+      return -1
+    end
+    r = @nd_receiver[expr]
+    if r < 0 || @nd_type[r] != "LocalVariableReadNode"
+      return -1
+    end
+    if @nd_name[r] == bpname
+      return expr
+    end
+ # `pv.call` where pv is a local proc capturing the block — descend
+ # into pv's proc body tail and keep looking for the governing blk.call.
+    plit = find_proc_literal_assign(decl_body_id, @nd_name[r])
+    if plit >= 0 && @nd_block[plit] >= 0
+      pst = get_stmts(@nd_body[@nd_block[plit]])
+      if pst.length > 0
+        ptail = pst.last
+        if @nd_type[ptail] == "ReturnNode"
+          pra = @nd_arguments[ptail]
+          if pra >= 0
+            pras = get_args(pra)
+            if pras.length == 1
+              ptail = pras[0]
+            end
+          end
+        end
+        return check_block_call_expr(ptail, bpname, decl_body_id, depth + 1)
+      end
+    end
+    -1
+  end
+
+ # Tail-position trace: the method's last statement (optionally wrapped
+ # in `return`), following the proc-var indirection. Returns the
+ # governing blk.call CallNode id or -1.
   def trace_block_call_return(stmts_body_id, bpname, decl_body_id, depth)
-    if depth > 4 || stmts_body_id < 0
+    if stmts_body_id < 0
       return -1
     end
     st = get_stmts(stmts_body_id)
@@ -51885,30 +51974,87 @@ class Compiler
         end
       end
     end
-    if @nd_type[last] == "CallNode" && @nd_name[last] == "call"
-      r = @nd_receiver[last]
-      if r >= 0 && @nd_type[r] == "LocalVariableReadNode"
-        if @nd_name[r] == bpname
-          return last
+    check_block_call_expr(last, bpname, decl_body_id, 0)
+  end
+
+ # Scan `nid` for a `return <bpname>.call` in a non-tail position — the
+ # governing block call of a recursive method lives in the base case
+ # (`return blk.call if n <= 0`), not the tail (which is the recursive
+ # call). Descends statement lists and control-flow branches but stops
+ # at nested def/lambda/block frames (their returns are not ours).
+ # Returns the CallNode id or -1.
+  def find_block_call_in_returns(nid, bpname, decl_body_id, depth)
+    if nid < 0 || depth > 8
+      return -1
+    end
+    t = @nd_type[nid]
+    if t == "DefNode" || t == "LambdaNode" || t == "BlockNode"
+      return -1
+    end
+    if t == "ReturnNode"
+      ra = @nd_arguments[nid]
+      if ra >= 0
+        ras = get_args(ra)
+        if ras.length == 1
+          return check_block_call_expr(ras[0], bpname, decl_body_id, 0)
         end
- # `pv.call` where pv is a local proc capturing the block — descend
- # into pv's proc body and keep looking for the governing blk.call.
-        plit = find_proc_literal_assign(decl_body_id, @nd_name[r])
-        if plit >= 0 && @nd_block[plit] >= 0
-          return trace_block_call_return(@nd_body[@nd_block[plit]], bpname, decl_body_id, depth + 1)
+      end
+      return -1
+    end
+    if t == "StatementsNode"
+      ss = parse_id_list(@nd_stmts[nid])
+      k = 0
+      while k < ss.length
+        c = find_block_call_in_returns(ss[k], bpname, decl_body_id, depth + 1)
+        if c >= 0
+          return c
         end
+        k = k + 1
+      end
+      return -1
+    end
+    if @nd_body[nid] >= 0
+      c = find_block_call_in_returns(@nd_body[nid], bpname, decl_body_id, depth + 1)
+      if c >= 0
+        return c
+      end
+    end
+    if @nd_subsequent[nid] >= 0
+      c = find_block_call_in_returns(@nd_subsequent[nid], bpname, decl_body_id, depth + 1)
+      if c >= 0
+        return c
+      end
+    end
+    if @nd_else_clause[nid] >= 0
+      c = find_block_call_in_returns(@nd_else_clause[nid], bpname, decl_body_id, depth + 1)
+      if c >= 0
+        return c
       end
     end
     -1
   end
 
  # Locate the `<bpname>.call(...)` whose value is the return of method
- # body `bid` (the last statement, optionally wrapped in `return`, and
- # possibly reached through a `p = proc { blk.call }; p.call` proc-var
- # indirection). Returns the CallNode id or -1. This is the call whose
- # result type a literal-block caller can refine.
+ # body `bid`: the tail expression first (optionally `return`-wrapped,
+ # possibly through a `p = proc { blk.call }; p.call` indirection), then
+ # any earlier `return blk.call` (a recursive method's base case).
+ # Returns the CallNode id or -1 — the call whose result type a
+ # literal-block caller can refine.
   def find_block_param_call_expr(bid, bpname)
-    trace_block_call_return(bid, bpname, bid, 0)
+    c = trace_block_call_return(bid, bpname, bid, 0)
+    if c >= 0
+      return c
+    end
+    st = get_stmts(bid)
+    k = 0
+    while k < st.length
+      c = find_block_call_in_returns(st[k], bpname, bid, 0)
+      if c >= 0
+        return c
+      end
+      k = k + 1
+    end
+    -1
   end
 
  # An `&block`-param method called with a literal block returns the
@@ -52839,6 +52985,18 @@ class Compiler
             emit("  return " + val + ";")
             return
           end
+        end
+ # A block-bearing tail call to a user-defined method is the method's
+ # implicit return value, not a side-effecting builtin iterator like
+ # `each` / `times`. Route it through compile_expr so the value is
+ # returned rather than dropped — this is what carries a recursive
+ # block-forwarding call's result (`countdown(n - 1) { ... }`, the
+ # explicit-&block recursion). Builtins fall through to the
+ # statement-and-default path below.
+        if return_type != "void" && block_bearing_tail_is_user_call(last) == 1
+          val = compile_expr(last)
+          emit("  return " + val + ";")
+          return
         end
         compile_stmt(last)
         if return_type != "void"
