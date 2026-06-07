@@ -2423,12 +2423,20 @@ class Compiler
  # (union of the prior value and the rhs, but Spinel widens those
  # via update_ivar_type already, so reading the slot type is the
  # same answer).
+      cls_ct_ow = class_def_ivar_const_type(@nd_name[nid])
+      if cls_ct_ow != ""
+        return cls_ct_ow
+      end
       if @current_class_idx >= 0
         return cls_ivar_type(@current_class_idx, @nd_name[nid])
       end
       return "int"
     end
     if t == "InstanceVariableReadNode"
+      cls_ct_r = class_def_ivar_const_type(@nd_name[nid])
+      if cls_ct_r != ""
+        return cls_ct_r
+      end
       if @current_class_idx >= 0
         return cls_ivar_type(@current_class_idx, @nd_name[nid])
       end
@@ -11576,6 +11584,17 @@ class Compiler
     body_stmts.each { |sid|
       if @nd_type[sid] == "DefNode"
         collect_class_method(ci, sid)
+ # Class method (`def self.X`) body: a bare `@v` there is a
+ # class-instance-variable, not an instance ivar. The emitted
+ # C function takes no `self`, so register a `<Class>_<v>` const
+ # slot for it to lower against (cst_<Class>_<v>), mirroring the
+ # module class-method path. Issue #1352.
+        if @nd_receiver[sid] >= 0 && @nd_type[@nd_receiver[sid]] == "SelfNode"
+          dbody_civ = @nd_body[sid]
+          if dbody_civ >= 0
+            register_class_def_ivars(cname, dbody_civ)
+          end
+        end
       end
  # `class << self; def X; ...; end; end` inside a class body --
  # the def is a singleton method on the enclosing class,
@@ -11595,6 +11614,11 @@ class Compiler
               sb_defs = collect_defaults_str(sb)
               sb_body_id = @nd_body[sb]
               append_cls_cmeth(ci, sb_name, sb_params, sb_ptypes, "int", sb_body_id, sb_defs)
+ # Same class-instance-variable const registration for the
+ # `class << self` form. Issue #1352.
+              if sb_body_id >= 0
+                register_class_def_ivars(cname, sb_body_id)
+              end
             end
             sbi = sbi + 1
           end
@@ -14024,6 +14048,123 @@ class Compiler
     end
     if @nd_ensure_clause[nid] >= 0
       register_module_def_ivars(mname, @nd_ensure_clause[nid])
+    end
+  end
+
+ # During class-method body inference, @current_method_name is set
+ # to "<Class>_cls_<m>" (see the cmeth inference drivers). A bare
+ # `@x` there is a class-instance-variable stored in the per-class
+ # `cst_<Class>_<x>` slot. Return that slot's recorded type, or ""
+ # when the current scope isn't a class method or no slot matches.
+ # Issue #1352.
+  def class_def_ivar_const_type(name)
+    if @current_method_name == ""
+      return ""
+    end
+    mark = @current_method_name.index("_cls_")
+    if mark == nil || mark < 0
+      return ""
+    end
+    owning = @current_method_name[0, mark]
+    if find_class_idx(owning) < 0
+      return ""
+    end
+    cname = owning + "_" + name[1, name.length - 1]
+    ci = find_const_idx(cname)
+    if ci >= 0
+      return @const_types[ci]
+    end
+    ""
+  end
+
+ # Register the per-class const slot `<cname>_<iv>` for a
+ # class-instance-variable seen in a `def self.X` body. The slot is
+ # typed `poly` (sp_RbVal): a class-instance-variable is genuinely
+ # nullable (`@x ||= ...` starts from nil, a pure read returns nil),
+ # and the poly tagged-union is the one storage with a real nil state
+ # at file-scope init (`{SP_TAG_NIL,...}`). Typed slots (int 0,
+ # interned "") have no nil, which breaks `||=` and nil reads.
+ # codegen lowers `@x` to this `cst_<Class>_<x>` slot. Issue #1352.
+  def register_class_def_ivar_slot(cname, iname)
+    slot = cname + "_" + iname[1, iname.length - 1]
+    if find_const_idx(slot) >= 0
+      return
+    end
+    @const_names.push(slot)
+    @const_types.push("poly")
+    @const_expr_ids.push(-1)
+    @const_scope_names.push(cname)
+  end
+
+  def register_class_def_ivars(cname, nid)
+    if nid < 0
+      return
+    end
+    t = @nd_type[nid]
+    if t == "InstanceVariableWriteNode" || t == "InstanceVariableReadNode" ||
+       t == "InstanceVariableOperatorWriteNode" || t == "InstanceVariableAndWriteNode" ||
+       t == "InstanceVariableOrWriteNode" || t == "InstanceVariableTargetNode"
+      register_class_def_ivar_slot(cname, @nd_name[nid])
+    end
+    if @nd_body[nid] >= 0
+      register_class_def_ivars(cname, @nd_body[nid])
+    end
+    stmts = parse_id_list(@nd_stmts[nid])
+    k = 0
+    while k < stmts.length
+      register_class_def_ivars(cname, stmts[k])
+      k = k + 1
+    end
+    if @nd_expression[nid] >= 0
+      register_class_def_ivars(cname, @nd_expression[nid])
+    end
+    if @nd_predicate[nid] >= 0
+      register_class_def_ivars(cname, @nd_predicate[nid])
+    end
+    if @nd_subsequent[nid] >= 0
+      register_class_def_ivars(cname, @nd_subsequent[nid])
+    end
+    if @nd_else_clause[nid] >= 0
+      register_class_def_ivars(cname, @nd_else_clause[nid])
+    end
+    if @nd_receiver[nid] >= 0
+      register_class_def_ivars(cname, @nd_receiver[nid])
+    end
+    if @nd_arguments[nid] >= 0
+      register_class_def_ivars(cname, @nd_arguments[nid])
+    end
+    args = parse_id_list(@nd_args[nid])
+    k = 0
+    while k < args.length
+      register_class_def_ivars(cname, args[k])
+      k = k + 1
+    end
+    conds = parse_id_list(@nd_conditions[nid])
+    k = 0
+    while k < conds.length
+      register_class_def_ivars(cname, conds[k])
+      k = k + 1
+    end
+    if @nd_left[nid] >= 0
+      register_class_def_ivars(cname, @nd_left[nid])
+    end
+    if @nd_right[nid] >= 0
+      register_class_def_ivars(cname, @nd_right[nid])
+    end
+    if @nd_block[nid] >= 0
+      register_class_def_ivars(cname, @nd_block[nid])
+    end
+    elems = parse_id_list(@nd_elements[nid])
+    k = 0
+    while k < elems.length
+      register_class_def_ivars(cname, elems[k])
+      k = k + 1
+    end
+    if @nd_rescue_clause[nid] >= 0
+      register_class_def_ivars(cname, @nd_rescue_clause[nid])
+    end
+    if @nd_ensure_clause[nid] >= 0
+      register_class_def_ivars(cname, @nd_ensure_clause[nid])
     end
   end
 

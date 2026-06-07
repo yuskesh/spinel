@@ -3419,6 +3419,15 @@ class Compiler
  # class's ivar type. Resolve ivars from the active class scope before
  # honoring the cache.
     if @nd_type[nid] == "InstanceVariableReadNode" && @current_class_idx >= 0
+ # Class-method scope (`def self.X`): `@x` is a class-instance-
+ # variable in the poly `cst_<Class>_<x>` slot, not an instance
+ # ivar — resolve it before the instance-ivar table (which would
+ # return the unregistered "int" default and mis-box the read).
+ # Issue #1352.
+      cls_ct_sh = class_ivar_const_type(@nd_name[nid])
+      if cls_ct_sh != ""
+        return cls_ct_sh
+      end
       ivt_shared = cls_ivar_type(@current_class_idx, @nd_name[nid])
       if ivt_shared != ""
         return ivt_shared
@@ -3821,12 +3830,20 @@ class Compiler
  # (union of the prior value and the rhs, but Spinel widens those
  # via update_ivar_type already, so reading the slot type is the
  # same answer).
+      cls_ct_ow = class_ivar_const_type(@nd_name[nid])
+      if cls_ct_ow != ""
+        return cls_ct_ow
+      end
       if @current_class_idx >= 0
         return cls_ivar_type(@current_class_idx, @nd_name[nid])
       end
       return "int"
     end
     if t == "InstanceVariableReadNode"
+      cls_ct_r = class_ivar_const_type(@nd_name[nid])
+      if cls_ct_r != ""
+        return cls_ct_r
+      end
       if @current_class_idx >= 0
         return cls_ivar_type(@current_class_idx, @nd_name[nid])
       end
@@ -5787,6 +5804,10 @@ class Compiler
     if mod_slot != ""
       return mod_slot
     end
+    cls_slot = class_ivar_const_lhs(name)
+    if cls_slot != ""
+      return cls_slot
+    end
  # Rebound self (instance_eval / instance_exec splice): route ivar
  # access through the receiver's struct via self_arrow(), not the
  # toplevel static-global slot. Without this, a block body that
@@ -5833,6 +5854,47 @@ class Compiler
         end
       end
       mi = mi + 1
+    end
+    ""
+  end
+
+ # When the current emit scope is a class method (`def self.X` or
+ # `class << self; def X`), the bare `@x` ivar is a class-instance-
+ # variable. The emitted C function takes no `self`, so `self->iv_x`
+ # would dangle (`self` undeclared). Lower it to the per-class
+ # `cst_<Class>_<x>` static slot, mirroring the module class-method
+ # path. Returns the C expression or "" when the current scope isn't
+ # a class method or no matching const is registered.
+  def class_ivar_const_lhs(name)
+    if @current_class_idx < 0 || @current_method_has_self != 0
+      return ""
+    end
+    cname = @cls_names[@current_class_idx]
+    if cname == ""
+      return ""
+    end
+    slot = cname + "_" + name[1, name.length - 1]
+    if find_const_idx(slot) >= 0
+      return "cst_" + slot
+    end
+    ""
+  end
+
+ # Type of the per-class static slot for a class-instance-variable in
+ # class-method scope (`def self.X`). Returns the const slot's recorded
+ # type or "" when not in a class method / no matching slot.
+  def class_ivar_const_type(name)
+    if @current_class_idx < 0 || @current_method_has_self != 0
+      return ""
+    end
+    cname = @cls_names[@current_class_idx]
+    if cname == ""
+      return ""
+    end
+    slot = cname + "_" + name[1, name.length - 1]
+    ci = find_const_idx(slot)
+    if ci >= 0
+      return @const_types[ci]
     end
     ""
   end
@@ -15795,7 +15857,12 @@ class Compiler
  # the same slot through a different compile path.
       iname_w = @nd_name[nid]
       ivt_w = ""
-      if @current_class_idx >= 0
+ # Class-method scope: the poly `cst_<Class>_<x>` slot needs the rhs
+ # boxed to sp_RbVal. Prefer the const slot type. Issue #1352.
+      cls_ct_ew = class_ivar_const_type(iname_w)
+      if cls_ct_ew != ""
+        ivt_w = cls_ct_ew
+      elsif @current_class_idx >= 0
         ivt_w = cls_ivar_type(@current_class_idx, iname_w)
       end
       if ivt_w == "poly"
@@ -37906,7 +37973,13 @@ class Compiler
  # default empty container types, so without this special-case the ivar
  # slot's type and the initializer's type can disagree.
       ivt = ""
-      if @current_class_idx >= 0
+ # Class method (`def self.X`): `@x` is a class-instance-variable
+ # stored in the per-class `cst_<Class>_<x>` slot, so prefer its
+ # recorded type for the empty-container promotion below.
+      cls_ct_ivw = class_ivar_const_type(iname)
+      if cls_ct_ivw != ""
+        ivt = cls_ct_ivw
+      elsif @current_class_idx >= 0
         ivt = cls_ivar_type(@current_class_idx, iname)
       end
  # Module class method (`def self.X` on a module): the ivar
@@ -38189,7 +38262,13 @@ class Compiler
       ivor_lhs = ivar_lhs(ivor_iname)
       ivor_expr_id = @nd_expression[nid]
       ivor_ivar_t = ""
-      if @current_class_idx >= 0
+ # Class-method scope (`def self.X`): `@x` is the poly `cst_<Class>_<x>`
+ # slot, not an instance ivar, so its nil-check must use the poly tag
+ # branch below. Prefer the const slot type. Issue #1352.
+      cls_ct_ow = class_ivar_const_type(ivor_iname)
+      if cls_ct_ow != ""
+        ivor_ivar_t = cls_ct_ow
+      elsif @current_class_idx >= 0
         ivor_ivar_t = cls_ivar_type(@current_class_idx, ivor_iname)
       end
       ivor_cond = ""
@@ -38216,7 +38295,11 @@ class Compiler
       val = compile_expr(@nd_expression[nid])
       lhs = ivar_lhs(@nd_name[nid])
       ivar_t = ""
-      if @current_class_idx >= 0
+ # Class-method scope: prefer the poly const slot type. Issue #1352.
+      cls_ct_op = class_ivar_const_type(@nd_name[nid])
+      if cls_ct_op != ""
+        ivar_t = cls_ct_op
+      elsif @current_class_idx >= 0
         ivar_t = cls_ivar_type(@current_class_idx, @nd_name[nid])
       end
  # `@x OP= v` desugars to `@x = @x OP v`. When @x is obj-typed
