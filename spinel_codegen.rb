@@ -9197,6 +9197,17 @@ class Compiler
         end
       end
     end
+ # @needs_sym_intern decides whether emit_sym_runtime defines
+ # sp_sym_intern, but analyze sets that flag as a memoized side effect
+ # of infer_call_type and misses cases where the type only settles
+ # late -- e.g. `Symbol#upcase` on a method-returned symbol inside
+ # string interpolation, where codegen still emits the sp_sym_intern
+ # call (compile_*_method_expr) and the link then fails on the missing
+ # definition. Re-derive the flag here from the now-stable codegen
+ # types, before the gated emit. Issue #1355.
+    if @needs_sym_intern == 0
+      scan_for_sym_intern_usage(@root_id)
+    end
     emit_sym_runtime
     emit_ffi_externs
  # Emit program-specific regexp patterns
@@ -14121,6 +14132,43 @@ class Compiler
  # The codegen-side arms also flip the flag, but most of them
  # run after emit_class_methods -- the pre-scan is what makes
  # the gate effective.
+ # Pre-scan for constructs codegen lowers through sp_sym_intern:
+ # `Symbol#upcase` / `#downcase` (re-intern the case-folded name) and
+ # `String#to_sym` / `#intern` (runtime intern). Mirrors the emit-site
+ # conditions in the Symbol / String method compilers so the gated
+ # sp_sym_intern definition lands whenever a call to it is emitted,
+ # independent of analyze's @needs_sym_intern timing. Issue #1355.
+  def scan_for_sym_intern_usage(nid)
+    if nid < 0
+      return
+    end
+    if @needs_sym_intern == 1
+      return
+    end
+    if @nd_type[nid] == "CallNode"
+      msi = @nd_name[nid]
+      rsi = @nd_receiver[nid]
+      if rsi >= 0
+        rtsi = infer_type(rsi)
+        if (msi == "upcase" || msi == "downcase") && rtsi == "symbol"
+          @needs_sym_intern = 1
+          return
+        end
+        if (msi == "to_sym" || msi == "intern") && base_type(rtsi) == "string"
+          @needs_sym_intern = 1
+          return
+        end
+      end
+    end
+    cs = []
+    push_child_ids(nid, cs)
+    k = 0
+    while k < cs.length
+      scan_for_sym_intern_usage(cs[k])
+      k = k + 1
+    end
+  end
+
   def scan_for_method_usage(nid)
     if nid < 0
       return
