@@ -298,8 +298,9 @@ spinel_parse$(EXE): $(PARSE_STAMP) $(PRISM_LIB)
 # harness invokes cc to link against libspinel_rt.a.
 
 SPINELC      = build/spinelc$(EXE)
-SPINELC_HDRS = src/node_table.h src/codegen.h
-SPINELC_OBJ  = build/csrc/node_table.o build/csrc/codegen.o build/csrc/main.o
+SPINELC_HDRS = src/node_table.h src/codegen.h src/types.h src/compiler.h src/analyze.h
+SPINELC_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
+               build/csrc/analyze.o build/csrc/codegen.o build/csrc/main.o
 
 build/csrc:
 	@mkdir -p build/csrc
