@@ -1078,9 +1078,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
+    /* /re/ =~ str -> match offset or nil (poly) */
+    if (rre >= 0 && !strcmp(name, "=~") && argc == 1 && a0 == TY_STRING) {
+      buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
   }
-  if (recv >= 0 && argc >= 1 && (!strcmp(name, "match?") || !strcmp(name, "!~"))) {
+  if (recv >= 0 && argc >= 1 && (!strcmp(name, "match?") || !strcmp(name, "!~") || !strcmp(name, "=~"))) {
     int are = re_lit_index(c, argv[0]);
+    if (are >= 0 && !strcmp(name, "=~") && rt == TY_STRING) {
+      buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
     if (are >= 0 && !strcmp(name, "!~")) {
       buf_printf(b, "(!sp_re_match_p(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, "))");
       return;

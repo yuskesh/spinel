@@ -622,6 +622,11 @@ static TyKind infer_call(Compiler *c, int id) {
   if (!strcmp(name, "!")) return TY_BOOL;
   if (!strcmp(name, "respond_to?") && recv >= 0) return TY_BOOL;
   if ((!strcmp(name, "match?") || !strcmp(name, "!~")) && recv >= 0) return TY_BOOL;
+  if (!strcmp(name, "=~") && recv >= 0 && argc == 1) {
+    const char *rrt = nt_type(nt, recv), *art = nt_type(nt, argv[0]);
+    if ((rrt && !strcmp(rrt, "RegularExpressionNode")) ||
+        (art && !strcmp(art, "RegularExpressionNode"))) return TY_POLY;
+  }
 
   if (recv >= 0 && argc == 1 && is_arith_op(name)) {
     if (rt == TY_STRING) {
