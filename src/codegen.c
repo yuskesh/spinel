@@ -579,6 +579,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  /* Proc introspection: arity / lambda? read the sp_Proc metadata directly. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && !strcmp(name, "arity")) {
+    buf_puts(b, "sp_proc_arity("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+  }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && !strcmp(name, "lambda?")) {
+    buf_puts(b, "sp_proc_lambda_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+  }
+
   /* block_given? -> true inside an inlined yielding method (we only inline
      when a block is present) */
   if (recv < 0 && !strcmp(name, "block_given?")) { buf_puts(b, g_block_id >= 0 ? "1" : "0"); return; }

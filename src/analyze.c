@@ -172,6 +172,12 @@ static TyKind infer_call(Compiler *c, int id) {
       (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]")))
     return proc_call_ret(c, recv);
 
+  /* Proc introspection */
+  if (recv >= 0 && rt == TY_PROC && argc == 0) {
+    if (!strcmp(name, "arity")) return TY_INT;
+    if (!strcmp(name, "lambda?")) return TY_BOOL;
+  }
+
   /* identity methods: return the receiver unchanged */
   if (recv >= 0 && argc == 0 &&
       (!strcmp(name, "freeze") || !strcmp(name, "itself") ||
