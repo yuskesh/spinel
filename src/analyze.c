@@ -32,6 +32,27 @@ static int is_void_call(const char *name) {
 
 /* ---- call inference ---- */
 
+/* Resolve a struct member from a literal key node: a SymbolNode names a
+   member; an IntegerNode is a positional index. Returns the member index
+   (0-based, matching ivar order) or -1. */
+static int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode) {
+  const NodeTable *nt = c->nt;
+  const char *kty = nt_type(nt, keynode);
+  if (!kty) return -1;
+  if (!strcmp(kty, "SymbolNode")) {
+    const char *kn = nt_str(nt, keynode, "value");
+    if (!kn) return -1;
+    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
+    int iv = comp_ivar_index(sc, ivn);
+    return iv;  /* ivar order == member order */
+  }
+  if (!strcmp(kty, "IntegerNode")) {
+    int idx = (int)nt_int(nt, keynode, "value", -1);
+    if (idx >= 0 && idx < sc->nivars) return idx;
+  }
+  return -1;
+}
+
 static TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -110,9 +131,21 @@ static TyKind infer_call(Compiler *c, int id) {
 
   /* Struct instance methods */
   if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
+    ClassInfo *sc = &c->classes[ty_object_class(rt)];
     if (!strcmp(name, "to_a") || !strcmp(name, "values") ||
         !strcmp(name, "deconstruct") || !strcmp(name, "members")) return TY_POLY_ARRAY;
     if (!strcmp(name, "to_h")) return TY_SYM_POLY_HASH;
+    if (!strcmp(name, "dig") && argc >= 1) {
+      int mi = struct_member_idx(c, sc, argv[0]);
+      if (mi >= 0) {
+        TyKind mt = sc->ivar_types[mi];
+        if (argc == 1) return mt;
+        /* dig(member, key, ...): index into the member's container */
+        if (ty_is_hash(mt) && argc == 2) return ty_hash_val(mt);
+        if (ty_is_array(mt) && argc == 2) return ty_array_elem(mt);
+        return TY_POLY;
+      }
+    }
   }
 
   /* obj.method(...) -> the method's return type (walks the superclass chain) */

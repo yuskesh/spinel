@@ -937,6 +937,38 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", rm);
       return;
     }
+    if (!strcmp(name, "dig") && argc >= 1) {
+      /* literal key resolves a member at compile time */
+      int mi = -1;
+      const char *kty = nt_type(nt, argv[0]);
+      if (kty && !strcmp(kty, "SymbolNode")) {
+        char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
+        mi = comp_ivar_index(sc, ivn);
+      }
+      else if (kty && !strcmp(kty, "IntegerNode")) {
+        int v = (int)nt_int(nt, argv[0], "value", -1);
+        if (v >= 0 && v < sc->nivars) mi = v;
+      }
+      if (mi >= 0) {
+        int t = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        char fld[300]; snprintf(fld, sizeof fld, "_t%d->iv_%s", t, sc->ivars[mi] + 1);
+        TyKind mt = sc->ivar_types[mi];
+        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->name, t, rb.p ? rb.p : ""); free(rb.p);
+        if (argc == 1) buf_puts(b, fld);
+        else if (ty_is_hash(mt) && argc == 2) {
+          const char *hn = ty_hash_cname(mt);
+          buf_printf(b, "sp_%sHash_%s(%s, ", hn, ty_hash_val(mt) == TY_INT ? "get_opt" : "get", fld);
+          emit_expr(c, argv[1], b); buf_puts(b, ")");
+        }
+        else if (ty_is_array(mt) && argc == 2) {
+          buf_printf(b, "sp_%sArray_get(%s, ", array_kind(mt), fld); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        }
+        else buf_puts(b, fld);
+        buf_puts(b, "; })");
+        return;
+      }
+    }
   }
 
   /* object method call: sp_<DefClass>_<m>((sp_<DefClass>*)&recv, args) */
