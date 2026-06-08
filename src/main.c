@@ -40,17 +40,22 @@ int main(int argc, char **argv) {
     if (strcmp(a, "-o") == 0) {
       if (++i >= argc) { usage(); return 2; }
       output = argv[i];
-    } else if (strcmp(a, "-c") == 0) {
+    }
+    else if (strcmp(a, "-c") == 0) {
       /* C-only; accepted for forward-compat with the driver. */
-    } else if (strcmp(a, "--dump-ast") == 0) {
+    }
+    else if (strcmp(a, "--dump-ast") == 0) {
       dump_ast = 1;
-    } else if (a[0] == '-' && a[1] != '\0') {
+    }
+    else if (a[0] == '-' && a[1] != '\0') {
       fprintf(stderr, "spinelc: unknown option '%s'\n", a);
       usage();
       return 2;
-    } else if (!source) {
+    }
+    else if (!source) {
       source = a;
-    } else {
+    }
+    else {
       fprintf(stderr, "spinelc: unexpected extra argument '%s'\n", a);
       return 2;
     }

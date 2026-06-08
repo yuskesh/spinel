@@ -31,7 +31,8 @@ static char *unescape_dup(const char *s, size_t len) {
       /* unknown escape: keep '%' literally and advance one */
       out[o++] = ch;
       i++;
-    } else {
+    }
+    else {
       out[o++] = ch;
       i++;
     }
@@ -179,10 +180,12 @@ NodeTable *nt_load_text(const char *text) {
       if (np >= 2) {
         if (tok_eq(parts[0], "ROOT")) {
           nt->root_id = (int)parse_ll(parts[1].p, parts[1].len);
-        } else if (tok_eq(parts[0], "SOURCE_FILE")) {
+        }
+        else if (tok_eq(parts[0], "SOURCE_FILE")) {
           /* path is parts[1] plus possibly value; emitted as one token */
           nt->source_file = unescape_dup(parts[1].p, parts[1].len);
-        } else {
+        }
+        else {
           /* N/S/I/F/R/A all carry a node id in parts[1] */
           char c = parts[0].p[0];
           if (parts[0].len == 1 && (c == 'N' || c == 'S' || c == 'I' ||
@@ -221,21 +224,26 @@ NodeTable *nt_load_text(const char *text) {
       if (tag == 'N') {
         /* type is parts[2] */
         if (np >= 3) node_set_type(nd, parts[2].p, parts[2].len);
-      } else if (np >= 3) {
+      }
+      else if (np >= 3) {
         Tok field = parts[2];
         if (tag == 'S') {
           char *uv = unescape_dup(val ? val : "", val ? vlen : 0);
           node_add_str(nd, field.p, field.len, uv);
-        } else if (tag == 'I') {
+        }
+        else if (tag == 'I') {
           node_add_int(nd, field.p, field.len, parse_ll(val ? val : "", val ? vlen : 0));
-        } else if (tag == 'R') {
+        }
+        else if (tag == 'R') {
           int ref = val ? (int)parse_ll(val, vlen) : -1;
           node_add_ref(nd, field.p, field.len, ref);
-        } else if (tag == 'A') {
+        }
+        else if (tag == 'A') {
           int n = 0;
           int *ids = parse_id_list(val ? val : "", val ? vlen : 0, &n);
           node_add_arr(nd, field.p, field.len, ids, n);
-        } else if (tag == 'F') {
+        }
+        else if (tag == 'F') {
           /* content = the value token (float string); field name ignored */
           free(nd->content);
           nd->content = dup_n(val ? val : "", val ? vlen : 0);

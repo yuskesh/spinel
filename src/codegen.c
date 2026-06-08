@@ -104,7 +104,8 @@ static void emit_ctype(Compiler *c, TyKind t, Buf *b) {
   if (ty_is_object(t)) {
     int cid = ty_object_class(t);
     buf_printf(b, "sp_%s", c->classes[cid].name);
-  } else {
+  }
+  else {
     const char *n = c_type_name(t);
     buf_puts(b, n ? n : "void");
   }
@@ -254,7 +255,8 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
     buf_puts(g_pre, vb.p ? vb.p : ""); buf_puts(g_pre, ");\n");
-  } else {
+  }
+  else {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "if (%s(", is_rej ? "!" : "");
     buf_puts(g_pre, vb.p ? vb.p : ""); buf_puts(g_pre, ")) ");
@@ -532,7 +534,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         snprintf(tmp, sizeof tmp, "&%s", rb.p ? rb.p : "");
         snprintf(selfptr, sizeof selfptr, "%s", tmp);
         free(rb.p);
-      } else {
+      }
+      else {
         int t = ++g_tmp;
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre);
@@ -563,7 +566,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", t, t, t);
       else if (!strcmp(name, "include?") || !strcmp(name, "member?") || !strcmp(name, "cover?")) {
         buf_printf(b, "sp_range_include(&_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin"))
+      }
+      else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin"))
         buf_printf(b, "(_t%d.first)", t);
       else if (!strcmp(name, "last") || !strcmp(name, "max"))
         buf_printf(b, "(_t%d.last - _t%d.excl)", t, t);
@@ -730,34 +734,47 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
       else if (!strcmp(name, "include?") && argc == 1) {
         buf_printf(b, "sp_str_include(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "start_with?") && argc == 1) {
+      }
+      else if (!strcmp(name, "start_with?") && argc == 1) {
         buf_printf(b, "sp_str_start_with(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "end_with?") && argc == 1) {
+      }
+      else if (!strcmp(name, "end_with?") && argc == 1) {
         buf_printf(b, "sp_str_end_with(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "index") && argc == 1) {
+      }
+      else if (!strcmp(name, "index") && argc == 1) {
         buf_printf(b, "sp_str_index(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "[]") && argc == 1) {
+      }
+      else if (!strcmp(name, "[]") && argc == 1) {
         buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "split") && argc == 1) {
+      }
+      else if (!strcmp(name, "split") && argc == 1) {
         buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
+      }
+      else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
       else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
       else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_strict(%s)", r);
       else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
       else if (!strcmp(name, "gsub") && argc == 2) {
         buf_printf(b, "sp_str_gsub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "sub") && argc == 2) {
+      }
+      else if (!strcmp(name, "sub") && argc == 2) {
         buf_printf(b, "sp_str_sub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "tr") && argc == 2) {
+      }
+      else if (!strcmp(name, "tr") && argc == 2) {
         buf_printf(b, "sp_str_tr(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "center") && argc == 1) {
+      }
+      else if (!strcmp(name, "center") && argc == 1) {
         buf_printf(b, "sp_str_center(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "ljust") && argc == 1) {
+      }
+      else if (!strcmp(name, "ljust") && argc == 1) {
         buf_printf(b, "sp_str_ljust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else if (!strcmp(name, "rjust") && argc == 1) {
+      }
+      else if (!strcmp(name, "rjust") && argc == 1) {
         buf_printf(b, "sp_str_rjust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      } else handled = 0;
-    } else if (rt == TY_INT) {
+      }
+      else handled = 0;
+    }
+    else if (rt == TY_INT) {
       if      (!strcmp(name, "to_s") && argc == 0) buf_printf(b, "sp_int_to_s(%s)", r);
       else if (!strcmp(name, "inspect")) buf_printf(b, "sp_int_to_s(%s)", r);
       else if (!strcmp(name, "to_f"))   buf_printf(b, "((mrb_float)(%s))", r);
@@ -776,7 +793,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
       else if (!strcmp(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else handled = 0;
-    } else { /* TY_FLOAT */
+    }
+    else { /* TY_FLOAT */
       /* round/ceil/floor/truncate(n>0) -> Float to n decimals; else Integer */
       int ndig = 0;
       if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
@@ -883,7 +901,8 @@ static void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     if (vt == TY_STRING && !strcmp(op, "+")) {
       buf_printf(b, "sp_str_concat(sp_%sHash_get(_t%d, _t%d), ", hn, ta, tb);
       emit_expr(c, v, b); buf_puts(b, ")");
-    } else {
+    }
+    else {
       buf_printf(b, "sp_%sHash_get(_t%d, _t%d) %s ", hn, ta, tb, op);
       buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")");
     }
@@ -1037,7 +1056,8 @@ static void emit_interp(Compiler *c, int id, Buf *b) {
         if (*p == '%') buf_puts(&fmt, "%%");
         else buf_printf(&fmt, "%c", *p);
       }
-    } else if (pty && !strcmp(pty, "EmbeddedStatementsNode")) {
+    }
+    else if (pty && !strcmp(pty, "EmbeddedStatementsNode")) {
       int s = nt_ref(nt, pid, "statements");
       int bn = 0;
       const int *body = s >= 0 ? nt_arr(nt, s, "body", &bn) : NULL;
@@ -1047,23 +1067,29 @@ static void emit_interp(Compiler *c, int id, Buf *b) {
       if (t == TY_INT) {
         buf_puts(&fmt, "%lld"); buf_puts(&argbuf, "(long long)");
         emit_expr(c, expr, &argbuf);
-      } else if (t == TY_STRING) {
+      }
+      else if (t == TY_STRING) {
         buf_puts(&fmt, "%s"); emit_expr(c, expr, &argbuf);
-      } else if (t == TY_FLOAT) {
+      }
+      else if (t == TY_FLOAT) {
         buf_puts(&fmt, "%s"); buf_puts(&argbuf, "sp_float_to_s(");
         emit_expr(c, expr, &argbuf); buf_puts(&argbuf, ")");
-      } else if (t == TY_BOOL) {
+      }
+      else if (t == TY_BOOL) {
         buf_puts(&fmt, "%s"); buf_puts(&argbuf, "(");
         emit_expr(c, expr, &argbuf); buf_puts(&argbuf, " ? \"true\" : \"false\")");
-      } else if (t == TY_SYMBOL) {
+      }
+      else if (t == TY_SYMBOL) {
         buf_puts(&fmt, "%s"); buf_puts(&argbuf, "sp_sym_to_s(");
         emit_expr(c, expr, &argbuf); buf_puts(&argbuf, ")");
-      } else {
+      }
+      else {
         free(fmt.p); free(argbuf.p);
         unsupported(c, pid, "interpolation value");
       }
       nargs++;
-    } else {
+    }
+    else {
       free(fmt.p); free(argbuf.p);
       unsupported(c, pid, "interpolation part");
     }
@@ -1076,7 +1102,8 @@ static void emit_interp(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "%c", *p);
     }
     buf_puts(b, "\")[1])");
-  } else {
+  }
+  else {
     buf_puts(b, "sp_sprintf(\"");
     buf_puts(b, fmt.p ? fmt.p : "");
     buf_puts(b, "\"");
@@ -1217,17 +1244,22 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   emit_indent(b, indent);
   if (t == TY_INT) {
     buf_puts(b, "printf(\"%lld\\n\", (long long)"); emit_expr(c, arg, b); buf_puts(b, ");\n");
-  } else if (t == TY_FLOAT) {
+  }
+  else if (t == TY_FLOAT) {
     buf_puts(b, "{ const char *_fs = sp_float_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(_fs, stdout); putchar('\\n'); }\n");
-  } else if (t == TY_STRING) {
+  }
+  else if (t == TY_STRING) {
     buf_puts(b, "{ const char *_ps = (const char *)("); emit_expr(c, arg, b);
-    buf_puts(b, "); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); } else putchar('\\n'); }\n");
-  } else if (t == TY_BOOL) {
+    buf_puts(b, "); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
+  }
+  else if (t == TY_BOOL) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
-  } else if (t == TY_SYMBOL) {
+  }
+  else if (t == TY_SYMBOL) {
     buf_puts(b, "puts(sp_sym_to_s("); emit_expr(c, arg, b); buf_puts(b, "));\n");
-  } else if (ty_is_array(t) && array_kind(t)) {
+  }
+  else if (ty_is_array(t) && array_kind(t)) {
     /* puts [a,b,c] prints each element on its own line (empty array: blank) */
     const char *k = array_kind(t);
     Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, arg, &ab);
@@ -1241,16 +1273,18 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     else if (t == TY_FLOAT_ARRAY)
       buf_printf(b, "{ const char *_fs = sp_float_to_s(sp_FloatArray_get(%s, _t%d)); fputs(_fs, stdout); putchar('\\n'); }\n", a, ti);
     else /* str */
-      buf_printf(b, "{ const char *_ps = sp_StrArray_get(%s, _t%d); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); } else putchar('\\n'); }\n", a, ti);
+      buf_printf(b, "{ const char *_ps = sp_StrArray_get(%s, _t%d); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n", a, ti);
     free(ab.p);
-  } else if (ty_is_object(t) && comp_method_in_class(c, ty_object_class(t), "to_s") >= 0) {
+  }
+  else if (ty_is_object(t) && comp_method_in_class(c, ty_object_class(t), "to_s") >= 0) {
     int cid = ty_object_class(t);
     buf_puts(b, "{ const char *_ps = (const char *)(");
     buf_printf(b, "sp_%s_to_s(", c->classes[cid].name);
     const char *rty = nt_type(c->nt, arg);
     if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode"))) {
       buf_puts(b, "&"); emit_expr(c, arg, b);
-    } else {
+    }
+    else {
       int tt = ++g_tmp;
       emit_indent(g_pre, g_indent); emit_ctype(c, t, g_pre);
       buf_printf(g_pre, " _t%d = ", tt);
@@ -1258,8 +1292,9 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
       buf_printf(b, "&_t%d", tt);
     }
-    buf_puts(b, ")); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); } else putchar('\\n'); }\n");
-  } else {
+    buf_puts(b, ")); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
+  }
+  else {
     unsupported(c, arg, "puts argument");
   }
 }
@@ -1268,14 +1303,18 @@ static void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
   emit_indent(b, indent);
   if (t == TY_INT) {
     buf_puts(b, "printf(\"%lld\", (long long)"); emit_expr(c, arg, b); buf_puts(b, ");\n");
-  } else if (t == TY_FLOAT) {
+  }
+  else if (t == TY_FLOAT) {
     buf_puts(b, "fputs(sp_float_to_s("); emit_expr(c, arg, b); buf_puts(b, "), stdout);\n");
-  } else if (t == TY_STRING) {
+  }
+  else if (t == TY_STRING) {
     buf_puts(b, "{ const char *_s = ("); emit_expr(c, arg, b);
     buf_puts(b, "); if (_s) fputs(_s, stdout); }\n");
-  } else if (t == TY_BOOL) {
+  }
+  else if (t == TY_BOOL) {
     buf_puts(b, "fputs(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\", stdout);\n");
-  } else {
+  }
+  else {
     unsupported(c, arg, "print argument");
   }
 }
@@ -1284,27 +1323,34 @@ static void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   emit_indent(b, indent);
   if (t == TY_INT) {
     buf_puts(b, "printf(\"%lld\\n\", (long long)"); emit_expr(c, arg, b); buf_puts(b, ");\n");
-  } else if (t == TY_FLOAT) {
+  }
+  else if (t == TY_FLOAT) {
     buf_puts(b, "{ const char *_fs = sp_float_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(_fs, stdout); putchar('\\n'); }\n");
-  } else if (t == TY_STRING) {
+  }
+  else if (t == TY_STRING) {
     buf_puts(b, "fputs(sp_str_inspect("); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
-  } else if (t == TY_BOOL) {
+  }
+  else if (t == TY_BOOL) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
-  } else if (t == TY_SYMBOL) {
+  }
+  else if (t == TY_SYMBOL) {
     buf_puts(b, "fputs(sp_str_concat(SPL(\":\"), sp_sym_to_s(");
     emit_expr(c, arg, b);
     buf_puts(b, ")), stdout); putchar('\\n');\n");
-  } else if (ty_is_array(t) && array_kind(t)) {
+  }
+  else if (ty_is_array(t) && array_kind(t)) {
     buf_printf(b, "fputs(sp_%sArray_inspect(", array_kind(t));
     emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
-  } else if (ty_is_hash(t) && ty_hash_cname(t)) {
+  }
+  else if (ty_is_hash(t) && ty_hash_cname(t)) {
     buf_printf(b, "fputs(sp_%sHash_inspect(", ty_hash_cname(t));
     emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
-  } else {
+  }
+  else {
     unsupported(c, arg, "p argument");
   }
 }
@@ -1345,10 +1391,12 @@ static void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   if (vty && !strcmp(vty, "NilNode") && lv) {
     if (lv->type == TY_RANGE) buf_puts(b, "(sp_Range){0}");
     else buf_puts(b, default_value(lv->type));
-  } else if (is_empty_array && lv && array_kind(lv->type)) {
+  }
+  else if (is_empty_array && lv && array_kind(lv->type)) {
     /* `a = []` -> a new array of the variable's resolved element type */
     buf_printf(b, "sp_%sArray_new()", array_kind(lv->type));
-  } else {
+  }
+  else {
     emit_expr(c, v, b);
   }
   buf_puts(b, ";\n");
@@ -1417,16 +1465,19 @@ static void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int 
       if (tail) emit_stmts_tail(c, s, b, indent + 1);
       else      emit_stmts(c, s, b, indent + 1);
       emit_indent(b, indent); buf_puts(b, "}\n");
-    } else if (sty && !strcmp(sty, "IfNode")) {
+    }
+    else if (sty && !strcmp(sty, "IfNode")) {
       buf_puts(b, "\n");
       emit_indent(b, indent);
       buf_puts(b, "else {\n");
       emit_if(c, sub, b, indent + 1, 0, tail);
       emit_indent(b, indent); buf_puts(b, "}\n");
-    } else {
+    }
+    else {
       buf_puts(b, "\n");
     }
-  } else {
+  }
+  else {
     buf_puts(b, "\n");
   }
 }
@@ -1462,10 +1513,12 @@ static void emit_case(Compiler *c, int id, Buf *b, int indent) {
       if (pred >= 0) {
         if (pt == TY_STRING) {
           buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
-        } else {
+        }
+        else {
           buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
         }
-      } else {
+      }
+      else {
         buf_puts(b, "("); emit_expr(c, conds[j], b); buf_puts(b, ")");
       }
     }
@@ -1590,7 +1643,8 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (vty && !strcmp(vty, "NilNode")) {
       if (ivt == TY_RANGE) buf_puts(b, "(sp_Range){0}");
       else buf_puts(b, default_value(ivt));
-    } else {
+    }
+    else {
       emit_expr(c, v, b);
     }
     buf_puts(b, ";\n");
@@ -1606,7 +1660,8 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (vt == TY_STRING && op && !strcmp(op, "+")) {
       buf_printf(b, "self->iv_%s = sp_str_concat(self->iv_%s, ", nm + 1, nm + 1);
       emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ");\n");
-    } else {
+    }
+    else {
       buf_printf(b, "self->iv_%s %s= ", nm + 1, op ? op : "+");
       emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
     }
@@ -1638,7 +1693,8 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (lv->type == TY_STRING && op && !strcmp(op, "+")) {
       buf_printf(b, "gv_%s = sp_str_concat(gv_%s, ", nm + 1, nm + 1);
       emit_expr(c, v, b); buf_puts(b, ");\n");
-    } else {
+    }
+    else {
       buf_printf(b, "gv_%s %s= ", nm + 1, op ? op : "+");
       emit_expr(c, v, b); buf_puts(b, ";\n");
     }
@@ -1723,7 +1779,8 @@ static void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
     int n = 0;
     const int *body = nt_arr(nt, id, "body", &n);
     for (int k = 0; k < n; k++) emit_stmt(c, body[k], b, indent);
-  } else {
+  }
+  else {
     emit_stmt(c, id, b, indent);
   }
 }
@@ -1739,7 +1796,8 @@ static void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
       if (k == n - 1) emit_stmt_tail(c, body[k], b, indent);
       else emit_stmt(c, body[k], b, indent);
     }
-  } else {
+  }
+  else {
     emit_stmt_tail(c, id, b, indent);
   }
 }
@@ -1795,7 +1853,8 @@ static void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
     LocalVar *lv = &s->locals[i];
     if (lv->is_param) {
       if (needs_root(lv->type)) buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", lv->name);
-    } else {
+    }
+    else {
       declare_local(c, b, lv);
     }
   }
@@ -1852,7 +1911,8 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   emit_scope_decls(c, s, b);
   if (method_is_void(s)) {
     emit_stmts(c, s->body, b, 1);
-  } else {
+  }
+  else {
     emit_stmts_tail(c, s->body, b, 1);
     buf_puts(b, "  return ");
     if (ty_is_object(s->ret)) { emit_ctype(c, s->ret, b); buf_puts(b, "){0}"); /* unreachable default */ buf_puts(b, ";\n"); }
@@ -1890,7 +1950,8 @@ static void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       emit_ctype(c, p ? p->type : TY_INT, b);
       buf_printf(b, " lv_%s", s->pnames[i]);
     }
-  } else {
+  }
+  else {
     buf_puts(b, "void");
   }
   buf_printf(b, ") {\n  sp_%s self = {0};\n", ci->name);
@@ -1920,7 +1981,8 @@ static void emit_super(Compiler *c, int id, Buf *b) {
   const char *ty = nt_type(c->nt, id);
   if (ty && !strcmp(ty, "ForwardingSuperNode")) {
     for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
-  } else {
+  }
+  else {
     int args = nt_ref(c->nt, id, "arguments");
     int argc = 0; const int *argv = NULL;
     if (args >= 0) argv = nt_arr(c->nt, args, "arguments", &argc);
@@ -1946,7 +2008,8 @@ char *codegen_program(const NodeTable *nt) {
     }
     buf_puts(&b, "};\n");
     buf_printf(&b, "static const char *sp_sym_to_s(sp_sym id){if(id>=0&&id<%d)return sp_sym_names[id];return \"\";}\n\n", c->nsymbols);
-  } else {
+  }
+  else {
     buf_puts(&b, "static const char *sp_sym_to_s(sp_sym id){(void)id;return \"\";}\n\n");
   }
   buf_puts(&b, "static const char *sp_class_to_s(sp_Class c){(void)c;return \"\";}\n\n\n");

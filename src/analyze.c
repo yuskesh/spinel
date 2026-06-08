@@ -384,10 +384,12 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
     if (cname && comp_class_index(c, cname) < 0) {
       comp_class_new(c, cname, id);
       child_class = c->nclasses - 1;
-    } else if (cname) {
+    }
+    else if (cname) {
       child_class = comp_class_index(c, cname);  /* reopened class */
     }
-  } else if (ty && !strcmp(ty, "DefNode")) {
+  }
+  else if (ty && !strcmp(ty, "DefNode")) {
     const char *name = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_new(c, name, id);
     int new_idx = c->nscopes - 1;
@@ -502,7 +504,8 @@ static void register_globals_consts(Compiler *c) {
         !strcmp(ty, "GlobalVariableOperatorWriteNode") || !strcmp(ty, "GlobalVariableTargetNode")) {
       const char *nm = nt_str(nt, id, "name");
       if (nm && nm[0] == '$' && is_c_ident(nm + 1)) comp_gvar_intern(c, nm + 1);
-    } else if (!strcmp(ty, "ConstantWriteNode")) {
+    }
+    else if (!strcmp(ty, "ConstantWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
       if (nm && is_c_ident(nm)) comp_const_intern(c, nm);
     }
@@ -522,7 +525,8 @@ static int infer_global_const_types(Compiler *c) {
       if (nm) lv = comp_gvar(c, nm + 1);
       vt = infer_type(c, nt_ref(nt, id, "value"));
       if (vt == TY_NIL) continue;
-    } else if (!strcmp(ty, "GlobalVariableOperatorWriteNode")) {
+    }
+    else if (!strcmp(ty, "GlobalVariableOperatorWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) lv = comp_gvar(c, nm + 1);
       TyKind cur = lv ? lv->type : TY_UNKNOWN;
@@ -530,11 +534,13 @@ static int infer_global_const_types(Compiler *c) {
       if (cur == TY_STRING) vt = TY_STRING;
       else if (ty_is_numeric(cur) && ty_is_numeric(v)) vt = (cur == TY_FLOAT || v == TY_FLOAT) ? TY_FLOAT : TY_INT;
       else vt = cur;
-    } else if (!strcmp(ty, "ConstantWriteNode")) {
+    }
+    else if (!strcmp(ty, "ConstantWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) lv = comp_const(c, nm);
       vt = infer_type(c, nt_ref(nt, id, "value"));
-    } else {
+    }
+    else {
       continue;
     }
     if (!lv) continue;
@@ -621,7 +627,8 @@ static int infer_ivar_types(Compiler *c) {
       if (iv < 0) continue;
       TyKind merged = ty_unify(ci->ivar_types[iv], vt);
       if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
-    } else if (!strcmp(ty, "CallNode")) {
+    }
+    else if (!strcmp(ty, "CallNode")) {
       /* attr-writer assignment: obj.x = v  (CallNode "x=") */
       const char *nm = nt_str(nt, id, "name");
       int recv = nt_ref(nt, id, "receiver");
@@ -679,7 +686,8 @@ static int infer_write_types(Compiler *c) {
       /* a `x = nil` write doesn't pin the type: nil is the absent/default
          value, so the variable takes its non-nil assignments' type */
       if (newt == TY_NIL) newt = TY_UNKNOWN;
-    } else if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
+    }
+    else if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
       nm = nt_str(nt, id, "name");
       Scope *s = comp_scope_of(c, id);
       LocalVar *cur = nm ? scope_local(s, nm) : NULL;
@@ -689,7 +697,8 @@ static int infer_write_types(Compiler *c) {
       else if (ty_is_numeric(ct) && ty_is_numeric(vt))
         newt = (ct == TY_FLOAT || vt == TY_FLOAT) ? TY_FLOAT : TY_INT;
       else newt = ct;
-    } else {
+    }
+    else {
       continue;
     }
     if (!nm) continue;
