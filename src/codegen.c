@@ -765,6 +765,20 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   if (argc == 1 && (!strcmp(name, "==") || !strcmp(name, "!="))) {
     int eq = !strcmp(name, "==");
+    /* `x == nil` / `x != nil` for any receiver */
+    int a_nil = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "NilNode");
+    int r_nil = nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "NilNode");
+    if (a_nil || r_nil) {
+      int other = a_nil ? recv : argv[0];
+      TyKind ot = comp_ntype(c, other);
+      if (ot == TY_POLY) {
+        buf_puts(b, eq ? "sp_poly_nil_p(" : "(!sp_poly_nil_p(");
+        emit_expr(c, other, b); buf_puts(b, eq ? ")" : "))");
+      }
+      else if (ot == TY_NIL) buf_puts(b, eq ? "1" : "0");
+      else { buf_puts(b, "(("); emit_expr(c, other, b); buf_printf(b, "), %d)", eq ? 0 : 1); }
+      return;
+    }
     if (rt == TY_STRING || a0 == TY_STRING) {
       buf_puts(b, eq ? "sp_str_eq(" : "(!sp_str_eq(");
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
