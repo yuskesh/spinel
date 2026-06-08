@@ -107,6 +107,7 @@ static const char *c_type_name(TyKind t) {
     case TY_SYMBOL:      return "sp_sym";
     case TY_RANGE:       return "sp_Range";
     case TY_TIME:        return "sp_Time";
+    case TY_STRINGIO:    return "sp_StringIO *";
     case TY_EXCEPTION:   return "sp_Exception *";
     case TY_INT_ARRAY:   return "sp_IntArray *";
     case TY_FLOAT_ARRAY: return "sp_FloatArray *";
@@ -124,7 +125,7 @@ static const char *c_type_name(TyKind t) {
 }
 static int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
-         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_EXCEPTION ||
+         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_STRINGIO || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_POLY || t == TY_POLY_ARRAY ||
          ty_is_hash(t) || ty_is_object(t);
@@ -138,6 +139,7 @@ static const char *default_value(TyKind t) {
     case TY_SYMBOL: return "((sp_sym)-1)";
     case TY_RANGE:  return "(sp_Range){0}";
     case TY_TIME:   return "(sp_Time){0}";
+    case TY_STRINGIO: return "NULL";
     case TY_EXCEPTION: return "NULL";
     case TY_INT_ARRAY:
     case TY_FLOAT_ARRAY:
@@ -629,6 +631,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         else buf_puts(b, "(&(\"\\xff\")[1])");
         return;
       }
+      if (cn && !strcmp(cn, "StringIO")) {
+        if (argc == 0) buf_puts(b, "sp_StringIO_new()");
+        else if (argc == 1) { buf_puts(b, "sp_StringIO_new_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        return;
+      }
       if (cn && !strcmp(cn, "Array") && argc == 2) {
         /* Array.new(n, v) -> n copies of v */
         TyKind at = comp_ntype(c, id);
@@ -1070,6 +1078,39 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_time_add(%s, %s(mrb_float)(", r, name[0] == '-' ? "-" : "");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
     }
+    else done = 0;
+    free(rs.p);
+    if (done) return;
+  }
+
+  /* StringIO instance methods (a non-GC heap buffer behind sp_StringIO *). */
+  if (recv >= 0 && rt == TY_STRINGIO) {
+    Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
+    const char *r = rs.p ? rs.p : "";
+    int done = 1;
+    if (!strcmp(name, "string")) buf_printf(b, "sp_StringIO_string(%s)", r);
+    else if (!strcmp(name, "pos") || !strcmp(name, "tell")) buf_printf(b, "sp_StringIO_pos(%s)", r);
+    else if (!strcmp(name, "size") || !strcmp(name, "length")) buf_printf(b, "sp_StringIO_size(%s)", r);
+    else if (!strcmp(name, "lineno")) buf_printf(b, "(%s)->lineno", r);
+    else if (!strcmp(name, "puts") && argc == 0) buf_printf(b, "sp_StringIO_puts_empty(%s)", r);
+    else if (!strcmp(name, "puts") && argc == 1) { buf_printf(b, "sp_StringIO_puts(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "print") && argc == 1) { buf_printf(b, "sp_StringIO_print(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if ((!strcmp(name, "write") || !strcmp(name, "<<")) && argc == 1) { buf_printf(b, "sp_StringIO_write(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "putc") && argc == 1) { buf_printf(b, "sp_StringIO_putc(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "read") && argc == 0) buf_printf(b, "sp_StringIO_read(%s)", r);
+    else if (!strcmp(name, "read") && argc == 1) { buf_printf(b, "sp_StringIO_read_n(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "gets")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_gets(%s))", r);
+    else if (!strcmp(name, "getc")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_getc(%s))", r);
+    else if (!strcmp(name, "getbyte")) buf_printf(b, "sp_StringIO_getbyte(%s)", r);
+    else if (!strcmp(name, "rewind")) buf_printf(b, "sp_StringIO_rewind(%s)", r);
+    else if (!strcmp(name, "seek") && argc >= 1) { buf_printf(b, "sp_StringIO_seek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "truncate") && argc == 1) { buf_printf(b, "sp_StringIO_truncate(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "eof?") || !strcmp(name, "eof")) buf_printf(b, "sp_StringIO_eof_p(%s)", r);
+    else if (!strcmp(name, "close")) buf_printf(b, "sp_StringIO_close(%s)", r);
+    else if (!strcmp(name, "closed?")) buf_printf(b, "sp_StringIO_closed_p(%s)", r);
+    else if (!strcmp(name, "flush")) buf_printf(b, "sp_StringIO_flush(%s)", r);
+    else if (!strcmp(name, "sync")) buf_printf(b, "sp_StringIO_sync(%s)", r);
+    else if (!strcmp(name, "isatty") || !strcmp(name, "tty?")) buf_printf(b, "sp_StringIO_isatty(%s)", r);
     else done = 0;
     free(rs.p);
     if (done) return;

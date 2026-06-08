@@ -88,7 +88,19 @@ static TyKind infer_call(Compiler *c, int id) {
       if (ci >= 0) return ty_object(ci);
       if (cn && !strcmp(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
       if (cn && !strcmp(cn, "String")) return TY_STRING;
+      if (cn && !strcmp(cn, "StringIO")) return TY_STRINGIO;
     }
+  }
+
+  /* StringIO instance methods */
+  if (recv >= 0 && rt == TY_STRINGIO) {
+    if (!strcmp(name, "string") || !strcmp(name, "read")) return TY_STRING;
+    if (!strcmp(name, "gets") || !strcmp(name, "getc")) return TY_POLY;  /* nil at eof */
+    if (!strcmp(name, "eof?") || !strcmp(name, "eof") || !strcmp(name, "closed?") ||
+        !strcmp(name, "sync") || !strcmp(name, "isatty") || !strcmp(name, "tty?")) return TY_BOOL;
+    if (!strcmp(name, "flush")) return TY_STRINGIO;
+    /* pos/tell/size/length/lineno/write/puts/print/putc/getbyte/seek/... */
+    return TY_INT;
   }
 
   /* Time.now / at / local / mktime / utc / gm -> a Time value */

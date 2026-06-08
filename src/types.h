@@ -19,6 +19,7 @@ typedef enum {
   TY_BOOL,
   TY_RANGE,
   TY_TIME,
+  TY_STRINGIO,
   TY_EXCEPTION,
   TY_INT_ARRAY,
   TY_FLOAT_ARRAY,
