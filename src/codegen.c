@@ -1049,6 +1049,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* nil receiver: nil.inspect -> "nil", nil.to_s -> "", nil.nil? -> true.
+     Evaluate the receiver for side effects, then yield the constant. */
+  if (recv >= 0 && rt == TY_NIL && argc == 0) {
+    if (!strcmp(name, "inspect")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"nil\"))"); return; }
+    if (!strcmp(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"\"))"); return; }
+    if (!strcmp(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
+  }
+
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (!strcmp(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
@@ -2800,6 +2808,10 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     }
     buf_puts(b, ")); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
   }
+  else if (nt_type(c->nt, arg) && !strcmp(nt_type(c->nt, arg), "ArrayNode") &&
+           ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
+    buf_puts(b, "(void)0;  /* puts [] prints nothing */\n");
+  }
   else {
     unsupported(c, arg, "puts argument");
   }
@@ -2871,6 +2883,13 @@ static void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_POLY) {
     buf_puts(b, "fputs(sp_poly_inspect("); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
+  }
+  else if (t == TY_NIL) {
+    buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); fputs(\"nil\\n\", stdout);\n");
+  }
+  else if (nt_type(c->nt, arg) && !strcmp(nt_type(c->nt, arg), "ArrayNode") &&
+           ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
+    buf_puts(b, "fputs(\"[]\\n\", stdout);\n");  /* p [] */
   }
   else {
     unsupported(c, arg, "p argument");
