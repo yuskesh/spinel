@@ -44,6 +44,24 @@ static TyKind infer_call(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
 
+  /* Class.new(...) -> an instance of that class */
+  if (recv >= 0 && !strcmp(name, "new")) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && !strcmp(rty, "ConstantReadNode")) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) return ty_object(ci);
+    }
+  }
+
+  /* obj.method(...) -> the method's return type */
+  if (recv >= 0 && ty_is_object(rt)) {
+    int cid = ty_object_class(rt);
+    int mi = comp_method_in_class(c, cid, name);
+    if (mi >= 0) return c->scopes[mi].ret;
+    /* built-in object queries */
+    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
+  }
+
   /* user-defined method call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name);
@@ -161,6 +179,14 @@ static TyKind infer_uncached(Compiler *c, int id) {
     LocalVar *lv = nm ? scope_local(s, nm) : NULL;
     return lv ? lv->type : TY_UNKNOWN;
   }
+  if (!strcmp(ty, "InstanceVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    Scope *s = comp_scope_of(c, id);
+    if (s->class_id < 0) return TY_UNKNOWN;
+    ClassInfo *ci = &c->classes[s->class_id];
+    int iv = nm ? comp_ivar_index(ci, nm) : -1;
+    return iv >= 0 ? ci->ivar_types[iv] : TY_UNKNOWN;
+  }
   if (!strcmp(ty, "ParenthesesNode")) {
     int body = nt_ref(nt, id, "body");
     if (body < 0) return TY_NIL;
@@ -227,17 +253,28 @@ static void scope_add_param(Scope *s, const char *name) {
   lv->is_param = 1;
 }
 
-static void walk_scope(Compiler *c, int id, int scope_idx) {
+static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
   const char *ty = nt_type(c->nt, id);
   int child = scope_idx;
+  int child_class = class_id;
 
-  if (ty && !strcmp(ty, "DefNode")) {
+  if (ty && !strcmp(ty, "ClassNode")) {
+    int cp = nt_ref(c->nt, id, "constant_path");
+    const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
+    if (cname && comp_class_index(c, cname) < 0) {
+      comp_class_new(c, cname, id);
+      child_class = c->nclasses - 1;
+    } else if (cname) {
+      child_class = comp_class_index(c, cname);  /* reopened class */
+    }
+  } else if (ty && !strcmp(ty, "DefNode")) {
     const char *name = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_new(c, name, id);
     int new_idx = c->nscopes - 1;
     s->body = nt_ref(c->nt, id, "body");
+    s->class_id = class_id;   /* instance method of the enclosing class */
     int pn = nt_ref(c->nt, id, "parameters");
     if (pn >= 0) {
       int rn = 0;
@@ -253,14 +290,14 @@ static void walk_scope(Compiler *c, int id, int scope_idx) {
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     int r = nt_ref_at(c->nt, id, i);
-    if (r >= 0) walk_scope(c, r, child);
+    if (r >= 0) walk_scope(c, r, child, child_class);
   }
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0;
     const int *ids = nt_arr_at(c->nt, id, i, &n);
     for (int j = 0; j < n; j++)
-      if (ids[j] >= 0) walk_scope(c, ids[j], child);
+      if (ids[j] >= 0) walk_scope(c, ids[j], child, child_class);
   }
 }
 
@@ -276,7 +313,40 @@ static void register_locals(Compiler *c) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) scope_local_intern(comp_scope_of(c, id), nm);
     }
+    if (!strcmp(ty, "InstanceVariableWriteNode") ||
+        !strcmp(ty, "InstanceVariableReadNode") ||
+        !strcmp(ty, "InstanceVariableOperatorWriteNode")) {
+      const char *nm = nt_str(nt, id, "name");
+      Scope *s = comp_scope_of(c, id);
+      if (nm && s->class_id >= 0) comp_ivar_intern(&c->classes[s->class_id], nm);
+    }
   }
+}
+
+/* @ivar types from their assignments across the class's methods. */
+static int infer_ivar_types(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty) continue;
+    const char *nm = NULL;
+    TyKind vt = TY_UNKNOWN;
+    if (!strcmp(ty, "InstanceVariableWriteNode")) {
+      nm = nt_str(nt, id, "name");
+      vt = infer_type(c, nt_ref(nt, id, "value"));
+    } else {
+      continue;
+    }
+    Scope *s = comp_scope_of(c, id);
+    if (!nm || s->class_id < 0) continue;
+    ClassInfo *ci = &c->classes[s->class_id];
+    int iv = comp_ivar_index(ci, nm);
+    if (iv < 0) continue;
+    TyKind merged = ty_unify(ci->ivar_types[iv], vt);
+    if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+  }
+  return changed;
 }
 
 /* ---- fixpoint passes ---- */
@@ -314,29 +384,53 @@ static int infer_write_types(Compiler *c) {
   return changed;
 }
 
+/* Unify a call's argument types into method scope `mi`'s parameters. */
+static int bind_call_params(Compiler *c, int call_id, int mi) {
+  if (mi < 0) return 0;
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int args = nt_ref(nt, call_id, "arguments");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int n = argc < m->nparams ? argc : m->nparams;
+  int changed = 0;
+  for (int k = 0; k < n; k++) {
+    TyKind at = infer_type(c, argv[k]);
+    LocalVar *p = scope_local(m, m->pnames[k]);
+    if (!p) continue;
+    TyKind merged = ty_unify(p->type, at);
+    if (merged != p->type) { p->type = merged; changed = 1; }
+  }
+  return changed;
+}
+
 static int infer_param_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || strcmp(ty, "CallNode")) continue;
-    if (nt_ref(nt, id, "receiver") >= 0) continue;
     const char *name = nt_str(nt, id, "name");
-    int mi = comp_method_index(c, name);
-    if (mi < 0) continue;
-    Scope *m = &c->scopes[mi];
-    int args = nt_ref(nt, id, "arguments");
-    int argc = 0;
-    const int *argv = NULL;
-    if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
-    int n = argc < m->nparams ? argc : m->nparams;
-    for (int k = 0; k < n; k++) {
-      TyKind at = infer_type(c, argv[k]);
-      LocalVar *p = scope_local(m, m->pnames[k]);
-      if (!p) continue;
-      TyKind merged = ty_unify(p->type, at);
-      if (merged != p->type) { p->type = merged; changed = 1; }
+    int recv = nt_ref(nt, id, "receiver");
+
+    if (recv < 0) {
+      changed |= bind_call_params(c, id, comp_method_index(c, name));
+      continue;
     }
+    /* Class.new -> initialize params */
+    if (!strcmp(name, "new")) {
+      const char *rty = nt_type(nt, recv);
+      if (rty && !strcmp(rty, "ConstantReadNode")) {
+        int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+        if (ci >= 0) changed |= bind_call_params(c, id, comp_method_in_class(c, ci, "initialize"));
+      }
+      continue;
+    }
+    /* obj.method -> instance method params */
+    TyKind rt = infer_type(c, recv);
+    if (ty_is_object(rt))
+      changed |= bind_call_params(c, id, comp_method_in_class(c, ty_object_class(rt), name));
   }
   return changed;
 }
@@ -437,7 +531,7 @@ void analyze_program(Compiler *c) {
   Scope *top = comp_scope_new(c, NULL, -1);
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
 
-  walk_scope(c, c->nt->root_id, 0);
+  walk_scope(c, c->nt->root_id, 0, -1);
   register_locals(c);
 
   /* intern every symbol literal so codegen can emit the id table */
@@ -454,6 +548,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_write_types(c);
     ch |= infer_param_types(c);
     ch |= infer_block_params(c);
+    ch |= infer_ivar_types(c);
     ch |= infer_return_types(c);
     if (!ch) break;
   }

@@ -82,7 +82,7 @@ static int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
          t == TY_SYMBOL ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
-         ty_is_hash(t);
+         ty_is_hash(t) || ty_is_object(t);
 }
 static const char *default_value(TyKind t) {
   switch (t) {
@@ -97,6 +97,17 @@ static const char *default_value(TyKind t) {
     default:        return ty_is_hash(t) ? "NULL" : "0";
   }
 }
+/* Append the C type name for `t` to `b` (objects need the class name). */
+static void emit_ctype(Compiler *c, TyKind t, Buf *b) {
+  if (ty_is_object(t)) {
+    int cid = ty_object_class(t);
+    buf_printf(b, "sp_%s", c->classes[cid].name);
+  } else {
+    const char *n = c_type_name(t);
+    buf_puts(b, n ? n : "void");
+  }
+}
+
 /* "Int" / "Str" / "Float" for the sp_<K>Array_* runtime family. */
 static const char *array_kind(TyKind t) {
   switch (t) {
@@ -191,6 +202,23 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   if (recv < 0 && comp_method_index(c, name) >= 0) { emit_method_call(c, id, b); return; }
 
+  /* Class.new(args) -> sp_<Class>_new(args) */
+  if (recv >= 0 && !strcmp(name, "new")) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && !strcmp(rty, "ConstantReadNode")) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) {
+        buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+        int args = nt_ref(nt, id, "arguments");
+        int argc = 0; const int *argv = NULL;
+        if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+        for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, argv[k], b); }
+        buf_puts(b, ")");
+        return;
+      }
+    }
+  }
+
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
@@ -260,6 +288,34 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     unsupported(c, id, "equality");
+  }
+
+  /* object method call: sp_<Class>_<m>(&recv, args) */
+  if (recv >= 0 && ty_is_object(rt)) {
+    int cid = ty_object_class(rt);
+    int mi = comp_method_in_class(c, cid, name);
+    if (mi >= 0) {
+      buf_printf(b, "sp_%s_%s(", c->classes[cid].name, name);
+      /* self by address; receiver must be an lvalue (local/ivar) or a temp */
+      const char *rty = nt_type(nt, recv);
+      if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode"))) {
+        buf_puts(b, "&"); emit_expr(c, recv, b);
+      } else {
+        int t = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, rt, g_pre);
+        buf_printf(g_pre, " _t%d = ", t);
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+        buf_printf(b, "&_t%d", t);
+      }
+      int args = nt_ref(nt, id, "arguments");
+      int argc = 0; const int *argv = NULL;
+      if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+      for (int k = 0; k < argc; k++) { buf_puts(b, ", "); emit_expr(c, argv[k], b); }
+      buf_puts(b, ")");
+      return;
+    }
   }
 
   /* hash value methods */
@@ -712,6 +768,11 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (!strcmp(ty, "LocalVariableReadNode")) { buf_printf(b, "lv_%s", nt_str(nt, id, "name")); return; }
+  if (!strcmp(ty, "InstanceVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");  /* "@x" */
+    buf_printf(b, "self->iv_%s", nm + 1);
+    return;
+  }
   if (!strcmp(ty, "ParenthesesNode")) {
     int body = nt_ref(nt, id, "body");
     int n = 0;
@@ -790,6 +851,22 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
   } else if (t == TY_SYMBOL) {
     buf_puts(b, "puts(sp_sym_to_s("); emit_expr(c, arg, b); buf_puts(b, "));\n");
+  } else if (ty_is_object(t) && comp_method_in_class(c, ty_object_class(t), "to_s") >= 0) {
+    int cid = ty_object_class(t);
+    buf_puts(b, "{ const char *_ps = (const char *)(");
+    buf_printf(b, "sp_%s_to_s(", c->classes[cid].name);
+    const char *rty = nt_type(c->nt, arg);
+    if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode"))) {
+      buf_puts(b, "&"); emit_expr(c, arg, b);
+    } else {
+      int tt = ++g_tmp;
+      emit_indent(g_pre, g_indent); emit_ctype(c, t, g_pre);
+      buf_printf(g_pre, " _t%d = ", tt);
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arg, &rb);
+      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      buf_printf(b, "&_t%d", tt);
+    }
+    buf_puts(b, ")); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); } else putchar('\\n'); }\n");
   } else {
     unsupported(c, arg, "puts argument");
   }
@@ -1018,6 +1095,31 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   }
   if (!strcmp(ty, "LocalVariableWriteNode")) { emit_assign(c, id, b, indent); return; }
   if (!strcmp(ty, "LocalVariableOperatorWriteNode")) { emit_op_assign(c, id, b, indent); return; }
+  if (!strcmp(ty, "InstanceVariableWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    emit_indent(b, indent);
+    buf_printf(b, "self->iv_%s = ", nm + 1);
+    emit_expr(c, nt_ref(nt, id, "value"), b);
+    buf_puts(b, ";\n");
+    return;
+  }
+  if (!strcmp(ty, "InstanceVariableOperatorWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    const char *op = nt_str(nt, id, "binary_operator");
+    int sc = comp_scope_of(c, id)->class_id;
+    TyKind vt = TY_UNKNOWN;
+    if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) vt = c->classes[sc].ivar_types[iv]; }
+    emit_indent(b, indent);
+    if (vt == TY_STRING && op && !strcmp(op, "+")) {
+      buf_printf(b, "self->iv_%s = sp_str_concat(self->iv_%s, ", nm + 1, nm + 1);
+      emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ");\n");
+    } else {
+      buf_printf(b, "self->iv_%s %s= ", nm + 1, op ? op : "+");
+      emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
+    }
+    return;
+  }
+  if (!strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) { return; } /* methods emitted separately */
   if (!strcmp(ty, "IndexOperatorWriteNode")) { emit_index_op_write(c, id, b, indent); return; }
   if (!strcmp(ty, "IfNode"))     { emit_if(c, id, b, indent, 0, 0); return; }
   if (!strcmp(ty, "UnlessNode")) { emit_if(c, id, b, indent, 1, 0); return; }
@@ -1091,7 +1193,7 @@ static void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
 /* Heap-managed types need a GC root for their local slot. */
 static int needs_root(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_is_hash(t); }
 
-static void declare_local(Buf *b, LocalVar *lv) {
+static void declare_local(Compiler *c, Buf *b, LocalVar *lv) {
   switch (lv->type) {
     case TY_INT:    buf_printf(b, "    mrb_int lv_%s = 0;\n", lv->name); break;
     case TY_FLOAT:  buf_printf(b, "    mrb_float lv_%s = 0.0;\n", lv->name); break;
@@ -1115,6 +1217,12 @@ static void declare_local(Buf *b, LocalVar *lv) {
         buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", lv->name);
         break;
       }
+      if (ty_is_object(lv->type)) {
+        buf_puts(b, "    ");
+        emit_ctype(c, lv->type, b);
+        buf_printf(b, " lv_%s = {0};\n", lv->name);
+        break;
+      }
       fprintf(stderr, "spinelc: local '%s' has unsupported type %s\n",
               lv->name, ty_name(lv->type));
       exit(1);
@@ -1123,39 +1231,58 @@ static void declare_local(Buf *b, LocalVar *lv) {
 
 /* Declare a scope's locals. Params are already C function parameters, so
    they only need a GC root; body locals get a full declaration. */
-static void emit_scope_decls(Scope *s, Buf *b) {
+static void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
   for (int i = 0; i < s->nlocals; i++) {
     LocalVar *lv = &s->locals[i];
     if (lv->is_param) {
       if (needs_root(lv->type)) buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", lv->name);
     } else {
-      declare_local(b, lv);
+      declare_local(c, b, lv);
     }
   }
 }
 
 /* ---- methods ---- */
 
-static int method_is_void(Scope *s) { return !is_scalar_ret(s->ret); }
+static int method_is_void(Scope *s) {
+  /* initialize is always void (mutates *self); else by return type */
+  if (s->class_id >= 0 && s->name && !strcmp(s->name, "initialize")) return 1;
+  return !is_scalar_ret(s->ret);
+}
+
+/* The mangled C name: sp_<name> for free functions, sp_<Class>_<name>
+   for instance methods. */
+static void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
+  if (s->class_id >= 0)
+    buf_printf(b, "sp_%s_%s", c->classes[s->class_id].name, s->name);
+  else
+    buf_printf(b, "sp_%s", s->name);
+}
 
 static void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
-  const char *rt = method_is_void(s) ? "void" : c_type_name(s->ret);
-  buf_printf(b, "static %s sp_%s(", rt, s->name);
-  if (s->nparams == 0) {
-    buf_puts(b, "void");
-  } else {
-    for (int i = 0; i < s->nparams; i++) {
-      if (i) buf_puts(b, ", ");
-      LocalVar *p = scope_local(s, s->pnames[i]);
-      const char *ct = p ? c_type_name(p->type) : NULL;
-      if (!ct) {
-        fprintf(stderr, "spinelc: method '%s' param '%s' has unsupported type %s\n",
-                s->name, s->pnames[i], ty_name(p ? p->type : TY_UNKNOWN));
-        exit(1);
-      }
-      buf_printf(b, "%s lv_%s", ct, s->pnames[i]);
-    }
+  if (method_is_void(s)) buf_puts(b, "static void ");
+  else { buf_puts(b, "static "); emit_ctype(c, s->ret, b); buf_puts(b, " "); }
+  emit_method_cname(c, s, b);
+  buf_puts(b, "(");
+  int wrote = 0;
+  if (s->class_id >= 0) {
+    /* self: by pointer (reference semantics for ivar mutation) */
+    buf_printf(b, "sp_%s *self", c->classes[s->class_id].name);
+    wrote = 1;
   }
+  for (int i = 0; i < s->nparams; i++) {
+    if (wrote++) buf_puts(b, ", ");
+    LocalVar *p = scope_local(s, s->pnames[i]);
+    TyKind pt = p ? p->type : TY_UNKNOWN;
+    if (!is_scalar_ret(pt)) {
+      fprintf(stderr, "spinelc: method '%s' param '%s' has unsupported type %s\n",
+              s->name, s->pnames[i], ty_name(pt));
+      exit(1);
+    }
+    emit_ctype(c, pt, b);
+    buf_printf(b, " lv_%s", s->pnames[i]);
+  }
+  if (!wrote) buf_puts(b, "void");
   buf_puts(b, ")");
 }
 
@@ -1163,14 +1290,57 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   emit_method_signature(c, s, b);
   buf_puts(b, " {\n");
   buf_puts(b, "    SP_GC_SAVE();\n");
-  emit_scope_decls(s, b);
+  emit_scope_decls(c, s, b);
   if (method_is_void(s)) {
     emit_stmts(c, s->body, b, 1);
   } else {
     emit_stmts_tail(c, s->body, b, 1);
-    buf_printf(b, "  return %s;\n", default_value(s->ret));
+    buf_puts(b, "  return ");
+    if (ty_is_object(s->ret)) { emit_ctype(c, s->ret, b); buf_puts(b, "){0}"); /* unreachable default */ buf_puts(b, ";\n"); }
+    else buf_printf(b, "%s;\n", default_value(s->ret));
   }
   buf_puts(b, "}\n");
+}
+
+/* Emit the struct + the constructor (sp_<Class>_new) for one class. */
+static void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
+  buf_printf(b, "typedef struct sp_%s_s sp_%s;\n", ci->name, ci->name);
+  buf_printf(b, "struct sp_%s_s {\n", ci->name);
+  if (ci->nivars == 0) buf_puts(b, "  char _unused;\n");
+  for (int i = 0; i < ci->nivars; i++) {
+    TyKind t = ci->ivar_types[i];
+    if (!is_scalar_ret(t) && t != TY_UNKNOWN) { /* ok */ }
+    buf_puts(b, "  ");
+    emit_ctype(c, t == TY_UNKNOWN ? TY_INT : t, b);
+    /* ivar name includes '@'; strip it for the field */
+    buf_printf(b, " iv_%s;\n", ci->ivars[i] + 1);
+  }
+  buf_puts(b, "};\n");
+}
+
+static void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
+  int cid = comp_class_index(c, ci->name);
+  int init = comp_method_in_class(c, cid, "initialize");
+  buf_printf(b, "static sp_%s sp_%s_new(", ci->name, ci->name);
+  if (init >= 0 && c->scopes[init].nparams > 0) {
+    Scope *s = &c->scopes[init];
+    for (int i = 0; i < s->nparams; i++) {
+      if (i) buf_puts(b, ", ");
+      LocalVar *p = scope_local(s, s->pnames[i]);
+      emit_ctype(c, p ? p->type : TY_INT, b);
+      buf_printf(b, " lv_%s", s->pnames[i]);
+    }
+  } else {
+    buf_puts(b, "void");
+  }
+  buf_printf(b, ") {\n  sp_%s self = {0};\n", ci->name);
+  if (init >= 0) {
+    buf_printf(b, "  sp_%s_initialize(&self", ci->name);
+    Scope *s = &c->scopes[init];
+    for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
+    buf_puts(b, ");\n");
+  }
+  buf_puts(b, "  return self;\n}\n");
 }
 
 /* ---- top level ---- */
@@ -1195,14 +1365,23 @@ char *codegen_program(const NodeTable *nt) {
   }
   buf_puts(&b, "static const char *sp_class_to_s(sp_Class c){(void)c;return \"\";}\n\n\n");
 
-  /* method prototypes then definitions (scope 0 is top-level) */
+  /* class structs */
+  for (int i = 0; i < c->nclasses; i++) emit_class_struct(c, &c->classes[i], &b);
+  if (c->nclasses > 0) buf_puts(&b, "\n");
+
+  /* method prototypes (scope 0 is top-level) */
   for (int s = 1; s < c->nscopes; s++) { emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
-  if (c->nscopes > 1) buf_puts(&b, "\n");
+  /* constructor prototypes + definitions (after method protos: new calls initialize) */
+  for (int i = 0; i < c->nclasses; i++) {
+    buf_printf(&b, "static sp_%s sp_%s_new();\n", c->classes[i].name, c->classes[i].name);
+  }
+  if (c->nscopes > 1 || c->nclasses > 0) buf_puts(&b, "\n");
+  for (int i = 0; i < c->nclasses; i++) emit_class_new(c, &c->classes[i], &b);
   for (int s = 1; s < c->nscopes; s++) emit_method(c, &c->scopes[s], &b);
 
   buf_puts(&b, "int main(int argc,char**argv){\n");
   buf_puts(&b, "    SP_GC_SAVE();\n");
-  emit_scope_decls(&c->scopes[0], &b);
+  emit_scope_decls(c, &c->scopes[0], &b);
   buf_puts(&b, "\n");
   emit_stmts(c, c->scopes[0].body, &b, 1);
   buf_puts(&b, "  return 0;\n}\n");

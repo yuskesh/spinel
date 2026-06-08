@@ -26,6 +26,13 @@ void comp_free(Compiler *c) {
   free(c->scopes);
   for (int i = 0; i < c->nsymbols; i++) free(c->symbols[i]);
   free(c->symbols);
+  for (int i = 0; i < c->nclasses; i++) {
+    free(c->classes[i].name);
+    for (int j = 0; j < c->classes[i].nivars; j++) free(c->classes[i].ivars[j]);
+    free(c->classes[i].ivars);
+    free(c->classes[i].ivar_types);
+  }
+  free(c->classes);
   free(c->nscope);
   free(c->ntype);
   free(c);
@@ -52,8 +59,55 @@ Scope *comp_scope_new(Compiler *c, const char *name, int def_node) {
   s->name = name ? strdup(name) : NULL;
   s->def_node = def_node;
   s->body = -1;
+  s->class_id = -1;
   s->ret = TY_UNKNOWN;
   return s;
+}
+
+ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
+  if (c->nclasses >= c->cclasses) {
+    c->cclasses = c->cclasses ? c->cclasses * 2 : 8;
+    c->classes = realloc(c->classes, sizeof(ClassInfo) * (size_t)c->cclasses);
+  }
+  ClassInfo *ci = &c->classes[c->nclasses++];
+  memset(ci, 0, sizeof(*ci));
+  ci->name = name ? strdup(name) : NULL;
+  ci->def_node = def_node;
+  return ci;
+}
+
+int comp_class_index(Compiler *c, const char *name) {
+  if (!name) return -1;
+  for (int i = 0; i < c->nclasses; i++)
+    if (c->classes[i].name && strcmp(c->classes[i].name, name) == 0) return i;
+  return -1;
+}
+
+int comp_ivar_index(ClassInfo *ci, const char *name) {
+  for (int i = 0; i < ci->nivars; i++)
+    if (strcmp(ci->ivars[i], name) == 0) return i;
+  return -1;
+}
+
+int comp_ivar_intern(ClassInfo *ci, const char *name) {
+  int idx = comp_ivar_index(ci, name);
+  if (idx >= 0) return idx;
+  if (ci->nivars >= ci->civars) {
+    ci->civars = ci->civars ? ci->civars * 2 : 8;
+    ci->ivars = realloc(ci->ivars, sizeof(char *) * (size_t)ci->civars);
+    ci->ivar_types = realloc(ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
+  }
+  ci->ivars[ci->nivars] = strdup(name);
+  ci->ivar_types[ci->nivars] = TY_UNKNOWN;
+  return ci->nivars++;
+}
+
+int comp_method_in_class(Compiler *c, int class_id, const char *name) {
+  if (!name) return -1;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].class_id == class_id && c->scopes[s].name &&
+        strcmp(c->scopes[s].name, name) == 0) return s;
+  return -1;
 }
 
 Scope *comp_scope_of(Compiler *c, int node_id) {
@@ -66,7 +120,8 @@ Scope *comp_scope_of(Compiler *c, int node_id) {
 int comp_method_index(Compiler *c, const char *name) {
   if (!name) return -1;
   for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].name && strcmp(c->scopes[s].name, name) == 0) return s;
+    if (c->scopes[s].class_id < 0 && c->scopes[s].name &&
+        strcmp(c->scopes[s].name, name) == 0) return s;
   return -1;
 }
 

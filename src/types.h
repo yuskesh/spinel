@@ -45,4 +45,12 @@ const char *ty_hash_cname(TyKind h);   /* "StrInt" etc, for sp_<X>Hash_* */
    and handled when they appear). */
 TyKind ty_unify(TyKind a, TyKind b);
 
+/* User-defined object types are encoded above the built-in range so the
+   flat TyKind node-type array still works: a class with index i has type
+   TY_OBJECT_BASE + i. The class table (names, ivars) lives in Compiler. */
+#define TY_OBJECT_BASE 1000
+static inline int    ty_is_object(TyKind t)   { return (int)t >= TY_OBJECT_BASE; }
+static inline TyKind ty_object(int class_id)  { return (TyKind)(TY_OBJECT_BASE + class_id); }
+static inline int    ty_object_class(TyKind t){ return (int)t - TY_OBJECT_BASE; }
+
 #endif
