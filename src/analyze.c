@@ -584,6 +584,8 @@ static TyKind infer_uncached(Compiler *c, int id) {
   if (!strcmp(ty, "NilNode"))                 return TY_NIL;
   if (!strcmp(ty, "RangeNode"))               return TY_RANGE;
   if (!strcmp(ty, "LambdaNode"))              return TY_PROC;
+  /* an assignment expression evaluates to the assigned value */
+  if (!strcmp(ty, "LocalVariableWriteNode"))  return infer_type(c, nt_ref(nt, id, "value"));
 
   if (!strcmp(ty, "LocalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
@@ -1743,6 +1745,110 @@ static void compute_reachable(Compiler *c) {
   #undef ADD_NAME
 }
 
+/* ---- proc capture detection (closures) ----
+   A local read inside a proc body that isn't bound by the proc (param or a
+   local the body itself writes) is a captured/free variable; its enclosing
+   local must live in a heap cell so the closure and the enclosing scope share
+   mutable storage. Mark those enclosing locals is_cell. */
+typedef struct { const char **v; int n, cap; } ANameSet;
+static int aname_has(ANameSet *s, const char *nm) {
+  if (!nm) return 1;
+  for (int i = 0; i < s->n; i++) if (!strcmp(s->v[i], nm)) return 1;
+  return 0;
+}
+static void aname_add(ANameSet *s, const char *nm) {
+  if (aname_has(s, nm)) return;
+  if (s->n >= s->cap) { s->cap = s->cap ? s->cap * 2 : 8; s->v = realloc(s->v, sizeof(char *) * (size_t)s->cap); }
+  s->v[s->n++] = nm;
+}
+static int a_nested_block(const char *ty) { return ty && (!strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode")); }
+static int a_is_local_node(const char *ty) {
+  return ty && (!strcmp(ty, "LocalVariableReadNode") || !strcmp(ty, "LocalVariableWriteNode") ||
+                !strcmp(ty, "LocalVariableTargetNode") || !strcmp(ty, "LocalVariableOperatorWriteNode") ||
+                !strcmp(ty, "LocalVariableOrWriteNode") || !strcmp(ty, "LocalVariableAndWriteNode"));
+}
+static int a_is_write_node(const char *ty) {
+  return ty && (!strcmp(ty, "LocalVariableWriteNode") || !strcmp(ty, "LocalVariableTargetNode") ||
+                !strcmp(ty, "LocalVariableOperatorWriteNode") || !strcmp(ty, "LocalVariableOrWriteNode") ||
+                !strcmp(ty, "LocalVariableAndWriteNode"));
+}
+/* Mark every node id in the subtree (crossing nested blocks: a node inside an
+   inner block is still "inside a proc"). */
+static void a_mark_subtree(Compiler *c, int id, char *inproc) {
+  if (id < 0) return;
+  inproc[id] = 1;
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) a_mark_subtree(c, ch, inproc); }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) a_mark_subtree(c, ids[k], inproc); }
+}
+/* Names used (read or written) directly in the proc body, not crossing nested
+   blocks. */
+static void a_collect_used(Compiler *c, int id, ANameSet *out) {
+  if (id < 0) return;
+  const char *ty = nt_type(c->nt, id);
+  if (!ty) return;
+  if (a_is_local_node(ty)) aname_add(out, nt_str(c->nt, id, "name"));
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0 && !a_nested_block(nt_type(c->nt, ch))) a_collect_used(c, ch, out); }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0 && !a_nested_block(nt_type(c->nt, ids[k]))) a_collect_used(c, ids[k], out); }
+}
+static int a_proc_params_node(Compiler *c, int create) {
+  const char *ty = nt_type(c->nt, create);
+  if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
+  int block = nt_ref(c->nt, create, "block");
+  if (block < 0) return -1;
+  int bp = nt_ref(c->nt, block, "parameters");
+  return bp < 0 ? -1 : nt_ref(c->nt, bp, "parameters");
+}
+static int a_proc_body(Compiler *c, int create) {
+  const char *ty = nt_type(c->nt, create);
+  if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "body");
+  int block = nt_ref(c->nt, create, "block");
+  return block >= 0 ? nt_ref(c->nt, block, "body") : -1;
+}
+/* A name used inside a proc is captured iff it belongs to the enclosing scope:
+   it is an enclosing parameter, or it is assigned somewhere in the enclosing
+   scope OUTSIDE any proc body. (A name assigned only inside the proc is a
+   proc-local, not a capture -- Ruby's block-local rule.) Captured enclosing
+   locals get a heap cell. */
+static void mark_proc_captures(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  char *inproc = (char *)calloc((size_t)nt->count, 1);
+  if (!inproc) return;
+  for (int id = 0; id < nt->count; id++)
+    if (is_proc_create(c, id)) { int body = a_proc_body(c, id); if (body >= 0) a_mark_subtree(c, body, inproc); }
+
+  for (int id = 0; id < nt->count; id++) {
+    if (!is_proc_create(c, id)) continue;
+    int body = a_proc_body(c, id);
+    if (body < 0) continue;
+    int encl = c->nscope[id];
+    ANameSet params = {0}, used = {0};
+    int pn = a_proc_params_node(c, id);
+    if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn); for (int k = 0; k < rn; k++) aname_add(&params, nt_str(nt, reqs[k], "name")); }
+    a_collect_used(c, body, &used);
+    Scope *es = &c->scopes[encl];
+    for (int u = 0; u < used.n; u++) {
+      const char *nm = used.v[u];
+      if (aname_has(&params, nm)) continue;          /* the proc's own param */
+      LocalVar *lv = scope_local(es, nm);
+      if (!lv) continue;                              /* not an enclosing local */
+      int owned = lv->is_param;
+      for (int w = 0; w < nt->count && !owned; w++) {
+        if (c->nscope[w] != encl || inproc[w]) continue;
+        if (!a_is_write_node(nt_type(nt, w))) continue;
+        const char *wn = nt_str(nt, w, "name");
+        if (wn && !strcmp(wn, nm)) owned = 1;
+      }
+      if (owned) lv->is_cell = 1;
+    }
+    free(params.v); free(used.v);
+  }
+  free(inproc);
+}
+
 void analyze_program(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
@@ -1854,6 +1960,9 @@ void analyze_program(Compiler *c) {
   }
   /* recompute returns: a method returning such a param is now poly */
   for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
+
+  /* mark locals captured by escaping procs (they need heap cells) */
+  mark_proc_captures(c);
 
   /* Reachability: an instance/free method is live only if its name is
      referenced somewhere -- as a call name, an alias target, or a symbol

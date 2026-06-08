@@ -83,6 +83,39 @@ static TyKind g_ret_type = TY_UNKNOWN;
 static Buf g_procs;
 static Buf g_proc_protos;
 static int g_proc_counter = 0;
+/* A set of local names (borrowed pointers into the node table). */
+typedef struct { const char **v; int n, cap; } NameSet;
+static int nameset_has(NameSet *s, const char *nm) {
+  if (!nm) return 0;
+  for (int i = 0; i < s->n; i++) if (!strcmp(s->v[i], nm)) return 1;
+  return 0;
+}
+static void nameset_add(NameSet *s, const char *nm) {
+  if (!nm || nameset_has(s, nm)) return;
+  if (s->n >= s->cap) { s->cap = s->cap ? s->cap * 2 : 8; s->v = realloc(s->v, sizeof(char *) * (size_t)s->cap); }
+  s->v[s->n++] = nm;
+}
+/* While emitting a capturing proc's body: the cap struct's C type name and the
+   set of captured names, so a read/write of a captured var routes to the cell
+   held in `_cap` instead of a (non-existent) local. NULL outside such a body. */
+static const char *g_cap_struct = NULL;
+static NameSet *g_cap_names = NULL;
+
+static const char *rename_local(const char *nm);
+
+/* Emit the C lvalue for local `name` in the current emission context: a
+   captured var inside a proc body -> the cell in _cap; a cell local in its
+   enclosing scope -> `(*_cell_x)`; otherwise the plain `lv_x`. Reads and
+   writes share this (a cell deref is a valid lvalue). */
+static void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
+  if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, name)) {
+    buf_printf(b, "(*((%s *)_cap)->%s)", g_cap_struct, name);
+    return;
+  }
+  LocalVar *lv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
+  if (lv && lv->is_cell) { buf_printf(b, "(*_cell_%s)", name); return; }
+  buf_printf(b, "lv_%s", rename_local(name));
+}
 
 /* Emit the lead of a tail value: `return ` or `<result> = `. */
 static void emit_tail_lead(Buf *b) {
@@ -2412,7 +2445,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, ", %d)", excl);
     return;
   }
-  if (!strcmp(ty, "LocalVariableReadNode")) { buf_printf(b, "lv_%s", rename_local(nt_str(nt, id, "name"))); return; }
+  if (!strcmp(ty, "LocalVariableReadNode")) { emit_local_ref(c, id, nt_str(nt, id, "name"), b); return; }
   if (!strcmp(ty, "YieldNode")) {
     if (g_block_id < 0) unsupported(c, id, "yield (no block in scope)");
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
@@ -2770,7 +2803,8 @@ static void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   int v = nt_ref(c->nt, id, "value");
   LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
   emit_indent(b, indent);
-  buf_printf(b, "lv_%s = ", rename_local(nm));
+  emit_local_ref(c, id, nm, b);
+  buf_puts(b, " = ");
   /* `x = nil` -> the variable's type-appropriate default */
   const char *vty = nt_type(c->nt, v);
   int vn = 0;
@@ -2832,6 +2866,21 @@ static void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
   TyKind t = lv ? lv->type : TY_UNKNOWN;
   const char *en = rename_local(nm);
   emit_indent(b, indent);
+
+  /* A captured/cell var: x op= v is x = x op v through the cell deref. Only
+     int cells exist today (capture is int-restricted). */
+  int celled = (lv && lv->is_cell) || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm));
+  if (celled) {
+    emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
+    if (t == TY_INT && (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*"))) {
+      emit_local_ref(c, id, nm, b); buf_printf(b, " %s ", op); emit_expr(c, v, b); buf_puts(b, ";\n");
+      return;
+    }
+    const char *fn = int_arith_fn(op);
+    if (fn) { buf_printf(b, "%s(", fn); emit_local_ref(c, id, nm, b); buf_puts(b, ", "); emit_expr(c, v, b); buf_puts(b, ");\n"); return; }
+    emit_local_ref(c, id, nm, b); buf_printf(b, " %s ", op); emit_expr(c, v, b); buf_puts(b, ";\n");
+    return;
+  }
 
   if (t == TY_STRING && !strcmp(op, "+")) {
     buf_printf(b, "lv_%s = sp_str_concat(lv_%s, ", en, en);
@@ -3614,6 +3663,18 @@ static void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
   for (int i = 0; i < s->nlocals; i++) {
     LocalVar *lv = &s->locals[i];
     if (s->blk_param && lv->name && !strcmp(lv->name, s->blk_param)) continue;  /* virtual &block slot */
+    /* Captured-by-closure local: lives in a heap cell so the proc and this
+       scope share storage. A param's incoming value is copied into the cell;
+       a body local starts at 0. Int cells only (capture is int-restricted). */
+    if (lv->is_cell) {
+      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN)
+        unsupported(c, s->def_node, "closure capturing a non-integer variable (later slice)");
+      buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);\n", lv->name);
+      buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
+      if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
+      else buf_printf(b, "    *_cell_%s = 0;\n", lv->name);
+      continue;
+    }
     if (lv->is_param) {
       if (needs_root(lv->type)) buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", lv->name);
     }
@@ -3695,17 +3756,8 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
    assigns live in the ENCLOSING scope (the inline model). To emit a proc body
    as a standalone function we therefore work over the body SUBTREE, not a
    scope: its bound names are the block params plus the locals it writes; a
-   read of any other name is a captured/free variable. */
-typedef struct { const char **v; int n, cap; } NameSet;
-static int nameset_has(NameSet *s, const char *nm) {
-  for (int i = 0; i < s->n; i++) if (!strcmp(s->v[i], nm)) return 1;
-  return 0;
-}
-static void nameset_add(NameSet *s, const char *nm) {
-  if (!nm || nameset_has(s, nm)) return;
-  if (s->n >= s->cap) { s->cap = s->cap ? s->cap * 2 : 8; s->v = realloc(s->v, sizeof(char *) * (size_t)s->cap); }
-  s->v[s->n++] = nm;
-}
+   read of any other name is a captured/free variable. (NameSet + helpers are
+   defined near the top, shared with the cell-capture machinery.) */
 
 /* True if `id` starts a nested block/lambda whose locals belong to it, not to
    the proc we're walking -- recursion stops there. */
@@ -3736,25 +3788,21 @@ static void proc_collect_locals(Compiler *c, int id, NameSet *locals) {
   }
 }
 
-/* True if a LocalVariableReadNode in the subtree reads a name not in `bound`
-   (block params + the proc's own locals) -- i.e. a captured variable. */
-static int proc_subtree_has_free(Compiler *c, int id, NameSet *bound) {
-  if (id < 0) return 0;
+/* Collect all local names used (read or written) directly in the proc body,
+   not crossing nested blocks. The caller classifies each as the proc's own
+   param/local or a captured enclosing var (is_cell). */
+static void proc_collect_used(Compiler *c, int id, NameSet *out) {
+  if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
-  if (!ty) return 0;
-  if (!strcmp(ty, "LocalVariableReadNode") && !nameset_has(bound, nt_str(c->nt, id, "name"))) return 1;
+  if (!ty) return;
+  if (!strcmp(ty, "LocalVariableReadNode") || !strcmp(ty, "LocalVariableWriteNode") ||
+      !strcmp(ty, "LocalVariableTargetNode") || !strcmp(ty, "LocalVariableOperatorWriteNode") ||
+      !strcmp(ty, "LocalVariableOrWriteNode") || !strcmp(ty, "LocalVariableAndWriteNode"))
+    nameset_add(out, nt_str(c->nt, id, "name"));
   int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) {
-    int ch = nt_ref_at(c->nt, id, i);
-    if (ch >= 0 && !is_nested_block(nt_type(c->nt, ch)) && proc_subtree_has_free(c, ch, bound)) return 1;
-  }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0 && !is_nested_block(nt_type(c->nt, ch))) proc_collect_used(c, ch, out); }
   int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na; i++) {
-    int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n);
-    for (int k = 0; k < n; k++)
-      if (ids[k] >= 0 && !is_nested_block(nt_type(c->nt, ids[k])) && proc_subtree_has_free(c, ids[k], bound)) return 1;
-  }
-  return 0;
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0 && !is_nested_block(nt_type(c->nt, ids[k]))) proc_collect_used(c, ids[k], out); }
 }
 
 /* The ParametersNode of a proc-creating node. A `->{}` LambdaNode carries it
@@ -3799,15 +3847,33 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   int arity = 0;
   while (proc_param_name(c, create, arity)) arity++;
 
-  /* bound names = params + locals the body writes */
-  NameSet bound = {0}, locals = {0};
-  for (int k = 0; k < arity; k++) nameset_add(&bound, proc_param_name(c, create, k));
+  /* Classify the names used in the proc body: the proc's params, captured
+     enclosing locals (marked is_cell by analyze), and the proc's own body
+     locals. Captures populate the cap struct; body locals are declared inside
+     the fn; params come from args[]. */
+  NameSet params = {0}, used = {0}, locals = {0}, caps = {0};
+  for (int k = 0; k < arity; k++) nameset_add(&params, proc_param_name(c, create, k));
+  proc_collect_used(c, body, &used);
   proc_collect_locals(c, body, &locals);
-  for (int i = 0; i < locals.n; i++) nameset_add(&bound, locals.v[i]);
-  if (proc_subtree_has_free(c, body, &bound)) {
-    free(bound.v); free(locals.v);
-    unsupported(c, create, "proc capturing outer variables (closures: later slice)");
-    return;
+  for (int u = 0; u < used.n; u++) {
+    const char *nm = used.v[u];
+    if (nameset_has(&params, nm)) continue;
+    LocalVar *lv = scope_local(bs, nm);
+    if (lv && lv->is_cell) {
+      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN) {
+        free(params.v); free(used.v); free(locals.v); free(caps.v);
+        unsupported(c, create, "proc capturing a non-integer variable (later slice)");
+        return;
+      }
+      nameset_add(&caps, nm);
+    }
+    else if (!nameset_has(&locals, nm)) {
+      /* read of an enclosing var that wasn't celled and isn't proc-local:
+         no storage exists for it inside the fn -- defer rather than miscompile */
+      free(params.v); free(used.v); free(locals.v); free(caps.v);
+      unsupported(c, create, "proc referencing an uncaptured outer variable (later slice)");
+      return;
+    }
   }
 
   /* proc {} / Proc.new {} are procs; lambda {} and ->(){} are lambdas */
@@ -3821,25 +3887,47 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   /* The proc fn returns mrb_int (the ABI). Until pointer/poly return
      laundering lands (later slice), only mrb_int-shaped returns are safe. */
   if (!(ret == TY_INT || ret == TY_BOOL || ret == TY_NIL)) {
-    free(bound.v); free(locals.v);
+    free(params.v); free(used.v); free(locals.v); free(caps.v);
     unsupported(c, create, "proc with non-integer return (later slice)");
     return;
   }
 
   int pid = ++g_proc_counter;
+  int ncap = caps.n;
+
+  /* capture struct + GC scan (only when the proc captures). cap_scan marks
+     the cap struct itself first (sp_Proc_scan does not), then each cell --
+     matching the sp_hashproc convention; marking only the cells would leave
+     the cap struct unreachable and free it out from under the proc. */
+  if (ncap > 0) {
+    buf_printf(&g_procs, "typedef struct {");
+    for (int i = 0; i < ncap; i++) buf_printf(&g_procs, " mrb_int *%s;", caps.v[i]);
+    buf_printf(&g_procs, " } _proc_cap_%d;\n", pid);
+    buf_printf(&g_procs, "static void _proc_cap_scan_%d(void *p) {\n", pid);
+    buf_printf(&g_procs, "  sp_gc_mark(p);\n");
+    buf_printf(&g_procs, "  _proc_cap_%d *_c = (_proc_cap_%d *)p;\n", pid, pid);
+    for (int i = 0; i < ncap; i++) buf_printf(&g_procs, "  if (_c->%s) sp_gc_mark((void *)_c->%s);\n", caps.v[i], caps.v[i]);
+    buf_puts(&g_procs, "}\n");
+  }
+
   buf_printf(&g_proc_protos, "static mrb_int _proc_%d(void *_cap, mrb_int *args);\n", pid);
 
   /* Save every emission global: the proc body is a fresh function context. */
   Buf *sv_pre = g_pre; int sv_indent = g_indent, sv_nren = g_nren, sv_block = g_block_id;
   const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
   TyKind sv_rt = g_ret_type;
+  const char *sv_cap_struct = g_cap_struct; NameSet *sv_cap_names = g_cap_names;
   g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret;
+  char cap_struct_name[32] = "";
+  if (ncap > 0) { snprintf(cap_struct_name, sizeof cap_struct_name, "_proc_cap_%d", pid); g_cap_struct = cap_struct_name; g_cap_names = &caps; }
+  else { g_cap_struct = NULL; g_cap_names = NULL; }
 
   Buf *pb = &g_procs;
   buf_printf(pb, "static mrb_int _proc_%d(void *_cap, mrb_int *args) {\n", pid);
   buf_puts(pb, "    SP_GC_SAVE();\n");
-  buf_puts(pb, "    (void)_cap; (void)args;\n");
+  if (ncap == 0) buf_puts(pb, "    (void)_cap;\n");
+  buf_puts(pb, "    (void)args;\n");
   for (int k = 0; k < arity; k++) {
     const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
@@ -3850,7 +3938,8 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   }
   for (int i = 0; i < locals.n; i++) {
     LocalVar *lv = scope_local(bs, locals.v[i]);
-    if (lv && !lv->is_block_param) declare_local(c, pb, lv, 0);
+    /* a celled local is a captured var (accessed via _cap), not a fn-local */
+    if (lv && !lv->is_block_param && !lv->is_cell) declare_local(c, pb, lv, 0);
   }
   emit_stmts_tail(c, body, pb, 1);
   buf_puts(pb, "  return 0;\n");
@@ -3858,11 +3947,25 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
 
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
+  g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names;
 
-  free(bound.v); free(locals.v);
+  if (ncap == 0) {
+    buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, NULL, NULL)",
+               pid, arity, is_lambda ? "TRUE" : "FALSE", arity);
+  }
+  else {
+    /* Allocate + populate the cap struct in the enclosing statement's prelude
+       (it shares the enclosing cells by pointer), then box the proc. */
+    if (g_pre) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_proc_cap_%d *_capv_%d = (_proc_cap_%d *)sp_gc_alloc(sizeof(_proc_cap_%d), NULL, _proc_cap_scan_%d);\n", pid, pid, pid, pid, pid);
+      for (int i = 0; i < ncap; i++) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->%s = _cell_%s;\n", pid, caps.v[i], caps.v[i]); }
+    }
+    buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, NULL, NULL)",
+               pid, pid, pid, arity, is_lambda ? "TRUE" : "FALSE", arity);
+  }
 
-  buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, NULL, NULL)",
-             pid, arity, is_lambda ? "TRUE" : "FALSE", arity);
+  free(params.v); free(used.v); free(locals.v); free(caps.v);
 }
 
 /* Emit the struct + the constructor (sp_<Class>_new) for one class. */

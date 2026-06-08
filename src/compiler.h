@@ -20,6 +20,9 @@ typedef struct {
   int is_block_param; /* bound by a block; typed by block-param inference */
   int proc_ret;     /* when type==TY_PROC: the proc's body return type (TyKind),
                        TY_UNKNOWN if not statically known */
+  int is_cell;      /* captured by an escaping proc: lives in a heap cell
+                       (mrb_int *_cell_<name>) so the closure and the enclosing
+                       scope share mutable storage */
 } LocalVar;
 
 typedef struct {

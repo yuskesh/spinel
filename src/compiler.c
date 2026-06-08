@@ -265,5 +265,6 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->is_param = 0;
   lv->is_block_param = 0;
   lv->proc_ret = TY_UNKNOWN;
+  lv->is_cell = 0;
   return lv;
 }
