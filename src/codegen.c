@@ -1733,6 +1733,22 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   /* array value methods */
   if (recv >= 0 && ty_is_array(rt)) {
+    /* values_at(i, j, ...) -> fresh same-kind array of the picked elements
+       (works for typed and poly arrays alike) */
+    if (!strcmp(name, "values_at") && argc >= 1) {
+      const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+      if (an) {
+        int tr = ++g_tmp, to = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", an, tr); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); ", an, to, an);
+        for (int a = 0; a < argc; a++) {
+          buf_printf(b, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, ", an, to, an, tr);
+          emit_expr(c, argv[a], b); buf_puts(b, ")); ");
+        }
+        buf_printf(b, "_t%d; })", to);
+        return;
+      }
+    }
     const char *k = array_kind(rt);
     if (k) {
       if ((!strcmp(name, "to_a") || !strcmp(name, "to_ary") || !strcmp(name, "entries") ||
