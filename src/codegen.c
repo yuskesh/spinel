@@ -609,6 +609,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_%sHash_keys(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
+      if (!strcmp(name, "values") && argc == 0 && rt != TY_INT_INT_HASH) {
+        buf_printf(b, "sp_%sHash_values(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
+        return;
+      }
       if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) {
         buf_printf(b, "sp_%sHash_inspect(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
@@ -929,8 +933,8 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* hash.each { |k, v| ... } */
-  if (!strcmp(name, "each") && ty_is_hash(rt)) {
+  /* hash.each / each_pair { |k, v| ... } */
+  if ((!strcmp(name, "each") || !strcmp(name, "each_pair")) && ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     if (!hn) return 0;
     const char *p1 = block_param_name(c, block, 1);

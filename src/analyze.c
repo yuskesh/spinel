@@ -880,8 +880,8 @@ static int infer_block_params(Compiler *c) {
              ty_is_array(rt))
       pt = ty_array_elem(rt);
 
-    /* hash.each { |k, v| } binds two params */
-    if (!strcmp(name, "each") && ty_is_hash(rt)) {
+    /* hash.each / each_pair { |k, v| } binds two params */
+    if ((!strcmp(name, "each") || !strcmp(name, "each_pair")) && ty_is_hash(rt)) {
       Scope *hs = comp_scope_of(c, block);
       LocalVar *kp = scope_local_intern(hs, p0); kp->is_block_param = 1;
       TyKind km = ty_unify(kp->type, ty_hash_key(rt));
