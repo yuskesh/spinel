@@ -631,36 +631,58 @@ static void register_locals(Compiler *c) {
    class named Const whose positional members are attr_accessors. Register
    it as a class with one ivar + reader + writer per member. */
 static int is_c_ident(const char *s);
+
+/* Is CallNode `val` a `Struct.new(...)` / `Data.define(...)`? */
+static int is_struct_call(Compiler *c, int val) {
+  const NodeTable *nt = c->nt;
+  if (val < 0 || !nt_type(nt, val) || strcmp(nt_type(nt, val), "CallNode")) return 0;
+  const char *mn = nt_str(nt, val, "name");
+  int vr = nt_ref(nt, val, "receiver");
+  const char *rn = vr >= 0 && nt_type(nt, vr) && !strcmp(nt_type(nt, vr), "ConstantReadNode")
+                   ? nt_str(nt, vr, "name") : NULL;
+  return rn && ((!strcmp(rn, "Struct") && mn && !strcmp(mn, "new")) ||
+                (!strcmp(rn, "Data") && mn && !strcmp(mn, "define")));
+}
+
+/* Register the symbol members of a Struct.new(...) call onto `cls`. */
+static void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
+  const NodeTable *nt = c->nt;
+  cls->is_struct = 1;
+  int args = nt_ref(nt, val, "arguments");
+  int an = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int a = 0; a < an; a++) {
+    if (!nt_type(nt, argv[a]) || strcmp(nt_type(nt, argv[a]), "SymbolNode")) continue;
+    const char *m = nt_str(nt, argv[a], "value");
+    if (!m) continue;
+    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", m);
+    comp_ivar_intern(cls, ivn);
+    comp_add_reader(cls, m);
+    comp_add_writer(cls, m);
+  }
+}
+
 static void register_structs(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "ConstantWriteNode")) continue;
-    const char *cname = nt_str(nt, id, "name");
-    int val = nt_ref(nt, id, "value");
-    if (!cname || val < 0 || !is_c_ident(cname)) continue;
-    if (!nt_type(nt, val) || strcmp(nt_type(nt, val), "CallNode")) continue;
-    const char *mn = nt_str(nt, val, "name");
-    int vr = nt_ref(nt, val, "receiver");
-    const char *rn = vr >= 0 && nt_type(nt, vr) && !strcmp(nt_type(nt, vr), "ConstantReadNode")
-                     ? nt_str(nt, vr, "name") : NULL;
-    int is_struct = rn && ((!strcmp(rn, "Struct") && mn && !strcmp(mn, "new")) ||
-                           (!strcmp(rn, "Data") && mn && !strcmp(mn, "define")));
-    if (!is_struct) continue;
-    if (comp_class_index(c, cname) >= 0) continue;
-    ClassInfo *cls = comp_class_new(c, cname, id);
-    cls->is_struct = 1;
-    int args = nt_ref(nt, val, "arguments");
-    int an = 0;
-    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    for (int a = 0; a < an; a++) {
-      if (!nt_type(nt, argv[a]) || strcmp(nt_type(nt, argv[a]), "SymbolNode")) continue;
-      const char *m = nt_str(nt, argv[a], "value");
-      if (!m) continue;
-      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", m);
-      comp_ivar_intern(cls, ivn);
-      comp_add_reader(cls, m);
-      comp_add_writer(cls, m);
+    if (!ty) continue;
+    /* Const = Struct.new(:a, :b) */
+    if (!strcmp(ty, "ConstantWriteNode")) {
+      const char *cname = nt_str(nt, id, "name");
+      int val = nt_ref(nt, id, "value");
+      if (!cname || !is_c_ident(cname) || !is_struct_call(c, val)) continue;
+      if (comp_class_index(c, cname) >= 0) continue;
+      register_struct_members(c, comp_class_new(c, cname, id), val);
+    }
+    /* class X < Struct.new(:a, :b); ... end */
+    else if (!strcmp(ty, "ClassNode")) {
+      int sup = nt_ref(nt, id, "superclass");
+      if (!is_struct_call(c, sup)) continue;
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      int ci = cname ? comp_class_index(c, cname) : -1;
+      if (ci >= 0) register_struct_members(c, &c->classes[ci], sup);
     }
   }
 }
