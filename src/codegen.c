@@ -710,6 +710,44 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     unsupported(c, id, "comparison");
   }
 
+  /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 &&
+      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
+    const char *cty = nt_type(nt, argv[0]);
+    const char *cn = cty && !strcmp(cty, "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
+    if (cn) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
+      char v[32]; snprintf(v, sizeof v, "_t%d", t);
+      if (!strcmp(cn, "Integer") || !strcmp(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
+      else if (!strcmp(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
+      else if (!strcmp(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
+      else if (!strcmp(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
+      else if (!strcmp(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);
+      else if (!strcmp(cn, "TrueClass"))  buf_printf(b, "(%s.tag == SP_TAG_BOOL && %s.v.b)", v, v);
+      else if (!strcmp(cn, "FalseClass")) buf_printf(b, "(%s.tag == SP_TAG_BOOL && !%s.v.b)", v, v);
+      else if (!strcmp(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
+      else if (!strcmp(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -8)", v, v, v);
+      else {
+        int cid = comp_class_index(c, cn);
+        int exact = !strcmp(name, "instance_of?");
+        if (cid >= 0) {
+          buf_printf(b, "(%s.tag == SP_TAG_OBJ && (", v);
+          int first = 1;
+          for (int k = 0; k < c->nclasses; k++)
+            if (k == cid || (!exact && is_descendant(c, k, cid))) {
+              buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", v, k); first = 0;
+            }
+          if (first) buf_puts(b, "0");
+          buf_puts(b, "))");
+        }
+        else buf_puts(b, "0");
+      }
+      buf_puts(b, "; })");
+      return;
+    }
+  }
+
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (!strcmp(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
@@ -1530,6 +1568,19 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* array.each { |x| ... } */
+  if (!strcmp(name, "each") && rt == TY_POLY_ARRAY) {
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    int ta = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+    emit_indent(b, indent);
+    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", t, t, ta, t);
+    if (p0) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t); }
+    emit_stmts(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
   if (!strcmp(name, "each") && ty_is_array(rt)) {
     const char *k = array_kind(rt);
     if (!k) return 0;
@@ -1632,6 +1683,22 @@ static void emit_interp(Compiler *c, int id, Buf *b) {
       }
       else if (t == TY_SYMBOL) {
         buf_puts(&fmt, "%s"); buf_puts(&argbuf, "sp_sym_to_s(");
+        emit_expr(c, expr, &argbuf); buf_puts(&argbuf, ")");
+      }
+      else if (t == TY_POLY) {
+        buf_puts(&fmt, "%s"); buf_puts(&argbuf, "sp_poly_to_s(");
+        emit_expr(c, expr, &argbuf); buf_puts(&argbuf, ")");
+      }
+      else if (t == TY_POLY_ARRAY) {
+        buf_puts(&fmt, "%s"); buf_puts(&argbuf, "sp_PolyArray_inspect(");
+        emit_expr(c, expr, &argbuf); buf_puts(&argbuf, ")");
+      }
+      else if (ty_is_array(t) && array_kind(t)) {
+        buf_puts(&fmt, "%s"); buf_printf(&argbuf, "sp_%sArray_inspect(", array_kind(t));
+        emit_expr(c, expr, &argbuf); buf_puts(&argbuf, ")");
+      }
+      else if (ty_is_object(t) && comp_method_in_chain(c, ty_object_class(t), "to_s", NULL) >= 0) {
+        buf_puts(&fmt, "%s"); buf_printf(&argbuf, "sp_%s_to_s(", c->classes[ty_object_class(t)].name);
         emit_expr(c, expr, &argbuf); buf_puts(&argbuf, ")");
       }
       else {
@@ -2094,7 +2161,10 @@ static void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
 /* ---- control flow ---- */
 
 static void emit_cond(Compiler *c, int id, Buf *b) {
-  if (comp_ntype(c, id) != TY_BOOL) unsupported(c, id, "condition (non-bool)");
+  TyKind t = comp_ntype(c, id);
+  if (t == TY_POLY) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, id, b); buf_puts(b, ")"); return; }
+  if (t == TY_NIL)  { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return; }
+  if (t != TY_BOOL) unsupported(c, id, "condition (non-bool)");
   emit_expr(c, id, b);
 }
 
