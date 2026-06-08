@@ -293,6 +293,10 @@ static TyKind infer_call(Compiler *c, int id) {
         nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Process") &&
         (!strcmp(name, "pid") || !strcmp(name, "ppid")))
       return TY_INT;
+    if (rty && !strcmp(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
+        (!strcmp(name, "exist?") || !strcmp(name, "exists?")))
+      return TY_BOOL;
   }
 
   /* Time instance methods */
