@@ -527,6 +527,27 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   if (recv < 0 && comp_method_index(c, name) >= 0) { emit_method_call(c, id, b); return; }
 
+  /* x.class -> the class-name string (compile-time for known types) */
+  if (recv >= 0 && !strcmp(name, "class") && argc == 0) {
+    TyKind rt = comp_ntype(c, recv);
+    const char *cn = NULL;
+    if (rt == TY_INT) cn = "Integer";
+    else if (rt == TY_FLOAT) cn = "Float";
+    else if (rt == TY_STRING) cn = "String";
+    else if (rt == TY_SYMBOL) cn = "Symbol";
+    else if (rt == TY_RANGE) cn = "Range";
+    else if (rt == TY_TIME) cn = "Time";
+    else if (rt == TY_NIL) cn = "NilClass";
+    else if (ty_is_array(rt)) cn = "Array";
+    else if (ty_is_hash(rt)) cn = "Hash";
+    else if (ty_is_object(rt)) cn = c->classes[ty_object_class(rt)].name;
+    if (cn) { buf_printf(b, "SPL(\"%s\")", cn); return; }
+    if (rt == TY_BOOL) {
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SPL(\"TrueClass\") : SPL(\"FalseClass\"))");
+      return;
+    }
+  }
+
   /* identity methods -> the receiver itself */
   if (recv >= 0 &&
       (!strcmp(name, "freeze") || !strcmp(name, "itself") ||
@@ -2227,6 +2248,14 @@ static void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
 }
 static void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   TyKind t = comp_ntype(c, arg);
+  /* `p x.class` prints the class name bare (it is a Class, not a String). */
+  if (t == TY_STRING && nt_type(c->nt, arg) && !strcmp(nt_type(c->nt, arg), "CallNode") &&
+      nt_str(c->nt, arg, "name") && !strcmp(nt_str(c->nt, arg, "name"), "class") &&
+      nt_ref(c->nt, arg, "receiver") >= 0) {
+    emit_indent(b, indent);
+    buf_puts(b, "fputs("); emit_expr(c, arg, b); buf_puts(b, ", stdout); putchar('\\n');\n");
+    return;
+  }
   emit_indent(b, indent);
   if (t == TY_INT) {
     buf_puts(b, "printf(\"%lld\\n\", (long long)"); emit_expr(c, arg, b); buf_puts(b, ");\n");

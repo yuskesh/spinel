@@ -51,6 +51,13 @@ static TyKind infer_call(Compiler *c, int id) {
        !strcmp(name, "dup") || !strcmp(name, "clone")))
     return rt;
 
+  /* x.class -> a class-name string (for known builtin/object receivers) */
+  if (recv >= 0 && argc == 0 && !strcmp(name, "class") &&
+      (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
+       rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL ||
+       ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt)))
+    return TY_STRING;
+
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
   if (recv >= 0 && !strcmp(name, "new")) {
     const char *rty = nt_type(nt, recv);
