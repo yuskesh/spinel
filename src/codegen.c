@@ -1847,6 +1847,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
       else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
       else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_strict(%s)", r);
+      else if (!strcmp(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_strict_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
       else if (!strcmp(name, "gsub") && argc == 2) {
         buf_printf(b, "sp_str_gsub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
