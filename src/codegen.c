@@ -1829,7 +1829,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     static const char *const rmeths[] = {
       "to_a", "include?", "member?", "cover?", "===", "sum", "min", "max",
       "first", "last", "size", "count", "begin", "end",
-      "exclude_end?", "eql?", "minmax", NULL };
+      "exclude_end?", "eql?", "minmax", "overlap?", NULL };
     int known = 0;
     for (int i = 0; rmeths[i]; i++) if (!strcmp(name, rmeths[i])) known = 1;
     if (known) {
@@ -1858,6 +1858,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "(_t%d.excl != 0)", t);
       else if (!strcmp(name, "eql?")) {
         buf_printf(b, "sp_range_eq(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "overlap?")) {
+        int t2 = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; (_t%d.first <= _t%d.last - _t%d.excl && _t%d.first <= _t%d.last - _t%d.excl); })",
+                   t, t2, t2, t2, t, t, t);
       }
       else if (!strcmp(name, "minmax")) {
         int ma = ++g_tmp;
