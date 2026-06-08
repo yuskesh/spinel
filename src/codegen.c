@@ -727,6 +727,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "strip"))      buf_printf(b, "sp_str_strip(%s)", r);
       else if (!strcmp(name, "lstrip"))     buf_printf(b, "sp_str_lstrip(%s)", r);
       else if (!strcmp(name, "rstrip"))     buf_printf(b, "sp_str_rstrip(%s)", r);
+      else if (!strcmp(name, "chomp") && argc == 1) {
+        buf_printf(b, "sp_str_chomp_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (!strcmp(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
       else if (!strcmp(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
       else if (!strcmp(name, "to_s") || !strcmp(name, "to_str") || !strcmp(name, "dup")) buf_puts(b, r);
@@ -743,6 +746,21 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       else if (!strcmp(name, "index") && argc == 1) {
         buf_printf(b, "sp_str_index(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "[]") && argc == 1 && nt_type(c->nt, argv[0]) &&
+               !strcmp(nt_type(c->nt, argv[0]), "RangeNode")) {
+        /* s[a..b] / s[a...b] */
+        int rn = argv[0];
+        int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+        buf_printf(b, "sp_str_sub_range_r(%s, ", r);
+        emit_expr(c, nt_ref(c->nt, rn, "left"), b); buf_puts(b, ", ");
+        emit_expr(c, nt_ref(c->nt, rn, "right"), b);
+        buf_printf(b, ", %d)", excl);
+      }
+      else if (!strcmp(name, "[]") && argc == 2) {
+        /* s[start, len] */
+        buf_printf(b, "sp_str_sub_range(%s, ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
       else if (!strcmp(name, "[]") && argc == 1) {
         buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
