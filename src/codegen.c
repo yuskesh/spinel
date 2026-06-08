@@ -106,6 +106,7 @@ static const char *c_type_name(TyKind t) {
     case TY_STRING:      return "const char *";
     case TY_SYMBOL:      return "sp_sym";
     case TY_RANGE:       return "sp_Range";
+    case TY_TIME:        return "sp_Time";
     case TY_EXCEPTION:   return "sp_Exception *";
     case TY_INT_ARRAY:   return "sp_IntArray *";
     case TY_FLOAT_ARRAY: return "sp_FloatArray *";
@@ -123,7 +124,7 @@ static const char *c_type_name(TyKind t) {
 }
 static int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
-         t == TY_SYMBOL || t == TY_RANGE || t == TY_EXCEPTION ||
+         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_POLY || t == TY_POLY_ARRAY ||
          ty_is_hash(t) || ty_is_object(t);
@@ -136,6 +137,7 @@ static const char *default_value(TyKind t) {
     case TY_STRING: return "(&(\"\\xff\")[1])";
     case TY_SYMBOL: return "((sp_sym)-1)";
     case TY_RANGE:  return "(sp_Range){0}";
+    case TY_TIME:   return "(sp_Time){0}";
     case TY_EXCEPTION: return "NULL";
     case TY_INT_ARRAY:
     case TY_FLOAT_ARRAY:
@@ -596,6 +598,31 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Time class constructors */
+  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Time")) {
+    if (!strcmp(name, "now") && argc == 0) { buf_puts(b, "sp_time_now()"); return; }
+    if (!strcmp(name, "at") && argc == 1) {
+      TyKind at = comp_ntype(c, argv[0]);
+      buf_printf(b, "sp_time_at_%s(", at == TY_FLOAT ? "float" : "int");
+      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if ((!strcmp(name, "local") || !strcmp(name, "mktime") ||
+         !strcmp(name, "utc") || !strcmp(name, "gm")) && argc >= 1) {
+      /* y[,mo,d,h,mi,s] -- missing trailing parts default (mo/d=1, rest 0) */
+      int is_utc = (!strcmp(name, "utc") || !strcmp(name, "gm"));
+      buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
+      for (int i = 0; i < 6; i++) {
+        if (i) buf_puts(b, ", ");
+        if (i < argc) emit_expr(c, argv[i], b);
+        else buf_puts(b, (i == 1 || i == 2) ? "1" : "0");
+      }
+      buf_puts(b, ")");
+      return;
+    }
+  }
+
   /* Class.cmethod(args) -> sp_<Class>_s_<method>(args) */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
@@ -842,6 +869,43 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       emit_dispatch(c, cid, name, selfptr, nt_ref(nt, id, "arguments"), b);
       return;
     }
+  }
+
+  /* Time instance methods: sp_Time is a value -- splice the receiver once. */
+  if (recv >= 0 && rt == TY_TIME) {
+    Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
+    const char *r = rs.p ? rs.p : "";
+    int done = 1;
+    if (!strcmp(name, "utc") || !strcmp(name, "gmtime") || !strcmp(name, "getutc")) buf_printf(b, "sp_time_utc(%s)", r);
+    else if (!strcmp(name, "localtime") || !strcmp(name, "getlocal")) buf_printf(b, "sp_time_localtime(%s)", r);
+    else if (!strcmp(name, "year"))  buf_printf(b, "sp_time_year(%s)", r);
+    else if (!strcmp(name, "mon") || !strcmp(name, "month")) buf_printf(b, "sp_time_mon(%s)", r);
+    else if (!strcmp(name, "day") || !strcmp(name, "mday"))  buf_printf(b, "sp_time_mday(%s)", r);
+    else if (!strcmp(name, "hour")) buf_printf(b, "sp_time_hour(%s)", r);
+    else if (!strcmp(name, "min"))  buf_printf(b, "sp_time_min(%s)", r);
+    else if (!strcmp(name, "sec"))  buf_printf(b, "sp_time_sec(%s)", r);
+    else if (!strcmp(name, "wday")) buf_printf(b, "sp_time_wday(%s)", r);
+    else if (!strcmp(name, "yday")) buf_printf(b, "sp_time_yday(%s)", r);
+    else if (!strcmp(name, "to_i") || !strcmp(name, "tv_sec")) buf_printf(b, "(%s).tv_sec", r);
+    else if (!strcmp(name, "to_f")) buf_printf(b, "((mrb_float)(%s).tv_sec + (mrb_float)(%s).tv_nsec / 1e9)", r, r);
+    else if (!strcmp(name, "subsec")) buf_printf(b, "((mrb_float)(%s).tv_nsec / 1e9)", r);
+    else if (!strcmp(name, "tv_usec") || !strcmp(name, "usec")) buf_printf(b, "((mrb_int)(%s).tv_nsec / 1000)", r);
+    else if (!strcmp(name, "tv_nsec") || !strcmp(name, "nsec")) buf_printf(b, "((mrb_int)(%s).tv_nsec)", r);
+    else if (!strcmp(name, "utc?") || !strcmp(name, "gmt?")) buf_printf(b, "((%s).is_utc != 0)", r);
+    else if (!strcmp(name, "dst?") || !strcmp(name, "isdst")) buf_printf(b, "(sp_time_isdst(%s) != 0)", r);
+    else if (!strcmp(name, "utc_offset") || !strcmp(name, "gmt_offset") || !strcmp(name, "gmtoff")) buf_printf(b, "sp_time_utc_offset(%s)", r);
+    else if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
+    else if (!strcmp(name, "iso8601")) buf_printf(b, "sp_time_iso8601(%s)", r);
+    else if (!strcmp(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
+    else if (!strcmp(name, "class")) buf_puts(b, "SPL(\"Time\")");
+    else if (!strcmp(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if ((!strcmp(name, "+") || !strcmp(name, "-")) && argc == 1) {
+      buf_printf(b, "sp_time_add(%s, %s(mrb_float)(", r, name[0] == '-' ? "-" : "");
+      emit_expr(c, argv[0], b); buf_puts(b, "))");
+    }
+    else done = 0;
+    free(rs.p);
+    if (done) return;
   }
 
   /* poly method dispatch: switch on the boxed object's cls_id and call the
@@ -2957,6 +3021,7 @@ static void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_BOOL:   fn = "sp_box_bool";  break;
     case TY_SYMBOL: fn = "sp_box_sym";   break;
     case TY_RANGE:  fn = "sp_box_range"; break;
+    case TY_TIME:   fn = "sp_box_time";  break;
     case TY_INT_ARRAY:   fn = "sp_box_int_array";   break;
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
     case TY_STR_ARRAY:   fn = "sp_box_str_array";   break;
@@ -2984,6 +3049,7 @@ static void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
     case TY_BOOL:   buf_puts(&cty, "mrb_bool"); init = "0"; break;
     case TY_SYMBOL: buf_puts(&cty, "sp_sym"); init = "((sp_sym)-1)"; break;
     case TY_RANGE:  buf_puts(&cty, "sp_Range"); init = "{0}"; break;
+    case TY_TIME:   buf_puts(&cty, "sp_Time"); init = "{0}"; break;
     case TY_STRING: buf_puts(&cty, "const char *"); init = "(&(\"\\xff\")[1])"; ptr = 1; break;
     case TY_POLY:   buf_puts(&cty, "sp_RbVal"); init = "sp_box_nil()"; break;
     default:

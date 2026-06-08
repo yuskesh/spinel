@@ -63,16 +63,30 @@ static TyKind infer_call(Compiler *c, int id) {
     }
   }
 
-  /* Class.cmethod(...) -> the class method's return type */
+  /* Time.now / at / local / mktime / utc / gm -> a Time value */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-      if (ci >= 0) {
-        int mi = comp_cmethod_in_chain(c, ci, name, NULL);
-        if (mi >= 0) return c->scopes[mi].ret;
-      }
-    }
+    if (rty && !strcmp(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Time") &&
+        (!strcmp(name, "now") || !strcmp(name, "at") || !strcmp(name, "local") ||
+         !strcmp(name, "mktime") || !strcmp(name, "utc") || !strcmp(name, "gm")))
+      return TY_TIME;
+  }
+
+  /* Time instance methods */
+  if (recv >= 0 && rt == TY_TIME) {
+    if (!strcmp(name, "utc") || !strcmp(name, "gmtime") || !strcmp(name, "getutc") ||
+        !strcmp(name, "localtime") || !strcmp(name, "getlocal") || !strcmp(name, "+") ||
+        !strcmp(name, "-")) return TY_TIME;
+    if (!strcmp(name, "to_s") || !strcmp(name, "inspect") || !strcmp(name, "strftime") ||
+        !strcmp(name, "iso8601") || !strcmp(name, "zone") || !strcmp(name, "asctime") ||
+        !strcmp(name, "ctime")) return TY_STRING;
+    if (!strcmp(name, "to_f") || !strcmp(name, "subsec")) return TY_FLOAT;
+    if (!strcmp(name, "utc?") || !strcmp(name, "gmt?") || !strcmp(name, "dst?") ||
+        !strcmp(name, "sunday?") || !strcmp(name, "monday?")) return TY_BOOL;
+    if (!strcmp(name, "class")) return TY_STRING;
+    /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
+    return TY_INT;
   }
 
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
