@@ -1070,7 +1070,17 @@ static int infer_write_types(Compiler *c) {
     }
     if (!nm) continue;
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-    if (!lv || lv->is_param || lv->is_block_param) continue;
+    if (!lv || lv->is_block_param) continue;
+    /* Params are typed from call sites (monotonic widen); a body assignment
+       of a different type widens them too (e.g. `x = "s"` in an int param's
+       body -> poly). Only widen -- never let an unknown RHS reset them. */
+    if (lv->is_param) {
+      if (newt != TY_UNKNOWN) {
+        TyKind m2 = ty_unify(lv->type, newt);
+        if (m2 != lv->type) { lv->type = m2; changed = 1; }
+      }
+      continue;
+    }
     lv->type = ty_unify(lv->type, newt);
   }
 
