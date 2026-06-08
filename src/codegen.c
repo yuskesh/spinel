@@ -2830,6 +2830,27 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  /* int.step(limit[, step]) { [|i|] ... } -- integer stepping loop */
+  if (!strcmp(name, "step") && rt == TY_INT) {
+    int args = nt_ref(nt, id, "arguments");
+    int sargc = 0;
+    const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
+    if (sargc < 1) return 0;
+    int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp;
+    emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = ", tl); emit_expr(c, sargv[0], b); buf_puts(b, ";\n");
+    emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = ", ts);
+    if (sargc >= 2) emit_expr(c, sargv[1], b); else buf_puts(b, "1");
+    buf_puts(b, ";\n");
+    emit_indent(b, indent);
+    buf_printf(b, "for (mrb_int _t%d = ", t); emit_expr(c, recv, b);
+    buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
+               ts, t, tl, t, tl, t, ts);
+    if (p0) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, t); }
+    emit_stmts(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
   /* hash.each / each_pair { |k, v| ... } */
   if ((!strcmp(name, "each") || !strcmp(name, "each_pair")) && ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
@@ -3656,6 +3677,12 @@ static void emit_case(Compiler *c, int id, Buf *b, int indent) {
         if (reidx >= 0 && pt == TY_STRING) {
           buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t);
         }
+        else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
+          /* `when lo..hi` is range membership, not equality */
+          int tr = ++g_tmp;
+          buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
+          buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
+        }
         else if (pt == TY_STRING) {
           buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
         }
@@ -3723,7 +3750,14 @@ static void emit_case_expr(Compiler *c, int id, Buf *b) {
     for (int j = 0; j < wc; j++) {
       if (j) buf_puts(b, " || ");
       if (pred >= 0) {
-        if (pt == TY_STRING) { buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
+        int reidx = re_lit_index(c, conds[j]);
+        if (reidx >= 0 && pt == TY_STRING) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t); }
+        else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
+          int tr = ++g_tmp;
+          buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
+          buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
+        }
+        else if (pt == TY_STRING) { buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
         else { buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
       }
       else { buf_puts(b, "("); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
