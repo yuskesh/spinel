@@ -967,6 +967,24 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     unsupported(c, id, "equality");
   }
 
+  /* obj.is_a?/kind_of?/instance_of?(Class): resolved at compile time from
+     the receiver's static class. */
+  if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
+      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
+    const char *cn = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")
+                     ? nt_str(nt, argv[0], "name") : NULL;
+    if (cn) {
+      int cid = ty_object_class(rt);
+      int target = comp_class_index(c, cn);
+      int yes;
+      if (target >= 0) yes = !strcmp(name, "instance_of?") ? (cid == target) : is_descendant(c, cid, target);
+      else yes = 0;  /* a user object is not a builtin (Integer/String/...) */
+      /* evaluate the receiver for side effects, then the constant result */
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
+      return;
+    }
+  }
+
   /* Struct instance methods (to_h / to_a / values / members / dig). */
   if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
     ClassInfo *sc = &c->classes[ty_object_class(rt)];

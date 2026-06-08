@@ -221,6 +221,9 @@ static TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);
     ClassInfo *cls = &c->classes[cid];
+    if (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?") ||
+        !strcmp(name, "respond_to?") || !strcmp(name, "==") || !strcmp(name, "!=") ||
+        !strcmp(name, "nil?") || !strcmp(name, "equal?") || !strcmp(name, "frozen?")) return TY_BOOL;
     /* attr reader */
     if (comp_reader_in_chain(c, cid, name, NULL)) {
       char ivn[256];
