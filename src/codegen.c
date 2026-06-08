@@ -389,6 +389,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   if (recv < 0 && comp_method_index(c, name) >= 0) { emit_method_call(c, id, b); return; }
 
+  /* identity methods -> the receiver itself */
+  if (recv >= 0 &&
+      (!strcmp(name, "freeze") || !strcmp(name, "itself") ||
+       !strcmp(name, "dup") || !strcmp(name, "clone"))) {
+    int args = nt_ref(nt, id, "arguments");
+    int argc0 = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc0);
+    if (argc0 == 0) { emit_expr(c, recv, b); return; }
+  }
+
   /* implicit-self call inside an instance method */
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
@@ -990,6 +999,28 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "lv_%s = sp_%sHash_get(", p1, hn);
       buf_puts(b, rb.p); buf_puts(b, ", "); buf_puts(b, rb.p); buf_printf(b, "->order[_t%d]);\n", t);
     }
+    emit_stmts(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    free(rb.p);
+    return 1;
+  }
+
+  /* array.each_with_index { |x, i| ... } */
+  if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
+    const char *k = array_kind(rt);
+    if (!k) return 0;
+    const char *p1 = block_param_name(c, block, 1);
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(", t, t, k);
+    buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
+    if (p0) {
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
+      buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
+    }
+    if (p1) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p1, t); }
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);

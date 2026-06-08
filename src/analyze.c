@@ -45,6 +45,12 @@ static TyKind infer_call(Compiler *c, int id) {
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
 
+  /* identity methods: return the receiver unchanged */
+  if (recv >= 0 && argc == 0 &&
+      (!strcmp(name, "freeze") || !strcmp(name, "itself") ||
+       !strcmp(name, "dup") || !strcmp(name, "clone")))
+    return rt;
+
   /* Class.new(...) -> an instance of that class */
   if (recv >= 0 && !strcmp(name, "new")) {
     const char *rty = nt_type(nt, recv);
@@ -888,6 +894,21 @@ static int infer_block_params(Compiler *c) {
               !strcmp(name, "find") || !strcmp(name, "each_with_index")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
+
+    /* array.each_with_index { |x, i| } binds element + int index */
+    if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
+      Scope *es = comp_scope_of(c, block);
+      LocalVar *ep = scope_local_intern(es, p0); ep->is_block_param = 1;
+      TyKind em = ty_unify(ep->type, ty_array_elem(rt));
+      if (em != ep->type) { ep->type = em; changed = 1; }
+      const char *p1 = block_param_name(c, block, 1);
+      if (p1) {
+        LocalVar *ip = scope_local_intern(es, p1); ip->is_block_param = 1;
+        TyKind im = ty_unify(ip->type, TY_INT);
+        if (im != ip->type) { ip->type = im; changed = 1; }
+      }
+      continue;
+    }
 
     /* hash.each / each_pair { |k, v| } binds two params */
     if ((!strcmp(name, "each") || !strcmp(name, "each_pair")) && ty_is_hash(rt)) {
