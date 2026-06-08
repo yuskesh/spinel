@@ -935,6 +935,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, eq ? ")" : "))");
       return;
     }
+    if (rt == TY_RANGE && a0 == TY_RANGE) {
+      buf_puts(b, eq ? "sp_range_eq(" : "(!sp_range_eq(");
+      emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      buf_puts(b, eq ? ")" : "))");
+      return;
+    }
+    if (rt == TY_RANGE || a0 == TY_RANGE) { buf_puts(b, eq ? "0" : "1"); return; }  /* range vs non-range */
     if (rt == TY_POLY || a0 == TY_POLY) {
       buf_puts(b, eq ? "sp_poly_eq(" : "(!sp_poly_eq(");
       emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
@@ -1202,9 +1209,31 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {
+    int block = nt_ref(nt, id, "block");
+    if (!strcmp(name, "step") && argc == 1) {
+      int t = ++g_tmp, ar = ++g_tmp, ii = ++g_tmp, st = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, argv[0], &sb);
+      buf_printf(b, "({ sp_Range _t%d = %s; mrb_int _t%d = %s; sp_IntArray *_t%d = sp_IntArray_new();"
+                    " for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d += _t%d)"
+                    " sp_IntArray_push(_t%d, _t%d); _t%d; })",
+                 t, rb.p ? rb.p : "", st, sb.p ? sb.p : "", ar,
+                 ii, t, ii, t, t, ii, st, ar, ii, ar);
+      free(rb.p); free(sb.p);
+      return;
+    }
+    if (!strcmp(name, "each") && block < 0) {  /* enumerator: materialize to_a */
+      int t = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })",
+                 t, rb.p ? rb.p : "", t, t, t);
+      free(rb.p);
+      return;
+    }
     static const char *const rmeths[] = {
       "to_a", "include?", "member?", "cover?", "sum", "min", "max",
-      "first", "last", "size", "count", "begin", "end", NULL };
+      "first", "last", "size", "count", "begin", "end",
+      "exclude_end?", "eql?", "minmax", NULL };
     int known = 0;
     for (int i = 0; rmeths[i]; i++) if (!strcmp(name, rmeths[i])) known = 1;
     if (known) {
@@ -1228,6 +1257,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "(_t%d.last - _t%d.excl - _t%d.first + 1)", t, t, t);
       else if (!strcmp(name, "sum"))
         buf_printf(b, "sp_IntArray_sum(sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl), 0)", t, t, t);
+      else if (!strcmp(name, "exclude_end?"))
+        buf_printf(b, "(_t%d.excl != 0)", t);
+      else if (!strcmp(name, "eql?")) {
+        buf_printf(b, "sp_range_eq(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "minmax")) {
+        int ma = ++g_tmp;
+        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, _t%d.first);"
+                      " sp_IntArray_push(_t%d, _t%d.last - _t%d.excl); _t%d; })", ma, ma, t, ma, t, t, ma);
+      }
       return;
     }
   }
@@ -1313,6 +1352,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && ty_is_array(rt)) {
     const char *k = array_kind(rt);
     if (k) {
+      if ((!strcmp(name, "to_a") || !strcmp(name, "to_ary") || !strcmp(name, "entries")) && argc == 0) {
+        emit_expr(c, recv, b); return;
+      }
       if (!strcmp(name, "[]") && argc == 1) {
         buf_printf(b, "sp_%sArray_get(", k);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);

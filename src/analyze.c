@@ -327,9 +327,12 @@ static TyKind infer_call(Compiler *c, int id) {
 
   /* range receiver methods */
   if (recv >= 0 && rt == TY_RANGE) {
-    if (!strcmp(name, "to_a"))      return TY_INT_ARRAY;
+    if (!strcmp(name, "to_a") || !strcmp(name, "minmax")) return TY_INT_ARRAY;
     if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
-        !strcmp(name, "cover?"))    return TY_BOOL;
+        !strcmp(name, "cover?") || !strcmp(name, "exclude_end?") ||
+        !strcmp(name, "eql?") || !strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
+    if (!strcmp(name, "step")) return TY_INT_ARRAY;
+    if (!strcmp(name, "each") && nt_ref(nt, id, "block") < 0) return TY_INT_ARRAY;
     if (!strcmp(name, "sum") || !strcmp(name, "min") || !strcmp(name, "max") ||
         !strcmp(name, "first") || !strcmp(name, "last") ||
         !strcmp(name, "size") || !strcmp(name, "count") ||
