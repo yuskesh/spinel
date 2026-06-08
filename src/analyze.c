@@ -108,17 +108,26 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "rstrip") || !strcmp(name, "chomp") ||
         !strcmp(name, "chop") || !strcmp(name, "chr")) return TY_STRING;
     if (!strcmp(name, "[]"))    return TY_STRING;
-    if (!strcmp(name, "index")) return TY_INT;
-    if (!strcmp(name, "split")) return TY_STR_ARRAY;
+    if (!strcmp(name, "index") || !strcmp(name, "to_i")) return TY_INT;
+    if (!strcmp(name, "to_f"))  return TY_FLOAT;
+    if (!strcmp(name, "split") || !strcmp(name, "lines")) return TY_STR_ARRAY;
+    if (!strcmp(name, "bytes")) return TY_INT_ARRAY;
+    if (!strcmp(name, "gsub") || !strcmp(name, "sub") || !strcmp(name, "tr") ||
+        !strcmp(name, "center") || !strcmp(name, "ljust") || !strcmp(name, "rjust"))
+      return TY_STRING;
+    if (!strcmp(name, "*")) return TY_STRING;
   }
   /* integer receiver methods */
   if (recv >= 0 && rt == TY_INT) {
     if (!strcmp(name, "chr")) return TY_STRING;
+    if (!strcmp(name, "gcd") || !strcmp(name, "lcm") || !strcmp(name, "clamp")) return TY_INT;
+    if (!strcmp(name, "digits")) return TY_INT_ARRAY;
+    if (!strcmp(name, "to_s") && argc == 1) return TY_STRING;
   }
   /* float receiver methods */
   if (recv >= 0 && rt == TY_FLOAT) {
     if (!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-        !strcmp(name, "round")) return TY_INT;
+        !strcmp(name, "round") || !strcmp(name, "truncate")) return TY_INT;
   }
 
   if ((!strcmp(name, "-@") || !strcmp(name, "+@")) && recv >= 0 && argc == 0)
@@ -139,6 +148,12 @@ static TyKind infer_call(Compiler *c, int id) {
     return TY_BOOL;
   }
   if (argc == 1 && is_eq_op(name)) return TY_BOOL;
+
+  /* integer bitwise operators */
+  if (recv >= 0 && argc == 1 && rt == TY_INT &&
+      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
+       !strcmp(name, "<<") || !strcmp(name, ">>")))
+    return TY_INT;
 
   size_t nl = strlen(name);
   if (nl > 0 && name[nl - 1] == '?') return TY_BOOL;

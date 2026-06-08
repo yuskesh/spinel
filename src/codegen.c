@@ -240,6 +240,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return;
     }
+    if (rt == TY_STRING && !strcmp(name, "*")) {
+      buf_puts(b, "sp_str_repeat(");
+      emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return;
+    }
     if (res == TY_INT) {
       buf_printf(b, "%s(", int_arith_fn(name));
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
@@ -257,6 +263,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     unsupported(c, id, "arithmetic");
   }
 
+  /* integer bitwise operators */
+  if (recv >= 0 && argc == 1 && rt == TY_INT &&
+      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
+       !strcmp(name, "<<") || !strcmp(name, ">>"))) {
+    buf_puts(b, "(");
+    emit_expr(c, recv, b);
+    buf_printf(b, " %s ", name);
+    emit_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    return;
+  }
+
   if (recv >= 0 && argc == 1 &&
       (!strcmp(name, "<") || !strcmp(name, ">") ||
        !strcmp(name, "<=") || !strcmp(name, ">="))) {
@@ -266,6 +284,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " %s ", name);
       emit_expr(c, argv[0], b);
       buf_puts(b, ")");
+      return;
+    }
+    if (rt == TY_STRING) {
+      buf_puts(b, "(strcmp(");
+      emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      buf_printf(b, ") %s 0)", name);
       return;
     }
     unsupported(c, id, "comparison");
@@ -433,9 +457,25 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       } else if (!strcmp(name, "split") && argc == 1) {
         buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      } else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
+      else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
+      else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_strict(%s)", r);
+      else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
+      else if (!strcmp(name, "gsub") && argc == 2) {
+        buf_printf(b, "sp_str_gsub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      } else if (!strcmp(name, "sub") && argc == 2) {
+        buf_printf(b, "sp_str_sub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      } else if (!strcmp(name, "tr") && argc == 2) {
+        buf_printf(b, "sp_str_tr(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      } else if (!strcmp(name, "center") && argc == 1) {
+        buf_printf(b, "sp_str_center(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      } else if (!strcmp(name, "ljust") && argc == 1) {
+        buf_printf(b, "sp_str_ljust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      } else if (!strcmp(name, "rjust") && argc == 1) {
+        buf_printf(b, "sp_str_rjust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       } else handled = 0;
     } else if (rt == TY_INT) {
-      if      (!strcmp(name, "to_s"))   buf_printf(b, "sp_int_to_s(%s)", r);
+      if      (!strcmp(name, "to_s") && argc == 0) buf_printf(b, "sp_int_to_s(%s)", r);
       else if (!strcmp(name, "to_f"))   buf_printf(b, "((mrb_float)(%s))", r);
       else if (!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "floor") ||
                !strcmp(name, "ceil") || !strcmp(name, "round")) buf_printf(b, "(%s)", r);
@@ -446,11 +486,17 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
       else if (!strcmp(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
       else if (!strcmp(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
+      else if (!strcmp(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
+      else if (!strcmp(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else handled = 0;
     } else { /* TY_FLOAT */
       if      (!strcmp(name, "floor")) buf_printf(b, "((mrb_int)floor(%s))", r);
       else if (!strcmp(name, "ceil"))  buf_printf(b, "((mrb_int)ceil(%s))", r);
       else if (!strcmp(name, "round")) buf_printf(b, "((mrb_int)round(%s))", r);
+      else if (!strcmp(name, "truncate")) buf_printf(b, "((mrb_int)trunc(%s))", r);
       else if (!strcmp(name, "to_i"))  buf_printf(b, "((mrb_int)(%s))", r);
       else if (!strcmp(name, "to_f"))  buf_printf(b, "(%s)", r);
       else if (!strcmp(name, "to_s"))  buf_printf(b, "sp_float_to_s(%s)", r);
@@ -1026,6 +1072,59 @@ static void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int 
   }
 }
 
+/* case/when -> an if / else-if chain. Statement form. */
+static void emit_case(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int pred = nt_ref(nt, id, "predicate");
+  int nw = 0;
+  const int *whens = nt_arr(nt, id, "conditions", &nw);
+  int else_clause = nt_ref(nt, id, "else_clause");
+
+  int t = -1;
+  TyKind pt = TY_UNKNOWN;
+  if (pred >= 0) {
+    pt = comp_ntype(c, pred);
+    t = ++g_tmp;
+    emit_indent(b, indent);
+    emit_ctype(c, pt, b);
+    buf_printf(b, " _t%d = ", t);
+    emit_expr(c, pred, b);
+    buf_puts(b, ";\n");
+  }
+
+  for (int w = 0; w < nw; w++) {
+    int wn = whens[w];
+    int wc = 0;
+    const int *conds = nt_arr(nt, wn, "conditions", &wc);
+    emit_indent(b, indent);
+    buf_puts(b, w == 0 ? "if (" : "else if (");
+    for (int j = 0; j < wc; j++) {
+      if (j) buf_puts(b, " || ");
+      if (pred >= 0) {
+        if (pt == TY_STRING) {
+          buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
+        } else {
+          buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
+        }
+      } else {
+        buf_puts(b, "("); emit_expr(c, conds[j], b); buf_puts(b, ")");
+      }
+    }
+    buf_puts(b, ") {\n");
+    emit_stmts(c, nt_ref(nt, wn, "statements"), b, indent + 1);
+    emit_indent(b, indent);
+    buf_puts(b, "}\n");
+  }
+
+  if (else_clause >= 0) {
+    emit_indent(b, indent);
+    buf_puts(b, "else {\n");
+    emit_stmts(c, nt_ref(nt, else_clause, "statements"), b, indent + 1);
+    emit_indent(b, indent);
+    buf_puts(b, "}\n");
+  }
+}
+
 static void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -1125,6 +1224,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(ty, "UnlessNode")) { emit_if(c, id, b, indent, 1, 0); return; }
   if (!strcmp(ty, "WhileNode"))  { emit_while(c, id, b, indent, 0); return; }
   if (!strcmp(ty, "UntilNode"))  { emit_while(c, id, b, indent, 1); return; }
+  if (!strcmp(ty, "CaseNode"))   { emit_case(c, id, b, indent); return; }
   if (!strcmp(ty, "ReturnNode")) { emit_return(c, id, b, indent); return; }
   if (!strcmp(ty, "DefNode"))    { return; } /* emitted separately */
 
