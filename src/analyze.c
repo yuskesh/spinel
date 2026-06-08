@@ -108,6 +108,13 @@ static TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* Struct instance methods */
+  if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
+    if (!strcmp(name, "to_a") || !strcmp(name, "values") ||
+        !strcmp(name, "deconstruct") || !strcmp(name, "members")) return TY_POLY_ARRAY;
+    if (!strcmp(name, "to_h")) return TY_SYM_POLY_HASH;
+  }
+
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);

@@ -206,6 +206,7 @@ static void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 static void emit_super(Compiler *c, int id, Buf *b);
 static void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
 static void emit_boxed(Compiler *c, int node, Buf *b);
+static void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 
 /* Strip ParenthesesNode wrappers to reach the inner expression. */
 static int unwrap_parens(Compiler *c, int id) {
@@ -871,6 +872,50 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     unsupported(c, id, "equality");
+  }
+
+  /* Struct instance methods (to_h / to_a / values / members / dig). */
+  if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
+    ClassInfo *sc = &c->classes[ty_object_class(rt)];
+    int is_to_a = (!strcmp(name, "to_a") || !strcmp(name, "values") || !strcmp(name, "deconstruct"));
+    if (is_to_a && argc == 0) {
+      int t = ++g_tmp; int rt2 = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      buf_printf(b, "({ sp_%s *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
+                 sc->name, t, rb.p ? rb.p : "", rt2, rt2);
+      for (int i = 0; i < sc->nivars; i++) {
+        buf_printf(b, " sp_PolyArray_push(_t%d, ", rt2);
+        Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+        emit_boxed_text(c, sc->ivar_types[i], fb.p, b); free(fb.p);
+        buf_puts(b, ");");
+      }
+      buf_printf(b, " _t%d; })", rt2);
+      free(rb.p);
+      return;
+    }
+    if (!strcmp(name, "to_h") && argc == 0) {
+      int t = ++g_tmp, rh = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      buf_printf(b, "({ sp_%s *_t%d = %s; sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);",
+                 sc->name, t, rb.p ? rb.p : "", rh, rh);
+      for (int i = 0; i < sc->nivars; i++) {
+        buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", rh, comp_sym_intern(c, sc->ivars[i] + 1));
+        Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+        emit_boxed_text(c, sc->ivar_types[i], fb.p, b); free(fb.p);
+        buf_puts(b, ");");
+      }
+      buf_printf(b, " _t%d; })", rh);
+      free(rb.p);
+      return;
+    }
+    if ((!strcmp(name, "members")) && argc == 0) {
+      int rm = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
+      for (int i = 0; i < sc->nivars; i++)
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", rm, comp_sym_intern(c, sc->ivars[i] + 1));
+      buf_printf(b, " _t%d; })", rm);
+      return;
+    }
   }
 
   /* object method call: sp_<DefClass>_<m>((sp_<DefClass>*)&recv, args) */
@@ -3065,6 +3110,27 @@ static int needs_root(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_
 
 /* Emit `node` boxed into an sp_RbVal. Idempotent: an already-poly value is
    passed through unboxed (double-boxing is a classic silent-corruption bug). */
+/* Box a C-text expression `expr` of static type `t` into an sp_RbVal. */
+static void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
+  if (t == TY_POLY) { buf_puts(b, expr); return; }
+  if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
+  const char *fn = NULL;
+  switch (t) {
+    case TY_INT: fn = "sp_box_int"; break;       case TY_FLOAT: fn = "sp_box_float"; break;
+    case TY_STRING: fn = "sp_box_str"; break;     case TY_BOOL: fn = "sp_box_bool"; break;
+    case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
+    case TY_TIME: fn = "sp_box_time"; break;
+    case TY_INT_ARRAY: fn = "sp_box_int_array"; break;
+    case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
+    case TY_STR_ARRAY: fn = "sp_box_str_array"; break;
+    case TY_POLY_ARRAY: fn = "sp_box_poly_array"; break;
+    case TY_NIL: buf_puts(b, "sp_box_nil()"); return;
+    default: break;
+  }
+  if (fn) buf_printf(b, "%s(%s)", fn, expr);
+  else buf_printf(b, "sp_box_int(%s)", expr);  /* fallback */
+}
+
 static void emit_boxed(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_POLY) { emit_expr(c, node, b); return; }
