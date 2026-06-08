@@ -331,10 +331,14 @@ TyKind infer_type(Compiler *c, int id) {
 
 /* ---- scope assignment ---- */
 
-static void scope_add_param(Scope *s, const char *name) {
-  if (s->nparams % 8 == 0)
+static void scope_add_param(Scope *s, const char *name, int defnode) {
+  if (s->nparams % 8 == 0) {
     s->pnames = realloc(s->pnames, sizeof(char *) * (size_t)(s->nparams + 8));
+    s->pdefault = realloc(s->pdefault, sizeof(int) * (size_t)(s->nparams + 8));
+  }
+  s->pdefault[s->nparams] = defnode;
   s->pnames[s->nparams++] = strdup(name);
+  if (defnode < 0) s->nrequired = s->nparams;
   LocalVar *lv = scope_local_intern(s, name);
   lv->is_param = 1;
 }
@@ -367,7 +371,14 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
       const int *reqs = nt_arr(c->nt, pn, "requireds", &rn);
       for (int i = 0; i < rn; i++) {
         const char *pname = nt_str(c->nt, reqs[i], "name");
-        if (pname) scope_add_param(s, pname);
+        if (pname) scope_add_param(s, pname, -1);
+      }
+      int on = 0;
+      const int *opts = nt_arr(c->nt, pn, "optionals", &on);
+      for (int i = 0; i < on; i++) {
+        const char *pname = nt_str(c->nt, opts[i], "name");
+        int dv = nt_ref(c->nt, opts[i], "value");
+        if (pname) scope_add_param(s, pname, dv);
       }
     }
     child = new_idx;
@@ -629,6 +640,24 @@ static int bind_call_params(Compiler *c, int call_id, int mi) {
   return changed;
 }
 
+/* Optional parameters get a type from their default value too. */
+static int infer_default_param_types(Compiler *c) {
+  int changed = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int i = 0; i < sc->nparams; i++) {
+      if (sc->pdefault[i] < 0) continue;
+      TyKind dt = infer_type(c, sc->pdefault[i]);
+      if (dt == TY_NIL) continue;  /* nil default doesn't pin the type */
+      LocalVar *p = scope_local(sc, sc->pnames[i]);
+      if (!p) continue;
+      TyKind merged = ty_unify(p->type, dt);
+      if (merged != p->type) { p->type = merged; changed = 1; }
+    }
+  }
+  return changed;
+}
+
 static int infer_param_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -788,6 +817,7 @@ void analyze_program(Compiler *c) {
     int ch = 0;
     ch |= infer_write_types(c);
     ch |= infer_param_types(c);
+    ch |= infer_default_param_types(c);
     ch |= infer_block_params(c);
     ch |= infer_ivar_types(c);
     ch |= infer_inherited_ivars(c);

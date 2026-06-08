@@ -151,6 +151,7 @@ static int  emit_output_call(Compiler *c, int id, Buf *b, int indent);
 static int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 static void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 static void emit_super(Compiler *c, int id, Buf *b);
+static void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
 
 /* Strip ParenthesesNode wrappers to reach the inner expression. */
 static int unwrap_parens(Compiler *c, int id) {
@@ -181,15 +182,9 @@ static const char *int_arith_fn(const char *op) {
 static void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int mi = comp_method_index(c, name);
   buf_printf(b, "sp_%s(", name);
-  for (int k = 0; k < argc; k++) {
-    if (k) buf_puts(b, ", ");
-    emit_expr(c, argv[k], b);
-  }
+  emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   buf_puts(b, ")");
 }
 
@@ -273,6 +268,32 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Emit the value for callee param `idx`: the provided arg node if any,
+   else the param's default (a nil default becomes the type's default). */
+static void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
+  if (provided >= 0) { emit_expr(c, provided, out); return; }
+  LocalVar *p = scope_local(m, m->pnames[idx]);
+  TyKind pt = p ? p->type : TY_INT;
+  int dv = m->pdefault[idx];
+  const char *dty = dv >= 0 ? nt_type(c->nt, dv) : NULL;
+  if (dv < 0 || (dty && !strcmp(dty, "NilNode")))
+    buf_puts(out, pt == TY_RANGE ? "(sp_Range){0}" : default_value(pt));
+  else
+    emit_expr(c, dv, out);
+}
+
+/* Emit a comma-separated argument list filling defaults for omitted
+   optional params. `lead` is prepended before the first arg. */
+static void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
+  Scope *m = &c->scopes[callee_idx];
+  int argc = 0;
+  const int *argv = argsNode >= 0 ? nt_arr(c->nt, argsNode, "arguments", &argc) : NULL;
+  for (int i = 0; i < m->nparams; i++) {
+    buf_puts(out, i == 0 ? lead : ", ");
+    emit_arg_or_default(c, m, i, i < argc ? argv[i] : -1, out);
+  }
+}
+
 static int is_descendant(Compiler *c, int k, int anc) {
   for (int x = k; x >= 0; x = c->classes[x].parent) if (x == anc) return 1;
   return 0;
@@ -300,19 +321,23 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
                           const char *selfptr, int argsNode, Buf *b) {
   const NodeTable *nt = c->nt;
   int defcls = cid;
-  comp_method_in_chain(c, cid, name, &defcls);
-  TyKind ret = TY_UNKNOWN;
-  { int mi = comp_method_in_chain(c, cid, name, NULL); if (mi >= 0) ret = c->scopes[mi].ret; }
+  int mi = comp_method_in_chain(c, cid, name, &defcls);
+  Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+  TyKind ret = m ? m->ret : TY_UNKNOWN;
 
   int argc = 0;
   const int *argv = argsNode >= 0 ? nt_arr(nt, argsNode, "arguments", &argc) : NULL;
-  /* evaluate args into temps in the prelude */
-  int *atmp = argc ? malloc(sizeof(int) * argc) : NULL;
-  for (int k = 0; k < argc; k++) {
+  int np = m ? m->nparams : argc;
+  /* evaluate each param value (provided arg or default) into a temp so the
+     virtual-dispatch cases reuse them without re-evaluating */
+  int *atmp = np ? malloc(sizeof(int) * np) : NULL;
+  for (int k = 0; k < np; k++) {
     atmp[k] = ++g_tmp;
-    Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, argv[k], &ab);
+    Buf ab; memset(&ab, 0, sizeof ab);
+    emit_arg_or_default(c, m, k, k < argc ? argv[k] : -1, &ab);
+    LocalVar *p = scope_local(m, m->pnames[k]);
     emit_indent(g_pre, g_indent);
-    emit_ctype(c, comp_ntype(c, argv[k]), g_pre);
+    emit_ctype(c, p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1), g_pre);
     buf_printf(g_pre, " _t%d = ", atmp[k]);
     buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
     free(ab.p);
@@ -322,7 +347,7 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
 
   if (!virtual) {
     buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, name, c->classes[defcls].name, selfptr);
-    for (int k = 0; k < argc; k++) buf_printf(b, ", _t%d", atmp[k]);
+    for (int k = 0; k < np; k++) buf_printf(b, ", _t%d", atmp[k]);
     buf_puts(b, ")");
     free(atmp);
     return;
@@ -339,12 +364,12 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
     if (comp_method_in_chain(c, k, name, &kd) < 0) continue;
     buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)%s", k, rtmp,
                c->classes[kd].name, name, c->classes[kd].name, selfptr);
-    for (int a = 0; a < argc; a++) buf_printf(b, ", _t%d", atmp[a]);
+    for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
     buf_puts(b, "); break;");
   }
   buf_printf(b, " default: _t%d = sp_%s_%s((sp_%s *)%s", rtmp,
              c->classes[defcls].name, name, c->classes[defcls].name, selfptr);
-  for (int a = 0; a < argc; a++) buf_printf(b, ", _t%d", atmp[a]);
+  for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
   buf_printf(b, "); break; } _t%d; })", rtmp);
   free(atmp);
 }
@@ -385,10 +410,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0) {
         buf_printf(b, "sp_%s_new(", c->classes[ci].name);
-        int args = nt_ref(nt, id, "arguments");
-        int argc = 0; const int *argv = NULL;
-        if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
-        for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, argv[k], b); }
+        int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+        if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");
         return;
       }

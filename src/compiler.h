@@ -26,8 +26,10 @@ typedef struct {
   int body;         /* StatementsNode id (-1 if empty) */
   int class_id;     /* owning class index, or -1 for free functions */
 
-  char **pnames;    /* parameter names, in order */
+  char **pnames;    /* parameter names, in order (requireds then optionals) */
+  int *pdefault;    /* per-param default-value node id, or -1 if required */
   int nparams;
+  int nrequired;    /* count of leading required params */
 
   TyKind ret;       /* inferred return type */
 

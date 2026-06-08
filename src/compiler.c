@@ -22,6 +22,7 @@ void comp_free(Compiler *c) {
     free(sc->locals);
     for (int i = 0; i < sc->nparams; i++) free(sc->pnames[i]);
     free(sc->pnames);
+    free(sc->pdefault);
   }
   free(c->scopes);
   for (int i = 0; i < c->nsymbols; i++) free(c->symbols[i]);
