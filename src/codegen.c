@@ -59,6 +59,9 @@ static char g_ren_from[MAX_RENAME][96];
 static char g_ren_to[MAX_RENAME][112];
 static int  g_nren = 0;
 static int  g_block_id = -1;
+/* The C expression for `self` (a pointer). Overridden while inlining an
+   instance method at a call site (where there is no real `self` param). */
+static const char *g_self = "self";
 
 static const char *rename_local(const char *nm) {
   for (int i = 0; i < g_nren; i++)
@@ -425,12 +428,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     Scope *self = comp_scope_of(c, id);
     if (self->class_id >= 0) {
       if (comp_reader_in_chain(c, self->class_id, name, NULL)) {
-        buf_printf(b, "self->iv_%s", name);
+        buf_printf(b, "%s->iv_%s", g_self, name);
         return;
       }
       int mi = comp_method_in_chain(c, self->class_id, name, NULL);
       if (mi >= 0) {
-        emit_dispatch(c, self->class_id, name, "self", nt_ref(nt, id, "arguments"), b);
+        emit_dispatch(c, self->class_id, name, g_self, nt_ref(nt, id, "arguments"), b);
         return;
       }
     }
@@ -1020,8 +1023,23 @@ static int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!name || recv >= 0) return 0;
-  int mi = comp_method_index(c, name);   /* free functions only for now */
+  if (!name) return 0;
+  int mi, recv_class = -1;
+  int implicit_self = 0;
+  if (recv < 0) {
+    mi = comp_method_index(c, name);     /* free function */
+    if (mi < 0) {                        /* implicit-self instance method */
+      Scope *encl = comp_scope_of(c, id);
+      if (encl->class_id >= 0) { mi = comp_method_in_chain(c, encl->class_id, name, NULL); implicit_self = 1; }
+      else return 0;
+    }
+  } else {
+    TyKind rt = comp_ntype(c, recv);     /* instance method */
+    if (!ty_is_object(rt)) return 0;
+    recv_class = ty_object_class(rt);
+    mi = comp_method_in_chain(c, recv_class, name, NULL);
+  }
+  (void)implicit_self;
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
   if (!m->yields || scope_has_return(c, mi)) return 0;
@@ -1030,9 +1048,28 @@ static int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
 
   int tag = ++g_tmp;
   int saved_nren = g_nren, saved_block = g_block_id;
+  const char *saved_self = g_self;
+  static char selfbuf[64];
   g_block_id = block;
 
   emit_indent(b, indent); buf_puts(b, "{\n");
+  /* instance method: bind self to the receiver */
+  if (recv >= 0) {
+    int st = ++g_tmp;
+    const char *rty = nt_type(nt, recv);
+    emit_indent(b, indent + 1);
+    if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode"))) {
+      buf_printf(b, "sp_%s *_t%d = &", c->classes[recv_class].name, st);
+      emit_expr(c, recv, b);
+    } else {
+      buf_printf(b, "sp_%s _t%da = ", c->classes[recv_class].name, st);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; sp_%s *_t%d = &_t%da", c->classes[recv_class].name, st, st);
+    }
+    buf_puts(b, ";\n");
+    snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
+    g_self = selfbuf;
+  }
   int din = indent + 1;
 
   /* declare method locals under renamed names */
@@ -1070,6 +1107,7 @@ static int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
 
   g_nren = saved_nren;
   g_block_id = saved_block;
+  g_self = saved_self;
   return 1;
 }
 
@@ -1317,7 +1355,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   if (!strcmp(ty, "LocalVariableReadNode")) { buf_printf(b, "lv_%s", rename_local(nt_str(nt, id, "name"))); return; }
   if (!strcmp(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
-    buf_printf(b, "self->iv_%s", nm + 1);
+    buf_printf(b, "%s->iv_%s", g_self, nm + 1);
     return;
   }
   if (!strcmp(ty, "GlobalVariableReadNode")) {
@@ -1775,13 +1813,22 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     int yc = 0;
     const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
     /* bind block params to yield args (yield args are in method scope:
-       renames stay on; block param names are call-site locals) */
-    for (int k = 0; k < yc; k++) {
+       renames stay on; block param names are call-site locals). Block
+       params beyond this yield's arity are zeroed so a smaller yield in a
+       mixed-arity method doesn't leak a previous yield's values. */
+    Scope *bsc = comp_scope_of(c, blk);
+    for (int k = 0; ; k++) {
       const char *bp = block_param_name(c, blk, k);
-      if (!bp) continue;
+      if (!bp) break;
       emit_indent(b, indent);
       buf_printf(b, "lv_%s = ", bp);
-      emit_expr(c, yargs[k], b);
+      if (k < yc) {
+        emit_expr(c, yargs[k], b);
+      } else {
+        LocalVar *bl = scope_local(bsc, bp);
+        TyKind bt = bl ? bl->type : TY_INT;
+        buf_puts(b, bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
+      }
       buf_puts(b, ";\n");
     }
     /* emit the block body in the call-site scope: renames off */
@@ -1833,7 +1880,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     emit_indent(b, indent);
-    buf_printf(b, "self->iv_%s = ", nm + 1);
+    buf_printf(b, "%s->iv_%s = ", g_self, nm + 1);
     const char *vty = nt_type(nt, v);
     int sc = comp_scope_of(c, id)->class_id;
     TyKind ivt = TY_INT;
@@ -1856,11 +1903,11 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) vt = c->classes[sc].ivar_types[iv]; }
     emit_indent(b, indent);
     if (vt == TY_STRING && op && !strcmp(op, "+")) {
-      buf_printf(b, "self->iv_%s = sp_str_concat(self->iv_%s, ", nm + 1, nm + 1);
+      buf_printf(b, "%s->iv_%s = sp_str_concat(%s->iv_%s, ", g_self, nm + 1, g_self, nm + 1);
       emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ");\n");
     }
     else {
-      buf_printf(b, "self->iv_%s %s= ", nm + 1, op ? op : "+");
+      buf_printf(b, "%s->iv_%s %s= ", g_self, nm + 1, op ? op : "+");
       emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
     }
     return;
@@ -2174,7 +2221,7 @@ static void emit_super(Compiler *c, int id, Buf *b) {
   int defcls = -1;
   int mi = p >= 0 ? comp_method_in_chain(c, p, s->name, &defcls) : -1;
   if (mi < 0) unsupported(c, id, "super (no parent method)");
-  buf_printf(b, "sp_%s_%s((sp_%s *)self", c->classes[defcls].name, s->name, c->classes[defcls].name);
+  buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, s->name, c->classes[defcls].name, g_self);
   /* explicit args, or forward the current method's params for bare super */
   const char *ty = nt_type(c->nt, id);
   if (ty && !strcmp(ty, "ForwardingSuperNode")) {

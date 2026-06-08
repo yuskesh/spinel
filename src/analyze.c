@@ -893,11 +893,17 @@ static int infer_block_params(Compiler *c) {
     if (!name) continue;
 
     /* call to a user yielding method: block params take the yield arg types */
-    if (recv < 0) {
-      int mi = comp_method_index(c, name);
-      if (mi < 0) {
-        Scope *self = comp_scope_of(c, id);
-        if (self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
+    {
+      int mi = -1;
+      if (recv < 0) {
+        mi = comp_method_index(c, name);
+        if (mi < 0) {
+          Scope *self = comp_scope_of(c, id);
+          if (self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
+        }
+      } else {
+        TyKind rt0 = infer_type(c, recv);
+        if (ty_is_object(rt0)) mi = comp_method_in_chain(c, ty_object_class(rt0), name, NULL);
       }
       if (mi >= 0 && c->scopes[mi].yields) {
         int yn = first_yield(c, mi);
