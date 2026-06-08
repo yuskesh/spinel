@@ -495,7 +495,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     return;
   }
   if (!strcmp(name, "!") && recv >= 0 && argc == 0) {
-    buf_puts(b, "(!"); emit_expr(c, recv, b); buf_puts(b, ")");
+    /* Ruby truthiness: only nil and false are falsy */
+    if (rt == TY_BOOL) { buf_puts(b, "(!"); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    else if (rt == TY_NIL) { buf_puts(b, "1"); }
+    else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }  /* truthy -> false */
     return;
   }
 
