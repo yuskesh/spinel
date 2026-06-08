@@ -983,6 +983,22 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
   } else if (t == TY_SYMBOL) {
     buf_puts(b, "puts(sp_sym_to_s("); emit_expr(c, arg, b); buf_puts(b, "));\n");
+  } else if (ty_is_array(t) && array_kind(t)) {
+    /* puts [a,b,c] prints each element on its own line (empty array: blank) */
+    const char *k = array_kind(t);
+    Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, arg, &ab);
+    const char *a = ab.p ? ab.p : "";
+    int ti = ++g_tmp;
+    buf_printf(b, "if (sp_%sArray_length(%s) == 0) putchar('\\n');\n", k, a);
+    emit_indent(b, indent);
+    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(%s); _t%d++) ", ti, ti, k, a, ti);
+    if (t == TY_INT_ARRAY)
+      buf_printf(b, "printf(\"%%lld\\n\", (long long)sp_IntArray_get(%s, _t%d));\n", a, ti);
+    else if (t == TY_FLOAT_ARRAY)
+      buf_printf(b, "{ const char *_fs = sp_float_to_s(sp_FloatArray_get(%s, _t%d)); fputs(_fs, stdout); putchar('\\n'); }\n", a, ti);
+    else /* str */
+      buf_printf(b, "{ const char *_ps = sp_StrArray_get(%s, _t%d); if (_ps) { fputs(_ps, stdout); if (!*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); } else putchar('\\n'); }\n", a, ti);
+    free(ab.p);
   } else if (ty_is_object(t) && comp_method_in_class(c, ty_object_class(t), "to_s") >= 0) {
     int cid = ty_object_class(t);
     buf_puts(b, "{ const char *_ps = (const char *)(");
