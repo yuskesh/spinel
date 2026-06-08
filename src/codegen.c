@@ -1358,6 +1358,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, eq ? ")" : "))");
       return;
     }
+    /* poly array vs a typed array: box the typed side element-wise */
+    if ((rt == TY_POLY_ARRAY && array_kind(a0)) || (a0 == TY_POLY_ARRAY && array_kind(rt))) {
+      int polyn = rt == TY_POLY_ARRAY ? recv : argv[0];
+      int typedn = rt == TY_POLY_ARRAY ? argv[0] : recv;
+      TyKind tk = rt == TY_POLY_ARRAY ? a0 : rt;
+      const char *kind = tk == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY"
+                       : tk == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" : "SP_BUILTIN_INT_ARRAY";
+      buf_puts(b, eq ? "sp_PolyArray_eq_typed(" : "(!sp_PolyArray_eq_typed(");
+      emit_expr(c, polyn, b); buf_puts(b, ", (void *)("); emit_expr(c, typedn, b);
+      buf_printf(b, "), %s)%s", kind, eq ? "" : ")");
+      return;
+    }
     /* a poly operand compares dynamically (covers string-vs-poly etc.) */
     if (rt == TY_POLY || a0 == TY_POLY) {
       buf_puts(b, eq ? "sp_poly_eq(" : "(!sp_poly_eq(");
