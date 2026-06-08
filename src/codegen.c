@@ -291,8 +291,9 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
-  if (!ty_is_array(rt)) return 0;
-  const char *k = array_kind(rt);
+  int range_recv = (rt == TY_RANGE);
+  if (!ty_is_array(rt) && !range_recv) return 0;
+  const char *k = range_recv ? "Int" : array_kind(rt);
   if (!k) return 0;
 
   int is_map = !strcmp(name, "map") || !strcmp(name, "collect");
@@ -312,9 +313,17 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
 
   int trecv = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
 
-  /* eval receiver once (its own preludes must land before the decl line) */
+  /* eval receiver once (its own preludes must land before the decl line);
+     a range receiver is materialized to an int array first */
   Buf rb; memset(&rb, 0, sizeof rb);
-  emit_expr(c, recv, &rb);
+  if (range_recv) {
+    int tr = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Range _t%d = ", tr); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+    buf_printf(&rb, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", tr, tr, tr);
+    rt = TY_INT_ARRAY;
+  }
+  else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
   emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = ", trecv);
@@ -1249,9 +1258,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin"))
         buf_printf(b, "(_t%d.first)", t);
-      else if (!strcmp(name, "last") || !strcmp(name, "max"))
+      else if (!strcmp(name, "max"))  /* max element: end minus the exclusive bound */
         buf_printf(b, "(_t%d.last - _t%d.excl)", t, t);
-      else if (!strcmp(name, "end"))
+      else if (!strcmp(name, "last") || !strcmp(name, "end"))  /* the end value itself */
         buf_printf(b, "(_t%d.last)", t);
       else if (!strcmp(name, "size") || !strcmp(name, "count"))
         buf_printf(b, "(_t%d.last - _t%d.excl - _t%d.first + 1)", t, t, t);
@@ -1354,6 +1363,24 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (k) {
       if ((!strcmp(name, "to_a") || !strcmp(name, "to_ary") || !strcmp(name, "entries")) && argc == 0) {
         emit_expr(c, recv, b); return;
+      }
+      if (!strcmp(name, "[]") && argc == 1 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "RangeNode")) {
+        /* arr[a..b] / arr[a...b] -> subarray */
+        int rn = argv[0];
+        int excl = (int)(nt_int(nt, rn, "flags", 0) & 4) ? 1 : 0;
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        buf_printf(b, "sp_%sArray_slice_range(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (lo >= 0) emit_expr(c, lo, b); else buf_puts(b, "0");
+        buf_puts(b, ", ");
+        if (hi >= 0) emit_expr(c, hi, b); else buf_puts(b, "-1");
+        buf_printf(b, ", %d)", hi >= 0 ? excl : 0);
+        return;
+      }
+      if (!strcmp(name, "[]") && argc == 2) {
+        /* arr[start, len] -> subarray */
+        buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        return;
       }
       if (!strcmp(name, "[]") && argc == 1) {
         buf_printf(b, "sp_%sArray_get(", k);
