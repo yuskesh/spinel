@@ -317,6 +317,12 @@ static TyKind infer_uncached(Compiler *c, int id) {
     int mi = comp_method_in_chain(c, p, s->name, NULL);
     return mi >= 0 ? c->scopes[mi].ret : TY_UNKNOWN;
   }
+  if (!strcmp(ty, "AndNode") || !strcmp(ty, "OrNode")) {
+    TyKind lt = infer_type(c, nt_ref(nt, id, "left"));
+    TyKind rt = infer_type(c, nt_ref(nt, id, "right"));
+    if (lt == TY_BOOL && rt == TY_BOOL) return TY_BOOL;
+    return ty_unify(lt, rt);  /* value form: a || b -> common type */
+  }
   if (!strcmp(ty, "CallNode")) return infer_call(c, id);
 
   return TY_UNKNOWN;

@@ -1119,6 +1119,18 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (!strcmp(ty, "CallNode")) { emit_call(c, id, b); return; }
   if (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode")) { emit_super(c, id, b); return; }
+  if (!strcmp(ty, "AndNode") || !strcmp(ty, "OrNode")) {
+    int left = nt_ref(nt, id, "left"), right = nt_ref(nt, id, "right");
+    if (comp_ntype(c, left) == TY_BOOL && comp_ntype(c, right) == TY_BOOL) {
+      buf_puts(b, "(");
+      emit_expr(c, left, b);
+      buf_puts(b, !strcmp(ty, "AndNode") ? " && " : " || ");
+      emit_expr(c, right, b);
+      buf_puts(b, ")");
+      return;
+    }
+    unsupported(c, id, "&&/|| (non-bool operands)");
+  }
 
   unsupported(c, id, "expression");
 }
