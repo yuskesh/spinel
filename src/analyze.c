@@ -93,6 +93,14 @@ static int is_proc_literal(Compiler *c, int id) {
   return 0;
 }
 
+/* 1 if `id` is any proc-creating literal: a proc/lambda/Proc.new call (above)
+   or a `->(){}` LambdaNode. */
+static int is_proc_create(Compiler *c, int id) {
+  const char *ty = nt_type(c->nt, id);
+  if (ty && !strcmp(ty, "LambdaNode")) return 1;
+  return is_proc_literal(c, id);
+}
+
 /* The body return type of a proc-creating node (proc/lambda CallNode literal,
    or a LambdaNode). The last statement of the block/lambda body is the value. */
 static TyKind proc_node_ret(Compiler *c, int create) {
@@ -555,6 +563,7 @@ static TyKind infer_uncached(Compiler *c, int id) {
   if (!strcmp(ty, "FalseNode"))               return TY_BOOL;
   if (!strcmp(ty, "NilNode"))                 return TY_NIL;
   if (!strcmp(ty, "RangeNode"))               return TY_RANGE;
+  if (!strcmp(ty, "LambdaNode"))              return TY_PROC;
 
   if (!strcmp(ty, "LocalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
@@ -1176,7 +1185,7 @@ static int infer_write_types(Compiler *c) {
        a later slice. */
     if (lv->type == TY_PROC && !strcmp(ty, "LocalVariableWriteNode")) {
       int vnode = nt_ref(nt, id, "value");
-      if (vnode >= 0 && is_proc_literal(c, vnode)) {
+      if (vnode >= 0 && is_proc_create(c, vnode)) {
         TyKind pr = proc_node_ret(c, vnode);
         if (pr != TY_UNKNOWN && (TyKind)lv->proc_ret != pr) { lv->proc_ret = (int)pr; changed = 1; }
       }
@@ -1459,6 +1468,25 @@ static int first_block_call_args(Compiler *c, int si) {
 static int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+
+  /* `->(x, ...) {}` (LambdaNode): its params live in the enclosing scope (no
+     separate scope), like block params. Register and type them; default to
+     int (the proc-literal slice default) until call-site arg inference lands. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "LambdaNode")) continue;
+    int pn = nt_ref(nt, id, "parameters");      /* ParametersNode (1 level, unlike blocks) */
+    if (pn < 0) continue;
+    int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+    Scope *bs = comp_scope_of(c, id);
+    for (int k = 0; k < rn; k++) {
+      const char *p = nt_str(nt, reqs[k], "name");
+      if (!p) continue;
+      LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
+      if (lv->type == TY_UNKNOWN) { lv->type = TY_INT; changed = 1; }
+    }
+  }
+
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || strcmp(ty, "CallNode")) continue;

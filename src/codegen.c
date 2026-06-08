@@ -2399,6 +2399,8 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "((sp_sym)%d)", sid);
     return;
   }
+  if (!strcmp(ty, "LambdaNode")) { emit_proc_literal(c, id, b); return; }
+
   if (!strcmp(ty, "RangeNode")) {
     int left = nt_ref(nt, id, "left");
     int right = nt_ref(nt, id, "right");
@@ -3755,23 +3757,51 @@ static int proc_subtree_has_free(Compiler *c, int id, NameSet *bound) {
   return 0;
 }
 
-/* Lower a `proc {}` / `lambda {}` / `Proc.new {}` literal: emit a standalone
-   `static mrb_int _proc_N(void *cap, mrb_int *args)` (sp_proc_call's ABI) into
-   g_procs, and emit the boxing `sp_proc_new_meta(...)` value into `b`. */
+/* The ParametersNode of a proc-creating node. A `->{}` LambdaNode carries it
+   directly (`parameters`); a `proc {}` / `lambda {}` block nests it one level
+   deeper (block -> BlockParametersNode -> ParametersNode). */
+static int proc_params_node(Compiler *c, int create) {
+  const char *ty = nt_type(c->nt, create);
+  if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
+  int block = nt_ref(c->nt, create, "block");
+  if (block < 0) return -1;
+  int bp = nt_ref(c->nt, block, "parameters");   /* BlockParametersNode */
+  if (bp < 0) return -1;
+  return nt_ref(c->nt, bp, "parameters");        /* ParametersNode */
+}
+static const char *proc_param_name(Compiler *c, int create, int idx) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return NULL;
+  int n = 0;
+  const int *reqs = nt_arr(c->nt, pn, "requireds", &n);
+  return idx < n ? nt_str(c->nt, reqs[idx], "name") : NULL;
+}
+/* The StatementsNode body of a proc-creating node. */
+static int proc_body_node(Compiler *c, int create) {
+  const char *ty = nt_type(c->nt, create);
+  if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "body");
+  int block = nt_ref(c->nt, create, "block");
+  return block >= 0 ? nt_ref(c->nt, block, "body") : -1;
+}
+
+/* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
+   standalone `static mrb_int _proc_N(void *cap, mrb_int *args)` (sp_proc_call's
+   ABI) into g_procs, and emit the boxing `sp_proc_new_meta(...)` value into `b`. */
 static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
-  int block = nt_ref(nt, create, "block");
-  if (block < 0) { unsupported(c, create, "proc literal without a block"); return; }
+  const char *cty = nt_type(nt, create);
+  int is_lambda_node = cty && !strcmp(cty, "LambdaNode");
+  if (!is_lambda_node && nt_ref(nt, create, "block") < 0) { unsupported(c, create, "proc literal without a block"); return; }
 
-  Scope *bs = comp_scope_of(c, block);  /* enclosing scope: holds block params + locals */
-  int body = nt_ref(nt, block, "body");
+  Scope *bs = comp_scope_of(c, create);  /* enclosing scope: holds params + locals */
+  int body = proc_body_node(c, create);
 
   int arity = 0;
-  while (block_param_name(c, block, arity)) arity++;
+  while (proc_param_name(c, create, arity)) arity++;
 
-  /* bound names = block params + locals the proc body writes */
+  /* bound names = params + locals the body writes */
   NameSet bound = {0}, locals = {0};
-  for (int k = 0; k < arity; k++) nameset_add(&bound, block_param_name(c, block, k));
+  for (int k = 0; k < arity; k++) nameset_add(&bound, proc_param_name(c, create, k));
   proc_collect_locals(c, body, &locals);
   for (int i = 0; i < locals.n; i++) nameset_add(&bound, locals.v[i]);
   if (proc_subtree_has_free(c, body, &bound)) {
@@ -3780,8 +3810,9 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
     return;
   }
 
+  /* proc {} / Proc.new {} are procs; lambda {} and ->(){} are lambdas */
   const char *cn = nt_str(nt, create, "name");
-  int is_lambda = cn && !strcmp(cn, "lambda");
+  int is_lambda = is_lambda_node || (cn && !strcmp(cn, "lambda"));
 
   /* body return type = last statement's type */
   TyKind ret = TY_NIL;
@@ -3810,11 +3841,11 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   buf_puts(pb, "    SP_GC_SAVE();\n");
   buf_puts(pb, "    (void)_cap; (void)args;\n");
   for (int k = 0; k < arity; k++) {
-    const char *p = block_param_name(c, block, k);
+    const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
     TyKind pt = lv ? lv->type : TY_INT;
     buf_puts(pb, "    "); emit_ctype(c, pt, pb);
-    /* slice 1: params are int-shaped; args[k] is already mrb_int */
+    /* params are int-shaped here; args[k] is already mrb_int */
     buf_printf(pb, " lv_%s = args[%d];\n", p, k);
   }
   for (int i = 0; i < locals.n; i++) {
