@@ -1960,16 +1960,47 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   if (!strcmp(ty, "CallNode")) { emit_call(c, id, b); return; }
   if (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode")) { emit_super(c, id, b); return; }
   if (!strcmp(ty, "AndNode") || !strcmp(ty, "OrNode")) {
+    int is_and = !strcmp(ty, "AndNode");
     int left = nt_ref(nt, id, "left"), right = nt_ref(nt, id, "right");
-    if (comp_ntype(c, left) == TY_BOOL && comp_ntype(c, right) == TY_BOOL) {
+    TyKind lt = comp_ntype(c, left), res = comp_ntype(c, id);
+    if (lt == TY_BOOL && comp_ntype(c, right) == TY_BOOL) {
       buf_puts(b, "(");
       emit_expr(c, left, b);
-      buf_puts(b, !strcmp(ty, "AndNode") ? " && " : " || ");
+      buf_puts(b, is_and ? " && " : " || ");
       emit_expr(c, right, b);
       buf_puts(b, ")");
       return;
     }
-    unsupported(c, id, "&&/|| (non-bool operands)");
+    /* value form: a || b  ->  truthy(a) ? a : b ;  a && b -> truthy(a) ? b : a.
+       Evaluate the left once into a temp; results widen to the unified type. */
+    int t = ++g_tmp;
+    buf_puts(b, "({ ");
+    emit_ctype(c, lt == TY_UNKNOWN ? res : lt, b);
+    buf_printf(b, " _t%d = ", t); emit_expr(c, left, b); buf_puts(b, "; ");
+    if (lt == TY_POLY)      buf_printf(b, "sp_poly_truthy(_t%d)", t);
+    else if (lt == TY_BOOL) buf_printf(b, "_t%d", t);
+    else if (lt == TY_NIL)  buf_puts(b, "0");
+    else                    buf_puts(b, "1");  /* concrete value: always truthy */
+    buf_puts(b, " ? ");
+    /* the "kept-left" arm and the "right" arm, each widened to res */
+    #define EMIT_ARM(IS_RIGHT) do { \
+      if (IS_RIGHT) { if (res == TY_POLY && comp_ntype(c, right) != TY_POLY) emit_boxed(c, right, b); else emit_expr(c, right, b); } \
+      else { if (res == TY_POLY && lt != TY_POLY) { /* box temp */ \
+               Buf _vb; memset(&_vb,0,sizeof _vb); buf_printf(&_vb, "_t%d", t); \
+               /* reuse emit_boxed by faking: just box by left type */ \
+               if (lt==TY_INT) buf_printf(b, "sp_box_int(_t%d)", t); \
+               else if (lt==TY_STRING) buf_printf(b, "sp_box_str(_t%d)", t); \
+               else if (lt==TY_FLOAT) buf_printf(b, "sp_box_float(_t%d)", t); \
+               else if (lt==TY_BOOL) buf_printf(b, "sp_box_bool(_t%d)", t); \
+               else if (lt==TY_SYMBOL) buf_printf(b, "sp_box_sym(_t%d)", t); \
+               else buf_printf(b, "_t%d", t); free(_vb.p); } \
+             else buf_printf(b, "_t%d", t); } \
+    } while (0)
+    if (is_and) { EMIT_ARM(1); buf_puts(b, " : "); EMIT_ARM(0); }
+    else        { EMIT_ARM(0); buf_puts(b, " : "); EMIT_ARM(1); }
+    #undef EMIT_ARM
+    buf_printf(b, "; })");
+    return;
   }
 
   unsupported(c, id, "expression");
