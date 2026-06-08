@@ -115,14 +115,14 @@ static const char *default_value(TyKind t) {
     case TY_INT_ARRAY:
     case TY_FLOAT_ARRAY:
     case TY_STR_ARRAY: return "NULL";
-    default:        return ty_is_hash(t) ? "NULL" : "0";
+    default:        return (ty_is_hash(t) || ty_is_object(t)) ? "NULL" : "0";
   }
 }
 /* Append the C type name for `t` to `b` (objects need the class name). */
 static void emit_ctype(Compiler *c, TyKind t, Buf *b) {
   if (ty_is_object(t)) {
     int cid = ty_object_class(t);
-    buf_printf(b, "sp_%s", c->classes[cid].name);
+    buf_printf(b, "sp_%s *", c->classes[cid].name);  /* objects are heap pointers (reference semantics) */
   }
   else {
     const char *n = c_type_name(t);
@@ -598,19 +598,19 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     int cid = ty_object_class(rt);
     /* attr reader -> field access (recv).iv_x */
     if (comp_reader_in_chain(c, cid, name, NULL)) {
-      buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ").iv_%s", name);
+      buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s", name);
       return;
     }
     int mi = comp_method_in_chain(c, cid, name, NULL);
     if (mi >= 0) {
-      /* receiver pointer: &lvalue, or a temp for an rvalue receiver */
+      /* receiver is a pointer; reuse it directly if it's a simple lvalue,
+         else stash in a temp (the virtual-dispatch switch references it
+         multiple times) */
       char selfptr[64];
       const char *rty = nt_type(nt, recv);
       if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
         Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-        char tmp[64];
-        snprintf(tmp, sizeof tmp, "&%s", rb.p ? rb.p : "");
-        snprintf(selfptr, sizeof selfptr, "%s", tmp);
+        snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
         free(rb.p);
       }
       else {
@@ -620,7 +620,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, " _t%d = ", t);
         Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
         buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-        snprintf(selfptr, sizeof selfptr, "&_t%d", t);
+        snprintf(selfptr, sizeof selfptr, "_t%d", t);
       }
       emit_dispatch(c, cid, name, selfptr, nt_ref(nt, id, "arguments"), b);
       return;
@@ -1087,20 +1087,12 @@ static int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_ex
 
   if (as_expr) buf_puts(b, "({\n");
   else { emit_indent(b, indent); buf_puts(b, "{\n"); }
-  /* instance method: bind self to the receiver */
+  /* instance method: bind self to the receiver (a pointer) */
   if (recv >= 0) {
     int st = ++g_tmp;
-    const char *rty = nt_type(nt, recv);
     emit_indent(b, indent + 1);
-    if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
-      buf_printf(b, "sp_%s *_t%d = &", c->classes[recv_class].name, st);
-      emit_expr(c, recv, b);
-    }
-    else {
-      buf_printf(b, "sp_%s _t%da = ", c->classes[recv_class].name, st);
-      emit_expr(c, recv, b);
-      buf_printf(b, "; sp_%s *_t%d = &_t%da", c->classes[recv_class].name, st, st);
-    }
+    buf_printf(b, "sp_%s *_t%d = ", c->classes[recv_class].name, st);
+    emit_expr(c, recv, b);
     buf_puts(b, ";\n");
     snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
     g_self = selfbuf;
@@ -1432,7 +1424,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, "})");
     return;
   }
-  if (!strcmp(ty, "SelfNode")) { buf_printf(b, "(*%s)", g_self); return; }
+  if (!strcmp(ty, "SelfNode")) { buf_puts(b, g_self); return; }  /* self is the object reference (pointer) */
   if (!strcmp(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
     buf_printf(b, "%s->iv_%s", g_self, nm + 1);
@@ -1571,7 +1563,7 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "sp_%s_to_s(", c->classes[cid].name);
     const char *rty = nt_type(c->nt, arg);
     if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
-      buf_puts(b, "&"); emit_expr(c, arg, b);
+      emit_expr(c, arg, b);
     }
     else {
       int tt = ++g_tmp;
@@ -1579,7 +1571,7 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
       buf_printf(g_pre, " _t%d = ", tt);
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arg, &rb);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      buf_printf(b, "&_t%d", tt);
+      buf_printf(b, "_t%d", tt);
     }
     buf_puts(b, ")); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
   }
@@ -1968,7 +1960,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
               int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
               if (an >= 1) {
                 emit_indent(b, indent);
-                buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ").iv_%s = ", base);
+                buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", base);
                 emit_expr(c, argv[0], b); buf_puts(b, ";\n");
                 return;
               }
@@ -2163,7 +2155,7 @@ static void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
 /* ---- declarations ---- */
 
 /* Heap-managed types need a GC root for their local slot. */
-static int needs_root(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_is_hash(t); }
+static int needs_root(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t); }
 
 static void declare_local(Compiler *c, Buf *b, LocalVar *lv) {
   switch (lv->type) {
@@ -2194,8 +2186,9 @@ static void declare_local(Compiler *c, Buf *b, LocalVar *lv) {
       }
       if (ty_is_object(lv->type)) {
         buf_puts(b, "    ");
-        emit_ctype(c, lv->type, b);
-        buf_printf(b, " lv_%s = {0};\n", lv->name);
+        emit_ctype(c, lv->type, b);   /* "sp_<Class> *" */
+        buf_printf(b, " lv_%s = NULL;\n", lv->name);
+        buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", lv->name);
         break;
       }
       fprintf(stderr, "spinelc: local '%s' has unsupported type %s\n",
@@ -2273,7 +2266,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   else {
     emit_stmts_tail(c, s->body, b, 1);
     buf_puts(b, "  return ");
-    if (ty_is_object(s->ret)) { buf_puts(b, "("); emit_ctype(c, s->ret, b); buf_puts(b, "){0};\n"); /* unreachable default */ }
+    if (ty_is_object(s->ret)) { buf_puts(b, "NULL;\n"); /* unreachable default (object pointer) */ }
     else buf_printf(b, "%s;\n", default_value(s->ret));
   }
   buf_puts(b, "}\n");
@@ -2295,11 +2288,36 @@ static void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_puts(b, "};\n");
 }
 
+/* A class needs a GC scan iff any ivar holds a heap reference. */
+static int class_needs_scan(ClassInfo *ci) {
+  for (int i = 0; i < ci->nivars; i++) {
+    TyKind t = ci->ivar_types[i];
+    if (t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t)) return 1;
+  }
+  return 0;
+}
+
+/* Emit the GC scan function (marks heap ivars) for a class that needs one. */
+static void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
+  (void)c;
+  if (!class_needs_scan(ci)) return;
+  buf_printf(b, "static void sp_%s_scan(void *p) {\n", ci->name);
+  buf_printf(b, "  sp_%s *o = (sp_%s *)p;\n", ci->name, ci->name);
+  for (int i = 0; i < ci->nivars; i++) {
+    TyKind t = ci->ivar_types[i];
+    const char *iv = ci->ivars[i] + 1;
+    if (t == TY_STRING) buf_printf(b, "  sp_mark_string(o->iv_%s);\n", iv);
+    else if (ty_is_array(t) || ty_is_hash(t) || ty_is_object(t))
+      buf_printf(b, "  if (o->iv_%s) sp_gc_mark(o->iv_%s);\n", iv, iv);
+  }
+  buf_puts(b, "}\n");
+}
+
 static void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
   int initcls = cid;
   int init = comp_method_in_chain(c, cid, "initialize", &initcls);
-  buf_printf(b, "static sp_%s sp_%s_new(", ci->name, ci->name);
+  buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
   if (init >= 0 && c->scopes[init].nparams > 0) {
     Scope *s = &c->scopes[init];
     for (int i = 0; i < s->nparams; i++) {
@@ -2312,13 +2330,16 @@ static void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   else {
     buf_puts(b, "void");
   }
-  buf_printf(b, ") {\n  sp_%s self = {0};\n", ci->name);
-  buf_printf(b, "  self.cls_id = %d;\n", cid);
+  buf_printf(b, ") {\n  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, %s%s%s);\n",
+            ci->name, ci->name, ci->name,
+            class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+            class_needs_scan(ci) ? "_scan" : "");
+  buf_printf(b, "  SP_GC_ROOT(self);\n");
+  buf_printf(b, "  self->cls_id = %d;\n", cid);
   if (init >= 0) {
-    /* an inherited initialize takes the parent's self type */
     buf_printf(b, "  sp_%s_initialize(", c->classes[initcls].name);
     if (initcls != cid) buf_printf(b, "(sp_%s *)", c->classes[initcls].name);
-    buf_puts(b, "&self");
+    buf_puts(b, "self");
     Scope *s = &c->scopes[init];
     for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
     buf_puts(b, ");\n");
@@ -2372,15 +2393,16 @@ char *codegen_program(const NodeTable *nt) {
   }
   buf_puts(&b, "static const char *sp_class_to_s(sp_Class c){(void)c;return \"\";}\n\n\n");
 
-  /* class structs */
+  /* class structs + GC scan functions */
   for (int i = 0; i < c->nclasses; i++) emit_class_struct(c, &c->classes[i], &b);
+  for (int i = 0; i < c->nclasses; i++) emit_class_scan(c, &c->classes[i], &b);
   if (c->nclasses > 0) buf_puts(&b, "\n");
 
   /* method prototypes (scope 0 is top-level) */
   for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
   /* constructor prototypes + definitions (after method protos: new calls initialize) */
   for (int i = 0; i < c->nclasses; i++) {
-    buf_printf(&b, "static sp_%s sp_%s_new();\n", c->classes[i].name, c->classes[i].name);
+    buf_printf(&b, "static sp_%s *sp_%s_new();\n", c->classes[i].name, c->classes[i].name);
   }
   if (c->nscopes > 1 || c->nclasses > 0) buf_puts(&b, "\n");
   for (int i = 0; i < c->nclasses; i++) emit_class_new(c, &c->classes[i], &b);
