@@ -25,6 +25,7 @@ typedef struct {
   int def_node;     /* DefNode id; -1 for top-level */
   int body;         /* StatementsNode id (-1 if empty) */
   int class_id;     /* owning class index, or -1 for free functions */
+  int yields;       /* body contains a YieldNode (inlined at call sites) */
 
   char **pnames;    /* parameter names, in order (requireds then optionals) */
   int *pdefault;    /* per-param default-value node id, or -1 if required */

@@ -870,6 +870,15 @@ const char *block_param_name(Compiler *c, int block, int idx) {
   return NULL;
 }
 
+/* First YieldNode belonging to scope `si`, or -1. */
+static int first_yield(Compiler *c, int si) {
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (ty && !strcmp(ty, "YieldNode") && c->nscope[id] == si) return id;
+  }
+  return -1;
+}
+
 /* Bind block parameter types for supported iteration methods. */
 static int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -881,7 +890,33 @@ static int infer_block_params(Compiler *c) {
     if (block < 0) continue;
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
-    if (!name || recv < 0) continue;
+    if (!name) continue;
+
+    /* call to a user yielding method: block params take the yield arg types */
+    if (recv < 0) {
+      int mi = comp_method_index(c, name);
+      if (mi < 0) {
+        Scope *self = comp_scope_of(c, id);
+        if (self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
+      }
+      if (mi >= 0 && c->scopes[mi].yields) {
+        int yn = first_yield(c, mi);
+        int ya = yn >= 0 ? nt_ref(nt, yn, "arguments") : -1;
+        int yc = 0;
+        const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+        Scope *bs = comp_scope_of(c, block);
+        for (int k = 0; k < yc; k++) {
+          const char *bp = block_param_name(c, block, k);
+          if (!bp) continue;
+          LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
+          TyKind m = ty_unify(lv->type, infer_type(c, yargs[k]));
+          if (m != lv->type) { lv->type = m; changed = 1; }
+        }
+        continue;
+      }
+    }
+
+    if (recv < 0) continue;
     TyKind rt = infer_type(c, recv);
     const char *p0 = block_param_name(c, block, 0);
     if (!p0) continue;
@@ -975,6 +1010,18 @@ void analyze_program(Compiler *c) {
   register_globals_consts(c);
   resolve_parents(c);
   inherit_members(c);
+
+  /* mark block-aware methods (contain yield or block_given?) -- these are
+     inlined at every call site so block_given? reflects the actual site */
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (!ty) continue;
+    if (!strcmp(ty, "YieldNode")) comp_scope_of(c, id)->yields = 1;
+    else if (!strcmp(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) {
+      const char *nm = nt_str(c->nt, id, "name");
+      if (nm && !strcmp(nm, "block_given?")) comp_scope_of(c, id)->yields = 1;
+    }
+  }
 
   /* intern every symbol literal so codegen can emit the id table */
   for (int id = 0; id < c->nt->count; id++) {

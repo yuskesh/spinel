@@ -50,6 +50,22 @@ static Buf *g_pre = NULL;
 static int  g_indent = 0;
 static int  g_tmp = 0;
 
+/* Inlining a yielding method: method-local names are renamed (to avoid
+   clashing with the call site's locals), and yield emits the active
+   block's body. g_block_id is the current BlockNode for yield (-1 if
+   none). The rename map holds only the inlined method's locals. */
+#define MAX_RENAME 128
+static char g_ren_from[MAX_RENAME][96];
+static char g_ren_to[MAX_RENAME][112];
+static int  g_nren = 0;
+static int  g_block_id = -1;
+
+static const char *rename_local(const char *nm) {
+  for (int i = 0; i < g_nren; i++)
+    if (strcmp(g_ren_from[i], nm) == 0) return g_ren_to[i];
+  return nm;
+}
+
 /* ---- diagnostics ---- */
 
 static void unsupported(Compiler *c, int id, const char *what) {
@@ -150,6 +166,8 @@ static void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent);
 static int  emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
 static int  emit_output_call(Compiler *c, int id, Buf *b, int indent);
 static int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
+static int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
+static int  needs_root(TyKind t);
 static void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 static void emit_super(Compiler *c, int id, Buf *b);
 static void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
@@ -386,6 +404,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   if (!name) unsupported(c, id, "call (no name)");
+
+  /* block_given? -> true inside an inlined yielding method (we only inline
+     when a block is present) */
+  if (recv < 0 && !strcmp(name, "block_given?")) { buf_puts(b, g_block_id >= 0 ? "1" : "0"); return; }
 
   if (recv < 0 && comp_method_index(c, name) >= 0) { emit_method_call(c, id, b); return; }
 
@@ -982,6 +1004,75 @@ static void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
   unsupported(c, id, "index operator assignment");
 }
 
+static int scope_has_return(Compiler *c, int scope_idx) {
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (ty && !strcmp(ty, "ReturnNode") && c->nscope[id] == scope_idx) return 1;
+  }
+  return 0;
+}
+
+/* Inline a call to a free-function yielding method `foo(args) { |bp| ... }`:
+   declare the method's locals (renamed to avoid clashing with the call
+   site), bind params to args, then emit the method body with yield
+   expanding to the block. Returns 1 if handled. */
+static int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv >= 0) return 0;
+  int mi = comp_method_index(c, name);   /* free functions only for now */
+  if (mi < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  if (!m->yields || scope_has_return(c, mi)) return 0;
+  int block = nt_ref(nt, id, "block");   /* may be -1: no block passed */
+  if (g_nren + m->nlocals >= MAX_RENAME) return 0;
+
+  int tag = ++g_tmp;
+  int saved_nren = g_nren, saved_block = g_block_id;
+  g_block_id = block;
+
+  emit_indent(b, indent); buf_puts(b, "{\n");
+  int din = indent + 1;
+
+  /* declare method locals under renamed names */
+  for (int i = 0; i < m->nlocals; i++) {
+    LocalVar *lv = &m->locals[i];
+    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
+    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
+    const char *rn = g_ren_to[g_nren];
+    g_nren++;
+    if (!is_scalar_ret(lv->type)) { /* unsupported local type: bail out */
+      g_nren = saved_nren; g_block_id = saved_block;
+      return 0;
+    }
+    emit_indent(b, din);
+    emit_ctype(c, lv->type, b);
+    buf_printf(b, " lv_%s = %s;\n", rn, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
+    if (needs_root(lv->type)) { emit_indent(b, din); buf_printf(b, "SP_GC_ROOT(lv_%s);\n", rn); }
+  }
+
+  /* bind params to call args (args are in the call-site scope: renames off) */
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  for (int i = 0; i < m->nparams; i++) {
+    emit_indent(b, din);
+    buf_printf(b, "lv__y%d_%s = ", tag, m->pnames[i]);
+    int sv = g_nren; g_nren = 0;
+    emit_arg_or_default(c, m, i, i < argc ? argv[i] : -1, b);
+    g_nren = sv;
+    buf_puts(b, ";\n");
+  }
+
+  emit_stmts(c, m->body, b, din);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+
+  g_nren = saved_nren;
+  g_block_id = saved_block;
+  return 1;
+}
+
 /* Block iteration lowered to an inline C for-loop. Handles n.times,
    array.each, range.each, n.upto/downto. Returns 1 if handled. */
 static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
@@ -1223,7 +1314,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, ", %d)", excl);
     return;
   }
-  if (!strcmp(ty, "LocalVariableReadNode")) { buf_printf(b, "lv_%s", nt_str(nt, id, "name")); return; }
+  if (!strcmp(ty, "LocalVariableReadNode")) { buf_printf(b, "lv_%s", rename_local(nt_str(nt, id, "name"))); return; }
   if (!strcmp(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@x" */
     buf_printf(b, "self->iv_%s", nm + 1);
@@ -1463,7 +1554,7 @@ static void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   int v = nt_ref(c->nt, id, "value");
   LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
   emit_indent(b, indent);
-  buf_printf(b, "lv_%s = ", nm);
+  buf_printf(b, "lv_%s = ", rename_local(nm));
   /* `x = nil` -> the variable's type-appropriate default */
   const char *vty = nt_type(c->nt, v);
   int vn = 0;
@@ -1489,23 +1580,24 @@ static void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
   int v = nt_ref(nt, id, "value");
   LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
   TyKind t = lv ? lv->type : TY_UNKNOWN;
+  const char *en = rename_local(nm);
   emit_indent(b, indent);
 
   if (t == TY_STRING && !strcmp(op, "+")) {
-    buf_printf(b, "lv_%s = sp_str_concat(lv_%s, ", nm, nm);
+    buf_printf(b, "lv_%s = sp_str_concat(lv_%s, ", en, en);
     emit_expr(c, v, b); buf_puts(b, ");\n");
     return;
   }
   if (t == TY_INT && (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*"))) {
-    buf_printf(b, "lv_%s %s= ", nm, op); emit_expr(c, v, b); buf_puts(b, ";\n");
+    buf_printf(b, "lv_%s %s= ", en, op); emit_expr(c, v, b); buf_puts(b, ";\n");
     return;
   }
   if (t == TY_INT) {
     const char *fn = int_arith_fn(op);
-    if (fn) { buf_printf(b, "lv_%s = %s(lv_%s, ", nm, fn, nm); emit_expr(c, v, b); buf_puts(b, ");\n"); return; }
+    if (fn) { buf_printf(b, "lv_%s = %s(lv_%s, ", en, fn, en); emit_expr(c, v, b); buf_puts(b, ");\n"); return; }
   }
   if (t == TY_FLOAT && (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*") || !strcmp(op, "/"))) {
-    buf_printf(b, "lv_%s %s= ", nm, op); emit_expr(c, v, b); buf_puts(b, ";\n");
+    buf_printf(b, "lv_%s %s= ", en, op); emit_expr(c, v, b); buf_puts(b, ";\n");
     return;
   }
   unsupported(c, id, "operator assignment");
@@ -1675,8 +1767,34 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const char *ty = nt_type(nt, id);
   if (!ty) unsupported(c, id, "statement (no type)");
 
+  if (!strcmp(ty, "YieldNode")) {
+    if (g_block_id < 0) unsupported(c, id, "yield (no block in scope)");
+    int blk = g_block_id;
+    int bbody = nt_ref(nt, blk, "body");
+    int ya = nt_ref(nt, id, "arguments");
+    int yc = 0;
+    const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+    /* bind block params to yield args (yield args are in method scope:
+       renames stay on; block param names are call-site locals) */
+    for (int k = 0; k < yc; k++) {
+      const char *bp = block_param_name(c, blk, k);
+      if (!bp) continue;
+      emit_indent(b, indent);
+      buf_printf(b, "lv_%s = ", bp);
+      emit_expr(c, yargs[k], b);
+      buf_puts(b, ";\n");
+    }
+    /* emit the block body in the call-site scope: renames off */
+    int sv = g_nren; g_nren = 0;
+    int svb = g_block_id; g_block_id = -1;  /* nested yield not supported */
+    emit_stmts(c, bbody, b, indent);
+    g_nren = sv; g_block_id = svb;
+    return;
+  }
+
   if (!strcmp(ty, "CallNode")) {
     if (emit_output_call(c, id, b, indent)) return;
+    if (emit_inline_call(c, id, b, indent)) return;
     if (emit_iteration_stmt(c, id, b, indent)) return;
     /* attr writer: obj.x = v */
     {
@@ -2099,14 +2217,14 @@ char *codegen_program(const NodeTable *nt) {
   if (c->nclasses > 0) buf_puts(&b, "\n");
 
   /* method prototypes (scope 0 is top-level) */
-  for (int s = 1; s < c->nscopes; s++) { emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
+  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
   /* constructor prototypes + definitions (after method protos: new calls initialize) */
   for (int i = 0; i < c->nclasses; i++) {
     buf_printf(&b, "static sp_%s sp_%s_new();\n", c->classes[i].name, c->classes[i].name);
   }
   if (c->nscopes > 1 || c->nclasses > 0) buf_puts(&b, "\n");
   for (int i = 0; i < c->nclasses; i++) emit_class_new(c, &c->classes[i], &b);
-  for (int s = 1; s < c->nscopes; s++) emit_method(c, &c->scopes[s], &b);
+  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields) continue; emit_method(c, &c->scopes[s], &b); }
 
   /* global variables and top-level constants (file-scope statics) */
   for (int i = 0; i < c->ngvars; i++) {
