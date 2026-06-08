@@ -923,6 +923,23 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
+  /* string append: s << x  ->  s = sp_str_concat(s, x) (value semantics).
+     recv must be an assignable lvalue (local or ivar). */
+  if (rt == TY_STRING && !strcmp(name, "<<") && argc == 1) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode"))) {
+      TyKind at = comp_ntype(c, argv[0]);
+      emit_indent(b, indent);
+      emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat(");
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (at == TY_INT) { buf_puts(b, "sp_int_chr("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ");\n");
+      return 1;
+    }
+    return 0;
+  }
+
   if (ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     if (hn && !strcmp(name, "[]=") && argc == 2) {
