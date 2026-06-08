@@ -924,7 +924,7 @@ static int infer_param_types(Compiler *c) {
       const char *rty = nt_type(nt, recv);
       if (rty && !strcmp(rty, "ConstantReadNode")) {
         int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-        if (ci >= 0) changed |= bind_call_params(c, id, comp_method_in_class(c, ci, "initialize"));
+        if (ci >= 0) changed |= bind_call_params(c, id, comp_method_in_chain(c, ci, "initialize", NULL));
       }
       continue;
     }
