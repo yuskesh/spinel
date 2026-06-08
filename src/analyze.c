@@ -435,6 +435,9 @@ static TyKind infer_call(Compiler *c, int id) {
           !strcmp(name, "filter") || !strcmp(name, "sort_by") ||
           !strcmp(name, "take_while") || !strcmp(name, "drop_while"))
         return rt;
+      if (!strcmp(name, "max_by") || !strcmp(name, "min_by") ||
+          !strcmp(name, "find") || !strcmp(name, "detect"))
+        return ty_array_elem(rt);  /* returns an element */
     }
     if (!strcmp(name, "[]")) {
       /* arr[range] / arr[start, len] -> a subarray; arr[i] -> an element */
@@ -1723,9 +1726,12 @@ static int infer_block_params(Compiler *c) {
               !strcmp(name, "find") || !strcmp(name, "detect") || !strcmp(name, "each_with_index") ||
               !strcmp(name, "sort_by") || !strcmp(name, "find_all") || !strcmp(name, "count")) && rt == TY_RANGE)
       pt = TY_INT;
-    else if ((!strcmp(name, "each") || !strcmp(name, "map") ||
-              !strcmp(name, "select") || !strcmp(name, "reject") ||
-              !strcmp(name, "find") || !strcmp(name, "each_with_index")) &&
+    else if ((!strcmp(name, "each") || !strcmp(name, "map") || !strcmp(name, "collect") ||
+              !strcmp(name, "select") || !strcmp(name, "reject") || !strcmp(name, "filter") ||
+              !strcmp(name, "find") || !strcmp(name, "detect") ||
+              !strcmp(name, "max_by") || !strcmp(name, "min_by") || !strcmp(name, "sort_by") ||
+              !strcmp(name, "take_while") || !strcmp(name, "drop_while") ||
+              !strcmp(name, "each_with_index")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
 
