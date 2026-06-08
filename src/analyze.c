@@ -89,6 +89,18 @@ static TyKind infer_call(Compiler *c, int id) {
     return TY_INT;
   }
 
+  /* Class.cmethod(...) -> the class method's return type */
+  if (recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && !strcmp(rty, "ConstantReadNode")) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) {
+        int mi = comp_cmethod_in_chain(c, ci, name, NULL);
+        if (mi >= 0) return c->scopes[mi].ret;
+      }
+    }
+  }
+
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);
