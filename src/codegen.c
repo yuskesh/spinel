@@ -578,6 +578,21 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     const char *rty = nt_type(nt, recv);
     if (rty && !strcmp(rty, "ConstantReadNode")) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0 && c->classes[ci].is_struct) {
+        /* Struct.new members: positional args, each coerced to the member ivar type */
+        ClassInfo *cls = &c->classes[ci];
+        buf_printf(b, "sp_%s_new(", cls->name);
+        for (int a = 0; a < cls->nivars; a++) {
+          if (a) buf_puts(b, ", ");
+          if (a < argc) {
+            if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, argv[a]) != TY_POLY) emit_boxed(c, argv[a], b);
+            else emit_expr(c, argv[a], b);
+          }
+          else buf_puts(b, default_value(cls->ivar_types[a]));
+        }
+        buf_puts(b, ")");
+        return;
+      }
       if (ci >= 0) {
         buf_printf(b, "sp_%s_new(", c->classes[ci].name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
@@ -3261,6 +3276,26 @@ static void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
 
 static void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
+  if (ci->is_struct) {
+    /* Struct constructor: one parameter per member, set the backing ivars. */
+    buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+    for (int i = 0; i < ci->nivars; i++) {
+      if (i) buf_puts(b, ", ");
+      emit_ctype(c, ci->ivar_types[i], b);
+      buf_printf(b, " a%d", i);
+    }
+    if (ci->nivars == 0) buf_puts(b, "void");
+    buf_printf(b, ") {\n  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, %s%s%s);\n",
+              ci->name, ci->name, ci->name,
+              class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+              class_needs_scan(ci) ? "_scan" : "");
+    buf_puts(b, "  SP_GC_ROOT(self);\n");
+    buf_printf(b, "  self->cls_id = %d;\n", cid);
+    for (int i = 0; i < ci->nivars; i++)
+      buf_printf(b, "  self->iv_%s = a%d;\n", ci->ivars[i] + 1, i);  /* skip leading '@' */
+    buf_puts(b, "  return self;\n}\n");
+    return;
+  }
   int initcls = cid;
   int init = comp_method_in_chain(c, cid, "initialize", &initcls);
   buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);

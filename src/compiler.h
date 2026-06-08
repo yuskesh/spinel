@@ -55,6 +55,9 @@ typedef struct {
   char **alias_new;    /* `alias new old`: alias_new[i] redirects to alias_old[i] */
   char **alias_old;
   int naliases, caliases;
+  int is_struct;       /* defined via Struct.new(:a, :b): readers[] are the
+                          positional members; the constructor takes them in
+                          order and there is no user `initialize`. */
 } ClassInfo;
 
 typedef struct {

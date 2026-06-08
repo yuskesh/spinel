@@ -620,6 +620,44 @@ static void register_locals(Compiler *c) {
   }
 }
 
+/* `Const = Struct.new(:a, :b)` / `Const = Data.define(:a, :b)` defines a
+   class named Const whose positional members are attr_accessors. Register
+   it as a class with one ivar + reader + writer per member. */
+static int is_c_ident(const char *s);
+static void register_structs(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "ConstantWriteNode")) continue;
+    const char *cname = nt_str(nt, id, "name");
+    int val = nt_ref(nt, id, "value");
+    if (!cname || val < 0 || !is_c_ident(cname)) continue;
+    if (!nt_type(nt, val) || strcmp(nt_type(nt, val), "CallNode")) continue;
+    const char *mn = nt_str(nt, val, "name");
+    int vr = nt_ref(nt, val, "receiver");
+    const char *rn = vr >= 0 && nt_type(nt, vr) && !strcmp(nt_type(nt, vr), "ConstantReadNode")
+                     ? nt_str(nt, vr, "name") : NULL;
+    int is_struct = rn && ((!strcmp(rn, "Struct") && mn && !strcmp(mn, "new")) ||
+                           (!strcmp(rn, "Data") && mn && !strcmp(mn, "define")));
+    if (!is_struct) continue;
+    if (comp_class_index(c, cname) >= 0) continue;
+    ClassInfo *cls = comp_class_new(c, cname, id);
+    cls->is_struct = 1;
+    int args = nt_ref(nt, val, "arguments");
+    int an = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int a = 0; a < an; a++) {
+      if (!nt_type(nt, argv[a]) || strcmp(nt_type(nt, argv[a]), "SymbolNode")) continue;
+      const char *m = nt_str(nt, argv[a], "value");
+      if (!m) continue;
+      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", m);
+      comp_ivar_intern(cls, ivn);
+      comp_add_reader(cls, m);
+      comp_add_writer(cls, m);
+    }
+  }
+}
+
 /* Collect attr_reader/attr_writer/attr_accessor declarations in class
    bodies, registering backing ivars + reader/writer method names. */
 static void register_attrs(Compiler *c) {
@@ -711,7 +749,8 @@ static void register_globals_consts(Compiler *c) {
     }
     else if (!strcmp(ty, "ConstantWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (nm && is_c_ident(nm)) comp_const_intern(c, nm);
+      /* a Struct/Data const names a class, not a value constant */
+      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0) comp_const_intern(c, nm);
     }
   }
 }
@@ -1086,6 +1125,19 @@ static int infer_param_types(Compiler *c) {
       if (rty && !strcmp(rty, "ConstantReadNode")) {
         int ci = comp_class_index(c, nt_str(nt, recv, "name"));
         if (ci >= 0) {
+          if (!strcmp(name, "new") && c->classes[ci].is_struct) {
+            /* Struct construction: positional args set member ivars in order. */
+            ClassInfo *cls = &c->classes[ci];
+            int args = nt_ref(nt, id, "arguments");
+            int an = 0;
+            const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+            for (int a = 0; a < an && a < cls->nivars; a++) {
+              TyKind at = infer_type(c, argv[a]);
+              TyKind m = ty_unify(cls->ivar_types[a], at);
+              if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
+            }
+            continue;
+          }
           if (!strcmp(name, "new"))
             changed |= bind_call_params(c, id, comp_method_in_chain(c, ci, "initialize", NULL));
           else
@@ -1344,6 +1396,7 @@ void analyze_program(Compiler *c) {
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
 
   walk_scope(c, c->nt->root_id, 0, -1);
+  register_structs(c);
   register_locals(c);
   register_attrs(c);
   register_aliases(c);
