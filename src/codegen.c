@@ -71,6 +71,9 @@ static const char *g_rescue_cls = NULL, *g_rescue_msg = NULL;
 /* When set, tail positions assign to this var instead of `return`ing
    (used to give a begin/rescue a value). */
 static const char *g_result_var = NULL;
+/* Return type of the method currently being emitted, so a tail/return value
+   can be boxed when the method returns poly but the value is concrete. */
+static TyKind g_ret_type = TY_UNKNOWN;
 
 /* Emit the lead of a tail value: `return ` or `<result> = `. */
 static void emit_tail_lead(Buf *b) {
@@ -727,7 +730,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(cn, "TrueClass"))  buf_printf(b, "(%s.tag == SP_TAG_BOOL && %s.v.b)", v, v);
       else if (!strcmp(cn, "FalseClass")) buf_printf(b, "(%s.tag == SP_TAG_BOOL && !%s.v.b)", v, v);
       else if (!strcmp(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
-      else if (!strcmp(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -8)", v, v, v);
+      else if (!strcmp(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", v, v, v);
+      else if (!strcmp(cn, "Hash"))     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -13 && %s.cls_id >= -20)", v, v, v);
       else {
         int cid = comp_class_index(c, cn);
         int exact = !strcmp(name, "instance_of?");
@@ -830,7 +834,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
-      if (comp_method_in_chain(c, k, name, NULL) >= 0) ncand++;
+      if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) ncand++;
     if (ncand > 0) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
@@ -841,9 +845,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
-        if (mi < 0) continue;
-        buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)_t%d.v.p); break;",
-                   k, tr, c->classes[defcls].name, mc(c->scopes[mi].name), c->classes[defcls].name, tv);
+        if (mi >= 0) {
+          buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)_t%d.v.p); break;",
+                     k, tr, c->classes[defcls].name, mc(c->scopes[mi].name), c->classes[defcls].name, tv);
+          continue;
+        }
+        int rdcls = -1;
+        if (comp_reader_in_chain(c, k, name, &rdcls))
+          buf_printf(b, " case %d: _t%d = ((sp_%s *)_t%d.v.p)->iv_%s; break;",
+                     k, tr, c->classes[rdcls].name, tv, name);
       }
       /* built-in array receivers reaching a length-like poly dispatch */
       if (!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) {
@@ -2360,7 +2370,13 @@ static void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int n = 0;
   const int *a = args >= 0 ? nt_arr(c->nt, args, "arguments", &n) : NULL;
   emit_indent(b, indent);
-  if (n > 0) { buf_puts(b, "return "); emit_expr(c, a[0], b); buf_puts(b, ";\n"); }
+  if (n > 0) {
+    buf_puts(b, "return ");
+    if (g_ret_type == TY_POLY && comp_ntype(c, a[0]) != TY_POLY) emit_boxed(c, a[0], b);
+    else emit_expr(c, a[0], b);
+    buf_puts(b, ";\n");
+  }
+  else if (g_ret_type == TY_POLY) buf_puts(b, "return sp_box_nil();\n");
   else buf_puts(b, "return;\n");
 }
 
@@ -2758,7 +2774,8 @@ static void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   /* a value expression: return it (or assign to the begin/rescue result) */
   emit_indent(b, indent);
   emit_tail_lead(b);
-  emit_expr(c, id, b);
+  if (!g_result_var && g_ret_type == TY_POLY && comp_ntype(c, id) != TY_POLY) emit_boxed(c, id, b);
+  else emit_expr(c, id, b);
   buf_puts(b, ";\n");
 }
 
@@ -2951,6 +2968,8 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   buf_puts(b, " {\n");
   buf_puts(b, "    SP_GC_SAVE();\n");
   emit_scope_decls(c, s, b);
+  TyKind saved_rt = g_ret_type;
+  g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   if (method_is_void(s)) {
     emit_stmts(c, s->body, b, 1);
   }
@@ -2960,6 +2979,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
     if (ty_is_object(s->ret)) { buf_puts(b, "NULL;\n"); /* unreachable default (object pointer) */ }
     else buf_printf(b, "%s;\n", default_value(s->ret));
   }
+  g_ret_type = saved_rt;
   buf_puts(b, "}\n");
 }
 

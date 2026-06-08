@@ -181,7 +181,14 @@ static TyKind infer_call(Compiler *c, int id) {
       TyKind r = TY_UNKNOWN; int found = 0;
       for (int k = 0; k < c->nclasses; k++) {
         int mi = comp_method_in_chain(c, k, name, NULL);
-        if (mi >= 0) { r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1; }
+        if (mi >= 0) { r = found ? ty_unify(r, c->scopes[mi].ret) : c->scopes[mi].ret; found = 1; continue; }
+        int rdcls = -1;
+        if (comp_reader_in_chain(c, k, name, &rdcls)) {
+          char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", name);
+          int iv = comp_ivar_index(&c->classes[rdcls], ivn);
+          TyKind rt2 = iv >= 0 ? c->classes[rdcls].ivar_types[iv] : TY_UNKNOWN;
+          r = found ? ty_unify(r, rt2) : rt2; found = 1;
+        }
       }
       if (found) return r;
     }
@@ -1200,7 +1207,13 @@ static int infer_return_types(Compiler *c) {
   /* implicit return: the body's value */
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    TyKind r = sc->body >= 0 ? infer_type(c, sc->body) : TY_NIL;
+    /* An empty method body returns nil; if its value is used at all it must
+       be poly (a void C function yields nothing to read). */
+    int empty_body = sc->body < 0;
+    if (sc->body >= 0 && nt_type(nt, sc->body) && !strcmp(nt_type(nt, sc->body), "StatementsNode")) {
+      int bn = 0; nt_arr(nt, sc->body, "body", &bn); if (bn == 0) empty_body = 1;
+    }
+    TyKind r = empty_body ? TY_POLY : infer_type(c, sc->body);
     /* explicit returns within this scope */
     for (int id = 0; id < nt->count; id++) {
       const char *ty = nt_type(nt, id);
