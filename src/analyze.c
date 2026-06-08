@@ -1138,9 +1138,22 @@ static int infer_param_types(Compiler *c) {
             int args = nt_ref(nt, id, "arguments");
             int an = 0;
             const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+            int kwh = (an == 1 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
             for (int a = 0; a < cls->nivars; a++) {
               /* a member not supplied at this construction can be nil */
-              TyKind at = a < an ? infer_type(c, argv[a]) : TY_NIL;
+              const char *mname = cls->ivars[a] + 1;
+              int kn = 0;
+              const int *ke = kwh >= 0 ? nt_arr(nt, kwh, "elements", &kn) : NULL;
+              int vnode = -1;
+              if (kwh >= 0) {
+                for (int e = 0; e < kn; e++) {
+                  int key = nt_ref(nt, ke[e], "key");
+                  if (key >= 0 && nt_type(nt, key) && !strcmp(nt_type(nt, key), "SymbolNode") &&
+                      nt_str(nt, key, "value") && !strcmp(nt_str(nt, key, "value"), mname)) { vnode = nt_ref(nt, ke[e], "value"); break; }
+                }
+              }
+              else if (a < an) vnode = argv[a];
+              TyKind at = vnode >= 0 ? infer_type(c, vnode) : TY_NIL;
               TyKind m = ty_unify(cls->ivar_types[a], at);
               if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
             }

@@ -253,6 +253,22 @@ static const char *mc(const char *name) {
   return buf;
 }
 
+/* Value node for keyword `name` inside a KeywordHashNode, or -1. */
+static int struct_kwarg_value(Compiler *c, int kwh, const char *name) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  const int *els = nt_arr(nt, kwh, "elements", &n);
+  for (int i = 0; i < n; i++) {
+    if (!nt_type(nt, els[i]) || strcmp(nt_type(nt, els[i]), "AssocNode")) continue;
+    int key = nt_ref(nt, els[i], "key");
+    if (key >= 0 && nt_type(nt, key) && !strcmp(nt_type(nt, key), "SymbolNode")) {
+      const char *kn = nt_str(nt, key, "value");
+      if (kn && !strcmp(kn, name)) return nt_ref(nt, els[i], "value");
+    }
+  }
+  return -1;
+}
+
 static void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -580,14 +596,19 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (rty && !strcmp(rty, "ConstantReadNode")) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0 && c->classes[ci].is_struct) {
-        /* Struct.new members: positional args, each coerced to the member ivar type */
+        /* Struct.new members: positional args, or keyword args mapping each
+           member by name; each coerced to the member ivar type. */
         ClassInfo *cls = &c->classes[ci];
+        int kwh = (argc == 1 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
         buf_printf(b, "sp_%s_new(", cls->name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
-          if (a < argc) {
-            if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, argv[a]) != TY_POLY) emit_boxed(c, argv[a], b);
-            else emit_expr(c, argv[a], b);
+          int vnode = -1;
+          if (kwh >= 0) vnode = struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
+          else if (a < argc) vnode = argv[a];
+          if (vnode >= 0) {
+            if (cls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, b);
+            else emit_expr(c, vnode, b);
           }
           else buf_puts(b, default_value(cls->ivar_types[a]));
         }
