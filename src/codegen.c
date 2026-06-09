@@ -364,6 +364,7 @@ static void emit_expr(Compiler *c, int id, Buf *b);
 static void emit_stmt(Compiler *c, int id, Buf *b, int indent);
 static void emit_stmts(Compiler *c, int id, Buf *b, int indent);
 static void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent);
+static void emit_op_assign(Compiler *c, int id, Buf *b, int indent);
 static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar);
 static int  emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
 static int  emit_output_call(Compiler *c, int id, Buf *b, int indent);
@@ -942,6 +943,55 @@ static int emit_inject_expr(Compiler *c, int id, Buf *b) {
   else
     buf_printf(b, "_t%d %s sp_%sArray_get(_t%d, _t%d)", tacc, op, k, ta, ti);
   buf_printf(b, "; _t%d; })", tacc);
+  return 1;
+}
+
+/* reduce/inject with a block { |acc, elem| body } as an expression.
+   Handles typed (non-poly) arrays where both params are scalar. */
+static int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (strcmp(name, "inject") && strcmp(name, "reduce"))) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt)) return 0;
+  const char *k = array_kind(rt);
+  if (!k) return 0;
+  TyKind et = ty_array_elem(rt);
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *bty = nt_type(nt, block);
+  if (!bty || strcmp(bty, "BlockNode")) return 0;
+  const char *p0_orig = block_param_name(c, block, 0);
+  const char *p1_orig = block_param_name(c, block, 1);
+  if (!p0_orig || !p1_orig) return 0;
+  const char *p0 = rename_local(p0_orig);
+  const char *p1 = rename_local(p1_orig);
+  int bbody = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+  if (bn == 0) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int init = (argc > 0 && argv) ? argv[0] : -1;
+
+  int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
+  buf_puts(b, "({ ");
+  emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");
+  emit_ctype(c, et, b); buf_printf(b, " _t%d = ", tacc);
+  int start;
+  if (init >= 0) { emit_expr(c, init, b); buf_puts(b, "; "); start = 0; }
+  else { buf_printf(b, "sp_%sArray_length(_t%d) > 0 ? sp_%sArray_get(_t%d, 0) : 0; ", k, ta, k, ta); start = 1; }
+  buf_printf(b, "for (mrb_int _t%d = %d; _t%d < sp_%sArray_length(_t%d); _t%d++) { ",
+             ti, start, ti, k, ta, ti);
+  buf_printf(b, "lv_%s = _t%d; ", p0, tacc);
+  buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p1, k, ta, ti);
+  for (int j = 0; j < bn - 1; j++) {
+    emit_stmt(c, bb[j], b, 0);
+    buf_puts(b, " ");
+  }
+  buf_printf(b, "_t%d = ", tacc); emit_expr(c, bb[bn - 1], b); buf_puts(b, "; } ");
+  buf_printf(b, "_t%d; })", tacc);
   return 1;
 }
 
@@ -1723,6 +1773,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_transform_hash_expr(c, id, b)) return;
   if (emit_gsub_block_expr(c, id, b)) return;
   if (emit_inject_expr(c, id, b)) return;
+  if (emit_reduce_block_expr(c, id, b)) return;
   if (emit_sortby_expr(c, id, b)) return;
   if (emit_inline_expr(c, id, b)) return;  /* value-returning yield method */
   const char *name = nt_str(nt, id, "name");
@@ -1748,6 +1799,24 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     emit_iteration_stmt(c, id, b, 0);
     emit_expr(c, recv, b); buf_puts(b, "; })");
     return;
+  }
+  /* n.times / lo.upto(hi) / hi.downto(lo) without block: produce sp_Range for chaining */
+  if (recv >= 0 && nt_ref(nt, id, "block") < 0 && comp_ntype(c, recv) == TY_INT &&
+      comp_ntype(c, id) == TY_RANGE) {
+    if (!strcmp(name, "times")) {
+      buf_puts(b, "(sp_Range){ .first = 0, .last = "); emit_expr(c, recv, b); buf_puts(b, ", .excl = 1 }");
+      return;
+    }
+    if (!strcmp(name, "upto") && argc == 1) {
+      buf_puts(b, "(sp_Range){ .first = "); emit_expr(c, recv, b);
+      buf_puts(b, ", .last = "); emit_expr(c, argv[0], b); buf_puts(b, ", .excl = 0 }");
+      return;
+    }
+    if (!strcmp(name, "downto") && argc == 1) {
+      buf_puts(b, "(sp_Range){ .first = "); emit_expr(c, argv[0], b);
+      buf_puts(b, ", .last = "); emit_expr(c, recv, b); buf_puts(b, ", .excl = 0 }");
+      return;
+    }
   }
 
   /* <proc>.call(args) / .() / [] -> sp_proc_call with the mrb_int[] ABI.
@@ -3893,6 +3962,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         return;
       }
     }
+    if (rt == TY_POLY_ARRAY && (!strcmp(name, "shift") || !strcmp(name, "pop")) && argc == 0) {
+      buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
     if (k) {
       if ((!strcmp(name, "to_a") || !strcmp(name, "to_ary") || !strcmp(name, "entries") ||
            !strcmp(name, "flatten") || !strcmp(name, "compact")) && argc == 0) {
@@ -3944,9 +4017,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
         return;
       }
-      if (((!strcmp(name, "shift") && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)) ||
-           (!strcmp(name, "pop") && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY))) &&
-          argc == 0) {
+      if ((!strcmp(name, "shift") || !strcmp(name, "pop")) && argc == 0) {
         /* remove and return first/last element (nil sentinel when empty) */
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
@@ -4222,9 +4293,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
                    k, o, k, k, o, k, t, k, o, k, t, o);
         return;
       }
-      if (!strcmp(name, "index") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+      if ((!strcmp(name, "index") || !strcmp(name, "find_index") || !strcmp(name, "rindex")) && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
         /* nil-on-miss -> poly */
-        buf_printf(b, "sp_%sArray_index_poly(", k);
+        const char *fn = !strcmp(name, "rindex") ? "rindex_poly" : "index_poly";
+        buf_printf(b, "sp_%sArray_%s(", k, fn);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
@@ -4242,7 +4314,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           return;
         }
       }
-      if ((!strcmp(name, "include?") || !strcmp(name, "index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
+      if ((!strcmp(name, "include?") || !strcmp(name, "index") || !strcmp(name, "find_index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
         const char *fn = !strcmp(name, "include?") ? "include" : "index";
         buf_printf(b, "sp_%sArray_%s(", k, fn);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -4341,6 +4413,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       if (!strcmp(name, "flatten") && argc <= 1) {
         if (argc == 1) { buf_puts(b, "sp_PolyArray_flatten_n("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_PolyArray_flatten("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+        return;
+      }
+      if (!strcmp(name, "transpose") && argc == 0) {
+        buf_puts(b, "sp_int_array_transpose("); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
       if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && argc == 1) {
@@ -4609,6 +4685,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
       else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
+      else if (!strcmp(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
+      else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);
       else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
       else if (!strcmp(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
@@ -4627,11 +4705,20 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "center") && argc == 1) {
         buf_printf(b, "sp_str_center(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      else if (!strcmp(name, "center") && argc == 2) {
+        buf_printf(b, "sp_str_center2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (!strcmp(name, "ljust") && argc == 1) {
         buf_printf(b, "sp_str_ljust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      else if (!strcmp(name, "ljust") && argc == 2) {
+        buf_printf(b, "sp_str_ljust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (!strcmp(name, "rjust") && argc == 1) {
         buf_printf(b, "sp_str_rjust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "rjust") && argc == 2) {
+        buf_printf(b, "sp_str_rjust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
       else handled = 0;
     }
@@ -5404,7 +5491,36 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", t, t, ta, t);
-    if (p0) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t); }
+    if (p0) {
+      /* Destructuring: 2+ params over poly_array where params are scalar-typed */
+      const char *orig_p0n = block_param_name(c, block, 0);
+      Scope *blk_sp = comp_scope_of(c, block);
+      LocalVar *bp0p = orig_p0n ? scope_local(blk_sp, orig_p0n) : NULL;
+      TyKind bp0_tp = bp0p ? bp0p->type : TY_UNKNOWN;
+      int npp = 0; while (block_param_name(c, block, npp)) npp++;
+      int did_destruct = 0;
+      if (npp >= 2 && bp0_tp != TY_POLY && bp0_tp != TY_UNKNOWN) {
+        const char *inner_kk = array_kind(ty_array_of(bp0_tp));
+        if (inner_kk) {
+          int tsub = ++g_tmp;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "sp_%sArray *_t%d = (sp_%sArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n",
+                     inner_kk, tsub, inner_kk, ta, t);
+          for (int pj = 0; pj < npp; pj++) {
+            const char *pnj = block_param_name(c, block, pj);
+            if (!pnj) continue;
+            emit_indent(b, indent + 1);
+            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %d);\n",
+                       rename_local(pnj), inner_kk, tsub, pj);
+          }
+          did_destruct = 1;
+        }
+      }
+      if (!did_destruct) {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t);
+      }
+    }
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
@@ -5439,6 +5555,33 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, rb.p); buf_printf(b, "); _t%d++) {\n", t);
     }
     if (p0) {
+      /* Destructuring: 2+ params over poly_array where params are scalar-typed
+         (e.g. `[[1,2],[3,4]].each { |a,b| }` or numbered `{ _1; _2 }`).
+         The poly element is an inner typed array; unbox and destructure. */
+      Scope *blk_s = comp_scope_of(c, block);
+      /* Use original (unrenameD) name for scope lookup; p0 is already renamed */
+      const char *orig_p0_name = block_param_name(c, block, 0);
+      LocalVar *bp0 = orig_p0_name ? scope_local(blk_s, orig_p0_name) : NULL;
+      TyKind bp0_type = bp0 ? bp0->type : TY_UNKNOWN;
+      int np = 0; while (block_param_name(c, block, np)) np++;
+      if (np >= 2 && !strcmp(k, "Poly") && bp0_type != TY_POLY && bp0_type != TY_UNKNOWN) {
+        /* Get the inner array kind from the first param's element type */
+        const char *inner_k = array_kind(ty_array_of(bp0_type));
+        if (inner_k) {
+          int tsub = ++g_tmp;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "sp_%sArray *_t%d = (sp_%sArray *)sp_PolyArray_get(", inner_k, tsub, inner_k);
+          buf_puts(b, rb.p); buf_printf(b, ", _t%d).v.p;\n", t);
+          for (int pj = 0; pj < np; pj++) {
+            const char *pname2 = block_param_name(c, block, pj);
+            if (!pname2) continue;
+            emit_indent(b, indent + 1);
+            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %d);\n",
+                       rename_local(pname2), inner_k, tsub, pj);
+          }
+          goto each_body;
+        }
+      }
       emit_indent(b, indent + 1);
       if (box_to_poly) {
         if (et == TY_INT) buf_printf(b, "lv_%s = sp_box_int(sp_%sArray_get(", p0, k);
@@ -5455,6 +5598,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
       }
     }
+    each_body:
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     if (outer) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts); }
@@ -5925,6 +6069,42 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
     return;
   }
+  if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
+    /* c += 3 used as expression: ({ lv_c += 3; lv_c; }) */
+    const char *nm = nt_str(nt, id, "name");
+    const char *en = rename_local(nm);
+    buf_puts(b, "({ ");
+    emit_op_assign(c, id, b, 0);
+    buf_printf(b, "lv_%s; })", en);
+    return;
+  }
+  if (!strcmp(ty, "LocalVariableOrWriteNode") || !strcmp(ty, "LocalVariableAndWriteNode")) {
+    int is_or = !strcmp(ty, "LocalVariableOrWriteNode");
+    const char *nm = nt_str(nt, id, "name");
+    int v = nt_ref(nt, id, "value");
+    LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
+    TyKind t = lv ? lv->type : TY_UNKNOWN;
+    const char *en = rename_local(nm);
+    if (t == TY_POLY) {
+      buf_printf(b, "({ if (%ssp_poly_truthy(lv_%s)) lv_%s = ", is_or ? "!" : "", en, en);
+      emit_boxed(c, v, b);
+      buf_printf(b, "; lv_%s; })", en);
+    }
+    else if (t == TY_BOOL) {
+      buf_printf(b, "({ if (%slv_%s) lv_%s = ", is_or ? "!" : "", en, en);
+      emit_expr(c, v, b);
+      buf_printf(b, "; lv_%s; })", en);
+    }
+    else if (!is_or) {
+      buf_printf(b, "({ lv_%s = ", en);
+      emit_expr(c, v, b);
+      buf_printf(b, "; lv_%s; })", en);
+    }
+    else {
+      buf_printf(b, "lv_%s", en);
+    }
+    return;
+  }
   if (!strcmp(ty, "YieldNode")) {
     if (g_block_id < 0) { buf_puts(b, "SP_INT_NIL"); return; }  /* no block: yield is nil */
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
@@ -6076,8 +6256,19 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     int body = nt_ref(nt, id, "body");
     int n = 0;
     const int *bd = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-    if (n != 1) unsupported(c, id, "parenthesized group");
-    buf_puts(b, "("); emit_expr(c, bd[0], b); buf_puts(b, ")");
+    if (n == 0) { buf_puts(b, "sp_box_nil()"); return; }
+    if (n == 1) {
+      buf_puts(b, "("); emit_expr(c, bd[0], b); buf_puts(b, ")");
+      return;
+    }
+    /* Multi-stmt parens: `(s1; s2; expr)` — run leading stmts in prelude,
+       return value of last expression via GNU statement expression. */
+    buf_puts(b, "({ ");
+    for (int j = 0; j < n - 1; j++) {
+      emit_stmt(c, bd[j], b, 0);
+    }
+    emit_expr(c, bd[n - 1], b);
+    buf_puts(b, "; })");
     return;
   }
   if (!strcmp(ty, "ArrayNode")) {
@@ -7604,26 +7795,43 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       unsupported(c, id, "multiple assignment");
     }
     if (en < ln) unsupported(c, id, "multiple assignment");
-    /* evaluate all RHS values into temps first (so `a, b = b, a` swaps) */
-    int base = g_tmp + 1;
+    /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
+       Save each temp index separately: emit_expr may consume extra g_tmp
+       slots via preludes (e.g. array literals), so base+i is unreliable. */
+    int *tmps = alloca(sizeof(int) * (size_t)ln);
     for (int i = 0; i < ln; i++) {
-      int t = ++g_tmp;
+      tmps[i] = ++g_tmp;
       Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
       emit_indent(b, indent);
       emit_ctype(c, comp_ntype(c, els[i]), b);
-      buf_printf(b, " _t%d = ", t);
+      buf_printf(b, " _t%d = ", tmps[i]);
       buf_puts(b, vb.p ? vb.p : ""); buf_puts(b, ";\n"); free(vb.p);
     }
     for (int i = 0; i < ln; i++) {
       const char *lty = nt_type(nt, lefts[i]);
       if (lty && !strcmp(lty, "LocalVariableTargetNode")) {
         emit_indent(b, indent);
-        buf_printf(b, "lv_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), base + i);
+        buf_printf(b, "lv_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), tmps[i]);
       }
       else if (lty && !strcmp(lty, "ConstantPathTargetNode") &&
                nt_str(nt, lefts[i], "name") && comp_const(c, nt_str(nt, lefts[i], "name"))) {
         emit_indent(b, indent);
-        buf_printf(b, "cst_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), base + i);
+        buf_printf(b, "cst_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), tmps[i]);
+      }
+      else if (lty && !strcmp(lty, "MultiTargetNode")) {
+        /* (b, c) = _t<i>  where _t<i> is a typed array */
+        TyKind at = comp_ntype(c, els[i]);
+        const char *k = array_kind(at);
+        if (!k) { unsupported(c, id, "multiple assignment nested target"); continue; }
+        int inn2 = 0;
+        const int *inner_lefts = nt_arr(nt, lefts[i], "lefts", &inn2);
+        for (int j = 0; j < inn2; j++) {
+          const char *ilty2 = inner_lefts ? nt_type(nt, inner_lefts[j]) : NULL;
+          if (!ilty2 || strcmp(ilty2, "LocalVariableTargetNode")) { unsupported(c, id, "multiple assignment nested target"); continue; }
+          emit_indent(b, indent);
+          buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %d);\n",
+                     nt_str(nt, inner_lefts[j], "name"), k, tmps[i], j);
+        }
       }
       else unsupported(c, id, "multiple assignment target");
     }

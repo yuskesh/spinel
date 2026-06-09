@@ -578,9 +578,10 @@ static TyKind infer_call(Compiler *c, int id) {
     }
     if (!strcmp(name, "at") && argc == 1) return ty_array_elem(rt);  /* like [i] */
     /* index returns nil on a miss -> poly (int-or-nil) */
-    if (!strcmp(name, "index") && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) return TY_POLY;
+    if ((!strcmp(name, "index") || !strcmp(name, "find_index") || !strcmp(name, "rindex")) &&
+        (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) return TY_POLY;
     if (!strcmp(name, "length") || !strcmp(name, "size") ||
-        !strcmp(name, "count") || !strcmp(name, "index")) return TY_INT;
+        !strcmp(name, "count") || !strcmp(name, "index") || !strcmp(name, "find_index")) return TY_INT;
     if (!strcmp(name, "sum")) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
@@ -622,6 +623,7 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "reverse") || !strcmp(name, "sort") || !strcmp(name, "uniq") ||
         !strcmp(name, "to_a") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
         !strcmp(name, "compact") || !strcmp(name, "compact!") || !strcmp(name, "flatten") || !strcmp(name, "clear") ||
+        !strcmp(name, "transpose") ||
         !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
         !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "freeze") ||
         (!strcmp(name, "fill") && argc == 1) ||
@@ -795,6 +797,7 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "rstrip") || !strcmp(name, "chomp") ||
         !strcmp(name, "chop") || !strcmp(name, "chr") || !strcmp(name, "clamp") ||
         !strcmp(name, "squeeze") || !strcmp(name, "tr") || !strcmp(name, "tr_s") ||
+        !strcmp(name, "succ") || !strcmp(name, "next") ||
         !strcmp(name, "delete")) return TY_STRING;
     if (!strcmp(name, "[]") || !strcmp(name, "slice") || !strcmp(name, "byteslice") ||
         !strcmp(name, "force_encoding") || !strcmp(name, "b") || !strcmp(name, "encode")) return TY_STRING;
@@ -814,7 +817,8 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "split") || !strcmp(name, "lines") || !strcmp(name, "scan")) return TY_STR_ARRAY;
     if (!strcmp(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
     if (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "each_byte")) return TY_STRING;
-    if (!strcmp(name, "bytes")) return TY_INT_ARRAY;
+    if (!strcmp(name, "bytes") || !strcmp(name, "codepoints")) return TY_INT_ARRAY;
+    if (!strcmp(name, "chars")) return TY_STR_ARRAY;
     if (!strcmp(name, "gsub") || !strcmp(name, "sub") || !strcmp(name, "tr") ||
         !strcmp(name, "center") || !strcmp(name, "ljust") || !strcmp(name, "rjust"))
       return TY_STRING;
@@ -855,6 +859,9 @@ static TyKind infer_call(Compiler *c, int id) {
     /* times/upto/downto/step with a block return the receiver (self) */
     if ((!strcmp(name, "times") || !strcmp(name, "upto") || !strcmp(name, "downto") ||
          !strcmp(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;
+    /* times/upto/downto without a block return a range-like enumerator */
+    if ((!strcmp(name, "times") || !strcmp(name, "upto") || !strcmp(name, "downto")) &&
+        nt_ref(nt, id, "block") < 0) return TY_RANGE;
     if (!strcmp(name, "chr")) return TY_STRING;
     if (!strcmp(name, "[]") && argc == 1) return TY_INT;  /* bit access */
     if (!strcmp(name, "gcd") || !strcmp(name, "lcm") || !strcmp(name, "clamp")) return TY_INT;
@@ -1001,6 +1008,24 @@ static TyKind infer_uncached(Compiler *c, int id) {
   if (!strcmp(ty, "LambdaNode"))              return TY_PROC;
   /* an assignment expression evaluates to the assigned value */
   if (!strcmp(ty, "LocalVariableWriteNode"))  return infer_type(c, nt_ref(nt, id, "value"));
+  if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
+    const char *nm2 = nt_str(nt, id, "name");
+    Scope *s2 = comp_scope_of(c, id);
+    LocalVar *lv2 = nm2 ? scope_local(s2, nm2) : NULL;
+    TyKind ct2 = lv2 ? lv2->type : TY_UNKNOWN;
+    TyKind vt2 = infer_type(c, nt_ref(nt, id, "value"));
+    if (ct2 == TY_STRING) return TY_STRING;
+    if (ty_is_numeric(ct2) && ty_is_numeric(vt2))
+      return (ct2 == TY_FLOAT || vt2 == TY_FLOAT) ? TY_FLOAT : TY_INT;
+    return ct2 != TY_UNKNOWN ? ct2 : vt2;
+  }
+  if (!strcmp(ty, "LocalVariableOrWriteNode") || !strcmp(ty, "LocalVariableAndWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    Scope *s = comp_scope_of(c, id);
+    LocalVar *lv = nm ? scope_local(s, nm) : NULL;
+    TyKind ct = lv ? lv->type : TY_UNKNOWN;
+    return ty_unify(ct, infer_type(c, nt_ref(nt, id, "value")));
+  }
 
   if (!strcmp(ty, "LocalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
@@ -1297,7 +1322,9 @@ static void register_locals(Compiler *c) {
     if (!strcmp(ty, "LocalVariableWriteNode") ||
         !strcmp(ty, "LocalVariableTargetNode") ||
         !strcmp(ty, "LocalVariableReadNode") ||
-        !strcmp(ty, "LocalVariableOperatorWriteNode")) {
+        !strcmp(ty, "LocalVariableOperatorWriteNode") ||
+        !strcmp(ty, "LocalVariableOrWriteNode") ||
+        !strcmp(ty, "LocalVariableAndWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) scope_local_intern(comp_scope_of(c, id), nm);
     }
@@ -1682,10 +1709,27 @@ static int infer_write_types(Compiler *c) {
     TyKind newt = TY_UNKNOWN;
     if (!strcmp(ty, "LocalVariableWriteNode")) {
       nm = nt_str(nt, id, "name");
-      newt = infer_type(c, nt_ref(nt, id, "value"));
+      int val_id = nt_ref(nt, id, "value");
+      newt = infer_type(c, val_id);
       /* a `x = nil` write doesn't pin the type: nil is the absent/default
          value, so the variable takes its non-nil assignments' type */
       if (newt == TY_NIL) newt = TY_POLY;
+      /* Empty-collection literal `x = []` / `x = {}` returns TY_UNKNOWN from
+         infer_type. If the container-fold from a prior iteration already gave
+         this local a meaningful type (stored in gc_root), preserve it so that
+         downstream uses like `x.map {...}` are not starved of type information. */
+      if (newt == TY_UNKNOWN && nm) {
+        const char *vty2 = nt_type(nt, val_id);
+        int is_empty_col = vty2 && ((!strcmp(vty2, "ArrayNode") &&
+          ({ int _n = 0; nt_arr(nt, val_id, "elements", &_n); _n; }) == 0) ||
+          (!strcmp(vty2, "HashNode") &&
+          ({ int _n2 = 0; nt_arr(nt, val_id, "elements", &_n2); _n2; }) == 0));
+        if (is_empty_col) {
+          Scope *s2 = comp_scope_of(c, id);
+          LocalVar *lv2 = scope_local(s2, nm);
+          if (lv2 && (TyKind)lv2->gc_root != TY_UNKNOWN) newt = (TyKind)lv2->gc_root;
+        }
+      }
     }
     else if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
       nm = nt_str(nt, id, "name");
@@ -1766,13 +1810,35 @@ static int infer_write_types(Compiler *c) {
     int en = 0;
     const int *els = nt_arr(nt, value, "elements", &en);
     for (int i = 0; i < ln && i < en; i++) {
-      if (strcmp(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
-      const char *lnm = nt_str(nt, lefts[i], "name");
-      TyKind et = infer_type(c, els[i]);
-      if (et == TY_NIL) continue;
-      LocalVar *lv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
-      if (!lv || lv->is_param || lv->is_block_param) continue;
-      lv->type = ty_unify(lv->type, et);
+      const char *lty = nt_type(nt, lefts[i]);
+      if (!lty) continue;
+      if (!strcmp(lty, "LocalVariableTargetNode")) {
+        const char *lnm = nt_str(nt, lefts[i], "name");
+        TyKind et = infer_type(c, els[i]);
+        if (et == TY_NIL) continue;
+        LocalVar *lv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
+        if (!lv || lv->is_param || lv->is_block_param) continue;
+        lv->type = ty_unify(lv->type, et);
+      }
+      else if (!strcmp(lty, "MultiTargetNode")) {
+        /* (b, c) nested target: inner RHS must be an ArrayNode literal */
+        const char *ety = nt_type(nt, els[i]);
+        if (!ety || strcmp(ety, "ArrayNode")) continue;
+        int inn = 0;
+        const int *inner_els = nt_arr(nt, els[i], "elements", &inn);
+        int inn2 = 0;
+        const int *inner_lefts = nt_arr(nt, lefts[i], "lefts", &inn2);
+        for (int j = 0; j < inn2 && j < inn; j++) {
+          const char *ilty = nt_type(nt, inner_lefts[j]);
+          if (!ilty || strcmp(ilty, "LocalVariableTargetNode")) continue;
+          const char *lnm2 = nt_str(nt, inner_lefts[j], "name");
+          TyKind et2 = infer_type(c, inner_els[j]);
+          if (et2 == TY_NIL) continue;
+          LocalVar *lv2 = lnm2 ? scope_local(comp_scope_of(c, id), lnm2) : NULL;
+          if (!lv2 || lv2->is_param || lv2->is_block_param) continue;
+          lv2->type = ty_unify(lv2->type, et2);
+        }
+      }
     }
   }
 
@@ -2114,6 +2180,14 @@ static int infer_for_index(Compiler *c) {
 const char *block_param_name(Compiler *c, int block, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");      /* BlockParametersNode */
   if (bp < 0) return NULL;
+  /* numbered block params: `{ _1 }`, `{ it }` → NumberedParametersNode */
+  const char *bpty = nt_type(c->nt, bp);
+  if (bpty && !strcmp(bpty, "NumberedParametersNode")) {
+    int max = (int)nt_int(c->nt, bp, "maximum", 0);
+    if (idx >= max) return NULL;
+    static const char *names[] = {"_1","_2","_3","_4","_5","_6","_7","_8","_9"};
+    return (idx < 9) ? names[idx] : NULL;
+  }
   int pn = nt_ref(c->nt, bp, "parameters");          /* ParametersNode */
   if (pn < 0) return NULL;
   int n = 0;
@@ -2343,6 +2417,28 @@ static int infer_block_params(Compiler *c) {
       continue;
     }
 
+    /* array.reduce(init) { |acc, elem| } or inject: p0=acc type, p1=elem type */
+    if ((!strcmp(name, "reduce") || !strcmp(name, "inject")) && ty_is_array(rt)) {
+      Scope *rs = comp_scope_of(c, block);
+      TyKind et2 = ty_array_elem(rt);
+      /* Determine accumulator type from initial value argument (if any) */
+      int rargs = nt_ref(nt, id, "arguments");
+      int rargc = 0;
+      const int *rargv = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &rargc) : NULL;
+      TyKind acc_t = (rargc > 0 && rargv) ? infer_type(c, rargv[0]) : et2;
+      if (acc_t == TY_UNKNOWN) acc_t = et2;
+      LocalVar *ap = scope_local_intern(rs, p0); ap->is_block_param = 1;
+      TyKind am = ty_unify(ap->type, acc_t);
+      if (am != ap->type) { ap->type = am; changed = 1; }
+      const char *rp1 = block_param_name(c, block, 1);
+      if (rp1) {
+        LocalVar *ep2 = scope_local_intern(rs, rp1); ep2->is_block_param = 1;
+        TyKind em2 = ty_unify(ep2->type, et2);
+        if (em2 != ep2->type) { ep2->type = em2; changed = 1; }
+      }
+      continue;
+    }
+
     /* array.each_with_index { |x, i| } binds element + int index */
     if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
       Scope *es = comp_scope_of(c, block);
@@ -2424,6 +2520,43 @@ static int infer_block_params(Compiler *c) {
         if (vm != vp->type) { vp->type = vm; changed = 1; }
       }
       continue;
+    }
+
+    /* array.each/map with 2+ params: auto-destructure sub-array elements.
+       Handles `[[1,2],[3,4]].each { |a,b| }` and numbered `{ _1; _2 }`. */
+    if (pt != TY_UNKNOWN && ty_is_array(rt)) {
+      int np = 0;
+      while (block_param_name(c, block, np)) np++;
+      if (np >= 2) {
+        TyKind inner_elem = TY_UNKNOWN;
+        if (ty_is_array(pt)) {
+          inner_elem = ty_array_elem(pt);
+        }
+        else if (pt == TY_POLY && recv >= 0) {
+          const char *rty2 = nt_type(nt, recv);
+          if (rty2 && !strcmp(rty2, "ArrayNode")) {
+            int re_n2 = 0;
+            const int *re_els2 = nt_arr(nt, recv, "elements", &re_n2);
+            TyKind common_at = TY_UNKNOWN;
+            for (int ri = 0; ri < re_n2; ri++)
+              common_at = ty_unify(common_at, infer_type(c, re_els2[ri]));
+            if (ty_is_array(common_at)) inner_elem = ty_array_elem(common_at);
+            else inner_elem = TY_POLY;
+          }
+          else { inner_elem = TY_POLY; }
+        }
+        if (inner_elem != TY_UNKNOWN) {
+          Scope *ds = comp_scope_of(c, block);
+          for (int pj = 0; pj < np; pj++) {
+            const char *pname2 = block_param_name(c, block, pj);
+            if (!pname2) continue;
+            LocalVar *lp2 = scope_local_intern(ds, pname2); lp2->is_block_param = 1;
+            TyKind m2 = ty_unify(lp2->type, inner_elem);
+            if (m2 != lp2->type) { lp2->type = m2; changed = 1; }
+          }
+          continue;
+        }
+      }
     }
 
     if (pt == TY_UNKNOWN) continue;
