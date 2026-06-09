@@ -306,6 +306,7 @@ static int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 static int  emit_inline_expr(Compiler *c, int id, Buf *b);
 static void emit_cond(Compiler *c, int id, Buf *b);
 static int  needs_root(TyKind t);
+static int  method_is_void(Scope *s);
 static void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 static void emit_super(Compiler *c, int id, Buf *b);
 static void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out);
@@ -1920,11 +1921,21 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
         if (mi < 0 || c->scopes[mi].nparams != argc) continue;
-        buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)_t%d.v.p",
-                   k, tr, c->classes[defcls].name, mc(c->scopes[mi].name),
-                   c->classes[defcls].name, tv);
-        for (int a = 0; a < argc; a++) buf_printf(b, ", _t%d", atmp[a]);
-        buf_puts(b, "); break;");
+        TyKind mret = c->scopes[mi].ret;
+        Buf cb; memset(&cb, 0, sizeof cb);
+        buf_printf(&cb, "sp_%s_%s((sp_%s *)_t%d.v.p", c->classes[defcls].name,
+                   mc(c->scopes[mi].name), c->classes[defcls].name, tv);
+        for (int a = 0; a < argc; a++) buf_printf(&cb, ", _t%d", atmp[a]);
+        buf_puts(&cb, ")");
+        buf_printf(b, " case %d: ", k);
+        if (mret == TY_VOID || mret == TY_NIL || method_is_void(&c->scopes[mi])) buf_puts(b, cb.p);  /* no usable value */
+        else {
+          buf_printf(b, "_t%d = ", tr);
+          if (ret == TY_POLY && mret != TY_POLY) emit_boxed_text(c, mret, cb.p, b);
+          else buf_puts(b, cb.p);
+        }
+        buf_puts(b, "; break;");
+        free(cb.p);
       }
       if (is_index) {
         buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_get((sp_IntArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
