@@ -1898,7 +1898,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
      and call the matching user method (or a builtin array `[]`), passing the
      arguments evaluated once into temps. */
   if (recv >= 0 && rt == TY_POLY && argc > 0) {
-    int is_index = !strcmp(name, "[]") && argc == 1;
+    /* the builtin-array `[]` arm only applies to an integer index */
+    int is_index = !strcmp(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_INT;
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
