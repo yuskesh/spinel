@@ -78,6 +78,16 @@ static int g_result_poly = 0;
    can be boxed when the method returns poly but the value is concrete. */
 static TyKind g_ret_type = TY_UNKNOWN;
 
+/* Ensure context stack for deferred `return` inside begin..ensure.
+   When `return` appears in the body of a begin..ensure block, the return
+   is deferred until after the ensure clause runs.  Each ensure clause
+   pushes a context on this stack; emit_return uses the top to emit a
+   deferred goto instead of a bare C `return`. */
+#define MAX_ENSURE_DEPTH 32
+typedef struct { int lid; int has_retval; } EnsureCtx;
+static EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
+static int       g_ensure_depth = 0;
+
 /* First-class Proc support: each `proc {}` / `lambda {}` / `->{}` literal
    lowers to a standalone `static mrb_int _proc_N(void *cap, mrb_int *args)`
    function (the ABI sp_proc_call expects). Definitions accumulate in g_procs
@@ -1674,9 +1684,17 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   /* exception object methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
-    if (!strcmp(name, "message") || !strcmp(name, "to_s") || !strcmp(name, "to_str") ||
-        !strcmp(name, "full_message")) {
+    if (!strcmp(name, "message") || !strcmp(name, "to_s") || !strcmp(name, "to_str")) {
       buf_puts(b, "sp_exc_message("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
+    if (!strcmp(name, "full_message")) {
+      int t = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
+      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
       return;
     }
     if (!strcmp(name, "inspect")) {
@@ -4034,8 +4052,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
       else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
-      else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_strict(%s)", r);
-      else if (!strcmp(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_strict_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
+      else if (!strcmp(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
       else if (!strcmp(name, "gsub") && argc == 2) {
         buf_printf(b, "sp_str_gsub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
@@ -5402,6 +5420,43 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  if (!strcmp(ty, "RescueModifierNode")) {
+    /* `expr rescue fallback` as an rvalue: evaluate expr under setjmp;
+       on exception, evaluate fallback instead. */
+    int e  = nt_ref(nt, id, "expression");
+    int r  = nt_ref(nt, id, "rescue_expression");
+    TyKind rt = comp_ntype(c, id);
+    int t = ++g_tmp;
+    buf_puts(b, "({ ");
+    emit_ctype(c, rt, b);
+    buf_printf(b, " _t%d = %s; sp_exc_top++;\n", t, default_value(rt));
+    buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+    /* expression arm — assign result to temp (skip diverging exprs like raise) */
+    TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;
+    int e_diverges = (et == TY_UNKNOWN || et == TY_VOID);
+    buf_puts(b, "  ");
+    if (e >= 0 && !e_diverges) {
+      buf_printf(b, "_t%d = ", t);
+      if (rt == TY_POLY && et != TY_POLY) emit_boxed(c, e, b);
+      else emit_expr(c, e, b);
+      buf_puts(b, ";");
+    }
+    else if (e >= 0) {
+      /* diverging expression like raise: emit as stmt (no assignment) */
+      emit_expr(c, e, b); buf_puts(b, ";");
+    }
+    buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  ");
+    /* rescue arm */
+    if (r >= 0) {
+      buf_printf(b, "_t%d = ", t);
+      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed(c, r, b);
+      else emit_expr(c, r, b);
+      buf_puts(b, ";");
+    }
+    buf_printf(b, "\n}\n_t%d; })", t);
+    return;
+  }
+
   unsupported(c, id, "expression");
 }
 
@@ -5446,6 +5501,10 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     else /* str */
       buf_printf(b, "{ const char *_ps = sp_StrArray_get(%s, _t%d); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n", a, ti);
     free(ab.p);
+  }
+  else if (t == TY_EXCEPTION) {
+    buf_puts(b, "{ const char *_ps = sp_exc_message("); emit_expr(c, arg, b);
+    buf_puts(b, "); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
   }
   else if (t == TY_POLY) {
     buf_puts(b, "sp_poly_puts("); emit_expr(c, arg, b); buf_puts(b, ");\n");
@@ -6050,6 +6109,23 @@ static void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int args = nt_ref(c->nt, id, "arguments");
   int n = 0;
   const int *a = args >= 0 ? nt_arr(c->nt, args, "arguments", &n) : NULL;
+
+  if (g_ensure_depth > 0) {
+    /* Inside a begin..ensure body: defer the return until ensure runs. */
+    EnsureCtx *ctx = &g_ensure_stack[g_ensure_depth - 1];
+    emit_indent(b, indent);
+    buf_puts(b, "{ ");
+    if (n > 0 && ctx->has_retval) {
+      buf_printf(b, "_retv%d = ", ctx->lid);
+      if (g_ret_type == TY_POLY && comp_ntype(c, a[0]) != TY_POLY) emit_boxed(c, a[0], b);
+      else emit_expr(c, a[0], b);
+      buf_puts(b, "; ");
+    }
+    buf_printf(b, "_retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
+               ctx->lid, ctx->lid);
+    return;
+  }
+
   emit_indent(b, indent);
   if (n > 0) {
     buf_puts(b, "return ");
@@ -6160,6 +6236,70 @@ static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resu
   int ensure_stmts = ensure_c >= 0 ? nt_ref(nt, ensure_c, "statements") : -1;
   int fr = ++g_tmp;
 
+  if (ensure_stmts >= 0 && g_ensure_depth < MAX_ENSURE_DEPTH) {
+    /* Ensure clause present: use goto-based deferred-return mechanism so that
+       a `return` inside the body still runs the ensure before leaving. */
+    int eid = ++g_tmp;
+    int has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
+    emit_indent(b, indent); buf_printf(b, "int _retf%d = 0;\n", eid);
+    if (has_retval) {
+      emit_indent(b, indent); emit_ctype(c, g_ret_type, b);
+      buf_printf(b, " _retv%d = %s;\n", eid, default_value(g_ret_type));
+    }
+    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval };
+
+    emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+    emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+    if (resultvar && else_stmts < 0) {
+      const char *sv = g_result_var; g_result_var = resultvar;
+      emit_stmts_tail(c, body, b, indent + 1);
+      g_result_var = sv;
+    }
+    else {
+      emit_stmts(c, body, b, indent + 1);
+    }
+    emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    if (else_stmts >= 0) {
+      if (resultvar) {
+        const char *sv = g_result_var; g_result_var = resultvar;
+        emit_stmts_tail(c, else_stmts, b, indent + 1);
+        g_result_var = sv;
+      }
+      else emit_stmts(c, else_stmts, b, indent + 1);
+    }
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "else {\n");
+    emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    if (rescue >= 0) emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+
+    g_ensure_depth--;
+
+    /* Ensure label: reached by deferred-return goto AND by normal fall-through. */
+    buf_printf(b, "_ensure%d: ;\n", eid);
+    emit_stmts(c, ensure_stmts, b, indent);
+
+    emit_indent(b, indent);
+    if (g_ensure_depth > 0) {
+      EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
+      if (has_retval && outer->has_retval) {
+        buf_printf(b, "if (_retf%d) { _retv%d = _retv%d; _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
+                   eid, outer->lid, eid, outer->lid, outer->lid);
+      }
+      else {
+        buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
+                   eid, outer->lid, outer->lid);
+      }
+    }
+    else {
+      if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
+      else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil();\n", eid);
+      else buf_printf(b, "if (_retf%d) return;\n", eid);
+    }
+    return;
+  }
+
+  /* No ensure (or ensure depth limit reached): original structure. */
   emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
   /* body value is the begin value only when there is no else clause */
@@ -6941,6 +7081,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   buf_puts(b, "    SP_GC_SAVE();\n");
   emit_scope_decls(c, s, b);
   TyKind saved_rt = g_ret_type;
+  int saved_ed = g_ensure_depth; g_ensure_depth = 0;
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   if (method_is_void(s)) {
     emit_stmts(c, s->body, b, 1);
@@ -6951,7 +7092,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
     if (ty_is_object(s->ret)) { buf_puts(b, "NULL;\n"); /* unreachable default (object pointer) */ }
     else buf_printf(b, "%s;\n", default_value(s->ret));
   }
-  g_ret_type = saved_rt;
+  g_ret_type = saved_rt; g_ensure_depth = saved_ed;
   buf_puts(b, "}\n");
 }
 
@@ -7147,8 +7288,9 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
   TyKind sv_rt = g_ret_type;
   const char *sv_cap_struct = g_cap_struct; NameSet *sv_cap_names = g_cap_names;
+  int sv_ensure_depth = g_ensure_depth;
   g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_param_name = NULL;
-  g_self = "self"; g_result_var = NULL; g_ret_type = ret;
+  g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0;
   char cap_struct_name[32] = "";
   if (ncap > 0) { snprintf(cap_struct_name, sizeof cap_struct_name, "_proc_cap_%d", pid); g_cap_struct = cap_struct_name; g_cap_names = &caps; }
   else { g_cap_struct = NULL; g_cap_names = NULL; }
@@ -7195,7 +7337,7 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
 
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
-  g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names;
+  g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
 
   if (ncap == 0) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",

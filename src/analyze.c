@@ -1067,6 +1067,16 @@ static TyKind infer_uncached(Compiler *c, int id) {
   }
   if (!strcmp(ty, "CallNode")) return infer_call(c, id);
 
+  if (!strcmp(ty, "RescueModifierNode")) {
+    int e = nt_ref(nt, id, "expression");
+    int r = nt_ref(nt, id, "rescue_expression");
+    TyKind et = e >= 0 ? infer_type(c, e) : TY_NIL;
+    TyKind rt = r >= 0 ? infer_type(c, r) : TY_NIL;
+    /* a diverging expression like raise has no real type; use the rescue arm's type */
+    if (et == TY_UNKNOWN || et == TY_VOID || et == TY_NIL) return rt;
+    return ty_unify(et, rt);
+  }
+
   return TY_UNKNOWN;
 }
 

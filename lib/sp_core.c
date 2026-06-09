@@ -151,6 +151,10 @@ mrb_int sp_str_to_i_strict(const char *s) {
   if (v < (long long)INTPTR_MIN || v > (long long)INTPTR_MAX)
     sp_raise_cls("RangeError", sp_sprintf("integer %lld out of range for 32-bit Integer", v));
 #endif
+  /* INTPTR_MIN == SP_INT_NIL is the int-nil sentinel; that value cannot
+     be represented as a Ruby Integer in Spinel. */
+  if ((mrb_int)v == (mrb_int)INTPTR_MIN)
+    sp_raise_cls("RangeError", sp_sprintf("integer %lld out of Spinel representable range", v));
   return (mrb_int)v;
 }
 
