@@ -2703,6 +2703,23 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
     }
     const char *k = array_kind(rt);
+    /* fill(val): overwrite every slot with val, evaluate to self. A poly
+       array stores boxed values; typed arrays take the raw scalar. */
+    if (!strcmp(name, "fill") && argc == 1) {
+      const char *fk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
+      if (fk) {
+        int t = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", fk, t); emit_expr(c, recv, b);
+        buf_puts(b, "; ");
+        emit_ctype(c, ty_array_elem(rt), b);
+        buf_printf(b, " _t%d = ", tv);
+        if (rt == TY_POLY_ARRAY) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
+        buf_printf(b, "; for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
+                      " sp_%sArray_set(_t%d, _t%d, _t%d); _t%d; })",
+                   ti, ti, fk, t, ti, fk, t, ti, tv, t);
+        return;
+      }
+    }
     if (k) {
       if ((!strcmp(name, "to_a") || !strcmp(name, "to_ary") || !strcmp(name, "entries") ||
            !strcmp(name, "flatten") || !strcmp(name, "compact")) && argc == 0) {

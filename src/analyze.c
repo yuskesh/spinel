@@ -548,6 +548,7 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "compact") || !strcmp(name, "flatten") || !strcmp(name, "clear") ||
         !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
         !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "freeze") ||
+        (!strcmp(name, "fill") && argc == 1) ||
         !strcmp(name, "values_at")) return rt;
     if (!strcmp(name, "frozen?")) return TY_BOOL;
     if ((!strcmp(name, "delete_at") || !strcmp(name, "delete")) && argc == 1)
