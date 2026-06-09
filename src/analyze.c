@@ -689,6 +689,9 @@ static TyKind infer_call(Compiler *c, int id) {
     if ((!strcmp(name, "ceildiv") || !strcmp(name, "pow")) && argc >= 1) return TY_INT;
     if ((!strcmp(name, "pred") || !strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) return TY_INT;
     if (!strcmp(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
+    /* times/upto/downto/step with a block return the receiver (self) */
+    if ((!strcmp(name, "times") || !strcmp(name, "upto") || !strcmp(name, "downto") ||
+         !strcmp(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;
     if (!strcmp(name, "chr")) return TY_STRING;
     if (!strcmp(name, "[]") && argc == 1) return TY_INT;  /* bit access */
     if (!strcmp(name, "gcd") || !strcmp(name, "lcm") || !strcmp(name, "clamp")) return TY_INT;

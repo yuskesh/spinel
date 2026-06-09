@@ -779,6 +779,17 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  /* n.times/upto/downto/step { ... } in expression position: run the loop
+     (lowered to a statement) and evaluate to the receiver (Ruby returns self) */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && comp_ntype(c, recv) == TY_INT &&
+      (!strcmp(name, "times") || !strcmp(name, "upto") ||
+       !strcmp(name, "downto") || !strcmp(name, "step"))) {
+    buf_puts(b, "({ ");
+    emit_iteration_stmt(c, id, b, 0);
+    emit_expr(c, recv, b); buf_puts(b, "; })");
+    return;
+  }
+
   /* <proc>.call(args) / .() / [] -> sp_proc_call with the mrb_int[] ABI.
      (A `&block`-param `.call` is handled earlier by the inline path, whose
      receiver name matches g_block_param_name; this is the escaped-value case.) */
