@@ -1863,6 +1863,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (!strcmp(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
   }
 
+  /* poly receiver: gsub/sub with a regex literal -- extract the string
+     payload (poly values reaching here are strings) and route to the
+     engine, just like a TY_STRING receiver. */
+  if (recv >= 0 && rt == TY_POLY && (!strcmp(name, "gsub") || !strcmp(name, "sub")) &&
+      argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+    const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
+    buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, sp_poly_to_s(", name, suf, re_lit_index(c, argv[0]));
+    emit_expr(c, recv, b); buf_puts(b, "), ");
+    emit_expr(c, argv[1], b); buf_puts(b, ")");
+    return;
+  }
+
   /* between?(lo, hi): lo <= self <= hi */
   if (!strcmp(name, "between?") && argc == 2) {
     if (rt == TY_STRING) {
