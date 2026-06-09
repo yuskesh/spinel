@@ -466,7 +466,8 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "count") || !strcmp(name, "index")) return TY_INT;
     if (!strcmp(name, "sum"))                         return ty_array_elem(rt);
     if (!strcmp(name, "first") || !strcmp(name, "last") ||
-        !strcmp(name, "min") || !strcmp(name, "max")) return ty_array_elem(rt);
+        !strcmp(name, "min") || !strcmp(name, "max") ||
+        !strcmp(name, "pop")) return ty_array_elem(rt);
     if (!strcmp(name, "minmax")) return rt;  /* [min, max], same element kind */
     if (!strcmp(name, "join"))                        return TY_STRING;
     if (!strcmp(name, "pack") && argc == 1)           return TY_STRING;

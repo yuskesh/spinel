@@ -1370,6 +1370,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)");
     return;
   }
+  /* nil? on a float: a nullable float carries the NaN sentinel (e.g. first/
+     last of an empty float array). A real float is never the sentinel. */
+  if (recv >= 0 && rt == TY_FLOAT && !strcmp(name, "nil?") && argc == 0) {
+    buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")");
+    return;
+  }
 
   /* `===` on a scalar comparable (bool/int/float/string/symbol) is case
      equality == value equality. Range/Class/Regexp `===` have their own
@@ -2066,6 +2072,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_%sArray_get(", k); emit_expr(c, recv, b); buf_puts(b, ", 0)");
         return;
       }
+      if (!strcmp(name, "pop") && argc == 0) {
+        buf_printf(b, "sp_%sArray_pop(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        return;
+      }
       if ((!strcmp(name, "min") || !strcmp(name, "max")) && argc == 0 && rt != TY_STR_ARRAY) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
@@ -2482,7 +2492,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
                       " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); _t%d; })",
                    tq, tx, tn, o, o, tq, o, tx, tq, tn, o);
       }
-      else if (!strcmp(name, "to_s") || !strcmp(name, "inspect"))  buf_printf(b, "sp_float_to_s(%s)", r);
+      else if (!strcmp(name, "to_s"))    buf_printf(b, "sp_float_opt_to_s(%s)", r);
+      else if (!strcmp(name, "inspect")) buf_printf(b, "sp_float_opt_inspect(%s)", r);
       else if (!strcmp(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
       else if (!strcmp(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
       else handled = 0;
@@ -3330,7 +3341,7 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "; if (_t%d == SP_INT_NIL) putchar('\\n'); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
   }
   else if (t == TY_FLOAT) {
-    buf_puts(b, "{ const char *_fs = sp_float_to_s("); emit_expr(c, arg, b);
+    buf_puts(b, "{ const char *_fs = sp_float_opt_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(_fs, stdout); putchar('\\n'); }\n");
   }
   else if (t == TY_STRING) {
@@ -3439,7 +3450,7 @@ static void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "; if (_t%d == SP_INT_NIL) fputs(\"nil\\n\", stdout); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
   }
   else if (t == TY_FLOAT) {
-    buf_puts(b, "{ const char *_fs = sp_float_to_s("); emit_expr(c, arg, b);
+    buf_puts(b, "{ const char *_fs = sp_float_opt_inspect("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(_fs, stdout); putchar('\\n'); }\n");
   }
   else if (t == TY_STRING) {
