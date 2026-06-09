@@ -3627,12 +3627,20 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     /* value form: a || b  ->  truthy(a) ? a : b ;  a && b -> truthy(a) ? b : a.
        Evaluate the left once into a temp; results widen to the unified type. */
     int t = ++g_tmp;
+    int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
     buf_puts(b, "({ ");
-    emit_ctype(c, lt == TY_UNKNOWN ? res : lt, b);
-    buf_printf(b, " _t%d = ", t); emit_expr(c, left, b); buf_puts(b, "; ");
+    emit_ctype(c, (lt == TY_UNKNOWN || lt_falsy_const) ? res : lt, b);
+    buf_printf(b, " _t%d = ", t);
+    if (lt_falsy_const) {
+      buf_puts(b, "("); emit_expr(c, left, b); buf_puts(b, ", ");
+      buf_puts(b, res == TY_POLY ? "sp_box_nil()" : default_value(res == TY_UNKNOWN ? TY_INT : res));
+      buf_puts(b, ")");
+    }
+    else emit_expr(c, left, b);
+    buf_puts(b, "; ");
     if (lt == TY_POLY)      buf_printf(b, "sp_poly_truthy(_t%d)", t);
     else if (lt == TY_BOOL) buf_printf(b, "_t%d", t);
-    else if (lt == TY_NIL)  buf_puts(b, "0");
+    else if (lt_falsy_const) buf_puts(b, "0");
     else if (lt == TY_INT)  buf_printf(b, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel; a plain int is always truthy */
     else if (lt == TY_FLOAT) buf_printf(b, "(!sp_float_is_nil(_t%d))", t);
     else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
