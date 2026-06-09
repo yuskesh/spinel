@@ -3430,17 +3430,39 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
 
   /* string append: s << x  ->  s = sp_str_concat(s, x) (value semantics).
-     recv must be an assignable lvalue (local or ivar). */
+     recv must be an assignable lvalue (local or ivar). A chained append
+     `s << a << b << c` bottoms out at the same lvalue, so unroll it into
+     one reassignment per argument in left-to-right order. */
   if (rt == TY_STRING && !strcmp(name, "<<") && argc == 1) {
-    const char *rty = nt_type(nt, recv);
-    if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
-      TyKind at = comp_ntype(c, argv[0]);
-      emit_indent(b, indent);
-      emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat(");
-      emit_expr(c, recv, b); buf_puts(b, ", ");
-      if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
-      buf_puts(b, ");\n");
+    /* walk down the receiver chain, collecting each `<<` argument */
+    int chain[64]; int nchain = 0;
+    int cur = id;
+    while (nchain < 64) {
+      const char *cty = nt_type(nt, cur);
+      if (!cty || strcmp(cty, "CallNode")) break;
+      const char *cnm = nt_str(nt, cur, "name");
+      int crecv = nt_ref(nt, cur, "receiver");
+      if (!cnm || strcmp(cnm, "<<") || crecv < 0 || comp_ntype(c, crecv) != TY_STRING) break;
+      int cargs = nt_ref(nt, cur, "arguments");
+      int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
+      if (cac != 1) break;
+      chain[nchain++] = cav[0];
+      cur = crecv;
+    }
+    const char *rty = nt_type(nt, cur);
+    if (nchain > 0 && rty &&
+        (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+      /* chain was collected outermost-first; emit left-to-right */
+      for (int j = nchain - 1; j >= 0; j--) {
+        int arg = chain[j];
+        TyKind at = comp_ntype(c, arg);
+        emit_indent(b, indent);
+        emit_expr(c, cur, b); buf_puts(b, " = sp_str_concat(");
+        emit_expr(c, cur, b); buf_puts(b, ", ");
+        if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+        else emit_expr(c, arg, b);
+        buf_puts(b, ");\n");
+      }
       return 1;
     }
     return 0;

@@ -705,6 +705,9 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "center") || !strcmp(name, "ljust") || !strcmp(name, "rjust"))
       return TY_STRING;
     if (!strcmp(name, "*")) return TY_STRING;
+    /* in-place append / concat reassign the receiver and evaluate to it */
+    if ((!strcmp(name, "<<") || !strcmp(name, "concat") || !strcmp(name, "prepend")) && argc == 1)
+      return TY_STRING;
   }
   /* integer receiver methods */
   if (recv >= 0 && rt == TY_INT) {
