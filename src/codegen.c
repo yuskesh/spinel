@@ -1037,15 +1037,21 @@ static int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   TyKind spt1 = slv1 ? slv1->type : TY_UNKNOWN;
   if (slv0) slv0->type = et;
   if (slv1) slv1->type = et;
+  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);  /* refresh ntype cache */
   int save = g_indent; g_indent += 2;
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d; lv_%s = _t%d;\n", p0, ta, p1, tb);
+  /* Shadow the outer (possibly poly) block params with et-typed locals */
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
+  emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, ta);
+  emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;\n", p1, tb);
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
-  Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
-  if (slv0) slv0->type = spt0;
-  if (slv1) slv1->type = spt1;
-  emit_indent(g_pre, g_indent + 2);
+  Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb);
+  emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "if ((%s) > 0) { sp_%sArray_set(_t%d, _t%d, _t%d); sp_%sArray_set(_t%d, _t%d + 1, _t%d); }\n",
              cb.p ? cb.p : "0", k, tr, tj, tb, k, tr, tj, ta); free(cb.p);
+  g_indent--; g_indent = save;
+  emit_indent(g_pre, g_indent + 2); buf_puts(g_pre, "}\n");
+  if (slv0) slv0->type = spt0;
+  if (slv1) slv1->type = spt1;
   emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
   buf_printf(b, "_t%d", tr);
   return 1;
