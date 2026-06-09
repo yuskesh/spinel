@@ -262,6 +262,19 @@ static TyKind infer_call(Compiler *c, int id) {
        ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt)))
     return TY_STRING;
 
+  /* X.class.name / .to_s -> the class-name string (X.class is already that) */
+  if (recv >= 0 && argc == 0 && (!strcmp(name, "name") || !strcmp(name, "to_s")) &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class"))
+    return TY_STRING;
+
+  /* SomeClass.name / .to_s / .inspect -> the class-name string */
+  if (recv >= 0 && argc == 0 &&
+      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
+    return TY_STRING;
+
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
   if (recv >= 0 && !strcmp(name, "new")) {
     const char *rty = nt_type(nt, recv);
@@ -1173,7 +1186,21 @@ static void register_globals_consts(Compiler *c) {
     else if (!strcmp(ty, "ConstantWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
       /* a Struct/Data const names a class, not a value constant */
-      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0) comp_const_intern(c, nm);
+      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0) {
+        LocalVar *cv = comp_const_intern(c, nm);
+        /* `CONST = SomeClass.new(...)`: reads of CONST during the new()
+           (i.e. inside initialize or anything it calls) must raise
+           NameError, since CONST is not yet bound. */
+        int v = nt_ref(nt, id, "value");
+        const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+        if (vty && !strcmp(vty, "CallNode") && nt_str(nt, v, "name") &&
+            !strcmp(nt_str(nt, v, "name"), "new")) {
+          int vr = nt_ref(nt, v, "receiver");
+          if (vr >= 0 && nt_type(nt, vr) && !strcmp(nt_type(nt, vr), "ConstantReadNode") &&
+              nt_str(nt, vr, "name") && comp_class_index(c, nt_str(nt, vr, "name")) >= 0)
+            cv->init_guarded = 1;
+        }
+      }
     }
   }
 }

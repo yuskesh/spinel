@@ -23,6 +23,8 @@ typedef struct {
   int is_cell;      /* captured by an escaping proc: lives in a heap cell
                        (mrb_int *_cell_<name>) so the closure and the enclosing
                        scope share mutable storage */
+  int init_guarded; /* (consts) initialized via `CONST = Class.new(...)`: reads
+                       during the init raise NameError (uninitialized constant) */
 } LocalVar;
 
 typedef struct {

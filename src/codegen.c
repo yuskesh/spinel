@@ -923,6 +923,23 @@ static void emit_call(Compiler *c, int id, Buf *b) {
 
   if (recv < 0 && comp_method_index(c, name) >= 0) { emit_method_call(c, id, b); return; }
 
+  /* X.class.name / .to_s -> identity: X.class already evaluates to the
+     class-name string. */
+  if (recv >= 0 && argc == 0 && (!strcmp(name, "name") || !strcmp(name, "to_s")) &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class")) {
+    emit_expr(c, recv, b);
+    return;
+  }
+  /* SomeClass.name / .to_s / .inspect -> the class-name string */
+  if (recv >= 0 && argc == 0 &&
+      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0) {
+    buf_printf(b, "SPL(\"%s\")", nt_str(nt, recv, "name"));
+    return;
+  }
+
   /* x.class -> the class-name string (compile-time for known types) */
   if (recv >= 0 && !strcmp(name, "class") && argc == 0) {
     TyKind rt = comp_ntype(c, recv);
@@ -3689,7 +3706,16 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (!strcmp(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
-    if (nm && comp_const(c, nm)) { buf_printf(b, "cst_%s", nm); return; }
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (cv) {
+      if (cv->init_guarded) {
+        /* a read during the const's own Class.new init raises NameError */
+        buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
+                      " \"uninitialized constant %s\"), cst_%s) : cst_%s)", nm, nm, nm, nm);
+      }
+      else buf_printf(b, "cst_%s", nm);
+      return;
+    }
     unsupported(c, id, "constant read");
   }
   if (!strcmp(ty, "ParenthesesNode")) {
@@ -4760,12 +4786,20 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     LocalVar *lv = isg ? comp_gvar(c, key) : comp_const(c, key);
     if (!lv) { /* not registered (non-ident name or class const) -> ignore */ return; }
     int v = nt_ref(nt, id, "value");
+    if (!isg && lv->init_guarded) {
+      /* flag the const as in-progress while its Class.new runs, so a
+         self-referential read inside initialize raises NameError */
+      emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 1;\n", key);
+    }
     emit_indent(b, indent);
     buf_printf(b, "%s_%s = ", pfx, key);
     const char *vty = nt_type(nt, v);
     if (vty && !strcmp(vty, "NilNode")) buf_puts(b, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
+    if (!isg && lv->init_guarded) {
+      emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
+    }
     return;
   }
   if (!strcmp(ty, "GlobalVariableOperatorWriteNode")) {
@@ -5681,6 +5715,7 @@ char *codegen_program(const NodeTable *nt) {
     emit_ctype(c, lv->type, &b);
     buf_printf(&b, " cst_%s = %s;\n", lv->name,
                lv->type == TY_RANGE ? "{0}" : default_value(lv->type));
+    if (lv->init_guarded) buf_printf(&b, "static int sp_init_in_progress_%s;\n", lv->name);
   }
   if (c->ngvars || c->nconsts) buf_puts(&b, "\n");
 
