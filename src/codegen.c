@@ -5492,6 +5492,22 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(ty, "RedoNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
   if (!strcmp(ty, "CaseNode"))   { emit_case(c, id, b, indent); return; }
   if (!strcmp(ty, "BeginNode"))  { emit_begin(c, id, b, indent, NULL); return; }
+  if (!strcmp(ty, "RescueModifierNode")) {
+    /* `expr rescue fallback` as a statement: run expr under a setjmp guard,
+       fall through to the rescue expression on any exception. */
+    int e = nt_ref(nt, id, "expression");
+    int r = nt_ref(nt, id, "rescue_expression");
+    emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+    emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+    if (e >= 0) emit_stmt(c, e, b, indent + 1);
+    emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "else {\n");
+    emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    if (r >= 0) emit_stmt(c, r, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return;
+  }
   if (!strcmp(ty, "ReturnNode")) { emit_return(c, id, b, indent); return; }
   if (!strcmp(ty, "DefNode"))    { return; } /* emitted separately */
 
