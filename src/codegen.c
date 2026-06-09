@@ -1471,10 +1471,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       if (g_rescue_cls) buf_printf(b, "sp_raise_cls(%s, %s)", g_rescue_cls, g_rescue_msg);
       else buf_puts(b, "sp_raise((&(\"\\xff\")[1]))");
     }
-    else if (ac == 1 && nt_type(nt, av[0]) && !strcmp(nt_type(nt, av[0]), "ConstantReadNode")) {
+    else if (ac == 1 && nt_type(nt, av[0]) &&
+             (!strcmp(nt_type(nt, av[0]), "ConstantReadNode") || !strcmp(nt_type(nt, av[0]), "ConstantPathNode"))) {
       buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", nt_str(nt, av[0], "name"));
     }
-    else if (ac >= 2 && nt_type(nt, av[0]) && !strcmp(nt_type(nt, av[0]), "ConstantReadNode")) {
+    else if (ac >= 2 && nt_type(nt, av[0]) &&
+             (!strcmp(nt_type(nt, av[0]), "ConstantReadNode") || !strcmp(nt_type(nt, av[0]), "ConstantPathNode"))) {
       buf_printf(b, "sp_raise_cls(\"%s\", ", nt_str(nt, av[0], "name"));
       emit_expr(c, av[1], b); buf_puts(b, ")");
     }
@@ -5711,7 +5713,7 @@ static void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const c
     int first = 1;
     for (int i = 0; i < nexc; i++) {
       const char *en = nt_type(nt, exc[i]);
-      if (!en || strcmp(en, "ConstantReadNode")) continue;
+      if (!en || (strcmp(en, "ConstantReadNode") && strcmp(en, "ConstantPathNode"))) continue;
       if (!first) buf_puts(b, " || ");
       first = 0;
       buf_printf(b, "sp_str_eq(_rcls_%d, \"%s\")", rc, nt_str(nt, exc[i], "name"));
