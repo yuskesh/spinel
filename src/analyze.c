@@ -335,6 +335,22 @@ static TyKind infer_call(Compiler *c, int id) {
         nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
         (!strcmp(name, "exist?") || !strcmp(name, "exists?")))
       return TY_BOOL;
+    if (rty && !strcmp(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
+        !strcmp(name, "pwd"))
+      return TY_STRING;
+    if (rty && !strcmp(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "File")) {
+      if (!strcmp(name, "basename") || !strcmp(name, "dirname") || !strcmp(name, "extname") ||
+          !strcmp(name, "read") || !strcmp(name, "expand_path"))
+        return TY_STRING;
+      if (!strcmp(name, "exist?") || !strcmp(name, "exists?"))
+        return TY_BOOL;
+      if (!strcmp(name, "write") || !strcmp(name, "delete"))
+        return TY_INT;
+      if (!strcmp(name, "mtime"))
+        return TY_TIME;
+    }
   }
 
   /* Time instance methods */

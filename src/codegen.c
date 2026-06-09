@@ -1118,6 +1118,43 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  /* File class methods -> runtime helpers (the runtime has long carried
+     these; only the dispatch was missing). */
+  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "File")) {
+    if ((!strcmp(name, "basename") || !strcmp(name, "dirname") || !strcmp(name, "extname")) && argc == 1) {
+      buf_printf(b, "sp_file_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "read") && argc == 1) {
+      buf_puts(b, "sp_file_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "write") && argc == 2) {
+      /* runtime write is void; Ruby returns the byte count */
+      buf_puts(b, "({ const char *_wp = "); emit_expr(c, argv[0], b);
+      buf_puts(b, "; const char *_wd = "); emit_expr(c, argv[1], b);
+      buf_puts(b, "; sp_file_write(_wp, _wd); (mrb_int)sp_str_byte_len(_wd); })"); return;
+    }
+    if ((!strcmp(name, "exist?") || !strcmp(name, "exists?")) && argc == 1) {
+      buf_puts(b, "sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "delete") && argc == 1) {
+      buf_puts(b, "({ sp_file_delete("); emit_expr(c, argv[0], b); buf_puts(b, "); (mrb_int)1; })"); return;
+    }
+    if (!strcmp(name, "mtime") && argc == 1) {
+      buf_puts(b, "sp_file_mtime("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (!strcmp(name, "expand_path") && (argc == 1 || argc == 2)) {
+      buf_puts(b, "sp_file_expand_path("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      if (argc == 2) emit_expr(c, argv[1], b); else buf_puts(b, "(const char *)0");
+      buf_puts(b, ")"); return;
+    }
+  }
+  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
+      !strcmp(name, "pwd") && argc == 0) {
+    buf_puts(b, "sp_dir_pwd()"); return;
+  }
+
   /* Time class constructors */
   if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Time")) {
