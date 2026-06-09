@@ -1951,7 +1951,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         Buf cb; memset(&cb, 0, sizeof cb);
         buf_printf(&cb, "sp_%s_%s((sp_%s *)_t%d.v.p", c->classes[defcls].name,
                    mc(c->scopes[mi].name), c->classes[defcls].name, tv);
-        for (int a = 0; a < argc; a++) buf_printf(&cb, ", _t%d", atmp[a]);
+        for (int a = 0; a < argc; a++) {
+          /* box the call-site arg if this candidate's parameter is poly */
+          TyKind pt = TY_UNKNOWN;
+          if (a < c->scopes[mi].nparams) { LocalVar *pv = scope_local(&c->scopes[mi], c->scopes[mi].pnames[a]); if (pv) pt = pv->type; }
+          TyKind at = infer_type(c, argv[a]);
+          buf_puts(&cb, ", ");
+          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+          if (pt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, &cb);
+          else buf_puts(&cb, tn);
+        }
         buf_puts(&cb, ")");
         buf_printf(b, " case %d: ", k);
         if (mret == TY_VOID || mret == TY_NIL || method_is_void(&c->scopes[mi])) buf_puts(b, cb.p);  /* no usable value */
@@ -1965,6 +1974,36 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       if (is_index) {
         buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_get((sp_IntArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+      }
+      /* the poly value may actually be a string-keyed hash: dispatch `[]` /
+         `fetch` to the matching hash storage, boxing the value into the poly
+         result. */
+      int is_aref = !strcmp(name, "[]") && argc == 1;
+      int is_fetch = !strcmp(name, "fetch") && (argc == 1 || argc == 2);
+      if ((is_aref || is_fetch) && infer_type(c, argv[0]) == TY_STRING) {
+        TyKind trt = is_scalar_ret(ret) ? ret : TY_INT;  /* the result temp's type */
+        static const struct { const char *cls, *hn; TyKind vt; } HV[] = {
+          {"SP_BUILTIN_STR_STR_HASH", "StrStr", TY_STRING},
+          {"SP_BUILTIN_STR_INT_HASH", "StrInt", TY_INT},
+          {"SP_BUILTIN_STR_POLY_HASH", "StrPoly", TY_POLY},
+        };
+        for (unsigned hvi = 0; hvi < sizeof HV / sizeof HV[0]; hvi++) {
+          /* only a variant whose value fits the result temp can be emitted */
+          if (ret != TY_POLY && HV[hvi].vt != trt) continue;
+          char getx[200];
+          snprintf(getx, sizeof getx, "sp_%sHash_get((sp_%sHash *)_t%d.v.p, _t%d)", HV[hvi].hn, HV[hvi].hn, tv, atmp[0]);
+          buf_printf(b, " case %s: _t%d = sp_%sHash_has_key((sp_%sHash *)_t%d.v.p, _t%d) ? ",
+                     HV[hvi].cls, tr, HV[hvi].hn, HV[hvi].hn, tv, atmp[0]);
+          if (ret == TY_POLY) emit_boxed_text(c, HV[hvi].vt, getx, b); else buf_puts(b, getx);
+          buf_puts(b, " : ");
+          if (is_fetch && argc == 2) {
+            char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
+            if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b); else buf_puts(b, dn);
+          }
+          else if (is_fetch) { buf_puts(b, "(sp_raise_cls(\"KeyError\", \"key not found\"), "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
+          else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
+          buf_puts(b, "; break;");
+        }
       }
       buf_printf(b, " } _t%d; })", tr);
       free(atmp);
