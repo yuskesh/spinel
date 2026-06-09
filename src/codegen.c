@@ -2568,6 +2568,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], ty_hash_key(rt), b); buf_puts(b, ")");
         return;
       }
+      if ((!strcmp(name, "value?") || !strcmp(name, "has_value?")) && argc == 1) {
+        int poly = (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH);
+        buf_printf(b, "sp_%sHash_has_value(", hn);
+        emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (poly) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return;
+      }
       if (!strcmp(name, "keys") && argc == 0 && rt == TY_SYM_POLY_HASH) {
         /* runtime returns sym ids as an IntArray; box into a poly (sym) array */
         int ki = ++g_tmp, kp = ++g_tmp, ii = ++g_tmp;
