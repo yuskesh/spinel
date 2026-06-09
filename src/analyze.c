@@ -667,7 +667,8 @@ static TyKind infer_call(Compiler *c, int id) {
       }
       if (block >= 0 && (!strcmp(name, "select") || !strcmp(name, "filter") || !strcmp(name, "reject"))) return rt;
     }
-    if (!strcmp(name, "merge") || !strcmp(name, "dup") || !strcmp(name, "clone")) return rt;
+    if (!strcmp(name, "merge") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
+        !strcmp(name, "replace")) return rt;
     if (!strcmp(name, "has_key?") || !strcmp(name, "key?") ||
         !strcmp(name, "include?") || !strcmp(name, "member?") ||
         !strcmp(name, "has_value?") || !strcmp(name, "value?") ||

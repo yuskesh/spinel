@@ -2576,6 +2576,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return;
       }
+      if (!strcmp(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
+        buf_printf(b, "sp_%sHash_replace(", hn);
+        emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
       if (!strcmp(name, "keys") && argc == 0 && rt == TY_SYM_POLY_HASH) {
         /* runtime returns sym ids as an IntArray; box into a poly (sym) array */
         int ki = ++g_tmp, kp = ++g_tmp, ii = ++g_tmp;
