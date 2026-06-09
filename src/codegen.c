@@ -5221,6 +5221,43 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (handled) return;
   }
 
+  /* `[]=` in expression position: mutate and return the assigned value.
+     Ruby's `(h[k] = v)` and `(a[i] = v)` evaluate to v. */
+  if (!strcmp(name, "[]=") && argc == 2 && recv >= 0) {
+    TyKind vt = comp_ntype(c, argv[1]);
+    if (ty_is_hash(rt)) {
+      const char *hn = ty_hash_cname(rt);
+      if (hn) {
+        int tv = ++g_tmp;
+        buf_puts(b, "({ ");
+        emit_ctype(c, vt != TY_UNKNOWN ? vt : TY_POLY, b);
+        buf_printf(b, " _t%d = ", tv);
+        if ((rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH) && vt != TY_POLY)
+          emit_boxed(c, argv[1], b);
+        else
+          emit_expr(c, argv[1], b);
+        buf_printf(b, "; if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash(); ");
+        buf_printf(b, "sp_%sHash_set(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+        return;
+      }
+    }
+    if (ty_is_array(rt) || rt == TY_POLY_ARRAY) {
+      const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
+      if (k) {
+        int tv = ++g_tmp;
+        buf_puts(b, "({ ");
+        emit_ctype(c, vt != TY_UNKNOWN ? vt : TY_POLY, b);
+        buf_printf(b, " _t%d = ", tv);
+        if (rt == TY_POLY_ARRAY && vt != TY_POLY) emit_boxed(c, argv[1], b);
+        else emit_expr(c, argv[1], b);
+        buf_printf(b, "; sp_%sArray_set(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+        return;
+      }
+    }
+  }
+
   /* Last-resort fallbacks for inspect/to_s on unresolved receivers.
      The test array_unresolved_inspect_no_segv expects "[]" when an
      unsupported method chains into inspect. Emit a safe nil-degrade
