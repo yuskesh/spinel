@@ -639,6 +639,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "casecmp?")) return TY_BOOL;
     if (!strcmp(name, "to_f"))  return TY_FLOAT;
     if (!strcmp(name, "split") || !strcmp(name, "lines") || !strcmp(name, "scan")) return TY_STR_ARRAY;
+    if (!strcmp(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
     if (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "each_byte")) return TY_STRING;
     if (!strcmp(name, "bytes")) return TY_INT_ARRAY;
     if (!strcmp(name, "gsub") || !strcmp(name, "sub") || !strcmp(name, "tr") ||
@@ -1855,7 +1856,7 @@ static int infer_block_params(Compiler *c) {
     if ((!strcmp(name, "times") || !strcmp(name, "upto") ||
          !strcmp(name, "downto") || !strcmp(name, "step")) && rt == TY_INT)
       pt = TY_INT;
-    else if (rt == TY_STRING && (!strcmp(name, "each_char") || !strcmp(name, "each_line")))
+    else if (rt == TY_STRING && (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "upto")))
       pt = TY_STRING;
     else if (rt == TY_STRING && !strcmp(name, "each_byte"))
       pt = TY_INT;
