@@ -3966,6 +3966,41 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  /* hash.each_value { |v| ... } / each_key { |k| ... } -- single param */
+  if ((!strcmp(name, "each_value") || !strcmp(name, "each_key")) && ty_is_hash(rt)) {
+    const char *hn = ty_hash_cname(rt);
+    if (!hn) return 0;
+    int is_val = !strcmp(name, "each_value");
+    int t = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
+    buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
+    if (p0) {
+      /* The param may be poly (shared name across hashes of differing
+         element types); box a concrete element into the poly slot. */
+      const char *raw = block_param_name(c, block, 0);
+      LocalVar *pv = raw ? scope_local(comp_scope_of(c, block), raw) : NULL;
+      TyKind want = is_val ? ty_hash_val(rt) : ty_hash_key(rt);
+      int box = pv && pv->type == TY_POLY && want != TY_POLY;
+      char src[256];
+      if (is_val)
+        snprintf(src, sizeof src, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
+      else
+        snprintf(src, sizeof src, "%s->order[_t%d]", rb.p, t);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = ", p0);
+      if (box) emit_boxed_text(c, want, src, b);
+      else buf_puts(b, src);
+      buf_puts(b, ";\n");
+    }
+    emit_stmts(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    free(rb.p);
+    return 1;
+  }
+
   /* array.each_with_index { |x, i| ... } */
   if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
     const char *k = array_kind(rt);

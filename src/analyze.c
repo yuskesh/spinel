@@ -2046,6 +2046,16 @@ static int infer_block_params(Compiler *c) {
       continue;
     }
 
+    /* hash.each_value { |v| } binds value; each_key { |k| } binds key */
+    if ((!strcmp(name, "each_value") || !strcmp(name, "each_key")) && ty_is_hash(rt)) {
+      Scope *hs = comp_scope_of(c, block);
+      LocalVar *vp = scope_local_intern(hs, p0); vp->is_block_param = 1;
+      TyKind want = !strcmp(name, "each_value") ? ty_hash_val(rt) : ty_hash_key(rt);
+      TyKind vm = ty_unify(vp->type, want);
+      if (vm != vp->type) { vp->type = vm; changed = 1; }
+      continue;
+    }
+
     /* hash.each / each_pair { |k, v| } binds two params */
     if ((!strcmp(name, "each") || !strcmp(name, "each_pair") || !strcmp(name, "map") ||
          !strcmp(name, "collect") || !strcmp(name, "flat_map") || !strcmp(name, "select") ||
