@@ -4989,6 +4989,14 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     int ta = ++g_tmp;
+    /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
+    Scope *cs_pa = p0 ? comp_scope_of(c, id) : NULL;
+    LocalVar *outer_pa = (p0 && cs_pa) ? scope_local(cs_pa, p0) : NULL;
+    int ts_pa = 0;
+    if (outer_pa) {
+      ts_pa = ++g_tmp; Buf ot_pa; memset(&ot_pa, 0, sizeof ot_pa); emit_ctype(c, outer_pa->type, &ot_pa);
+      emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot_pa.p ? ot_pa.p : "sp_RbVal", ts_pa, p0); free(ot_pa.p);
+    }
     emit_indent(b, indent);
     buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
     emit_indent(b, indent);
@@ -4996,6 +5004,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (p0) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t); }
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
+    if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
     return 1;
   }
   if ((!strcmp(name, "each") || !strcmp(name, "each_entry") || !strcmp(name, "reverse_each")) &&
@@ -5006,6 +5015,19 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     int t = ++g_tmp, tn = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, recv, &rb);
+    /* Detect block param shadowing an outer variable; save/restore to preserve outer value */
+    TyKind et = p0 ? ty_array_elem(rt) : TY_UNKNOWN;
+    Scope *cs = p0 ? comp_scope_of(c, id) : NULL;
+    LocalVar *outer = (p0 && cs) ? scope_local(cs, p0) : NULL;
+    int box_to_poly = outer && outer->type == TY_POLY && et != TY_POLY;
+    int ts = 0;
+    if (outer) {
+      /* Block params shadow outer variables in Ruby; save and restore */
+      ts = ++g_tmp;
+      Buf ot_ea; memset(&ot_ea, 0, sizeof ot_ea); emit_ctype(c, outer->type, &ot_ea);
+      emit_indent(b, indent);
+      buf_printf(b, "%s _t%d = lv_%s;\n", ot_ea.p ? ot_ea.p : "sp_RbVal", ts, p0); free(ot_ea.p);
+    }
     if (rev) { emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = sp_%sArray_length(%s);\n", tn, k, rb.p); }
     emit_indent(b, indent);
     if (rev) buf_printf(b, "for (mrb_int _t%d = _t%d - 1; _t%d >= 0; _t%d--) {\n", t, tn, t, t);
@@ -5015,11 +5037,24 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
     if (p0) {
       emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
-      buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
+      if (box_to_poly) {
+        if (et == TY_INT) buf_printf(b, "lv_%s = sp_box_int(sp_%sArray_get(", p0, k);
+        else if (et == TY_STRING) buf_printf(b, "lv_%s = sp_box_str(sp_%sArray_get(", p0, k);
+        else if (et == TY_FLOAT) buf_printf(b, "lv_%s = sp_box_float(sp_%sArray_get(", p0, k);
+        else if (et == TY_BOOL) buf_printf(b, "lv_%s = sp_box_bool(sp_%sArray_get(", p0, k);
+        else buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
+        buf_puts(b, rb.p); buf_printf(b, ", _t%d)", t);
+        if (et == TY_INT || et == TY_STRING || et == TY_FLOAT || et == TY_BOOL) buf_puts(b, ")");
+        buf_puts(b, ";\n");
+      }
+      else {
+        buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
+        buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
+      }
     }
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
+    if (outer) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts); }
     free(rb.p);
     return 1;
   }
