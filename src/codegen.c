@@ -1070,9 +1070,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     return;
   }
 
-  /* block_given? -> true inside an inlined yielding method (we only inline
-     when a block is present) */
-  if (recv < 0 && !strcmp(name, "block_given?")) { buf_puts(b, g_block_id >= 0 ? "1" : "0"); return; }
+  /* block_given? / self.block_given? -> true inside an inlined yielding
+     method (we only inline when a block is present) */
+  if (!strcmp(name, "block_given?") &&
+      (recv < 0 || (nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode")))) {
+    buf_puts(b, g_block_id >= 0 ? "1" : "0");
+    return;
+  }
 
   /* Kernel conversions */
   if (recv < 0 && comp_method_index(c, name) < 0) {

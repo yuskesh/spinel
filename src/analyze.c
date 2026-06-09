@@ -2294,9 +2294,12 @@ void analyze_program(Compiler *c) {
     const char *ty = nt_type(c->nt, id);
     if (!ty) continue;
     if (!strcmp(ty, "YieldNode")) comp_scope_of(c, id)->yields = 1;
-    else if (!strcmp(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) {
+    else if (!strcmp(ty, "CallNode")) {
+      int r = nt_ref(c->nt, id, "receiver");
+      const char *rty = r >= 0 ? nt_type(c->nt, r) : NULL;
+      int self_or_none = r < 0 || (rty && !strcmp(rty, "SelfNode"));
       const char *nm = nt_str(c->nt, id, "name");
-      if (nm && !strcmp(nm, "block_given?")) comp_scope_of(c, id)->yields = 1;
+      if (self_or_none && nm && !strcmp(nm, "block_given?")) comp_scope_of(c, id)->yields = 1;
     }
   }
 
