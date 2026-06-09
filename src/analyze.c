@@ -360,9 +360,12 @@ static TyKind infer_call(Compiler *c, int id) {
         (!strcmp(name, "exist?") || !strcmp(name, "exists?")))
       return TY_BOOL;
     if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
-        !strcmp(name, "pwd"))
-      return TY_STRING;
+        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir")) {
+      if (!strcmp(name, "pwd") || !strcmp(name, "home")) return TY_STRING;
+      if (!strcmp(name, "glob")) return TY_STR_ARRAY;
+      if (!strcmp(name, "mkdir") || !strcmp(name, "rmdir") || !strcmp(name, "chdir"))
+        return TY_INT;
+    }
     if (rty && !strcmp(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "File")) {
       if (!strcmp(name, "basename") || !strcmp(name, "dirname") || !strcmp(name, "extname") ||

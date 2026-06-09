@@ -1423,9 +1423,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
   if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
-      !strcmp(name, "pwd") && argc == 0) {
-    buf_puts(b, "sp_dir_pwd()"); return;
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir")) {
+    if (!strcmp(name, "pwd") && argc == 0) { buf_puts(b, "sp_dir_pwd()"); return; }
+    if (!strcmp(name, "home") && argc == 0) { buf_puts(b, "sp_dir_home()"); return; }
+    if (!strcmp(name, "glob") && argc == 1) {
+      buf_puts(b, "sp_dir_glob("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if ((!strcmp(name, "mkdir") || !strcmp(name, "rmdir") || !strcmp(name, "chdir")) && argc >= 1) {
+      buf_printf(b, "sp_dir_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
   }
 
   /* Time class constructors */
