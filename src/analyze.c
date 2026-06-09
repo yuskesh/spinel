@@ -593,10 +593,16 @@ static TyKind infer_call(Compiler *c, int id) {
       return ty_array_elem(rt);
     }
     if (!strcmp(name, "inject") || !strcmp(name, "reduce")) {
-      /* When an init argument is provided, the return type matches the init type. */
+      /* When an init argument is provided, the return type matches the init type.
+         inject(:op) is the no-init operator form — the sole symbol arg is the
+         operator, NOT an init value, so skip the "return argv[0] type" path. */
       if (argc > 0 && argv) {
-        TyKind it = infer_type(c, argv[0]);
-        if (it != TY_UNKNOWN) return it;
+        const char *a0ty = nt_type(nt, argv[0]);
+        int is_sym_op = a0ty && !strcmp(a0ty, "SymbolNode") && argc == 1;
+        if (!is_sym_op) {
+          TyKind it = infer_type(c, argv[0]);
+          if (it != TY_UNKNOWN) return it;
+        }
       }
       /* Block body last expression determines the return type when available. */
       int blk = nt_ref(nt, id, "block");
@@ -625,6 +631,11 @@ static TyKind infer_call(Compiler *c, int id) {
     if ((!strcmp(name, "bsearch") || !strcmp(name, "find") || !strcmp(name, "detect")) && block >= 0)
       return ty_array_elem(rt);  /* element or nil */
     if ((!strcmp(name, "map!") || !strcmp(name, "collect!")) && block >= 0) {
+      /* Typed arrays (int/str/float): in-place mutation preserves element type.
+         The block param may be widened to TY_POLY when shared with other blocks,
+         but the array type is determined by the receiver, not the block body. */
+      if (ty_array_elem(rt) != TY_POLY)
+        return rt;
       int body = nt_ref(nt, block, "body");
       int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
       TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
@@ -898,6 +909,8 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "round") || !strcmp(name, "truncate")) return TY_INT;  /* no precision arg -> self */
     if (!strcmp(name, "divmod") && argc == 1) return TY_INT_ARRAY;  /* [quotient, remainder] */
     if ((!strcmp(name, "allbits?") || !strcmp(name, "anybits?") || !strcmp(name, "nobits?")) && argc == 1) return TY_BOOL;
+    if (!strcmp(name, "even?") || !strcmp(name, "odd?") || !strcmp(name, "zero?") ||
+        !strcmp(name, "positive?") || !strcmp(name, "negative?")) return TY_BOOL;
     if ((!strcmp(name, "ceildiv") || !strcmp(name, "pow")) && argc >= 1) return TY_INT;
     if ((!strcmp(name, "pred") || !strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) return TY_INT;
     if (!strcmp(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
@@ -2642,6 +2655,13 @@ static int infer_block_params(Compiler *c) {
     if (pt == TY_UNKNOWN) continue;
     Scope *s = comp_scope_of(c, block);
     LocalVar *lv = scope_local_intern(s, p0); lv->is_block_param = 1;
+    /* Don't widen an array-typed variable to a scalar via block-param
+       inference.  When the variable already holds an array (set by a write
+       site in the same iteration, before infer_block_params runs), widening
+       it to the element scalar type collapses the outer array type to TY_POLY.
+       Codegen emits a scoped shadow for the block param instead. */
+    if (ty_is_array(lv->type) && !ty_is_array(pt))
+      continue;
     TyKind merged = ty_unify(lv->type, pt);
     if (merged != lv->type) { lv->type = merged; changed = 1; }
   }

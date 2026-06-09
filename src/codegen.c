@@ -3455,8 +3455,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
       buf_printf(b, " _t%d = %s; ", tr, is_scalar_ret(ret) ? default_value(ret) : "0");
-      /* a string-tagged poly answers length/size by its char count */
-      if (is_lengthlike) buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = (mrb_int)sp_str_length(_t%d.v.s); else ", tv, tr, tv);
+      /* string/symbol-tagged poly values answer length/size directly */
+      if (is_lengthlike) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = (mrb_int)strlen(sp_sym_to_s((sp_sym)_t%d.v.i)); else ", tv, tr, tv);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = (mrb_int)sp_str_length(_t%d.v.s); else ", tv, tr, tv);
+      }
       buf_printf(b, "switch (_t%d.cls_id) {", tv);
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
@@ -4216,10 +4219,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       /* map! / collect! { |x| body } - in-place transform, returns receiver */
       if ((!strcmp(name, "map!") || !strcmp(name, "collect!")) && block >= 0) {
-        const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
+        const char *bp0 = block_param_name(c, block, 0);
+        const char *bp = bp0 ? rename_local(bp0) : NULL;
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         if (bn >= 1) {
+          TyKind et = ty_array_elem(rt);
+          Scope *ms = comp_scope_of(c, block);
+          LocalVar *mlv = (ms && bp0) ? scope_local(ms, bp0) : NULL;
+          TyKind msaved = mlv ? mlv->type : TY_UNKNOWN;
+          if (mlv) { mlv->type = et; for (int j = 0; j < bn; j++) infer_type(c, bb[j]); }
           int trecv = ++g_tmp, ti = ++g_tmp;
           Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
@@ -4227,7 +4236,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                      ti, ti, k, trecv, ti);
-          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+          if (bp) {
+            emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
+            buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti);
+          }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
           Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = sv;
@@ -4235,6 +4247,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           buf_printf(g_pre, "sp_%sArray_set(_t%d, _t%d, %s);\n", k, trecv, ti, vb.p ? vb.p : "0");
           free(vb.p);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          if (mlv) mlv->type = msaved;
           buf_printf(b, "_t%d", trecv); return;
         }
       }
@@ -4242,10 +4255,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       if ((!strcmp(name, "select!") || !strcmp(name, "filter!") || !strcmp(name, "keep_if") ||
            !strcmp(name, "reject!") || !strcmp(name, "delete_if")) && block >= 0) {
         int is_rej = !strcmp(name, "reject!") || !strcmp(name, "delete_if");
-        const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
+        const char *bp0 = block_param_name(c, block, 0);
+        const char *bp = bp0 ? rename_local(bp0) : NULL;
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         if (bn >= 1) {
+          TyKind et = ty_array_elem(rt);
+          Scope *fs = comp_scope_of(c, block);
+          LocalVar *flv = (fs && bp0) ? scope_local(fs, bp0) : NULL;
+          TyKind fsaved = flv ? flv->type : TY_UNKNOWN;
+          if (flv) { flv->type = et; for (int j = 0; j < bn; j++) infer_type(c, bb[j]); }
           int trecv = ++g_tmp, ti = ++g_tmp, twp = ++g_tmp;
           Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
@@ -4254,10 +4273,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                      ti, ti, k, trecv, ti);
-          TyKind et = ty_array_elem(rt);
           emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
           buf_printf(g_pre, " _telt%d = sp_%sArray_get(_t%d, _t%d);\n", ti, k, trecv, ti);
-          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _telt%d;\n", bp, ti); }
+          if (bp) {
+            emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
+            buf_printf(g_pre, " lv_%s = _telt%d;\n", bp, ti);
+          }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
           Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = sv;
@@ -4271,6 +4292,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           free(cb.p);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d) _t%d->len = _t%d;\n", trecv, trecv, twp);
+          if (flv) flv->type = fsaved;
           buf_printf(b, "_t%d", trecv); return;
         }
       }
@@ -4610,15 +4632,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _telt%d;\n", bp, ti); }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
-          Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = sv;
-          emit_indent(g_pre, g_indent + 1);
-          if (is_rej)
-            buf_printf(g_pre, "if (!sp_poly_truthy(%s)) { sp_PolyArray_set(_t%d, _t%d, _telt%d); _t%d++; }\n",
-                       cb.p ? cb.p : "sp_box_nil()", trecv, twp, ti, twp);
-          else
-            buf_printf(g_pre, "if (sp_poly_truthy(%s)) { sp_PolyArray_set(_t%d, _t%d, _telt%d); _t%d++; }\n",
-                       cb.p ? cb.p : "sp_box_nil()", trecv, twp, ti, twp);
-          free(cb.p);
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "if (");
+          if (is_rej) buf_puts(g_pre, "!");
+          emit_cond(c, bb[bn - 1], g_pre);
+          g_indent = sv;
+          buf_printf(g_pre, ") { sp_PolyArray_set(_t%d, _t%d, _telt%d); _t%d++; }\n",
+                     trecv, twp, ti, twp);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d) _t%d->len = _t%d;\n", trecv, trecv, twp);
           buf_printf(b, "_t%d", trecv); return;
