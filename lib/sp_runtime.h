@@ -1302,6 +1302,33 @@ static const char*sp_str_swapcase(const char*s){if(!s)return sp_str_empty;size_t
    \" \\ \# \xHH \uHHHH \u{...}) are decoded back to bytes. The decoded
    string is never longer than the dumped form, so one buffer suffices. */
 static int _sp_hexval(unsigned char d){return (d<='9')?(d-'0'):(tolower(d)-'a'+10);}
+/* String#dump: a double-quoted, escaped form that sp_str_undump reverses.
+   UTF-8 high bytes pass through literally (undump copies them back), so a
+   dump/undump round-trip is byte-identical. */
+static const char*sp_str_dump(const char*s){
+  if(!s)return sp_str_empty;
+  size_t n=strlen(s);
+  char*out=sp_str_alloc_raw(n*4+3);size_t oi=0;
+  out[oi++]='"';
+  for(size_t i=0;i<n;i++){
+    unsigned char c=(unsigned char)s[i];
+    if(c=='"'){out[oi++]='\\';out[oi++]='"';}
+    else if(c=='\\'){out[oi++]='\\';out[oi++]='\\';}
+    else if(c=='#'){out[oi++]='\\';out[oi++]='#';}
+    else if(c=='\n'){out[oi++]='\\';out[oi++]='n';}
+    else if(c=='\t'){out[oi++]='\\';out[oi++]='t';}
+    else if(c=='\r'){out[oi++]='\\';out[oi++]='r';}
+    else if(c=='\f'){out[oi++]='\\';out[oi++]='f';}
+    else if(c=='\v'){out[oi++]='\\';out[oi++]='v';}
+    else if(c=='\a'){out[oi++]='\\';out[oi++]='a';}
+    else if(c=='\b'){out[oi++]='\\';out[oi++]='b';}
+    else if(c==27){out[oi++]='\\';out[oi++]='e';}
+    else if(c==0){out[oi++]='\\';out[oi++]='0';}
+    else if(c<0x20){oi+=(size_t)sprintf(out+oi,"\\x%02X",c);}
+    else{out[oi++]=(char)c;}
+  }
+  out[oi++]='"';out[oi]=0;return out;
+}
 static const char*sp_str_undump(const char*s){
   if(!s)return sp_str_empty;
   size_t n=strlen(s);
