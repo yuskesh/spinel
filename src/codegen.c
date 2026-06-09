@@ -3917,6 +3917,12 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
       return 1;
     }
+    /* `<<` onto a frozen string literal raises FrozenError */
+    if (rty && !strcmp(rty, "StringNode")) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
+      return 1;
+    }
     return 0;
   }
 
@@ -3948,6 +3954,15 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (rt == TY_STRING) {
     const char *rty = nt_type(nt, recv);
     int assignable = rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"));
+    /* an in-place mutator on a frozen string literal raises FrozenError */
+    if (rty && !strcmp(rty, "StringNode") &&
+        (!strcmp(name, "insert") || !strcmp(name, "prepend") || !strcmp(name, "<<") ||
+         !strcmp(name, "concat") || !strcmp(name, "replace") || !strcmp(name, "clear") ||
+         !strcmp(name, "delete_prefix!") || !strcmp(name, "delete_suffix!"))) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
+      return 1;
+    }
     if (assignable && !strcmp(name, "replace") && argc == 1) {
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = "); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
       return 1;
