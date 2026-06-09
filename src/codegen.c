@@ -1364,6 +1364,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_exc_class_name("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
+    if (!strcmp(name, "backtrace")) {
+      /* spinel does not capture stack frames: an empty array */
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_StrArray_new())");
+      return;
+    }
   }
 
   if (recv < 0 && comp_method_index(c, name) >= 0) { emit_method_call(c, id, b); return; }

@@ -578,6 +578,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "message") || !strcmp(name, "to_s") ||
         !strcmp(name, "to_str") || !strcmp(name, "inspect") ||
         !strcmp(name, "full_message") || !strcmp(name, "class")) return TY_STRING;
+    if (!strcmp(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
   }
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */
