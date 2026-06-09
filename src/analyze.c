@@ -916,6 +916,13 @@ static TyKind infer_uncached(Compiler *c, int id) {
   }
   if (!strcmp(ty, "DefinedNode")) return TY_STRING;  /* a label string, or nil (NULL) */
   if (!strcmp(ty, "NumberedReferenceReadNode")) return TY_STRING;  /* $1..$9: capture, or nil (NULL) */
+  if (!strcmp(ty, "ConstantPathNode")) {
+    /* M::CONST -> resolve by the final path component (constants register
+       under their unqualified name) */
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? comp_const(c, nm) : NULL;
+    return lv ? lv->type : TY_UNKNOWN;
+  }
   if (!strcmp(ty, "SelfNode")) {
     Scope *s = comp_scope_of(c, id);
     return s->class_id >= 0 ? ty_object(s->class_id) : TY_UNKNOWN;

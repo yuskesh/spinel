@@ -4856,6 +4856,12 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && !strcmp(nm, "RUBY_DESCRIPTION")) { buf_puts(b, "SPL(\"spinel\")"); return; }
     unsupported(c, id, "constant read");
   }
+  if (!strcmp(ty, "ConstantPathNode")) {
+    /* M::CONST -> the flat constant named by the final path component */
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && comp_const(c, nm)) { buf_printf(b, "cst_%s", nm); return; }
+    unsupported(c, id, "constant path read");
+  }
   if (!strcmp(ty, "DefinedNode")) {
     /* compile-time defined? -> a label string, or nil (NULL) when undefined */
     int v = nt_ref(nt, id, "value");
@@ -6091,6 +6097,12 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent);
         buf_printf(b, "lv_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), base + i);
       }
+      else if (lty && !strcmp(lty, "ConstantPathTargetNode") &&
+               nt_str(nt, lefts[i], "name") && comp_const(c, nt_str(nt, lefts[i], "name"))) {
+        emit_indent(b, indent);
+        buf_printf(b, "cst_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), base + i);
+      }
+      else unsupported(c, id, "multiple assignment target");
     }
     return;
   }
