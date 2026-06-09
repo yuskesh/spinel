@@ -6017,7 +6017,9 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     TyKind at = comp_ntype(c, id);
     /* an empty `[]` literal carries no element type of its own; it is
        emitted via the target's type in emit_assign. If we reach here for
-       an empty literal, fall back to an int array. */
+       an empty literal, use g_ret_type context (e.g. tail position in a
+       poly_array-returning method) before falling back to int array. */
+    if (n == 0 && at == TY_UNKNOWN && ty_is_array(g_ret_type)) at = g_ret_type;
     const char *k = array_kind(at);
     if (n == 0 && !k && at != TY_POLY_ARRAY) { buf_puts(b, "sp_IntArray_new()"); return; }
     /* poly (mixed-element) array: build an sp_PolyArray of boxed elements */
