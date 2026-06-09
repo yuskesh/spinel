@@ -341,6 +341,7 @@ static void emit_str_literal(Buf *b, const char *content) {
 
 /* ---- forward decls ---- */
 
+static void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 static void emit_expr(Compiler *c, int id, Buf *b);
 static void emit_stmt(Compiler *c, int id, Buf *b, int indent);
 static void emit_stmts(Compiler *c, int id, Buf *b, int indent);
@@ -1664,6 +1665,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   }
 
   if (recv < 0 && comp_method_index(c, name) >= 0) { emit_method_call(c, id, b); return; }
+  /* bare call to a module_function method made available via top-level include */
+  if (recv < 0) {
+    int imi = comp_included_method_index(c, name);
+    if (imi >= 0) {
+      Scope *ms = &c->scopes[imi];
+      emit_method_cname(c, ms, b);
+      buf_puts(b, "(");
+      emit_args_filled(c, imi, nt_ref(nt, id, "arguments"), "", b);
+      buf_puts(b, ")");
+      return;
+    }
+  }
 
   /* X.class.name / .to_s -> identity: X.class already evaluates to the
      class-name string. */
@@ -6117,6 +6130,19 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   }
 
   if (!strcmp(ty, "CallNode")) {
+    /* declarative-only calls emitted as no-ops */
+    {
+      const char *nm = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      if (recv < 0 && nm && (!strcmp(nm, "include") || !strcmp(nm, "extend") ||
+                             !strcmp(nm, "prepend") || !strcmp(nm, "module_function") ||
+                             !strcmp(nm, "private") || !strcmp(nm, "protected") ||
+                             !strcmp(nm, "public") || !strcmp(nm, "attr_reader") ||
+                             !strcmp(nm, "attr_writer") || !strcmp(nm, "attr_accessor"))) {
+        /* These are class-body declarations handled at analysis time; skip. */
+        return;
+      }
+    }
     if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0); return; }
     if (emit_output_call(c, id, b, indent)) return;
     if (emit_inline_call(c, id, b, indent)) return;

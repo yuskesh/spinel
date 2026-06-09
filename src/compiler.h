@@ -90,6 +90,9 @@ typedef struct {
   int ngvars, cgvars;
   LocalVar *consts;   /* top-level constants (FOO) */
   int nconsts, cconsts;
+
+  int *toplevel_includes;  /* class indices of modules included at top level */
+  int ntoplevel_includes;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);
@@ -99,6 +102,7 @@ void comp_free(Compiler *c);
 Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
 Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
 int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
+int    comp_included_method_index(Compiler *c, const char *name);
 
 /* Locals within a scope. */
 LocalVar *scope_local(Scope *s, const char *name);

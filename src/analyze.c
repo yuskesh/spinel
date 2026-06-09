@@ -505,6 +505,7 @@ static TyKind infer_call(Compiler *c, int id) {
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name);
+    if (mi < 0) mi = comp_included_method_index(c, name);
     if (mi >= 0) return method_call_ret(c, mi, id);
     /* Kernel conversions */
     if (!strcmp(name, "Integer") && argc == 1) return TY_INT;
@@ -1151,6 +1152,39 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
     const int *ids = nt_arr_at(c->nt, id, i, &n);
     for (int j = 0; j < n; j++)
       if (ids[j] >= 0) walk_scope(c, ids[j], child, child_class);
+  }
+}
+
+/* Mark methods following `module_function` in a module body as class-level
+   (is_cmethod=1, no self param). This lets them be called as bare functions
+   when their module is included at the top level. */
+static void register_module_functions(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int dn = c->classes[ci].def_node;
+    const char *dt = dn >= 0 ? nt_type(nt, dn) : NULL;
+    if (!dt || strcmp(dt, "ModuleNode")) continue;
+    int body = nt_ref(nt, dn, "body");
+    if (body < 0) continue;
+    int bn = 0;
+    const int *stmts = nt_arr(nt, body, "body", &bn);
+    int in_module_function = 0;
+    for (int k = 0; k < bn; k++) {
+      int s = stmts[k];
+      const char *sty = nt_type(nt, s);
+      if (!sty) continue;
+      if (!strcmp(sty, "CallNode") && nt_ref(nt, s, "receiver") < 0) {
+        const char *nm = nt_str(nt, s, "name");
+        if (nm && !strcmp(nm, "module_function")) { in_module_function = 1; continue; }
+      }
+      if (!strcmp(sty, "DefNode") && in_module_function) {
+        const char *mname = nt_str(nt, s, "name");
+        if (!mname) continue;
+        for (int mi = 0; mi < c->nscopes; mi++) {
+          if (c->scopes[mi].def_node == s) { c->scopes[mi].is_cmethod = 1; break; }
+        }
+      }
+    }
   }
 }
 
@@ -1847,12 +1881,22 @@ static int infer_param_types(Compiler *c) {
         Scope *self = comp_scope_of(c, id);
         if (self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL);
       }
+      if (mi < 0) mi = comp_included_method_index(c, name);
       changed |= bind_call_params(c, id, mi);
       continue;
     }
     /* Class.new -> initialize params; Class.cmethod -> cmethod params */
     {
       const char *rty = nt_type(nt, recv);
+      /* M::Sub.new(...) — resolve by the final path component */
+      if (rty && !strcmp(rty, "ConstantPathNode")) {
+        const char *cn = nt_str(nt, recv, "name");
+        int ci = cn ? comp_class_index(c, cn) : -1;
+        if (ci >= 0 && !strcmp(name, "new"))
+          changed |= bind_call_params(c, id, comp_method_in_chain(c, ci, "initialize", NULL));
+        else if (ci >= 0)
+          changed |= bind_call_params(c, id, comp_cmethod_in_chain(c, ci, name, NULL));
+      }
       if (rty && !strcmp(rty, "ConstantReadNode")) {
         int ci = comp_class_index(c, nt_str(nt, recv, "name"));
         if (ci >= 0) {
@@ -2442,6 +2486,7 @@ void analyze_program(Compiler *c) {
 
   walk_scope(c, c->nt->root_id, 0, -1);
   register_structs(c);
+  register_module_functions(c);
   register_locals(c);
   register_attrs(c);
   register_aliases(c);
@@ -2462,6 +2507,34 @@ void analyze_program(Compiler *c) {
 
   resolve_parents(c);
   inherit_members(c);
+
+  /* collect top-level `include <Mod>` calls so bare method calls can
+     resolve to module_function methods in those modules. */
+  {
+    const NodeTable *nt = c->nt;
+    int root_stmts = nt_ref(nt, nt->root_id, "statements");
+    int sn = 0;
+    const int *stmts = root_stmts >= 0 ? nt_arr(nt, root_stmts, "body", &sn) : NULL;
+    for (int i = 0; i < sn; i++) {
+      if (!nt_type(nt, stmts[i]) || strcmp(nt_type(nt, stmts[i]), "CallNode")) continue;
+      if (!nt_str(nt, stmts[i], "name") || strcmp(nt_str(nt, stmts[i], "name"), "include")) continue;
+      if (nt_ref(nt, stmts[i], "receiver") >= 0) continue;
+      int anode = nt_ref(nt, stmts[i], "arguments");
+      int an = 0;
+      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      for (int j = 0; j < an; j++) {
+        const char *aty = nt_type(nt, args[j]);
+        const char *mname = NULL;
+        if (aty && !strcmp(aty, "ConstantReadNode")) mname = nt_str(nt, args[j], "name");
+        else if (aty && !strcmp(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
+        int ci = mname ? comp_class_index(c, mname) : -1;
+        if (ci < 0) continue;
+        c->toplevel_includes = realloc(c->toplevel_includes,
+                                       sizeof(int) * (size_t)(c->ntoplevel_includes + 1));
+        c->toplevel_includes[c->ntoplevel_includes++] = ci;
+      }
+    }
+  }
 
   /* mark block-aware methods (contain yield or block_given?) -- these are
      inlined at every call site so block_given? reflects the actual site */
