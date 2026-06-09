@@ -1559,6 +1559,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")");
     return;
   }
+  /* a no-block predicate on an empty array literal folds to a constant
+     (empty: all?/none? true, any?/one? false) */
+  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      (!strcmp(name, "all?") || !strcmp(name, "any?") ||
+       !strcmp(name, "none?") || !strcmp(name, "one?")) &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode") &&
+      ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
+    buf_puts(b, (!strcmp(name, "all?") || !strcmp(name, "none?")) ? "1" : "0");
+    return;
+  }
 
   /* `===` on a scalar comparable (bool/int/float/string/symbol) is case
      equality == value equality. Range/Class/Regexp `===` have their own
@@ -2451,6 +2461,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
+      if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||
+           !strcmp(name, "none?") || !strcmp(name, "one?")) &&
+          argc == 0 && nt_ref(nt, id, "block") < 0) {
+        /* scalar-element arrays never hold nil/false: predicate is length-based */
+        const char *op = !strcmp(name, "all?") ? ">= 0" : !strcmp(name, "any?") ? "> 0"
+                       : !strcmp(name, "none?") ? "== 0" : "== 1";
+        buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_printf(b, ") %s)", op);
+        return;
+      }
       if ((!strcmp(name, "length") || !strcmp(name, "size")) && argc == 0) {
         buf_printf(b, "sp_%sArray_length(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
@@ -2555,6 +2574,24 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
         buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
+        return;
+      }
+      if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||
+           !strcmp(name, "none?") || !strcmp(name, "one?")) &&
+          argc == 0 && nt_ref(nt, id, "block") < 0) {
+        /* count truthy elements; a poly element may be nil/false */
+        int t = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = 0; for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
+                      " if (sp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) _t%d++;",
+                   tn, ti, ti, t, ti, t, ti, tn);
+        const char *expr = !strcmp(name, "all?") ? "_t%d == sp_PolyArray_length(_t%d)"
+                         : !strcmp(name, "any?") ? "_t%d > 0"
+                         : !strcmp(name, "none?") ? "_t%d == 0" : "_t%d == 1";
+        buf_puts(b, " (");
+        if (!strcmp(name, "all?")) buf_printf(b, expr, tn, t);
+        else buf_printf(b, expr, tn);
+        buf_puts(b, "); })");
         return;
       }
       if ((!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) && argc == 0) {

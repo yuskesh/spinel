@@ -524,6 +524,8 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "pack") && argc == 1)           return TY_STRING;
     if (!strcmp(name, "inspect") || !strcmp(name, "to_s")) return TY_STRING;
     if (!strcmp(name, "empty?") || !strcmp(name, "include?")) return TY_BOOL;
+    if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||
+         !strcmp(name, "none?") || !strcmp(name, "one?")) && argc == 0) return TY_BOOL;
     if (!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append") ||
         !strcmp(name, "reverse") || !strcmp(name, "sort") || !strcmp(name, "uniq") ||
         !strcmp(name, "to_a") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
