@@ -1626,6 +1626,20 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* namespaced class M::Sub.new -> sp_<Sub>_new(args) (resolve by final name) */
+  if (recv >= 0 && !strcmp(name, "new") && nt_type(nt, recv) &&
+      !strcmp(nt_type(nt, recv), "ConstantPathNode")) {
+    const char *cn = nt_str(nt, recv, "name");
+    int ci = cn ? comp_class_index(c, cn) : -1;
+    if (ci >= 0 && !c->classes[ci].is_struct) {
+      buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+      int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+      if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
+      buf_puts(b, ")");
+      return;
+    }
+  }
+
   /* Class.new(args) -> sp_<Class>_new(args) */
   if (recv >= 0 && !strcmp(name, "new")) {
     const char *rty = nt_type(nt, recv);

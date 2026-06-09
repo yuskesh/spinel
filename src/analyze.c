@@ -295,6 +295,12 @@ static TyKind infer_call(Compiler *c, int id) {
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
   if (recv >= 0 && !strcmp(name, "new")) {
     const char *rty = nt_type(nt, recv);
+    /* a namespaced class (M::Sub) -> resolve by the final path component */
+    if (rty && !strcmp(rty, "ConstantPathNode")) {
+      const char *cn = nt_str(nt, recv, "name");
+      int ci = cn ? comp_class_index(c, cn) : -1;
+      if (ci >= 0) return ty_object(ci);
+    }
     if (rty && !strcmp(rty, "ConstantReadNode")) {
       const char *cn = nt_str(nt, recv, "name");
       int ci = comp_class_index(c, cn);
