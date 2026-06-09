@@ -1150,6 +1150,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       if (en == 0) {
         if ((!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) && argc == 0) { buf_puts(b, "0"); return; }
         if (!strcmp(name, "empty?") && argc == 0) { buf_puts(b, "1"); return; }
+        if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return; }
         if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return; }
         if ((!strcmp(name, "flatten") || !strcmp(name, "compact") || !strcmp(name, "uniq") ||
              !strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "dup") ||
@@ -2070,6 +2071,19 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       if (!strcmp(name, "first") && argc == 0) {
         buf_printf(b, "sp_%sArray_get(", k); emit_expr(c, recv, b); buf_puts(b, ", 0)");
+        return;
+      }
+      if (!strcmp(name, "first") && argc == 1) {
+        buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", 0, ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (!strcmp(name, "last") && argc == 1) {
+        /* slice's negative start counts from the end -> the last n elements */
+        int tn = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", tn); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_%sArray_slice(", k); emit_expr(c, recv, b);
+        buf_printf(b, ", -_t%d, _t%d); })", tn, tn);
         return;
       }
       if (!strcmp(name, "pop") && argc == 0) {

@@ -216,7 +216,11 @@ static TyKind infer_call(Compiler *c, int id) {
     const char *rty = nt_type(nt, recv);
     if (rty && !strcmp(rty, "ArrayNode")) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
-      if (en == 0) rt = TY_POLY_ARRAY;
+      if (en == 0) {
+        /* first/last of an empty array is nil; carry it as a nullable int */
+        if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 0) return TY_INT;
+        rt = TY_POLY_ARRAY;
+      }
     }
   }
 
@@ -465,6 +469,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "length") || !strcmp(name, "size") ||
         !strcmp(name, "count") || !strcmp(name, "index")) return TY_INT;
     if (!strcmp(name, "sum"))                         return ty_array_elem(rt);
+    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 1) return rt;  /* first(n)/last(n) -> subarray */
     if (!strcmp(name, "first") || !strcmp(name, "last") ||
         !strcmp(name, "min") || !strcmp(name, "max") ||
         !strcmp(name, "pop")) return ty_array_elem(rt);
