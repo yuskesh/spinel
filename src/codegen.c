@@ -547,6 +547,62 @@ static int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* sort_by { |x| key } as an expression: a stable bubble sort of a copy of
+   the receiver, ordering by the block's computed (scalar) key. Returns 1 if
+   handled. */
+static int emit_sortby_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (strcmp(name, "sort_by")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt)) return 0;
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) return 0;
+  TyKind et = ty_array_elem(rt);
+  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  TyKind kt = comp_ntype(c, bb[bn - 1]);
+  if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING) return 0;  /* scalar key only */
+  int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp, tka = ++g_tmp, tkb = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv);
+  buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  /* copy so the receiver is left unsorted (sort_by is non-mutating) */
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+  buf_printf(g_pre, " _t%d = sp_%sArray_slice(_t%d, 0, sp_%sArray_length(_t%d));\n", tr, k, trv, k, trv);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, tr);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d - 1; _t%d++)\n", ti, ti, tn, ti);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d - 1 - _t%d; _t%d++) {\n", tj, tj, tn, ti, tj);
+  emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", ta, k, tr, tj);
+  emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d + 1);\n", tb, k, tr, tj);
+  int save = g_indent; g_indent += 2;
+  /* key of _ta */
+  if (p0) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, ta); }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+  Buf ka; memset(&ka, 0, sizeof ka); emit_expr(c, bb[bn - 1], &ka);
+  emit_indent(g_pre, g_indent); emit_ctype(c, kt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tka, ka.p ? ka.p : "0"); free(ka.p);
+  /* key of _tb */
+  if (p0) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, tb); }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+  Buf kb; memset(&kb, 0, sizeof kb); emit_expr(c, bb[bn - 1], &kb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, kt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tkb, kb.p ? kb.p : "0"); free(kb.p);
+  g_indent = save;
+  emit_indent(g_pre, g_indent + 2);
+  if (kt == TY_STRING) buf_printf(g_pre, "if (strcmp(_t%d, _t%d) > 0) {", tka, tkb);
+  else buf_printf(g_pre, "if (_t%d > _t%d) {", tka, tkb);
+  buf_printf(g_pre, " sp_%sArray_set(_t%d, _t%d, _t%d); sp_%sArray_set(_t%d, _t%d + 1, _t%d); }\n", k, tr, tj, tb, k, tr, tj, ta);
+  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tr);
+  return 1;
+}
+
 /* map/select/reject/filter as an expression: build a result array via a
    loop emitted into the statement prelude; the expression value is the
    temp array. Returns 1 if handled. */
@@ -764,6 +820,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_collect_expr(c, id, b)) return;
   if (emit_minmax_by_expr(c, id, b)) return;
+  if (emit_sortby_expr(c, id, b)) return;
   if (emit_inline_expr(c, id, b)) return;  /* value-returning yield method */
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
