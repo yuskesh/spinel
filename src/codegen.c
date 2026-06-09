@@ -1888,9 +1888,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           char call[600];
           snprintf(call, sizeof call, "sp_%s_%s((sp_%s *)_t%d.v.p)",
                    c->classes[defcls].name, mc(c->scopes[mi].name), c->classes[defcls].name, tv);
-          buf_printf(b, " case %d: _t%d = ", k, tr);
-          if (ret == TY_POLY && c->scopes[mi].ret != TY_POLY) emit_boxed_text(c, c->scopes[mi].ret, call, b);
-          else buf_puts(b, call);
+          buf_printf(b, " case %d: ", k);
+          if (method_is_void(&c->scopes[mi])) buf_puts(b, call);  /* void: no usable value */
+          else {
+            buf_printf(b, "_t%d = ", tr);
+            if (ret == TY_POLY && c->scopes[mi].ret != TY_POLY) emit_boxed_text(c, c->scopes[mi].ret, call, b);
+            else buf_puts(b, call);
+          }
           buf_puts(b, "; break;");
           continue;
         }
