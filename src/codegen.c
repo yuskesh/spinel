@@ -681,7 +681,7 @@ static int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
-  TyKind bvt = comp_ntype(c, bb[bn - 1]);
+  TyKind bvt = infer_type(c, bb[bn - 1]);
   if (bvt != TY_INT && bvt != TY_FLOAT) return 0;  /* comparable scalar key only */
   int trecv = ++g_tmp, tbest = ++g_tmp, tbv = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tcur = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);  /* recv value; its own preludes flow to g_pre */
@@ -691,8 +691,13 @@ static int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
   if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  Scope *mbsc = p0 ? comp_scope_of(c, block) : NULL;
+  LocalVar *mlv0 = (mbsc && p0) ? scope_local(mbsc, p0) : NULL;
+  TyKind mpt0 = mlv0 ? mlv0->type : TY_UNKNOWN;
+  if (mlv0) mlv0->type = et;
   int save = g_indent; g_indent++;
   Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  if (mlv0) mlv0->type = mpt0;
   emit_indent(g_pre, g_indent + 1); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tcur, vb.p ? vb.p : "0"); free(vb.p);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "if (_t%d || _t%d %s _t%d) { _t%d = lv_%s; _t%d = _t%d; _t%d = 0; }\n",
@@ -1011,7 +1016,7 @@ static int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   p0 = rename_local(p0); p1 = rename_local(p1);
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-  if (bn < 1 || comp_ntype(c, bb[bn - 1]) != TY_INT) return 0;
+  if (bn < 1 || infer_type(c, bb[bn - 1]) != TY_INT) return 0;
   int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
@@ -1023,16 +1028,42 @@ static int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d - 1 - _t%d; _t%d++) {\n", tj, tj, tn, ti, tj);
   emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", ta, k, tr, tj);
   emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d + 1);\n", tb, k, tr, tj);
+  Scope *sbsc = comp_scope_of(c, block);
+  LocalVar *slv0 = sbsc ? scope_local(sbsc, p0) : NULL;
+  LocalVar *slv1 = sbsc ? scope_local(sbsc, p1) : NULL;
+  TyKind spt0 = slv0 ? slv0->type : TY_UNKNOWN;
+  TyKind spt1 = slv1 ? slv1->type : TY_UNKNOWN;
+  if (slv0) slv0->type = et;
+  if (slv1) slv1->type = et;
   int save = g_indent; g_indent += 2;
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d; lv_%s = _t%d;\n", p0, ta, p1, tb);
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
   Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
+  if (slv0) slv0->type = spt0;
+  if (slv1) slv1->type = spt1;
   emit_indent(g_pre, g_indent + 2);
   buf_printf(g_pre, "if ((%s) > 0) { sp_%sArray_set(_t%d, _t%d, _t%d); sp_%sArray_set(_t%d, _t%d + 1, _t%d); }\n",
              cb.p ? cb.p : "0", k, tr, tj, tb, k, tr, tj, ta); free(cb.p);
   emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
   buf_printf(b, "_t%d", tr);
   return 1;
+}
+
+/* Emit "lv_<nm> = _t<tidx>" with boxing if the outer local is TY_POLY
+   but the element type et is scalar (string, int, float, bool). */
+static void emit_block_param_assign(Compiler *c, int scope_id, const char *nm, int tidx, TyKind et, Buf *b) {
+  Scope *sc = comp_scope_of(c, scope_id);
+  LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+  int box = lv && lv->type == TY_POLY && et != TY_POLY;
+  if (box) {
+    if (et == TY_INT)    buf_printf(b, "lv_%s = sp_box_int(_t%d);", nm, tidx);
+    else if (et == TY_STRING) buf_printf(b, "lv_%s = sp_box_str(_t%d);", nm, tidx);
+    else if (et == TY_FLOAT)  buf_printf(b, "lv_%s = sp_box_float(_t%d);", nm, tidx);
+    else if (et == TY_BOOL)   buf_printf(b, "lv_%s = sp_box_bool(_t%d);", nm, tidx);
+    else buf_printf(b, "lv_%s = _t%d;", nm, tidx);
+  } else {
+    buf_printf(b, "lv_%s = _t%d;", nm, tidx);
+  }
 }
 
 /* min / max / minmax { |a, b| a <=> b } as an expression: a single scan
@@ -1047,7 +1078,7 @@ static int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   if (!is_min && !is_max && !is_mm) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
-  TyKind rt = comp_ntype(c, recv);
+  TyKind rt = infer_type(c, recv);
   if (!ty_is_array(rt)) return 0;
   const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
@@ -1058,7 +1089,7 @@ static int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   p0 = rename_local(p0); p1 = rename_local(p1);
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-  if (bn < 1 || comp_ntype(c, bb[bn - 1]) != TY_INT) return 0;
+  if (bn < 1 || infer_type(c, bb[bn - 1]) != TY_INT) return 0;
   int trv = ++g_tmp, tn = ++g_tmp, tmin = ++g_tmp, tmax = ++g_tmp, ti = ++g_tmp, te = ++g_tmp, tres = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
@@ -1068,19 +1099,43 @@ static int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = _t%d;\n", tmax, tmin);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 1; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
   emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", te, k, trv, ti);
+  /* Block params may be widened to TY_POLY across multiple block sites.
+     Pin them to the element type for body emission:
+     - temporarily set scope types to `et`
+     - refresh ntype cache for body nodes (infer_type writes to cache)
+     - emit C shadow declarations inside { } to give lv_p0/lv_p1 the right C type */
+  Scope *bsc = comp_scope_of(c, block);
+  LocalVar *lv_p0 = bsc ? scope_local(bsc, p0) : NULL;
+  LocalVar *lv_p1 = bsc ? scope_local(bsc, p1) : NULL;
+  TyKind saved_p0 = lv_p0 ? lv_p0->type : TY_UNKNOWN;
+  TyKind saved_p1 = lv_p1 ? lv_p1->type : TY_UNKNOWN;
+  if (lv_p0) lv_p0->type = et;
+  if (lv_p1) lv_p1->type = et;
+  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);  /* refresh cache */
   int save = g_indent; g_indent++;
   if (is_min || is_mm) {
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d; lv_%s = _t%d;\n", p0, te, p1, tmin);
+    /* Open C shadow scope with et-typed block param vars */
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
+    emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, te);
+    emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;\n", p1, tmin);
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
     Buf cm; memset(&cm, 0, sizeof cm); emit_expr(c, bb[bn - 1], &cm);
+    g_indent--;
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "if ((%s) < 0) _t%d = _t%d;\n", cm.p ? cm.p : "0", tmin, te); free(cm.p);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   }
   if (is_max || is_mm) {
-    emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d; lv_%s = _t%d;\n", p0, te, p1, tmax);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
+    emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d; ", p0, te);
+    emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = _t%d;\n", p1, tmax);
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
     Buf cx; memset(&cx, 0, sizeof cx); emit_expr(c, bb[bn - 1], &cx);
+    g_indent--;
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "if ((%s) > 0) _t%d = _t%d;\n", cx.p ? cx.p : "0", tmax, te); free(cx.p);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   }
+  if (lv_p0) lv_p0->type = saved_p0;
+  if (lv_p1) lv_p1->type = saved_p1;
   g_indent = save;
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   if (is_min) { buf_printf(b, "_t%d", tmin); return 1; }
@@ -2456,15 +2511,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   }
 
   if (recv >= 0 && argc == 1 && !strcmp(name, "<=>")) {
+    /* Re-infer when stale cache has TY_POLY (e.g. block params temporarily pinned to element type). */
+    TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? infer_type(c, recv) : rt;
     TyKind at = comp_ntype(c, argv[0]);
-    if (ty_is_numeric(rt) && ty_is_numeric(at)) {
+    TyKind lat = (at == TY_POLY || at == TY_UNKNOWN) ? infer_type(c, argv[0]) : at;
+    if (ty_is_numeric(lrt) && ty_is_numeric(lat)) {
       int ta = ++g_tmp, tb = ++g_tmp;
-      buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b);
-      buf_puts(b, "; "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tb); emit_expr(c, argv[0], b);
+      buf_puts(b, "({ "); emit_ctype(c, lrt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b);
+      buf_puts(b, "; "); emit_ctype(c, lat, b); buf_printf(b, " _t%d = ", tb); emit_expr(c, argv[0], b);
       buf_printf(b, "; (_t%d > _t%d) - (_t%d < _t%d); })", ta, tb, ta, tb);
       return;
     }
-    if (rt == TY_STRING && at == TY_STRING) {
+    if (lrt == TY_STRING && lat == TY_STRING) {
       int tc = ++g_tmp;
       buf_printf(b, "({ int _t%d = strcmp(", tc); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
       buf_printf(b, "); (_t%d > 0) - (_t%d < 0); })", tc, tc);
@@ -3853,7 +3911,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
-      if (!strcmp(name, "minmax") && argc == 0 && rt != TY_STR_ARRAY) {
+      if (!strcmp(name, "minmax") && argc == 0 && rt != TY_STR_ARRAY && block < 0) {
         int t = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); sp_%sArray_push(_t%d, sp_%sArray_min(_t%d));"
@@ -5586,10 +5644,25 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
       emit_cond(c, pred, b);
       if (is_unless) buf_puts(b, ")");
       buf_puts(b, " ? ");
-      /* a poly result with concrete-typed branches boxes each branch */
-      if (res == TY_POLY && comp_ntype(c, tb[0]) != TY_POLY) emit_boxed(c, tb[0], b); else emit_expr(c, tb[0], b);
+      /* a poly result with concrete-typed branches boxes each branch;
+         for typed-array results, an empty [] literal uses the result type */
+      { int nd = tb[0]; const char *_bty = nt_type(nt, nd);
+        if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) emit_boxed(c, nd, b);
+        else if (ty_is_array(res) && _bty && !strcmp(_bty, "ArrayNode")) {
+          int _bn = 0; nt_arr(nt, nd, "elements", &_bn);
+          if (_bn == 0) { const char *_rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
+            buf_printf(b, "sp_%sArray_new()", _rk ? _rk : "Int"); }
+          else emit_expr(c, nd, b);
+        } else emit_expr(c, nd, b); }
       buf_puts(b, " : ");
-      if (res == TY_POLY && comp_ntype(c, eb[0]) != TY_POLY) emit_boxed(c, eb[0], b); else emit_expr(c, eb[0], b);
+      { int nd = eb[0]; const char *_bty = nt_type(nt, nd);
+        if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) emit_boxed(c, nd, b);
+        else if (ty_is_array(res) && _bty && !strcmp(_bty, "ArrayNode")) {
+          int _bn = 0; nt_arr(nt, nd, "elements", &_bn);
+          if (_bn == 0) { const char *_rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
+            buf_printf(b, "sp_%sArray_new()", _rk ? _rk : "Int"); }
+          else emit_expr(c, nd, b);
+        } else emit_expr(c, nd, b); }
       buf_puts(b, ")");
       return;
     }

@@ -896,13 +896,8 @@ static TyKind infer_call(Compiler *c, int id) {
       return (rt == TY_FLOAT || a0 == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return TY_UNKNOWN;
   }
-  if (recv >= 0 && argc == 1 && !strcmp(name, "<=>") &&
-      ((ty_is_numeric(rt) && ty_is_numeric(a0)) || (rt == TY_STRING && a0 == TY_STRING)))
-    return TY_INT;
-  if (recv >= 0 && argc == 1 && is_cmp_op(name)) {
-    if (!strcmp(name, "<=>")) return TY_INT;
-    return TY_BOOL;
-  }
+  if (recv >= 0 && argc == 1 && !strcmp(name, "<=>")) return TY_INT;
+  if (recv >= 0 && argc == 1 && is_cmp_op(name)) return TY_BOOL;
   if (argc == 1 && is_eq_op(name)) return TY_BOOL;
 
   /* integer bitwise operators */
