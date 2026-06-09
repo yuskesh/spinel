@@ -1758,14 +1758,27 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
         if (mi >= 0) {
-          buf_printf(b, " case %d: _t%d = sp_%s_%s((sp_%s *)_t%d.v.p); break;",
-                     k, tr, c->classes[defcls].name, mc(c->scopes[mi].name), c->classes[defcls].name, tv);
+          char call[600];
+          snprintf(call, sizeof call, "sp_%s_%s((sp_%s *)_t%d.v.p)",
+                   c->classes[defcls].name, mc(c->scopes[mi].name), c->classes[defcls].name, tv);
+          buf_printf(b, " case %d: _t%d = ", k, tr);
+          if (ret == TY_POLY && c->scopes[mi].ret != TY_POLY) emit_boxed_text(c, c->scopes[mi].ret, call, b);
+          else buf_puts(b, call);
+          buf_puts(b, "; break;");
           continue;
         }
         int rdcls = -1;
-        if (comp_reader_in_chain(c, k, name, &rdcls))
-          buf_printf(b, " case %d: _t%d = ((sp_%s *)_t%d.v.p)->iv_%s; break;",
-                     k, tr, c->classes[rdcls].name, tv, name);
+        if (comp_reader_in_chain(c, k, name, &rdcls)) {
+          char fld[600];
+          snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[rdcls].name, tv, name);
+          char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", name);
+          int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
+          TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
+          buf_printf(b, " case %d: _t%d = ", k, tr);
+          if (ret == TY_POLY && ivt != TY_POLY) emit_boxed_text(c, ivt, fld, b);
+          else buf_puts(b, fld);
+          buf_puts(b, "; break;");
+        }
       }
       /* built-in array receivers reaching a length-like poly dispatch */
       if (!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) {
