@@ -6270,6 +6270,12 @@ static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resu
     int eid = ++g_tmp;
     int has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
     emit_indent(b, indent); buf_printf(b, "int _retf%d = 0;\n", eid);
+    /* _excf/_excmsg/_exccls track an unhandled exception (no rescue) so
+       that ensure can re-raise it after running.  Saved immediately after
+       sp_exc_top-- while the index is still valid. */
+    emit_indent(b, indent); buf_printf(b, "int _excf%d = 0;\n", eid);
+    emit_indent(b, indent); buf_printf(b, "const char *_excmsg%d = NULL;\n", eid);
+    emit_indent(b, indent); buf_printf(b, "const char *_exccls%d = NULL;\n", eid);
     if (has_retval) {
       emit_indent(b, indent); emit_ctype(c, g_ret_type, b);
       buf_printf(b, " _retv%d = %s;\n", eid, default_value(g_ret_type));
@@ -6298,7 +6304,16 @@ static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resu
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
-    if (rescue >= 0) emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
+    if (rescue >= 0) {
+      emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
+    }
+    else {
+      /* No rescue: save exception info for re-raise after ensure runs.
+         sp_exc_top has just been decremented so sp_exc_top is the right index. */
+      emit_indent(b, indent + 1);
+      buf_printf(b, "_excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top];\n",
+                 eid, eid, eid);
+    }
     emit_indent(b, indent); buf_puts(b, "}\n");
 
     g_ensure_depth--;
@@ -6318,12 +6333,19 @@ static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resu
         buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
                    eid, outer->lid, outer->lid);
       }
+      /* Unhandled exception: propagate info to outer ensure context. */
+      emit_indent(b, indent);
+      buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; sp_exc_top--; goto _ensure%d; }\n",
+                 eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid);
     }
     else {
       if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
       else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil();\n", eid);
       else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0;\n", eid); /* main() */
       else buf_printf(b, "if (_retf%d) return;\n", eid);
+      /* Unhandled exception: re-raise using the saved class/message. */
+      emit_indent(b, indent);
+      buf_printf(b, "if (_excf%d) sp_raise_cls(_exccls%d, _excmsg%d);\n", eid, eid, eid);
     }
     return;
   }
@@ -6828,6 +6850,10 @@ static void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent); emit_tail_lead(b); buf_printf(b, "_t%d;\n", t);
       return;
     }
+    /* Non-scalar (e.g. TY_VOID when body diverges with raise or return):
+       emit as a plain statement; any `return` inside uses deferred mechanism. */
+    emit_begin(c, id, b, indent, NULL);
+    return;
   }
 
   /* statements that don't produce a usable tail value: emit normally;
