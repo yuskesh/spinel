@@ -272,7 +272,19 @@ static TyKind infer_call(Compiler *c, int id) {
       if (cn && !strcmp(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
       if (cn && !strcmp(cn, "String")) return TY_STRING;
       if (cn && !strcmp(cn, "StringIO")) return TY_STRINGIO;
+      if (cn && !strcmp(cn, "StringScanner")) return TY_STRINGSCANNER;
     }
+  }
+
+  /* StringScanner instance methods */
+  if (recv >= 0 && rt == TY_STRINGSCANNER) {
+    if (!strcmp(name, "scan") || !strcmp(name, "check") || !strcmp(name, "scan_until") ||
+        !strcmp(name, "matched") || !strcmp(name, "pre_match") || !strcmp(name, "post_match") ||
+        !strcmp(name, "rest") || !strcmp(name, "string") || !strcmp(name, "getch") ||
+        !strcmp(name, "peek") || !strcmp(name, "[]")) return TY_STRING;  /* nullable via NULL */
+    if (!strcmp(name, "matched?") || !strcmp(name, "eos?") || !strcmp(name, "rest?")) return TY_BOOL;
+    if (!strcmp(name, "pos") || !strcmp(name, "charpos") || !strcmp(name, "rest_size")) return TY_INT;
+    if (!strcmp(name, "reset") || !strcmp(name, "terminate") || !strcmp(name, "unscan")) return TY_STRINGSCANNER;
   }
 
   /* StringIO.open(args) { |io| body } -> the block body's value */

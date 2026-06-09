@@ -206,6 +206,7 @@ static const char *c_type_name(TyKind t) {
     case TY_RANGE:       return "sp_Range";
     case TY_TIME:        return "sp_Time";
     case TY_STRINGIO:    return "sp_StringIO *";
+    case TY_STRINGSCANNER: return "sp_StringScanner *";
     case TY_EXCEPTION:   return "sp_Exception *";
     case TY_INT_ARRAY:   return "sp_IntArray *";
     case TY_FLOAT_ARRAY: return "sp_FloatArray *";
@@ -224,7 +225,7 @@ static const char *c_type_name(TyKind t) {
 }
 static int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
-         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_STRINGIO || t == TY_EXCEPTION ||
+         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC ||
          ty_is_hash(t) || ty_is_object(t);
@@ -239,6 +240,7 @@ static const char *default_value(TyKind t) {
     case TY_RANGE:  return "(sp_Range){0}";
     case TY_TIME:   return "(sp_Time){0}";
     case TY_STRINGIO: return "NULL";
+    case TY_STRINGSCANNER: return "NULL";
     case TY_EXCEPTION: return "NULL";
     case TY_INT_ARRAY:
     case TY_FLOAT_ARRAY:
@@ -986,6 +988,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         return;
       }
+      if (cn && !strcmp(cn, "StringScanner") && argc == 1) {
+        buf_puts(b, "sp_StringScanner_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
       if (cn && !strcmp(cn, "Array") && argc == 2) {
         /* Array.new(n, v) -> n copies of v */
         TyKind at = comp_ntype(c, id);
@@ -1724,6 +1730,38 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (done) return;
   }
 
+  /* StringScanner instance methods. String-returning methods may yield NULL
+     (nil) on a miss; the NULL-aware string output operators render that. */
+  if (recv >= 0 && rt == TY_STRINGSCANNER) {
+    Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
+    const char *r = rs.p ? rs.p : "";
+    int done = 1;
+    if ((!strcmp(name, "scan") || !strcmp(name, "check") || !strcmp(name, "scan_until")) &&
+        argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      buf_printf(b, "sp_StringScanner_%s(%s, sp_re_pat_%d)", name, r, re_lit_index(c, argv[0]));
+    }
+    else if (!strcmp(name, "matched")) buf_printf(b, "sp_StringScanner_matched(%s)", r);
+    else if (!strcmp(name, "matched?")) buf_printf(b, "sp_StringScanner_matched_p(%s)", r);
+    else if (!strcmp(name, "pre_match")) buf_printf(b, "sp_StringScanner_pre_match(%s)", r);
+    else if (!strcmp(name, "post_match")) buf_printf(b, "sp_StringScanner_post_match(%s)", r);
+    else if (!strcmp(name, "pos") || !strcmp(name, "charpos")) buf_printf(b, "sp_StringScanner_pos(%s)", r);
+    else if (!strcmp(name, "pos=") && argc == 1) { buf_printf(b, "sp_StringScanner_pos_set(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "rest")) buf_printf(b, "sp_StringScanner_rest(%s)", r);
+    else if (!strcmp(name, "rest?")) buf_printf(b, "sp_StringScanner_rest_p(%s)", r);
+    else if (!strcmp(name, "rest_size")) buf_printf(b, "sp_StringScanner_rest_size(%s)", r);
+    else if (!strcmp(name, "string")) buf_printf(b, "sp_StringScanner_string(%s)", r);
+    else if (!strcmp(name, "eos?")) buf_printf(b, "sp_StringScanner_eos_p(%s)", r);
+    else if (!strcmp(name, "getch")) buf_printf(b, "sp_StringScanner_getch(%s)", r);
+    else if (!strcmp(name, "peek") && argc == 1) { buf_printf(b, "sp_StringScanner_peek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "[]") && argc == 1) { buf_printf(b, "sp_StringScanner_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (!strcmp(name, "reset")) buf_printf(b, "(sp_StringScanner_reset(%s), %s)", r, r);
+    else if (!strcmp(name, "terminate")) buf_printf(b, "(sp_StringScanner_terminate(%s), %s)", r, r);
+    else if (!strcmp(name, "unscan")) buf_printf(b, "(sp_StringScanner_unscan(%s), %s)", r, r);
+    else done = 0;
+    free(rs.p);
+    if (done) return;
+  }
+
   /* StringIO instance methods (a non-GC heap buffer behind sp_StringIO *). */
   if (recv >= 0 && rt == TY_STRINGIO) {
     Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
@@ -2422,7 +2460,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
       else if (!strcmp(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
       else if (!strcmp(name, "to_s") || !strcmp(name, "to_str") || !strcmp(name, "dup")) buf_puts(b, r);
-      else if (!strcmp(name, "inspect"))    buf_printf(b, "sp_str_inspect(%s)", r);
+      else if (!strcmp(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
       else if (!strcmp(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
       else if (!strcmp(name, "include?") && argc == 1) {
         buf_printf(b, "sp_str_include(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -3617,8 +3655,10 @@ static void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "); fputs(_fs, stdout); putchar('\\n'); }\n");
   }
   else if (t == TY_STRING) {
-    buf_puts(b, "fputs(sp_str_inspect("); emit_expr(c, arg, b);
-    buf_puts(b, "), stdout); putchar('\\n');\n");
+    /* a nullable string (NULL) prints "nil" */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ const char *_t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(_t%d ? sp_str_inspect(_t%d) : \"nil\", stdout); putchar('\\n'); }\n", tv, tv);
   }
   else if (t == TY_BOOL) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
@@ -3791,6 +3831,16 @@ static void emit_cond(Compiler *c, int id, Buf *b) {
   TyKind t = comp_ntype(c, id);
   if (t == TY_POLY) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, id, b); buf_puts(b, ")"); return; }
   if (t == TY_NIL)  { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return; }
+  /* Ruby truthiness: only nil and false are falsy. A nullable scalar reads
+     falsy at its sentinel (NULL string / SP_INT_NIL / NaN float); a pointer
+     value is falsy when NULL. Every other concrete value is truthy. */
+  if (t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) ||
+      t == TY_PROC || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_EXCEPTION) {
+    buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != 0)"); return;
+  }
+  if (t == TY_INT)   { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != SP_INT_NIL)"); return; }
+  if (t == TY_FLOAT) { buf_puts(b, "(!sp_float_is_nil("); emit_expr(c, id, b); buf_puts(b, "))"); return; }
+  if (t == TY_SYMBOL) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }
   if (t != TY_BOOL) unsupported(c, id, "condition (non-bool)");
   emit_expr(c, id, b);
 }
