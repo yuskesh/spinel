@@ -3152,6 +3152,27 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
 }
 static mrb_int sp_PolyArray_length(sp_PolyArray *a) { if (!a) return 0; return a->len; }
 static sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
+/* Helpers for iterating over a poly value that holds a boxed array. */
+static mrb_int sp_poly_arr_len(sp_RbVal a) {
+  if (a.tag != SP_TAG_OBJ) return 0;
+  switch (a.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: return ((sp_IntArray *)a.v.p)->len;
+    case SP_BUILTIN_FLT_ARRAY: return ((sp_FloatArray *)a.v.p)->len;
+    case SP_BUILTIN_STR_ARRAY: return ((sp_StrArray *)a.v.p)->len;
+    case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)a.v.p)->len;
+    default: return 0;
+  }
+}
+static sp_RbVal sp_poly_arr_get(sp_RbVal a, mrb_int i) {
+  if (a.tag != SP_TAG_OBJ) return sp_box_nil();
+  switch (a.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: { sp_IntArray *ar=(sp_IntArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return sp_box_int(ar->data[ar->start+i]); }
+    case SP_BUILTIN_FLT_ARRAY: { sp_FloatArray *ar=(sp_FloatArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return sp_box_float(ar->data[i]); }
+    case SP_BUILTIN_STR_ARRAY: { sp_StrArray *ar=(sp_StrArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return sp_box_str(ar->data[i]); }
+    case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *ar=(sp_PolyArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return ar->data[i]; }
+    default: return sp_box_nil();
+  }
+}
 /* Issues #770, #789: NULL + bounds guard. Out-of-range set no-ops. */
 static void sp_PolyArray_set(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } mrb_int orig=i; if (i < 0) i += a->len; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len)); if (i >= a->len) return; a->data[i] = v; }
 static sp_PolyArray *sp_PolyArray_slice(sp_PolyArray *a, mrb_int start, mrb_int len) { if (start < 0) start += a->len; if (start < 0) start = 0; sp_PolyArray *b = sp_PolyArray_new(); if (start >= a->len || len <= 0) return b; if (start + len > a->len) len = a->len - start; for (mrb_int i = 0; i < len; i++) sp_PolyArray_push(b, a->data[start + i]); return b; }
@@ -3487,6 +3508,25 @@ static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
     sp_String_append(s, sp_poly_to_s(a->data[i]));
   }
   return s->data;
+}
+/* join on a boxed array (poly value holding any array kind) */
+static const char *sp_poly_join(sp_RbVal a, const char *sep) {
+  if (a.tag != SP_TAG_OBJ) return sp_poly_to_s(a);
+  switch (a.cls_id) {
+    case SP_BUILTIN_STR_ARRAY: return sp_StrArray_join((sp_StrArray *)a.v.p, sep);
+    case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_join((sp_PolyArray *)a.v.p, sep);
+    case SP_BUILTIN_INT_ARRAY: {
+      sp_IntArray *ar = (sp_IntArray *)a.v.p;
+      if (!ar || ar->len == 0) return sp_str_empty;
+      sp_String *s = sp_String_new(""); SP_GC_ROOT(s);
+      for (mrb_int i = 0; i < ar->len; i++) {
+        if (i > 0 && sep) sp_String_append(s, sep);
+        sp_String_append(s, sp_int_to_s(ar->data[ar->start + i]));
+      }
+      return s->data;
+    }
+    default: return sp_poly_to_s(a);
+  }
 }
 static mrb_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b) {
   if (!a || !b) return a == b;

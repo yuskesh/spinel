@@ -323,6 +323,16 @@ static TyKind infer_call(Compiler *c, int id) {
       int ci = comp_class_index(c, cn);
       if (ci >= 0) return ty_object(ci);
       if (cn && !strcmp(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
+      if (cn && !strcmp(cn, "Array")) {
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0) {
+          /* Array.new(n) { body }: element type from last expression of block body */
+          int bbody = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+          if (bn > 0 && bb) { TyKind et = infer_type(c, bb[bn - 1]); if (et != TY_UNKNOWN) return ty_array_of(et); }
+        }
+        return TY_POLY_ARRAY;
+      }
       if (cn && !strcmp(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
       if (cn && !strcmp(cn, "String")) return TY_STRING;
       if (cn && !strcmp(cn, "StringIO")) return TY_STRINGIO;
@@ -676,7 +686,7 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "shuffle") ||
         !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
         !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "freeze") ||
-        (!strcmp(name, "fill") && argc == 1) ||
+        (!strcmp(name, "fill") && argc >= 1 && argc <= 3) ||
         !strcmp(name, "replace") ||
         !strcmp(name, "values_at")) return rt;
     if (!strcmp(name, "frozen?")) return TY_BOOL;
@@ -732,6 +742,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (rt == TY_POLY) {
       if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
       if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2) return TY_STRING;
+      if (!strcmp(name, "join")) return TY_STRING;
       if (!strcmp(name, "to_i") || !strcmp(name, "length") || !strcmp(name, "size")) return TY_INT;
       if (!strcmp(name, "to_f")) return TY_FLOAT;
       if (!strcmp(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
@@ -893,9 +904,12 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "partition") || !strcmp(name, "rpartition")) return TY_STR_ARRAY;
     if (!strcmp(name, "casecmp?")) return TY_BOOL;
     if (!strcmp(name, "to_f"))  return TY_FLOAT;
+    if (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "each_byte")) return TY_STRING;
+    { int blk = nt_ref(nt, id, "block");
+      if (blk >= 0 && (!strcmp(name, "chars") || !strcmp(name, "lines"))) return TY_STRING;
+      if (blk >= 0 && (!strcmp(name, "bytes") || !strcmp(name, "codepoints"))) return TY_STRING; }
     if (!strcmp(name, "split") || !strcmp(name, "lines") || !strcmp(name, "scan")) return TY_STR_ARRAY;
     if (!strcmp(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
-    if (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "each_byte")) return TY_STRING;
     if (!strcmp(name, "bytes") || !strcmp(name, "codepoints")) return TY_INT_ARRAY;
     if (!strcmp(name, "unpack") && argc == 1) return TY_POLY_ARRAY;
     if (!strcmp(name, "chars")) return TY_STR_ARRAY;
@@ -977,7 +991,7 @@ static TyKind infer_call(Compiler *c, int id) {
     return TY_BOOL;
 
   if ((!strcmp(name, "-@") || !strcmp(name, "+@")) && recv >= 0 && argc == 0)
-    return ty_is_numeric(rt) ? rt : TY_UNKNOWN;
+    return ty_is_numeric(rt) ? rt : rt == TY_POLY ? TY_POLY : TY_UNKNOWN;
   if (!strcmp(name, "!")) return TY_BOOL;
   if (!strcmp(name, "respond_to?") && recv >= 0) return TY_BOOL;
   if ((!strcmp(name, "method_defined?") || !strcmp(name, "const_defined?")) && recv >= 0) return TY_BOOL;
@@ -1003,7 +1017,7 @@ static TyKind infer_call(Compiler *c, int id) {
 
   /* array set operations: &, |, - (not arith ops but share same arity/recv pattern) */
   if (recv >= 0 && argc == 1 &&
-      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "-"))) {
+      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "-") || !strcmp(name, "difference"))) {
     if (ty_is_array(rt) && a0 == rt) return rt;
     if (ty_is_array(rt) && a0 == TY_POLY_ARRAY) return rt;
     if (ty_is_array(a0) && rt == TY_POLY_ARRAY) return a0;
@@ -1342,6 +1356,27 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
         const char *pname = nt_str(c->nt, opts[i], "name");
         int dv = nt_ref(c->nt, opts[i], "value");
         if (pname) scope_add_param(s, pname, dv);
+      }
+      /* `*rest` parameter */
+      int rp = nt_ref(c->nt, pn, "rest");
+      if (rp >= 0) {
+        const char *rpty = nt_type(c->nt, rp);
+        if (rpty && !strcmp(rpty, "RestParameterNode")) {
+          const char *rname = nt_str(c->nt, rp, "name");
+          if (rname) {
+            /* Add param slot without bumping nrequired */
+            if (s->nparams % 8 == 0) {
+              s->pnames  = realloc(s->pnames,  sizeof(char *) * (size_t)(s->nparams + 8));
+              s->pdefault = realloc(s->pdefault, sizeof(int)    * (size_t)(s->nparams + 8));
+            }
+            s->pdefault[s->nparams] = -1;
+            s->pnames[s->nparams++] = strdup(rname);
+            LocalVar *lv = scope_local_intern(s, rname);
+            lv->is_param = 1;
+            lv->type = TY_POLY_ARRAY;
+            s->rest_idx = s->nparams - 1;
+          }
+        }
       }
       /* keyword parameters: `tag:` (required) or `tag: default` (optional) */
       int kn = 0;
@@ -2086,9 +2121,22 @@ static int bind_call_params(Compiler *c, int call_id, int mi) {
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
-  int n = pos_argc < m->nparams ? pos_argc : m->nparams;
+  /* Don't bind individual args to the *rest slot; it stays TY_POLY_ARRAY. */
+  int max_bind = m->nparams;
+  if (m->rest_idx >= 0 && max_bind > m->rest_idx) max_bind = m->rest_idx;
+  int n = pos_argc < max_bind ? pos_argc : max_bind;
   for (int k = 0; k < n; k++) {
-    TyKind at = infer_type(c, argv[k]);
+    /* When the call has a single SplatNode covering this fixed param,
+       infer the element type of the splatted array instead. */
+    TyKind at;
+    const char *apty = argv ? nt_type(nt, argv[k]) : NULL;
+    if (apty && !strcmp(apty, "SplatNode")) {
+      int inner = nt_ref(nt, argv[k], "expression");
+      TyKind arr = inner >= 0 ? infer_type(c, inner) : TY_UNKNOWN;
+      at = ty_is_array(arr) ? ty_array_elem(arr) : TY_POLY;
+    } else {
+      at = infer_type(c, argv[k]);
+    }
     LocalVar *p = scope_local(m, m->pnames[k]);
     if (!p) continue;
     TyKind merged = ty_unify(p->type, at);
@@ -2389,6 +2437,16 @@ static int infer_block_params(Compiler *c) {
       continue;
     }
 
+    /* Array.new(n) { |i| ... }: i is the integer index */
+    if (recv >= 0 && !strcmp(name, "new") && nt_type(nt, recv) &&
+        !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        !strcmp(nt_str(nt, recv, "name"), "Array")) {
+      const char *p0 = block_param_name(c, block, 0);
+      if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
+                if (l->type != TY_INT) { l->type = TY_INT; changed = 1; } }
+      continue;
+    }
+
     /* StringIO.open(args) { |io| ... }: io is a StringIO */
     if (recv >= 0 && !strcmp(name, "open") && nt_type(nt, recv) &&
         !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
@@ -2469,11 +2527,12 @@ static int infer_block_params(Compiler *c) {
     else if ((!strcmp(name, "times") || !strcmp(name, "upto") ||
          !strcmp(name, "downto")) && rt == TY_INT)
       pt = TY_INT;
-    else if (rt == TY_STRING && (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "upto")))
+    else if (rt == TY_STRING && (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "upto") ||
+                                 !strcmp(name, "chars") || !strcmp(name, "lines")))
       pt = TY_STRING;
     else if (rt == TY_STRING && (!strcmp(name, "gsub") || !strcmp(name, "sub")))
       pt = TY_STRING;  /* block receives the matched substring */
-    else if (rt == TY_STRING && !strcmp(name, "each_byte"))
+    else if (rt == TY_STRING && (!strcmp(name, "each_byte") || !strcmp(name, "bytes") || !strcmp(name, "codepoints")))
       pt = TY_INT;
     else if ((!strcmp(name, "each") || !strcmp(name, "map") || !strcmp(name, "collect") ||
               !strcmp(name, "select") || !strcmp(name, "reject") || !strcmp(name, "filter") ||
@@ -2497,6 +2556,12 @@ static int infer_block_params(Compiler *c) {
               !strcmp(name, "flat_map") || !strcmp(name, "each_with_object")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
+    /* TY_POLY receiver with iteration methods: element type is TY_POLY */
+    else if (rt == TY_POLY &&
+             (!strcmp(name, "each") || !strcmp(name, "map") || !strcmp(name, "collect") ||
+              !strcmp(name, "select") || !strcmp(name, "reject") || !strcmp(name, "find") ||
+              !strcmp(name, "detect") || !strcmp(name, "any?") || !strcmp(name, "all?")))
+      pt = TY_POLY;
 
     /* array.each_cons(n) { |a, b, ...| } -- a single param binds the n-element
        sub-array; multiple params destructure consecutive elements */

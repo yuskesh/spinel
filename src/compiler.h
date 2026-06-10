@@ -41,6 +41,7 @@ typedef struct {
   int *pdefault;    /* per-param default-value node id, or -1 if required */
   int nparams;
   int nrequired;    /* count of leading required params */
+  int rest_idx;     /* index in pnames[] of *rest param, -1 if none */
 
   TyKind ret;       /* inferred return type */
   int ret_proc_ret; /* when ret==TY_PROC: the returned proc's body return type
