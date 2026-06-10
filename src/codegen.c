@@ -4755,14 +4755,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       if (!strcmp(name, "dig") && argc >= 1) {
         TyKind vt = ty_hash_val(rt);
+        TyKind kt = ty_hash_key(rt);
         const char *getter = vt == TY_INT ? "get_opt" : "get";
         if (argc == 1) {
           buf_printf(b, "sp_%sHash_%s(", hn, getter);
-          emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], ty_hash_key(rt), b); buf_puts(b, ")");
+          emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], kt, b); buf_puts(b, ")");
         }
         else {
           /* multi-step: chain sp_poly_arr_get / sp_poly_get_sym / sp_poly_get_str */
-          TyKind kt = ty_hash_key(rt);
           for (int di = argc - 1; di >= 1; di--) {
             if (kt == TY_SYMBOL) buf_puts(b, "sp_poly_get_sym(");
             else if (kt == TY_STRING) buf_puts(b, "sp_poly_get_str(");
