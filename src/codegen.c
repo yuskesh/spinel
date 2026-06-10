@@ -2584,6 +2584,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
 
+  /* `poly_val << x`: runtime dispatch via sp_poly_shl (handles IntArray,
+     StrArray, PolyArray, etc. boxed in sp_RbVal). Returns the receiver. */
+  if (recv >= 0 && !strcmp(name, "<<") && argc == 1 &&
+      comp_ntype(c, recv) == TY_POLY) {
+    int t = ++g_tmp;
+    buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", t); emit_expr(c, recv, b); buf_puts(b, "; ");
+    buf_printf(b, "sp_poly_shl(_t%d, ", t);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "); _t%d; })", t);
+    return;
+  }
+
   /* `arr << x` / push / append in value position: mutate, then yield the array
      (statement position is handled earlier by emit_array_mutate_stmt). */
   if (recv >= 0 && (!strcmp(name, "<<") || !strcmp(name, "push") || !strcmp(name, "append")) &&
@@ -6816,6 +6828,12 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 0;
   }
 
+  if (rt == TY_POLY && !strcmp(name, "<<") && argc == 1) {
+    emit_indent(b, indent);
+    buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ");\n");
+    return 1;
+  }
+
   if (!ty_is_array(rt)) return 0;
   const char *k = array_kind(rt);
   if (!k) return 0;
@@ -8140,6 +8158,92 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     }
     else {
       buf_printf(b, "lv_%s", en);
+    }
+    return;
+  }
+  if (!strcmp(ty, "IndexOrWriteNode") || !strcmp(ty, "IndexAndWriteNode")) {
+    int is_or2 = !strcmp(ty, "IndexOrWriteNode");
+    int ir = nt_ref(nt, id, "receiver");
+    int ia = nt_ref(nt, id, "arguments");
+    int iv = nt_ref(nt, id, "value");
+    int iac = 0; const int *iav = ia >= 0 ? nt_arr(nt, ia, "arguments", &iac) : NULL;
+    if (iac != 1 || ir < 0 || iv < 0) { unsupported(c, id, "index-or/and-write (expr)"); return; }
+    TyKind irt = comp_ntype(c, ir);
+    int ta2 = ++g_tmp, tb2 = ++g_tmp, tc2 = ++g_tmp;
+    if (irt == TY_POLY_ARRAY) {
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta2); emit_expr(c, ir, b);
+      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b);
+      buf_printf(b, "; sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);", tc2, ta2, tb2);
+      buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
+      emit_boxed(c, iv, b);
+      buf_printf(b, "; sp_PolyArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+    }
+    else if (irt == TY_INT_ARRAY) {
+      buf_printf(b, "({ sp_IntArray *_t%d = ", ta2); emit_expr(c, ir, b);
+      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b);
+      buf_printf(b, "; mrb_int _t%d = sp_IntArray_get(_t%d, _t%d);", tc2, ta2, tb2);
+      buf_printf(b, " if (%s(_t%d == SP_INT_NIL)) { _t%d = ", is_or2 ? "" : "!", tc2, tc2);
+      emit_expr(c, iv, b);
+      buf_printf(b, "; sp_IntArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+    }
+    else if (irt == TY_STR_ARRAY) {
+      buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);
+      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b);
+      buf_printf(b, "; const char *_t%d = sp_StrArray_get(_t%d, _t%d);", tc2, ta2, tb2);
+      buf_printf(b, " if (%s_t%d) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
+      emit_expr(c, iv, b);
+      buf_printf(b, "; sp_StrArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+    }
+    else if (ty_is_hash(irt)) {
+      const char *hn = ty_hash_cname(irt);
+      TyKind kt = ty_hash_key(irt);
+      TyKind vt = ty_hash_val(irt);
+      if (!hn) { unsupported(c, id, "index-or/and-write (expr, unknown hash)"); return; }
+      buf_printf(b, "({ %s _t%d = ", c_type_name(irt), ta2); emit_expr(c, ir, b);
+      buf_printf(b, "; %s _t%d = ", c_type_name(kt), tb2); emit_hash_key(c, iav[0], kt, b);
+      if (vt == TY_POLY) {
+        buf_printf(b, "; sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d);", tc2, hn, ta2, tb2);
+        buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
+        emit_boxed(c, iv, b);
+        buf_printf(b, "; sp_%sHash_set(_t%d, _t%d, _t%d); } _t%d; })", hn, ta2, tb2, tc2, tc2);
+      }
+      else {
+        buf_printf(b, "; %s _t%d = sp_%sHash_get(_t%d, _t%d);", c_type_name(vt), tc2, hn, ta2, tb2);
+        buf_printf(b, " if (%s_t%d) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
+        emit_expr(c, iv, b);
+        buf_printf(b, "; sp_%sHash_set(_t%d, _t%d, _t%d); } _t%d; })", hn, ta2, tb2, tc2, tc2);
+      }
+    }
+    else if (irt == TY_POLY) {
+      /* TY_POLY receiver: dispatch via sp_poly_get/set based on key type */
+      TyKind kt2 = comp_ntype(c, iav[0]);
+      buf_printf(b, "({ sp_RbVal _t%d = ", ta2); emit_expr(c, ir, b);
+      buf_puts(b, "; ");
+      if (kt2 == TY_INT) {
+        buf_printf(b, "mrb_int _t%d = ", tb2); emit_expr(c, iav[0], b); buf_puts(b, "; ");
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_arr_get(_t%d, _t%d);", tc2, ta2, tb2);
+        buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
+        emit_boxed(c, iv, b);
+        buf_printf(b, "; sp_poly_arr_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+      }
+      else if (kt2 == TY_STRING) {
+        buf_printf(b, "const char *_t%d = ", tb2); emit_expr(c, iav[0], b); buf_puts(b, "; ");
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_get_str(_t%d, _t%d);", tc2, ta2, tb2);
+        buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
+        emit_boxed(c, iv, b);
+        buf_printf(b, "; sp_poly_set_str(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+      }
+      else {
+        /* poly key fallback: box the key and use sp_poly_set_poly */
+        buf_printf(b, "sp_RbVal _t%d = ", tb2); emit_boxed(c, iav[0], b); buf_puts(b, "; ");
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_get_str(_t%d, _t%d.v.s);", tc2, ta2, tb2);
+        buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { _t%d = ", is_or2 ? "!" : "", tc2, tc2);
+        emit_boxed(c, iv, b);
+        buf_printf(b, "; sp_poly_set_poly(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+      }
+    }
+    else {
+      unsupported(c, id, "index-or/and-write (expr, unsupported recv type)");
     }
     return;
   }

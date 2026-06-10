@@ -1324,6 +1324,14 @@ static TyKind infer_uncached(Compiler *c, int id) {
       !strcmp(ty, "ClassVariableOrWriteNode") ||
       !strcmp(ty, "ClassVariableAndWriteNode"))
     return infer_type(c, nt_ref(nt, id, "value"));
+  if (!strcmp(ty, "IndexOrWriteNode") || !strcmp(ty, "IndexAndWriteNode")) {
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) return TY_UNKNOWN;
+    TyKind rt = infer_type(c, recv);
+    if (ty_is_array(rt)) return ty_array_elem(rt);
+    if (ty_is_hash(rt)) return ty_hash_val(rt);
+    return TY_POLY;
+  }
   if (!strcmp(ty, "ParenthesesNode")) {
     int body = nt_ref(nt, id, "body");
     if (body < 0) return TY_NIL;
