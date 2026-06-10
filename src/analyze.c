@@ -2484,6 +2484,74 @@ static int infer_write_types(Compiler *c) {
     }
   }
 
+  /* MatchRequiredNode: `value => pattern` — infer locals from pattern shape. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "MatchRequiredNode")) continue;
+    int value = nt_ref(nt, id, "value");
+    int pattern = nt_ref(nt, id, "pattern");
+    if (value < 0 || pattern < 0) continue;
+    const char *pty = nt_type(nt, pattern);
+    if (!pty) continue;
+    Scope *ms = comp_scope_of(c, id);
+    if (!strcmp(pty, "ArrayPatternNode")) {
+      int rn = 0;
+      const int *reqs = nt_arr(nt, pattern, "requireds", &rn);
+      /* Try to get types from a literal ArrayNode value. */
+      const char *vty = nt_type(nt, value);
+      int en = 0;
+      const int *els = (vty && !strcmp(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
+      TyKind arr_elem = TY_UNKNOWN;
+      if (ty_is_array(infer_type(c, value))) arr_elem = ty_array_elem(infer_type(c, value));
+      for (int i = 0; i < rn; i++) {
+        const char *lty2 = nt_type(nt, reqs[i]);
+        if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+        const char *lnm = nt_str(nt, reqs[i], "name");
+        LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+        if (!lv || lv->is_param || lv->is_block_param) continue;
+        TyKind et = (els && i < en) ? infer_type(c, els[i]) : arr_elem;
+        if (et == TY_UNKNOWN || et == TY_NIL) continue;
+        TyKind mg = ty_unify(lv->type, et);
+        if (mg != lv->type) { lv->type = mg; changed = 1; }
+      }
+    }
+    else if (!strcmp(pty, "HashPatternNode")) {
+      int pn = 0;
+      const int *pelms = nt_arr(nt, pattern, "elements", &pn);
+      /* Try to match keys from a literal HashNode value. */
+      const char *vty = nt_type(nt, value);
+      int vn = 0;
+      const int *velms = (vty && !strcmp(vty, "HashNode")) ? nt_arr(nt, value, "elements", &vn) : NULL;
+      for (int i = 0; i < pn; i++) {
+        const char *ety = nt_type(nt, pelms[i]);
+        if (!ety || strcmp(ety, "AssocNode")) continue;
+        int pkey = nt_ref(nt, pelms[i], "key");
+        int ptgt = nt_ref(nt, pelms[i], "value");
+        if (ptgt < 0) continue;
+        const char *tty = nt_type(nt, ptgt);
+        if (!tty || strcmp(tty, "LocalVariableTargetNode")) continue;
+        const char *lnm = nt_str(nt, ptgt, "name");
+        LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+        if (!lv || lv->is_param || lv->is_block_param) continue;
+        /* find matching key in value hash */
+        const char *pkey_val = (pkey >= 0 && nt_type(nt, pkey) &&
+          !strcmp(nt_type(nt, pkey), "SymbolNode")) ? nt_str(nt, pkey, "value") : NULL;
+        TyKind et = TY_UNKNOWN;
+        if (pkey_val && velms) {
+          for (int j = 0; j < vn; j++) {
+            int vkey = nt_ref(nt, velms[j], "key");
+            const char *vkty = vkey >= 0 ? nt_type(nt, vkey) : NULL;
+            const char *vkval = (vkty && !strcmp(vkty, "SymbolNode")) ? nt_str(nt, vkey, "value") : NULL;
+            if (vkval && !strcmp(vkval, pkey_val)) { et = infer_type(c, nt_ref(nt, velms[j], "value")); break; }
+          }
+        }
+        if (et == TY_UNKNOWN || et == TY_NIL) continue;
+        TyKind mg = ty_unify(lv->type, et);
+        if (mg != lv->type) { lv->type = mg; changed = 1; }
+      }
+    }
+  }
+
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
      its element / key+value type from how it is filled. `a << x` /
      `a.push(x)` / `a[i] = x` (int key) -> array; `h[k] = v` / `h[k] op= v`

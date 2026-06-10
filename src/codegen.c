@@ -9959,6 +9959,65 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "; }\n");
     return;
   }
+  if (!strcmp(ty, "MatchRequiredNode")) {
+    /* `value => pattern`: destructure pattern into locals. */
+    int value = nt_ref(nt, id, "value");
+    int pattern = nt_ref(nt, id, "pattern");
+    if (value < 0 || pattern < 0) return;
+    const char *pty = nt_type(nt, pattern);
+    if (!pty) return;
+    if (!strcmp(pty, "ArrayPatternNode")) {
+      int rn = 0;
+      const int *reqs = nt_arr(nt, pattern, "requireds", &rn);
+      TyKind vt = comp_ntype(c, value);
+      const char *k = ty_is_array(vt) ? ((vt == TY_POLY_ARRAY) ? "Poly" : array_kind(vt)) : NULL;
+      if (!k) k = "Int";
+      int tarr = ++g_tmp;
+      emit_indent(b, indent);
+      emit_ctype(c, vt != TY_UNKNOWN ? vt : TY_INT_ARRAY, b);
+      buf_printf(b, " _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "SP_GC_ROOT(_t%d);\n", tarr);
+      /* Length check: raise NoMatchingPatternError if sizes differ. */
+      emit_indent(b, indent);
+      buf_printf(b, "if (!_t%d || _t%d->len != %dLL) sp_raise_cls(\"NoMatchingPatternError\", \"[array pattern mismatch]\");\n", tarr, tarr, (long long)rn);
+      for (int i = 0; i < rn; i++) {
+        const char *lty2 = nt_type(nt, reqs[i]);
+        if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+        const char *lnm = nt_str(nt, reqs[i], "name");
+        if (!lnm) continue;
+        emit_indent(b, indent);
+        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %dLL);\n", lnm, k, tarr, (long long)i);
+      }
+    }
+    else if (!strcmp(pty, "HashPatternNode")) {
+      int pn = 0;
+      const int *pelms = nt_arr(nt, pattern, "elements", &pn);
+      /* Evaluate value hash into a temp. */
+      TyKind vt = comp_ntype(c, value);
+      const char *hn = ty_is_hash(vt) ? ty_hash_cname(vt) : NULL;
+      int thash = ++g_tmp;
+      emit_indent(b, indent);
+      if (hn) { buf_printf(b, "sp_%sHash *_t%d = ", hn, thash); }
+      else { buf_printf(b, "void *_t%d = (void *)", thash); }
+      emit_expr(c, value, b); buf_puts(b, ";\n");
+      for (int i = 0; i < pn; i++) {
+        const char *ety = nt_type(nt, pelms[i]);
+        if (!ety || strcmp(ety, "AssocNode")) continue;
+        int pkey = nt_ref(nt, pelms[i], "key");
+        int ptgt = nt_ref(nt, pelms[i], "value");
+        if (ptgt < 0) continue;
+        const char *tty = nt_type(nt, ptgt);
+        if (!tty || strcmp(tty, "LocalVariableTargetNode")) continue;
+        const char *lnm = nt_str(nt, ptgt, "name");
+        if (!lnm || !hn) continue;
+        emit_indent(b, indent);
+        buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", lnm, hn, thash);
+        emit_expr(c, pkey, b); buf_puts(b, ");\n");
+      }
+    }
+    return;
+  }
   if (!strcmp(ty, "MultiWriteNode")) {
     int ln = 0;
     const int *lefts = nt_arr(nt, id, "lefts", &ln);
