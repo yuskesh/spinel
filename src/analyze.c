@@ -730,6 +730,7 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "transpose") ||
         !strcmp(name, "shuffle") ||
         !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
+        !strcmp(name, "uniq!") ||
         !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "freeze") ||
         (!strcmp(name, "fill") && argc >= 1 && argc <= 3) ||
         !strcmp(name, "replace") ||
@@ -2838,6 +2839,39 @@ static int infer_param_types(Compiler *c) {
       changed |= bind_call_params(c, id, comp_method_in_chain(c, p, s->name, NULL));
       continue;
     }
+    /* op-assign on an object slot: `lv OP= rhs` / `@iv OP= rhs` is an
+       implicit call to `lv.OP(rhs)` -- bind the RHS type to the method param. */
+    if (!strcmp(ty, "LocalVariableOperatorWriteNode") ||
+        !strcmp(ty, "InstanceVariableOperatorWriteNode")) {
+      const char *nm  = nt_str(nt, id, "name");
+      const char *op  = nt_str(nt, id, "binary_operator");
+      int val         = nt_ref(nt, id, "value");
+      if (!op || val < 0) continue;
+      TyKind slot_t = TY_UNKNOWN;
+      if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
+        Scope *s2 = comp_scope_of(c, id);
+        LocalVar *lv2 = nm ? scope_local(s2, nm) : NULL;
+        slot_t = lv2 ? lv2->type : TY_UNKNOWN;
+      }
+      else {
+        Scope *s2 = comp_scope_of(c, id);
+        if (s2->class_id < 0) continue;
+        int iidx = nm ? comp_ivar_index(&c->classes[s2->class_id], nm) : -1;
+        slot_t = iidx >= 0 ? c->classes[s2->class_id].ivar_types[iidx] : TY_UNKNOWN;
+      }
+      if (!ty_is_object(slot_t)) continue;
+      int cid2 = ty_object_class(slot_t);
+      int mi2 = comp_method_in_chain(c, cid2, op, NULL);
+      if (mi2 < 0) continue;
+      Scope *ms2 = &c->scopes[mi2];
+      if (ms2->nparams < 1) continue;
+      LocalVar *pp = scope_local(ms2, ms2->pnames[0]);
+      if (!pp) continue;
+      TyKind at2 = infer_type(c, val);
+      TyKind mg2 = ty_unify(pp->type, at2);
+      if (mg2 != pp->type) { pp->type = mg2; changed = 1; }
+      continue;
+    }
     if (strcmp(ty, "CallNode")) continue;
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
@@ -2910,8 +2944,16 @@ static int infer_param_types(Compiler *c) {
     }
     /* obj.method -> instance method params */
     TyKind rt = infer_type(c, recv);
-    if (ty_is_object(rt))
-      changed |= bind_call_params(c, id, comp_method_in_chain(c, ty_object_class(rt), name, NULL));
+    if (ty_is_object(rt)) {
+      int cid3 = ty_object_class(rt);
+      int mi3 = comp_method_in_chain(c, cid3, name, NULL);
+      /* Comparable: `a < b` etc. on an object with `<=>` but no direct `<`
+         bind the argument to `<=>` param instead. */
+      if (mi3 < 0 && (!strcmp(name, "<") || !strcmp(name, ">") ||
+                      !strcmp(name, "<=") || !strcmp(name, ">=")))
+        mi3 = comp_method_in_chain(c, cid3, "<=>", NULL);
+      changed |= bind_call_params(c, id, mi3);
+    }
     else if (rt == TY_POLY) {
       /* poly receiver: the call may dispatch to any user method of this name,
          so bind every candidate's params (they would otherwise stay UNKNOWN

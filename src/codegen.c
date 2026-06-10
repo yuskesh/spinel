@@ -3781,6 +3781,35 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ") %s 0)", name);
       return;
     }
+    /* Comparable: object with a user `<=>` method but no direct `<` etc. */
+    if (ty_is_object(rt)) {
+      int cid4 = ty_object_class(rt);
+      if (comp_method_in_chain(c, cid4, name, NULL) < 0 &&
+          comp_method_in_chain(c, cid4, "<=>", NULL) >= 0) {
+        char selfptr[64];
+        const char *rtyp = nt_type(nt, recv);
+        if (rtyp && (!strcmp(rtyp, "LocalVariableReadNode") ||
+                     !strcmp(rtyp, "InstanceVariableReadNode") ||
+                     !strcmp(rtyp, "SelfNode"))) {
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
+          free(rb.p);
+        }
+        else {
+          int t4 = ++g_tmp;
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          emit_indent(g_pre, g_indent);
+          emit_ctype(c, rt, g_pre);
+          buf_printf(g_pre, " _t%d = %s;\n", t4, rb.p ? rb.p : "");
+          free(rb.p);
+          snprintf(selfptr, sizeof selfptr, "_t%d", t4);
+        }
+        buf_puts(b, "(");
+        emit_dispatch(c, cid4, "<=>", selfptr, nt_ref(nt, id, "arguments"), b);
+        buf_printf(b, " %s 0)", name);
+        return;
+      }
+    }
     unsupported(c, id, "comparison");
   }
 
@@ -5278,6 +5307,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         if      (!strcmp(name, "reverse!")) base = "reverse_bang";
         else if (!strcmp(name, "sort!"))    base = "sort_bang";
         else if (!strcmp(name, "shuffle!")) base = "shuffle_bang";
+        else if (!strcmp(name, "uniq!"))    base = "uniq_bang";
         if (base && argc == 0) {
           int t = ++g_tmp;
           buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
@@ -5788,6 +5818,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         if      (!strcmp(name, "reverse!")) base = "reverse_bang";
         else if (!strcmp(name, "shuffle!")) base = "shuffle_bang";
         else if (!strcmp(name, "sort!"))    base = "sort_bang";
+        else if (!strcmp(name, "uniq!"))    base = "uniq_bang";
         if (base && argc == 0) {
           int t = ++g_tmp;
           buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
