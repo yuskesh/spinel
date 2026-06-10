@@ -2970,6 +2970,23 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (!strcmp(name, "rand")) {
       if (ac == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
+      TyKind a0t = comp_ntype(c, av[0]);
+      if (a0t == TY_RANGE) {
+        int tr = ++g_tmp;
+        /* is the range a float range? */
+        int is_float = 0;
+        const char *atype = nt_type(nt, av[0]);
+        if (atype && !strcmp(atype, "RangeNode")) {
+          int lo = nt_ref(nt, av[0], "left");
+          if (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) is_float = 1;
+        }
+        buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, av[0], b); buf_puts(b, "; ");
+        if (is_float)
+          buf_printf(b, "(mrb_float)_t%d.first + sp_Random_rand_float(sp_random_default_get()) * (mrb_float)(_t%d.last - _t%d.first); })", tr, tr, tr);
+        else
+          buf_printf(b, "_t%d.first + sp_Random_rand_int(sp_random_default_get(), _t%d.last - _t%d.first + 1 - _t%d.excl); })", tr, tr, tr, tr);
+        return;
+      }
       buf_puts(b, "((mrb_int)("); emit_expr(c, av[0], b); buf_printf(b, " > 0 ? rand() %% (int)"); emit_expr(c, av[0], b); buf_puts(b, " : rand()))");
       return;
     }
@@ -5397,14 +5414,44 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", t, t, t);
       else if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
                !strcmp(name, "cover?") || !strcmp(name, "===")) {
-        buf_printf(b, "sp_range_include(&_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        /* cover?(range) checks that both endpoints of the arg fit inside self */
+        if (!strcmp(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+          int t2 = ++g_tmp;
+          buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
+          buf_printf(b, "; _t%d.first >= _t%d.first && (_t%d.last - _t%d.excl) <= (_t%d.last - _t%d.excl); })",
+                     t2, t, t2, t2, t, t);
+        }
+        else {
+          buf_printf(b, "sp_range_include(&_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        }
       }
-      else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin"))
-        buf_printf(b, "(_t%d.first)", t);
+      else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin")) {
+        if (argc == 1) {
+          /* first(n): collect up to n elements starting at first */
+          int tf = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+          buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); mrb_int _t%d = ", tf, tn);
+          emit_expr(c, argv[0], b);
+          buf_printf(b, "; for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl && _t%d - _t%d.first < _t%d; _t%d++)"
+                        " sp_IntArray_push(_t%d, _t%d); _t%d; })",
+                     ti, t, ti, t, t, ti, t, tn, ti, tf, ti, tf);
+        }
+        else buf_printf(b, "(_t%d.first)", t);
+      }
       else if (!strcmp(name, "max"))  /* max element: end minus the exclusive bound */
         buf_printf(b, "(_t%d.last - _t%d.excl)", t, t);
-      else if (!strcmp(name, "last") || !strcmp(name, "end"))  /* the end value itself */
-        buf_printf(b, "(_t%d.last)", t);
+      else if (!strcmp(name, "last") || !strcmp(name, "end")) {
+        if (argc == 1 && !strcmp(name, "last")) {
+          /* last(n): collect up to n elements ending at last */
+          int tf = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
+          buf_printf(b, "({ mrb_int _t%d = ", tn); emit_expr(c, argv[0], b);
+          buf_printf(b, "; mrb_int _t%d = _t%d.last - _t%d.excl;", te, t, t);
+          buf_printf(b, " mrb_int _t%d = _t%d - _t%d + 1; if (_t%d < _t%d.first) _t%d = _t%d.first;", ts, te, tn, ts, t, ts, t);
+          buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); for (mrb_int _i%d = _t%d; _i%d <= _t%d; _i%d++)"
+                        " sp_IntArray_push(_t%d, _i%d); _t%d; })",
+                     tf, tf, ts, tf, te, tf, tf, tf, tf);
+        }
+        else buf_printf(b, "(_t%d.last)", t);
+      }
       else if (!strcmp(name, "size") || !strcmp(name, "count"))
         buf_printf(b, "(_t%d.last - _t%d.excl - _t%d.first + 1)", t, t, t);
       else if (!strcmp(name, "sum"))
@@ -5885,7 +5932,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     /* values_at(i, j, ...) -> fresh same-kind array of the picked elements
-       (works for typed and poly arrays alike) */
+       (works for typed and poly arrays alike, and range args) */
     if (!strcmp(name, "values_at") && argc >= 1) {
       const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
       if (an) {
@@ -5893,8 +5940,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ sp_%sArray *_t%d = ", an, tr); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); ", an, to, an);
         for (int a = 0; a < argc; a++) {
-          buf_printf(b, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, ", an, to, an, tr);
-          emit_expr(c, argv[a], b); buf_puts(b, ")); ");
+          TyKind at = comp_ntype(c, argv[a]);
+          if (at == TY_RANGE) {
+            int trng = ++g_tmp, ti = ++g_tmp;
+            buf_printf(b, "{ sp_Range _t%d = ", trng); emit_expr(c, argv[a], b);
+            buf_printf(b, "; for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d++)"
+                          " sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d)); } ",
+                       ti, trng, ti, trng, trng, ti, an, to, an, tr, ti);
+          }
+          else {
+            buf_printf(b, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, ", an, to, an, tr);
+            emit_expr(c, argv[a], b); buf_puts(b, ")); ");
+          }
         }
         buf_printf(b, "_t%d; })", to);
         return;
@@ -5910,7 +5967,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         emit_ctype(c, ty_array_elem(rt), b); buf_printf(b, " _t%d = ", tv);
         if (rt == TY_POLY_ARRAY) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
         buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d);", tn, fk, t);
-        if (argc >= 2) {
+        if (argc >= 2 && comp_ntype(c, argv[1]) == TY_RANGE) {
+          /* fill(val, range): use range as index span */
+          int tr = ++g_tmp, te = ++g_tmp;
+          buf_printf(b, " sp_Range _t%d = ", tr); emit_expr(c, argv[1], b);
+          buf_printf(b, "; mrb_int _t%d = _t%d.first; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;",
+                     ts, tr, ts, ts, tn, ts, ts);
+          buf_printf(b, " mrb_int _t%d = _t%d.last - _t%d.excl;", te, tr, tr);
+          buf_printf(b, " for (mrb_int _t%d = _t%d; _t%d <= _t%d; _t%d++)"
+                        " sp_%sArray_set(_t%d, _t%d, _t%d); _t%d; })",
+                     ti, ts, ti, te, ti, fk, t, ti, tv, t);
+        }
+        else if (argc >= 2) {
           buf_printf(b, " mrb_int _t%d = ", ts); emit_expr(c, argv[1], b);
           buf_printf(b, "; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, tn, ts, ts);
           if (argc == 3) {

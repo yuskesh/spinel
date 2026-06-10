@@ -610,7 +610,16 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "Float") && argc == 1) return TY_FLOAT;
     if (!strcmp(name, "system") && argc >= 1) return TY_BOOL;
     if (!strcmp(name, "trap") && argc >= 1) return TY_STRING;
-    if (!strcmp(name, "rand")) return argc > 0 ? TY_INT : TY_FLOAT;
+    if (!strcmp(name, "rand")) {
+      if (argc == 0) return TY_FLOAT;
+      /* rand(float_range) → Float */
+      const char *atype = nt_type(nt, argv[0]);
+      if (atype && !strcmp(atype, "RangeNode")) {
+        int lo = nt_ref(nt, argv[0], "left");
+        if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;
+      }
+      return TY_INT;
+    }
     if (!strcmp(name, "srand")) return TY_INT;
   }
   /* Signal.trap / ::Signal.trap */
@@ -942,6 +951,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "all?") || !strcmp(name, "any?") ||
         !strcmp(name, "none?") || !strcmp(name, "one?")) return TY_BOOL;
     if (!strcmp(name, "each") && nt_ref(nt, id, "block") < 0) return TY_INT_ARRAY;
+    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 1) return TY_INT_ARRAY;
     if (!strcmp(name, "sum") || !strcmp(name, "min") || !strcmp(name, "max") ||
         !strcmp(name, "first") || !strcmp(name, "last") ||
         !strcmp(name, "size") || !strcmp(name, "count") ||
