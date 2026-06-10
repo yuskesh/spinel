@@ -8252,7 +8252,101 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return;
     }
-    unsupported(c, id, "if/unless expression");
+    /* Multi-stmt branches or no-else: emit as if/else block with a result temp.
+       Preludes and the if structure go into g_pre; `b` receives only _t<N>. */
+    {
+      TyKind res = comp_ntype(c, id);
+      int tr = ++g_tmp;
+      /* Declare the temp and default-initialize it. */
+      emit_indent(g_pre, g_indent);
+      emit_ctype(c, res, g_pre);
+      buf_printf(g_pre, " _t%d = %s;\n", tr,
+                 res == TY_RANGE ? "(sp_Range){0}" : default_value(res));
+      /* Emit condition — any prolog from the condition expr also goes to g_pre. */
+      emit_indent(g_pre, g_indent);
+      buf_puts(g_pre, "if (");
+      if (is_unless) buf_puts(g_pre, "!(");
+      emit_cond(c, pred, g_pre);
+      if (is_unless) buf_puts(g_pre, ")");
+      buf_puts(g_pre, ") {\n");
+      /* Then branch: side-effect stmts, then assign last expr to temp. */
+      for (int i = 0; i < tn - 1; i++) emit_stmt(c, tb[i], g_pre, g_indent + 2);
+      if (tn > 0) {
+        int last_then = tb[tn - 1];
+        TyKind lt = comp_ntype(c, last_then);
+        if (lt == TY_NIL || lt == TY_UNKNOWN) {
+          emit_stmt(c, last_then, g_pre, g_indent + 2);
+        }
+        else {
+          int saved_gi = g_indent; g_indent = g_indent + 2;
+          Buf le; memset(&le, 0, sizeof le);
+          emit_expr(c, last_then, &le);
+          g_indent = saved_gi;
+          emit_indent(g_pre, g_indent + 2);
+          buf_printf(g_pre, "_t%d = ", tr);
+          if (res == TY_POLY && lt != TY_POLY) {
+            Buf bx; memset(&bx, 0, sizeof bx);
+            emit_boxed_text(c, lt, le.p ? le.p : default_value(lt), &bx);
+            buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+          }
+          else buf_puts(g_pre, le.p ? le.p : default_value(res));
+          buf_puts(g_pre, ";\n");
+          free(le.p);
+        }
+      }
+      emit_indent(g_pre, g_indent);
+      buf_puts(g_pre, "}\n");
+      /* Else / elsif branch. */
+      if (sub >= 0) {
+        const char *sub_ty = nt_type(nt, sub);
+        if (sub_ty && !strcmp(sub_ty, "ElseNode")) {
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "else {\n");
+          for (int i = 0; i < en - 1; i++) emit_stmt(c, eb[i], g_pre, g_indent + 2);
+          if (en > 0) {
+            int last_else = eb[en - 1];
+            TyKind lt2 = comp_ntype(c, last_else);
+            if (lt2 == TY_NIL || lt2 == TY_UNKNOWN) {
+              emit_stmt(c, last_else, g_pre, g_indent + 2);
+            }
+            else {
+              int saved_gi2 = g_indent; g_indent = g_indent + 2;
+              Buf le2; memset(&le2, 0, sizeof le2);
+              emit_expr(c, last_else, &le2);
+              g_indent = saved_gi2;
+              emit_indent(g_pre, g_indent + 2);
+              buf_printf(g_pre, "_t%d = ", tr);
+              if (res == TY_POLY && lt2 != TY_POLY) {
+                Buf bx2; memset(&bx2, 0, sizeof bx2);
+                emit_boxed_text(c, lt2, le2.p ? le2.p : default_value(lt2), &bx2);
+                buf_puts(g_pre, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
+              }
+              else buf_puts(g_pre, le2.p ? le2.p : default_value(res));
+              buf_puts(g_pre, ";\n");
+              free(le2.p);
+            }
+          }
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "}\n");
+        }
+        else {
+          /* elsif (sub is IfNode) or other subsequent: recurse via emit_expr */
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "else {\n");
+          int saved_gi3 = g_indent; g_indent = g_indent + 2;
+          Buf sub_e; memset(&sub_e, 0, sizeof sub_e);
+          emit_expr(c, sub, &sub_e);
+          g_indent = saved_gi3;
+          emit_indent(g_pre, g_indent + 2);
+          buf_printf(g_pre, "_t%d = %s;\n", tr, sub_e.p ? sub_e.p : default_value(res));
+          free(sub_e.p);
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "}\n");
+        }
+      }
+      buf_printf(b, "_t%d", tr);
+      return;
+    }
   }
   if (!strcmp(ty, "CallNode")) { emit_call(c, id, b); return; }
   if (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode")) {
