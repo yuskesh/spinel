@@ -8882,6 +8882,62 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent);
         buf_printf(b, "cst_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), tmps[i]);
       }
+      else if (lty && !strcmp(lty, "InstanceVariableTargetNode")) {
+        const char *ivnm = nt_str(nt, lefts[i], "name");
+        if (!ivnm) continue;
+        Scope *iv_sc = comp_scope_of(c, id);
+        int iv_cid = iv_sc ? iv_sc->class_id : -1;
+        if (iv_cid < 0 && g_class_body_id >= 0) iv_cid = g_class_body_id;
+        TyKind ivt = TY_UNKNOWN;
+        if (iv_cid >= 0) {
+          int iv_idx = comp_ivar_index(&c->classes[iv_cid], ivnm);
+          if (iv_idx >= 0) ivt = c->classes[iv_cid].ivar_types[iv_idx];
+        }
+        emit_indent(b, indent);
+        if (iv_sc && iv_sc->is_cmethod && iv_cid >= 0)
+          buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, ivnm + 1);
+        else
+          buf_printf(b, "%s->iv_%s = ", g_self, ivnm + 1);
+        TyKind valt = comp_ntype(c, els[i]);
+        if (ivt == TY_POLY && valt != TY_POLY) {
+          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, valt, expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
+      }
+      else if (lty && !strcmp(lty, "CallTargetNode")) {
+        /* setter call: e.g. @c.v = _t<i> */
+        const char *setnm = nt_str(nt, lefts[i], "name");
+        int recv_id2 = nt_ref(nt, lefts[i], "receiver");
+        size_t snlen = setnm ? strlen(setnm) : 0;
+        if (!setnm || snlen < 2 || setnm[snlen - 1] != '=' || recv_id2 < 0)
+          { unsupported(c, id, "multiple assignment call target"); continue; }
+        TyKind rt2 = comp_ntype(c, recv_id2);
+        if (!ty_is_object(rt2))
+          { unsupported(c, id, "multiple assignment call target non-object"); continue; }
+        char base2[256]; memcpy(base2, setnm, snlen - 1); base2[snlen - 1] = '\0';
+        int rc2 = ty_object_class(rt2);
+        if (!comp_writer_in_chain(c, rc2, base2, NULL))
+          { unsupported(c, id, "multiple assignment call target no writer"); continue; }
+        char ivn2[260]; snprintf(ivn2, sizeof ivn2, "@%s", base2);
+        int defc2 = -1; comp_writer_in_chain(c, rc2, base2, &defc2);
+        int iv2 = comp_ivar_index(&c->classes[defc2 < 0 ? rc2 : defc2], ivn2);
+        TyKind ivt2 = iv2 >= 0 ? c->classes[defc2 < 0 ? rc2 : defc2].ivar_types[iv2] : TY_UNKNOWN;
+        emit_indent(b, indent);
+        buf_puts(b, "("); emit_expr(c, recv_id2, b); buf_printf(b, ")->iv_%s = ", base2);
+        TyKind valt2 = comp_ntype(c, els[i]);
+        if (ivt2 == TY_POLY && valt2 != TY_POLY) {
+          char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
+          Buf bx2; memset(&bx2, 0, sizeof bx2);
+          emit_boxed_text(c, valt2, expr2, &bx2);
+          buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
+      }
       else if (lty && !strcmp(lty, "MultiTargetNode")) {
         /* (b, c) = _t<i>  where _t<i> is a typed array */
         TyKind at = comp_ntype(c, els[i]);
@@ -8953,6 +9009,32 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         if (ridx >= 0 && ridx < en) {
           buf_printf(b, "cst_%s = _t%d;\n", rnm_j, tmps[ridx]);
         }
+      }
+      else if (!strcmp(lty, "InstanceVariableTargetNode") && rnm_j) {
+        Scope *iv_sc2 = comp_scope_of(c, id);
+        int iv_cid2 = iv_sc2 ? iv_sc2->class_id : -1;
+        TyKind ivt2 = TY_UNKNOWN;
+        if (iv_cid2 >= 0) {
+          int iv_idx2 = comp_ivar_index(&c->classes[iv_cid2], rnm_j);
+          if (iv_idx2 >= 0) ivt2 = c->classes[iv_cid2].ivar_types[iv_idx2];
+        }
+        emit_indent(b, indent);
+        if (iv_sc2 && iv_sc2->is_cmethod && iv_cid2 >= 0)
+          buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid2].name, rnm_j + 1);
+        else
+          buf_printf(b, "%s->iv_%s = ", g_self, rnm_j + 1);
+        if (ridx >= 0 && ridx < en) {
+          TyKind valt2 = (ridx < en) ? comp_ntype(c, els[ridx]) : TY_UNKNOWN;
+          if (ivt2 == TY_POLY && valt2 != TY_POLY) {
+            char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[ridx]);
+            Buf bx2; memset(&bx2, 0, sizeof bx2);
+            emit_boxed_text(c, valt2, expr2, &bx2);
+            buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
+          }
+          else buf_printf(b, "_t%d", tmps[ridx]);
+        }
+        else buf_puts(b, default_value(ivt2 != TY_UNKNOWN ? ivt2 : TY_INT));
+        buf_puts(b, ";\n");
       }
     }
     return;

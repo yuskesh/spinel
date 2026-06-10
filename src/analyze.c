@@ -2107,6 +2107,20 @@ static int infer_write_types(Compiler *c) {
         TyKind mg = ty_unify(cv->type, et);
         if (mg != cv->type) { cv->type = mg; changed = 1; }
       }
+      else if (!strcmp(lty, "InstanceVariableTargetNode")) {
+        Scope *iv_sc = comp_scope_of(c, id);
+        int iv_cid = iv_sc ? iv_sc->class_id : -1;
+        if (iv_cid < 0) continue;
+        const char *ivnm = nt_str(nt, lefts[i], "name");
+        int iv_idx = ivnm ? comp_ivar_index(&c->classes[iv_cid], ivnm) : -1;
+        if (iv_idx < 0) continue;
+        TyKind et = infer_type(c, els[i]);
+        if (et == TY_NIL) continue;
+        TyKind mg = ty_unify(c->classes[iv_cid].ivar_types[iv_idx], et);
+        if (mg != c->classes[iv_cid].ivar_types[iv_idx]) {
+          c->classes[iv_cid].ivar_types[iv_idx] = mg; changed = 1;
+        }
+      }
       else if (!strcmp(lty, "MultiTargetNode")) {
         /* (b, c) nested target: inner RHS must be an ArrayNode literal */
         const char *ety = nt_type(nt, els[i]);
@@ -2149,6 +2163,18 @@ static int infer_write_types(Compiler *c) {
         if (!cv2) continue;
         TyKind mg3 = ty_unify(cv2->type, et);
         if (mg3 != cv2->type) { cv2->type = mg3; changed = 1; }
+      }
+      else if (!strcmp(rty3, "InstanceVariableTargetNode")) {
+        Scope *iv_sc3 = comp_scope_of(c, id);
+        int iv_cid3 = iv_sc3 ? iv_sc3->class_id : -1;
+        if (iv_cid3 < 0) continue;
+        const char *ivnm3 = nt_str(nt, rights[j], "name");
+        int iv_idx3 = ivnm3 ? comp_ivar_index(&c->classes[iv_cid3], ivnm3) : -1;
+        if (iv_idx3 < 0) continue;
+        TyKind mg4 = ty_unify(c->classes[iv_cid3].ivar_types[iv_idx3], et);
+        if (mg4 != c->classes[iv_cid3].ivar_types[iv_idx3]) {
+          c->classes[iv_cid3].ivar_types[iv_idx3] = mg4; changed = 1;
+        }
       }
     }
     /* rest (splat) target: elements [ln, en-rn) become a typed array */
