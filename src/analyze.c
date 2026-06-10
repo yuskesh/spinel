@@ -1018,6 +1018,17 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "[]="))    return argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt);
     if (!strcmp(name, "fetch")) {
       TyKind vt = ty_hash_val(rt);
+      if (argc == 2) {
+        TyKind dt = infer_type(c, argv[1]);
+        /* A hash literal default `{}` infers TY_UNKNOWN but is still a hash value
+           — incompatible with a non-hash hash-val type like TY_INT. */
+        if (dt == TY_UNKNOWN) {
+          const char *atn = nt_type(nt, argv[1]);
+          if (atn && (!strcmp(atn, "HashNode") || !strcmp(atn, "KeywordHashNode")))
+            dt = TY_POLY_POLY_HASH;
+        }
+        if (ty_unify(vt, dt) == TY_POLY) return TY_POLY;
+      }
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
         int bbody = nt_ref(nt, blk, "body");

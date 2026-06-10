@@ -5868,12 +5868,30 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       if (!strcmp(name, "fetch") && argc == 2) {
         /* fetch(key, default) -> has_key? ? value : default */
         TyKind vt = ty_hash_val(rt);
+        TyKind dt = comp_ntype(c, argv[1]);
+        /* Empty `{}` default infers TY_UNKNOWN but is a hash — incompatible with int/str etc. */
+        if (dt == TY_UNKNOWN) {
+          const char *atn = nt_type(c->nt, argv[1]);
+          if (atn && (!strcmp(atn, "HashNode") || !strcmp(atn, "KeywordHashNode")))
+            dt = TY_POLY_POLY_HASH;
+        }
+        int needs_box = (vt != TY_POLY && ty_unify(vt, dt) == TY_POLY);
         int th = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
         buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
-        buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : ", hn, th, tk, hn, th, tk);
-        if (vt == TY_POLY && comp_ntype(c, argv[1]) != TY_POLY) emit_boxed(c, argv[1], b);
-        else emit_expr(c, argv[1], b);
+        if (needs_box) {
+          buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? ", hn, th, tk);
+          Buf _bx; memset(&_bx, 0, sizeof _bx);
+          buf_printf(&_bx, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
+          emit_boxed_text(c, vt, _bx.p, b);
+          free(_bx.p);
+          buf_puts(b, " : "); emit_boxed(c, argv[1], b);
+        }
+        else {
+          buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : ", hn, th, tk, hn, th, tk);
+          if (vt == TY_POLY && dt != TY_POLY) emit_boxed(c, argv[1], b);
+          else emit_expr(c, argv[1], b);
+        }
         buf_puts(b, "; })");
         return;
       }
