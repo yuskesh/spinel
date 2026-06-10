@@ -3535,8 +3535,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         if ((!strcmp(name, "first") || !strcmp(name, "last") ||
              !strcmp(name, "min") || !strcmp(name, "max") ||
              !strcmp(name, "pop") || !strcmp(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return; }
+        if (!strcmp(name, "sample") && argc == 0) { buf_puts(b, "0"); return; }
         if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return; }
         if ((!strcmp(name, "join") || !strcmp(name, "pack")) && argc <= 1) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
+        if ((!strcmp(name, "union")) && argc == 0) { buf_puts(b, "sp_IntArray_new()"); return; }
         if ((!strcmp(name, "flatten") || !strcmp(name, "compact") || !strcmp(name, "uniq") ||
              !strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "dup") ||
              !strcmp(name, "clone") || !strcmp(name, "to_a")) && argc <= 1) {
@@ -5761,6 +5763,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
+      if (!strcmp(name, "union") && argc == 0) {
+        buf_printf(b, "sp_%sArray_union(", k); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
+        return;
+      }
+      if (!strcmp(name, "sample") && argc == 0) {
+        buf_printf(b, "sp_%sArray_sample(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        return;
+      }
     }
     /* poly (mixed-element) array methods: elements are boxed sp_RbVal */
     if (rt == TY_POLY_ARRAY) {
@@ -5782,6 +5792,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         const char *fn = !strcmp(name, "&") ? "intersect" : (!strcmp(name, "|") ? "union" : "difference");
         buf_printf(b, "sp_PolyArray_%s(", fn);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (!strcmp(name, "union") && argc == 0) {
+        buf_puts(b, "sp_PolyArray_union("); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
+        return;
+      }
+      if (!strcmp(name, "sample") && argc == 0) {
+        buf_puts(b, "sp_PolyArray_sample("); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
       if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||

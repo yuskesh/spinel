@@ -240,10 +240,11 @@ static TyKind infer_call(Compiler *c, int id) {
     if (rty && !strcmp(rty, "ArrayNode")) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en == 0) {
-        /* first/last/min/max/pop/shift of an empty array is nil; carry it as
-           a nullable int */
+        /* first/last/min/max/pop/shift/sample of an empty array returns 0
+           (the typed slot's zero value); carry it as an int */
         if ((!strcmp(name, "first") || !strcmp(name, "last") ||
              !strcmp(name, "min") || !strcmp(name, "max") ||
+             !strcmp(name, "sample") ||
              !strcmp(name, "pop") || !strcmp(name, "shift")) && argc == 0) return TY_INT;
         rt = TY_POLY_ARRAY;
       }
@@ -685,6 +686,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 1) return rt;  /* first(n)/last(n) -> subarray */
     if (!strcmp(name, "first") || !strcmp(name, "last") ||
         !strcmp(name, "min") || !strcmp(name, "max") ||
+        !strcmp(name, "sample") ||
         !strcmp(name, "pop") || !strcmp(name, "shift")) return ty_array_elem(rt);
     if (!strcmp(name, "minmax")) return rt;  /* [min, max], same element kind */
     if (!strcmp(name, "join"))                        return TY_STRING;
@@ -729,6 +731,7 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "compact") || !strcmp(name, "compact!") || !strcmp(name, "flatten") || !strcmp(name, "clear") ||
         !strcmp(name, "transpose") ||
         !strcmp(name, "shuffle") ||
+        (!strcmp(name, "union") && argc == 0) ||
         !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
         !strcmp(name, "uniq!") ||
         !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "freeze") ||
