@@ -4756,21 +4756,66 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       if (!strcmp(name, "dig") && argc >= 1) {
         TyKind vt = ty_hash_val(rt);
         TyKind kt = ty_hash_key(rt);
+        /* Static key-type mismatch (string key on sym hash, etc.) -> nil. */
+        TyKind arg0t = comp_ntype(c, argv[0]);
+        if ((kt == TY_SYMBOL && arg0t == TY_STRING) ||
+            (kt == TY_STRING && arg0t == TY_SYMBOL)) {
+          if (vt == TY_INT) buf_puts(b, "SP_INT_NIL");
+          else if (vt == TY_STRING) buf_puts(b, "NULL");
+          else buf_puts(b, "sp_box_nil()");
+          return;
+        }
         const char *getter = vt == TY_INT ? "get_opt" : "get";
         if (argc == 1) {
           buf_printf(b, "sp_%sHash_%s(", hn, getter);
           emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], kt, b); buf_puts(b, ")");
         }
         else {
-          /* multi-step: chain sp_poly_arr_get / sp_poly_get_sym / sp_poly_get_str */
-          for (int di = argc - 1; di >= 1; di--) {
-            if (kt == TY_SYMBOL) buf_puts(b, "sp_poly_get_sym(");
-            else if (kt == TY_STRING) buf_puts(b, "sp_poly_get_str(");
-            else buf_puts(b, "sp_poly_arr_get(");
+          /* multi-step dig: use a compound statement to guarantee
+             left-to-right key-expression evaluation order. */
+          int tr = ++g_tmp, th = ++g_tmp;
+          buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th);
+          emit_expr(c, recv, b); buf_puts(b, ";");
+          /* first key -> box to sp_RbVal so remaining steps are uniform */
+          buf_printf(b, " sp_RbVal _t%d = ", tr);
+          if (vt == TY_INT) {
+            int tk0 = ++g_tmp;
+            buf_printf(b, "({ mrb_int _t%d = sp_%sHash_%s(_t%d, ", tk0, hn, getter, th);
+            emit_hash_key(c, argv[0], kt, b);
+            buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); });", tk0, tk0);
           }
-          buf_printf(b, "sp_%sHash_%s(", hn, getter == "get_opt" ? "get_opt" : "get");
-          emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], kt, b); buf_puts(b, ")");
-          for (int di = 1; di < argc; di++) { buf_puts(b, ", "); emit_expr(c, argv[di], b); buf_puts(b, ")"); }
+          else if (vt == TY_STRING) {
+            int tk0 = ++g_tmp;
+            buf_printf(b, "({ const char *_t%d = sp_%sHash_%s(_t%d, ", tk0, hn, getter, th);
+            emit_hash_key(c, argv[0], kt, b);
+            buf_printf(b, "); _t%d ? sp_box_str(_t%d) : sp_box_nil(); });", tk0, tk0);
+          }
+          else {
+            /* TY_POLY: getter already returns sp_RbVal */
+            buf_printf(b, "sp_%sHash_%s(_t%d, ", hn, getter, th);
+            emit_hash_key(c, argv[0], kt, b);
+            buf_puts(b, ");");
+          }
+          /* remaining keys via sp_poly_get_sym / sp_poly_get_str / sp_poly_arr_get */
+          for (int di = 1; di < argc; di++) {
+            int tk = ++g_tmp;
+            if (kt == TY_SYMBOL) {
+              buf_printf(b, " sp_sym _t%d = ", tk);
+              emit_expr(c, argv[di], b);
+              buf_printf(b, "; _t%d = sp_poly_get_sym(_t%d, _t%d);", tr, tr, tk);
+            }
+            else if (kt == TY_STRING) {
+              buf_printf(b, " const char *_t%d = ", tk);
+              emit_expr(c, argv[di], b);
+              buf_printf(b, "; _t%d = sp_poly_get_str(_t%d, _t%d);", tr, tr, tk);
+            }
+            else {
+              buf_printf(b, " mrb_int _t%d = ", tk);
+              emit_expr(c, argv[di], b);
+              buf_printf(b, "; _t%d = sp_poly_arr_get(_t%d, _t%d);", tr, tr, tk);
+            }
+          }
+          buf_printf(b, " _t%d; })", tr);
         }
         return;
       }
