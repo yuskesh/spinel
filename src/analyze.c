@@ -2913,6 +2913,10 @@ static int infer_write_types(Compiler *c) {
          PolyArray (ty_unify would return TY_POLY scalar, so use array-aware
          widening instead). */
       if (vt == TY_UNKNOWN) continue;
+      /* If a [] read already promoted this slot to a hash type, the push
+         wins: a variable that is pushed to is an array, not a hash.
+         Reset the slot so the array promotion below can fire. */
+      if (ty_is_hash(*slot)) *slot = TY_UNKNOWN;
       if (*slot != TY_UNKNOWN && !ty_is_array(*slot)) continue;
       if (*slot == TY_POLY_ARRAY) continue;  /* already widest array type */
       TyKind want = ty_array_of(vt);
