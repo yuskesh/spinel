@@ -5744,8 +5744,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if ((!strcmp(name, "sort") || !strcmp(name, "uniq")) && argc == 0 && rt == TY_INT_ARRAY) {
-        buf_printf(b, "sp_IntArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")");
+      if (!strcmp(name, "sort") && argc == 0 &&
+          (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)) {
+        buf_printf(b, "sp_%sArray_sort(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        return;
+      }
+      if (!strcmp(name, "uniq") && argc == 0 && rt == TY_INT_ARRAY) {
+        buf_puts(b, "sp_IntArray_uniq("); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
       if (!strcmp(name, "last") && argc == 0) {
