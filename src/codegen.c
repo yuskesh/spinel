@@ -1613,6 +1613,33 @@ static int emit_collect_expr(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, block, "body");
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+
+  /* map {} with empty block: poly array of nil with same length as receiver */
+  if (bn == 0 && is_map) {
+    int tlen = ++g_tmp, tres0 = ++g_tmp, ti0 = ++g_tmp;
+    Buf rb0; memset(&rb0, 0, sizeof rb0);
+    emit_expr(c, recv, &rb0);  /* preludes land in g_pre, value in rb0 */
+    emit_indent(g_pre, g_indent);
+    if (range_recv) {
+      int tr = ++g_tmp;
+      buf_printf(g_pre, "sp_Range _t%d = %s;\n", tr, rb0.p ? rb0.p : "");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "mrb_int _t%d = _t%d.last - _t%d.excl - _t%d.first + 1; if (_t%d < 0) _t%d = 0;\n",
+                 tlen, tr, tr, tr, tlen, tlen);
+    }
+    else {
+      buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(%s);\n", tlen, k, rb0.p ? rb0.p : "NULL");
+    }
+    free(rb0.p);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres0, tres0);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, sp_box_nil());\n",
+               ti0, ti0, tlen, ti0, tres0);
+    buf_printf(b, "_t%d", tres0);
+    return 1;
+  }
+
   if (bn < 1) return 0;
 
   int trecv = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
