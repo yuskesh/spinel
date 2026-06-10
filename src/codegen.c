@@ -8474,6 +8474,17 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  /* MultiWriteNode as expression: execute the destructuring (side effect),
+     then return the RHS value (Ruby semantics: value of `a, b = arr` is arr). */
+  if (!strcmp(ty, "MultiWriteNode")) {
+    int value = nt_ref(nt, id, "value");
+    /* emit the multi-write as a statement first (for its side effects) */
+    emit_stmt(c, id, g_pre, g_indent);
+    /* then yield the RHS value as the expression's result */
+    emit_expr(c, value, b);
+    return;
+  }
+
   unsupported(c, id, "expression");
 }
 

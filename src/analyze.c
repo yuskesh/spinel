@@ -1416,6 +1416,10 @@ static TyKind infer_uncached(Compiler *c, int id) {
     return ty_unify(et, rt);
   }
 
+  /* MultiWriteNode as expression: value is the RHS array. */
+  if (!strcmp(ty, "MultiWriteNode"))
+    return infer_type(c, nt_ref(nt, id, "value"));
+
   return TY_UNKNOWN;
 }
 
