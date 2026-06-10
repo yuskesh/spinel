@@ -12465,10 +12465,11 @@ static void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   /* regex values can appear in poly context (multi-typed local); box as nil */
   if (t == TY_REGEX) { buf_puts(b, "sp_box_nil()"); return; }
-  /* an empty array literal [] has TY_UNKNOWN; box it as an empty IntArray */
+  /* an empty array literal [] has TY_UNKNOWN; box it as an empty PolyArray so
+     it can hold any element type when stored into a poly slot */
   if (t == TY_UNKNOWN && nt_type(c->nt, node) && !strcmp(nt_type(c->nt, node), "ArrayNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
-    if (_ne == 0) { buf_puts(b, "sp_box_int_array(sp_IntArray_new())"); return; }
+    if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); return; }
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
   if (t == TY_UNKNOWN && nt_type(c->nt, node) && !strcmp(nt_type(c->nt, node), "HashNode")) {

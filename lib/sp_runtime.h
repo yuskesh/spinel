@@ -3832,7 +3832,14 @@ static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, mrb_int idx, sp_RbVal val) {
                                                    val.tag == SP_TAG_FLT ? val.v.f : (mrb_float)val.v.i); break;
     case SP_BUILTIN_STR_ARRAY:  sp_StrArray_set((sp_StrArray*)v.v.p, idx,
                                                  val.tag == SP_TAG_STR ? val.v.s : NULL); break;
-    case SP_BUILTIN_POLY_ARRAY: sp_PolyArray_set((sp_PolyArray*)v.v.p, idx, val); break;
+    case SP_BUILTIN_POLY_ARRAY: {
+      sp_PolyArray *_pa = (sp_PolyArray*)v.v.p;
+      if (_pa && !_pa->frozen) {
+        while (_pa->len <= idx) sp_PolyArray_push(_pa, sp_box_nil());
+        _pa->data[idx] = val;
+      }
+      break;
+    }
     case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, sp_box_int(idx), val); break;
     default: break;
   }
