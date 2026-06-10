@@ -3436,7 +3436,26 @@ static void emit_call(Compiler *c, int id, Buf *b) {
             free(rp.p); return;
           }
           if (!strcmp(name, "=~") && argc == 1) {
-            buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")");
+            if (a0 == TY_STRING) {
+              buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")");
+            }
+            else if (a0 == TY_POLY) {
+              /* runtime type check: raise TypeError if not a string */
+              int tv = ++g_tmp;
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "if (_t%d.tag != SP_TAG_STR) sp_raise_cls(\"TypeError\", \"no implicit conversion into String\");\n", tv);
+              buf_printf(b, "sp_re_match_poly(%s, _t%d.v.s)", rp.p, tv);
+            }
+            else {
+              /* statically known non-string: always raises TypeError */
+              const char *tn = (a0 == TY_INT) ? "Integer" : (a0 == TY_FLOAT) ? "Float"
+                             : (a0 == TY_BOOL) ? "true/false" : (a0 == TY_NIL) ? "NilClass" : "Object";
+              buf_printf(b, "((void)(");
+              emit_expr(c, argv[0], b);
+              buf_printf(b, "), sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into String\"), sp_box_nil())", tn);
+            }
             free(rp.p); return;
           }
           if (!strcmp(name, "match") && (argc == 1 || argc == 2)) {
