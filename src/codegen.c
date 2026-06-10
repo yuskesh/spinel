@@ -2055,6 +2055,25 @@ static void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Bu
   if (provided >= 0) {
     if (pt == TY_POLY) emit_boxed(c, provided, out);   /* box into a poly param */
     else {
+      /* When the param is a typed hash pointer but the caller passes a poly
+         or nil value (e.g. an uninit ivar), extract .v.p from the RbVal.
+         sp_box_nil() stores v.i=0 so .v.p is NULL, which hash getters handle
+         safely via their NULL guards. */
+      TyKind at = comp_ntype(c, provided);
+      if (ty_is_hash(pt) && (at == TY_POLY || at == TY_NIL || at == TY_UNKNOWN)) {
+        const char *hn = ty_hash_cname(pt);
+        if (hn) {
+          int ht = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_RbVal _t%d = ", ht);
+          Buf ab2; memset(&ab2, 0, sizeof ab2);
+          emit_expr(c, provided, &ab2);
+          buf_puts(g_pre, ab2.p ? ab2.p : "sp_box_nil()"); free(ab2.p);
+          buf_puts(g_pre, ";\n");
+          buf_printf(out, "(sp_%sHash *)_t%d.v.p", hn, ht);
+          return;
+        }
+      }
       /* empty array literal `[]` defaults to IntArray in emit_expr; if the
          parameter expects a different array type, emit the right constructor */
       int nen = 0;

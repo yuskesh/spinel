@@ -3047,6 +3047,85 @@ static int is_string_only_method(const char *m) {
   return 0;
 }
 
+/* Infer a still-unknown parameter as a typed hash when the body indexes
+   it with a literal key: `param["key"]` → str_poly_hash,
+   `param[:sym]` → sym_poly_hash. Runs in the fixpoint alongside
+   infer_string_params so methods with no concrete-typed caller still
+   resolve their hash param type from body usage. */
+static int infer_hash_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  static const char *const hash_only_meths[] = {
+    "keys","values","each_pair","merge","has_key?","key?","fetch","store",
+    "delete","transform_values","transform_keys","to_h","each_with_object",NULL
+  };
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    const char *rty = nt_type(nt, recv);
+    if (!rty || strcmp(rty, "LocalVariableReadNode")) continue;
+    Scope *s = comp_scope_of(c, id);
+    LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
+    if (!lv || !lv->is_param || lv->type != TY_UNKNOWN) continue;
+    /* Literal-key [] / fetch: infer specific variant */
+    if (!strcmp(name, "[]") || !strcmp(name, "fetch")) {
+      int args = nt_ref(nt, id, "arguments");
+      int an = 0;
+      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an < 1) continue;
+      const char *kty = argv ? nt_type(nt, argv[0]) : NULL;
+      if (!kty) continue;
+      TyKind want = TY_UNKNOWN;
+      if (!strcmp(kty, "StringNode") || !strcmp(kty, "InterpolatedStringNode"))
+        want = TY_STR_POLY_HASH;
+      else if (!strcmp(kty, "SymbolNode"))
+        want = TY_SYM_POLY_HASH;
+      if (want == TY_UNKNOWN) continue;
+      lv->type = want; changed = 1;
+      continue;
+    }
+    /* Hash-only methods: widen to str_poly_hash (most common variant) */
+    for (int k = 0; hash_only_meths[k]; k++) {
+      if (!strcmp(name, hash_only_meths[k])) { lv->type = TY_STR_POLY_HASH; changed = 1; break; }
+    }
+  }
+  return changed;
+}
+
+/* Infer a still-unknown parameter as poly_array when the body calls an
+   array-only method on it: push/pop/shift/unshift/concat/length/size/empty?.
+   Does NOT fire on << (overlaps with Integer/String) or arithmetic ops.
+   Runs inside the fixpoint so array params without typed callers still resolve. */
+static int infer_array_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  static const char *const arr_meths[] = {
+    "push","pop","shift","unshift","concat","flatten","compact","transpose",
+    "each_with_index","each_with_object","zip","combination","permutation",NULL
+  };
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name) continue;
+    int is_arr = 0;
+    for (int k = 0; arr_meths[k]; k++) if (!strcmp(name, arr_meths[k])) { is_arr = 1; break; }
+    if (!is_arr) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    const char *rty = nt_type(nt, recv);
+    if (!rty || strcmp(rty, "LocalVariableReadNode")) continue;
+    Scope *s = comp_scope_of(c, id);
+    LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
+    if (lv && lv->is_param && lv->type == TY_UNKNOWN) { lv->type = TY_POLY_ARRAY; changed = 1; }
+  }
+  return changed;
+}
+
 /* Infer a still-unknown parameter as String when the body calls a
    String-only method on it (a param with no concrete-typed caller). */
 static int infer_string_params(Compiler *c) {
@@ -4252,6 +4331,19 @@ void analyze_program(Compiler *c) {
   infer_write_types(c);
   /* recompute returns: a method returning such a param is now poly */
   for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
+
+  /* Post-fixpoint body-usage inference: type any param still TY_UNKNOWN
+     from how it is used inside the method body (hash subscript patterns,
+     array-specific calls). Runs after the main fixpoint so caller-side
+     types always win; the mini-loop below propagates the new types. */
+  if (infer_hash_params(c) | infer_array_params(c)) {
+    for (int iter = 0; iter < 16; iter++) {
+      int ch = 0;
+      ch |= infer_param_types(c);
+      ch |= infer_return_types(c);
+      if (!ch) break;
+    }
+  }
 
   /* Post-fixpoint: unify param types across method override families.
      When an override widens a param to TY_POLY but the parent (or
