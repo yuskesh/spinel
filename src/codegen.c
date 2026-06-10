@@ -5031,13 +5031,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && argc > 0) {
     /* the builtin-array `[]` arm only applies to an integer index */
     int is_index = !strcmp(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_INT;
+    int is_include = (!strcmp(name, "include?") || !strcmp(name, "member?")) && argc == 1;
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
       /* Include if call supplies all required params (pad defaults / truncate extras) */
       if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
     }
-    if (ncand > 0 || is_index) {
+    if (ncand > 0 || is_index || is_include) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       int *atmp = malloc(sizeof(int) * argc);
@@ -5049,6 +5050,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
       buf_printf(b, " _t%d = %s; ", tr, is_scalar_ret(ret) ? default_value(ret) : "0");
+      /* include? on a TAG_STR receiver: check tag before entering cls_id switch */
+      if (is_include && infer_type(c, argv[0]) == TY_STRING)
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_include(_t%d.v.s, _t%d); } else ", tv, tr, tv, atmp[0]);
       buf_printf(b, "switch (_t%d.cls_id) {", tv);
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
@@ -5101,6 +5105,32 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         }
         else {
           buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_get((sp_IntArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+        }
+      }
+      if (is_include) {
+        TyKind at = infer_type(c, argv[0]);
+        if (at == TY_INT) {
+          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = sp_range_include((sp_Range *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+        }
+        else if (at == TY_STRING) {
+          buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_STR_INT_HASH: _t%d = sp_StrIntHash_has_key((sp_StrIntHash *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_STR_STR_HASH: _t%d = sp_StrStrHash_has_key((sp_StrStrHash *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_STR_POLY_HASH: _t%d = sp_StrPolyHash_has_key((sp_StrPolyHash *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+        }
+        else if (at == TY_SYMBOL) {
+          /* sym array is stored as IntArray (sp_sym == mrb_int) */
+          buf_printf(b, " case SP_BUILTIN_SYM_ARRAY: _t%d = sp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_SYM_POLY_HASH: _t%d = sp_SymPolyHash_has_key((sp_SymPolyHash *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+        }
+        /* PolyArray: box the arg for runtime comparison */
+        {
+          int tbox = ++g_tmp;
+          buf_printf(b, " case SP_BUILTIN_POLY_ARRAY: { sp_RbVal _t%d = ", tbox);
+          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+          emit_boxed_text(c, at, tn, b);
+          buf_printf(b, "; _t%d = sp_PolyArray_include((sp_PolyArray *)_t%d.v.p, _t%d); break; }", tr, tv, tbox);
         }
       }
       /* the poly value may actually be a string-keyed hash: dispatch `[]` /
@@ -7071,6 +7101,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   }
   if (recv >= 0 && argc == 0 && !strcmp(name, "to_s")) {
     buf_puts(b, "\"\""); return;
+  }
+  /* nil? on an object type: objects are never nil */
+  if (recv >= 0 && argc == 0 && !strcmp(name, "nil?") && ty_is_object(rt)) {
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+    return;
   }
 
   unsupported(c, id, "call");
