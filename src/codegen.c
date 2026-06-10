@@ -10826,12 +10826,13 @@ static int needs_root(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_
 /* Box a C-text expression `expr` of static type `t` into an sp_RbVal. */
 static const char *hash_box_cls(TyKind t) {
   switch (t) {
-    case TY_STR_INT_HASH:  return "SP_BUILTIN_STR_INT_HASH";
-    case TY_STR_STR_HASH:  return "SP_BUILTIN_STR_STR_HASH";
-    case TY_INT_STR_HASH:  return "SP_BUILTIN_INT_STR_HASH";
-    case TY_STR_POLY_HASH: return "SP_BUILTIN_STR_POLY_HASH";
-    case TY_SYM_POLY_HASH: return "SP_BUILTIN_SYM_POLY_HASH";
-    default:               return NULL;
+    case TY_STR_INT_HASH:   return "SP_BUILTIN_STR_INT_HASH";
+    case TY_STR_STR_HASH:   return "SP_BUILTIN_STR_STR_HASH";
+    case TY_INT_STR_HASH:   return "SP_BUILTIN_INT_STR_HASH";
+    case TY_STR_POLY_HASH:  return "SP_BUILTIN_STR_POLY_HASH";
+    case TY_SYM_POLY_HASH:  return "SP_BUILTIN_SYM_POLY_HASH";
+    case TY_POLY_POLY_HASH: return "SP_BUILTIN_POLY_POLY_HASH";
+    default:                return NULL;
   }
 }
 
@@ -10898,6 +10899,11 @@ static void emit_boxed(Compiler *c, int node, Buf *b) {
   if (t == TY_UNKNOWN && nt_type(c->nt, node) && !strcmp(nt_type(c->nt, node), "ArrayNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_int_array(sp_IntArray_new())"); return; }
+  }
+  /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
+  if (t == TY_UNKNOWN && nt_type(c->nt, node) && !strcmp(nt_type(c->nt, node), "HashNode")) {
+    int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
+    if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); return; }
   }
   const char *fn = NULL;
   switch (t) {
