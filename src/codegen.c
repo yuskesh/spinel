@@ -153,6 +153,21 @@ static int re_lit_index(Compiler *c, int nid) {
     }
     return -1;
   }
+  /* a local variable of type TY_REGEX: look up its write node */
+  if (!strcmp(ty, "LocalVariableReadNode") && comp_ntype(c, nid) == TY_REGEX) {
+    const char *nm = nt_str(c->nt, nid, "name");
+    if (!nm) return -1;
+    for (int k = 0; k < c->nt->count; k++) {
+      const char *kt = nt_type(c->nt, k);
+      if (!kt || strcmp(kt, "LocalVariableWriteNode")) continue;
+      const char *kn = nt_str(c->nt, k, "name");
+      if (!kn || strcmp(kn, nm)) continue;
+      int v = nt_ref(c->nt, k, "value");
+      if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "RegularExpressionNode"))
+        return re_lit_index(c, v);
+    }
+    return -1;
+  }
   if (strcmp(ty, "RegularExpressionNode")) return -1;
   const char *src = nt_str(c->nt, nid, "unescaped");
   if (!src) return -1;
@@ -193,6 +208,32 @@ static const char *re_lit_src(Compiler *c, int nid) {
   }
   return NULL;
 }
+
+static void emit_interp(Compiler *c, int id, Buf *b);  /* forward */
+
+/* Emit a regex pattern expression to `b`, handling both static literals and
+   interpolated patterns. For interpolated patterns, setup is emitted to
+   g_pre and a temp mrb_regexp_pattern* variable name is written to `b`.
+   Returns 1 if handled, 0 if nid is not a recognizable regex. */
+static int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b) {
+  int ri = re_lit_index(c, nid);
+  if (ri >= 0) { buf_printf(b, "sp_re_pat_%d", ri); return 1; }
+  const char *ty = nt_type(c->nt, nid);
+  if (ty && !strcmp(ty, "InterpolatedRegularExpressionNode")) {
+    int flg = re_engine_flags((int)nt_int(c->nt, nid, "flags", 0));
+    int ts = ++g_tmp, tp = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = ", ts);
+    emit_interp(c, nid, g_pre);
+    buf_puts(g_pre, ";\n");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)strlen(_t%d), %d);\n", tp, ts, ts, flg);
+    buf_printf(b, "_t%d", tp);
+    return 1;
+  }
+  return 0;
+}
+
 /* A set of local names (borrowed pointers into the node table). */
 typedef struct { const char **v; int n, cap; } NameSet;
 static int nameset_has(NameSet *s, const char *nm) {
@@ -270,6 +311,7 @@ static const char *c_type_name(TyKind t) {
     case TY_STRINGIO:    return "sp_StringIO *";
     case TY_STRINGSCANNER: return "sp_StringScanner *";
     case TY_MATCHDATA:   return "sp_MatchData *";
+    case TY_REGEX:       return "mrb_regexp_pattern *";
     case TY_EXCEPTION:   return "sp_Exception *";
     case TY_INT_ARRAY:   return "sp_IntArray *";
     case TY_FLOAT_ARRAY: return "sp_FloatArray *";
@@ -289,7 +331,7 @@ static const char *c_type_name(TyKind t) {
 }
 static int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
-         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_EXCEPTION ||
+         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC ||
          ty_is_hash(t) || ty_is_object(t);
@@ -306,6 +348,7 @@ static const char *default_value(TyKind t) {
     case TY_STRINGIO: return "NULL";
     case TY_STRINGSCANNER: return "NULL";
     case TY_MATCHDATA:  return "NULL";
+    case TY_REGEX:      return "NULL";
     case TY_EXCEPTION: return "NULL";
     case TY_INT_ARRAY:
     case TY_FLOAT_ARRAY:
@@ -3217,6 +3260,66 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* General handler for regex-related calls where the pattern is an
+     interpolated regex (/foo_#{x}/) or a TY_REGEX local variable.
+     Covers match?, =~, !~, match, gsub, sub, scan, split as regex arg. */
+  {
+    /* Pattern from argument (str.match?(/dyn/), str =~ /dyn/, etc.) */
+    if (recv >= 0 && argc >= 1) {
+      const char *a0ty = nt_type(nt, argv[0]);
+      int is_interp_arg = a0ty && !strcmp(a0ty, "InterpolatedRegularExpressionNode");
+      int is_regex_lv_arg = !is_interp_arg && argc >= 1 && comp_ntype(c, argv[0]) == TY_REGEX
+                            && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "LocalVariableReadNode");
+      if (is_interp_arg || is_regex_lv_arg) {
+        Buf rp; memset(&rp, 0, sizeof rp);
+        if (emit_regex_pat_to_buf(c, argv[0], &rp) && rp.p) {
+          if (!strcmp(name, "match?") && argc == 1) {
+            buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")");
+            free(rp.p); return;
+          }
+          if (!strcmp(name, "=~") && rt == TY_STRING) {
+            buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")");
+            free(rp.p); return;
+          }
+          if (!strcmp(name, "!~")) {
+            buf_printf(b, "(!sp_re_match_p(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, "))");
+            free(rp.p); return;
+          }
+          if (!strcmp(name, "match") && argc == 1) {
+            buf_printf(b, "sp_re_matchdata(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")");
+            free(rp.p); return;
+          }
+          free(rp.p);
+        }
+      }
+    }
+    /* Pattern from receiver (rx.match?(str), rx =~ str, etc.) */
+    {
+      const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+      int is_interp_recv = rty && !strcmp(rty, "InterpolatedRegularExpressionNode");
+      int is_regex_lv_recv = !is_interp_recv && recv >= 0 && comp_ntype(c, recv) == TY_REGEX;
+      if (is_interp_recv || is_regex_lv_recv) {
+        Buf rp; memset(&rp, 0, sizeof rp);
+        if (emit_regex_pat_to_buf(c, recv, &rp) && rp.p) {
+          if ((!strcmp(name, "match?") || !strcmp(name, "===")) && argc == 1) {
+            buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")");
+            free(rp.p); return;
+          }
+          if (!strcmp(name, "=~") && argc == 1) {
+            buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")");
+            free(rp.p); return;
+          }
+          if (!strcmp(name, "match") && (argc == 1 || argc == 2)) {
+            if (argc == 1) { buf_printf(b, "sp_re_matchdata(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+            else { buf_printf(b, "sp_re_matchdata_at(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+            free(rp.p); return;
+          }
+          free(rp.p);
+        }
+      }
+    }
+  }
+
   /* String#% with an array argument: printf-style formatting. Any typed array
      is boxed to poly so a single format path handles mixed specs. */
   if (recv >= 0 && rt == TY_STRING && !strcmp(name, "%") && argc == 1) {
@@ -5648,6 +5751,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
         emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
+      else if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2 &&
+               nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
+        Buf rp; memset(&rp, 0, sizeof rp);
+        emit_regex_pat_to_buf(c, argv[0], &rp);
+        buf_printf(b, "sp_re_%s(%s, %s, ", name, rp.p ? rp.p : "NULL", r);
+        emit_expr(c, argv[1], b); buf_puts(b, ")");
+        free(rp.p);
+      }
       else if (!strcmp(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
@@ -7116,8 +7227,15 @@ static void emit_interp(Compiler *c, int id, Buf *b) {
     if (pty && !strcmp(pty, "StringNode")) {
       const char *content = nt_str(nt, pid, "content");
       for (const char *p = content ? content : ""; *p; p++) {
-        if (*p == '%') buf_puts(&fmt, "%%");
-        else buf_printf(&fmt, "%c", *p);
+        unsigned char ch = (unsigned char)*p;
+        if (ch == '%') buf_puts(&fmt, "%%");
+        else if (ch == '\\') buf_puts(&fmt, "\\\\");
+        else if (ch == '"') buf_puts(&fmt, "\\\"");
+        else if (ch == '\n') buf_puts(&fmt, "\\n");
+        else if (ch == '\t') buf_puts(&fmt, "\\t");
+        else if (ch == '\r') buf_puts(&fmt, "\\r");
+        else if (ch >= 0x20 && ch < 0x7f) buf_printf(&fmt, "%c", ch);
+        else buf_printf(&fmt, "\\%03o", ch);
       }
     }
     else if (pty && !strcmp(pty, "EmbeddedStatementsNode")) {
@@ -7243,6 +7361,21 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   if (!strcmp(ty, "StringNode")) {
     const char *sc = nt_str(nt, id, "content");
     emit_str_literal_n(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0);
+    return;
+  }
+  if (!strcmp(ty, "SourceFileNode")) {
+    const char *sc = nt_str(nt, id, "content");
+    emit_str_literal_n(b, sc ? sc : "", sc ? strlen(sc) : 0);
+    return;
+  }
+  if (!strcmp(ty, "SourceLineNode")) {
+    buf_printf(b, "%lld", (long long)nt_int(nt, id, "value", 0));
+    return;
+  }
+  if (!strcmp(ty, "RegularExpressionNode")) {
+    int ri = re_lit_index(c, id);
+    if (ri >= 0) buf_printf(b, "sp_re_pat_%d", ri);
+    else buf_puts(b, "NULL");
     return;
   }
   if (!strcmp(ty, "InterpolatedStringNode")) { emit_interp(c, id, b); return; }
@@ -9917,6 +10050,13 @@ static void emit_boxed(Compiler *c, int node, Buf *b) {
     const char *hid = hash_box_cls(t);
     if (hid) { buf_printf(b, "sp_box_obj("); emit_expr(c, node, b); buf_printf(b, ", %s)", hid); return; }
     unsupported(c, node, "boxing value into poly"); return;
+  }
+  /* regex values can appear in poly context (multi-typed local); box as nil */
+  if (t == TY_REGEX) { buf_puts(b, "sp_box_nil()"); return; }
+  /* an empty array literal [] has TY_UNKNOWN; box it as an empty IntArray */
+  if (t == TY_UNKNOWN && nt_type(c->nt, node) && !strcmp(nt_type(c->nt, node), "ArrayNode")) {
+    int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
+    if (_ne == 0) { buf_puts(b, "sp_box_int_array(sp_IntArray_new())"); return; }
   }
   const char *fn = NULL;
   switch (t) {

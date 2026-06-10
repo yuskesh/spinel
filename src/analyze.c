@@ -358,6 +358,15 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "reset") || !strcmp(name, "terminate") || !strcmp(name, "unscan")) return TY_STRINGSCANNER;
   }
 
+  /* Regexp instance methods */
+  if (recv >= 0 && rt == TY_REGEX) {
+    if (!strcmp(name, "match?") || !strcmp(name, "===")) return TY_BOOL;
+    if (!strcmp(name, "match")) return TY_MATCHDATA;
+    if (!strcmp(name, "=~")) return TY_POLY;
+    if (!strcmp(name, "source") || !strcmp(name, "inspect") || !strcmp(name, "to_s")) return TY_STRING;
+    if (!strcmp(name, "freeze") || !strcmp(name, "dup") || !strcmp(name, "clone")) return TY_REGEX;
+  }
+
   /* MatchData instance methods */
   if (recv >= 0 && rt == TY_MATCHDATA) {
     if (!strcmp(name, "[]") && argc == 1) return TY_STRING;
@@ -1054,8 +1063,14 @@ static TyKind infer_call(Compiler *c, int id) {
   }
   if (!strcmp(name, "=~") && recv >= 0 && argc == 1) {
     const char *rrt = nt_type(nt, recv), *art = nt_type(nt, argv[0]);
+    TyKind a0t = argc > 0 ? infer_type(c, argv[0]) : TY_UNKNOWN;
     if ((rrt && !strcmp(rrt, "RegularExpressionNode")) ||
-        (art && !strcmp(art, "RegularExpressionNode"))) return TY_POLY;
+        (art && !strcmp(art, "RegularExpressionNode")) ||
+        rt == TY_REGEX || a0t == TY_REGEX) return TY_POLY;
+  }
+  if (!strcmp(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
+    TyKind a0t = argc > 0 ? infer_type(c, argv[0]) : TY_UNKNOWN;
+    if (rt == TY_REGEX || a0t == TY_REGEX) return TY_MATCHDATA;
   }
   /* /re/.source -> String, /re/.options -> Integer (compile-time constants) */
   if (recv >= 0 && argc == 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "RegularExpressionNode")) {
@@ -1152,6 +1167,10 @@ static TyKind infer_uncached(Compiler *c, int id) {
   if (!strcmp(ty, "IntegerNode"))             return TY_INT;
   if (!strcmp(ty, "FloatNode"))               return TY_FLOAT;
   if (!strcmp(ty, "StringNode"))              return TY_STRING;
+  if (!strcmp(ty, "SourceFileNode"))          return TY_STRING;
+  if (!strcmp(ty, "SourceLineNode"))          return TY_INT;
+  if (!strcmp(ty, "RegularExpressionNode") ||
+      !strcmp(ty, "InterpolatedRegularExpressionNode")) return TY_REGEX;
   if (!strcmp(ty, "InterpolatedStringNode"))  return TY_STRING;
   if (!strcmp(ty, "InterpolatedSymbolNode"))  return TY_SYMBOL;
   if (!strcmp(ty, "SymbolNode"))              return TY_SYMBOL;
@@ -1745,6 +1764,11 @@ static void register_globals_consts(Compiler *c) {
           nt_str(nt, rv, "name") && !strcmp(nt_str(nt, rv, "name"), "freeze"))
         rv = nt_ref(nt, rv, "receiver");
       int is_regex_const = rv >= 0 && nt_type(nt, rv) && !strcmp(nt_type(nt, rv), "RegularExpressionNode");
+      /* regex constants: store with type TY_REGEX so call-type inference works */
+      if (nm && is_regex_const) {
+        LocalVar *cv = comp_const_intern(c, nm);
+        cv->type = TY_REGEX;
+      }
       /* a Struct/Data const names a class, not a value constant */
       if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0 && !is_regex_const) {
         LocalVar *cv = comp_const_intern(c, nm);
