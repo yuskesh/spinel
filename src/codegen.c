@@ -3817,6 +3817,33 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (!strcmp(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
     if (!strcmp(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
   }
+  /* poly receiver: []= with symbol, string, int, or poly key -> runtime dispatch */
+  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]=") && argc == 2) {
+    TyKind at = comp_ntype(c, argv[0]);
+    TyKind vt = comp_ntype(c, argv[1]);
+    int tv = ++g_tmp;
+    buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[1], b);
+    buf_puts(b, "; ");
+    if (at == TY_STRING) {
+      buf_printf(b, "sp_poly_set_str("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+    }
+    else if (at == TY_SYMBOL) {
+      buf_printf(b, "sp_poly_set_sym("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+    }
+    else if (at == TY_INT) {
+      buf_printf(b, "sp_poly_arr_set("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+    }
+    else {
+      buf_printf(b, "sp_poly_set_poly("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+    }
+    buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+    (void)vt;
+    return;
+  }
   /* poly receiver: [] with symbol or string key -> runtime dispatch */
   if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]") && argc == 1) {
     TyKind at = comp_ntype(c, argv[0]);

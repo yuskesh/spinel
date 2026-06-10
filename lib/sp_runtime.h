@@ -3653,6 +3653,8 @@ static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
   switch (v.cls_id) {
     case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_get((sp_StrPolyHash*)v.v.p, key);
+    case SP_BUILTIN_STR_STR_HASH: { const char *s = sp_StrStrHash_get((sp_StrStrHash*)v.v.p, key); return s ? sp_box_str(s) : sp_box_nil(); }
+    case SP_BUILTIN_STR_INT_HASH: { mrb_int i = sp_StrIntHash_get_opt((sp_StrIntHash*)v.v.p, key); return i == SP_INT_NIL ? sp_box_nil() : sp_box_int(i); }
     default: return sp_box_nil();
   }
 }
@@ -3714,6 +3716,75 @@ static sp_RbVal sp_PolyPolyHash_get(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return s
 static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){if(h->len*2>=h->cap)sp_PolyPolyHash_grow(h);mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}h->keys[idx]=k;h->vals[idx]=v;h->occ[idx]=TRUE;h->order[h->len]=idx;h->len++;}
 static mrb_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 static mrb_int sp_PolyPolyHash_length(sp_PolyPolyHash*h){return h->len;}
+/* poly_val[str_key] = val: runtime dispatch for poly recv `[]=` with string key. */
+static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
+  if (v.tag != SP_TAG_OBJ) return val;
+  switch (v.cls_id) {
+    case SP_BUILTIN_STR_POLY_HASH: sp_StrPolyHash_set((sp_StrPolyHash*)v.v.p, key, val); break;
+    case SP_BUILTIN_STR_STR_HASH:
+      if (val.tag == SP_TAG_STR) sp_StrStrHash_set((sp_StrStrHash*)v.v.p, key, val.v.s); break;
+    case SP_BUILTIN_STR_INT_HASH:
+      if (val.tag == SP_TAG_INT) sp_StrIntHash_set((sp_StrIntHash*)v.v.p, key, val.v.i); break;
+    case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, sp_box_str(key), val); break;
+    default: break;
+  }
+  return val;
+}
+/* poly_val[sym_key] = val: runtime dispatch for poly recv `[]=` with symbol key. */
+static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
+  if (v.tag != SP_TAG_OBJ) return val;
+  switch (v.cls_id) {
+    case SP_BUILTIN_SYM_POLY_HASH:  sp_SymPolyHash_set((sp_SymPolyHash*)v.v.p, key, val); break;
+    case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, sp_box_sym(key), val); break;
+    default: break;
+  }
+  return val;
+}
+/* poly_val[int_idx] = val: runtime dispatch for poly recv `[]=` with int index. */
+static sp_RbVal sp_poly_arr_set(sp_RbVal v, mrb_int idx, sp_RbVal val) {
+  if (v.tag != SP_TAG_OBJ) return val;
+  switch (v.cls_id) {
+    case SP_BUILTIN_INT_ARRAY:  sp_IntArray_set((sp_IntArray*)v.v.p, idx,
+                                                val.tag == SP_TAG_INT ? val.v.i : (mrb_int)val.v.f); break;
+    case SP_BUILTIN_FLT_ARRAY:  sp_FloatArray_set((sp_FloatArray*)v.v.p, idx,
+                                                   val.tag == SP_TAG_FLT ? val.v.f : (mrb_float)val.v.i); break;
+    case SP_BUILTIN_STR_ARRAY:  sp_StrArray_set((sp_StrArray*)v.v.p, idx,
+                                                 val.tag == SP_TAG_STR ? val.v.s : NULL); break;
+    case SP_BUILTIN_POLY_ARRAY: sp_PolyArray_set((sp_PolyArray*)v.v.p, idx, val); break;
+    default: break;
+  }
+  return val;
+}
+/* poly_val[poly_key] = val: fully dynamic dispatch for poly recv + poly key. */
+static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
+  if (v.tag != SP_TAG_OBJ) return val;
+  switch (v.cls_id) {
+    case SP_BUILTIN_STR_POLY_HASH:
+      if (key.tag == SP_TAG_STR) sp_StrPolyHash_set((sp_StrPolyHash*)v.v.p, key.v.s, val);
+      break;
+    case SP_BUILTIN_STR_STR_HASH:
+      if (key.tag == SP_TAG_STR && val.tag == SP_TAG_STR)
+        sp_StrStrHash_set((sp_StrStrHash*)v.v.p, key.v.s, val.v.s);
+      break;
+    case SP_BUILTIN_STR_INT_HASH:
+      if (key.tag == SP_TAG_STR && val.tag == SP_TAG_INT)
+        sp_StrIntHash_set((sp_StrIntHash*)v.v.p, key.v.s, val.v.i);
+      break;
+    case SP_BUILTIN_SYM_POLY_HASH:
+      if (key.tag == SP_TAG_SYM) sp_SymPolyHash_set((sp_SymPolyHash*)v.v.p, (sp_sym)key.v.i, val);
+      break;
+    case SP_BUILTIN_INT_ARRAY:
+      if (key.tag == SP_TAG_INT) sp_IntArray_set((sp_IntArray*)v.v.p, key.v.i,
+                                                  val.tag == SP_TAG_INT ? val.v.i : (mrb_int)val.v.f);
+      break;
+    case SP_BUILTIN_POLY_ARRAY:
+      if (key.tag == SP_TAG_INT) sp_PolyArray_set((sp_PolyArray*)v.v.p, key.v.i, val);
+      break;
+    case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, key, val); break;
+    default: break;
+  }
+  return val;
+}
 static mrb_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(mrb_int)strlen(v.v.s):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);default:return 0;}}
 static sp_PolyArray*sp_PolyPolyHash_keys(sp_PolyPolyHash*h){sp_PolyArray*a=sp_PolyArray_new();for(mrb_int i=0;i<h->len;i++)sp_PolyArray_push(a,h->keys[h->order[i]]);return a;}
 static sp_PolyArray*sp_PolyPolyHash_values(sp_PolyPolyHash*h){sp_PolyArray*a=sp_PolyArray_new();for(mrb_int i=0;i<h->len;i++)sp_PolyArray_push(a,h->vals[h->order[i]]);return a;}
