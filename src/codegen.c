@@ -9081,6 +9081,53 @@ static void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int 
   }
 }
 
+/* Emit `when ClassName` test against a poly (sp_RbVal) scrutinee temp.
+   Returns 1 if the class is known and the check was emitted, 0 otherwise. */
+static int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *cty = nt_type(nt, cond_id);
+  if (!cty || strcmp(cty, "ConstantReadNode")) return 0;
+  const char *cn = nt_str(nt, cond_id, "name");
+  if (!cn) return 0;
+  if (!strcmp(cn, "Integer") || !strcmp(cn, "Fixnum"))
+    buf_printf(b, "%s.tag == SP_TAG_INT", tmp);
+  else if (!strcmp(cn, "String"))
+    buf_printf(b, "%s.tag == SP_TAG_STR", tmp);
+  else if (!strcmp(cn, "Float"))
+    buf_printf(b, "%s.tag == SP_TAG_FLT", tmp);
+  else if (!strcmp(cn, "Symbol"))
+    buf_printf(b, "%s.tag == SP_TAG_SYM", tmp);
+  else if (!strcmp(cn, "NilClass"))
+    buf_printf(b, "%s.tag == SP_TAG_NIL", tmp);
+  else if (!strcmp(cn, "TrueClass"))
+    buf_printf(b, "(%s.tag == SP_TAG_BOOL && %s.v.b)", tmp, tmp);
+  else if (!strcmp(cn, "FalseClass"))
+    buf_printf(b, "(%s.tag == SP_TAG_BOOL && !%s.v.b)", tmp, tmp);
+  else if (!strcmp(cn, "Numeric"))
+    buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", tmp, tmp);
+  else if (!strcmp(cn, "Array"))
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", tmp, tmp, tmp);
+  else if (!strcmp(cn, "Hash"))
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -13 && %s.cls_id >= -20)", tmp, tmp, tmp);
+  else {
+    int cid = comp_class_index(c, cn);
+    if (cid >= 0) {
+      buf_printf(b, "(%s.tag == SP_TAG_OBJ && (", tmp);
+      int first = 1;
+      for (int k = 0; k < c->nclasses; k++) {
+        if (k == cid || is_descendant(c, k, cid)) {
+          buf_printf(b, "%s%s.cls_id == %d", first ? "" : " || ", tmp, k);
+          first = 0;
+        }
+      }
+      if (first) buf_puts(b, "0");
+      buf_puts(b, "))");
+    }
+    else return 0;
+  }
+  return 1;
+}
+
 /* case/when -> an if / else-if chain. Statement form. */
 static void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
@@ -9174,7 +9221,9 @@ static void emit_case(Compiler *c, int id, Buf *b, int indent) {
             buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
           }
           else if (pt == TY_POLY) {
-            buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")");
+            char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
+            if (!emit_poly_class_when(c, conds[j], tmp, b))
+              { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
           }
           else {
             buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
@@ -9254,7 +9303,11 @@ static void emit_case_expr(Compiler *c, int id, Buf *b) {
           buf_puts(b, "0");
         }
         else if (pt == TY_STRING) { buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
-        else if (pt == TY_POLY) { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
+        else if (pt == TY_POLY) {
+          char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
+          if (!emit_poly_class_when(c, conds[j], tmp, b))
+            { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
+        }
         else { buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
       }
       else { buf_puts(b, "("); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
