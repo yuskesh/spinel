@@ -2913,6 +2913,30 @@ static int infer_write_types(Compiler *c) {
       if (iv < 0) continue;
       slot = &ci->ivar_types[iv];
     }
+    else if (is_push && rty && !strcmp(rty, "CallNode")) {
+      /* `getter_method << x` where getter returns @ivar: trace through
+         to that ivar so cross-class lazy-init getters get widened. */
+      int recv_args = nt_ref(nt, recv, "arguments");
+      int recv_argc = 0;
+      if (recv_args >= 0) nt_arr(nt, recv_args, "arguments", &recv_argc);
+      if (recv_argc != 0) continue;
+      const char *mname = nt_str(nt, recv, "name");
+      if (!mname) continue;
+      Scope *caller = comp_scope_of(c, recv);
+      if (!caller || caller->class_id < 0) continue;
+      int defcls2 = caller->class_id;
+      int getter_mi = comp_method_in_chain(c, caller->class_id, mname, &defcls2);
+      if (getter_mi < 0) continue;
+      int last2 = scope_body_last(c, getter_mi);
+      if (last2 < 0 || !nt_type(nt, last2) ||
+          strcmp(nt_type(nt, last2), "InstanceVariableReadNode")) continue;
+      const char *inm2 = nt_str(nt, last2, "name");
+      if (!inm2) continue;
+      ClassInfo *ci2 = &c->classes[defcls2];
+      int iv2 = comp_ivar_index(ci2, inm2);
+      if (iv2 < 0) continue;
+      slot = &ci2->ivar_types[iv2];
+    }
     else continue;
 
     TyKind before = *slot;
