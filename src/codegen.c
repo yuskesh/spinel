@@ -3955,7 +3955,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", "); emit_expr(c, argv[0], b);
     }
     else if (at == TY_INT) {
-      buf_printf(b, "sp_poly_arr_set("); emit_expr(c, recv, b);
+      emit_expr(c, recv, b);
+      buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_expr(c, argv[0], b);
     }
     else {

@@ -3777,6 +3777,21 @@ static sp_RbVal sp_poly_arr_set(sp_RbVal v, mrb_int idx, sp_RbVal val) {
   }
   return val;
 }
+/* Like sp_poly_arr_set but widens IntArray to PolyArray when val is non-numeric.
+   Returns the (possibly new) array RbVal so the caller can update the slot. */
+static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, mrb_int idx, sp_RbVal val) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY &&
+      val.tag != SP_TAG_INT && val.tag != SP_TAG_FLT) {
+    sp_IntArray *ia = (sp_IntArray *)v.v.p;
+    sp_PolyArray *pa = sp_PolyArray_new();
+    for (mrb_int k = 0; k < ia->len; k++)
+      sp_PolyArray_push(pa, sp_box_int(ia->data[ia->start + k]));
+    sp_PolyArray_set(pa, idx, val);
+    return sp_box_poly_array(pa);
+  }
+  sp_poly_arr_set(v, idx, val);
+  return v;
+}
 /* poly_val[poly_key] = val: fully dynamic dispatch for poly recv + poly key. */
 static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   if (v.tag != SP_TAG_OBJ) return val;
