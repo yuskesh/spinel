@@ -12172,6 +12172,14 @@ static void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      the trailing default return covers the method's value. */
   if (!strcmp(ty, "LocalVariableWriteNode") ||
       !strcmp(ty, "LocalVariableOperatorWriteNode") ||
+      !strcmp(ty, "LocalVariableOrWriteNode") ||
+      !strcmp(ty, "LocalVariableAndWriteNode") ||
+      !strcmp(ty, "InstanceVariableWriteNode") ||
+      !strcmp(ty, "InstanceVariableOperatorWriteNode") ||
+      !strcmp(ty, "InstanceVariableOrWriteNode") ||
+      !strcmp(ty, "InstanceVariableAndWriteNode") ||
+      !strcmp(ty, "GlobalVariableWriteNode") ||
+      !strcmp(ty, "ConstantWriteNode") ||
       !strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") ||
       (!strcmp(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
        emit_output_call(c, id, b, indent))) {
