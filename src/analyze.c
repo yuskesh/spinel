@@ -614,6 +614,11 @@ static TyKind infer_call(Compiler *c, int id) {
           if (it != TY_UNKNOWN) return it;
         }
       }
+      /* empty array literal `[]` with sym op: codegen treats as int_array → returns int */
+      if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode")) {
+        int en = 0; nt_arr(nt, recv, "elements", &en);
+        if (en == 0) return TY_INT;
+      }
       /* Block body last expression determines the return type when available. */
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
@@ -960,6 +965,7 @@ static TyKind infer_call(Compiler *c, int id) {
         nt_ref(nt, id, "block") < 0) return TY_RANGE;
     if (!strcmp(name, "chr")) return TY_STRING;
     if (!strcmp(name, "[]") && argc == 1) return TY_INT;  /* bit access */
+    if (!strcmp(name, "div") && argc == 1) return TY_INT;  /* floor division */
     if (!strcmp(name, "gcd") || !strcmp(name, "lcm") || !strcmp(name, "clamp")) return TY_INT;
     if (!strcmp(name, "magnitude") && argc == 0) return TY_INT;  /* alias for abs */
     if ((!strcmp(name, "modulo") || !strcmp(name, "remainder")) && argc == 1) return TY_INT;
@@ -1030,8 +1036,9 @@ static TyKind infer_call(Compiler *c, int id) {
     }
     /* array + (same kind) -> same kind */
     if (!strcmp(name, "+") && ty_is_array(rt) && a0 == rt) return rt;
-    /* array * int -> same array type (repeat) */
+    /* array * int -> same array type (repeat); array * string -> join string */
     if (!strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) return rt;
+    if (!strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) return TY_STRING;
     if (ty_is_numeric(rt) && ty_is_numeric(a0))
       return (rt == TY_FLOAT || a0 == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return TY_UNKNOWN;
@@ -2566,6 +2573,29 @@ static int infer_for_index(Compiler *c) {
     int idx = nt_ref(nt, id, "index");
     int coll = nt_ref(nt, id, "collection");
     if (idx < 0 || coll < 0) continue;
+    const char *idx_ty = nt_type(nt, idx);
+    /* for a, b in coll: MultiTargetNode with LocalVariableTargetNode children */
+    if (idx_ty && !strcmp(idx_ty, "MultiTargetNode")) {
+      int ln = 0;
+      const int *lefts = nt_arr(nt, idx, "lefts", &ln);
+      TyKind ct2 = infer_type(c, coll);
+      /* Each destructured variable gets the element type of the inner array,
+         or TY_POLY if the collection element is not a concrete typed array. */
+      TyKind inner = TY_POLY;
+      if (ty_is_array(ct2)) {
+        TyKind et2 = ty_array_elem(ct2);
+        if (ty_is_array(et2)) inner = ty_array_elem(et2);
+      }
+      Scope *ms = comp_scope_of(c, idx);
+      for (int i = 0; i < ln; i++) {
+        const char *lnm = nt_str(nt, lefts[i], "name");
+        if (!lnm) continue;
+        LocalVar *lv = scope_local_intern(ms, lnm);
+        lv->is_block_param = 1;
+        if (lv->type != inner) { lv->type = inner; changed = 1; }
+      }
+      continue;
+    }
     const char *vn = nt_str(nt, idx, "name");
     if (!vn) continue;
     TyKind ct = infer_type(c, coll);

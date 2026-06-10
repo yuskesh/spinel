@@ -921,6 +921,11 @@ static int emit_inject_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
+  /* empty array literal `[]` has TY_UNKNOWN; treat as TY_INT_ARRAY */
+  if (rt == TY_UNKNOWN && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode")) {
+    int en = 0; nt_arr(nt, recv, "elements", &en);
+    if (en == 0) rt = TY_INT_ARRAY;
+  }
   if (!ty_is_array(rt)) return 0;
   const char *k = array_kind(rt);
   if (!k) return 0;
@@ -946,10 +951,14 @@ static int emit_inject_expr(Compiler *c, int id, Buf *b) {
   if (!op) return 0;
 
   const char *ifn = (et == TY_INT) ? int_arith_fn(op) : NULL;
+  /* bitwise ops on integers: &, |, ^, <<, >> -- use operator directly */
+  int int_bitop = (et == TY_INT) && !ifn &&
+                  (!strcmp(op, "&") || !strcmp(op, "|") || !strcmp(op, "^") ||
+                   !strcmp(op, "<<") || !strcmp(op, ">>"));
   int float_op = (et == TY_FLOAT) && (!strcmp(op, "+") || !strcmp(op, "-") ||
                                       !strcmp(op, "*") || !strcmp(op, "/"));
   int str_op = (et == TY_STRING) && !strcmp(op, "+");
-  if (!ifn && !float_op && !str_op) return 0;
+  if (!ifn && !int_bitop && !float_op && !str_op) return 0;
 
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
@@ -963,7 +972,7 @@ static int emit_inject_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "%s(_t%d, sp_%sArray_get(_t%d, _t%d))", ifn, tacc, k, ta, ti);
   else if (str_op)
     buf_printf(b, "sp_str_concat(_t%d, sp_%sArray_get(_t%d, _t%d))", tacc, k, ta, ti);
-  else
+  else /* int_bitop or float direct-op */
     buf_printf(b, "_t%d %s sp_%sArray_get(_t%d, _t%d)", tacc, op, k, ta, ti);
   buf_printf(b, "; _t%d; })", tacc);
   return 1;
@@ -3185,6 +3194,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Array#* (join): arr * sep_str  ->  elements joined by separator string. */
+  if (recv >= 0 && argc == 1 && !strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
+      comp_ntype(c, argv[0]) == TY_STRING) {
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+    if (!k) k = "Str";
+    buf_printf(b, "sp_%sArray_join(", k); emit_expr(c, recv, b);
+    buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    return;
+  }
+
   /* Array#* (repeat): arr * n  ->  new array with elements repeated n times. */
   if (recv >= 0 && argc == 1 && !strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
       comp_ntype(c, argv[0]) == TY_INT) {
@@ -3385,6 +3404,25 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (!strcmp(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
     if (!strcmp(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+  }
+  /* poly receiver: [] with symbol or string key -> runtime dispatch */
+  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]") && argc == 1) {
+    TyKind at = comp_ntype(c, argv[0]);
+    if (at == TY_SYMBOL) {
+      buf_puts(b, "sp_poly_get_sym("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if (at == TY_STRING) {
+      buf_puts(b, "sp_poly_get_str("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if (at == TY_INT) {
+      buf_puts(b, "sp_poly_arr_get("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
   }
   /* poly receiver: join */
   if (recv >= 0 && rt == TY_POLY && !strcmp(name, "join")) {
@@ -5359,10 +5397,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       else if (!strcmp(name, "split") && argc == 0) buf_printf(b, "sp_str_split_ws(%s)", r);
       else if (!strcmp(name, "split") && argc == 1) {
-        /* split(" ") is whitespace-mode; split(sep) drops trailing empties */
+        /* split(nil) and split(" ") are whitespace-mode; split(sep) drops trailing empties */
         const char *aty = nt_type(c->nt, argv[0]);
-        int ws = aty && !strcmp(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
-                 !strcmp(nt_str(c->nt, argv[0], "content"), " ");
+        int nil_arg = aty && !strcmp(aty, "NilNode");
+        int ws = nil_arg || (aty && !strcmp(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
+                 !strcmp(nt_str(c->nt, argv[0], "content"), " "));
         if (ws) buf_printf(b, "sp_str_split_ws(%s)", r);
         else { buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
@@ -5468,6 +5507,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
                       " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
       }
+      else if (!strcmp(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
@@ -7526,6 +7566,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
 /* ---- output statements (puts/print/p) ---- */
 
 static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
+  arg = unwrap_parens(c, arg);
   TyKind t = comp_ntype(c, arg);
   emit_indent(b, indent);
   if (t == TY_INT) {
@@ -8156,9 +8197,47 @@ static void emit_for(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
   }
-  if (ty_is_array(ct)) {
+  if (ty_is_array(ct) || ct == TY_POLY_ARRAY) {
     const char *k = array_kind(ct);
     int ta = ++g_tmp, ti = ++g_tmp;
+    /* Multi-variable for: `for a, b in coll` -- each element is an inner array. */
+    const char *idx_ty = nt_type(nt, idx);
+    if (idx_ty && !strcmp(idx_ty, "MultiTargetNode")) {
+      int ln = 0;
+      const int *lefts = nt_arr(nt, idx, "lefts", &ln);
+      int tv = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_%sArray *_t%d = ", k ? k : "Poly", ta); emit_expr(c, coll, b); buf_puts(b, ";\n");
+      emit_indent(b, indent + 1);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
+                 ti, ti, k ? k : "Poly", ta, ti);
+      emit_indent(b, indent + 2);
+      /* get the outer element as a poly value for inner destructuring */
+      if (k) /* typed array: box the element to poly */
+        buf_printf(b, "sp_RbVal _t%d = sp_box_%s(sp_%sArray_get(_t%d, _t%d));\n",
+                   tv, !strcmp(k,"Int")?"int":!strcmp(k,"Float")?"float":"str", k, ta, ti);
+      else
+        buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", tv, ta, ti);
+      for (int i = 0; i < ln; i++) {
+        const char *lnm = nt_str(nt, lefts[i], "name");
+        if (!lnm) continue;
+        TyKind vt = scope_local(comp_scope_of(c, idx), lnm) ?
+                    scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
+        emit_indent(b, indent + 2);
+        if (vt == TY_INT || vt == TY_UNKNOWN)
+          buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_arr_get(_t%d, %d));\n", lnm, tv, i);
+        else if (vt == TY_FLOAT)
+          buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_arr_get(_t%d, %d));\n", lnm, tv, i);
+        else if (vt == TY_STRING)
+          buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_arr_get(_t%d, %d));\n", lnm, tv, i);
+        else
+          buf_printf(b, "lv_%s = sp_poly_arr_get(_t%d, %d);\n", lnm, tv, i);
+      }
+      emit_stmts(c, body, b, indent + 2);
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return;
+    }
     emit_indent(b, indent);
     buf_printf(b, "{ sp_%sArray *_t%d = ", k ? k : "Poly", ta); emit_expr(c, coll, b); buf_puts(b, ";\n");
     emit_indent(b, indent + 1);

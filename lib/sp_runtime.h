@@ -3638,6 +3638,22 @@ static mrb_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)r
    in shorthand: `{a: 1, b: "x"}` rather than `{:a=>1, :b=>"x"}`. */
 static const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h){if(!h){char*r=sp_str_alloc_raw(3);r[0]='{';r[1]='}';r[2]=0;sp_str_set_len(r,2);return r;}sp_String*s=sp_String_new("{");for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_sym_to_s(h->order[i]));sp_String_append(s,": ");sp_String_append(s,sp_poly_inspect(sp_SymPolyHash_get(h,h->order[i])));}sp_String_append(s,"}");return s->data;}
 
+/* poly_val[sym_key]: runtime dispatch for poly receiver `[]` with symbol arg. */
+static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
+  if (v.tag != SP_TAG_OBJ) return sp_box_nil();
+  switch (v.cls_id) {
+    case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_get((sp_SymPolyHash*)v.v.p, key);
+    default: return sp_box_nil();
+  }
+}
+/* poly_val[str_key]: runtime dispatch for poly receiver `[]` with string arg. */
+static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
+  if (v.tag != SP_TAG_OBJ) return sp_box_nil();
+  switch (v.cls_id) {
+    case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_get((sp_StrPolyHash*)v.v.p, key);
+    default: return sp_box_nil();
+  }
+}
 /* PolyPolyHash: heterogeneous keys + values (both sp_RbVal). For
    primitives the hash/eql is tag-based (value equality); for OBJ tag
    the default is pointer identity. Codegen patches sp_obj_hash_hook /
