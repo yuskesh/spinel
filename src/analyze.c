@@ -822,7 +822,7 @@ static TyKind infer_call(Compiler *c, int id) {
   }
   if (recv >= 0 && ty_is_hash(rt)) {
     if (!strcmp(name, "[]"))     return ty_hash_val(rt);
-    if (!strcmp(name, "[]="))    return ty_hash_val(rt);
+    if (!strcmp(name, "[]="))    return argc >= 2 ? infer_type(c, argv[1]) : ty_hash_val(rt);
     if (!strcmp(name, "fetch")) {
       TyKind vt = ty_hash_val(rt);
       int blk = nt_ref(nt, id, "block");
@@ -1959,6 +1959,68 @@ static int infer_write_types(Compiler *c) {
           }
         }
       }
+      /* call/super/yield returning a typed array: assign element types to targets */
+      if (multi_src && value >= 0) {
+        TyKind st = infer_type(c, value);
+        if (ty_is_array(st)) {
+          TyKind elem = ty_array_elem(st);
+          int rn2 = 0;
+          const int *rights2 = nt_arr(nt, id, "rights", &rn2);
+          Scope *ms_arr = comp_scope_of(c, id);
+          for (int i = 0; i < ln; i++) {
+            const char *lty_ms = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
+            if (!strcmp(lty_ms, "LocalVariableTargetNode")) {
+              const char *lnm = nt_str(nt, lefts[i], "name");
+              LocalVar *lv = lnm ? scope_local(ms_arr, lnm) : NULL;
+              if (!lv || lv->is_param || lv->is_block_param) continue;
+              lv->type = ty_unify(lv->type, elem);
+            }
+            else if (!strcmp(lty_ms, "InstanceVariableTargetNode") &&
+                     ms_arr && ms_arr->class_id >= 0) {
+              const char *ivnm = nt_str(nt, lefts[i], "name");
+              int iv_ms = ivnm ? comp_ivar_index(&c->classes[ms_arr->class_id], ivnm) : -1;
+              if (iv_ms < 0) continue;
+              TyKind mg = ty_unify(c->classes[ms_arr->class_id].ivar_types[iv_ms], elem);
+              if (mg != c->classes[ms_arr->class_id].ivar_types[iv_ms]) {
+                c->classes[ms_arr->class_id].ivar_types[iv_ms] = mg; changed = 1;
+              }
+            }
+          }
+          for (int j = 0; j < rn2; j++) {
+            const char *lty_ms = nt_type(nt, rights2[j]) ? nt_type(nt, rights2[j]) : "";
+            if (!strcmp(lty_ms, "LocalVariableTargetNode")) {
+              const char *rnm2 = nt_str(nt, rights2[j], "name");
+              LocalVar *lv = rnm2 ? scope_local(ms_arr, rnm2) : NULL;
+              if (!lv || lv->is_param || lv->is_block_param) continue;
+              lv->type = ty_unify(lv->type, elem);
+            }
+            else if (!strcmp(lty_ms, "InstanceVariableTargetNode") &&
+                     ms_arr && ms_arr->class_id >= 0) {
+              const char *ivnm2 = nt_str(nt, rights2[j], "name");
+              int iv_ms2 = ivnm2 ? comp_ivar_index(&c->classes[ms_arr->class_id], ivnm2) : -1;
+              if (iv_ms2 < 0) continue;
+              TyKind mg2 = ty_unify(c->classes[ms_arr->class_id].ivar_types[iv_ms2], elem);
+              if (mg2 != c->classes[ms_arr->class_id].ivar_types[iv_ms2]) {
+                c->classes[ms_arr->class_id].ivar_types[iv_ms2] = mg2; changed = 1;
+              }
+            }
+          }
+          int rest_nid2 = nt_ref(nt, id, "rest");
+          if (rest_nid2 >= 0) {
+            const char *rsty2 = nt_type(nt, rest_nid2);
+            int inner2 = -1;
+            if (rsty2 && !strcmp(rsty2, "SplatNode"))
+              inner2 = nt_ref(nt, rest_nid2, "expression");
+            if (inner2 >= 0 && nt_type(nt, inner2) &&
+                !strcmp(nt_type(nt, inner2), "LocalVariableTargetNode")) {
+              const char *rnm3 = nt_str(nt, inner2, "name");
+              LocalVar *lv3 = rnm3 ? scope_local(comp_scope_of(c, id), rnm3) : NULL;
+              if (lv3 && !lv3->is_param && !lv3->is_block_param)
+                lv3->type = ty_unify(lv3->type, st);
+            }
+          }
+        }
+      }
       continue;
     }
     int en = 0;
@@ -1992,6 +2054,42 @@ static int infer_write_types(Compiler *c) {
           if (!lv2 || lv2->is_param || lv2->is_block_param) continue;
           lv2->type = ty_unify(lv2->type, et2);
         }
+      }
+    }
+    /* rights targets (post-splat fixed targets) */
+    int rn = 0;
+    const int *rights = nt_arr(nt, id, "rights", &rn);
+    for (int j = 0; j < rn; j++) {
+      int ridx = en - rn + j;
+      if (ridx < 0 || ridx >= en) continue;
+      const char *rty3 = nt_type(nt, rights[j]);
+      if (!rty3 || strcmp(rty3, "LocalVariableTargetNode")) continue;
+      const char *rnm2 = nt_str(nt, rights[j], "name");
+      TyKind et = infer_type(c, els[ridx]);
+      if (et == TY_NIL) continue;
+      LocalVar *lv = rnm2 ? scope_local(comp_scope_of(c, id), rnm2) : NULL;
+      if (!lv || lv->is_param || lv->is_block_param) continue;
+      lv->type = ty_unify(lv->type, et);
+    }
+    /* rest (splat) target: elements [ln, en-rn) become a typed array */
+    int rest_nid = nt_ref(nt, id, "rest");
+    if (rest_nid >= 0) {
+      const char *rsty = nt_type(nt, rest_nid);
+      int inner = -1;
+      if (rsty && !strcmp(rsty, "SplatNode"))
+        inner = nt_ref(nt, rest_nid, "expression");
+      if (inner >= 0 && nt_type(nt, inner) &&
+          !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
+        const char *rnm = nt_str(nt, inner, "name");
+        int rstart = ln, rend = en - rn;
+        if (rend < rstart) rend = rstart;
+        TyKind rest_elem = TY_UNKNOWN;
+        for (int i = rstart; i < rend; i++)
+          rest_elem = ty_unify(rest_elem, infer_type(c, els[i]));
+        TyKind rest_arr = (rest_elem != TY_UNKNOWN) ? ty_array_of(rest_elem) : TY_INT_ARRAY;
+        LocalVar *lv = rnm ? scope_local(comp_scope_of(c, id), rnm) : NULL;
+        if (lv && !lv->is_param && !lv->is_block_param)
+          lv->type = ty_unify(lv->type, rest_arr);
       }
     }
   }
