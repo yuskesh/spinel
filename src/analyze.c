@@ -2777,8 +2777,9 @@ static int infer_write_types(Compiler *c) {
            Only fires when the slot is currently TY_UNKNOWN (empty hash). */
         TyKind rslot = TY_UNKNOWN;
         const char *rrty = nt_type(nt, recv);
+        const char *rnm2 = NULL;
         if (rrty && !strcmp(rrty, "LocalVariableReadNode")) {
-          const char *rnm2 = nt_str(nt, recv, "name");
+          rnm2 = nt_str(nt, recv, "name");
           LocalVar *lv2 = rnm2 ? scope_local(comp_scope_of(c, recv), rnm2) : NULL;
           if (lv2) rslot = lv2->type;
         }
@@ -2786,6 +2787,28 @@ static int infer_write_types(Compiler *c) {
           /* handled via slot below if it's TY_UNKNOWN */
         }
         if (rslot != TY_UNKNOWN) continue;  /* already typed, skip */
+        /* Only promote via [] read if the receiver local has at least one
+           write site in its scope. Pure block params have no write site and
+           get their type from infer_block_params; promoting them here to
+           TY_STR_POLY_HASH before is_block_param is set creates a TY_POLY
+           that ty_unify can never narrow back to the yield arg type. */
+        if (rrty && !strcmp(rrty, "LocalVariableReadNode") && rnm2) {
+          Scope *recv_scope = comp_scope_of(c, recv);
+          int has_write = 0;
+          for (int _wi = 0; _wi < nt->count && !has_write; _wi++) {
+            const char *_wty = nt_type(nt, _wi);
+            if (!_wty) continue;
+            if ((!strcmp(_wty, "LocalVariableWriteNode") ||
+                 !strcmp(_wty, "LocalVariableOrWriteNode") ||
+                 !strcmp(_wty, "LocalVariableAndWriteNode") ||
+                 !strcmp(_wty, "LocalVariableOperatorWriteNode")) &&
+                comp_scope_of(c, _wi) == recv_scope) {
+              const char *_wnm = nt_str(nt, _wi, "name");
+              if (_wnm && !strcmp(_wnm, rnm2)) has_write = 1;
+            }
+          }
+          if (!has_write) continue;
+        }
         kt = infer_type(c, argv[0]);
         if (kt == TY_SYMBOL) { vt = TY_INT; /* dummy: sym hash val is always poly */ }
         else if (kt == TY_STRING) { vt = TY_POLY; /* will map to STR_POLY */ }
@@ -4251,6 +4274,7 @@ void analyze_program(Compiler *c) {
 
   for (int id = 0; id < c->nt->count; id++)
     infer_type(c, id);
+
 
   /* Re-infer nodes inside instance_eval block bodies with the receiver's class
      context, so ivar reads get correct types in the final c->ntype cache.
