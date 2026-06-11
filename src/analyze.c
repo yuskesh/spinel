@@ -2274,8 +2274,10 @@ static void register_globals_consts(Compiler *c) {
         LocalVar *cv = comp_const_intern(c, nm);
         cv->type = TY_REGEX;
       }
-      /* a Struct/Data const names a class, not a value constant */
-      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0 && !is_regex_const) {
+      /* a Struct/Data const names a class, not a value constant.
+         Do NOT skip when the name collides with a module: M::V = "str" is a
+         value constant even though top-level `module V` exists. */
+      if (nm && is_c_ident(nm) && !is_regex_const) {
         LocalVar *cv = comp_const_intern(c, nm);
         /* `CONST = SomeClass.new(...)`: reads of CONST during the new()
            (i.e. inside initialize or anything it calls) must raise

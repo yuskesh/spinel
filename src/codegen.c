@@ -10211,7 +10211,7 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
   if (!strcmp(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
-    if (cv) {
+    if (cv && cv->type != TY_UNKNOWN) {
       if (cv->init_guarded) {
         /* a read during the const's own Class.new init raises NameError */
         buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
@@ -10222,12 +10222,18 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     }
     if (nm && !strcmp(nm, "RUBY_DESCRIPTION")) { buf_puts(b, "SPL(\"spinel\")"); return; }
     if (nm && !strcmp(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
-    unsupported(c, id, "constant read");
+    /* unregistered or untyped constant: emit a runtime NameError raise */
+    if (nm && comp_class_index(c, nm) < 0)
+      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), (const char*)NULL)", nm);
+    else
+      unsupported(c, id, "constant read");
+    return;
   }
   if (!strcmp(ty, "ConstantPathNode")) {
     /* M::CONST -> the flat constant named by the final path component */
     const char *nm = nt_str(nt, id, "name");
-    if (nm && comp_const(c, nm)) { buf_printf(b, "cst_%s", nm); return; }
+    LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
+    if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", nm); return; }
     if (nm && !strcmp(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
     /* well-known module constants */
     int par_idc = nt_ref(nt, id, "parent");
@@ -10775,6 +10781,16 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
 
 static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   arg = unwrap_parens(c, arg);
+  /* bare class/module constant: always print the name regardless of value type */
+  const char *arg_ty = nt_type(c->nt, arg);
+  if (arg_ty && !strcmp(arg_ty, "ConstantReadNode")) {
+    const char *arg_nm = nt_str(c->nt, arg, "name");
+    if (arg_nm && comp_class_index(c, arg_nm) >= 0 && !comp_const(c, arg_nm)) {
+      emit_indent(b, indent);
+      buf_printf(b, "puts(\"%s\");\n", arg_nm);
+      return;
+    }
+  }
   TyKind t = comp_ntype(c, arg);
   emit_indent(b, indent);
   if (t == TY_INT) {
@@ -10868,6 +10884,13 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
            nt_str(c->nt, arg, "name") && comp_class_index(c, nt_str(c->nt, arg, "name")) >= 0) {
     /* `puts SomeClass` -- a bare class constant renders its name */
     buf_printf(b, "puts(\"%s\");\n", nt_str(c->nt, arg, "name"));
+  }
+  else if (t == TY_UNKNOWN &&
+           nt_type(c->nt, arg) &&
+           (!strcmp(nt_type(c->nt, arg), "ConstantReadNode") ||
+            !strcmp(nt_type(c->nt, arg), "ConstantPathNode"))) {
+    /* unresolved constant: emit the expression which will raise NameError */
+    buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); putchar('\\n');\n");
   }
   else {
     unsupported(c, arg, "puts argument");
@@ -12322,7 +12345,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     const char *raw_key = isg ? nm + 1 : nm;
     const char *key = isg ? comp_resolve_gvar(c, raw_key) : raw_key;
     LocalVar *lv = isg ? comp_gvar(c, key) : comp_const(c, key);
-    if (!lv) { /* not registered (non-ident name or class const) -> ignore */ return; }
+    if (!lv || (!isg && lv->type == TY_UNKNOWN)) { /* untyped -> skip */ return; }
     int v = nt_ref(nt, id, "value");
     if (!isg && lv->init_guarded) {
       /* flag the const as in-progress while its Class.new runs, so a
