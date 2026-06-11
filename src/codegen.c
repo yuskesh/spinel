@@ -12852,6 +12852,59 @@ static int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *
   return 1;
 }
 
+/* Emit the match condition for a pattern into buf as a C boolean expression.
+   Returns 1 if a condition was emitted (requires a runtime check),
+   0 if the pattern always matches (no condition needed). */
+static int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *pty = nt_type(nt, pat);
+  if (!pty) return 0;
+  if (!strcmp(pty, "IntegerNode")) {
+    long long v = (long long)nt_int(nt, pat, "value", 0);
+    buf_printf(b, "(_t%d == %lldLL)", t, v);
+    return 1;
+  }
+  if (!strcmp(pty, "StringNode")) {
+    const char *sv = nt_str(nt, pat, "content");
+    buf_printf(b, "sp_str_eq(_t%d, \"%s\")", t, sv ? sv : "");
+    return 1;
+  }
+  if (!strcmp(pty, "SymbolNode")) {
+    const char *sv = nt_str(nt, pat, "value");
+    if (sv) { buf_printf(b, "(_t%d == sp_sym_intern(\"%s\"))", t, sv); return 1; }
+    return 0;
+  }
+  if (!strcmp(pty, "ConstantReadNode")) {
+    const char *cn2 = nt_str(nt, pat, "name");
+    if (cn2) {
+      int yes = ty_matches_class(pt, cn2, 0);
+      buf_printf(b, "%d", yes > 0 ? 1 : 0);
+      return 1;
+    }
+    return 0;
+  }
+  if (!strcmp(pty, "ArrayPatternNode")) {
+    /* Length check */
+    int apn = 0;
+    nt_arr(nt, pat, "requireds", &apn);
+    int rest_nid = nt_ref(nt, pat, "rest");
+    int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
+                    !strcmp(nt_type(nt, rest_nid), "SplatNode"));
+    if (has_rest)
+      buf_printf(b, "(_t%d && _t%d->len >= %dLL)", t, t, (long long)apn);
+    else
+      buf_printf(b, "(_t%d && _t%d->len == %dLL)", t, t, (long long)apn);
+    return 1;
+  }
+  if (!strcmp(pty, "CapturePatternNode")) {
+    /* Check inner pattern's condition if any */
+    int val = nt_ref(nt, pat, "value");
+    if (val >= 0) return emit_pm_cond(c, val, t, pt, b);
+    return 0;
+  }
+  return 0;
+}
+
 /* case/in (pattern match) -> bind pattern vars, optional guard check,
    then body; goto end_label to skip subsequent arms. */
 static void emit_case_match(Compiler *c, int id, Buf *b, int indent) {
@@ -12883,15 +12936,29 @@ static void emit_case_match(Compiler *c, int id, Buf *b, int indent) {
 
     emit_indent(b, indent); buf_puts(b, "{\n");
 
-    int guard = -1;     /* IfNode guard expression */
-    int array_pat = -1; /* ArrayPatternNode to destructure */
+    /* --- compute match condition --- */
+    Buf cond_buf = {NULL, 0, 0};
+    int has_cond = emit_pm_cond(c, pat, t, pt, &cond_buf);
+    /* For IfNode the pattern is always a binding (LV), guard is separate */
+    if (!strcmp(pty, "IfNode")) has_cond = 0;
+
+    int body_indent = indent + 1;
+    if (has_cond) {
+      emit_indent(b, indent + 1);
+      buf_printf(b, "if (%s) {\n", cond_buf.p ? cond_buf.p : "1");
+      body_indent = indent + 2;
+    }
+    free(cond_buf.p);
+
+    /* --- bindings --- */
+    int guard = -1;
+    int array_pat = -1;
 
     if (!strcmp(pty, "LocalVariableTargetNode")) {
       const char *lnm = nt_str(nt, pat, "name");
-      if (lnm) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
+      if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
     }
     else if (!strcmp(pty, "IfNode")) {
-      /* `in x if guard`: statements contains LocalVariableTargetNode(s) */
       guard = nt_ref(nt, pat, "predicate");
       int bs = nt_ref(nt, pat, "statements");
       if (bs >= 0 && nt_type(nt, bs) && !strcmp(nt_type(nt, bs), "StatementsNode")) {
@@ -12901,18 +12968,17 @@ static void emit_case_match(Compiler *c, int id, Buf *b, int indent) {
           const char *bty = nt_type(nt, body[k]);
           if (bty && !strcmp(bty, "LocalVariableTargetNode")) {
             const char *lnm = nt_str(nt, body[k], "name");
-            if (lnm) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
+            if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
           }
         }
       }
     }
     else if (!strcmp(pty, "CapturePatternNode")) {
-      /* `in PATTERN => var`: bind var = scrutinee */
       int tgt = nt_ref(nt, pat, "target");
       if (tgt >= 0 && nt_type(nt, tgt) &&
           !strcmp(nt_type(nt, tgt), "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, tgt, "name");
-        if (lnm) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
+        if (lnm) { emit_indent(b, body_indent); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
       }
       int val = nt_ref(nt, pat, "value");
       if (val >= 0 && nt_type(nt, val) && !strcmp(nt_type(nt, val), "ArrayPatternNode"))
@@ -12921,23 +12987,24 @@ static void emit_case_match(Compiler *c, int id, Buf *b, int indent) {
     else if (!strcmp(pty, "ArrayPatternNode")) {
       array_pat = pat;
     }
+    /* IntegerNode/StringNode/SymbolNode/ConstantReadNode: value-only, no binding */
 
-    /* Destructure ArrayPatternNode */
+    /* --- ArrayPatternNode destructuring --- */
     if (array_pat >= 0) {
       TyKind arr_t = ty_is_array(pt) ? pt : TY_INT_ARRAY;
       const char *k = (arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(arr_t);
       if (!k) k = "Int";
       int apn = 0;
       const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
+      int rest_nid = nt_ref(nt, array_pat, "rest");
       for (int i = 0; i < apn; i++) {
         const char *lty2 = nt_type(nt, reqs[i]);
         if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
         const char *lnm = nt_str(nt, reqs[i], "name");
         if (!lnm) continue;
-        emit_indent(b, indent + 1);
+        emit_indent(b, body_indent);
         buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %dLL);\n", lnm, k, t, (long long)i);
       }
-      int rest_nid = nt_ref(nt, array_pat, "rest");
       if (rest_nid >= 0 && nt_type(nt, rest_nid) &&
           !strcmp(nt_type(nt, rest_nid), "SplatNode")) {
         int inner = nt_ref(nt, rest_nid, "expression");
@@ -12945,28 +13012,29 @@ static void emit_case_match(Compiler *c, int id, Buf *b, int indent) {
             !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
           const char *rnm = nt_str(nt, inner, "name");
           if (rnm) {
-            emit_indent(b, indent + 1);
-            buf_printf(b, "if (_t%d) lv_%s = sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL);\n",
-                       t, rnm, k, t, (long long)apn, t, (long long)apn);
+            emit_indent(b, body_indent);
+            buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL);\n",
+                       rnm, k, t, (long long)apn, t, (long long)apn);
           }
         }
       }
     }
 
-    /* Emit body with optional guard */
+    /* --- body with optional guard --- */
     if (guard >= 0) {
-      emit_indent(b, indent + 1); buf_puts(b, "if (");
+      emit_indent(b, body_indent); buf_puts(b, "if (");
       emit_expr(c, guard, b);
       buf_puts(b, ") {\n");
-      emit_stmts(c, stmts, b, indent + 2);
-      emit_indent(b, indent + 2); buf_printf(b, "goto _pm_%d;\n", lbl);
-      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      emit_stmts(c, stmts, b, body_indent + 1);
+      emit_indent(b, body_indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl);
+      emit_indent(b, body_indent); buf_puts(b, "}\n");
     }
     else {
-      emit_stmts(c, stmts, b, indent + 1);
-      emit_indent(b, indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl);
+      emit_stmts(c, stmts, b, body_indent);
+      emit_indent(b, body_indent); buf_printf(b, "goto _pm_%d;\n", lbl);
     }
 
+    if (has_cond) { emit_indent(b, indent + 1); buf_puts(b, "}\n"); }
     emit_indent(b, indent); buf_puts(b, "}\n");
   }
 
@@ -12974,6 +13042,11 @@ static void emit_case_match(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_puts(b, "{\n");
     emit_stmts(c, nt_ref(nt, else_clause, "statements"), b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
+  }
+  else {
+    /* No matching arm and no else: raise NoMatchingPatternError */
+    emit_indent(b, indent);
+    buf_printf(b, "sp_raise_cls(\"NoMatchingPatternError\", \"no pattern matched\");\n");
   }
 
   emit_indent(b, indent); buf_printf(b, "_pm_%d:;\n", lbl);
