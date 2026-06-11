@@ -1055,6 +1055,11 @@ static TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* bare call inside a module/class body -> class method of that module/class */
+  if (recv < 0 && g_cbody_class_id >= 0) {
+    int smi = comp_cmethod_in_chain(c, g_cbody_class_id, name, NULL);
+    if (smi >= 0) return method_call_ret(c, smi, id);
+  }
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name);

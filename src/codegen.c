@@ -2678,6 +2678,16 @@ static void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Bu
     if (pt == TY_POLY) emit_boxed(c, provided, out);   /* box into a poly param */
     else {
       TyKind at = comp_ntype(c, provided);
+      /* Bare call inside a class/module body: analyze may not have resolved the
+         type because g_cbody_class_id is not set during fixpoint. Look it up now. */
+      if (at == TY_UNKNOWN && g_class_body_id >= 0) {
+        const char *ptn = nt_type(c->nt, provided);
+        if (ptn && !strcmp(ptn, "CallNode") && nt_ref(c->nt, provided, "receiver") < 0) {
+          const char *bn = nt_str(c->nt, provided, "name");
+          int bsmi = bn ? comp_cmethod_in_chain(c, g_class_body_id, bn, NULL) : -1;
+          if (bsmi >= 0) at = (TyKind)c->scopes[bsmi].ret;
+        }
+      }
       /* empty array literal `[]` defaults to IntArray in emit_expr; if the
          parameter expects a different array type, emit the right constructor */
       int nen = 0;
@@ -4205,6 +4215,18 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return;
       }
+    }
+  }
+  /* bare call to a class method of the enclosing module/class body */
+  if (recv < 0 && g_class_body_id >= 0) {
+    int smi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
+    if (smi >= 0) {
+      Scope *ms = &c->scopes[smi];
+      emit_method_cname(c, ms, b);
+      buf_puts(b, "(");
+      emit_args_filled(c, smi, nt_ref(nt, id, "arguments"), "", b);
+      buf_puts(b, ")");
+      return;
     }
   }
   /* bare call to a module_function method made available via top-level include */
@@ -6542,6 +6564,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     if (a_nil || r_nil) {
       int other = a_nil ? recv : argv[0];
       TyKind ot = comp_ntype(c, other);
+      /* recv.==(nil): user object may override ==; dispatch to its method.
+         nil.==(obj): NilClass#== is identity-only, so false for any object. */
+      if (a_nil && ty_is_object(ot)) goto equality_skip_nil;
       if (ot == TY_POLY) {
         buf_puts(b, eq ? "sp_poly_nil_p(" : "(!sp_poly_nil_p(");
         emit_expr(c, other, b); buf_puts(b, eq ? ")" : "))");
@@ -6564,6 +6589,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else { buf_puts(b, "(("); emit_expr(c, other, b); buf_printf(b, "), %d)", eq ? 0 : 1); }
       return;
     }
+    equality_skip_nil:;
     /* arr == [] : an array equals the empty literal iff it has no elements */
     {
       int er = nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode") &&
@@ -6724,6 +6750,34 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, " %s 0)", eq ? "==" : "!=");
         return;
       }
+      /* obj.!= synthesized from obj.== when != is not explicitly defined */
+      if (!eq) {
+        int eqm2 = comp_method_in_chain(c, ecid, "==", NULL);
+        if (eqm2 >= 0) {
+          char selfptr2[64];
+          const char *rty3 = nt_type(nt, recv);
+          if (rty3 && (!strcmp(rty3, "LocalVariableReadNode") ||
+                       !strcmp(rty3, "InstanceVariableReadNode") ||
+                       !strcmp(rty3, "SelfNode"))) {
+            Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+            snprintf(selfptr2, sizeof selfptr2, "%s", rb.p ? rb.p : "");
+            free(rb.p);
+          }
+          else {
+            int t4 = ++g_tmp;
+            Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+            emit_indent(g_pre, g_indent);
+            emit_ctype(c, rt, g_pre);
+            buf_printf(g_pre, " _t%d = %s;\n", t4, rb.p ? rb.p : "");
+            free(rb.p);
+            snprintf(selfptr2, sizeof selfptr2, "_t%d", t4);
+          }
+          buf_puts(b, "(!");
+          emit_dispatch(c, ecid, "==", selfptr2, nt_ref(nt, id, "arguments"), -1, b);
+          buf_puts(b, ")");
+          return;
+        }
+      }
     }
     /* Time == / != via sp_time_cmp */
     if (rt == TY_TIME) {
@@ -6731,6 +6785,38 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = ", tt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
       buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, eq ? "==" : "!=");
+      return;
+    }
+    /* cross-type: primitive vs user-object */
+    if ((eq_family(rt) && ty_is_object(a0)) || (eq_family(a0) && ty_is_object(rt))) {
+      TyKind obj_t = ty_is_object(a0) ? a0 : rt;
+      int    obj_n = ty_is_object(a0) ? argv[0] : recv;
+      TyKind prim_t = ty_is_object(a0) ? rt : a0;
+      int    prim_n = ty_is_object(a0) ? recv : argv[0];
+      int    obj_cid = ty_object_class(obj_t);
+      int    eqm = comp_method_in_chain(c, obj_cid, "==", NULL);
+      /* Numeric types delegate == to other.==(self) when types mismatch */
+      if (ty_is_numeric(prim_t) && eqm >= 0) {
+        Scope *ms = &c->scopes[eqm];
+        int to2 = ++g_tmp;
+        Buf ob2; memset(&ob2, 0, sizeof ob2); emit_expr(c, obj_n, &ob2);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, obj_t, g_pre);
+        buf_printf(g_pre, " _t%d = %s;\n", to2, ob2.p ? ob2.p : ""); free(ob2.p);
+        if (!eq) buf_puts(b, "(!");
+        emit_method_cname(c, ms, b);
+        buf_printf(b, "(_t%d, ", to2);
+        /* Match the parameter type: if == expects TY_POLY, box the primitive */
+        LocalVar *p1 = (ms->nparams > 0) ? scope_local(ms, ms->pnames[0]) : NULL;
+        if (p1 && p1->type == TY_POLY) emit_boxed(c, prim_n, b);
+        else emit_expr(c, prim_n, b);
+        buf_puts(b, ")");
+        if (!eq) buf_puts(b, ")");
+        return;
+      }
+      /* other primitive types (string, symbol, bool) are strict: false */
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), (");
+      emit_expr(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
       return;
     }
     unsupported(c, id, "equality");
