@@ -145,7 +145,9 @@ static TyKind yield_value_type(Compiler *c, int mi) {
 static TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   int is_yield = last >= 0 && nt_type(c->nt, last) && !strcmp(nt_type(c->nt, last), "YieldNode");
-  if (is_yield || is_blk_param_call(c, last, mi)) {
+  /* Lowered yield methods (self-recursive + yield) carry the block's return value:
+     return the per-call-site block body type so puts/assign use the right type. */
+  if (c->scopes[mi].is_lowered_yield || is_yield || is_blk_param_call(c, last, mi)) {
     int blk = nt_ref(c->nt, call_id, "block");
     if (blk >= 0) {
       int bbody = nt_ref(c->nt, blk, "body");
@@ -5378,6 +5380,46 @@ void analyze_program(Compiler *c) {
      are dead code; skipping them avoids type-checking uninvoked methods
      (e.g. a never-called method with an uninferrable param). */
   compute_reachable(c);
+
+  /* Lower self-recursive yield methods: methods that use `yield` AND call
+     themselves recursively. Their implicit block is forwarded as a synthetic
+     __yblk__ sp_Proc * parameter, so the method is emitted (yields=0) and
+     each `yield` in its body calls sp_proc_call(__yblk__, ...). */
+  for (int mi = 1; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (!m->name || !m->reachable || m->blk_param) continue;
+    if (!m->yields) continue;
+    if (m->body < 0) continue;
+    int has_yld = 0;
+    for (int id = 0; id < c->nt->count && !has_yld; id++) {
+      if (c->nscope[id] != mi) continue;
+      const char *ty = nt_type(c->nt, id);
+      if (ty && !strcmp(ty, "YieldNode")) has_yld = 1;
+    }
+    if (!has_yld) continue;
+    int has_self_call = 0;
+    for (int id = 0; id < c->nt->count && !has_self_call; id++) {
+      if (c->nscope[id] != mi) continue;
+      const char *ty = nt_type(c->nt, id);
+      if (!ty || strcmp(ty, "CallNode")) continue;
+      const char *nm = nt_str(c->nt, id, "name");
+      if (!nm || strcmp(nm, m->name)) continue;
+      int recv = nt_ref(c->nt, id, "receiver");
+      const char *rty = recv >= 0 ? nt_type(c->nt, recv) : NULL;
+      if (recv < 0 || (rty && !strcmp(rty, "SelfNode"))) has_self_call = 1;
+    }
+    if (!has_self_call) continue;
+    m->is_lowered_yield = 1;
+    m->yields = 0;
+    m->ret = TY_INT;
+    m->blk_param = strdup("__yblk__");
+    LocalVar *yblk = scope_local_intern(m, "__yblk__");
+    if (yblk) {
+      yblk->type = TY_PROC;
+      yblk->is_param = 1;
+      yblk->is_cell = 1;
+    }
+  }
 
   /* Post-fixpoint: propagate include-copy param types back to the source
      scope so the final infer_type scan (which uses comp_scope_of, mapping

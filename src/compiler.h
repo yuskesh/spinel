@@ -36,6 +36,7 @@ typedef struct {
   int reachable;    /* method name is referenced somewhere (else dead code) */
   int is_cmethod;   /* `def self.foo`: a class (singleton) method, no instance self */
   int is_transplanted_source; /* method was copied into another class via include/prepend */
+  int is_lowered_yield; /* self-recursive yield method lowered to &block (sp_Proc) form */
   char *blk_param;  /* name of the `&block` parameter, or NULL (anon -> "") */
 
   char **pnames;    /* parameter names, in order (requireds then optionals) */

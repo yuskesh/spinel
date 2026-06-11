@@ -86,6 +86,9 @@ static int g_result_poly = 0;
 /* Return type of the method currently being emitted, so a tail/return value
    can be boxed when the method returns poly but the value is concrete. */
 static TyKind g_ret_type = TY_UNKNOWN;
+/* Set while emitting a self-recursive yield method (is_lowered_yield=1).
+   Persists into inner proc literal bodies so { yield } forwards __yblk__. */
+static int g_current_scope_is_lowered = 0;
 
 /* Ensure context stack for deferred `return` inside begin..ensure.
    When `return` appears in the body of a begin..ensure block, the return
@@ -272,6 +275,18 @@ static void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b
   LocalVar *lv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
   if (lv && lv->is_cell) { buf_printf(b, "(*_cell_%s)", name); return; }
   buf_printf(b, "lv_%s", rename_local(name));
+}
+
+/* Emit `sp_Proc *` reference to the synthetic __yblk__ param of a lowered
+   self-recursive yield method.  If we are inside an inner proc literal that
+   captures __yblk__ via a cell, cast back from the mrb_int cell slot. */
+static void emit_yblk_ref(Buf *b) {
+  if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, "__yblk__")) {
+    buf_printf(b, "(sp_Proc *)(uintptr_t)(*(((%s *)_cap)->__yblk__))", g_cap_struct);
+  }
+  else {
+    buf_puts(b, "lv___yblk__");
+  }
 }
 
 /* Emit the lead of a tail value: `return ` or `<result> = `. */
@@ -10558,6 +10573,20 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (!strcmp(ty, "YieldNode")) {
+    /* Lowered self-recursive yield method: `yield` calls the synthetic __yblk__ proc. */
+    if (g_current_scope_is_lowered) {
+      int yargs = nt_ref(nt, id, "arguments");
+      int yargc = 0; const int *yargv = yargs >= 0 ? nt_arr(nt, yargs, "arguments", &yargc) : NULL;
+      /* Lowered yield method returns mrb_int (raw carrier for any type).
+         sp_proc_call already returns mrb_int; emit it directly with no cast. */
+      buf_puts(b, "sp_proc_call(");
+      emit_yblk_ref(b);
+      buf_puts(b, ", (mrb_int[]){");
+      for (int k = 0; k < yargc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, yargv[k], b); }
+      if (yargc == 0) buf_puts(b, "0");
+      buf_puts(b, "})");
+      return;
+    }
     if (g_block_id < 0) { buf_puts(b, "SP_INT_NIL"); return; }  /* no block: yield is nil */
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
     return;
@@ -12413,6 +12442,18 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!ty) unsupported(c, id, "statement (no type)");
 
   if (!strcmp(ty, "YieldNode")) {
+    if (g_current_scope_is_lowered) {
+      int yargs = nt_ref(nt, id, "arguments");
+      int yargc = 0; const int *yargv = yargs >= 0 ? nt_arr(nt, yargs, "arguments", &yargc) : NULL;
+      emit_indent(b, indent);
+      buf_puts(b, "sp_proc_call(");
+      emit_yblk_ref(b);
+      buf_puts(b, ", (mrb_int[]){");
+      for (int k = 0; k < yargc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, yargv[k], b); }
+      if (yargc == 0) buf_puts(b, "0");
+      buf_puts(b, "});\n");
+      return;
+    }
     if (g_block_id < 0) return;  /* inlined without block: yield is dead code */
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0);
     return;
@@ -13825,11 +13866,20 @@ static void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
   int vol = scope_has_begin(c, (int)(s - c->scopes));
   for (int i = 0; i < s->nlocals; i++) {
     LocalVar *lv = &s->locals[i];
-    if (s->blk_param && lv->name && !strcmp(lv->name, s->blk_param)) continue;  /* virtual &block slot */
+    /* Virtual &block slot: skip declaration UNLESS it's a lowered __yblk__ that
+       needs a cell (so forwarding procs can capture it). */
+    if (s->blk_param && lv->name && !strcmp(lv->name, s->blk_param) && !lv->is_cell) continue;
     /* Captured-by-closure local: lives in a heap cell so the proc and this
        scope share storage. A param's incoming value is copied into the cell;
-       a body local starts at 0. Int cells only (capture is int-restricted). */
+       a body local starts at 0. Int and proc cells supported. */
     if (lv->is_cell) {
+      if (lv->type == TY_PROC) {
+        buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);\n", lv->name);
+        buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
+        if (lv->is_param) buf_printf(b, "    *_cell_%s = (mrb_int)(uintptr_t)lv_%s;\n", lv->name, lv->name);
+        else buf_printf(b, "    *_cell_%s = 0;\n", lv->name);
+        continue;
+      }
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN)
         unsupported(c, s->def_node, "closure capturing a non-integer variable (later slice)");
       buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);\n", lv->name);
@@ -13913,6 +13963,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   TyKind saved_rt = g_ret_type;
   int saved_ed = g_ensure_depth; g_ensure_depth = 0;
   int saved_emcls = g_emitting_class_id; g_emitting_class_id = s->class_id;
+  int saved_lowered = g_current_scope_is_lowered; g_current_scope_is_lowered = s->is_lowered_yield;
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   if (method_is_void(s)) {
     emit_stmts(c, s->body, b, 1);
@@ -13925,6 +13976,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   }
   g_ret_type = saved_rt; g_ensure_depth = saved_ed;
   g_emitting_class_id = saved_emcls;
+  g_current_scope_is_lowered = saved_lowered;
   buf_puts(b, "}\n");
 }
 
@@ -14024,6 +14076,20 @@ static int proc_body_node(Compiler *c, int create) {
 static int proc_slot_is_direct(TyKind t) { return t == TY_INT || t == TY_BOOL || t == TY_SYMBOL || t == TY_NIL || t == TY_UNKNOWN; }
 static int proc_slot_is_ptr(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t); }
 
+/* True if the AST subtree at `id` has a YieldNode, not crossing DefNode. */
+static int proc_body_has_yield(Compiler *c, int id) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(c->nt, id);
+  if (!ty) return 0;
+  if (!strcmp(ty, "YieldNode")) return 1;
+  if (!strcmp(ty, "DefNode")) return 0;
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (proc_body_has_yield(c, ch)) return 1; }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (proc_body_has_yield(c, ids[k])) return 1; }
+  return 0;
+}
+
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
    standalone `static mrb_int _proc_N(void *cap, mrb_int *args)` (sp_proc_call's
    ABI) into g_procs, and emit the boxing `sp_proc_new_meta(...)` value into `b`. */
@@ -14053,7 +14119,7 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
     if (nameset_has(&params, nm)) continue;
     LocalVar *lv = scope_local(bs, nm);
     if (lv && lv->is_cell) {
-      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN) {
+      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN && lv->type != TY_PROC) {
         free(params.v); free(used.v); free(locals.v); free(caps.v);
         unsupported(c, create, "proc capturing a non-integer variable (later slice)");
         return;
@@ -14066,6 +14132,16 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
       free(params.v); free(used.v); free(locals.v); free(caps.v);
       unsupported(c, create, "proc referencing an uncaptured outer variable (later slice)");
       return;
+    }
+  }
+  /* Lowered self-recursive yield method: a `{ yield }` block forwards the
+     enclosing method's __yblk__ down via capture.  The YieldNode is not a
+     LocalVariableRead so proc_collect_used never picks it up -- force it. */
+  if (g_current_scope_is_lowered) {
+    int pb2 = proc_body_node(c, create);
+    if (pb2 >= 0 && proc_body_has_yield(c, pb2) && !nameset_has(&caps, "__yblk__")) {
+      LocalVar *yblk_lv = scope_local(bs, "__yblk__");
+      if (yblk_lv && yblk_lv->is_cell) nameset_add(&caps, "__yblk__");
     }
   }
 
