@@ -11021,6 +11021,8 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     char ref2e[300];
     if (cws && cws->is_cmethod && cid2 >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, nm + 1);
+    else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
+      snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", nm + 1);
     else
       snprintf(ref2e, sizeof ref2e, "%s->iv_%s", g_self, nm + 1);
     buf_puts(b, "({ ");
@@ -11218,6 +11220,12 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);  /* module/class-level ivar */
+    else if (cs && cs->class_id < 0) {
+      /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
+      int tl = comp_class_index(c, "Toplevel");
+      if (tl >= 0) buf_printf(b, "civ_Toplevel_%s", nm + 1);
+      else buf_printf(b, "%s->iv_%s", g_self, nm + 1);
+    }
     else
       buf_printf(b, "%s->iv_%s", g_self, nm + 1);
     return;
@@ -13411,8 +13419,14 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "civ_%s_%s = ", c->classes[g_class_body_id].name, nm + 1);
     }
-    /* True top-level (outside any class or method): skip. */
-    else if (!cws || (cws->class_id < 0 && !cws->is_cmethod && !cws->yields)) { return; }
+    /* Top-level method (class_id<0, not cmethod): use Toplevel pseudo-class global. */
+    else if (cws && cws->class_id < 0 && !cws->is_cmethod &&
+             comp_class_index(c, "Toplevel") >= 0) {
+      emit_indent(b, indent);
+      buf_printf(b, "civ_Toplevel_%s = ", nm + 1);
+    }
+    /* True top-level or no-class scope: skip. */
+    else if (!cws || (cws->class_id < 0 && !cws->is_cmethod)) { return; }
     else {
       emit_indent(b, indent);
       if (cws && cws->is_cmethod && cws->class_id >= 0)
@@ -13423,6 +13437,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     const char *vty = nt_type(nt, v);
     int sc = cws ? cws->class_id : -1;
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
+    if (sc < 0) sc = comp_class_index(c, "Toplevel");
     TyKind ivt = TY_INT;
     if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) ivt = c->classes[sc].ivar_types[iv]; }
     int ven = 0;

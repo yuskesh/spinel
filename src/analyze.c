@@ -1982,6 +1982,7 @@ static TyKind infer_uncached(Compiler *c, int id) {
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     int cls_id = (s->class_id >= 0) ? s->class_id : g_ie_class_id;
+    if (cls_id < 0) cls_id = comp_class_index(c, "Toplevel");
     if (cls_id < 0) return TY_UNKNOWN;
     ClassInfo *ci = &c->classes[cls_id];
     int iv = nm ? comp_ivar_index(ci, nm) : -1;
@@ -3183,10 +3184,19 @@ static int infer_ivar_types(Compiler *c) {
       TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
       if (vt == TY_NIL) continue;  /* nil write doesn't pin the ivar type */
       Scope *s = comp_scope_of(c, id);
-      if (!nm || s->class_id < 0) continue;
-      ClassInfo *ci = &c->classes[s->class_id];
-      int iv = comp_ivar_index(ci, nm);
-      if (iv < 0) continue;
+      int cls_id2 = s->class_id;
+      if (!nm) continue;
+      if (cls_id2 < 0) {
+        /* Top-level method: track ivars in the Toplevel pseudo-class */
+        int old_nc = c->nclasses;
+        cls_id2 = comp_class_index(c, "Toplevel");
+        if (cls_id2 < 0) { comp_class_new(c, "Toplevel", -1); cls_id2 = c->nclasses - 1; }
+        if (c->nclasses != old_nc) changed = 1;  /* new class created, need another pass */
+      }
+      ClassInfo *ci = &c->classes[cls_id2];
+      int old_ni = ci->nivars;
+      int iv = comp_ivar_intern(ci, nm);
+      if (ci->nivars != old_ni) changed = 1;  /* new ivar registered, need another pass */
       TyKind merged = ty_unify(ci->ivar_types[iv], vt);
       if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
     }
@@ -3726,8 +3736,10 @@ static int infer_write_types(Compiler *c) {
     else if (rty && !strcmp(rty, "InstanceVariableReadNode")) {
       const char *inm = nt_str(nt, recv, "name");
       Scope *s = comp_scope_of(c, recv);
-      if (s->class_id < 0) continue;
-      ClassInfo *ci = &c->classes[s->class_id];
+      int ivar_cls_id = s->class_id;
+      if (ivar_cls_id < 0) ivar_cls_id = comp_class_index(c, "Toplevel");
+      if (ivar_cls_id < 0) continue;
+      ClassInfo *ci = &c->classes[ivar_cls_id];
       int iv = inm ? comp_ivar_index(ci, inm) : -1;
       if (iv < 0) continue;
       slot = &ci->ivar_types[iv];
@@ -3744,7 +3756,9 @@ static int infer_write_types(Compiler *c) {
           const char *_wnm = nt_str(nt, _wi, "name");
           if (!_wnm || strcmp(_wnm, inm)) continue;
           Scope *_ws = comp_scope_of(c, _wi);
-          if (!_ws || _ws->class_id != s->class_id) continue;
+          int _ws_cls = _ws ? _ws->class_id : -1;
+          if (_ws_cls < 0) _ws_cls = comp_class_index(c, "Toplevel");
+          if (_ws_cls != ivar_cls_id) continue;
           int _wval = nt_ref(nt, _wi, "value");
           if (_wval < 0) continue;
           TyKind _wt = infer_type(c, _wval);
@@ -5789,8 +5803,10 @@ void analyze_program(Compiler *c) {
     int en = 0; nt_arr(c->nt, v, "elements", &en);
     if (en != 0) continue;
     Scope *s = comp_scope_of(c, id);
-    if (s->class_id < 0) continue;
-    ClassInfo *ci = &c->classes[s->class_id];
+    int cls_id_bs = s->class_id;
+    if (cls_id_bs < 0) cls_id_bs = comp_class_index(c, "Toplevel");
+    if (cls_id_bs < 0) continue;
+    ClassInfo *ci = &c->classes[cls_id_bs];
     int iv = comp_ivar_index(ci, nt_str(c->nt, id, "name"));
     if (iv >= 0 && ci->ivar_types[iv] == TY_UNKNOWN) ci->ivar_types[iv] = TY_INT_ARRAY;
   }
