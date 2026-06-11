@@ -722,7 +722,10 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent + 1);
       if (ns0) {
         st0 = ++g_tmp; emit_ctype(c, p0_actual, g_pre);
-        buf_printf(g_pre, " lv__bp%d = _t%d->order[_t%d];\n", st0, trecv, ti);
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(g_pre, " lv__bp%d = _t%d->keys[_t%d->order[_t%d]];\n", st0, trecv, trecv, ti);
+        else
+          buf_printf(g_pre, " lv__bp%d = _t%d->order[_t%d];\n", st0, trecv, ti);
         for (int ri = 0; ri < g_nren; ri++) {
           if (strcmp(g_ren_from[ri], p0_orig) == 0) {
             sri0 = ri; strncpy(sro0, g_ren_to[ri], sizeof sro0 - 1);
@@ -734,13 +737,21 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
           snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_bp%d", st0);
         }
       }
-      else buf_printf(g_pre, "lv_%s = _t%d->order[_t%d];\n", p0, trecv, ti);
+      else {
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(g_pre, "lv_%s = _t%d->keys[_t%d->order[_t%d]];\n", p0, trecv, trecv, ti);
+        else
+          buf_printf(g_pre, "lv_%s = _t%d->order[_t%d];\n", p0, trecv, ti);
+      }
     }
     if (p1_orig) {
       emit_indent(g_pre, g_indent + 1);
       if (ns1) {
         st1 = ++g_tmp; emit_ctype(c, p1_actual, g_pre);
-        buf_printf(g_pre, " lv__bp%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", st1, hn, trecv, trecv, ti);
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(g_pre, " lv__bp%d = _t%d->vals[_t%d->order[_t%d]];\n", st1, trecv, trecv, ti);
+        else
+          buf_printf(g_pre, " lv__bp%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", st1, hn, trecv, trecv, ti);
         for (int ri = 0; ri < g_nren; ri++) {
           if (strcmp(g_ren_from[ri], p1_orig) == 0) {
             sri1 = ri; strncpy(sro1, g_ren_to[ri], sizeof sro1 - 1);
@@ -752,7 +763,12 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
           snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_bp%d", st1);
         }
       }
-      else buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", p1, hn, trecv, trecv, ti);
+      else {
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(g_pre, "lv_%s = _t%d->vals[_t%d->order[_t%d]];\n", p1, trecv, trecv, ti);
+        else
+          buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", p1, hn, trecv, trecv, ti);
+      }
     }
     if (ns0 && p0_lv) p0_lv->type = p0_actual;
     if (ns1 && p1_lv) p1_lv->type = p1_actual;
@@ -767,10 +783,8 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
     TyKind vtt = ty_hash_val(rt);
     buf_printf(g_pre, "if (%s(%s)) { ", is_rej ? "!" : "", vb.p ? vb.p : "0"); free(vb.p);
     if (rt == TY_POLY_POLY_HASH) {
-      buf_printf(g_pre, "sp_%sHash_set(_t%d, ", hn, tres);
-      if (p0_orig) buf_printf(g_pre, "_t%d->order[_t%d]", trecv, ti);
-      else buf_printf(g_pre, "_t%d->order[_t%d]", trecv, ti);
-      buf_printf(g_pre, ", sp_%sHash_get(_t%d, _t%d->order[_t%d])); }", hn, trecv, trecv, ti);
+      buf_printf(g_pre, "sp_%sHash_set(_t%d, _t%d->keys[_t%d->order[_t%d]], _t%d->vals[_t%d->order[_t%d]]); }",
+                 hn, tres, trecv, trecv, ti, trecv, trecv, ti);
     }
     else {
       buf_printf(g_pre, "sp_%sHash_set(_t%d, _t%d->order[_t%d], sp_%sHash_%s(_t%d, _t%d->order[_t%d])); }",
@@ -794,8 +808,18 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent + 1);
       if (ns0) {
         st0 = ++g_tmp; emit_ctype(c, p0_actual, g_pre);
-        if (p1_orig) buf_printf(g_pre, " lv__bp%d = _t%d->order[_t%d];\n", st0, trecv, ti);
-        else buf_printf(g_pre, " lv__bp%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", st0, hn, trecv, trecv, ti);
+        if (p1_orig) {
+          if (rt == TY_POLY_POLY_HASH)
+            buf_printf(g_pre, " lv__bp%d = _t%d->keys[_t%d->order[_t%d]];\n", st0, trecv, trecv, ti);
+          else
+            buf_printf(g_pre, " lv__bp%d = _t%d->order[_t%d];\n", st0, trecv, ti);
+        }
+        else {
+          if (rt == TY_POLY_POLY_HASH)
+            buf_printf(g_pre, " lv__bp%d = _t%d->vals[_t%d->order[_t%d]];\n", st0, trecv, trecv, ti);
+          else
+            buf_printf(g_pre, " lv__bp%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", st0, hn, trecv, trecv, ti);
+        }
         for (int ri = 0; ri < g_nren; ri++) {
           if (strcmp(g_ren_from[ri], p0_orig) == 0) {
             sri0 = ri; strncpy(sro0, g_ren_to[ri], sizeof sro0 - 1);
@@ -808,15 +832,28 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
         }
       }
       else {
-        if (p1_orig) buf_printf(g_pre, "lv_%s = _t%d->order[_t%d];\n", p0, trecv, ti);
-        else buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", p0, hn, trecv, trecv, ti);
+        if (p1_orig) {
+          if (rt == TY_POLY_POLY_HASH)
+            buf_printf(g_pre, "lv_%s = _t%d->keys[_t%d->order[_t%d]];\n", p0, trecv, trecv, ti);
+          else
+            buf_printf(g_pre, "lv_%s = _t%d->order[_t%d];\n", p0, trecv, ti);
+        }
+        else {
+          if (rt == TY_POLY_POLY_HASH)
+            buf_printf(g_pre, "lv_%s = _t%d->vals[_t%d->order[_t%d]];\n", p0, trecv, trecv, ti);
+          else
+            buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", p0, hn, trecv, trecv, ti);
+        }
       }
     }
     if (p1_orig) {
       emit_indent(g_pre, g_indent + 1);
       if (ns1) {
         st1 = ++g_tmp; emit_ctype(c, p1_actual, g_pre);
-        buf_printf(g_pre, " lv__bp%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", st1, hn, trecv, trecv, ti);
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(g_pre, " lv__bp%d = _t%d->vals[_t%d->order[_t%d]];\n", st1, trecv, trecv, ti);
+        else
+          buf_printf(g_pre, " lv__bp%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", st1, hn, trecv, trecv, ti);
         for (int ri = 0; ri < g_nren; ri++) {
           if (strcmp(g_ren_from[ri], p1_orig) == 0) {
             sri1 = ri; strncpy(sro1, g_ren_to[ri], sizeof sro1 - 1);
@@ -828,7 +865,12 @@ static int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
           snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_bp%d", st1);
         }
       }
-      else buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", p1, hn, trecv, trecv, ti);
+      else {
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(g_pre, "lv_%s = _t%d->vals[_t%d->order[_t%d]];\n", p1, trecv, trecv, ti);
+        else
+          buf_printf(g_pre, "lv_%s = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n", p1, hn, trecv, trecv, ti);
+      }
     }
     /* Temporarily set scope LocalVar types so infer_type reads the shadow type.
        This ensures both c->ntype cache and emit_call see the correct operand types. */
@@ -887,6 +929,38 @@ static int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty,
   return n;
 }
 
+/* Scan nodes with IDs in [min_id, max_id) for LocalVariableReadNode with the
+   given name in the given scope, and patch c->ntype[id] to `new_ty`.
+   Prism assigns IDs in pre-order, so all descendants of `block` have id > block.
+   Passing min_id=block+1 restricts patching to the block's own subtree.
+   Stores original types in saved[] (caller must free). Returns the count. */
+static int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name,
+                                TyKind new_ty, int min_id,
+                                int **saved_ids, TyKind **saved_tys) {
+  int n = 0, cap = 8;
+  *saved_ids = malloc(sizeof(int) * (size_t)cap);
+  *saved_tys = malloc(sizeof(TyKind) * (size_t)cap);
+  for (int i = min_id; i < c->nt->count; i++) {
+    const char *ty = nt_type(c->nt, i);
+    if (!ty || strcmp(ty, "LocalVariableReadNode")) continue;
+    if (c->nscope[i] != scope_idx) continue;
+    const char *nm = nt_str(c->nt, i, "name");
+    if (!nm || strcmp(nm, name)) continue;
+    if (c->ntype[i] == new_ty) continue;
+    if (n >= cap) { cap *= 2; *saved_ids = realloc(*saved_ids, sizeof(int) * (size_t)cap); *saved_tys = realloc(*saved_tys, sizeof(TyKind) * (size_t)cap); }
+    (*saved_ids)[n] = i;
+    (*saved_tys)[n] = c->ntype[i];
+    c->ntype[i] = new_ty;
+    n++;
+  }
+  return n;
+}
+
+static void restore_lv_read_ntype(Compiler *c, int *saved_ids, TyKind *saved_tys, int n) {
+  for (int i = 0; i < n; i++) c->ntype[saved_ids[i]] = saved_tys[i];
+  free(saved_ids); free(saved_tys);
+}
+
 /* hash.transform_keys { |k| nk } / transform_values { |v| nv }: rebuild the
    hash applying the block to every key (or value), keeping the other half.
    Returns 1 if handled. */
@@ -921,7 +995,10 @@ static int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti2, ti2, ts2, ti2);
     emit_indent(g_pre, g_indent + 1); emit_ctype(c, ty_hash_key(rt), g_pre);
-    buf_printf(g_pre, " _t%d = _t%d->order[_t%d];\n", tk2, ts2, ti2);
+    if (rt == TY_POLY_POLY_HASH)
+      buf_printf(g_pre, " _t%d = _t%d->keys[_t%d->order[_t%d]];\n", tk2, ts2, ts2, ti2);
+    else
+      buf_printf(g_pre, " _t%d = _t%d->order[_t%d];\n", tk2, ts2, ti2);
     emit_indent(g_pre, g_indent + 1);
     { TyKind vt2 = ty_hash_val(rt);
       const char *nil_v = (vt2 == TY_INT) ? "SP_INT_NIL" :
@@ -944,7 +1021,11 @@ static int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ts); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
   emit_indent(g_pre, g_indent); emit_ctype(c, dt, g_pre); buf_printf(g_pre, " _t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", td, dhn, td);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ts, ti);
-  emit_indent(g_pre, g_indent + 1); emit_ctype(c, skt, g_pre); buf_printf(g_pre, " _t%d = _t%d->order[_t%d];\n", tk, ts, ti);
+  emit_indent(g_pre, g_indent + 1); emit_ctype(c, skt, g_pre);
+  if (rt == TY_POLY_POLY_HASH)
+    buf_printf(g_pre, " _t%d = _t%d->keys[_t%d->order[_t%d]];\n", tk, ts, ts, ti);
+  else
+    buf_printf(g_pre, " _t%d = _t%d->order[_t%d];\n", tk, ts, ti);
   if (p0) {
     emit_indent(g_pre, g_indent + 1);
     if (keys) {
@@ -969,17 +1050,36 @@ static int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   int save = g_indent; g_indent++;
   Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
   TyKind bret = comp_ntype(c, bb[bn - 1]);
+  TyKind dkt = ty_hash_key(dt);
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_%sHash_set(_t%d, ", dhn, td);
   if (keys) {
-    /* new key = block result; value carried over (box if dst value is poly) */
-    buf_puts(g_pre, vb.p ? vb.p : "0"); buf_puts(g_pre, ", ");
-    if (dvt == TY_POLY && svt != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); char g[64]; snprintf(g, sizeof g, "sp_%sHash_get(_t%d, _t%d)", shn, ts, tk); emit_boxed_text(c, svt, g, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+    /* new key = block result; unbox if block returned poly but key type is typed */
+    const char *vbp = vb.p ? vb.p : "0";
+    if (dkt == TY_STRING && (bret == TY_POLY || bret == TY_UNKNOWN))
+      buf_printf(g_pre, "sp_poly_to_s(%s)", vbp);
+    else if (dkt == TY_INT && (bret == TY_POLY || bret == TY_UNKNOWN))
+      buf_printf(g_pre, "sp_poly_to_i(%s)", vbp);
+    else
+      buf_puts(g_pre, vbp);
+    buf_puts(g_pre, ", ");
+    if (rt == TY_POLY_POLY_HASH)
+      buf_printf(g_pre, "_t%d->vals[_t%d->order[_t%d]]", ts, ts, ti);
+    else if (dvt == TY_POLY && svt != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); char g[64]; snprintf(g, sizeof g, "sp_%sHash_get(_t%d, _t%d)", shn, ts, tk); emit_boxed_text(c, svt, g, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
     else buf_printf(g_pre, "sp_%sHash_get(_t%d, _t%d)", shn, ts, tk);
   }
   else {
-    /* key carried over; new value = block result (box if dst value is poly) */
+    /* key carried over; new value = block result (box/unbox to match dest type) */
     buf_printf(g_pre, "_t%d, ", tk);
-    if (dvt == TY_POLY && bret != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb.p ? vb.p : "", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+    if (dvt == TY_POLY && bret != TY_POLY) {
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb.p ? vb.p : "", &bx);
+      buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
+    }
+    else if (dvt == TY_STRING && (bret == TY_POLY || bret == TY_UNKNOWN)) {
+      buf_printf(g_pre, "sp_poly_to_s(%s)", vb.p ? vb.p : "sp_box_nil()");
+    }
+    else if (dvt == TY_INT && (bret == TY_POLY || bret == TY_UNKNOWN)) {
+      buf_printf(g_pre, "sp_poly_to_i(%s)", vb.p ? vb.p : "sp_box_nil()");
+    }
     else buf_puts(g_pre, vb.p ? vb.p : "0");
   }
   buf_puts(g_pre, ");\n"); free(vb.p);
@@ -5471,6 +5571,15 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (!strcmp(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
     if (!strcmp(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+    if (!strcmp(name, "upcase"))     { buf_puts(b, "sp_box_str(sp_str_upcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "downcase"))   { buf_puts(b, "sp_box_str(sp_str_downcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "capitalize")) { buf_puts(b, "sp_box_str(sp_str_capitalize(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "reverse"))    { buf_puts(b, "sp_box_str(sp_str_reverse(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "chr"))        { buf_puts(b, "sp_box_str(sp_str_chr(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return; }
+    if (!strcmp(name, "freeze"))     { emit_expr(c, recv, b); return; }
   }
   /* poly receiver: []= with symbol, string, int, or poly key -> runtime dispatch */
   if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]=") && argc == 2) {
@@ -7108,12 +7217,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
     }
     if (rt == TY_POLY_ARRAY && !strcmp(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-      buf_puts(b, "sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, ")");
+      buf_puts(b, "sp_box_int(sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
     if (rt == TY_POLY_ARRAY && !strcmp(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
       TyKind init_t = comp_ntype(c, argv[0]);
-      buf_puts(b, "(");
+      buf_puts(b, "sp_box_int(");
       if (init_t == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { emit_expr(c, argv[0], b); }
       buf_puts(b, " + sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, "))");
@@ -8182,6 +8291,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_rpartition(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
+      else if (!strcmp(name, "rindex") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_rindex_opt(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
       else if (!strcmp(name, "rindex") && argc == 1) { buf_printf(b, "sp_str_rindex_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "crypt") && argc == 1) { buf_printf(b, "sp_str_crypt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -8265,7 +8377,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
         buf_printf(b, "}, %d)", argc);
       }
-      else if (!strcmp(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"wrong number of arguments (given 0, expected 1+)\"), 0LL)"); return; }
+      else if (!strcmp(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return; }
       else if (!strcmp(name, "count") && argc == 1) { buf_printf(b, "sp_str_count(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (!strcmp(name, "count") && argc >= 2) {
         buf_printf(b, "sp_str_count_n(%s, (const char *[]){", r);
@@ -9375,12 +9487,19 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
     if (p0) {
       emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = ", p0); buf_puts(b, rb.p); buf_printf(b, "->order[_t%d];\n", t);
+      if (rt == TY_POLY_POLY_HASH)
+        buf_printf(b, "lv_%s = %s->keys[%s->order[_t%d]];\n", p0, rb.p, rb.p, t);
+      else
+        buf_printf(b, "lv_%s = %s->order[_t%d];\n", p0, rb.p, t);
     }
     if (p1) {
       emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = sp_%sHash_get(", p1, hn);
-      buf_puts(b, rb.p); buf_puts(b, ", "); buf_puts(b, rb.p); buf_printf(b, "->order[_t%d]);\n", t);
+      if (rt == TY_POLY_POLY_HASH)
+        buf_printf(b, "lv_%s = %s->vals[%s->order[_t%d]];\n", p1, rb.p, rb.p, t);
+      else {
+        buf_printf(b, "lv_%s = sp_%sHash_get(", p1, hn);
+        buf_puts(b, rb.p); buf_puts(b, ", "); buf_puts(b, rb.p); buf_printf(b, "->order[_t%d]);\n", t);
+      }
     }
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
