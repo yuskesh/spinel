@@ -2921,7 +2921,6 @@ static void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const ch
     if (m->rest_idx >= 0 && i == m->rest_idx) {
       /* rest collects middle args; stop before post-splat params */
       int rest_end = pos_argc - m->npost_rest;
-      if (rest_end < i) rest_end = i;
       if (splat_tmp >= 0) {
         emit_rest_from_splat_and_argv(splat_tmp, splat_at, i - splat_idx,
                                       c, splat_idx + 1, rest_end, argv, out);
