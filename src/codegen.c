@@ -6469,6 +6469,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "(sp_%sHash_length(", hn); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
         return;
       }
+      if (!strcmp(name, "clear") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; sp_%sHash_clear(_t%d); _t%d; })", hn, t, t);
+        return;
+      }
       if ((!strcmp(name, "has_key?") || !strcmp(name, "key?") ||
            !strcmp(name, "include?") || !strcmp(name, "member?")) && argc == 1) {
         TyKind arg_kt = comp_ntype(c, argv[0]);
