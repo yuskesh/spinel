@@ -12852,6 +12852,133 @@ static int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *
   return 1;
 }
 
+/* case/in (pattern match) -> bind pattern vars, optional guard check,
+   then body; goto end_label to skip subsequent arms. */
+static void emit_case_match(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int pred = nt_ref(nt, id, "predicate");
+  int cn = 0;
+  const int *conds = nt_arr(nt, id, "conditions", &cn);
+  int else_clause = nt_ref(nt, id, "else_clause");
+
+  int t = ++g_tmp;
+  int lbl = ++g_tmp;
+  TyKind pt = (pred >= 0) ? comp_ntype(c, pred) : TY_POLY;
+  if (pt == TY_UNKNOWN) pt = TY_POLY;
+  emit_indent(b, indent); emit_ctype(c, pt, b);
+  buf_printf(b, " _t%d = ", t);
+  if (pred >= 0) emit_expr(c, pred, b);
+  else buf_puts(b, default_value(pt));
+  buf_puts(b, ";\n");
+  if (needs_root(pt)) { emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", t); }
+
+  for (int w = 0; w < cn; w++) {
+    const char *cty = nt_type(nt, conds[w]);
+    if (!cty || strcmp(cty, "InNode")) continue;
+    int pat = nt_ref(nt, conds[w], "pattern");
+    int stmts = nt_ref(nt, conds[w], "statements");
+    if (pat < 0) continue;
+    const char *pty = nt_type(nt, pat);
+    if (!pty) continue;
+
+    emit_indent(b, indent); buf_puts(b, "{\n");
+
+    int guard = -1;     /* IfNode guard expression */
+    int array_pat = -1; /* ArrayPatternNode to destructure */
+
+    if (!strcmp(pty, "LocalVariableTargetNode")) {
+      const char *lnm = nt_str(nt, pat, "name");
+      if (lnm) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
+    }
+    else if (!strcmp(pty, "IfNode")) {
+      /* `in x if guard`: statements contains LocalVariableTargetNode(s) */
+      guard = nt_ref(nt, pat, "predicate");
+      int bs = nt_ref(nt, pat, "statements");
+      if (bs >= 0 && nt_type(nt, bs) && !strcmp(nt_type(nt, bs), "StatementsNode")) {
+        int bn = 0;
+        const int *body = nt_arr(nt, bs, "body", &bn);
+        for (int k = 0; k < bn; k++) {
+          const char *bty = nt_type(nt, body[k]);
+          if (bty && !strcmp(bty, "LocalVariableTargetNode")) {
+            const char *lnm = nt_str(nt, body[k], "name");
+            if (lnm) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
+          }
+        }
+      }
+    }
+    else if (!strcmp(pty, "CapturePatternNode")) {
+      /* `in PATTERN => var`: bind var = scrutinee */
+      int tgt = nt_ref(nt, pat, "target");
+      if (tgt >= 0 && nt_type(nt, tgt) &&
+          !strcmp(nt_type(nt, tgt), "LocalVariableTargetNode")) {
+        const char *lnm = nt_str(nt, tgt, "name");
+        if (lnm) { emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", lnm, t); }
+      }
+      int val = nt_ref(nt, pat, "value");
+      if (val >= 0 && nt_type(nt, val) && !strcmp(nt_type(nt, val), "ArrayPatternNode"))
+        array_pat = val;
+    }
+    else if (!strcmp(pty, "ArrayPatternNode")) {
+      array_pat = pat;
+    }
+
+    /* Destructure ArrayPatternNode */
+    if (array_pat >= 0) {
+      TyKind arr_t = ty_is_array(pt) ? pt : TY_INT_ARRAY;
+      const char *k = (arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(arr_t);
+      if (!k) k = "Int";
+      int apn = 0;
+      const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
+      for (int i = 0; i < apn; i++) {
+        const char *lty2 = nt_type(nt, reqs[i]);
+        if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+        const char *lnm = nt_str(nt, reqs[i], "name");
+        if (!lnm) continue;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %dLL);\n", lnm, k, t, (long long)i);
+      }
+      int rest_nid = nt_ref(nt, array_pat, "rest");
+      if (rest_nid >= 0 && nt_type(nt, rest_nid) &&
+          !strcmp(nt_type(nt, rest_nid), "SplatNode")) {
+        int inner = nt_ref(nt, rest_nid, "expression");
+        if (inner >= 0 && nt_type(nt, inner) &&
+            !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
+          const char *rnm = nt_str(nt, inner, "name");
+          if (rnm) {
+            emit_indent(b, indent + 1);
+            buf_printf(b, "if (_t%d) lv_%s = sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL);\n",
+                       t, rnm, k, t, (long long)apn, t, (long long)apn);
+          }
+        }
+      }
+    }
+
+    /* Emit body with optional guard */
+    if (guard >= 0) {
+      emit_indent(b, indent + 1); buf_puts(b, "if (");
+      emit_expr(c, guard, b);
+      buf_puts(b, ") {\n");
+      emit_stmts(c, stmts, b, indent + 2);
+      emit_indent(b, indent + 2); buf_printf(b, "goto _pm_%d;\n", lbl);
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    }
+    else {
+      emit_stmts(c, stmts, b, indent + 1);
+      emit_indent(b, indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl);
+    }
+
+    emit_indent(b, indent); buf_puts(b, "}\n");
+  }
+
+  if (else_clause >= 0) {
+    emit_indent(b, indent); buf_puts(b, "{\n");
+    emit_stmts(c, nt_ref(nt, else_clause, "statements"), b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+  }
+
+  emit_indent(b, indent); buf_printf(b, "_pm_%d:;\n", lbl);
+}
+
 /* case/when -> an if / else-if chain. Statement form. */
 static void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
@@ -14653,7 +14780,8 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     else unsupported(c, id, "retry (outside rescue)");
     return;
   }
-  if (!strcmp(ty, "CaseNode"))   { emit_case(c, id, b, indent); return; }
+  if (!strcmp(ty, "CaseNode"))      { emit_case(c, id, b, indent); return; }
+  if (!strcmp(ty, "CaseMatchNode")) { emit_case_match(c, id, b, indent); return; }
   if (!strcmp(ty, "BeginNode"))  { emit_begin(c, id, b, indent, NULL); return; }
   if (!strcmp(ty, "RescueModifierNode")) {
     /* `expr rescue fallback` as a statement: run expr under a setjmp guard,

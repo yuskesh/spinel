@@ -3685,6 +3685,110 @@ static int infer_write_types(Compiler *c) {
     }
   }
 
+  /* CaseMatchNode: `case X; in PATTERN; ...` — infer locals bound by pattern.
+     Handles: bare LV (`in x`), guard (`in x if cond`), capture (`in P => x`),
+     and array patterns (`in [first, *rest]` / `in Array(head, *tail)`). */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CaseMatchNode")) continue;
+    int pred = nt_ref(nt, id, "predicate");
+    if (pred < 0) continue;
+    TyKind scrutinee_t = infer_type(c, pred);
+    int cn = 0;
+    const int *conds = nt_arr(nt, id, "conditions", &cn);
+    for (int ci = 0; ci < cn; ci++) {
+      const char *cty = nt_type(nt, conds[ci]);
+      if (!cty || strcmp(cty, "InNode")) continue;
+      int pat = nt_ref(nt, conds[ci], "pattern");
+      if (pat < 0) continue;
+      Scope *ms = comp_scope_of(c, conds[ci]);
+      const char *pty = nt_type(nt, pat);
+      if (!pty) continue;
+      int bind_lv_node = -1;
+      int array_pat = -1;
+      TyKind array_scrutinee = TY_UNKNOWN;
+      if (!strcmp(pty, "LocalVariableTargetNode")) {
+        /* in x */
+        bind_lv_node = pat;
+      }
+      else if (!strcmp(pty, "IfNode")) {
+        /* in x if guard — binding is in IfNode.statements body */
+        int stmts = nt_ref(nt, pat, "statements");
+        if (stmts >= 0 && nt_type(nt, stmts) &&
+            !strcmp(nt_type(nt, stmts), "StatementsNode")) {
+          int bn = 0;
+          const int *body = nt_arr(nt, stmts, "body", &bn);
+          for (int k = 0; k < bn; k++) {
+            const char *bty = nt_type(nt, body[k]);
+            if (bty && !strcmp(bty, "LocalVariableTargetNode")) {
+              bind_lv_node = body[k]; break;
+            }
+          }
+        }
+      }
+      else if (!strcmp(pty, "CapturePatternNode")) {
+        /* in PATTERN => var */
+        int tgt = nt_ref(nt, pat, "target");
+        if (tgt >= 0 && nt_type(nt, tgt) &&
+            !strcmp(nt_type(nt, tgt), "LocalVariableTargetNode"))
+          bind_lv_node = tgt;
+        /* inner ArrayPatternNode also gets element-level types */
+        int val = nt_ref(nt, pat, "value");
+        if (val >= 0 && nt_type(nt, val) &&
+            !strcmp(nt_type(nt, val), "ArrayPatternNode")) {
+          array_pat = val; array_scrutinee = scrutinee_t;
+        }
+      }
+      else if (!strcmp(pty, "ArrayPatternNode")) {
+        /* in [first, *rest] or in Array(head, *tail) */
+        array_pat = pat; array_scrutinee = scrutinee_t;
+      }
+      /* Bind simple LV target to scrutinee type */
+      if (bind_lv_node >= 0 && scrutinee_t != TY_UNKNOWN) {
+        const char *lnm = nt_str(nt, bind_lv_node, "name");
+        LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+        if (lv && !lv->is_param && !lv->is_block_param) {
+          TyKind mg = ty_unify(lv->type, scrutinee_t);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+      }
+      /* Handle ArrayPatternNode requireds and rest splat */
+      if (array_pat >= 0) {
+        TyKind elem_t = ty_is_array(array_scrutinee) ? ty_array_elem(array_scrutinee) : TY_UNKNOWN;
+        int apn = 0;
+        const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
+        for (int k = 0; k < apn; k++) {
+          const char *lty2 = nt_type(nt, reqs[k]);
+          if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, reqs[k], "name");
+          LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+          if (!lv || lv->is_param || lv->is_block_param) continue;
+          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_INT;
+          TyKind mg = ty_unify(lv->type, et);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+        /* rest splat: *name gets array type */
+        int rest_nid = nt_ref(nt, array_pat, "rest");
+        if (rest_nid >= 0) {
+          const char *rsty2 = nt_type(nt, rest_nid);
+          int inner = -1;
+          if (rsty2 && !strcmp(rsty2, "SplatNode"))
+            inner = nt_ref(nt, rest_nid, "expression");
+          if (inner >= 0 && nt_type(nt, inner) &&
+              !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
+            const char *rnm = nt_str(nt, inner, "name");
+            LocalVar *lv = rnm ? scope_local(ms, rnm) : NULL;
+            if (lv && !lv->is_param && !lv->is_block_param) {
+              TyKind rest_arr = ty_is_array(array_scrutinee) ? array_scrutinee : TY_INT_ARRAY;
+              TyKind mg = ty_unify(lv->type, rest_arr);
+              if (mg != lv->type) { lv->type = mg; changed = 1; }
+            }
+          }
+        }
+      }
+    }
+  }
+
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
      its element / key+value type from how it is filled. `a << x` /
      `a.push(x)` / `a[i] = x` (int key) -> array; `h[k] = v` / `h[k] op= v`
