@@ -7036,6 +7036,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   /* object method call: sp_<DefClass>_<m>((sp_<DefClass>*)&recv, args) */
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);
+    /* undef'd method: raise NoMethodError */
+    if (comp_is_undeffed_in_chain(c, cid, name)) {
+      TyKind ret_ty = comp_ntype(c, id);
+      buf_printf(b, "(sp_raise_cls(\"NoMethodError\",\"undefined method '%s' for an instance of %s\"),%s)",
+                 name, c->classes[cid].name,
+                 ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value(ret_ty));
+      return;
+    }
     /* attr reader -> field access (recv).iv_x */
     if (comp_reader_in_chain(c, cid, name, NULL)) {
       const char *rn2 = comp_resolve_alias(c, cid, name);
@@ -15414,6 +15422,7 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   }
   if (!strcmp(ty, "ReturnNode")) { emit_return(c, id, b, indent); return; }
   if (!strcmp(ty, "DefNode"))    { return; } /* emitted separately */
+  if (!strcmp(ty, "UndefNode"))  { return; } /* resolved at scan time */
   if (!strcmp(ty, "AliasGlobalVariableNode")) { return; } /* resolved at scan time */
   if (!strcmp(ty, "PreExecutionNode") || !strcmp(ty, "PostExecutionNode")) { return; } /* hoisted separately */
 

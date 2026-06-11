@@ -36,6 +36,8 @@ void comp_free(Compiler *c) {
     free(c->classes[i].readers);
     for (int j = 0; j < c->classes[i].nwriters; j++) free(c->classes[i].writers[j]);
     free(c->classes[i].writers);
+    for (int j = 0; j < c->classes[i].nundefs; j++) free(c->classes[i].undefs[j]);
+    free(c->classes[i].undefs);
     for (int j = 0; j < c->classes[i].nsg_readers; j++) free(c->classes[i].sg_readers[j]);
     free(c->classes[i].sg_readers);
     for (int j = 0; j < c->classes[i].nsg_writers; j++) free(c->classes[i].sg_writers[j]);
@@ -234,6 +236,21 @@ void comp_add_writer(ClassInfo *ci, const char *name) {
 }
 int comp_is_reader(ClassInfo *ci, const char *name) { return name_in(ci->readers, ci->nreaders, name); }
 int comp_is_writer(ClassInfo *ci, const char *name) { return name_in(ci->writers, ci->nwriters, name); }
+void comp_add_undef(ClassInfo *ci, const char *name) {
+  if (name_in(ci->undefs, ci->nundefs, name)) return;
+  if (ci->nundefs >= ci->cundefs) {
+    ci->cundefs = ci->cundefs ? ci->cundefs * 2 : 4;
+    ci->undefs = realloc(ci->undefs, sizeof(char *) * (size_t)ci->cundefs);
+  }
+  ci->undefs[ci->nundefs++] = strdup(name);
+}
+int comp_is_undeffed_in_chain(Compiler *c, int class_id, const char *name) {
+  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
+    if (name_in(c->classes[cid].undefs, c->classes[cid].nundefs, name)) return 1;
+    if (comp_method_in_class(c, cid, name) >= 0) return 0;
+  }
+  return 0;
+}
 void comp_add_sg_reader(ClassInfo *ci, const char *name) {
   if (name_in(ci->sg_readers, ci->nsg_readers, name)) return;
   if (ci->nsg_readers >= ci->csg_readers) {

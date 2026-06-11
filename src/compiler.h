@@ -69,6 +69,8 @@ typedef struct {
   int nreaders, creaders;
   char **writers;      /* attr writer base names (no '@', no '=') */
   int nwriters, cwriters;
+  char **undefs;       /* method names removed via `undef` */
+  int nundefs, cundefs;
   /* class << self attr_accessor/reader/writer: singleton-level accessors
      stored in static globals (cst_<Class>_<field>), not in per-instance ivars */
   char **sg_readers;   /* singleton reader names */
@@ -168,6 +170,8 @@ void       comp_add_reader(ClassInfo *ci, const char *name);
 void       comp_add_writer(ClassInfo *ci, const char *name);
 int        comp_is_reader(ClassInfo *ci, const char *name);
 int        comp_is_writer(ClassInfo *ci, const char *name);
+void       comp_add_undef(ClassInfo *ci, const char *name);
+int        comp_is_undeffed_in_chain(Compiler *c, int class_id, const char *name);
 void       comp_add_sg_reader(ClassInfo *ci, const char *name);
 void       comp_add_sg_writer(ClassInfo *ci, const char *name);
 int        comp_is_sg_reader(ClassInfo *ci, const char *name);

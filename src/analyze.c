@@ -2719,6 +2719,42 @@ static void register_aliases(Compiler *c) {
   }
 }
 
+static void register_undefs_body(Compiler *c, ClassInfo *cls, int body) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    int s = stmts[k];
+    const char *sty = nt_type(nt, s);
+    if (!sty || strcmp(sty, "UndefNode")) continue;
+    int names_n = 0;
+    const int *names = nt_arr(nt, s, "names", &names_n);
+    for (int j = 0; j < names_n; j++) {
+      const char *mname = nt_str(nt, names[j], "value");
+      if (mname) comp_add_undef(cls, mname);
+    }
+  }
+}
+
+static void register_undefs(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cls = &c->classes[ci];
+    register_undefs_body(c, cls, nt_ref(nt, cls->def_node, "body"));
+  }
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || (strcmp(ty, "ClassNode") && strcmp(ty, "ModuleNode"))) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cname) continue;
+    int ci = comp_class_index(c, cname);
+    if (ci < 0) continue;
+    if (id == c->classes[ci].def_node) continue;
+    register_undefs_body(c, &c->classes[ci], nt_ref(nt, id, "body"));
+  }
+}
+
 static int is_c_ident(const char *s) {
   if (!s || !*s) return 0;
   for (const char *p = s; *p; p++)
@@ -6035,6 +6071,7 @@ void analyze_program(Compiler *c) {
   register_locals(c);
   register_attrs(c);
   register_aliases(c);
+  register_undefs(c);
   register_globals_consts(c);
 
   /* rescue variables (`rescue => e`) are typed as exception objects */
