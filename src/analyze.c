@@ -2449,40 +2449,93 @@ static void resolve_parents(Compiler *c) {
   }
 }
 
-/* For each class, find `include M` declarations and transplant M's instance
-   methods into the class so they are reachable via comp_method_in_chain. */
-static void register_includes(Compiler *c) {
+/* Process include calls in a single class body, creating scope copies for each
+   included module method. We copy (not mutate) so multiple classes can include
+   the same module independently. */
+static void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    int body = nt_ref(nt, c->classes[ci].def_node, "body");
-    int n = 0;
-    const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-    for (int k = 0; k < n; k++) {
-      int s = stmts[k];
-      const char *sty = nt_type(nt, s);
-      if (!sty || strcmp(sty, "CallNode")) continue;
-      const char *nm = nt_str(nt, s, "name");
-      if (!nm || strcmp(nm, "include")) continue;
-      if (nt_ref(nt, s, "receiver") >= 0) continue;
-      int anode = nt_ref(nt, s, "arguments");
-      int an = 0;
-      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      for (int j = 0; j < an; j++) {
-        const char *aty = nt_type(nt, args[j]);
-        const char *mname = NULL;
-        if (aty && !strcmp(aty, "ConstantReadNode")) mname = nt_str(nt, args[j], "name");
-        else if (aty && !strcmp(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
-        int mod_id = mname ? comp_class_index(c, mname) : -1;
-        if (mod_id < 0) continue;
-        for (int ms = 0; ms < c->nscopes; ms++) {
-          Scope *sc = &c->scopes[ms];
-          if (sc->class_id != mod_id || sc->is_cmethod || !sc->name) continue;
-          /* Skip if class already has a method with this name */
-          if (comp_method_in_class(c, ci, sc->name) >= 0) continue;
-          sc->class_id = ci;
+  int n = 0;
+  const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    int s = stmts[k];
+    const char *sty = nt_type(nt, s);
+    if (!sty || strcmp(sty, "CallNode")) continue;
+    const char *nm = nt_str(nt, s, "name");
+    if (!nm || strcmp(nm, "include")) continue;
+    if (nt_ref(nt, s, "receiver") >= 0) continue;
+    int anode = nt_ref(nt, s, "arguments");
+    int an = 0;
+    const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+    for (int j = 0; j < an; j++) {
+      const char *aty = nt_type(nt, args[j]);
+      const char *mname = NULL;
+      if (aty && !strcmp(aty, "ConstantReadNode")) mname = nt_str(nt, args[j], "name");
+      else if (aty && !strcmp(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
+      int mod_id = mname ? comp_class_index(c, mname) : -1;
+      if (mod_id < 0) continue;
+      /* snapshot count before adding new scopes to avoid re-scanning them */
+      int snap = c->nscopes;
+      for (int ms = 0; ms < snap; ms++) {
+        Scope *src = &c->scopes[ms];
+        if (src->class_id != mod_id || src->is_cmethod || !src->name) continue;
+        if (comp_method_in_class(c, ci, src->name) >= 0) continue;
+        /* Create a new scope sharing the same AST nodes but owned by ci. */
+        Scope *dst = comp_scope_new(c, src->name, src->def_node);
+        /* comp_scope_new may realloc c->scopes; re-derive src pointer. */
+        src = &c->scopes[ms];
+        dst->body = src->body;
+        dst->class_id = ci;
+        dst->is_cmethod = 0;
+        dst->reachable = src->reachable;
+        dst->yields = src->yields;
+        dst->nrequired = src->nrequired;
+        dst->rest_idx = src->rest_idx;
+        if (src->blk_param) dst->blk_param = strdup(src->blk_param);
+        /* Copy parameter names and defaults. */
+        dst->nparams = src->nparams;
+        if (src->nparams > 0) {
+          dst->pnames = malloc(sizeof(char *) * (size_t)src->nparams);
+          dst->pdefault = malloc(sizeof(int) * (size_t)src->nparams);
+          for (int p = 0; p < src->nparams; p++) {
+            dst->pnames[p] = src->pnames[p] ? strdup(src->pnames[p]) : NULL;
+            dst->pdefault[p] = src->pdefault ? src->pdefault[p] : -1;
+          }
+          /* Register param locals so infer_param_types can update types. */
+          for (int p = 0; p < src->nparams; p++) {
+            if (dst->pnames[p]) {
+              LocalVar *lv = scope_local_intern(dst, dst->pnames[p]);
+              lv->is_param = 1;
+            }
+          }
+          src->is_transplanted_source = 1;
         }
       }
     }
+  }
+}
+
+/* For each class, find `include M` declarations in ALL class bodies
+   (including reopenings) and transplant M's instance methods into the
+   class so they are reachable via comp_method_in_chain. */
+static void register_includes(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  /* First pass: process def_node bodies (first class definition). */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int body = nt_ref(nt, c->classes[ci].def_node, "body");
+    process_include_body(c, ci, body);
+  }
+  /* Second pass: scan all ClassNode/ModuleNode in the AST for reopenings. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || (strcmp(ty, "ClassNode") && strcmp(ty, "ModuleNode"))) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!cname) continue;
+    int ci = comp_class_index(c, cname);
+    if (ci < 0) continue;
+    if (id == c->classes[ci].def_node) continue;  /* already processed above */
+    int body = nt_ref(nt, id, "body");
+    process_include_body(c, ci, body);
   }
 }
 
@@ -5032,6 +5085,33 @@ void analyze_program(Compiler *c) {
      are dead code; skipping them avoids type-checking uninvoked methods
      (e.g. a never-called method with an uninferrable param). */
   compute_reachable(c);
+
+  /* Post-fixpoint: scope copies created by register_includes have pnames but no
+     locals (since nscope still maps body nodes to the original scope). Find each
+     such copy and transplant the finalized locals + return type from the source. */
+  for (int ci = 0; ci < c->nscopes; ci++) {
+    Scope *s = &c->scopes[ci];
+    if (!s->name || s->nparams == 0 || s->nlocals > 0) continue;
+    /* Has params but no locals: a copy whose params were never registered. */
+    for (int si = 0; si < c->nscopes; si++) {
+      if (si == ci) continue;
+      Scope *src = &c->scopes[si];
+      if (!src->name || strcmp(src->name, s->name)) continue;
+      if (src->body != s->body || src->nlocals == 0) continue;
+      if (src->nparams != s->nparams) continue;
+      if (!scope_local(src, s->pnames[0])) continue;
+      s->nlocals = src->nlocals;
+      s->clocals = src->nlocals;
+      s->locals = malloc(sizeof(LocalVar) * (size_t)src->nlocals);
+      for (int l = 0; l < src->nlocals; l++) {
+        s->locals[l] = src->locals[l];
+        s->locals[l].name = src->locals[l].name ? strdup(src->locals[l].name) : NULL;
+      }
+      s->ret = src->ret;
+      s->ret_proc_ret = src->ret_proc_ret;
+      break;
+    }
+  }
 
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)

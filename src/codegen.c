@@ -71,6 +71,9 @@ static const char *g_block_param_name = NULL;
 static const char *g_self = "self";
 /* When emitting class/module body statements, the class index (-1 outside). */
 static int g_class_body_id = -1;
+/* Class id of the scope currently being emitted (-1 if none). Used to resolve
+   implicit self calls in included-module methods to the including class. */
+static int g_emitting_class_id = -1;
 /* While emitting a rescue handler: the C var names holding the caught
    exception's class/message, so a bare `raise` can re-raise. */
 static const char *g_rescue_cls = NULL, *g_rescue_msg = NULL;
@@ -422,6 +425,7 @@ static void emit_str_literal(Buf *b, const char *content) {
 
 /* ---- forward decls ---- */
 
+static int is_builtin_reopen(const char *name);
 static void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 static void emit_expr(Compiler *c, int id, Buf *b);
 static void emit_stmt(Compiler *c, int id, Buf *b, int indent);
@@ -2687,11 +2691,16 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
     } else {
       int kv = (m && kwh_d >= 0) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
       int provided = kv >= 0 ? kv : (k < pos_argc_d ? argv[k] : -1);
-      /* Default expressions (e.g. `@ivar * 10`) reference the callee's self,
-         not the caller's. Temporarily point g_self at the receiver. */
-      if (provided < 0) g_self = selfptr;
+      /* Default expressions (e.g. `@ivar * 10`) reference the callee's self and
+         callee's class, not the caller's. Temporarily redirect both. */
+      int saved_emcls2 = g_emitting_class_id;
+      if (provided < 0) {
+        g_self = selfptr;
+        if (m) g_emitting_class_id = m->class_id;
+      }
       emit_arg_or_default(c, m, k, provided, &ab);
       g_self = saved_self;
+      g_emitting_class_id = saved_emcls2;
       emit_indent(g_pre, g_indent);
       emit_ctype(c, p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1), g_pre);
       buf_printf(g_pre, " _t%d = ", atmp[k]);
@@ -3707,6 +3716,17 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   /* x.class -> the class-name string (compile-time for known types) */
   if (recv >= 0 && !strcmp(name, "class") && argc == 0) {
     TyKind rt = comp_ntype(c, recv);
+    /* When emitting a scope transplanted from a builtin-reopen class (Object/Array/
+       Numeric), self is sp_RbVal even if the nscope-based type says otherwise.
+       Override the inferred type to TY_POLY so we get sp_poly_class_name(self).
+       Exception: TrueClass/FalseClass use int self; keep TY_BOOL for ternary. */
+    if (g_emitting_class_id >= 0 &&
+        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode") &&
+        is_builtin_reopen(c->classes[g_emitting_class_id].name)) {
+      const char *ecn = c->classes[g_emitting_class_id].name;
+      if (strcmp(ecn, "TrueClass") && strcmp(ecn, "FalseClass"))
+        rt = TY_POLY;
+    }
     const char *cn = NULL;
     if (rt == TY_INT) cn = "Integer";
     else if (rt == TY_FLOAT) cn = "Float";
@@ -3894,19 +3914,22 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   /* implicit-self call inside an instance method */
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
-    if (self->class_id >= 0) {
-      if (comp_reader_in_chain(c, self->class_id, name, NULL)) {
+    /* When emitting a scope transplanted by include (g_emitting_class_id is set),
+       dispatch through the emitting class so overrides are found correctly. */
+    int dispatch_cid = (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
+    if (dispatch_cid >= 0) {
+      if (comp_reader_in_chain(c, dispatch_cid, name, NULL)) {
         buf_printf(b, "%s->iv_%s", g_self, name);
         return;
       }
-      int mi = comp_method_in_chain(c, self->class_id, name, NULL);
+      int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
       if (mi >= 0) {
-        emit_dispatch(c, self->class_id, name, g_self, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+        emit_dispatch(c, dispatch_cid, name, g_self, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         return;
       }
       /* Built-in class reopening: implicit self → dispatch as self.builtin_method() */
       if (mi < 0 && !self->is_cmethod) {
-        const char *bcn = c->classes[self->class_id].name;
+        const char *bcn = c->classes[dispatch_cid].name;
         TyKind brt = TY_UNKNOWN;
         if (!strcmp(bcn, "String"))        brt = TY_STRING;
         else if (!strcmp(bcn, "Integer"))  brt = TY_INT;
@@ -13404,6 +13427,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
   emit_scope_decls(c, s, b);
   TyKind saved_rt = g_ret_type;
   int saved_ed = g_ensure_depth; g_ensure_depth = 0;
+  int saved_emcls = g_emitting_class_id; g_emitting_class_id = s->class_id;
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   if (method_is_void(s)) {
     emit_stmts(c, s->body, b, 1);
@@ -13415,6 +13439,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b) {
     else buf_printf(b, "%s;\n", default_value(s->ret));
   }
   g_ret_type = saved_rt; g_ensure_depth = saved_ed;
+  g_emitting_class_id = saved_emcls;
   buf_puts(b, "}\n");
 }
 
@@ -14060,7 +14085,7 @@ char *codegen_program(const NodeTable *nt) {
   }
 
   /* method prototypes (scope 0 is top-level) */
-  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s)) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
+  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
   /* constructor prototypes + definitions (after method protos: new calls initialize) */
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
@@ -14120,7 +14145,7 @@ char *codegen_program(const NodeTable *nt) {
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name))
       emit_class_new(c, &c->classes[i], &body);
-  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s)) continue; emit_method(c, &c->scopes[s], &body); }
+  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; emit_method(c, &c->scopes[s], &body); }
 
   /* Emit END block static functions for atexit registration */
   int end_count = 0;
