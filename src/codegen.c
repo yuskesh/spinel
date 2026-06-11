@@ -6489,7 +6489,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && argc > 0) {
     /* the builtin-array `[]` arm only applies to an integer index */
     int is_index = !strcmp(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_INT;
-    int is_include = (!strcmp(name, "include?") || !strcmp(name, "member?")) && argc == 1;
+    int is_include = (!strcmp(name, "include?") || !strcmp(name, "member?") ||
+                      !strcmp(name, "has_key?") || !strcmp(name, "key?")) && argc == 1;
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
