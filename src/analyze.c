@@ -1234,6 +1234,7 @@ static TyKind infer_call(Compiler *c, int id) {
         (!strcmp(name, "fill") && argc >= 1 && argc <= 3) ||
         !strcmp(name, "replace") ||
         !strcmp(name, "values_at")) return rt;
+    if (!strcmp(name, "zip") && block < 0) return TY_POLY_ARRAY;
     if (!strcmp(name, "frozen?")) return TY_BOOL;
     if ((!strcmp(name, "delete_at") || !strcmp(name, "delete")) && argc == 1)
       return ty_array_elem(rt);
@@ -4413,6 +4414,17 @@ static int infer_block_params(Compiler *c) {
       continue;
     }
 
+    /* File.open(args) { |f| ... }: f is a TY_POLY file handle */
+    if (recv >= 0 && !strcmp(name, "open") && nt_type(nt, recv) &&
+        !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        (!strcmp(nt_str(nt, recv, "name"), "File") ||
+         !strcmp(nt_str(nt, recv, "name"), "IO"))) {
+      const char *p0 = block_param_name(c, block, 0);
+      if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
+                if (l->type != TY_POLY) { l->type = TY_POLY; changed = 1; } }
+      continue;
+    }
+
     /* StringIO.open(args) { |io| ... }: io is a StringIO */
     if (recv >= 0 && !strcmp(name, "open") && nt_type(nt, recv) &&
         !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
@@ -4492,6 +4504,10 @@ static int infer_block_params(Compiler *c) {
     }
     else if ((!strcmp(name, "times") || !strcmp(name, "upto") ||
          !strcmp(name, "downto")) && rt == TY_INT)
+      pt = TY_INT;
+    else if (rt == TY_POLY && !strcmp(name, "each_line"))
+      pt = TY_STRING;  /* File/IO object yielding lines */
+    else if (rt == TY_POLY && !strcmp(name, "each_byte"))
       pt = TY_INT;
     else if (rt == TY_STRING && (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "upto") ||
                                  !strcmp(name, "chars") || !strcmp(name, "lines")))

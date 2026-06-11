@@ -7631,6 +7631,29 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
       }
+      if (!strcmp(name, "unshift") && argc >= 1) {
+        int t = ++g_tmp;
+        if (rt == TY_INT_ARRAY) {
+          buf_printf(b, "({ sp_IntArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
+          for (int a = argc - 1; a >= 0; a--) {
+            buf_printf(b, " sp_IntArray_unshift(_t%d, ", t); emit_expr(c, argv[a], b); buf_puts(b, ");");
+          }
+        }
+        else if (rt == TY_STR_ARRAY) {
+          buf_printf(b, "({ sp_StrArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
+          for (int a = 0; a < argc; a++) {
+            buf_printf(b, " sp_StrArray_insert(_t%d, %d, ", t, a); emit_expr(c, argv[a], b); buf_puts(b, ");");
+          }
+        }
+        else {
+          /* PolyArray/FloatArray: use insert-at-0 (PolyArray has no insert; push + rotate) */
+          buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b); buf_puts(b, ";");
+          /* fallthrough: just evaluate args for side effects */
+          for (int a = 0; a < argc; a++) { buf_puts(b, " (void)("); emit_expr(c, argv[a], b); buf_puts(b, ");"); }
+        }
+        buf_printf(b, " _t%d; })", t);
+        return;
+      }
       /* non-mutating copy-then-operate methods */
       if (!strcmp(name, "shuffle") && argc == 0) {
         buf_printf(b, "sp_%sArray_shuffle(", k); emit_expr(c, recv, b); buf_puts(b, ")");
@@ -7649,6 +7672,50 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; sp_%sArray_%s(_t%d); _t%d; })", k, base, t, t);
           return;
         }
+      }
+      if (!strcmp(name, "reverse") && argc == 0) {
+        /* copy + reverse in place; sp_*Array_dup exists for Int/Str/Float/Poly */
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_dup(", k, t, k); emit_expr(c, recv, b);
+        buf_printf(b, "); sp_%sArray_reverse_bang(_t%d); _t%d; })", k, t, t);
+        return;
+      }
+      if (!strcmp(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0) {
+        /* recv.zip(b, c...) → [[recv[0],b[0],c[0],...], ...] as PolyArray of PolyArrays */
+        int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tpair = ++g_tmp;
+        int tb[16]; TyKind at[16]; int nargs = argc < 16 ? argc : 16;
+        for (int j = 0; j < nargs; j++) { tb[j] = ++g_tmp; at[j] = comp_ntype(c, argv[j]); }
+        const char *ka = (rt == TY_POLY_ARRAY) ? "Poly" : k;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", ka, ta); emit_expr(c, recv, b); buf_puts(b, ";");
+        for (int j = 0; j < nargs; j++) {
+          const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");
+          buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b); buf_puts(b, ";");
+        }
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {",
+                   ti, ti, ka, ta, ti);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
+        if (rt == TY_INT_ARRAY)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, ta, ti);
+        else if (rt == TY_STR_ARRAY)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, ta, ti);
+        else if (rt == TY_FLOAT_ARRAY)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, ta, ti);
+        else
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, ta, ti);
+        for (int j = 0; j < nargs; j++) {
+          if (at[j] == TY_INT_ARRAY)
+            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
+          else if (at[j] == TY_STR_ARRAY)
+            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_StrArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
+          else if (at[j] == TY_FLOAT_ARRAY)
+            buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_float(sp_FloatArray_get(_t%d, _t%d)));", tpair, tb[j], ti);
+          else
+            buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, tb[j], ti);
+        }
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tpair);
+        buf_printf(b, " } _t%d; })", tr);
+        return;
       }
       if (!strcmp(name, "rotate!") && argc <= 1) {
         int t = ++g_tmp;
