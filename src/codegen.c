@@ -470,6 +470,7 @@ static int is_builtin_reopen(const char *name);
 static int is_exc_name(const char *n);
 static int class_is_exc_subclass(Compiler *c, int ci);
 static const char *class_ruby_name(Compiler *c, int ci);
+static const char *exc_builtin_parent(Compiler *c, int ci);
 static void emit_method_cname(Compiler *c, Scope *s, Buf *b);
 static void emit_expr(Compiler *c, int id, Buf *b);
 static void emit_stmt(Compiler *c, int id, Buf *b, int indent);
@@ -4367,25 +4368,22 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     int ci = cn ? comp_class_index(c, cn) : -1;
     if (ci >= 0) {
       if (class_is_exc_subclass(c, ci)) {
-        const char *cn2 = class_ruby_name(c, ci);
-        if (!cn2) cn2 = c->classes[ci].name;
-        const char *par = NULL;
-        for (int k = ci; k >= 0; k = c->classes[k].parent) {
-          int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
-          if (sc < 0) continue;
-          const char *sty = nt_type(c->nt, sc);
-          const char *sn = nt_str(c->nt, sc, "name");
-          if (sty && (!strcmp(sty, "ConstantReadNode") || !strcmp(sty, "ConstantPathNode")) && is_exc_name(sn))
-            { par = sn; break; }
-        }
-        if (!par) par = "StandardError";
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
-        buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-        if (argc >= 1) emit_expr(c, argv[0], b);
-        else if (initm >= 0 && c->scopes[initm].nparams > 0)
-          emit_arg_or_default(c, &c->scopes[initm], 0, -1, b);
-        else buf_puts(b, "(&(\"\\xff\")[1])");
-        buf_puts(b, ")");
+        if (initm >= 0) {
+          /* user initialize: call the generated sp_ClassName_new(args) constructor */
+          buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+          emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
+          buf_puts(b, ")");
+        }
+        else {
+          /* no user initialize: create directly with first arg as message */
+          const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
+          const char *par = exc_builtin_parent(c, ci);
+          buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
+          if (argc >= 1) emit_expr(c, argv[0], b);
+          else buf_puts(b, "(&(\"\\xff\")[1])");
+          buf_puts(b, ")");
+        }
         return;
       }
       int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
@@ -4440,33 +4438,24 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         return;
       }
       if (ci >= 0) {
-        /* user exception subclass: emit sp_exc_new_sub(ClassName, parent, msg) */
+        /* user exception subclass: use the generated constructor */
         if (class_is_exc_subclass(c, ci)) {
-          const char *cn2 = class_ruby_name(c, ci);
-          if (!cn2) cn2 = c->classes[ci].name;
-          /* find builtin parent name */
-          const char *par = NULL;
-          for (int k = ci; k >= 0; k = c->classes[k].parent) {
-            int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
-            if (sc < 0) continue;
-            const char *sty = nt_type(c->nt, sc);
-            const char *sn = nt_str(c->nt, sc, "name");
-            if (sty && (!strcmp(sty, "ConstantReadNode") || !strcmp(sty, "ConstantPathNode")) && is_exc_name(sn))
-              { par = sn; break; }
-          }
-          if (!par) par = "StandardError";
-          /* get the message: first call-site arg, or the initialize default */
           int initm = comp_method_in_chain(c, ci, "initialize", NULL);
-          buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
-          if (argc >= 1) {
-            emit_expr(c, argv[0], b);
+          if (initm >= 0) {
+            /* user initialize: sp_ClassName_new(args) calls initialize which calls super(msg) */
+            buf_printf(b, "sp_%s_new(", c->classes[ci].name);
+            emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
+            buf_puts(b, ")");
           }
-          else if (initm >= 0 && c->scopes[initm].nparams > 0) {
-            /* use the initialize's first param default, if any */
-            emit_arg_or_default(c, &c->scopes[initm], 0, -1, b);
+          else {
+            /* no user initialize: create directly with first arg as message */
+            const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
+            const char *par = exc_builtin_parent(c, ci);
+            buf_printf(b, "sp_exc_new_sub(\"%s\", \"%s\", ", cn2, par);
+            if (argc >= 1) emit_expr(c, argv[0], b);
+            else buf_puts(b, "(&(\"\\xff\")[1])");
+            buf_puts(b, ")");
           }
-          else buf_puts(b, "(&(\"\\xff\")[1])");
-          buf_puts(b, ")");
           return;
         }
         /* user-defined def self.new takes precedence over the constructor */
@@ -14513,7 +14502,27 @@ static const char *class_ruby_name(Compiler *c, int ci) {
   return buf;
 }
 
+/* Return the builtin exception parent name for user exc subclass ci,
+   walking up the chain until a builtin exception name is found. */
+static const char *exc_builtin_parent(Compiler *c, int ci) {
+  for (int k = ci; k >= 0; k = c->classes[k].parent) {
+    int sc = nt_ref(c->nt, c->classes[k].def_node, "superclass");
+    if (sc < 0) continue;
+    const char *sty = nt_type(c->nt, sc);
+    const char *sn = nt_str(c->nt, sc, "name");
+    if (sty && (!strcmp(sty, "ConstantReadNode") || !strcmp(sty, "ConstantPathNode")) && is_exc_name(sn))
+      return sn;
+  }
+  return "StandardError";
+}
+
 static void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
+  /* Exception subclasses share sp_Exception as their underlying type. */
+  int cid = comp_class_index(c, ci->name);
+  if (cid >= 0 && class_is_exc_subclass(c, cid)) {
+    /* struct is forward-declared as typedef sp_Exception in codegen_program */
+    return;
+  }
   /* the typedef is forward-declared for every class first (see codegen_program)
      so a class can embed a pointer to a class defined later in the file */
   buf_printf(b, "struct sp_%s_s {\n", ci->name);
@@ -14591,6 +14600,16 @@ static void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   else {
     buf_puts(b, "void");
   }
+  /* Exception subclasses: use sp_exc_new_sub as underlying storage so that
+     sp_raise/rescue machinery sees the right cls_name and parent. */
+  if (class_is_exc_subclass(c, cid)) {
+    const char *cn2 = class_ruby_name(c, cid); if (!cn2) cn2 = ci->name;
+    const char *par = exc_builtin_parent(c, cid);
+    buf_printf(b, ") {\n  sp_%s *self = sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]));\n",
+               ci->name, cn2, par);
+    buf_printf(b, "  SP_GC_ROOT(self);\n");
+  }
+  else {
   buf_printf(b, ") {\n  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, %s%s%s);\n",
             ci->name, ci->name, ci->name,
             class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
@@ -14603,6 +14622,7 @@ static void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   for (int i = 0; i < ci->nivars; i++)
     if (ci->ivar_types[i] == TY_POLY)
       buf_printf(b, "  self->iv_%s = sp_box_nil();\n", ci->ivars[i] + 1);
+  } /* close else (non-exception subclass allocation) */
   if (init >= 0) {
     buf_printf(b, "  sp_%s_initialize(", c->classes[initcls].name);
     if (initcls != cid) buf_printf(b, "(sp_%s *)", c->classes[initcls].name);
@@ -14737,9 +14757,23 @@ static void emit_super(Compiler *c, int id, Buf *b) {
   int defcls = -1;
   int mi = p >= 0 ? comp_method_in_chain(c, p, uname, &defcls) : -1;
   if (mi < 0) {
-    /* super in exception subclass initialize: no-op (message was set at .new call site) */
-    if (class_is_exc_subclass(c, s->class_id) && s->name && !strcmp(s->name, "initialize"))
-      { buf_puts(b, "((void)0)"); return; }
+    /* super(msg) in exception subclass initialize: capture msg into self->msg */
+    if (class_is_exc_subclass(c, s->class_id) && s->name && !strcmp(s->name, "initialize")) {
+      int args_id = nt_ref(c->nt, id, "arguments");
+      int argc2 = 0;
+      const int *argv2 = NULL;
+      if (args_id >= 0) argv2 = nt_arr(c->nt, args_id, "arguments", &argc2);
+      if (argc2 > 0) {
+        buf_printf(b, "(%s->msg = (", g_self);
+        emit_expr(c, argv2[0], b);
+        buf_puts(b, "))");
+      }
+      else if (ty && !strcmp(ty, "ForwardingSuperNode") && s->nparams > 0)
+        buf_printf(b, "(%s->msg = lv_%s)", g_self, s->pnames[0]);
+      else
+        buf_puts(b, "((void)0)");
+      return;
+    }
     unsupported(c, id, "super (no parent method)");
     return;
   }
@@ -14875,9 +14909,13 @@ char *codegen_program(const NodeTable *nt) {
 
   /* class structs + GC scan functions. Forward-declare every typedef first so
      a class struct may embed a pointer to a class defined later. */
-  for (int i = 0; i < c->nclasses; i++)
-    if (!is_builtin_reopen(c->classes[i].name))
+  for (int i = 0; i < c->nclasses; i++) {
+    if (is_builtin_reopen(c->classes[i].name)) continue;
+    if (class_is_exc_subclass(c, i))
+      buf_printf(&b, "typedef sp_Exception sp_%s;\n", c->classes[i].name);
+    else
       buf_printf(&b, "typedef struct sp_%s_s sp_%s;\n", c->classes[i].name, c->classes[i].name);
+  }
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name))
       emit_class_struct(c, &c->classes[i], &b);

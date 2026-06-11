@@ -4913,27 +4913,58 @@ static int infer_return_types(Compiler *c) {
   return changed;
 }
 
-/* Mark each method scope reachable iff its name is referenced anywhere as
-   a call name, alias target, or symbol literal. Scope 0 (top level) and
-   every `initialize` are always reachable. */
-static void compute_reachable(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  /* Build the set of referenced names. */
-  char **names = NULL; int n = 0, cap = 0;
-  #define ADD_NAME(NM) do { const char *_nm = (NM); \
-    if (_nm) { int _f = 0; for (int _i = 0; _i < n; _i++) if (!strcmp(names[_i], _nm)) { _f = 1; break; } \
-    if (!_f) { if (n >= cap) { cap = cap ? cap*2 : 32; names = realloc(names, sizeof(char*)*(size_t)cap); } names[n++] = strdup(_nm); } } } while (0)
-
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty) continue;
-    if (!strcmp(ty, "CallNode")) ADD_NAME(nt_str(nt, id, "name"));
-    else if (!strcmp(ty, "SymbolNode")) ADD_NAME(nt_str(nt, id, "value"));
+/* Collect CallNode names in the subtree rooted at `id`, stopping at nested
+   DefNodes (which are separate method scopes). `out` / `n` / `cap` are
+   the dynamic string array to append to. */
+static void cr_collect_calls(const NodeTable *nt, int id,
+                              char ***out, int *n, int *cap) {
+  if (id < 0) return;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return;
+  if (!strcmp(ty, "DefNode")) return;          /* don't enter nested methods */
+  /* Collect method name from CallNode, or operator name from op-assign nodes
+     (e.g. `a += 1` → InstanceVariableOperatorWriteNode with binary_operator "+"). */
+  const char *nm = NULL;
+  if (!strcmp(ty, "CallNode"))
+    nm = nt_str(nt, id, "name");
+  else {
+    size_t tl = strlen(ty);
+    if (tl > 17 && (!strcmp(ty + tl - 17, "OperatorWriteNode")))
+      nm = nt_str(nt, id, "binary_operator");
   }
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    ClassInfo *cls = &c->classes[ci];
-    for (int i = 0; i < cls->naliases; i++) { ADD_NAME(cls->alias_new[i]); ADD_NAME(cls->alias_old[i]); }
-    for (int i = 0; i < cls->nprep_chain; i++) ADD_NAME(cls->prep_to[i]);
+  if (nm) {
+    int found = 0;
+    for (int i = 0; i < *n; i++) if (!strcmp((*out)[i], nm)) { found = 1; break; }
+    if (!found) {
+      if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
+      (*out)[(*n)++] = strdup(nm);
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(nt, ch, out, n, cap); }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int k = 0; k < nn; k++) if (ids[k] >= 0) cr_collect_calls(nt, ids[k], out, n, cap); }
+}
+
+/* Mark each method scope reachable via transitive call-graph BFS.
+   Scope 0 (top level), every `initialize`, and implicitly-called methods
+   are roots. Any method reachable from a root (directly or transitively)
+   is marked live; others are dead-code-eliminated. */
+static void compute_reachable(Compiler *c) {
+  /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
+  char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
+  int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
+  int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
+  for (int s = 0; s < c->nscopes; s++) {
+    if (c->scopes[s].body >= 0)
+      cr_collect_calls(c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s]);
+    /* Also scan parameter defaults (e.g. def foo(opt = bar)) — these emit calls
+       within the method scope but live in the DefNode parameters subtree. */
+    if (c->scopes[s].def_node >= 0) {
+      int pn = nt_ref(c->nt, c->scopes[s].def_node, "parameters");
+      if (pn >= 0)
+        cr_collect_calls(c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s]);
+    }
   }
 
   /* Names that may be invoked implicitly (no explicit CallNode): keep live. */
@@ -4941,17 +4972,113 @@ static void compute_reachable(Compiler *c) {
     "to_s", "inspect", "==", "<=>", "eql?", "hash", "each", "coerce",
     "to_str", "to_ary", "to_a", "to_i", "to_int", "to_h", "to_proc", "call", NULL };
 
+  /* BFS queue (scope indices). */
+  int *queue = malloc((size_t)c->nscopes * sizeof(int));
+  int qhead = 0, qtail = 0;
+
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    if (s == 0 || !sc->name || !strcmp(sc->name, "initialize")) { sc->reachable = 1; continue; }
     sc->reachable = 0;
-    for (int i = 0; implicit[i]; i++) if (!strcmp(implicit[i], sc->name)) { sc->reachable = 1; break; }
-    if (sc->reachable) continue;
-    for (int i = 0; i < n; i++) if (!strcmp(names[i], sc->name)) { sc->reachable = 1; break; }
+    int is_root = (s == 0 || !sc->name || !strcmp(sc->name, "initialize"));
+    if (!is_root)
+      for (int i = 0; implicit[i]; i++) if (!strcmp(implicit[i], sc->name)) { is_root = 1; break; }
+    if (is_root) { sc->reachable = 1; queue[qtail++] = s; }
   }
-  for (int i = 0; i < n; i++) free(names[i]);
-  free(names);
-  #undef ADD_NAME
+
+  /* "called_names" tracks every method name reached from any reachable scope.
+     Used by alias and prep_to propagation (aliases have no scope of their own). */
+  char **called_names = NULL; int cn_n = 0, cn_cap = 0;
+  #define CN_ADD(NM) do { const char *_n=(NM); if(_n){ int _f=0; \
+    for(int _i=0;_i<cn_n;_i++) if(!strcmp(called_names[_i],_n)){_f=1;break;} \
+    if(!_f){if(cn_n>=cn_cap){cn_cap=cn_cap?cn_cap*2:32;called_names=realloc(called_names,sizeof(char*)*cn_cap);} \
+    called_names[cn_n++]=strdup(_n);}} } while(0)
+
+  /* Helper: mark a name reachable — all scopes with that name join the BFS. */
+  #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn){ CN_ADD(_mn); \
+    for(int _t=0;_t<c->nscopes;_t++) \
+      if(!c->scopes[_t].reachable&&c->scopes[_t].name&&!strcmp(c->scopes[_t].name,_mn)) \
+        { c->scopes[_t].reachable=1; queue[qtail++]=_t; } } } while(0)
+
+  while (qhead < qtail) {
+    int s = queue[qhead++];
+    for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
+  }
+
+  /* Alias/prep_to propagation: when alias_new (or alias_old) is in called_names,
+     make the counterpart reachable too (aliases have no scope of their own). */
+  int changed = 1;
+  while (changed) {
+    changed = 0;
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      ClassInfo *cls = &c->classes[ci];
+      for (int i = 0; i < cls->naliases; i++) {
+        const char *an = cls->alias_new[i], *ao = cls->alias_old[i];
+        int an_live = 0, ao_live = 0;
+        for (int j = 0; j < cn_n; j++) {
+          if (an && !strcmp(called_names[j], an)) an_live = 1;
+          if (ao && !strcmp(called_names[j], ao)) ao_live = 1;
+        }
+        /* also check reachable scope names (covers scope-backed aliases) */
+        for (int s = 0; s < c->nscopes; s++) {
+          if (c->scopes[s].reachable && c->scopes[s].name) {
+            if (an && !strcmp(c->scopes[s].name, an)) an_live = 1;
+            if (ao && !strcmp(c->scopes[s].name, ao)) ao_live = 1;
+          }
+        }
+        if (an_live && !ao_live) {
+          int prev_qtail = qtail;
+          MARK_NAME(ao);
+          if (qtail > prev_qtail) changed = 1;
+          /* drain newly enqueued scopes */
+          while (qhead < qtail) {
+            int s = queue[qhead++];
+            for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
+          }
+        }
+        if (ao_live && !an_live) {
+          int prev_qtail = qtail;
+          MARK_NAME(an);
+          if (qtail > prev_qtail) changed = 1;
+          while (qhead < qtail) {
+            int s = queue[qhead++];
+            for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
+          }
+        }
+      }
+      for (int i = 0; i < cls->nprep_chain; i++) {
+        const char *pf = cls->prep_from[i]; /* user-facing name, e.g. "hi" */
+        const char *pt = cls->prep_to[i];   /* shadow name, e.g. "__prep_0_hi" */
+        if (!pf || !pt) continue;
+        /* When the user-facing name is called, the codegen wrapper calls the shadow
+           implementation directly — so mark the shadow reachable too. */
+        int pf_in_called = 0;
+        for (int j = 0; j < cn_n; j++) if (!strcmp(called_names[j], pf)) { pf_in_called = 1; break; }
+        if (!pf_in_called) {
+          for (int s = 0; s < c->nscopes; s++)
+            if (c->scopes[s].reachable && c->scopes[s].name && !strcmp(c->scopes[s].name, pf)) { pf_in_called = 1; break; }
+        }
+        if (pf_in_called) {
+          int prev_qtail = qtail;
+          MARK_NAME(pt);
+          if (qtail > prev_qtail) { changed = 1;
+            while (qhead < qtail) { int s=queue[qhead++]; for(int ni=0;ni<sc_n[s];ni++) MARK_NAME(scope_calls[s][ni]); }
+          }
+        }
+      }
+    }
+  }
+
+  for (int i = 0; i < cn_n; i++) free(called_names[i]);
+  free(called_names);
+  #undef CN_ADD
+  #undef MARK_NAME
+
+  /* Cleanup. */
+  for (int s = 0; s < c->nscopes; s++) {
+    for (int i = 0; i < sc_n[s]; i++) free(scope_calls[s][i]);
+    free(scope_calls[s]);
+  }
+  free(scope_calls); free(sc_n); free(sc_cap); free(queue);
 }
 
 /* ---- proc capture detection (closures) ----
