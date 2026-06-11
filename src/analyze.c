@@ -5961,6 +5961,21 @@ void analyze_program(Compiler *c) {
     }
   }
 
+  /* Backstop: a reachable method still has TY_UNKNOWN params if it was never
+     called with typed arguments (BFS marked it live by name, but no typed call
+     site bound its args).  Mark such methods unreachable so codegen skips them
+     rather than exit(1)ing on the unknown type. */
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (!sc->reachable || sc->nparams == 0) continue;
+    int has_unknown = 0;
+    for (int i = 0; i < sc->nparams; i++) {
+      LocalVar *p = sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
+      if (p && p->type == TY_UNKNOWN) { has_unknown = 1; break; }
+    }
+    if (has_unknown) sc->reachable = 0;
+  }
+
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)
     for (int i = 0; i < c->scopes[s].nlocals; i++)
