@@ -5138,6 +5138,19 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           if (ci >= 0) {
             resolved = 1;
             yes = comp_cmethod_in_chain(c, ci, qm, NULL) >= 0;
+            /* singleton attr_accessor/reader/writer via class << self */
+            if (!yes) {
+              size_t ql = strlen(qm);
+              int is_wr = ql > 0 && qm[ql - 1] == '=';
+              if (is_wr) {
+                char base[256];
+                if (ql - 1 < sizeof base) { memcpy(base, qm, ql - 1); base[ql - 1] = '\0'; }
+                yes = comp_is_sg_writer(&c->classes[ci], base);
+              }
+              else {
+                yes = comp_is_sg_reader(&c->classes[ci], qm);
+              }
+            }
             /* a module also responds to its def'd (module_function) methods */
             if (!yes) {
               int dn = c->classes[ci].def_node;
@@ -6416,6 +6429,13 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       /* include? on a TAG_STR receiver: check tag before entering cls_id switch */
       if (is_include && infer_type(c, argv[0]) == TY_STRING)
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_include(_t%d.v.s, _t%d); } else ", tv, tr, tv, atmp[0]);
+      /* Integer#[N] bit-extraction: poly recv may hold a tagged int */
+      if (is_index) {
+        if (ret == TY_POLY)
+          buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = sp_box_int((_t%d.v.i >> _t%d) & 1); } else ", tv, tr, tv, atmp[0]);
+        else
+          buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = (_t%d.v.i >> _t%d) & 1; } else ", tv, tr, tv, atmp[0]);
+      }
       buf_printf(b, "switch (_t%d.cls_id) {", tv);
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
@@ -9721,12 +9741,12 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
   }
 
-  /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array */
+  /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array or hash */
   if (!strcmp(name, "each") && rt == TY_POLY && block >= 0 && p0) {
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
-    emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = sp_poly_arr_len(_t%d);\n", tn, ta);
+    emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
     /* multi-param: auto-splat each poly element into params */
@@ -9734,7 +9754,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (npp_poly >= 2) {
       int telem = ++g_tmp;
       emit_indent(b, indent + 1);
-      buf_printf(b, "sp_RbVal _t%d = sp_poly_arr_get_hash(_t%d, _t%d);\n", telem, ta, ti);
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", telem, ta, ti);
       for (int pj = 0; pj < npp_poly; pj++) {
         const char *pnj = block_param_name(c, block, pj);
         if (!pnj) break;
@@ -9744,7 +9764,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
     else {
       emit_indent(b, indent + 1);
-      buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, _t%d);\n", p0, ta, ti);
+      buf_printf(b, "lv_%s = sp_poly_each_elem(_t%d, _t%d);\n", p0, ta, ti);
     }
     emit_stmts(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -11540,6 +11560,45 @@ static int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "{ const char *_sys_%d[] = { ", ts);
     for (int k = 0; k < argc; k++) { if (k > 0) buf_puts(b, ", "); emit_expr(c, argv[k], b); }
     buf_printf(b, ", NULL }; sp_system_args(%d, _sys_%d); }\n", argc, ts);
+    return 1;
+  }
+  if (!strcmp(name, "printf") && argc >= 1) {
+    /* Kernel#printf: printf(fmt, args...) with %d/%i/%x/%o/%u rewritten to ll forms */
+    emit_indent(b, indent);
+    buf_puts(b, "printf(");
+    if (nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "StringNode")) {
+      const char *lit = nt_str(nt, argv[0], "unescaped");
+      if (!lit) lit = nt_str(nt, argv[0], "content");
+      if (!lit) lit = "";
+      /* Build a rewritten format string with ll-qualified integer specifiers */
+      Buf fmtb; memset(&fmtb, 0, sizeof fmtb);
+      for (const char *p = lit; *p; ) {
+        if (*p == '%') {
+          buf_puts(&fmtb, "%"); p++;
+          while (*p == '-' || *p == '+' || *p == ' ' || *p == '#' || *p == '0' ||
+                 (*p >= '1' && *p <= '9') || *p == '.') { buf_printf(&fmtb, "%c", (unsigned char)*p); p++; }
+          if (*p == 'd' || *p == 'i') { buf_puts(&fmtb, "lld"); p++; }
+          else if (*p == 'x') { buf_puts(&fmtb, "llx"); p++; }
+          else if (*p == 'X') { buf_puts(&fmtb, "llX"); p++; }
+          else if (*p == 'o') { buf_puts(&fmtb, "llo"); p++; }
+          else if (*p == 'u') { buf_puts(&fmtb, "llu"); p++; }
+          else if (*p) { buf_printf(&fmtb, "%c", (unsigned char)*p); p++; }
+        }
+        else { buf_printf(&fmtb, "%c", (unsigned char)*p); p++; }
+      }
+      buf_puts(b, "\"");
+      emit_c_escaped(b, fmtb.p ? fmtb.p : "");
+      buf_puts(b, "\"");
+      free(fmtb.p);
+    }
+    else { emit_expr(c, argv[0], b); }
+    for (int k = 1; k < argc; k++) {
+      buf_puts(b, ", ");
+      TyKind at = comp_ntype(c, argv[k]);
+      if (at == TY_INT) { buf_puts(b, "(long long)"); emit_expr(c, argv[k], b); }
+      else emit_expr(c, argv[k], b);
+    }
+    buf_puts(b, ");\n");
     return 1;
   }
   /* trap(...) stmt: no-op (Spinel has no signal-handler runtime) */
@@ -13752,6 +13811,7 @@ static void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_STRING: fn = "sp_box_str"; break;     case TY_BOOL: fn = "sp_box_bool"; break;
     case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
     case TY_TIME: fn = "sp_box_time"; break;
+    case TY_PROC: fn = "sp_box_proc"; break;
     case TY_INT_ARRAY: fn = "sp_box_int_array"; break;
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
     case TY_STR_ARRAY: fn = "sp_box_str_array"; break;

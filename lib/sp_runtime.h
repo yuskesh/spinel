@@ -3251,6 +3251,9 @@ static mrb_int sp_poly_arr_len(sp_RbVal a) {
     case SP_BUILTIN_FLT_ARRAY: return ((sp_FloatArray *)a.v.p)->len;
     case SP_BUILTIN_STR_ARRAY: return ((sp_StrArray *)a.v.p)->len;
     case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)a.v.p)->len;
+    case SP_BUILTIN_STR_INT_HASH: return ((sp_StrIntHash *)a.v.p)->len;
+    case SP_BUILTIN_STR_STR_HASH: return ((sp_StrStrHash *)a.v.p)->len;
+    case SP_BUILTIN_INT_STR_HASH: return ((sp_IntStrHash *)a.v.p)->len;
     default: return 0;
   }
 }
@@ -3826,8 +3829,76 @@ static void sp_PolyPolyHash_set(sp_PolyPolyHash*h,sp_RbVal k,sp_RbVal v){if(h->l
 static mrb_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 static mrb_int sp_PolyPolyHash_length(sp_PolyPolyHash*h){return h->len;}
 static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->occ[i]=0;h->len=0;}
+/* Extend sp_poly_arr_len for hash types defined after the initial declaration. */
+static mrb_int sp_poly_arr_len_ex(sp_RbVal a) {
+  if (a.tag != SP_TAG_OBJ) return 0;
+  switch (a.cls_id) {
+    case SP_BUILTIN_STR_POLY_HASH: return ((sp_StrPolyHash *)a.v.p)->len;
+    case SP_BUILTIN_SYM_POLY_HASH: return ((sp_SymPolyHash *)a.v.p)->len;
+    case SP_BUILTIN_POLY_POLY_HASH: return ((sp_PolyPolyHash *)a.v.p)->len;
+    default: return sp_poly_arr_len(a);
+  }
+}
+/* sp_poly_each_elem: return the i-th element for sequential each-iteration.
+   For arrays: element at index i. For hashes: the i-th insertion-order
+   key-value pair as a 2-element PolyArray so |k, v| block splat works. */
+static sp_RbVal sp_poly_each_elem(sp_RbVal a, mrb_int i) {
+  if (a.tag != SP_TAG_OBJ) return sp_box_nil();
+  switch (a.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
+    case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_POLY_ARRAY:
+      return sp_poly_arr_get(a, i);
+    case SP_BUILTIN_STR_INT_HASH: {
+      sp_StrIntHash *h = (sp_StrIntHash*)a.v.p;
+      if (!h || i < 0 || i >= h->len) return sp_box_nil();
+      sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+      sp_PolyArray_push(pair, sp_box_str(h->order[i]));
+      sp_PolyArray_push(pair, sp_box_int(sp_StrIntHash_get(h, h->order[i])));
+      return sp_box_poly_array(pair); }
+    case SP_BUILTIN_STR_STR_HASH: {
+      sp_StrStrHash *h = (sp_StrStrHash*)a.v.p;
+      if (!h || i < 0 || i >= h->len) return sp_box_nil();
+      sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+      sp_PolyArray_push(pair, sp_box_str(h->order[i]));
+      const char *sv = sp_StrStrHash_get(h, h->order[i]);
+      sp_PolyArray_push(pair, sv ? sp_box_str(sv) : sp_box_nil());
+      return sp_box_poly_array(pair); }
+    case SP_BUILTIN_STR_POLY_HASH: {
+      sp_StrPolyHash *h = (sp_StrPolyHash*)a.v.p;
+      if (!h || i < 0 || i >= h->len) return sp_box_nil();
+      sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+      sp_PolyArray_push(pair, sp_box_str(h->order[i]));
+      sp_PolyArray_push(pair, sp_StrPolyHash_get(h, h->order[i]));
+      return sp_box_poly_array(pair); }
+    case SP_BUILTIN_SYM_POLY_HASH: {
+      sp_SymPolyHash *h = (sp_SymPolyHash*)a.v.p;
+      if (!h || i < 0 || i >= h->len) return sp_box_nil();
+      sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+      sp_PolyArray_push(pair, sp_box_sym(h->order[i]));
+      sp_PolyArray_push(pair, sp_SymPolyHash_get(h, h->order[i]));
+      return sp_box_poly_array(pair); }
+    case SP_BUILTIN_INT_STR_HASH: {
+      sp_IntStrHash *h = (sp_IntStrHash*)a.v.p;
+      if (!h || i < 0 || i >= h->len) return sp_box_nil();
+      sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+      sp_PolyArray_push(pair, sp_box_int(h->order[i]));
+      const char *iv = sp_IntStrHash_get(h, h->order[i]);
+      sp_PolyArray_push(pair, iv ? sp_box_str(iv) : sp_box_nil());
+      return sp_box_poly_array(pair); }
+    case SP_BUILTIN_POLY_POLY_HASH: {
+      sp_PolyPolyHash *h = (sp_PolyPolyHash*)a.v.p;
+      if (!h || i < 0 || i >= h->len) return sp_box_nil();
+      mrb_int idx = h->order[i];
+      sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+      sp_PolyArray_push(pair, h->keys[idx]);
+      sp_PolyArray_push(pair, h->vals[idx]);
+      return sp_box_poly_array(pair); }
+    default: return sp_box_nil();
+  }
+}
 /* poly_arr_get/set for PolyPolyHash with integer index key. */
 static sp_RbVal sp_poly_arr_get_hash(sp_RbVal a, mrb_int i) {
+  if (a.tag == SP_TAG_INT) return sp_box_int((a.v.i >> i) & 1);
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_POLY_POLY_HASH)
     return sp_PolyPolyHash_get((sp_PolyPolyHash*)a.v.p, sp_box_int(i));
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_SYM_POLY_HASH)
