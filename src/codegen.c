@@ -2442,9 +2442,10 @@ static int dispatch_impl_count(Compiler *c, int cid, const char *name) {
 
 /* Emit a (possibly virtual) method call. `selfptr` is a reusable C
    expression yielding sp_<static>* (e.g. "self", "&lv_x", "&_t3"). Args
-   are pre-evaluated into temps so they're emitted once. */
+   are pre-evaluated into temps so they're emitted once.
+   `blk_node` is the BlockNode id of the attached block, or -1 if none. */
 static void emit_dispatch(Compiler *c, int cid, const char *name,
-                          const char *selfptr, int argsNode, Buf *b) {
+                          const char *selfptr, int argsNode, int blk_node, Buf *b) {
   const NodeTable *nt = c->nt;
   int defcls = cid;
   int mi = comp_method_in_chain(c, cid, name, &defcls);
@@ -2499,6 +2500,19 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
     free(ab.p);
   }
 
+  /* &block param that escapes: pre-evaluate the block as sp_Proc * temp.
+     When the call site has no block, blk_tmp stays -1 and we pass NULL. */
+  int blk_tmp = -1;
+  int needs_blk_arg = m && m->blk_param && m->blk_param[0] && !m->yields;
+  if (needs_blk_arg && blk_node >= 0) {
+    blk_tmp = ++g_tmp;
+    Buf pb; memset(&pb, 0, sizeof pb);
+    emit_proc_literal(c, blk_node, &pb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+    free(pb.p);
+  }
+
   /* The aliased name may differ from the defining method's real name. */
   const char *mname = m ? m->name : name;
 
@@ -2507,6 +2521,10 @@ static void emit_dispatch(Compiler *c, int cid, const char *name,
   if (!virtual) {
     buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
     for (int k = 0; k < np; k++) buf_printf(b, ", _t%d", atmp[k]);
+    if (needs_blk_arg) {
+      if (blk_tmp >= 0) buf_printf(b, ", _t%d", blk_tmp);
+      else buf_puts(b, ", NULL");
+    }
     buf_puts(b, ")");
     free(atmp);
     return;
@@ -2908,10 +2926,21 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* proc {} / lambda {} / Proc.new {} literal -> a first-class Proc value */
+  /* proc {} / lambda {} / Proc.new {} literal -> a first-class Proc value.
+     Guard with is_proc_literal so that any method call that returns TY_PROC
+     and happens to have a block (e.g. wrap { }) is not mistaken for a literal. */
   if (comp_ntype(c, id) == TY_PROC && nt_ref(nt, id, "block") >= 0) {
-    emit_proc_literal(c, id, b);
-    return;
+    int _pr_recv = nt_ref(nt, id, "receiver");
+    const char *_pr_nm = nt_str(nt, id, "name");
+    int is_literal = 0;
+    if (_pr_recv < 0 && _pr_nm && (!strcmp(_pr_nm, "proc") || !strcmp(_pr_nm, "lambda")))
+      is_literal = 1;
+    if (!is_literal && _pr_recv >= 0 && _pr_nm && !strcmp(_pr_nm, "new")) {
+      const char *_rty = nt_type(nt, _pr_recv);
+      const char *_rnm = _rty && !strcmp(_rty, "ConstantReadNode") ? nt_str(nt, _pr_recv, "name") : NULL;
+      if (_rnm && !strcmp(_rnm, "Proc")) is_literal = 1;
+    }
+    if (is_literal) { emit_proc_literal(c, id, b); return; }
   }
 
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
@@ -2994,7 +3023,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]"))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
     int unbox_ptr = proc_slot_is_ptr(rty);
+    int unbox_poly = (rty == TY_POLY);       /* sp_proc_call → mrb_int; box into sp_RbVal */
     if (unbox_ptr) { buf_puts(b, "("); emit_ctype(c, rty, b); buf_puts(b, ")(uintptr_t)("); }
+    if (unbox_poly) buf_puts(b, "sp_box_int(");
     buf_puts(b, "sp_proc_call(");
     emit_expr(c, recv, b);
     buf_puts(b, ", (mrb_int[16]){");
@@ -3006,6 +3037,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
     buf_puts(b, "})");
     if (unbox_ptr) buf_puts(b, ")");
+    if (unbox_poly) buf_puts(b, ")");
     return;
   }
 
@@ -3605,7 +3637,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       int mi = comp_method_in_chain(c, self->class_id, name, NULL);
       if (mi >= 0) {
-        emit_dispatch(c, self->class_id, name, g_self, nt_ref(nt, id, "arguments"), b);
+        emit_dispatch(c, self->class_id, name, g_self, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         return;
       }
     }
@@ -4699,7 +4731,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           snprintf(selfptr, sizeof selfptr, "_t%d", t4);
         }
         buf_puts(b, "(");
-        emit_dispatch(c, cid4, "<=>", selfptr, nt_ref(nt, id, "arguments"), b);
+        emit_dispatch(c, cid4, "<=>", selfptr, nt_ref(nt, id, "arguments"), -1, b);
         buf_printf(b, " %s 0)", name);
         return;
       }
@@ -5098,7 +5130,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           free(rb.p);
           snprintf(selfptr, sizeof selfptr, "_t%d", t2);
         }
-        emit_dispatch(c, ecid, name, selfptr, nt_ref(nt, id, "arguments"), b);
+        emit_dispatch(c, ecid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         return;
       }
       /* no direct == : use <=> == 0 when the class supports Comparable */
@@ -5122,7 +5154,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           snprintf(selfptr, sizeof selfptr, "_t%d", t3);
         }
         buf_puts(b, "(");
-        emit_dispatch(c, ecid, "<=>", selfptr, nt_ref(nt, id, "arguments"), b);
+        emit_dispatch(c, ecid, "<=>", selfptr, nt_ref(nt, id, "arguments"), -1, b);
         buf_printf(b, " %s 0)", eq ? "==" : "!=");
         return;
       }
@@ -5296,7 +5328,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
         snprintf(selfptr, sizeof selfptr, "_t%d", t);
       }
-      emit_dispatch(c, cid, name, selfptr, nt_ref(nt, id, "arguments"), b);
+      emit_dispatch(c, cid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
       return;
     }
   }
@@ -12812,6 +12844,11 @@ static void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     emit_ctype(c, pt, b);
     buf_printf(b, " lv_%s", s->pnames[i]);
   }
+  /* &block param that escapes (not inlined): passes the block as sp_Proc * */
+  if (s->blk_param && s->blk_param[0] && !s->yields) {
+    if (wrote++) buf_puts(b, ", ");
+    buf_printf(b, "sp_Proc *lv_%s", s->blk_param);
+  }
   if (!wrote) buf_puts(b, "void");
   buf_puts(b, ")");
 }
@@ -12893,11 +12930,17 @@ static void proc_collect_used(Compiler *c, int id, NameSet *out) {
 }
 
 /* The ParametersNode of a proc-creating node. A `->{}` LambdaNode carries it
-   directly (`parameters`); a `proc {}` / `lambda {}` block nests it one level
-   deeper (block -> BlockParametersNode -> ParametersNode). */
+   directly (`parameters`); a `proc {}` / `lambda {}` / block-escape pass-through
+   nests it one level deeper (block/BlockNode -> BlockParametersNode -> ParametersNode). */
 static int proc_params_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
   if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
+  /* BlockNode used directly as a proc (escaped &block) */
+  if (ty && !strcmp(ty, "BlockNode")) {
+    int bp = nt_ref(c->nt, create, "parameters");
+    if (bp < 0) return -1;
+    return nt_ref(c->nt, bp, "parameters");
+  }
   int block = nt_ref(c->nt, create, "block");
   if (block < 0) return -1;
   int bp = nt_ref(c->nt, block, "parameters");   /* BlockParametersNode */
@@ -12915,6 +12958,7 @@ static const char *proc_param_name(Compiler *c, int create, int idx) {
 static int proc_body_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
   if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "body");
+  if (ty && !strcmp(ty, "BlockNode")) return nt_ref(c->nt, create, "body");
   int block = nt_ref(c->nt, create, "block");
   return block >= 0 ? nt_ref(c->nt, block, "body") : -1;
 }
@@ -12933,7 +12977,8 @@ static void emit_proc_literal(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *cty = nt_type(nt, create);
   int is_lambda_node = cty && !strcmp(cty, "LambdaNode");
-  if (!is_lambda_node && nt_ref(nt, create, "block") < 0) { unsupported(c, create, "proc literal without a block"); return; }
+  int is_block_node = cty && !strcmp(cty, "BlockNode");
+  if (!is_lambda_node && !is_block_node && nt_ref(nt, create, "block") < 0) { unsupported(c, create, "proc literal without a block"); return; }
 
   Scope *bs = comp_scope_of(c, create);  /* enclosing scope: holds params + locals */
   int body = proc_body_node(c, create);

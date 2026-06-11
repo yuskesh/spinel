@@ -1498,8 +1498,15 @@ static TyKind infer_uncached(Compiler *c, int id) {
   if (!strcmp(ty, "LocalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
+    /* &block param that escapes (not yield-inlined): the LocalVar slot type is
+       TY_UNKNOWN, but the value is a Proc object when the method does not inline
+       the block (yields==0). Return TY_PROC so callers can type the return value. */
+    if (nm && s && s->blk_param && s->blk_param[0] && !strcmp(nm, s->blk_param)
+        && !s->yields)
+      return TY_PROC;
     LocalVar *lv = nm ? scope_local(s, nm) : NULL;
-    return lv ? lv->type : TY_UNKNOWN;
+    if (lv) return lv->type;
+    return TY_UNKNOWN;
   }
   if (!strcmp(ty, "GlobalVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
