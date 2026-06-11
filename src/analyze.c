@@ -4605,7 +4605,17 @@ void analyze_program(Compiler *c) {
       }
       if (!ok) escapes = 1;
     }
-    if (!escapes && uses > 0) m->yields = 1;
+    if (!escapes && uses > 0) {
+      /* Don't mark yields=1 if the method has an explicit return: emit_inlined_call
+         would reject inlining anyway (scope_has_return), but the method would then
+         be skipped in emission because yields=1 -- causing undefined references. */
+      int has_ret = 0;
+      for (int id2 = 0; id2 < c->nt->count && !has_ret; id2++) {
+        const char *ty2 = nt_type(c->nt, id2);
+        if (ty2 && !strcmp(ty2, "ReturnNode") && comp_scope_of(c, id2) == m) has_ret = 1;
+      }
+      if (!has_ret) m->yields = 1;
+    }
   }
 
   /* intern every symbol literal so codegen can emit the id table */

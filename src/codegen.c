@@ -609,8 +609,27 @@ static void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int mi = comp_method_index(c, name);
+  Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
   buf_printf(b, "sp_%s(", mc(name));
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+  /* pass &block as sp_Proc * when the callee has a blk_param and isn't inlined */
+  if (m && m->blk_param && m->blk_param[0] && !m->yields) {
+    int blk_node = nt_ref(nt, id, "block");
+    int wrote_args = m->nparams > 0;
+    if (wrote_args) buf_puts(b, ", ");
+    if (blk_node >= 0) {
+      int blk_tmp = ++g_tmp;
+      Buf pb; memset(&pb, 0, sizeof pb);
+      emit_proc_literal(c, blk_node, &pb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+      free(pb.p);
+      buf_printf(b, "_t%d", blk_tmp);
+    }
+    else {
+      buf_puts(b, "NULL");
+    }
+  }
   buf_puts(b, ")");
 }
 
