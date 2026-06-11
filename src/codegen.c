@@ -4503,6 +4503,39 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_class_ancestors(_cl%d); })", _clt);
       return;
     }
+    /* ClassName.instance_methods(false): compile-time sym array of own methods */
+    if (!strcmp(name, "instance_methods") && argc == 1) {
+      /* check arg is `false` */
+      const char *argt = nt_type(nt, argv[0]);
+      int is_false_arg = argt && !strcmp(argt, "FalseNode");
+      if (is_false_arg) {
+        const char *cn2 = nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")
+                          ? nt_str(nt, recv, "name") : NULL;
+        int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
+        if (ci2 >= 0) {
+          int ta = ++g_tmp;
+          buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
+          /* user-defined instance methods */
+          for (int si = 0; si < c->nscopes; si++) {
+            Scope *s = &c->scopes[si];
+            if (s->class_id != ci2 || s->is_cmethod) continue;
+            if (!s->name || !s->name[0]) continue;
+            /* skip shadow methods */
+            if (strncmp(s->name, "__prep_", 7) == 0) continue;
+            buf_printf(b, "sp_IntArray_push(_t%d, sp_sym_intern(\"%s\")); ", ta, s->name);
+          }
+          /* attr_readers */
+          ClassInfo *ci3 = &c->classes[ci2];
+          for (int ri = 0; ri < ci3->nreaders; ri++)
+            buf_printf(b, "sp_IntArray_push(_t%d, sp_sym_intern(\"%s\")); ", ta, ci3->readers[ri]);
+          /* attr_writers */
+          for (int wi = 0; wi < ci3->nwriters; wi++)
+            buf_printf(b, "sp_IntArray_push(_t%d, sp_sym_intern(\"%s=\")); ", ta, ci3->writers[wi]);
+          buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_SYM_ARRAY); })", ta);
+          return;
+        }
+      }
+    }
     if ((!strcmp(name, "==" ) || !strcmp(name, "eql?")) && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_CLASS) {
@@ -11410,6 +11443,17 @@ static void emit_interp(Compiler *c, int id, Buf *b) {
       else if (ty_is_hash(t) && ty_hash_cname(t)) {
         buf_puts(&fmt, "%s"); buf_printf(&argbuf, "sp_%sHash_inspect(", ty_hash_cname(t));
         EMIT_IV(); buf_puts(&argbuf, ")");
+      }
+      else if (t == TY_CLASS) {
+        buf_puts(&fmt, "%s"); buf_puts(&argbuf, "sp_class_to_s(");
+        EMIT_IV(); buf_puts(&argbuf, ")");
+      }
+      else if (ty_is_object(t)) {
+        /* user object without to_s: fall back to poly_to_s of boxed value */
+        int cid2 = ty_object_class(t);
+        buf_puts(&fmt, "%s");
+        buf_printf(&argbuf, "sp_poly_to_s(sp_box_obj(");
+        EMIT_IV(); buf_printf(&argbuf, ", %d))", cid2);
       }
       else if (t == TY_UNKNOWN && ety && !strcmp(ety, "ArrayNode") &&
                (nt_arr(nt, expr, "elements", (int[]){0}), 1)) {

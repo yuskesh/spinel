@@ -430,7 +430,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (argc == 1 && (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") || !strcmp(name, ">="))) return TY_BOOL;
     if (argc == 0 && !strcmp(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 1 && (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) return TY_BOOL;
-    if (argc == 0 && !strcmp(name, "instance_methods")) return TY_POLY_ARRAY;
+    if (argc <= 1 && !strcmp(name, "instance_methods")) return TY_POLY;
   }
 
   /* __method__ / __callee__ -> the enclosing method's name (a symbol) */
