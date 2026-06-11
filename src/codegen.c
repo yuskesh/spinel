@@ -14221,9 +14221,9 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
           char base[256];
           if (ln - 1 < sizeof base) {
             memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
+            int args = nt_ref(nt, id, "arguments");
+            int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
             if (comp_writer_in_chain(c, ty_object_class(rt), base, NULL)) {
-              int args = nt_ref(nt, id, "arguments");
-              int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
               if (an >= 1) {
                 int rc = ty_object_class(rt);
                 char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
@@ -14235,6 +14235,37 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                 if (ivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
                 else emit_expr(c, argv[0], b);
                 buf_puts(b, ";\n");
+                return;
+              }
+            }
+            else if (comp_method_in_chain(c, ty_object_class(rt), nm, NULL) < 0) {
+              /* writer not in chain and no explicit method: try subclass dispatch via cls_id */
+              int ncand = 0;
+              for (int k = 0; k < c->nclasses; k++)
+                if (comp_is_writer(&c->classes[k], base)) ncand++;
+              if (an >= 1 && ncand > 0) {
+                TyKind at = comp_ntype(c, argv[0]);
+                int tp = ++g_tmp, tval = ++g_tmp;
+                emit_indent(b, indent);
+                buf_printf(b, "{ sp_%s *_t%d = ", c->classes[ty_object_class(rt)].name, tp);
+                emit_expr(c, recv, b); buf_puts(b, "; ");
+                emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
+                emit_expr(c, argv[0], b); buf_puts(b, ";");
+                buf_printf(b, " switch (_t%d->cls_id) {", tp);
+                char src[32]; snprintf(src, sizeof src, "_t%d", tval);
+                for (int k = 0; k < c->nclasses; k++) {
+                  if (!comp_is_writer(&c->classes[k], base)) continue;
+                  char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);
+                  int iv = comp_ivar_index(&c->classes[k], ivn);
+                  TyKind ivt = iv >= 0 ? c->classes[k].ivar_types[iv] : at;
+                  if (at != ivt && at != TY_POLY && ivt != TY_POLY) continue;
+                  buf_printf(b, " case %d: ((sp_%s *)_t%d)->iv_%s = ", k, c->classes[k].name, tp, base);
+                  if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
+                  else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
+                  else buf_puts(b, src);
+                  buf_puts(b, "; break;");
+                }
+                buf_puts(b, " } }\n");
                 return;
               }
             }
@@ -15449,6 +15480,23 @@ static void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (!strcmp(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
       emit_iteration_stmt(c, id, b, indent))
     return;
+
+  /* setter call at tail position (obj.x = v): side-effect only, no return value.
+     A setter name ends in a bare '=' that is not part of ==, !=, <=, >=. */
+  if (!strcmp(ty, "CallNode")) {
+    const char *_setnm = nt_str(nt, id, "name");
+    int _setrecv = nt_ref(nt, id, "receiver");
+    size_t _setlen = _setnm ? strlen(_setnm) : 0;
+    if (_setrecv >= 0 && _setnm && _setlen >= 2 && _setnm[_setlen - 1] == '=' &&
+        _setnm[_setlen - 2] != '=' && _setnm[_setlen - 2] != '!' &&
+        _setnm[_setlen - 2] != '<' && _setnm[_setlen - 2] != '>') {
+      TyKind _setrt = comp_ntype(c, _setrecv);
+      if (ty_is_object(_setrt) || _setrt == TY_POLY) {
+        emit_stmt(c, id, b, indent);
+        return;
+      }
+    }
+  }
 
   /* string << at tail position: mutate receiver, then return it */
   if (!strcmp(ty, "CallNode")) {
