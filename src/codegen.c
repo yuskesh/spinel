@@ -3507,6 +3507,21 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* poly_val.call — the poly value is a proc; unbox then call. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
+      (!strcmp(name, "call") || !strcmp(name, "()"))) {
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = ", t); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+    buf_printf(b, "sp_proc_call((sp_Proc *)_t%d.v.p, (mrb_int[16]){", t);
+    for (int k = 0; k < argc; k++) {
+      if (k) buf_puts(b, ", ");
+      if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[k], b);
+    }
+    buf_puts(b, "})");
+    return;
+  }
   /* <proc>.call(args) / .() / [] -> sp_proc_call with the mrb_int[] ABI.
      (A `&block`-param `.call` is handled earlier by the inline path, whose
      receiver name matches g_block_param_name; this is the escaped-value case.) */
@@ -13795,6 +13810,7 @@ static void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_SYMBOL: fn = "sp_box_sym";   break;
     case TY_RANGE:  fn = "sp_box_range"; break;
     case TY_TIME:   fn = "sp_box_time";  break;
+    case TY_PROC:   fn = "sp_box_proc";  break;
     case TY_INT_ARRAY:   fn = "sp_box_int_array";   break;
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
     case TY_STR_ARRAY:   fn = "sp_box_str_array";   break;
