@@ -10276,6 +10276,76 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  /* hash.delete_if / reject! / select! / filter! / keep_if { |k, v| cond } */
+  if ((!strcmp(name, "delete_if") || !strcmp(name, "reject!") || !strcmp(name, "select!") ||
+       !strcmp(name, "filter!") || !strcmp(name, "keep_if")) && ty_is_hash(rt) && block >= 0) {
+    const char *hn = ty_hash_cname(rt);
+    if (hn && rt != TY_POLY_POLY_HASH) {
+      int is_rej = (!strcmp(name, "delete_if") || !strcmp(name, "reject!"));
+      const char *p0_raw = block_param_name(c, block, 0);
+      const char *p1_raw = block_param_name(c, block, 1);
+      const char *kp = p0_raw ? rename_local(p0_raw) : NULL;
+      const char *vp = p1_raw ? rename_local(p1_raw) : NULL;
+      int body2 = nt_ref(nt, block, "body");
+      int bn2 = 0; const int *bb2 = body2 >= 0 ? nt_arr(nt, body2, "body", &bn2) : NULL;
+      if (bn2 >= 1) {
+        Scope *hs2 = comp_scope_of(c, block);
+        TyKind hkt = ty_hash_key(rt), hvt = ty_hash_val(rt);
+        /* Temporarily set block param types to hash key/value types so
+           the block body is emitted with the right concrete types.
+           Refresh the ntype cache with the new types. */
+        LocalVar *klv = (kp && hs2) ? scope_local(hs2, p0_raw) : NULL;
+        LocalVar *vlv = (vp && hs2) ? scope_local(hs2, p1_raw) : NULL;
+        TyKind ksaved = klv ? klv->type : TY_UNKNOWN;
+        TyKind vsaved = vlv ? vlv->type : TY_UNKNOWN;
+        if (klv) klv->type = hkt;
+        if (vlv) vlv->type = hvt;
+        for (int j = 0; j < bn2; j++) infer_type(c, bb2[j]);
+        int tr2 = ++g_tmp, ti2 = ++g_tmp;
+        Buf rb2; memset(&rb2, 0, sizeof rb2); emit_expr(c, recv, &rb2);
+        emit_indent(b, indent); emit_ctype(c, rt, b);
+        buf_printf(b, "_t%d = %s;\n", tr2, rb2.p ? rb2.p : "NULL"); free(rb2.p);
+        emit_indent(b, indent);
+        buf_printf(b, "for (mrb_int _t%d = 0; _t%d && _t%d < _t%d->len; ) {\n",
+                   ti2, tr2, ti2, tr2);
+        /* declare + assign key param with hash key type (shadows outer lv_k) */
+        if (kp) {
+          emit_indent(b, indent + 1); emit_ctype(c, hkt, b);
+          buf_printf(b, " lv_%s = _t%d->order[_t%d];\n", kp, tr2, ti2);
+        }
+        /* declare + assign value param with hash value type (shadows outer lv_v) */
+        if (vp) {
+          emit_indent(b, indent + 1); emit_ctype(c, hvt, b);
+          buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d->order[_t%d]);\n",
+                     vp, hn, tr2, tr2, ti2);
+        }
+        /* block body stmts except last */
+        for (int j = 0; j < bn2 - 1; j++) emit_stmt(c, bb2[j], b, indent + 1);
+        /* condition: save g_pre so pre-effects land inside the loop body */
+        Buf *sp2 = g_pre; int si2 = g_indent;
+        Buf cpre2; memset(&cpre2, 0, sizeof cpre2); g_pre = &cpre2; g_indent = indent + 1;
+        Buf cexpr2; memset(&cexpr2, 0, sizeof cexpr2);
+        emit_expr(c, bb2[bn2 - 1], &cexpr2);
+        g_pre = sp2; g_indent = si2;
+        if (cpre2.p) { buf_puts(b, cpre2.p); free(cpre2.p); }
+        emit_indent(b, indent + 1);
+        if (is_rej) buf_printf(b, "if (%s) {\n", cexpr2.p ? cexpr2.p : "0");
+        else        buf_printf(b, "if (!(%s)) {\n", cexpr2.p ? cexpr2.p : "0");
+        free(cexpr2.p);
+        emit_indent(b, indent + 2);
+        buf_printf(b, "sp_%sHash_delete(_t%d, _t%d->order[_t%d]);\n", hn, tr2, tr2, ti2);
+        emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+        emit_indent(b, indent + 2); buf_printf(b, "_t%d++;\n", ti2);
+        emit_indent(b, indent + 1); buf_puts(b, "}\n");
+        emit_indent(b, indent); buf_puts(b, "}\n");
+        /* restore block param types */
+        if (klv) klv->type = ksaved;
+        if (vlv) vlv->type = vsaved;
+        return 1;
+      }
+    }
+  }
+
   /* array.each_with_index { |x, i| ... } */
   if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
