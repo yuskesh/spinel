@@ -4180,12 +4180,17 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* X.class.name / .to_s -> identity: X.class already evaluates to the
-     class-name string. */
-  if (recv >= 0 && argc == 0 && (!strcmp(name, "name") || !strcmp(name, "to_s")) &&
+  /* X.class.name / .to_s -> identity when .class yields a string;
+     for user-object receivers .class now yields TY_CLASS, so wrap with sp_class_to_s. */
+  if (recv >= 0 && argc == 0 && (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
       nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
       nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class")) {
-    emit_expr(c, recv, b);
+    if (comp_ntype(c, recv) == TY_CLASS) {
+      int _clt = ++g_tmp;
+      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_class_to_s(_cl%d); })", _clt);
+    }
+    else emit_expr(c, recv, b);
     return;
   }
   /* obj.class.cmeth(...) -> dispatch class method on obj's runtime class
@@ -4404,7 +4409,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     else if (rt == TY_NIL) cn = "NilClass";
     else if (ty_is_array(rt)) cn = "Array";
     else if (ty_is_hash(rt)) cn = "Hash";
-    else if (ty_is_object(rt)) cn = c->classes[ty_object_class(rt)].name;
+    else if (ty_is_object(rt)) {
+      /* user object: .class returns a TY_CLASS value */
+      int _cidx = ty_object_class(rt);
+      int _tobj = ++g_tmp;
+      emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _tobj);
+      Buf _rb; memset(&_rb, 0, sizeof _rb); emit_expr(c, recv, &_rb);
+      buf_puts(g_pre, _rb.p ? _rb.p : ""); buf_puts(g_pre, ";\n"); free(_rb.p);
+      buf_printf(b, "((sp_Class){_t%d ? _t%d->cls_id : %d})", _tobj, _tobj, _cidx);
+      return;
+    }
     if (cn) { buf_printf(b, "SPL(\"%s\")", cn); return; }
     if (rt == TY_BOOL) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SPL(\"TrueClass\") : SPL(\"FalseClass\"))");
@@ -4426,7 +4440,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (!strcmp(name, "nil?")) { buf_puts(b, "0"); return; }
     if (!strcmp(name, "class")) { buf_puts(b, "SPL(\"Class\")"); return; }
-    if (!strcmp(name, "==" ) && argc == 1) {
+    if ((!strcmp(name, "==" ) || !strcmp(name, "eql?")) && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
@@ -12401,6 +12415,11 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; const char *_ts = sp_time_inspect_v(_t%d); fputs(_ts, stdout); putchar('\\n'); }\n", tv);
+  }
+  else if (t == TY_CLASS) {
+    int _tc = ++g_tmp;
+    buf_printf(b, "{ sp_Class _cl%d = ", _tc); emit_expr(c, arg, b);
+    buf_printf(b, "; puts(sp_class_to_s(_cl%d)); }\n", _tc);
   }
   else if (t == TY_POLY) {
     buf_puts(b, "sp_poly_puts("); emit_expr(c, arg, b); buf_puts(b, ");\n");

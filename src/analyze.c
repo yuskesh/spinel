@@ -409,12 +409,14 @@ static TyKind infer_call(Compiler *c, int id) {
        !strcmp(name, "dup") || !strcmp(name, "clone")))
     return rt;
 
-  /* x.class -> a class-name string (for known builtin/object receivers) */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "class") &&
-      (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
-       rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
-       ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt)))
-    return TY_STRING;
+  /* x.class -> a class-name string (for known builtin receivers) or TY_CLASS (user objects) */
+  if (recv >= 0 && argc == 0 && !strcmp(name, "class")) {
+    if (ty_is_object(rt)) return TY_CLASS;  /* user object: return sp_Class value */
+    if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
+        rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
+        ty_is_array(rt) || ty_is_hash(rt))
+      return TY_STRING;
+  }
 
   /* X.class.name / .to_s -> the class-name string (X.class is already that) */
   if (recv >= 0 && argc == 0 && (!strcmp(name, "name") || !strcmp(name, "to_s")) &&
