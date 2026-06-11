@@ -11774,7 +11774,15 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant Integer::%s\"), 0)", nm);
       return;
     }
-    unsupported(c, id, "constant path read");
+    /* unresolved qualified constant: raise NameError at runtime */
+    {
+      char fullname[512];
+      if (par_nmc && nm) snprintf(fullname, sizeof fullname, "%s::%s", par_nmc, nm);
+      else if (nm) snprintf(fullname, sizeof fullname, "%s", nm);
+      else snprintf(fullname, sizeof fullname, "?");
+      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), (mrb_int)0)", fullname);
+    }
+    return;
   }
   if (!strcmp(ty, "DefinedNode")) {
     /* compile-time defined? -> a label string, or nil (NULL) when undefined */
@@ -12871,7 +12879,7 @@ static void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int 
 static int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *cty = nt_type(nt, cond_id);
-  if (!cty || strcmp(cty, "ConstantReadNode")) return 0;
+  if (!cty || (strcmp(cty, "ConstantReadNode") && strcmp(cty, "ConstantPathNode"))) return 0;
   const char *cn = nt_str(nt, cond_id, "name");
   if (!cn) return 0;
   if (!strcmp(cn, "Integer") || !strcmp(cn, "Fixnum"))
@@ -13190,13 +13198,20 @@ static void emit_case(Compiler *c, int id, Buf *b, int indent) {
             else buf_puts(b, "0");
           }
           else {
-          /* when ClassName: Module#=== resolves via is_a? semantics */
+          /* when ClassName / when Mod::Klass: Module#=== via is_a? semantics */
           const char *cty2 = nt_type(nt, conds[j]);
-          const char *cn2 = cty2 && !strcmp(cty2, "ConstantReadNode") ? nt_str(nt, conds[j], "name") : NULL;
+          const char *cn2 = cty2 && (!strcmp(cty2, "ConstantReadNode") || !strcmp(cty2, "ConstantPathNode"))
+                           ? nt_str(nt, conds[j], "name") : NULL;
           if (cn2 && pt == TY_POLY) {
             char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
             if (!emit_poly_class_when(c, conds[j], tmp, b))
               buf_puts(b, "0");
+          }
+          else if (cn2 && ty_is_object(pt)) {
+            int cid = ty_object_class(pt);
+            int tcid = comp_class_index(c, cn2);
+            int yes = (tcid >= 0) && (cid == tcid || is_descendant(c, cid, tcid));
+            buf_printf(b, "%d", yes ? 1 : 0);
           }
           else if (cn2) {
             int yes = ty_matches_class(pt, cn2, 0);
@@ -13290,12 +13305,18 @@ static void emit_case_expr(Compiler *c, int id, Buf *b) {
     for (int j = 0; j < wc; j++) {
       if (j) buf_puts(b, " || ");
       if (pred >= 0) {
-        /* when ClassName: Module#=== resolves via is_a? semantics */
+        /* when ClassName / Mod::Klass: Module#=== via is_a? semantics */
         const char *cty2 = nt_type(nt, conds[j]);
-        const char *cn2 = cty2 && !strcmp(cty2, "ConstantReadNode") ? nt_str(nt, conds[j], "name") : NULL;
+        const char *cn2 = cty2 && (!strcmp(cty2, "ConstantReadNode") || !strcmp(cty2, "ConstantPathNode"))
+                         ? nt_str(nt, conds[j], "name") : NULL;
         if (cn2 && pt == TY_POLY) {
           char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
           if (!emit_poly_class_when(c, conds[j], tmp, b)) buf_puts(b, "0");
+        }
+        else if (cn2 && ty_is_object(pt)) {
+          int cid = ty_object_class(pt); int tcid = comp_class_index(c, cn2);
+          int yes = (tcid >= 0) && (cid == tcid || is_descendant(c, cid, tcid));
+          buf_printf(b, "%d", yes ? 1 : 0);
         }
         else if (cn2) { int yes = ty_matches_class(pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
         else {
@@ -13307,7 +13328,6 @@ static void emit_case_expr(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; sp_range_include(&_t%d, _t%d); })", tr, t);
         }
         else if (eq_family(pt) && eq_family(comp_ntype(c, conds[j])) && eq_family(pt) != eq_family(comp_ntype(c, conds[j]))) {
-          /* a when value of a different comparable family never matches */
           buf_puts(b, "0");
         }
         else if (pt == TY_STRING) { buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
