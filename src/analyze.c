@@ -1471,8 +1471,9 @@ static TyKind infer_call(Compiler *c, int id) {
       }
       return TY_UNKNOWN;
     }
-    /* array + (same kind) -> same kind */
+    /* array + same-kind -> same kind; different-kind -> poly_array */
     if (!strcmp(name, "+") && ty_is_array(rt) && a0 == rt) return rt;
+    if (!strcmp(name, "+") && ty_is_array(rt) && ty_is_array(a0) && a0 != rt) return TY_POLY_ARRAY;
     /* array * int -> same array type (repeat); array * string -> join string */
     if (!strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) return rt;
     if (!strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) return TY_STRING;
@@ -3976,7 +3977,9 @@ static int infer_block_params(Compiler *c) {
               !strcmp(name, "flat_map") || !strcmp(name, "each_with_object") ||
               !strcmp(name, "chunk") || !strcmp(name, "group_by") ||
               !strcmp(name, "tally_by") || !strcmp(name, "min_by_all") ||
-              !strcmp(name, "filter_map") || !strcmp(name, "count_by")) &&
+              !strcmp(name, "filter_map") || !strcmp(name, "count_by") ||
+              !strcmp(name, "partition") || !strcmp(name, "each_slice") ||
+              !strcmp(name, "each_cons")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
     /* TY_POLY receiver with iteration methods: element type is TY_POLY */

@@ -6885,6 +6885,48 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
+      if (!strcmp(name, "+") && argc == 1 && ty_is_array(a0) && a0 != rt) {
+        /* array + different-kind array -> poly_array */
+        const char *k2 = (a0 == TY_POLY_ARRAY) ? "Poly" : array_kind(a0);
+        if (k2) {
+          int tL = ++g_tmp, tR = ++g_tmp, tO = ++g_tmp, ti = ++g_tmp;
+          Buf lbuf; memset(&lbuf, 0, sizeof lbuf); emit_expr(c, recv, &lbuf);
+          Buf rbuf; memset(&rbuf, 0, sizeof rbuf); emit_expr(c, argv[0], &rbuf);
+          const char *box_l = (rt == TY_INT_ARRAY) ? "sp_box_int" :
+                              (rt == TY_FLOAT_ARRAY) ? "sp_box_float" :
+                              (rt == TY_STR_ARRAY) ? "sp_box_str" : NULL;
+          const char *box_r = (a0 == TY_INT_ARRAY) ? "sp_box_int" :
+                              (a0 == TY_FLOAT_ARRAY) ? "sp_box_float" :
+                              (a0 == TY_STR_ARRAY) ? "sp_box_str" : NULL;
+          const char *get_l = (rt == TY_POLY_ARRAY) ? "sp_PolyArray_get" :
+                              NULL;
+          const char *get_r = (a0 == TY_POLY_ARRAY) ? "sp_PolyArray_get" :
+                              NULL;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_%sArray *_t%d = %s;\n", k, tL, lbuf.p ? lbuf.p : ""); free(lbuf.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_%sArray *_t%d = %s;\n", k2, tR, rbuf.p ? rbuf.p : ""); free(rbuf.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tO, tO);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)\n", ti, ti, k, tL, ti);
+          emit_indent(g_pre, g_indent + 1);
+          if (rt == TY_POLY_ARRAY)
+            buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n", tO, tL, ti);
+          else if (box_l)
+            buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s(sp_%sArray_get(_t%d, _t%d)));\n", tO, box_l, k, tL, ti);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)\n", ti, ti, k2, tR, ti);
+          emit_indent(g_pre, g_indent + 1);
+          if (a0 == TY_POLY_ARRAY)
+            buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n", tO, tR, ti);
+          else if (box_r)
+            buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s(sp_%sArray_get(_t%d, _t%d)));\n", tO, box_r, k2, tR, ti);
+          buf_printf(b, "_t%d", tO);
+          (void)get_l; (void)get_r;
+          return;
+        }
+      }
       if (!strcmp(name, "clear") && argc == 0) {
         /* empty the array in place, evaluate to it (Ruby returns self) */
         int t = ++g_tmp;
@@ -8428,6 +8470,32 @@ static void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "; ");
     buf_printf(b, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d) %s ", k, ta, tb, k, ta, tb, op);
     buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")); }\n");
+    return;
+  }
+  if (rt == TY_POLY) {
+    /* poly receiver: dispatch get/op/set based on key type */
+    TyKind kt = comp_ntype(c, argv[0]);
+    TyKind vt = comp_ntype(c, v);
+    emit_indent(b, indent);
+    if (kt == TY_SYMBOL) {
+      int tc = ++g_tmp;
+      buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_sym _t%d = ", tb); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_get_sym(_t%d, _t%d);", tc, ta, tb);
+      buf_printf(b, " sp_poly_set_sym(_t%d, _t%d, sp_box_int(_t%d.v.i %s (", ta, tb, tc, op);
+      emit_expr(c, v, b); buf_puts(b, "))); }\n");
+    }
+    else if (kt == TY_STRING) {
+      int tc = ++g_tmp;
+      buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; const char *_t%d = ", tb); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_get_str(_t%d, _t%d);", tc, ta, tb);
+      buf_printf(b, " sp_poly_set_str(_t%d, _t%d, sp_box_int(_t%d.v.i %s (", ta, tb, tc, op);
+      emit_expr(c, v, b); buf_puts(b, "))); }\n");
+    }
+    else {
+      unsupported(c, id, "index operator assignment (poly-recv, non-sym/str key)");
+    }
     return;
   }
   unsupported(c, id, "index operator assignment");
