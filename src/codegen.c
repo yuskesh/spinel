@@ -4490,10 +4490,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* Class.cmethod(args) -> sp_<Class>_s_<method>(args) */
+  /* Class.cmethod(args) / M::Sub.cmethod(args) -> sp_<Class>_s_<method>(args) */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
+    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       int defcls = -1;
       int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
