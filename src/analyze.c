@@ -190,6 +190,40 @@ static TyKind scan_break_type(Compiler *c, int id, int depth) {
   return result;
 }
 
+/* Unify the value types of every `throw <tag>, <val>` inside a catch block.
+   A nested inner BlockNode is still scanned because `throw` is dynamic. */
+static TyKind scan_throw_type(Compiler *c, int id, int depth) {
+  if (id < 0 || depth > 32) return TY_UNKNOWN;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return TY_UNKNOWN;
+  if (!strcmp(ty, "DefNode")) return TY_UNKNOWN;
+  if (!strcmp(ty, "CallNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && !strcmp(nm, "throw") && nt_ref(nt, id, "receiver") < 0) {
+      int v = nt_ref(nt, id, "arguments");
+      int vargc = 0; const int *vargs = v >= 0 ? nt_arr(nt, v, "arguments", &vargc) : NULL;
+      if (vargc >= 2) return infer_type(c, vargs[1]);
+      return TY_NIL;
+    }
+  }
+  TyKind result = TY_UNKNOWN;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) {
+    TyKind t = scan_throw_type(c, nt_ref_at(nt, id, i), depth + 1);
+    if (t != TY_UNKNOWN) result = ty_unify(result, t);
+  }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) {
+      TyKind t = scan_throw_type(c, ids[k], depth + 1);
+      if (t != TY_UNKNOWN) result = ty_unify(result, t);
+    }
+  }
+  return result;
+}
+
 /* The value type of `yield` / a `<&block-param>.call` inside method mi: the
    block-body value type at a (any) call site of mi. Polymorphic, resolved from
    the first matching caller -- matches how the rewrite inlines per call site. */
@@ -413,6 +447,23 @@ static TyKind infer_call(Compiler *c, int id) {
       }
     }
     return TY_NIL;
+  }
+
+  /* catch(:tag) { ... [throw :tag, val] ... } -> unify the block's last
+     value with every throw value targeting the tag */
+  if (recv < 0 && !strcmp(name, "catch")) {
+    int blk = nt_ref(nt, id, "block");
+    TyKind result = TY_UNKNOWN;
+    if (blk >= 0) {
+      int body = nt_ref(nt, blk, "body");
+      if (body >= 0) {
+        int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+        if (bn > 0) result = infer_type(c, bb[bn - 1]);
+        TyKind tt = scan_throw_type(c, body, 0);
+        if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
+      }
+    }
+    return result == TY_UNKNOWN ? TY_NIL : result;
   }
 
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
@@ -5316,6 +5367,33 @@ static int infer_block_params(Compiler *c) {
       if (!p) continue;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
       if (lv->type == TY_UNKNOWN) { lv->type = TY_INT; changed = 1; }
+    }
+  }
+
+  /* Fiber.new { |first| ... }: the block param receives the resume value,
+     which is always a poly (boxed) value at the runtime ABI boundary. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *cname = nt_str(nt, id, "name");
+    if (!cname || strcmp(cname, "new")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "ConstantReadNode")) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || strcmp(rn, "Fiber")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0) continue;
+    int pn = nt_ref(nt, blk, "parameters");
+    if (pn < 0) continue;
+    int inner = nt_ref(nt, pn, "parameters");
+    int pnode = inner >= 0 ? inner : pn;
+    int rnp = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rnp);
+    Scope *bs = comp_scope_of(c, blk);
+    for (int k = 0; k < rnp; k++) {
+      const char *p = nt_str(nt, reqs[k], "name");
+      if (!p) continue;
+      LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
+      if (lv->type == TY_UNKNOWN) { lv->type = TY_POLY; changed = 1; }
     }
   }
 

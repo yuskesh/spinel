@@ -557,6 +557,17 @@ static void emit_str_literal(Buf *b, const char *content) {
   emit_str_literal_n(b, content, strlen(content));
 }
 
+/* Emit a catch/throw tag (a Symbol or String literal) as a `const char *`.
+   The same literal text is produced for both catch and throw sites so the
+   runtime's strcmp tag match succeeds. Falls back to a runtime string expr. */
+static void emit_expr(Compiler *c, int id, Buf *b);
+static void emit_catch_tag(Compiler *c, int id, Buf *b) {
+  const char *ty = nt_type(c->nt, id);
+  if (ty && !strcmp(ty, "SymbolNode")) { emit_str_literal(b, nt_str(c->nt, id, "value")); return; }
+  if (ty && !strcmp(ty, "StringNode")) { emit_str_literal(b, nt_str(c->nt, id, "unescaped")); return; }
+  emit_expr(c, id, b);
+}
+
 /* ---- forward decls ---- */
 
 static int is_builtin_reopen(const char *name);
@@ -738,6 +749,8 @@ static int ty_matches_class(TyKind t, const char *cn, int exact) {
   else if (t == TY_RANGE) self_cls = "Range";
   else if (ty_is_array(t)) self_cls = "Array";
   else if (ty_is_hash(t)) self_cls = "Hash";
+  else if (t == TY_NIL) self_cls = "NilClass";
+  else if (t == TY_BOOL) self_cls = "Boolean"; /* true/false split handled at call site */
   if (!self_cls) return -1;
   if (!strcmp(cn, self_cls)) return 1;
   if (exact) return 0;
@@ -3726,6 +3739,79 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* catch(:tag) { ... [throw :tag, val] ... } as expression: a setjmp scope
+     whose value is the block's last expression, or the thrown value. */
+  if (recv < 0 && !strcmp(name, "catch") && argc == 1) {
+    int blk = nt_ref(nt, id, "block");
+    if (blk >= 0) {
+      TyKind bt = comp_ntype(c, id);
+      if (bt == TY_UNKNOWN || bt == TY_VOID) bt = TY_INT;
+      int ptr = proc_slot_is_ptr(bt);
+      int t = ++g_tmp;
+      emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
+      buf_printf(g_pre, " _t%d = %s;\n", t, default_value(bt));
+      emit_indent(g_pre, g_indent);
+      buf_puts(g_pre, "sp_catch_tag[sp_catch_top] = ");
+      emit_catch_tag(c, argv[0], g_pre);
+      buf_puts(g_pre, ";\n");
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_top++;\n");
+      emit_indent(g_pre, g_indent);
+      buf_puts(g_pre, "if (setjmp(sp_catch_stack[sp_catch_top-1]) == 0) {\n");
+      int body = nt_ref(nt, blk, "body");
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], g_pre, g_indent + 1);
+      if (bn > 0) {
+        int last = bb[bn - 1];
+        const char *lty = nt_type(nt, last);
+        const char *lnm = (lty && !strcmp(lty, "CallNode")) ? nt_str(nt, last, "name") : NULL;
+        int last_throw = (lnm && !strcmp(lnm, "throw") && nt_ref(nt, last, "receiver") < 0);
+        TyKind lt = comp_ntype(c, last);
+        if (last_throw || lt == TY_VOID || lt == TY_UNKNOWN) {
+          emit_stmt(c, last, g_pre, g_indent + 1);
+        }
+        else {
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "_t%d = ", t);
+          if (bt == TY_POLY && lt != TY_POLY) emit_boxed(c, last, g_pre);
+          else emit_expr(c, last, g_pre);
+          buf_puts(g_pre, ";\n");
+        }
+      }
+      emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_catch_top--;\n");
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "else {\n");
+      emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_catch_top--;\n");
+      emit_indent(g_pre, g_indent + 1);
+      if (ptr) {
+        buf_printf(g_pre, "_t%d = (", t); emit_ctype(c, bt, g_pre);
+        buf_printf(g_pre, ")(uintptr_t)sp_catch_val[sp_catch_top];\n");
+      }
+      else {
+        buf_printf(g_pre, "_t%d = sp_catch_val[sp_catch_top];\n", t);
+      }
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      buf_printf(b, "_t%d", t);
+      return;
+    }
+  }
+
+  /* throw :tag[, val] -> non-local jump to the matching catch scope. */
+  if (recv < 0 && !strcmp(name, "throw")) {
+    buf_puts(b, "sp_throw(");
+    if (argc >= 1) emit_catch_tag(c, argv[0], b);
+    else buf_puts(b, "(&(\"\\xff\")[1])");
+    buf_puts(b, ", ");
+    if (argc >= 2) {
+      if (proc_slot_is_ptr(comp_ntype(c, argv[1]))) {
+        buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else emit_expr(c, argv[1], b);
+    }
+    else buf_puts(b, "0");
+    buf_puts(b, ")");
+    return;
+  }
+
   /* system(cmd, ...) expr: run and return bool */
   if (recv < 0 && !strcmp(name, "system") && argc >= 1) {
     int ts = ++g_tmp;
@@ -3960,7 +4046,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
     if (!strcmp(name, "resume")) {
       buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b);
-      for (int k = 0; k < argc; k++) { buf_puts(b, ", "); emit_expr(c, argv[k], b); }
+      for (int k = 0; k < argc; k++) {
+        buf_puts(b, ", ");
+        if (comp_ntype(c, argv[k]) == TY_POLY) emit_expr(c, argv[k], b);
+        else emit_boxed(c, argv[k], b);
+      }
       if (argc == 0) buf_puts(b, ", sp_box_nil()");
       buf_puts(b, ")");
       return;
@@ -3970,7 +4060,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (!strcmp(name, "transfer")) {
       buf_puts(b, "sp_Fiber_transfer("); emit_expr(c, recv, b);
-      for (int k = 0; k < argc; k++) { buf_puts(b, ", "); emit_expr(c, argv[k], b); }
+      for (int k = 0; k < argc; k++) {
+        buf_puts(b, ", ");
+        if (comp_ntype(c, argv[k]) == TY_POLY) emit_expr(c, argv[k], b);
+        else emit_boxed(c, argv[k], b);
+      }
       if (argc == 0) buf_puts(b, ", sp_box_nil()");
       buf_puts(b, ")");
       return;
@@ -6986,6 +7080,19 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     const char *cn = nt_str(nt, recv, "name");
     if (cn) {
       TyKind at2 = comp_ntype(c, argv[0]);
+      /* TrueClass/FalseClass/NilClass === <literal/typed value>: decide
+         statically from the arg's node kind or scalar type. */
+      const char *aty = nt_type(nt, argv[0]);
+      if (!strcmp(cn, "NilClass") || !strcmp(cn, "TrueClass") || !strcmp(cn, "FalseClass")) {
+        int yn = -1;
+        if (!strcmp(cn, "NilClass"))
+          yn = (at2 == TY_NIL || (aty && !strcmp(aty, "NilNode"))) ? 1 : (at2 != TY_POLY ? 0 : -1);
+        else if (!strcmp(cn, "TrueClass"))
+          yn = (aty && !strcmp(aty, "TrueNode")) ? 1 : (aty && !strcmp(aty, "FalseNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
+        else
+          yn = (aty && !strcmp(aty, "FalseNode")) ? 1 : (aty && !strcmp(aty, "TrueNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
+        if (yn >= 0) { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yn); return; }
+      }
       int yes = ty_matches_class(at2, cn, 0);
       if (yes >= 0) {
         buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
@@ -14641,6 +14748,21 @@ static void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
   int body = nt_ref(nt, id, "statements");
+  /* PM_LOOP_FLAGS_BEGIN_MODIFIER (bit 2 == 4): `begin..end while cond` is a
+     post-test loop -- the body runs at least once before the guard is tested. */
+  int post_test = (int)(nt_int(nt, id, "flags", 0) & 4) ? 1 : 0;
+  if (post_test) {
+    emit_indent(b, indent);
+    buf_puts(b, "do {\n");
+    emit_stmts(c, body, b, indent + 1);
+    emit_indent(b, indent);
+    buf_puts(b, "} while (");
+    if (is_until) buf_puts(b, "!(");
+    emit_cond(c, pred, b);
+    if (is_until) buf_puts(b, ")");
+    buf_puts(b, ");\n");
+    return;
+  }
   emit_indent(b, indent);
   buf_puts(b, "while (");
   if (is_until) buf_puts(b, "!(");
