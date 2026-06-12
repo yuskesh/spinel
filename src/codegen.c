@@ -4250,7 +4250,49 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     else buf_puts(b, "NULL");
     buf_puts(b, ", ");
     if (mi >= 0) { buf_puts(b, "(mrb_int)(uintptr_t)&"); emit_method_cname(c, &c->scopes[mi], b); }
-    else buf_puts(b, "(mrb_int)0");  /* builtin/Kernel method: no callable address */
+    else {
+      /* `<typed_array>.method(:op)`: lower through a per-(type, op) adapter
+         matching the Method dispatch ABI (optcarrot's
+         `add_mappings(.., @ram, @ram.method(:[]=))` shape). */
+      TyKind brt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+      const char *bk = ty_is_array(brt) ? array_kind(brt) : NULL;
+      const char *bop = NULL;
+      if (bk && (brt == TY_INT_ARRAY || brt == TY_STR_ARRAY)) {
+        if (!strcmp(sym, "[]")) bop = "get";
+        else if (!strcmp(sym, "[]=")) bop = "set";
+        else if (!strcmp(sym, "push")) bop = "push";
+      }
+      if (bop) {
+        /* memoized per (kind, op): emit the adapter once */
+        static char bam_done[2][3];
+        int ki = (brt == TY_INT_ARRAY) ? 0 : 1;
+        int oi = bop[0] == 'g' ? 0 : bop[0] == 's' ? 1 : 2;
+        if (!bam_done[ki][oi]) {
+          bam_done[ki][oi] = 1;
+          const char *et = (ki == 0) ? "mrb_int" : "const char *";
+          const char *cast = (ki == 0) ? "" : "(mrb_int)(uintptr_t)";
+          const char *uncast = (ki == 0) ? "" : "(const char *)(uintptr_t)";
+          if (oi == 0) {
+            buf_printf(&g_proc_protos, "static mrb_int _bam_%sArray_get(void *a, mrb_int i);\n", bk);
+            buf_printf(&g_procs, "static mrb_int _bam_%sArray_get(void *a, mrb_int i) {\n"
+                                 "  return %ssp_%sArray_get((sp_%sArray *)a, i);\n}\n", bk, cast, bk, bk);
+          }
+          else if (oi == 1) {
+            buf_printf(&g_proc_protos, "static mrb_int _bam_%sArray_set(void *a, mrb_int i, mrb_int v);\n", bk);
+            buf_printf(&g_procs, "static mrb_int _bam_%sArray_set(void *a, mrb_int i, mrb_int v) {\n"
+                                 "  sp_%sArray_set((sp_%sArray *)a, i, %sv);\n  return v;\n}\n", bk, bk, bk, uncast);
+          }
+          else {
+            buf_printf(&g_proc_protos, "static mrb_int _bam_%sArray_push(void *a, mrb_int v);\n", bk);
+            buf_printf(&g_procs, "static mrb_int _bam_%sArray_push(void *a, mrb_int v) {\n"
+                                 "  sp_%sArray_push((sp_%sArray *)a, %sv);\n  return (mrb_int)(uintptr_t)a;\n}\n", bk, bk, bk, uncast);
+          }
+          (void)et;
+        }
+        buf_printf(b, "(mrb_int)(uintptr_t)&_bam_%sArray_%s", bk, bop);
+      }
+      else buf_puts(b, "(mrb_int)0");  /* builtin/Kernel method: no callable address */
+    }
     buf_puts(b, ", ");
     emit_str_literal(b, sym);
     buf_puts(b, ")");
