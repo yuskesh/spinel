@@ -2910,6 +2910,42 @@ static int collect_dm_each_unroll(Compiler *c, int id, int class_id) {
   return 1;
 }
 
+/* The class name a TyKind denotes (for `<x>.class` alias resolution). */
+static const char *builtin_class_of_type(TyKind t) {
+  if (t == TY_INT || t == TY_BIGINT) return "Integer";
+  if (t == TY_FLOAT) return "Float";
+  if (t == TY_STRING) return "String";
+  if (t == TY_SYMBOL) return "Symbol";
+  return NULL;
+}
+
+/* If `cname` is a constant assigned a class value (`CONST = SomeClass` or
+   `CONST = <expr>.class`), return the underlying class name so `class CONST`
+   reopens that class. Returns NULL if `cname` is a plain new class name. */
+static const char *resolve_class_alias(Compiler *c, const char *cname) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "ConstantWriteNode")) continue;
+    const char *n = nt_str(nt, id, "name");
+    if (!n || strcmp(n, cname)) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0) return NULL;
+    const char *vty = nt_type(nt, v);
+    if (vty && (!strcmp(vty, "ConstantReadNode") || !strcmp(vty, "ConstantPathNode"))) {
+      const char *vn = nt_str(nt, v, "name");
+      if (vn && (comp_class_index(c, vn) >= 0 || is_builtin_class_name(vn))) return vn;
+    }
+    if (vty && !strcmp(vty, "CallNode") && nt_str(nt, v, "name") &&
+        !strcmp(nt_str(nt, v, "name"), "class")) {
+      int r = nt_ref(nt, v, "receiver");
+      if (r >= 0) return builtin_class_of_type(infer_type(c, r));
+    }
+    return NULL;
+  }
+  return NULL;
+}
+
 static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -2953,6 +2989,16 @@ static void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (ty && (!strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode"))) {
     int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
+    /* `class CONST` where CONST aliases an existing class reopens that class.
+       Rewrite the AST name so every later pass (registration, includes) agrees. */
+    if (cname && cp >= 0 && comp_class_index(c, cname) < 0) {
+      const char *real = resolve_class_alias(c, cname);
+      if (real) {
+        char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees cname */
+        nt_set_str((NodeTable *)c->nt, cp, "name", buf);
+        cname = nt_str(c->nt, cp, "name");
+      }
+    }
     if (cname && comp_class_index(c, cname) < 0) {
       comp_class_new(c, cname, id);
       child_class = c->nclasses - 1;
@@ -3842,6 +3888,7 @@ static void resolve_parents(Compiler *c) {
 /* Process include calls in a single class body, creating scope copies for each
    included module method. We copy (not mutate) so multiple classes can include
    the same module independently. */
+static int g_inc_did_clone = 0;
 static void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
   int n = 0;
@@ -3871,9 +3918,25 @@ static void process_include_body(Compiler *c, int ci, int body_node) {
         if (comp_method_in_class(c, ci, src->name) >= 0) continue;
         /* Create a new scope sharing the same AST nodes but owned by ci. */
         Scope *dst = comp_scope_new(c, src->name, src->def_node);
+        int dst_idx = c->nscopes - 1;
         /* comp_scope_new may realloc c->scopes; re-derive src pointer. */
         src = &c->scopes[ms];
-        dst->body = src->body;
+        /* When the target is a built-in class, `self` has a different (scalar)
+           type than the module's object self, so clone the body and re-attribute
+           it to the target -- otherwise the shared SelfNode resolves to the
+           module and e.g. `self.to_s` mis-dispatches. */
+        if (is_builtin_class_name(c->classes[ci].name) && src->body >= 0) {
+          int nb = nt_clone_subtree((NodeTable *)nt, src->body);
+          if (nb >= 0) {
+            comp_grow_node_arrays(c);
+            src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+            dst->body = nb;
+            walk_scope(c, nb, dst_idx, ci);
+            g_inc_did_clone = 1;
+          } else dst->body = src->body;
+        } else {
+          dst->body = src->body;
+        }
         dst->class_id = ci;
         dst->is_cmethod = 0;
         dst->reachable = src->reachable;
@@ -3924,6 +3987,7 @@ static void process_include_body(Compiler *c, int ci, int body_node) {
    class so they are reachable via comp_method_in_chain. */
 static void register_includes(Compiler *c) {
   const NodeTable *nt = c->nt;
+  g_inc_did_clone = 0;
   /* First pass: process def_node bodies (first class definition). */
   for (int ci = 0; ci < c->nclasses; ci++) {
     int body = nt_ref(nt, c->classes[ci].def_node, "body");
@@ -3942,6 +4006,7 @@ static void register_includes(Compiler *c) {
     int body = nt_ref(nt, id, "body");
     process_include_body(c, ci, body);
   }
+  if (g_inc_did_clone) register_locals(c);
 }
 
 /* For each class, find `extend M` declarations and transplant M's instance
