@@ -3772,6 +3772,87 @@ static int sp_is_fiber_storage_recv(const NodeTable *nt, int recv) {
   return 0;
 }
 
+/* `Klass.new(args) { block }` where Klass#initialize yields: the constructor
+   only allocates (a yielding initialize is never emitted), so inline the
+   initialize body at the call site with self bound to the fresh object and the
+   literal block feeding its yields -- the same per-call-site specialization as
+   ordinary yield-method inlining. Returns 1 if handled. */
+static int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0 || !nt_type(nt, block) || strcmp(nt_type(nt, block), "BlockNode")) return 0;
+  int mi = comp_method_in_chain(c, ci, "initialize", NULL);
+  if (mi < 0 || !c->scopes[mi].yields) return 0;
+  Scope *m = &c->scopes[mi];
+  if (g_nren + m->nlocals >= MAX_RENAME) return 0;
+  for (int i = 0; i < m->nlocals; i++) {
+    LocalVar *lv = &m->locals[i];
+    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    if (!is_scalar_ret(lv->type)) return 0;
+  }
+
+  int tag = ++g_tmp;
+  int saved_nren = g_nren, saved_block = g_block_id;
+  const char *saved_self = g_self;
+  const char *saved_bpn = g_block_param_name;
+  int saved_yfb = g_yield_block_fallback;
+  g_yield_block_fallback = saved_block;
+  g_block_id = block;
+  g_block_param_name = m->blk_param;
+
+  int st = ++g_tmp;
+  static char selfbuf[64];
+  buf_puts(b, "({\n");
+  emit_indent(b, g_indent + 1);
+  buf_printf(b, "sp_%s *_t%d = sp_%s_new(", c->classes[ci].name, st, c->classes[ci].name);
+  emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+  buf_puts(b, ");\n");
+  snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
+  g_self = selfbuf;
+  int din = g_indent + 1;
+
+  /* declare the initialize body's locals under renamed names */
+  for (int i = 0; i < m->nlocals; i++) {
+    LocalVar *lv = &m->locals[i];
+    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
+    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
+    const char *rn = g_ren_to[g_nren];
+    g_nren++;
+    emit_indent(b, din);
+    emit_ctype(c, lv->type, b);
+    buf_printf(b, " lv_%s = %s;\n", rn, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
+    if (needs_root(lv->type)) { emit_indent(b, din); buf_printf(b, "SP_GC_ROOT(lv_%s);\n", rn); }
+  }
+
+  /* bind params to the call args (call-site scope: renames off) */
+  int args = nt_ref(nt, id, "arguments");
+  int argc2 = 0;
+  const int *argv2 = args >= 0 ? nt_arr(nt, args, "arguments", &argc2) : NULL;
+  for (int i = 0; i < m->nparams; i++) {
+    emit_indent(b, din);
+    buf_printf(b, "lv__y%d_%s = ", tag, m->pnames[i]);
+    int sv = g_nren; g_nren = 0;
+    emit_arg_or_default(c, m, i, i < argc2 ? argv2[i] : -1, b);
+    g_nren = sv;
+    buf_puts(b, ";\n");
+  }
+
+  int save_ind = g_indent; g_indent = din;
+  emit_stmts(c, m->body, b, din);
+  g_indent = save_ind;
+  emit_indent(b, g_indent + 1);
+  buf_printf(b, "_t%d;\n", st);
+  emit_indent(b, g_indent); buf_puts(b, "})");
+
+  g_nren = saved_nren;
+  g_block_id = saved_block;
+  g_self = saved_self;
+  g_block_param_name = saved_bpn;
+  g_yield_block_fallback = saved_yfb;
+  return 1;
+}
+
 static void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_partition_expr(c, id, b)) return;
@@ -5645,6 +5726,9 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           }
           return;
         }
+        /* yielding initialize: inline its body at the call site (the block
+           feeds the yields; the emitted constructor only allocates) */
+        if (emit_ctor_yield_inline(c, id, ci, b)) return;
         /* user-defined def self.new takes precedence over the constructor */
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) {

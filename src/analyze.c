@@ -255,6 +255,12 @@ static TyKind yield_value_type(Compiler *c, int mi) {
     } else {
       TyKind crt = infer_type(c, crecv);
       if (ty_is_object(crt)) rmi = comp_method_in_chain(c, ty_object_class(crt), cn, NULL);
+      /* `Klass.new { block }`: the block feeds the class's initialize. */
+      else if (cn && !strcmp(cn, "new") && nt_type(nt, crecv) &&
+               !strcmp(nt_type(nt, crecv), "ConstantReadNode")) {
+        int nci = comp_class_index(c, nt_str(nt, crecv, "name"));
+        if (nci >= 0) rmi = comp_method_in_chain(c, nci, "initialize", NULL);
+      }
     }
     if (rmi != mi) continue;
     int bb = nt_ref(nt, blk, "body");
