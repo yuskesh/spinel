@@ -5246,11 +5246,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
   /* implicit-self call inside an instance method */
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
-    /* When emitting a scope transplanted by include (g_emitting_class_id is set),
-       dispatch through the emitting class so overrides are found correctly.
-       Inside an instance_eval/exec block, g_ie_class_id is the receiver class. */
-    int dispatch_cid = (g_emitting_class_id >= 0) ? g_emitting_class_id
-                     : (g_ie_class_id >= 0) ? g_ie_class_id : self->class_id;
+    /* Inside an instance_eval/exec block, g_ie_class_id is the rebound
+       receiver class and takes priority -- the splice may sit inside a class
+       method whose own class (g_emitting_class_id) is unrelated to the block's
+       self. Otherwise, when emitting a scope transplanted by include
+       (g_emitting_class_id is set), dispatch through the emitting class so
+       overrides are found correctly. */
+    int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
+                     : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
     if (dispatch_cid >= 0) {
       if (comp_reader_in_chain(c, dispatch_cid, name, NULL)) {
         const char *rn = comp_resolve_alias(c, dispatch_cid, name);
@@ -6302,6 +6305,34 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       else if (comp_is_sg_reader(_sgcls, name)) {
         buf_printf(b, "sg_%s_%s", _sgcn, name);
         return;
+      }
+    }
+  }
+
+  /* obj.attr = val as an expression: store into the ivar and yield the value.
+     The statement form is handled in emit_stmt; this expression form is hit
+     when the assignment is the last statement of an instance_eval block. */
+  if (recv >= 0) {
+    int _alen = (int)strlen(name);
+    TyKind _art = comp_ntype(c, recv);
+    if (_alen > 1 && name[_alen - 1] == '=' && ty_is_object(_art)) {
+      char _abase[256]; int _ablen = _alen - 1;
+      if (_ablen < (int)sizeof _abase) {
+        memcpy(_abase, name, (size_t)_ablen); _abase[_ablen] = '\0';
+        int _arc = ty_object_class(_art), _adefc = -1;
+        if (comp_writer_in_chain(c, _arc, _abase, &_adefc)) {
+          char _aivn[256]; snprintf(_aivn, sizeof _aivn, "@%s", _abase);
+          int _aiv = comp_ivar_index(&c->classes[_adefc < 0 ? _arc : _adefc], _aivn);
+          TyKind _aivt = _aiv >= 0 ? c->classes[_adefc < 0 ? _arc : _adefc].ivar_types[_aiv] : TY_UNKNOWN;
+          buf_puts(b, "(("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", _abase);
+          if (argc >= 1) {
+            if (_aivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
+            else emit_expr(c, argv[0], b);
+          }
+          else buf_puts(b, "0");
+          buf_puts(b, ")");
+          return;
+        }
       }
     }
   }

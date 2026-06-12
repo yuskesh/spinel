@@ -2413,8 +2413,11 @@ static TyKind infer_uncached(Compiler *c, int id) {
   }
   if (!strcmp(ty, "SelfNode")) {
     Scope *s = comp_scope_of(c, id);
-    if (s->class_id < 0) return TY_UNKNOWN;
-    const char *cn = c->classes[s->class_id].name;
+    int self_cls = s->class_id;
+    /* `self` inside an instance_eval/exec block is the rebound receiver. */
+    if (self_cls < 0) self_cls = (g_ie_class_id >= 0) ? g_ie_class_id : ie_class_of(c, id);
+    if (self_cls < 0) return TY_UNKNOWN;
+    const char *cn = c->classes[self_cls].name;
     if (!strcmp(cn, "String"))  return TY_STRING;
     if (!strcmp(cn, "Integer")) return TY_INT;
     if (!strcmp(cn, "Float"))   return TY_FLOAT;
@@ -2422,7 +2425,7 @@ static TyKind infer_uncached(Compiler *c, int id) {
     if (!strcmp(cn, "TrueClass") || !strcmp(cn, "FalseClass") || !strcmp(cn, "NilClass")) return TY_BOOL;
     if (!strcmp(cn, "Array"))   return TY_POLY_ARRAY;
     if (!strcmp(cn, "Object"))  return TY_POLY;  /* dynamic: called on any receiver type */
-    return ty_object(s->class_id);
+    return ty_object(self_cls);
   }
   if (!strcmp(ty, "InstanceVariableReadNode")) {
     const char *nm = nt_str(nt, id, "name");
