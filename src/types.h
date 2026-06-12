@@ -39,6 +39,7 @@ typedef enum {
   TY_STR_POLY_HASH,  /* string keys, boxed (poly) values */
   TY_POLY_POLY_HASH, /* heterogeneous keys and values (both sp_RbVal) */
   TY_PROC,         /* a first-class Proc/lambda value (sp_Proc *) */
+  TY_CURRY,        /* a curried Proc argument accumulator (sp_Curry *) */
   TY_FIBER,        /* a cooperative Fiber (sp_Fiber *) */
   TY_RANDOM,       /* a per-instance PRNG (sp_Random *) */
   TY_METHOD,       /* a bound Method object (sp_BoundMethod *) */

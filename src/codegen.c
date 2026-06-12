@@ -417,6 +417,7 @@ static const char *c_type_name(TyKind t) {
     case TY_POLY:         return "sp_RbVal";
     case TY_POLY_ARRAY:   return "sp_PolyArray *";
     case TY_PROC:         return "sp_Proc *";
+    case TY_CURRY:        return "sp_Curry *";
     case TY_FIBER:        return "sp_Fiber *";
     case TY_RANDOM:       return "sp_Random *";
     case TY_METHOD:       return "sp_BoundMethod *";
@@ -429,7 +430,7 @@ static int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
          t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
-         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_FIBER || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_CLASS ||
+         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_CLASS ||
          ty_is_hash(t) || ty_is_object(t);
 }
 /* Map an FFI type spec string to the C type used in extern prototypes.
@@ -478,6 +479,7 @@ static const char *default_value(TyKind t) {
     case TY_STR_ARRAY:
     case TY_POLY_ARRAY: return "NULL";
     case TY_PROC:    return "NULL";
+    case TY_CURRY:   return "NULL";
     case TY_FIBER:   return "NULL";
     case TY_RANDOM:  return "NULL";
     case TY_METHOD:  return "NULL";
@@ -3787,6 +3789,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         return;
       }
       if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+    }
+    /* Proc#curry and curry application. */
+    if (crt == TY_PROC && !strcmp(name, "curry") && argc == 0) {
+      buf_puts(b, "sp_curry_new("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
+    if (crt == TY_CURRY && (!strcmp(name, "[]") || !strcmp(name, "call") || !strcmp(name, "()")) && argc == 1) {
+      buf_puts(b, "sp_curry_apply("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)(");
+      emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return;
     }
     if (crt == TY_INT && !strcmp(name, "quo") && argc == 1) {
       buf_puts(b, "sp_rational_new((mrb_int)(");
@@ -14151,6 +14163,11 @@ static void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ const char *_bs = sp_bigint_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "); if (_bs) fputs(_bs, stdout); putchar('\\n'); }\n");
   }
+  else if (t == TY_CURRY) {
+    /* a fully-applied curry realizes to its (int) result */
+    buf_puts(b, "printf(\"%lld\\n\", (long long)sp_curry_to_int("); emit_expr(c, arg, b);
+    buf_puts(b, "));\n");
+  }
   else if (t == TY_FLOAT) {
     buf_puts(b, "{ const char *_fs = sp_float_opt_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "); fputs(_fs, stdout); putchar('\\n'); }\n");
@@ -17101,7 +17118,7 @@ static void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
 /* ---- declarations ---- */
 
 /* Heap-managed types need a GC root for their local slot. */
-static int needs_root(TyKind t) { return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) || t == TY_EXCEPTION || t == TY_POLY || t == TY_PROC || t == TY_METHOD; }
+static int needs_root(TyKind t) { return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) || t == TY_EXCEPTION || t == TY_POLY || t == TY_PROC || t == TY_CURRY || t == TY_METHOD; }
 
 /* Emit `node` boxed into an sp_RbVal. Idempotent: an already-poly value is
    passed through unboxed (double-boxing is a classic silent-corruption bug). */

@@ -473,6 +473,11 @@ static TyKind infer_call(Compiler *c, int id) {
         !strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*")) return TY_COMPLEX;
     if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
   }
+  /* Proc#curry and curry application via []. */
+  if (rt == TY_PROC && !strcmp(name, "curry")) return TY_CURRY;
+  if (rt == TY_CURRY && (!strcmp(name, "[]") || !strcmp(name, "call") || !strcmp(name, "()")))
+    return TY_CURRY;
+
   if (rt == TY_INT && !strcmp(name, "quo")) return TY_RATIONAL;
   if (rt == TY_RATIONAL) {
     if (!strcmp(name, "numerator") || !strcmp(name, "denominator")) return TY_INT;

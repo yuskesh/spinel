@@ -33,6 +33,7 @@ const char *ty_name(TyKind t) {
     case TY_STR_POLY_HASH:  return "str_poly_hash";
     case TY_POLY_POLY_HASH: return "poly_poly_hash";
     case TY_PROC:    return "proc";
+    case TY_CURRY:   return "curry";
     case TY_FIBER:   return "fiber";
     case TY_RANDOM:  return "random";
     case TY_METHOD:  return "method";

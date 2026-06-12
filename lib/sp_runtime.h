@@ -5074,6 +5074,30 @@ static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
   c->inner = inner;
   return sp_proc_new_meta((void *)sp_proc_compose_fn, c, sp_proc_compose_scan, 1, TRUE, 1, NULL, NULL);
 }
+/* Proc#curry: an immutable argument accumulator over an sp_Proc target.
+   `proc.curry` makes an empty accumulator; each `[arg]` returns a fresh
+   accumulator with `arg` appended; the fully-applied value is realized
+   by calling the target with the collected (mrb_int) arguments. Spinel
+   defers the call to the point of use (sp_curry_to_int), so a partial
+   curry behaves as a deferred call rather than auto-invoking at arity. */
+typedef struct { sp_Proc *target; mrb_int nargs; mrb_int args[16]; } sp_Curry;
+static void sp_curry_scan(void *p) { sp_Curry *c = (sp_Curry *)p; if (c->target) sp_gc_mark(c->target); }
+static sp_Curry *sp_curry_new(sp_Proc *p) {
+  sp_Curry *c = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
+  c->target = p; c->nargs = 0;
+  return c;
+}
+static sp_Curry *sp_curry_apply(sp_Curry *c, mrb_int arg) {
+  sp_Curry *n = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
+  *n = *c;
+  if (n->nargs < 16) n->args[n->nargs++] = arg;
+  return n;
+}
+static mrb_int sp_curry_to_int(sp_Curry *c) {
+  if (!c || !c->target) return 0;
+  return sp_proc_call(c->target, c->args);
+}
+
 /* Hash#to_proc cap-scan: the proc's `cap` field IS the source hash
    (a single GC pointer), so marking it keeps the hash alive for the
    proc's lifetime. The per-variant lookup fn is emitted by codegen
