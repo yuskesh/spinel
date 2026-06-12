@@ -561,6 +561,16 @@ static TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "name")) return TY_STRING;
     if (!strcmp(name, "arity")) return TY_INT;
   }
+  /* <poly>.call(args): a boxed Proc/Method called through the runtime ABI,
+     which returns mrb_int. (Skip when a user class defines `call`: that goes
+     through normal dispatch and returns the method's own type.) */
+  if (recv >= 0 && rt == TY_POLY &&
+      (!strcmp(name, "call") || !strcmp(name, "()"))) {
+    int has_user_call = 0;
+    for (int k = 0; k < c->nclasses && !has_user_call; k++)
+      if (comp_method_in_class(c, k, "call") >= 0) has_user_call = 1;
+    if (!has_user_call) return TY_INT;
+  }
 
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
   if (is_proc_literal(c, id)) return TY_PROC;
