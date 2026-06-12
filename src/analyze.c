@@ -4,6 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Forward declarations for FFI helpers defined later in this file. */
+static const char *ffi_arg_str(const NodeTable *nt, int nid);
+static int ffi_arg_int(const NodeTable *nt, int nid);
+static TyKind ffi_spec_to_ty(const char *spec);
+static int ffi_find_func(Compiler *c, const char *mod, const char *name);
+static int ffi_find_buf(Compiler *c, const char *mod, const char *name);
+static int ffi_find_reader(Compiler *c, const char *mod, const char *name);
+
 static int is_builtin_class_name(const char *n) {
   if (!n) return 0;
   static const char *const CL[] = {
@@ -523,6 +531,29 @@ static TyKind infer_call(Compiler *c, int id) {
         }
       }
       else if (comp_is_sg_reader(_cls, name)) return TY_POLY;
+    }
+  }
+
+  /* FFI: call on a module that registered ffi_func/ffi_buffer/ffi_read_* */
+  if (recv >= 0 && nt_type(nt, recv)) {
+    const char *rty_ffi = nt_type(nt, recv);
+    const char *rcmod = NULL;
+    if (!strcmp(rty_ffi, "ConstantReadNode"))
+      rcmod = nt_str(nt, recv, "name");
+    else if (!strcmp(rty_ffi, "ConstantPathNode"))
+      rcmod = nt_str(nt, recv, "name");
+    if (rcmod) {
+      int fi = ffi_find_func(c, rcmod, name);
+      if (fi >= 0) return ffi_spec_to_ty(c->ffi_func_ret[fi]);
+      /* ffi_buffer: Module.buf_name returns the static char* (ptr type -> TY_POLY) */
+      if (ffi_find_buf(c, rcmod, name) >= 0) return TY_POLY;
+      /* ffi_read_*: Module.reader_name(buf) returns int or ptr */
+      int ri = ffi_find_reader(c, rcmod, name);
+      if (ri >= 0) {
+        const char *kind = c->ffi_reader_kinds[ri];
+        if (kind && !strcmp(kind, "ptr")) return TY_POLY;
+        return TY_INT;
+      }
     }
   }
 
@@ -2133,6 +2164,14 @@ static TyKind infer_uncached(Compiler *c, int id) {
     }
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
+    /* FFI const: Module::NAME -> int */
+    if (par_nm && nm) {
+      for (int fci = 0; fci < c->n_ffi_consts; fci++) {
+        if (!strcmp(c->ffi_const_mods[fci], par_nm) &&
+            !strcmp(c->ffi_const_names[fci], nm))
+          return TY_INT;
+      }
+    }
     return TY_UNKNOWN;
   }
   if (!strcmp(ty, "SelfNode")) {
@@ -2940,6 +2979,217 @@ static void register_globals_consts(Compiler *c) {
       }
     }
   }
+}
+
+/* Extract a symbol or string literal text from a node, or NULL. */
+static const char *ffi_arg_str(const NodeTable *nt, int nid) {
+  if (nid < 0) return NULL;
+  const char *ty = nt_type(nt, nid);
+  if (!ty) return NULL;
+  if (!strcmp(ty, "SymbolNode")) return nt_str(nt, nid, "value");
+  if (!strcmp(ty, "StringNode")) return nt_str(nt, nid, "content");
+  return NULL;
+}
+
+/* Extract an integer literal value, or -1. */
+static int ffi_arg_int(const NodeTable *nt, int nid) {
+  if (nid < 0) return -1;
+  const char *ty = nt_type(nt, nid);
+  if (!ty) return -1;
+  if (!strcmp(ty, "IntegerNode")) return (int)nt_int(nt, nid, "value", 0);
+  return -1;
+}
+
+/* Map an FFI spec string to the Spinel TyKind used for return types. */
+static TyKind ffi_spec_to_ty(const char *spec) {
+  if (!spec) return TY_UNKNOWN;
+  if (!strcmp(spec,"int")||!strcmp(spec,"uint32")||!strcmp(spec,"int32")||
+      !strcmp(spec,"uint16")||!strcmp(spec,"int16")||!strcmp(spec,"uint8")||
+      !strcmp(spec,"size_t")||!strcmp(spec,"long")||!strcmp(spec,"int64"))
+    return TY_INT;
+  if (!strcmp(spec,"float")||!strcmp(spec,"double")) return TY_FLOAT;
+  if (!strcmp(spec,"str")) return TY_STRING;
+  if (!strcmp(spec,"bool")) return TY_BOOL;
+  if (!strcmp(spec,"ptr")) return TY_POLY;
+  if (!strcmp(spec,"void")) return TY_NIL;
+  if (!strcmp(spec,"float_array")) return TY_FLOAT_ARRAY;
+  if (!strcmp(spec,"int_array")) return TY_INT_ARRAY;
+  return TY_UNKNOWN;
+}
+
+/* Register a ffi_func / ffi_const / ffi_buffer / ffi_read_* declared in
+   module bodies. Called during analyze_program before fixpoint. */
+static void register_ffi_decls(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "ModuleNode")) continue;
+    int cp = nt_ref(nt, id, "constant_path");
+    const char *mname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (!mname) continue;
+    int body = nt_ref(nt, id, "body");
+    int sn = 0;
+    const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &sn) : NULL;
+    for (int k = 0; k < sn; k++) {
+      int s = stmts[k];
+      const char *sty = nt_type(nt, s);
+      if (!sty || strcmp(sty, "CallNode")) continue;
+      if (nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *dname = nt_str(nt, s, "name");
+      if (!dname) continue;
+      int anode = nt_ref(nt, s, "arguments");
+      int an = 0;
+      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+
+      if (!strcmp(dname, "ffi_lib")) {
+        if (an < 1) continue;
+        const char *libname = ffi_arg_str(nt, args[0]);
+        if (!libname) continue;
+        /* find or create lib entry */
+        int mi = -1;
+        for (int li = 0; li < c->n_ffi_libs; li++)
+          if (!strcmp(c->ffi_lib_mods[li], mname)) { mi = li; break; }
+        if (mi < 0) {
+          if (c->n_ffi_libs >= c->c_ffi_libs) {
+            c->c_ffi_libs = c->c_ffi_libs ? c->c_ffi_libs * 2 : 8;
+            c->ffi_lib_mods  = realloc(c->ffi_lib_mods,  sizeof(char*) * (size_t)c->c_ffi_libs);
+            c->ffi_lib_names = realloc(c->ffi_lib_names, sizeof(char*) * (size_t)c->c_ffi_libs);
+          }
+          c->ffi_lib_mods[c->n_ffi_libs]  = strdup(mname);
+          c->ffi_lib_names[c->n_ffi_libs] = strdup(libname);
+          mi = c->n_ffi_libs++;
+        }
+        else {
+          /* append with semicolon */
+          size_t old_len = strlen(c->ffi_lib_names[mi]);
+          size_t new_len = old_len + 1 + strlen(libname) + 1;
+          char *merged = malloc(new_len);
+          snprintf(merged, new_len, "%s;%s", c->ffi_lib_names[mi], libname);
+          free(c->ffi_lib_names[mi]);
+          c->ffi_lib_names[mi] = merged;
+        }
+        continue;
+      }
+
+      if (!strcmp(dname, "ffi_func")) {
+        if (an < 3) continue;
+        const char *fname = ffi_arg_str(nt, args[0]);
+        if (!fname) continue;
+        /* arg type array */
+        int arr_id = args[1];
+        const char *arr_ty = nt_type(nt, arr_id);
+        if (!arr_ty || strcmp(arr_ty, "ArrayNode")) continue;
+        int en = 0;
+        const int *elems = nt_arr(nt, arr_id, "elements", &en);
+        char **arg_specs = malloc(sizeof(char*) * (size_t)(en + 1));
+        for (int ei = 0; ei < en; ei++) {
+          const char *spec = ffi_arg_str(nt, elems[ei]);
+          arg_specs[ei] = strdup(spec ? spec : "");
+        }
+        const char *ret_spec = ffi_arg_str(nt, args[2]);
+        if (!ret_spec) { free(arg_specs); continue; }
+        /* grow array */
+        if (c->n_ffi_funcs >= c->c_ffi_funcs) {
+          c->c_ffi_funcs = c->c_ffi_funcs ? c->c_ffi_funcs * 2 : 16;
+          c->ffi_func_mods   = realloc(c->ffi_func_mods,   sizeof(char*) * (size_t)c->c_ffi_funcs);
+          c->ffi_func_names  = realloc(c->ffi_func_names,  sizeof(char*) * (size_t)c->c_ffi_funcs);
+          c->ffi_func_ret    = realloc(c->ffi_func_ret,    sizeof(char*) * (size_t)c->c_ffi_funcs);
+          c->ffi_func_args   = realloc(c->ffi_func_args,   sizeof(char**) * (size_t)c->c_ffi_funcs);
+          c->ffi_func_nargs  = realloc(c->ffi_func_nargs,  sizeof(int) * (size_t)c->c_ffi_funcs);
+        }
+        int fi = c->n_ffi_funcs++;
+        c->ffi_func_mods[fi]  = strdup(mname);
+        c->ffi_func_names[fi] = strdup(fname);
+        c->ffi_func_ret[fi]   = strdup(ret_spec);
+        c->ffi_func_args[fi]  = arg_specs;
+        c->ffi_func_nargs[fi] = en;
+        continue;
+      }
+
+      if (!strcmp(dname, "ffi_const")) {
+        if (an < 2) continue;
+        const char *kname = ffi_arg_str(nt, args[0]);
+        if (!kname) continue;
+        int val = ffi_arg_int(nt, args[1]);
+        if (c->n_ffi_consts >= c->c_ffi_consts) {
+          c->c_ffi_consts = c->c_ffi_consts ? c->c_ffi_consts * 2 : 16;
+          c->ffi_const_mods  = realloc(c->ffi_const_mods,  sizeof(char*) * (size_t)c->c_ffi_consts);
+          c->ffi_const_names = realloc(c->ffi_const_names, sizeof(char*) * (size_t)c->c_ffi_consts);
+          c->ffi_const_vals  = realloc(c->ffi_const_vals,  sizeof(int) * (size_t)c->c_ffi_consts);
+        }
+        int ci2 = c->n_ffi_consts++;
+        c->ffi_const_mods[ci2]  = strdup(mname);
+        c->ffi_const_names[ci2] = strdup(kname);
+        c->ffi_const_vals[ci2]  = val;
+        continue;
+      }
+
+      if (!strcmp(dname, "ffi_buffer")) {
+        if (an < 2) continue;
+        const char *bname = ffi_arg_str(nt, args[0]);
+        if (!bname) continue;
+        int bsize = ffi_arg_int(nt, args[1]);
+        if (bsize <= 0) continue;
+        if (c->n_ffi_bufs >= c->c_ffi_bufs) {
+          c->c_ffi_bufs = c->c_ffi_bufs ? c->c_ffi_bufs * 2 : 8;
+          c->ffi_buf_mods  = realloc(c->ffi_buf_mods,  sizeof(char*) * (size_t)c->c_ffi_bufs);
+          c->ffi_buf_names = realloc(c->ffi_buf_names, sizeof(char*) * (size_t)c->c_ffi_bufs);
+          c->ffi_buf_sizes = realloc(c->ffi_buf_sizes, sizeof(int) * (size_t)c->c_ffi_bufs);
+        }
+        int bi = c->n_ffi_bufs++;
+        c->ffi_buf_mods[bi]  = strdup(mname);
+        c->ffi_buf_names[bi] = strdup(bname);
+        c->ffi_buf_sizes[bi] = bsize;
+        continue;
+      }
+
+      if (!strncmp(dname, "ffi_read_", 9)) {
+        if (an < 2) continue;
+        const char *rname = ffi_arg_str(nt, args[0]);
+        if (!rname) continue;
+        int roff = ffi_arg_int(nt, args[1]);
+        if (roff < 0) roff = 0;
+        const char *kind = dname + 9;  /* "u32", "i32", "ptr" */
+        if (c->n_ffi_readers >= c->c_ffi_readers) {
+          c->c_ffi_readers = c->c_ffi_readers ? c->c_ffi_readers * 2 : 8;
+          c->ffi_reader_mods    = realloc(c->ffi_reader_mods,    sizeof(char*) * (size_t)c->c_ffi_readers);
+          c->ffi_reader_names   = realloc(c->ffi_reader_names,   sizeof(char*) * (size_t)c->c_ffi_readers);
+          c->ffi_reader_offsets = realloc(c->ffi_reader_offsets, sizeof(int) * (size_t)c->c_ffi_readers);
+          c->ffi_reader_kinds   = realloc(c->ffi_reader_kinds,   sizeof(char*) * (size_t)c->c_ffi_readers);
+        }
+        int ri = c->n_ffi_readers++;
+        c->ffi_reader_mods[ri]    = strdup(mname);
+        c->ffi_reader_names[ri]   = strdup(rname);
+        c->ffi_reader_offsets[ri] = roff;
+        c->ffi_reader_kinds[ri]   = strdup(kind);
+        continue;
+      }
+    }
+  }
+}
+
+/* Look up an FFI func by (module, name). Returns index or -1. */
+static int ffi_find_func(Compiler *c, const char *mod, const char *name) {
+  for (int i = 0; i < c->n_ffi_funcs; i++)
+    if (!strcmp(c->ffi_func_mods[i], mod) && !strcmp(c->ffi_func_names[i], name))
+      return i;
+  return -1;
+}
+
+/* Look up an FFI buffer by (module, name). Returns index or -1. */
+static int ffi_find_buf(Compiler *c, const char *mod, const char *name) {
+  for (int i = 0; i < c->n_ffi_bufs; i++)
+    if (!strcmp(c->ffi_buf_mods[i], mod) && !strcmp(c->ffi_buf_names[i], name))
+      return i;
+  return -1;
+}
+
+/* Look up an FFI reader by (module, name). Returns index or -1. */
+static int ffi_find_reader(Compiler *c, const char *mod, const char *name) {
+  for (int i = 0; i < c->n_ffi_readers; i++)
+    if (!strcmp(c->ffi_reader_mods[i], mod) && !strcmp(c->ffi_reader_names[i], name))
+      return i;
+  return -1;
 }
 
 static int infer_global_const_types(Compiler *c) {
@@ -6177,6 +6427,7 @@ void analyze_program(Compiler *c) {
   register_aliases(c);
   register_undefs(c);
   register_globals_consts(c);
+  register_ffi_decls(c);
 
   /* rescue variables (`rescue => e`) are typed as exception objects */
   for (int id = 0; id < c->nt->count; id++) {
@@ -6433,6 +6684,45 @@ void analyze_program(Compiler *c) {
     ClassInfo *cl = &c->classes[ci];
     for (int iv = 0; iv < cl->nivars; iv++)
       if (cl->ivar_types[iv] == TY_UNKNOWN) cl->ivar_types[iv] = TY_POLY;
+  }
+  /* An attr_reader/attr_accessor ivar typed via a writer call (scalar type),
+     but whose class has no initialize that writes it, starts nil on fresh
+     instances. Only widen when there is NO write inside ANY initialize in
+     the inheritance chain (the read-only case is already TY_POLY via the
+     TY_UNKNOWN pass above). */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cl = &c->classes[ci];
+    if (cl->is_struct) continue; /* struct members are set by generated ctor */
+    int init_mi = comp_method_in_chain(c, ci, "initialize", NULL);
+    if (init_mi >= 0) continue;
+    for (int ri = 0; ri < cl->nreaders; ri++) {
+      const char *rname = cl->readers[ri];
+      if (!rname) continue;
+      char ivname[300]; snprintf(ivname, sizeof ivname, "@%s", rname);
+      int iv = comp_ivar_index(cl, ivname);
+      if (iv < 0) continue;
+      TyKind t = cl->ivar_types[iv];
+      if (t != TY_INT && t != TY_FLOAT && t != TY_STRING &&
+          t != TY_SYMBOL && t != TY_BOOL) continue;
+      cl->ivar_types[iv] = TY_POLY;
+      /* Also patch the node-type cache for all InstanceVariableReadNode and
+         InstanceVariableWriteNode nodes that reference this ivar, so codegen
+         sees TY_POLY for both the struct field and the node type. */
+      for (int nid = 0; nid < c->nt->count; nid++) {
+        const char *nty = nt_type(c->nt, nid);
+        if (!nty) continue;
+        if (strcmp(nty, "InstanceVariableReadNode") &&
+            strcmp(nty, "InstanceVariableWriteNode") &&
+            strcmp(nty, "InstanceVariableOperatorWriteNode") &&
+            strcmp(nty, "InstanceVariableOrWriteNode") &&
+            strcmp(nty, "InstanceVariableAndWriteNode")) continue;
+        /* only within methods of this class */
+        Scope *s = comp_scope_of(c, nid);
+        if (!s || s->class_id != ci) continue;
+        const char *nm = nt_str(c->nt, nid, "name");
+        if (nm && !strcmp(nm, ivname)) c->ntype[nid] = TY_POLY;
+      }
+    }
   }
   /* Post-backstop: re-run write type inference so multi-write locals whose
      RHS chains through a now-typed ivar (e.g. @h[bank][idx] where @h was

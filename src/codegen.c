@@ -414,6 +414,31 @@ static int is_scalar_ret(TyKind t) {
          t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_FIBER || t == TY_IO || t == TY_CLASS ||
          ty_is_hash(t) || ty_is_object(t);
 }
+/* Map an FFI type spec string to the C type used in extern prototypes.
+   Uses standard C types to avoid conflicting with system headers. */
+static const char *ffi_c_type(const char *spec) {
+  if (!spec) return "void";
+  if (!strcmp(spec, "int"))    return "int";
+  if (!strcmp(spec, "uint32")) return "uint32_t";
+  if (!strcmp(spec, "int32"))  return "int32_t";
+  if (!strcmp(spec, "uint16")) return "uint16_t";
+  if (!strcmp(spec, "int16"))  return "int16_t";
+  if (!strcmp(spec, "uint8"))  return "uint8_t";
+  if (!strcmp(spec, "int8"))   return "int8_t";
+  if (!strcmp(spec, "size_t")) return "size_t";
+  if (!strcmp(spec, "long"))   return "long";
+  if (!strcmp(spec, "int64"))  return "int64_t";
+  if (!strcmp(spec, "float"))  return "float";
+  if (!strcmp(spec, "double")) return "double";
+  if (!strcmp(spec, "bool"))   return "int";
+  if (!strcmp(spec, "str"))    return "const char *";
+  if (!strcmp(spec, "ptr"))    return "void *";
+  if (!strcmp(spec, "float_array")) return "const double *";
+  if (!strcmp(spec, "int_array"))   return "const int64_t *";
+  if (!strcmp(spec, "void"))   return "void";
+  return "void";
+}
+
 static const char *default_value(TyKind t) {
   switch (t) {
     case TY_INT:    return "0";
@@ -5732,6 +5757,141 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* FFI call dispatch: Module.func(...) where Module declared ffi_func */
+  if (recv >= 0) {
+    const char *rty_ffi = nt_type(nt, recv);
+    const char *rcmod = NULL;
+    if (rty_ffi && !strcmp(rty_ffi, "ConstantReadNode"))
+      rcmod = nt_str(nt, recv, "name");
+    else if (rty_ffi && !strcmp(rty_ffi, "ConstantPathNode"))
+      rcmod = nt_str(nt, recv, "name");
+    if (rcmod) {
+      int fi = -1;
+      for (int ffi_i = 0; ffi_i < c->n_ffi_funcs; ffi_i++)
+        if (!strcmp(c->ffi_func_mods[ffi_i], rcmod) && !strcmp(c->ffi_func_names[ffi_i], name)) {
+          fi = ffi_i; break;
+        }
+      if (fi >= 0) {
+        const char *ret_spec = c->ffi_func_ret[fi];
+        int is_void_ret = !strcmp(ret_spec, "void");
+        int is_ptr_ret  = !strcmp(ret_spec, "ptr");
+        int is_str_ret  = !strcmp(ret_spec, "str");
+        int call_argc = c->ffi_func_nargs[fi];
+        /* Build the raw C call */
+        Buf call_buf; memset(&call_buf, 0, sizeof call_buf);
+        buf_puts(&call_buf, c->ffi_func_names[fi]);
+        buf_puts(&call_buf, "(");
+        for (int ai = 0; ai < call_argc && ai < argc; ai++) {
+          if (ai) buf_puts(&call_buf, ", ");
+          const char *spec = c->ffi_func_args[fi][ai];
+          TyKind at = comp_ntype(c, argv[ai]);
+          if (!strcmp(spec, "str")) {
+            if (at == TY_POLY) {
+              buf_puts(&call_buf, "("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.s");
+            }
+            else emit_expr(c, argv[ai], &call_buf);
+          }
+          else if (!strcmp(spec, "ptr")) {
+            if (at == TY_POLY) {
+              buf_puts(&call_buf, "((void *)(");
+              emit_expr(c, argv[ai], &call_buf);
+              buf_puts(&call_buf, ").v.p)");
+            }
+            else {
+              buf_puts(&call_buf, "((void *)(uintptr_t)(");
+              emit_expr(c, argv[ai], &call_buf);
+              buf_puts(&call_buf, "))");
+            }
+          }
+          else if (!strcmp(spec, "float") || !strcmp(spec, "double")) {
+            if (at == TY_POLY) {
+              buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")(");
+              emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.f)");
+            }
+            else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+          }
+          else {
+            /* integer-like: int, uint32, size_t, long, etc. */
+            if (at == TY_POLY) {
+              buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")(");
+              emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.i)");
+            }
+            else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+          }
+        }
+        buf_puts(&call_buf, ")");
+        if (is_void_ret) {
+          buf_puts(b, "("); buf_puts(b, call_buf.p); buf_puts(b, ", (mrb_int)0)");
+        }
+        else if (is_ptr_ret) {
+          /* wrap void* in a poly sp_RbVal */
+          buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_OBJECT)", call_buf.p);
+        }
+        else if (is_str_ret) {
+          buf_printf(b, "sp_str_dup_external(%s)", call_buf.p);
+        }
+        else {
+          /* numeric / bool: cast to mrb_int or mrb_float */
+          int ffi_ret_is_float = (!strcmp(ret_spec, "float") || !strcmp(ret_spec, "double"));
+          if (ffi_ret_is_float) {
+            buf_puts(b, "((mrb_float)("); buf_puts(b, call_buf.p); buf_puts(b, "))");
+          }
+          else {
+            buf_puts(b, "((mrb_int)("); buf_puts(b, call_buf.p); buf_puts(b, "))");
+          }
+        }
+        free(call_buf.p);
+        return;
+      }
+      /* ffi_buffer access: Module.buf_name returns static char* as void* poly */
+      {
+        int bi = -1;
+        for (int fbi = 0; fbi < c->n_ffi_bufs; fbi++)
+          if (!strcmp(c->ffi_buf_mods[fbi], rcmod) && !strcmp(c->ffi_buf_names[fbi], name)) {
+            bi = fbi; break;
+          }
+        if (bi >= 0) {
+          buf_printf(b, "sp_box_obj((void *)sp_ffi_buf_%s_%s, SP_BUILTIN_OBJECT)",
+                     c->ffi_buf_mods[bi], c->ffi_buf_names[bi]);
+          return;
+        }
+      }
+      /* ffi_read_* access: Module.reader_name(buf) */
+      {
+        int ri = -1;
+        for (int fri = 0; fri < c->n_ffi_readers; fri++)
+          if (!strcmp(c->ffi_reader_mods[fri], rcmod) && !strcmp(c->ffi_reader_names[fri], name)) {
+            ri = fri; break;
+          }
+        if (ri >= 0 && argc >= 1) {
+          const char *kind = c->ffi_reader_kinds[ri];
+          int off = c->ffi_reader_offsets[ri];
+          const char *ctype = "uint32_t";
+          if (kind && !strcmp(kind, "i32")) ctype = "int32_t";
+          if (argc >= 1) {
+            if (kind && !strcmp(kind, "ptr")) {
+              int rt3 = ++g_tmp;
+              buf_printf(b, "({ void *_t%d = (*(void **)((char *)(", rt3);
+              /* unbox if poly */
+              TyKind at = comp_ntype(c, argv[0]);
+              if (at == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+              else emit_expr(c, argv[0], b);
+              buf_printf(b, " + %d)); _t%d ? sp_box_obj(_t%d, SP_BUILTIN_OBJECT) : sp_box_nil(); })", off, rt3, rt3);
+            }
+            else {
+              buf_printf(b, "((mrb_int)(*(((%s *)((char *)(", ctype);
+              TyKind at = comp_ntype(c, argv[0]);
+              if (at == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+              else emit_expr(c, argv[0], b);
+              buf_printf(b, ") + %d))))", off);
+            }
+          }
+          return;
+        }
+      }
+    }
+  }
+
   /* Module.field = val  /  Module.field  -> singleton accessor sg_Mod_field */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
@@ -6680,6 +6840,11 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       }
       if (at == TY_INT) {
         buf_puts(b, "sp_poly_arr_get_hash("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (at == TY_POLY) {
+        buf_puts(b, "sp_poly_index_poly("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
@@ -12458,6 +12623,16 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant Integer::%s\"), 0)", nm);
       return;
     }
+    /* FFI const: Module::NAME -> integer literal */
+    if (par_nmc && nm) {
+      for (int fci = 0; fci < c->n_ffi_consts; fci++) {
+        if (!strcmp(c->ffi_const_mods[fci], par_nmc) &&
+            !strcmp(c->ffi_const_names[fci], nm)) {
+          buf_printf(b, "((mrb_int)%d)", c->ffi_const_vals[fci]);
+          return;
+        }
+      }
+    }
     /* class/module constant as value */
     if (nm) {
       int _cpidx = comp_class_index(c, nm);
@@ -12980,6 +13155,36 @@ static void emit_expr(Compiler *c, int id, Buf *b) {
     emit_stmt(c, id, g_pre, g_indent);
     /* then yield the RHS value as the expression's result */
     emit_expr(c, value, b);
+    return;
+  }
+
+  /* ivar OP= as expression: emit the mutation then read back the ivar. */
+  if (!strcmp(ty, "InstanceVariableOperatorWriteNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    int sc = comp_scope_of(c, id)->class_id;
+    char ref[300];
+    Scope *cs = comp_scope_of(c, id);
+    if (cs && cs->is_cmethod && cs->class_id >= 0)
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);
+    else
+      snprintf(ref, sizeof ref, "%s->iv_%s", g_self, nm + 1);
+    if (g_pre) {
+      emit_stmt(c, id, g_pre, g_indent);
+      buf_puts(b, ref);
+    }
+    else {
+      TyKind vt = TY_UNKNOWN;
+      if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) vt = c->classes[sc].ivar_types[iv]; }
+      int t = ++g_tmp;
+      buf_printf(b, "({ ");
+      emit_ctype(c, vt, b);
+      buf_printf(b, " _t%d; ", t);
+      /* inline the write */
+      const char *op = nt_str(nt, id, "binary_operator");
+      buf_printf(b, "%s %s= ", ref, op ? op : "+");
+      emit_expr(c, nt_ref(nt, id, "value"), b);
+      buf_printf(b, "; _t%d = %s; _t%d; })", t, ref, t);
+    }
     return;
   }
 
@@ -17111,6 +17316,28 @@ char *codegen_program(const NodeTable *nt) {
   g_re_count = 0;
   buf_puts(&b, "/* Generated by Spinel AOT compiler */\n");
   buf_puts(&b, "#include \"sp_runtime.h\"\n");
+  /* FFI extern declarations and buffer storage */
+  {
+    Compiler *cf = c;
+    for (int fi = 0; fi < cf->n_ffi_funcs; fi++) {
+      const char *ret = cf->ffi_func_ret[fi];
+      buf_puts(&b, "extern ");
+      buf_puts(&b, ffi_c_type(ret));
+      buf_puts(&b, " ");
+      buf_puts(&b, cf->ffi_func_names[fi]);
+      buf_puts(&b, "(");
+      for (int ai = 0; ai < cf->ffi_func_nargs[fi]; ai++) {
+        if (ai) buf_puts(&b, ", ");
+        buf_puts(&b, ffi_c_type(cf->ffi_func_args[fi][ai]));
+      }
+      if (cf->ffi_func_nargs[fi] == 0) buf_puts(&b, "void");
+      buf_puts(&b, ");\n");
+    }
+    for (int bi = 0; bi < cf->n_ffi_bufs; bi++) {
+      buf_printf(&b, "static char sp_ffi_buf_%s_%s[%d];\n",
+                 cf->ffi_buf_mods[bi], cf->ffi_buf_names[bi], cf->ffi_buf_sizes[bi]);
+    }
+  }
   {
     int ns = c->nsymbols;
     if (ns > 0) {

@@ -4013,6 +4013,13 @@ static sp_RbVal sp_poly_arr_get_hash(sp_RbVal a, mrb_int i) {
     return sp_StrPolyHash_get((sp_StrPolyHash*)a.v.p, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)i) : "");
   return sp_poly_arr_get(a, i);
 }
+/* poly[poly_key]: dispatch on key tag at runtime. */
+static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
+  if (idx.tag == SP_TAG_STR) return sp_poly_get_str(recv, idx.v.s);
+  if (idx.tag == SP_TAG_SYM) return sp_poly_get_sym(recv, (sp_sym)idx.v.i);
+  mrb_int i = (idx.tag == SP_TAG_INT) ? idx.v.i : 0;
+  return sp_poly_arr_get_hash(recv, i);
+}
 static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, mrb_int idx, sp_RbVal val) {
   if (v.tag != SP_TAG_OBJ) return val;
   switch (v.cls_id) {

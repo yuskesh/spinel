@@ -121,6 +121,38 @@ typedef struct {
 
   int *toplevel_includes;  /* class indices of modules included at top level */
   int ntoplevel_includes;
+
+  /* FFI registry: ffi_func declarations */
+  char **ffi_func_mods;     /* module name */
+  char **ffi_func_names;    /* function name */
+  char **ffi_func_ret;      /* return spec: "ptr","int","float","double","str","void","size_t","long","bool" */
+  char ***ffi_func_args;    /* arg specs array (malloc'd) */
+  int  *ffi_func_nargs;
+  int n_ffi_funcs, c_ffi_funcs;
+
+  /* FFI registry: ffi_const declarations */
+  char **ffi_const_mods;    /* module name */
+  char **ffi_const_names;   /* constant name */
+  int  *ffi_const_vals;     /* integer value */
+  int n_ffi_consts, c_ffi_consts;
+
+  /* FFI registry: ffi_buffer declarations */
+  char **ffi_buf_mods;
+  char **ffi_buf_names;
+  int  *ffi_buf_sizes;
+  int n_ffi_bufs, c_ffi_bufs;
+
+  /* FFI registry: ffi_read_* declarations */
+  char **ffi_reader_mods;
+  char **ffi_reader_names;
+  int  *ffi_reader_offsets;
+  char **ffi_reader_kinds;  /* "u32", "i32", "ptr" */
+  int n_ffi_readers, c_ffi_readers;
+
+  /* FFI library names per module (semicolon-separated) */
+  char **ffi_lib_mods;
+  char **ffi_lib_names;     /* semicolon-separated library names, or "" */
+  int n_ffi_libs, c_ffi_libs;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);
