@@ -5344,7 +5344,16 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           if (!strcmp(k, "Poly")) {
             buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tr);
             TyKind vt = comp_ntype(c, bb[bn - 1]);
-            if (vt != TY_POLY) emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", g_pre);
+            if (vt == TY_UNKNOWN) {
+              /* comp_ntype may return UNKNOWN for e.g. empty [] literals.
+                 emit_boxed handles those correctly (no extra g_pre side effects
+                 for side-effect-free expressions like empty array literals). */
+              Buf bx; memset(&bx, 0, sizeof bx);
+              emit_boxed(c, bb[bn - 1], &bx);
+              buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()");
+              free(bx.p);
+            }
+            else if (vt != TY_POLY) emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", g_pre);
             else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
             buf_puts(g_pre, ");\n");
           }
@@ -9467,7 +9476,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     /* poly (mixed-element) array methods: elements are boxed sp_RbVal */
     if (rt == TY_POLY_ARRAY) {
       if (!strcmp(name, "[]") && argc == 1) {
-        buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (a0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
         return;
       }
       if (!strcmp(name, "clear") && argc == 0) {
@@ -17612,6 +17624,7 @@ char *codegen_program(const NodeTable *nt) {
       if (class_is_exc_subclass(c, i)) { any = 1; break; }
     }
     buf_puts(&b, "static const char *sp_user_exc_parent(const char *cls){\n");
+    if (!any) buf_puts(&b, "  (void)cls;\n");
     if (any) {
       for (int i = 0; i < c->nclasses; i++) {
         if (!class_is_exc_subclass(c, i)) continue;
