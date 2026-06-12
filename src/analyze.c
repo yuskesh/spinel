@@ -4010,6 +4010,31 @@ static int cmethod_has_bare_new(Compiler *c, int mi) {
   return 0;
 }
 
+/* Does the inherited cls method `mi` (defined on def_cls) contain a bare call
+   that would resolve differently when run as a class method of `ci`? That is:
+   a bare `new` (constructs ci), or a bare cmethod call `m` that ci defines but
+   def_cls does not (so the inherited body's `m` means ci's version). */
+static int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new) {
+  const NodeTable *nt = c->nt;
+  int need = 0;
+  if (has_new) *has_new = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (c->nscope[id] != mi) continue;
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;   /* receiverless only */
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    if (!strcmp(nm, "new")) { if (has_new) *has_new = 1; need = 1; continue; }
+    /* a bare cmethod call that resolves to a different method for ci than for
+       the defining class (ci adds or overrides it) */
+    int mci = comp_cmethod_in_chain(c, ci, nm, NULL);
+    int mdef = comp_cmethod_in_chain(c, def_cls, nm, NULL);
+    if (mci >= 0 && mci != mdef) need = 1;
+  }
+  return need;
+}
+
 /* `Subclass.create` where `create` is an inherited class method whose body
    does `new(...)`: Ruby's bare `new` constructs the *calling* class, so copy
    the inherited cls method into each calling subclass (the copy's class_id
@@ -4036,7 +4061,8 @@ static void specialize_inherited_cls_new(Compiler *c) {
     int def_cls = -1;
     int mi = comp_cmethod_in_chain(c, ci, mname, &def_cls);
     if (mi < 0 || def_cls == ci || mi >= snap) continue;     /* not inherited */
-    if (!cmethod_has_bare_new(c, mi)) continue;
+    int has_new = 0;
+    if (!cmethod_needs_specialization(c, mi, ci, def_cls, &has_new)) continue;
 
     /* Copy the inherited cls method scope, owned by ci, with its OWN clone of
        the body AST so locals/dispatches inside resolve against ci (the bare
@@ -4059,10 +4085,14 @@ static void specialize_inherited_cls_new(Compiler *c) {
     dst->nrequired = src->nrequired;
     dst->rest_idx = src->rest_idx;
     dst->kwrest_idx = src->kwrest_idx;
-    /* The bare `new` returns the specialized subclass, so a create-style
-       method that returns its instance is typed as that subclass. */
-    dst->ret = ty_object(ci);
-    dst->ret_specialized = 1;
+    /* A bare-`new` create method returns the specialized subclass instance, so
+       pin its return type. Other specializations (a body calling a subclass-
+       specific class method) let the normal return inference compute the type
+       from the cloned, ci-attributed body. */
+    if (has_new) {
+      dst->ret = ty_object(ci);
+      dst->ret_specialized = 1;
+    }
     if (src->blk_param) dst->blk_param = strdup(src->blk_param);
     dst->nparams = src->nparams;
     if (src->nparams > 0) {
