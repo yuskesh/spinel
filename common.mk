@@ -69,12 +69,19 @@ TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/
 TIMEOUT10 := $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) 10,)
 TIMEOUT60 := $(if $(TIMEOUT_BIN),$(TIMEOUT_BIN) 60,)
 
-# Default -j to logical CPU count when MAKEFLAGS doesn't already carry a
-# -j flag (covers `-j N` / `-jN`, the short-flag-cluster form, and Make
-# 4.x's `--jobserver-auth=…`). GNU Make 3.81 reports MAKEFLAGS empty at
-# parse time, so the guard always fires there.
-ifeq (,$(filter -j%,$(MAKEFLAGS))$(findstring j,$(firstword -$(MAKEFLAGS)))$(filter --jobserver%,$(MAKEFLAGS)))
+# Default to a parallel build at the logical CPU count, unless the
+# invocation already asked for a job count. Applied ONLY at the top level
+# (MAKELEVEL 0): a sub-make inherits the parent's jobserver, and forcing
+# -j again in a sub-make's MAKEFLAGS triggers GNU Make's "-j forced in
+# makefile: resetting jobserver mode" warning (the --jobserver-auth flag
+# isn't visible in MAKEFLAGS at sub-make parse time, so a plain -j guard
+# can't see it — MAKELEVEL is the reliable discriminator). A command-line
+# -jN still wins by precedence; the env form `MAKEFLAGS=-jN` is honored
+# by the inner guard.
+ifeq ($(MAKELEVEL),0)
+ifeq (,$(filter -j%,$(MAKEFLAGS))$(findstring j,$(firstword -$(MAKEFLAGS))))
   MAKEFLAGS += -j$(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+endif
 endif
 
 # Reference Ruby for test/bench output comparison. Override on the command
