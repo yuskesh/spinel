@@ -91,6 +91,12 @@ static const char *g_rescue_cls = NULL, *g_rescue_msg = NULL;
 /* When inside a rescue handler that can `retry`, holds the goto label for the
    retry target (just before `sp_exc_top++`). NULL otherwise. */
 static const char *g_retry_label = NULL;
+/* Redo label stack: each enclosing loop that contains a `redo` pushes a fresh
+   C label id; a RedoNode emits `goto _redo_<top>` to re-run the current
+   iteration without re-testing the guard or advancing the iterator. */
+static int g_redo_stack[64];
+static int g_redo_depth = 0;
+
 /* When set inside a loop-as-expression, BreakNode assigns its value here. */
 static const char *g_loop_break_var = NULL;
 /* When set, tail positions assign to this var instead of `return`ing
@@ -597,6 +603,8 @@ static void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resu
 static int  emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
 static int  emit_output_call(Compiler *c, int id, Buf *b, int indent);
 static int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
+static void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
+static int  subtree_has_own_redo(const NodeTable *nt, int id);
 static int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 static int  emit_inline_expr(Compiler *c, int id, Buf *b);
 static void emit_cond(Compiler *c, int id, Buf *b);
@@ -3522,7 +3530,7 @@ static int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     }
     /* Body */
     int save_indent = g_indent; g_indent++;
-    for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    emit_loop_body(c, body, g_pre, g_indent);
     g_indent = save_indent;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     buf_printf(b, "_t%d", tacc);
@@ -3625,7 +3633,7 @@ static int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
       }
     }
     int save_indent = g_indent; g_indent++;
-    for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    emit_loop_body(c, body, g_pre, g_indent);
     g_indent = save_indent;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     /* Restore types */
@@ -3672,7 +3680,7 @@ static int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
 
     /* Body */
     int save_indent = g_indent; g_indent++;
-    for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    emit_loop_body(c, body, g_pre, g_indent);
     g_indent = save_indent;
 
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -11942,6 +11950,46 @@ static void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig,
   }
 }
 
+/* Does the subtree contain a `redo` that belongs to THIS loop, i.e. one not
+   nested inside a deeper loop/block/def (which would own it instead)? */
+static int subtree_has_own_redo(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (!strcmp(ty, "RedoNode")) return 1;
+  /* nested scope/loop boundaries: a redo inside binds to that inner loop */
+  if (!strcmp(ty, "DefNode") || !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode") ||
+      !strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
+      !strcmp(ty, "LambdaNode"))
+    return 0;
+  if (!strcmp(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (subtree_has_own_redo(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (subtree_has_own_redo(nt, ids[k])) return 1;
+  }
+  return 0;
+}
+
+/* Emit a loop body, prefixing a `_redo_N:` label (and pushing it on the redo
+   stack) when the body contains a `redo` that targets this loop. The label
+   sits at the body top so `redo` re-runs the body without advancing. */
+static void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
+  int has_redo = subtree_has_own_redo(c->nt, body);
+  int lbl = 0;
+  if (has_redo) {
+    lbl = ++g_tmp;
+    if (g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0]))
+      g_redo_stack[g_redo_depth++] = lbl;
+    else has_redo = 0;
+  }
+  if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
+  emit_stmts(c, body, b, indent);
+  if (has_redo) g_redo_depth--;
+}
+
 static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -11954,7 +12002,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (recv < 0 && !strcmp(name, "loop")) {
     int lbody = nt_ref(nt, block, "body");
     emit_indent(b, indent); buf_puts(b, "for (;;) {\n");
-    emit_stmts(c, lbody, b, indent + 1);
+    emit_loop_body(c, lbody, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
@@ -11974,7 +12022,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "; _t%d++) {\n", t);
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);
     return 1;
@@ -12001,7 +12049,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
                  ts, t, tl, t, tl, t, ts);
       if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
-      emit_stmts(c, body, b, indent + 1);
+      emit_loop_body(c, body, b, indent + 1);
       emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
     }
@@ -12022,7 +12070,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d <= _t%d; _t%d++) {\n", ti, ti, tn, ti);
     if (p0) { char fp_expr[64]; snprintf(fp_expr, sizeof fp_expr, "_t%d + _t%d * _t%d", tb, ti, ts); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, fp_expr, b, indent + 1); }
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
@@ -12054,7 +12102,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         buf_puts(b, rb.p); buf_puts(b, ", "); buf_puts(b, rb.p); buf_printf(b, "->order[_t%d]);\n", t);
       }
     }
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);
     return 1;
@@ -12096,7 +12144,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       else buf_puts(b, src);
       buf_puts(b, ";\n");
     }
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);
     return 1;
@@ -12214,7 +12262,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       if (p1_box_poly) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p1, t);
       else buf_printf(b, "lv_%s = _t%d;\n", p1, t);
     }
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     /* Restore outer variables */
     if (p0 && ts_p0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_p0); }
@@ -12269,7 +12317,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         else buf_puts(b, src2);
         buf_puts(b, ";\n");
       }
-      emit_stmts(c, body, b, indent + 1);
+      emit_loop_body(c, body, b, indent + 1);
       emit_indent(b, indent); buf_puts(b, "}\n");
       if (p0 && zs0 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, zs0); }
       if (p1n && zs1 > 0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p1n, zs1); }
@@ -12303,7 +12351,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent + 1);
       buf_printf(b, "lv_%s = sp_poly_each_elem(_t%d, _t%d);\n", p0, ta, ti);
     }
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
@@ -12355,7 +12403,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, t);
       }
     }
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
     return 1;
@@ -12433,7 +12481,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     each_body:
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     if (outer) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts); }
     free(rb.p);
@@ -12461,7 +12509,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       else
         buf_printf(b, "lv_%s = (sp_IntArray *)_t%d->data[_t%d];\n", p0, tc, ti);
     }
-    emit_stmts(c, body, b, indent + 2);
+    emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
@@ -12497,14 +12545,14 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent + 1); buf_puts(b, "{\n");
         emit_indent(b, indent + 2); emit_ctype(c, rt, b);
         buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
-        emit_stmts(c, body, b, indent + 2);
+        emit_loop_body(c, body, b, indent + 2);
         emit_indent(b, indent + 1); buf_puts(b, "}\n");
         clv_ec->type = csaved_ec;
       }
       else {
         emit_indent(b, indent + 1);
         buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
-        emit_stmts(c, body, b, indent + 1);
+        emit_loop_body(c, body, b, indent + 1);
       }
     }
     else {
@@ -12513,7 +12561,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent + 1);
         buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n", rename_local(pn), k, ta, ti, pj);
       }
-      emit_stmts(c, body, b, indent + 1);
+      emit_loop_body(c, body, b, indent + 1);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
@@ -12529,7 +12577,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (lv_%s = _t%d.first; lv_%s <= _t%d.last - _t%d.excl; lv_%s++) {\n",
                p0, t, p0, t, t, p0);
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
   }
@@ -12548,7 +12596,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "for (lv_%s = ", p0); buf_puts(b, lo.p);
     buf_printf(b, "; lv_%s %s ", p0, up ? "<=" : ">="); buf_puts(b, hi.p);
     buf_printf(b, "; lv_%s%s) {\n", p0, up ? "++" : "--");
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(lo.p); free(hi.p);
     return 1;
@@ -12568,7 +12616,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent + 1); buf_printf(b, "int _t%d = strcmp(_t%d, _t%d);\n", tcmp, tc, te);
     emit_indent(b, indent + 1); buf_printf(b, "if (_t%d > 0) break;\n", tcmp);
     emit_indent(b, indent + 1); buf_printf(b, "lv_%s = _t%d;\n", p0, tc);
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent + 1); buf_printf(b, "if (_t%d == 0) break;\n", tcmp);
     emit_indent(b, indent + 1); buf_printf(b, "_t%d = sp_str_succ(_t%d);\n", tc, tc);
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -12593,13 +12641,13 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent); buf_puts(b, "{\n");
       emit_indent(b, indent + 1); emit_ctype(c, et, b);
       buf_printf(b, " lv_%s = _t%d;\n", p0, tr);
-      emit_stmts(c, body, b, indent + 1);
+      emit_loop_body(c, body, b, indent + 1);
       emit_indent(b, indent); buf_puts(b, "}\n");
       tlv0->type = tsaved0;
     }
     else {
       if (p0) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, tr); }
-      emit_stmts(c, body, b, indent);
+      emit_loop_body(c, body, b, indent);
     }
     return 1;
   }
@@ -12634,14 +12682,14 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, innerIndent); buf_puts(b, "{\n"); innerIndent++;
       emit_indent(b, innerIndent); emit_ctype(c, et, b);
       buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, tj);
-      emit_stmts(c, body, b, innerIndent);
+      emit_loop_body(c, body, b, innerIndent);
       innerIndent--;
       emit_indent(b, innerIndent); buf_puts(b, "}\n");
       clv0->type = csaved0;
     }
     else {
       if (p0) { emit_indent(b, innerIndent); buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, tj); }
-      emit_stmts(c, body, b, innerIndent);
+      emit_loop_body(c, body, b, innerIndent);
     }
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -12678,7 +12726,7 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, bodyIndent);
         buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n", rename_local(pn), k, ta, ti, pj);
       }
-      emit_stmts(c, body, b, bodyIndent);
+      emit_loop_body(c, body, b, bodyIndent);
     }
     else if (use_shadow_es) {
       int esb_bn = 0; const int *esb_bb = body >= 0 ? nt_arr(nt, body, "body", &esb_bn) : NULL;
@@ -12687,14 +12735,14 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
       emit_indent(b, bodyIndent); emit_ctype(c, rt, b);
       buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts);
-      emit_stmts(c, body, b, bodyIndent);
+      emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
       clv0->type = csaved0;
     }
     else {
       if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts); }
-      emit_stmts(c, body, b, bodyIndent);
+      emit_loop_body(c, body, b, bodyIndent);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
@@ -12726,14 +12774,14 @@ static int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       for (int j = 0; j < scb_bn; j++) infer_type(c, scb_bb[j]);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
       emit_indent(b, bodyIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
-      emit_stmts(c, body, b, bodyIndent);
+      emit_loop_body(c, body, b, bodyIndent);
       bodyIndent--;
       emit_indent(b, bodyIndent); buf_puts(b, "}\n");
       clv0->type = csaved0;
     }
     else {
       if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
-      emit_stmts(c, body, b, bodyIndent);
+      emit_loop_body(c, body, b, bodyIndent);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
@@ -15084,7 +15132,7 @@ static void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   if (post_test) {
     emit_indent(b, indent);
     buf_puts(b, "do {\n");
-    emit_stmts(c, body, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent);
     buf_puts(b, "} while (");
     if (is_until) buf_puts(b, "!(");
@@ -15099,7 +15147,7 @@ static void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   emit_cond(c, pred, b);
   if (is_until) buf_puts(b, ")");
   buf_puts(b, ") {\n");
-  emit_stmts(c, body, b, indent + 1);
+  emit_loop_body(c, body, b, indent + 1);
   emit_indent(b, indent);
   buf_puts(b, "}\n");
 }
@@ -15121,7 +15169,7 @@ static void emit_for(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent + 1);
     buf_printf(b, "for (lv_%s = ", vn); emit_expr(c, nt_ref(nt, coll, "left"), b);
     buf_printf(b, "; lv_%s %s _t%d; lv_%s++) {\n", vn, excl ? "<" : "<=", thi, vn);
-    emit_stmts(c, body, b, indent + 2);
+    emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
@@ -15162,7 +15210,7 @@ static void emit_for(Compiler *c, int id, Buf *b, int indent) {
         else
           buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, %d);\n", lnm, tv, i);
       }
-      emit_stmts(c, body, b, indent + 2);
+      emit_loop_body(c, body, b, indent + 2);
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
       emit_indent(b, indent); buf_puts(b, "}\n");
       return;
@@ -15174,7 +15222,7 @@ static void emit_for(Compiler *c, int id, Buf *b, int indent) {
                ti, ti, k ? k : "Poly", ta, ti);
     emit_indent(b, indent + 2);
     buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", vn, k ? k : "Poly", ta, ti);
-    emit_stmts(c, body, b, indent + 2);
+    emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
@@ -16802,7 +16850,12 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_puts(b, "break;\n"); return;
   }
   if (!strcmp(ty, "NextNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
-  if (!strcmp(ty, "RedoNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
+  if (!strcmp(ty, "RedoNode"))   {
+    emit_indent(b, indent);
+    if (g_redo_depth > 0) buf_printf(b, "goto _redo_%d;\n", g_redo_stack[g_redo_depth - 1]);
+    else buf_puts(b, "continue;\n");  /* redo outside a labeled loop: best-effort */
+    return;
+  }
   if (!strcmp(ty, "RetryNode")) {
     if (g_retry_label) { emit_indent(b, indent); buf_printf(b, "goto %s;\n", g_retry_label); }
     else unsupported(c, id, "retry (outside rescue)");
