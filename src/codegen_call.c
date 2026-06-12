@@ -8497,7 +8497,20 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   const char *svbpn = g_block_param_name; g_block_param_name = NULL;
   emit_stmts(c, bbody, b, as_expr ? 0 : indent);
   g_block_id = svb; g_block_param_name = svbpn;
-  if (as_expr) buf_puts(b, "})");
+  if (as_expr) {
+    /* `{ return e }`: the block exits the enclosing function, so the
+       statement-expr's tail is unreachable — but C still needs a value
+       expression there (a trailing `return;` makes the ({...}) void). */
+    int bn2 = 0; const int *bd2 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn2) : NULL;
+    if (bn2 > 0 && nt_type(nt, bd2[bn2 - 1]) &&
+        !strcmp(nt_type(nt, bd2[bn2 - 1]), "ReturnNode")) {
+      int ra = nt_ref(nt, bd2[bn2 - 1], "arguments");
+      int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+      TyKind rt2 = rn > 0 ? comp_ntype(c, rv[0]) : TY_INT;
+      buf_printf(b, " %s;", default_value(is_scalar_ret(rt2) ? rt2 : TY_INT));
+    }
+    buf_puts(b, "})");
+  }
 }
 
 /* Inline a yielding method call in expression position: ({ ...; value; }).

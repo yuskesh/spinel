@@ -1047,10 +1047,11 @@ void analyze_program(Compiler *c) {
   /* A read-only ivar (referenced but never assigned a typed value) stays
      TY_UNKNOWN -> it has no C type. Such a slot always reads nil at runtime;
      give it a boxed-nil poly field so `.nil?`/`.inspect` behave (#712). */
+  int ivar_backstop_changed = 0;
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cl = &c->classes[ci];
     for (int iv = 0; iv < cl->nivars; iv++)
-      if (cl->ivar_types[iv] == TY_UNKNOWN) cl->ivar_types[iv] = TY_POLY;
+      if (cl->ivar_types[iv] == TY_UNKNOWN) { cl->ivar_types[iv] = TY_POLY; ivar_backstop_changed = 1; }
   }
   /* An attr_reader/attr_accessor ivar typed via a writer call (scalar type),
      but whose class has no initialize that writes it, starts nil on fresh
@@ -1072,6 +1073,7 @@ void analyze_program(Compiler *c) {
       if (t != TY_INT && t != TY_FLOAT && t != TY_STRING &&
           t != TY_SYMBOL && t != TY_BOOL) continue;
       cl->ivar_types[iv] = TY_POLY;
+      ivar_backstop_changed = 1;
       /* Also patch the node-type cache for all InstanceVariableReadNode and
          InstanceVariableWriteNode nodes that reference this ivar, so codegen
          sees TY_POLY for both the struct field and the node type. */
@@ -1101,8 +1103,13 @@ void analyze_program(Compiler *c) {
   /* Post-fixpoint body-usage inference: type any param still TY_UNKNOWN
      from how it is used inside the method body (hash subscript patterns,
      array-specific calls). Runs after the main fixpoint so caller-side
-     types always win; the mini-loop below propagates the new types. */
-  if (infer_hash_params(c) | infer_array_params(c) | infer_params_from_ivar_hash_ops(c)) {
+     types always win; the mini-loop below propagates the new types.
+     Also re-runs after the ivar backstops above widened an UNKNOWN slot
+     to poly: reads of such an ivar inferred UNKNOWN during the fixpoint,
+     leaving params bound from them untyped (and the method dropped,
+     turning its call sites into undefined references). */
+  if (infer_hash_params(c) | infer_array_params(c) | infer_params_from_ivar_hash_ops(c) |
+      ivar_backstop_changed) {
     for (int iter = 0; iter < 16; iter++) {
       int ch = 0;
       ch |= infer_param_types(c);

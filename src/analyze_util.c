@@ -208,7 +208,14 @@ TyKind yield_value_type(Compiler *c, int mi) {
     if (rmi != mi) continue;
     int bb = nt_ref(nt, blk, "body");
     int bn = 0; const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
-    TyKind bt = (bn == 0) ? TY_NIL : infer_type(c, bd[bn - 1]);
+    TyKind bt;
+    if (bn == 0) bt = TY_NIL;
+    else if (nt_type(nt, bd[bn - 1]) && !strcmp(nt_type(nt, bd[bn - 1]), "ReturnNode"))
+      /* `{ return e }`: a non-local return — the yield never produces a
+         value, but typing it as e's type keeps the enclosing method's
+         return shape consistent (the inline emits `return e` directly). */
+      bt = return_node_type(c, bd[bn - 1]);
+    else bt = infer_type(c, bd[bn - 1]);
     if (bt == TY_VOID) bt = TY_NIL;
     /* A yield-inlined (or self-recursive-lowered) method is specialized per
        call site, so its internal block type is the first concrete block. A
@@ -231,7 +238,12 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     if (blk >= 0) {
       int bbody = nt_ref(c->nt, blk, "body");
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
-      if (bn > 0) return infer_type(c, bb[bn - 1]);
+      if (bn > 0) {
+        const char *lty = nt_type(c->nt, bb[bn - 1]);
+        if (lty && !strcmp(lty, "ReturnNode"))
+          return return_node_type(c, bb[bn - 1]);  /* `{ return e }`: see yield_value_type */
+        return infer_type(c, bb[bn - 1]);
+      }
     }
   }
   return c->scopes[mi].ret;
