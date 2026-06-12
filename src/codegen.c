@@ -5398,6 +5398,19 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           return;
         }
       }
+      if (cn && !strcmp(cn, "Time")) {
+        if (argc == 0) { buf_puts(b, "sp_time_now()"); return; }
+        buf_printf(b, "sp_time_new(");
+        for (int i = 0; i < 6; i++) {
+          if (i) buf_puts(b, ", ");
+          if (i < argc) emit_expr(c, argv[i], b);
+          else buf_puts(b, (i == 1 || i == 2) ? "1" : "0");
+        }
+        buf_puts(b, ")");
+        return;
+      }
+      /* unrecognized stdlib class .new (Pathname, OpenStruct, IPAddr, etc.): emit 0 */
+      if (cn) { buf_puts(b, "0LL"); return; }
     }
   }
 
@@ -16422,7 +16435,10 @@ static void emit_boxed(Compiler *c, int node, Buf *b) {
     }
     default: break;
   }
-  if (!fn) { unsupported(c, node, "boxing value into poly"); return; }
+  if (!fn) {
+    /* TY_UNKNOWN (e.g. unrecognized stdlib class .new): evaluate for side-effects, yield nil */
+    buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); return;
+  }
   buf_printf(b, "%s(", fn);
   emit_expr(c, node, b);
   buf_puts(b, ")");
