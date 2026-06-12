@@ -16078,6 +16078,14 @@ static int proc_body_has_yield(Compiler *c, int id) {
    fine only when it's a parameter of the enclosing method (passed by value).
    Captured outer locals (is_cell) are not yet supported — those fibers will
    produce a C compile error rather than silently miscompiling. */
+/* Returns 1 if a type needs a GC root when stored in a fiber capture struct. */
+static int fiber_cap_needs_root(TyKind t) {
+  return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) ||
+         ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER ||
+         t == TY_EXCEPTION || t == TY_STRINGIO || t == TY_STRINGSCANNER ||
+         t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
+}
+
 static void emit_fiber_new(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
@@ -16103,6 +16111,51 @@ static void emit_fiber_new(Compiler *c, int id, Buf *b) {
   NameSet fib_locals = {0};
   if (body >= 0) proc_collect_locals(c, body, &fib_locals);
 
+  /* Compute captures: names used in the body that belong to the enclosing scope
+     but are NOT defined by the fiber body itself and NOT the block param. */
+  NameSet fib_used = {0};
+  if (body >= 0) proc_collect_used(c, body, &fib_used);
+
+  /* caps: outer-scope vars referenced in body but not written in body */
+  NameSet caps = {0};
+  if (encl) {
+    for (int u = 0; u < fib_used.n; u++) {
+      const char *nm = fib_used.v[u];
+      if (bp0 && !strcmp(nm, bp0)) continue;
+      if (nameset_has(&fib_locals, nm)) continue;
+      LocalVar *lv = scope_local(encl, nm);
+      if (!lv || lv->type == TY_UNKNOWN) continue;
+      nameset_add(&caps, nm);
+    }
+  }
+  free(fib_used.v);
+
+  int ncap = caps.n;
+
+  /* Emit capture struct + GC scan function when there are captured vars */
+  if (ncap > 0) {
+    buf_printf(&g_proc_protos, "typedef struct {");
+    for (int i = 0; i < ncap; i++) {
+      LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
+      TyKind ct = lv ? lv->type : TY_POLY;
+      buf_printf(&g_proc_protos, " "); emit_ctype(c, ct, &g_proc_protos);
+      buf_printf(&g_proc_protos, " %s;", caps.v[i]);
+    }
+    buf_printf(&g_proc_protos, " } _fib_cap_%d;\n", fid);
+    buf_printf(&g_proc_protos, "static void _fib_cap_scan_%d(void *p) {\n", fid);
+    buf_printf(&g_proc_protos, "  sp_gc_mark(p);\n");
+    buf_printf(&g_proc_protos, "  _fib_cap_%d *_c = (_fib_cap_%d *)p;\n", fid, fid);
+    for (int i = 0; i < ncap; i++) {
+      LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
+      TyKind ct = lv ? lv->type : TY_POLY;
+      if (fiber_cap_needs_root(ct)) {
+        if (ct == TY_POLY) buf_printf(&g_proc_protos, "  sp_gc_mark_rbval(_c->%s);\n", caps.v[i]);
+        else buf_printf(&g_proc_protos, "  if (_c->%s) sp_gc_mark((void *)_c->%s);\n", caps.v[i], caps.v[i]);
+      }
+    }
+    buf_printf(&g_proc_protos, "}\n");
+  }
+
   /* Emit fiber body function prototype before main bodies */
   buf_printf(&g_proc_protos, "static void %s(sp_Fiber *_fb);\n", fname);
 
@@ -16119,6 +16172,22 @@ static void emit_fiber_new(Compiler *c, int id, Buf *b) {
   g_block_param_name = bp0; g_self = sv_self;
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
 
+  /* Unpack capture struct */
+  if (ncap > 0) {
+    buf_printf(pb, "    _fib_cap_%d *_fc = (_fib_cap_%d *)_fb->user_data;\n", fid, fid);
+    for (int i = 0; i < ncap; i++) {
+      LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
+      TyKind ct = lv ? lv->type : TY_POLY;
+      const char *rn = rename_local(caps.v[i]);
+      buf_printf(pb, "    "); emit_ctype(c, ct, pb);
+      buf_printf(pb, " lv_%s = _fc->%s;\n", rn, caps.v[i]);
+      if (fiber_cap_needs_root(ct)) {
+        if (ct == TY_POLY) buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", rn);
+        else buf_printf(pb, "    SP_GC_ROOT(lv_%s);\n", rn);
+      }
+    }
+  }
+
   /* Block param: first resume value (or nil on initial resume) */
   if (bp0) {
     const char *bpn = rename_local(bp0);
@@ -16133,6 +16202,7 @@ static void emit_fiber_new(Compiler *c, int id, Buf *b) {
       if (lv->is_param || lv->is_cell) continue;
       if (!lv->name) continue;
       if (bp0 && !strcmp(lv->name, bp0)) continue;
+      if (nameset_has(&caps, lv->name)) continue;
       if (!nameset_has(&fib_locals, lv->name)) continue;
       if (lv->type == TY_UNKNOWN) continue;
       declare_local(c, pb, lv, 0);
@@ -16189,7 +16259,32 @@ static void emit_fiber_new(Compiler *c, int id, Buf *b) {
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
   g_result_poly = sv_rp; g_result_var = sv_rv;
 
-  buf_printf(b, "sp_Fiber_new(%s)", fname);
+  /* Emit creation expression:
+     If there are captures, allocate a GC-managed capture struct, fill it,
+     assign to fiber->user_data, then return the fiber.
+     Without captures: just sp_Fiber_new(fname). */
+  if (ncap > 0) {
+    int tf = ++g_tmp, tc = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Fiber *_t%d = sp_Fiber_new(%s);\n", tf, fname);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tf);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "_fib_cap_%d *_t%d = (_fib_cap_%d *)sp_gc_alloc(sizeof(_fib_cap_%d), NULL, _fib_cap_scan_%d);\n",
+               fid, tc, fid, fid, fid);
+    for (int i = 0; i < ncap; i++) {
+      const char *rn = rename_local(caps.v[i]);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d->%s = lv_%s;\n", tc, caps.v[i], rn);
+    }
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "_t%d->user_data = _t%d;\n", tf, tc);
+    buf_printf(b, "_t%d", tf);
+  }
+  else {
+    buf_printf(b, "sp_Fiber_new(%s)", fname);
+  }
+  free(caps.v);
 }
 
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
