@@ -39,6 +39,7 @@ typedef enum {
   TY_PROC,         /* a first-class Proc/lambda value (sp_Proc *) */
   TY_FIBER,        /* a cooperative Fiber (sp_Fiber *) */
   TY_RANDOM,       /* a per-instance PRNG (sp_Random *) */
+  TY_METHOD,       /* a bound Method object (sp_BoundMethod *) */
   TY_IO,           /* a File/IO handle (sp_File *) */
   TY_CLASS,        /* a Class/Module value (sp_Class, carries cls_id) */
   TY_POLY          /* union / top: a value whose static type widened */

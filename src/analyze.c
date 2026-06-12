@@ -363,6 +363,69 @@ static TyKind proc_call_ret(Compiler *c, int recv) {
   return r == TY_UNKNOWN ? TY_POLY : r;
 }
 
+/* The symbol-name argument of a `method(:sym)` call, or NULL. */
+const char *method_sym_arg(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, node, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1) return NULL;
+  const char *aty = nt_type(nt, av[0]);
+  if (aty && !strcmp(aty, "SymbolNode")) return nt_str(nt, av[0], "value");
+  if (aty && !strcmp(aty, "StringNode")) {
+    const char *s = nt_str(nt, av[0], "content");
+    return s ? s : nt_str(nt, av[0], "unescaped");
+  }
+  return NULL;
+}
+
+/* True if `node` is a `method(:sym)` / `<recv>.method(:sym)` call. */
+int is_method_obj_call(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || !nt_type(nt, node) || strcmp(nt_type(nt, node), "CallNode")) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  return nm && !strcmp(nm, "method") && method_sym_arg(c, node) != NULL;
+}
+
+/* The target method scope index bound by a `method(:sym)` node, or -1
+   (e.g. a top-level Kernel method like `puts`, or a builtin-array receiver). */
+int method_obj_target_mi(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const char *sym = method_sym_arg(c, node);
+  if (!sym) return -1;
+  int recv = nt_ref(nt, node, "receiver");
+  if (recv < 0) {
+    int mi = comp_method_index(c, sym);
+    if (mi < 0) { Scope *s = comp_scope_of(c, node); if (s && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, sym, NULL); }
+    return mi;
+  }
+  TyKind rt = infer_type(c, recv);
+  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), sym, NULL);
+  return -1;
+}
+
+/* The `method(:sym)` node a Method-typed expression resolves to: either the
+   call itself (inline) or, for a local variable, its assignment in scope. */
+int method_recv_node(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return -1;
+  if (is_method_obj_call(c, recv)) return recv;
+  const char *rty = nt_type(nt, recv);
+  if (rty && !strcmp(rty, "LocalVariableReadNode")) {
+    const char *vn = nt_str(nt, recv, "name");
+    Scope *sc = comp_scope_of(c, recv);
+    for (int w = 0; w < nt->count; w++) {
+      const char *wty = nt_type(nt, w);
+      if (!wty || strcmp(wty, "LocalVariableWriteNode")) continue;
+      if (comp_scope_of(c, w) != sc) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !vn || strcmp(wn, vn)) continue;
+      int val = nt_ref(nt, w, "value");
+      if (is_method_obj_call(c, val)) return val;
+    }
+  }
+  return -1;
+}
+
 static TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -466,6 +529,23 @@ static TyKind infer_call(Compiler *c, int id) {
     return result == TY_UNKNOWN ? TY_NIL : result;
   }
 
+  /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
+  if (name && !strcmp(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
+
+  /* <method>.call(args) / [] -> the target method's return type. */
+  if (recv >= 0 && rt == TY_METHOD &&
+      (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]"))) {
+    int mn = method_recv_node(c, recv);
+    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    if (mi >= 0) return c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret;
+    return TY_INT;  /* bound-method ABI returns mrb_int */
+  }
+  /* <method>.name -> the method name string; .arity -> int */
+  if (recv >= 0 && rt == TY_METHOD && argc == 0) {
+    if (!strcmp(name, "name")) return TY_STRING;
+    if (!strcmp(name, "arity")) return TY_INT;
+  }
+
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
   if (is_proc_literal(c, id)) return TY_PROC;
 
@@ -523,6 +603,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (ty_is_object(rt)) return TY_CLASS;  /* user object: return sp_Class value */
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
+        rt == TY_METHOD || rt == TY_PROC ||
         ty_is_array(rt) || ty_is_hash(rt))
       return TY_STRING;
   }
@@ -5236,6 +5317,17 @@ static int infer_param_types(Compiler *c) {
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
 
+    /* <method>.call(args): bind the call-site arg types to the target
+       method's params (the Method ABI is the only call site for a method
+       reached solely via method(:sym)). */
+    if (recv >= 0 && name && (!strcmp(name, "call") || !strcmp(name, "[]") || !strcmp(name, "()")) &&
+        infer_type(c, recv) == TY_METHOD) {
+      int mn = method_recv_node(c, recv);
+      int tmi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+      if (tmi >= 0) changed |= bind_call_params(c, id, tmi);
+      continue;
+    }
+
     if (recv < 0) {
       int mi = comp_method_index(c, name);
       int caller_cid = -1;
@@ -6340,8 +6432,29 @@ static void cr_collect_calls(const NodeTable *nt, int id,
   /* Collect method name from CallNode, or operator name from op-assign nodes
      (e.g. `a += 1` → InstanceVariableOperatorWriteNode with binary_operator "+"). */
   const char *nm = NULL;
-  if (!strcmp(ty, "CallNode"))
+  if (!strcmp(ty, "CallNode")) {
     nm = nt_str(nt, id, "name");
+    /* `method(:foo)` takes a reference to foo without calling it; the target
+       must still be emitted, so treat the symbol arg as a called name. */
+    if (nm && !strcmp(nm, "method")) {
+      int margs = nt_ref(nt, id, "arguments");
+      int man = 0; const int *mav = margs >= 0 ? nt_arr(nt, margs, "arguments", &man) : NULL;
+      if (man >= 1) {
+        const char *aty = nt_type(nt, mav[0]);
+        const char *msym = NULL;
+        if (aty && !strcmp(aty, "SymbolNode")) msym = nt_str(nt, mav[0], "value");
+        else if (aty && !strcmp(aty, "StringNode")) { msym = nt_str(nt, mav[0], "content"); if (!msym) msym = nt_str(nt, mav[0], "unescaped"); }
+        if (msym) {
+          int found = 0;
+          for (int i = 0; i < *n; i++) if (!strcmp((*out)[i], msym)) { found = 1; break; }
+          if (!found) {
+            if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
+            (*out)[(*n)++] = strdup(msym);
+          }
+        }
+      }
+    }
+  }
   else {
     size_t tl = strlen(ty);
     if (tl > 17 && (!strcmp(ty + tl - 17, "OperatorWriteNode")))
@@ -7170,7 +7283,29 @@ void analyze_program(Compiler *c) {
       LocalVar *p = sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
       if (p && p->type == TY_UNKNOWN) { has_unknown = 1; break; }
     }
-    if (has_unknown) sc->reachable = 0;
+    if (!has_unknown) continue;
+    /* A method reached only via method(:sym) is invoked through the bound
+       Method ABI, which passes mrb_int args -- default its untyped params to
+       int rather than dropping the method (which would leave it undeclared). */
+    int taken = 0;
+    if (sc->name) {
+      for (int id = 0; id < c->nt->count && !taken; id++) {
+        const char *nty = nt_type(c->nt, id);
+        if (!nty || strcmp(nty, "CallNode")) continue;
+        const char *nm = nt_str(c->nt, id, "name");
+        if (!nm || strcmp(nm, "method")) continue;
+        const char *msym = method_sym_arg(c, id);
+        if (msym && !strcmp(msym, sc->name)) taken = 1;
+      }
+    }
+    if (taken) {
+      for (int i = 0; i < sc->nparams; i++) {
+        LocalVar *p = sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
+        if (p && p->type == TY_UNKNOWN) p->type = TY_INT;
+      }
+      if (sc->ret == TY_UNKNOWN) sc->ret = TY_INT;
+    }
+    else sc->reachable = 0;
   }
 
   /* finalize: gc-root needs + full node type cache */

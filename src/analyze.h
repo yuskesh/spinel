@@ -30,4 +30,10 @@ int block_param_multi_count(Compiler *c, int block, int idx);
 /* Returns the name of the leaf_idx-th leaf inside the MultiTargetNode at requireds[idx]. */
 const char *block_param_multi_leaf(Compiler *c, int block, int idx, int leaf_idx);
 
+/* Bound-Method (`method(:sym)`) resolution, shared with codegen. */
+const char *method_sym_arg(Compiler *c, int node);   /* :sym arg name, or NULL */
+int is_method_obj_call(Compiler *c, int node);        /* is node a method(:sym) call? */
+int method_obj_target_mi(Compiler *c, int node);      /* target method scope idx, or -1 */
+int method_recv_node(Compiler *c, int recv);          /* the method(:sym) node behind a Method expr */
+
 #endif

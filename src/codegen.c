@@ -407,6 +407,7 @@ static const char *c_type_name(TyKind t) {
     case TY_PROC:         return "sp_Proc *";
     case TY_FIBER:        return "sp_Fiber *";
     case TY_RANDOM:       return "sp_Random *";
+    case TY_METHOD:       return "sp_BoundMethod *";
     case TY_IO:           return "sp_File *";
     case TY_CLASS:        return "sp_Class";
     default:             return NULL;
@@ -416,7 +417,7 @@ static int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
          t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
-         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_FIBER || t == TY_RANDOM || t == TY_IO || t == TY_CLASS ||
+         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_FIBER || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_CLASS ||
          ty_is_hash(t) || ty_is_object(t);
 }
 /* Map an FFI type spec string to the C type used in extern prototypes.
@@ -465,6 +466,7 @@ static const char *default_value(TyKind t) {
     case TY_PROC:    return "NULL";
     case TY_FIBER:   return "NULL";
     case TY_RANDOM:  return "NULL";
+    case TY_METHOD:  return "NULL";
     case TY_IO:      return "NULL";
     case TY_POLY:    return "sp_box_nil()";
     case TY_CLASS:   return "((sp_Class){-1})";
@@ -4005,6 +4007,61 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* method(:sym) / <recv>.method(:sym) -> a bound Method object. */
+  if (!strcmp(name, "method") && method_sym_arg(c, id) != NULL) {
+    const char *sym = method_sym_arg(c, id);
+    int mi = method_obj_target_mi(c, id);
+    /* bare method(:sym) on an instance method binds the current self */
+    int self_bound = (recv < 0 && mi >= 0 && c->scopes[mi].class_id >= 0 &&
+                      !c->scopes[mi].is_cmethod);
+    buf_puts(b, "sp_bound_method_new(");
+    if (recv >= 0) { buf_puts(b, "(void *)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    else if (self_bound) buf_printf(b, "(void *)%s", g_self);
+    else buf_puts(b, "NULL");
+    buf_puts(b, ", ");
+    if (mi >= 0) { buf_puts(b, "(mrb_int)(uintptr_t)&"); emit_method_cname(c, &c->scopes[mi], b); }
+    else buf_puts(b, "(mrb_int)0");  /* builtin/Kernel method: no callable address */
+    buf_puts(b, ", ");
+    emit_str_literal(b, sym);
+    buf_puts(b, ")");
+    return;
+  }
+  /* <method>.name -> the stored method name. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && !strcmp(name, "name")) {
+    buf_puts(b, "(const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name");
+    return;
+  }
+  /* <method>.call(args) / [] -> invoke the bound function. A top-level
+     method ref calls its function directly; an object-bound Method casts
+     fn through the (void *self, mrb_int...) ABI, evaluating recv once. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
+      (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]"))) {
+    int mn = method_recv_node(c, recv);
+    int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
+    if (target >= 0 && target_recvless) {
+      /* top-level / self method: direct call sp_<name>(args). */
+      emit_method_cname(c, &c->scopes[target], b);
+      buf_puts(b, "(");
+      for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, argv[k], b); }
+      buf_puts(b, ")");
+      return;
+    }
+    /* object-bound: ((mrb_int(*)(void*, mrb_int...))rc->fn)((void*)rc->self, args) */
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
+    buf_printf(b, "((mrb_int (*)(void *");
+    for (int k = 0; k < argc; k++) buf_puts(b, ", mrb_int");
+    buf_printf(b, "))(uintptr_t)_t%d->fn)((void *)_t%d->self", tr, tr);
+    for (int k = 0; k < argc; k++) {
+      buf_puts(b, ", ");
+      if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[k], b);
+    }
+    buf_printf(b, "); })");
+    return;
+  }
+
   /* <proc>.call(args) / .() / [] -> sp_proc_call with the mrb_int[] ABI.
      (A `&block`-param `.call` is handled earlier by the inline path, whose
      receiver name matches g_block_param_name; this is the escaped-value case.) */
@@ -4814,6 +4871,8 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     else if (rt == TY_RANGE) cn = "Range";
     else if (rt == TY_TIME) cn = "Time";
     else if (rt == TY_NIL) cn = "NilClass";
+    else if (rt == TY_METHOD) cn = "Method";
+    else if (rt == TY_PROC) cn = "Proc";
     else if (ty_is_array(rt)) cn = "Array";
     else if (ty_is_hash(rt)) cn = "Hash";
     else if (ty_is_object(rt)) {
@@ -16681,7 +16740,7 @@ static void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
 /* ---- declarations ---- */
 
 /* Heap-managed types need a GC root for their local slot. */
-static int needs_root(TyKind t) { return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) || t == TY_EXCEPTION || t == TY_POLY || t == TY_PROC; }
+static int needs_root(TyKind t) { return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t) || t == TY_EXCEPTION || t == TY_POLY || t == TY_PROC || t == TY_METHOD; }
 
 /* Emit `node` boxed into an sp_RbVal. Idempotent: an already-poly value is
    passed through unboxed (double-boxing is a classic silent-corruption bug). */
