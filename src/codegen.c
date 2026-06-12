@@ -5235,6 +5235,10 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)");
         return;
       }
+      /* Mutex/Monitor.new: no-op sentinel (single-threaded; synchronize runs block inline) */
+      if (cn && (!strcmp(cn, "Mutex") || !strcmp(cn, "Monitor"))) {
+        buf_puts(b, "sp_box_nil()"); return;
+      }
       if (cn && !strcmp(cn, "StringIO")) {
         if (argc == 0) buf_puts(b, "sp_StringIO_new()");
         else if (argc == 1) { buf_puts(b, "sp_StringIO_new_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -10293,6 +10297,42 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
+  }
+
+  /* Mutex/Monitor#synchronize { block }: run block inline (single-threaded) */
+  if (!strcmp(name, "synchronize") && nt_ref(nt, id, "block") >= 0) {
+    int blk = nt_ref(nt, id, "block");
+    int bdy = nt_ref(nt, blk, "body");
+    int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
+    TyKind res = comp_ntype(c, id);
+    int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
+    int rv = ++g_tmp;
+    buf_puts(b, "({ ");
+    for (int k = 0; k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
+    if (bbn > 0) {
+      TyKind lty = comp_ntype(c, bbb[bbn-1]);
+      const char *lnty = nt_type(nt, bbb[bbn-1]);
+      int nil_lit = (lty == TY_NIL && lnty && !strcmp(lnty, "NilNode"));
+      int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN && (lty != TY_NIL || nil_lit));
+      if (scalar && can_expr) {
+        emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
+        if (res == TY_POLY && lty != TY_POLY) emit_boxed(c, bbb[bbn-1], b);
+        else emit_expr(c, bbb[bbn-1], b);
+        buf_puts(b, "; ");
+      }
+      else {
+        emit_stmt(c, bbb[bbn-1], b, 0);
+        if (scalar) {
+          emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
+          if (res == TY_POLY) buf_puts(b, "sp_box_nil()");
+          else buf_puts(b, default_value(res));
+          buf_puts(b, "; ");
+        }
+      }
+    }
+    if (scalar) buf_printf(b, "_t%d; })", rv);
+    else buf_puts(b, "0; })");
+    return;
   }
 
   unsupported(c, id, "call");

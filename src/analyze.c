@@ -583,7 +583,7 @@ static TyKind infer_call(Compiler *c, int id) {
       if (cn && !strcmp(cn, "Hash")) return TY_UNKNOWN;
       if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
       if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
-      if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") ||
+      if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") || !strcmp(cn, "Monitor") ||
                  !strcmp(cn, "Random") || !strcmp(cn, "IO") || !strcmp(cn, "File") ||
                  !strcmp(cn, "GzipReader") || !strcmp(cn, "GzipWriter"))) return TY_POLY;
     }
@@ -617,7 +617,7 @@ static TyKind infer_call(Compiler *c, int id) {
       if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */
       if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
-      if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") ||
+      if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") || !strcmp(cn, "Monitor") ||
                  !strcmp(cn, "Random") || !strcmp(cn, "IO") || !strcmp(cn, "File") ||
                  !strcmp(cn, "GzipReader") || !strcmp(cn, "GzipWriter"))) return TY_POLY;
     }
@@ -1505,6 +1505,15 @@ static TyKind infer_call(Compiler *c, int id) {
           !strcmp(name, "readline")) return TY_STRING;
       if (!strcmp(name, "close") || !strcmp(name, "flush")) return TY_NIL;
       if (!strcmp(name, "fileno")) return TY_INT;
+      if (!strcmp(name, "synchronize")) {
+        int blk_id = nt_ref(nt, id, "block");
+        if (blk_id >= 0) {
+          int bdy = nt_ref(nt, blk_id, "body");
+          int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
+          if (bbn > 0) return infer_type(c, bbb[bbn - 1]);
+        }
+        return TY_NIL;
+      }
     }
   }
 
