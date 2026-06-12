@@ -258,6 +258,21 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
   }
   if (!strcmp(name, "print")) { for (int k = 0; k < argc; k++) emit_print_one(c, argv[k], b, indent); return 1; }
   if (!strcmp(name, "p"))     { for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent); return 1; }
+  if (!strcmp(name, "putc") && argc == 1) {
+    /* Kernel#putc: an int writes (byte & 0xff); a string writes its first char. */
+    TyKind at = comp_ntype(c, argv[0]);
+    emit_indent(b, indent);
+    if (at == TY_STRING) {
+      int ts = ++g_tmp;
+      buf_printf(b, "{ const char *_t%d = ", ts); emit_expr(c, argv[0], b);
+      buf_printf(b, "; if (_t%d && *_t%d) putchar((unsigned char)_t%d[0]); }\n", ts, ts, ts);
+    } else if (at == TY_POLY) {
+      buf_puts(b, "putchar((int)(sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ") & 0xff));\n");
+    } else {
+      buf_puts(b, "putchar((int)(("); emit_expr(c, argv[0], b); buf_puts(b, ") & 0xff));\n");
+    }
+    return 1;
+  }
   if (!strcmp(name, "system") && argc >= 1) {
     int ts = ++g_tmp;
     emit_indent(b, indent);
@@ -483,6 +498,17 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
     const char *fn = int_arith_fn(op);
     if (fn) { buf_printf(b, "lv_%s = %s(lv_%s, ", en, fn, en); emit_expr(c, v, b); buf_puts(b, ");\n"); return; }
   }
+  /* Bitwise op-assign on an int: shift/and/or/xor map straight to the C
+     operator (fixed-width wrap, same as the binary `x << y` path). */
+  if (t == TY_INT && (!strcmp(op, "<<") || !strcmp(op, ">>") ||
+                      !strcmp(op, "|") || !strcmp(op, "&") || !strcmp(op, "^"))) {
+    TyKind vt = comp_ntype(c, v);
+    buf_printf(b, "lv_%s = (lv_%s %s (", en, en, op);
+    if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, v, b); buf_puts(b, ")"); }
+    else emit_expr(c, v, b);
+    buf_puts(b, "));\n");
+    return;
+  }
   if (t == TY_BIGINT) {
     const char *bfn = bigint_arith_fn(op);
     if (bfn) {
@@ -513,6 +539,21 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "lv_%s = sp_%s_%s((sp_%s *)lv_%s, _t%d);\n",
                  en, c->classes[defcls2].name, mc(ms2->name),
                  c->classes[defcls2].name, en, atmp2);
+      return;
+    }
+  }
+  /* Poly local (e.g. an int seeded then widened by a float op): defer the
+     arithmetic to the runtime's tag-dispatching sp_poly_<op>. */
+  if (t == TY_POLY) {
+    const char *pfn = NULL;
+    if (!strcmp(op, "+")) pfn = "sp_poly_add";
+    else if (!strcmp(op, "-")) pfn = "sp_poly_sub";
+    else if (!strcmp(op, "*")) pfn = "sp_poly_mul";
+    else if (!strcmp(op, "/")) pfn = "sp_poly_div";
+    if (pfn) {
+      buf_printf(b, "lv_%s = %s(lv_%s, ", en, pfn, en);
+      emit_boxed(c, v, b);
+      buf_puts(b, ");\n");
       return;
     }
   }
