@@ -604,6 +604,18 @@ static void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int
 static void emit_boxed(Compiler *c, int node, Buf *b);
 static void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   TyKind actual = comp_ntype(c, key);
+  /* A symbol key on a string-keyed hash (Hash.new{}'s StrPolyHash models
+     symbol keys by their name) coerces to the symbol's string. A literal
+     :sym becomes the name string directly; a symbol value uses sp_sym_to_s. */
+  if (kt == TY_STRING && actual == TY_SYMBOL) {
+    const char *kty = nt_type(c->nt, key);
+    if (kty && !strcmp(kty, "SymbolNode")) {
+      emit_str_literal(b, nt_str(c->nt, key, "value"));
+    } else {
+      buf_puts(b, "sp_sym_to_s("); emit_expr(c, key, b); buf_puts(b, ")");
+    }
+    return;
+  }
   if (actual == TY_POLY && kt != TY_POLY) {
     buf_puts(b, "(");
     emit_expr(c, key, b);
@@ -5507,6 +5519,60 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return;
       }
+      /* Hash.new { |hash, key| default } -> a StrPolyHash with a default-proc
+         function computing the missing-key value. */
+      if (cn && !strcmp(cn, "Hash") && nt_ref(nt, id, "block") >= 0) {
+        int hblk = nt_ref(nt, id, "block");
+        int hbody = nt_ref(nt, hblk, "body");
+        const char *hp = block_param_name(c, hblk, 0);
+        const char *kp = block_param_name(c, hblk, 1);
+        int dn = ++g_proc_counter;
+        Buf *pb = &g_procs;
+        buf_printf(pb, "static sp_RbVal _sp_hash_dproc_%d(sp_StrPolyHash *_self_h, const char *_key) {\n", dn);
+        if (hp) buf_printf(pb, "  sp_StrPolyHash *lv_%s = _self_h; (void)lv_%s;\n", rename_local(hp), rename_local(hp));
+        if (kp) buf_printf(pb, "  const char *lv_%s = _key; (void)lv_%s;\n", rename_local(kp), rename_local(kp));
+        Buf *sv_pre = g_pre; int sv_ind = g_indent; const char *sv_self = g_self;
+        g_pre = pb; g_indent = 1;
+        int bn = 0; const int *bb = hbody >= 0 ? nt_arr(nt, hbody, "body", &bn) : NULL;
+        for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
+        if (bn > 0) {
+          int last = bb[bn - 1];
+          const char *lty = nt_type(nt, last);
+          int is_set = lty && !strcmp(lty, "CallNode") && nt_str(nt, last, "name") &&
+                       !strcmp(nt_str(nt, last, "name"), "[]=");
+          if (is_set) {
+            int srecv = nt_ref(nt, last, "receiver");
+            int sargs = nt_ref(nt, last, "arguments");
+            int san = 0; const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &san) : NULL;
+            if (san == 2) {
+              int vtmp = ++g_tmp;
+              emit_indent(pb, 1); emit_ctype(c, comp_ntype(c, sav[1]), pb);
+              buf_printf(pb, " _t%d = ", vtmp); emit_expr(c, sav[1], pb); buf_puts(pb, ";\n");
+              emit_indent(pb, 1); buf_puts(pb, "sp_StrPolyHash_set(");
+              emit_expr(c, srecv, pb); buf_puts(pb, ", ");
+              emit_expr(c, sav[0], pb); buf_puts(pb, ", ");
+              { Buf bx; memset(&bx, 0, sizeof bx); char vb[32]; snprintf(vb, sizeof vb, "_t%d", vtmp);
+                emit_boxed_text(c, comp_ntype(c, sav[1]), vb, &bx); buf_puts(pb, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+              buf_puts(pb, ");\n");
+              emit_indent(pb, 1); buf_puts(pb, "return ");
+              { Buf bx; memset(&bx, 0, sizeof bx); char vb[32]; snprintf(vb, sizeof vb, "_t%d", vtmp);
+                emit_boxed_text(c, comp_ntype(c, sav[1]), vb, &bx); buf_puts(pb, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+              buf_puts(pb, ";\n");
+            }
+          }
+          else {
+            emit_indent(pb, 1); buf_puts(pb, "return ");
+            if (comp_ntype(c, last) == TY_POLY) emit_expr(c, last, pb);
+            else emit_boxed(c, last, pb);
+            buf_puts(pb, ";\n");
+          }
+        }
+        else { emit_indent(pb, 1); buf_puts(pb, "return sp_box_nil();\n"); }
+        g_pre = sv_pre; g_indent = sv_ind; g_self = sv_self;
+        buf_puts(pb, "}\n");
+        buf_printf(b, "sp_StrPolyHash_new_dproc(_sp_hash_dproc_%d)", dn);
+        return;
+      }
       if (cn && !strcmp(cn, "StringScanner") && argc == 1) {
         buf_puts(b, "sp_StringScanner_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
@@ -8323,9 +8389,12 @@ static void emit_call(Compiler *c, int id, Buf *b) {
         TyKind arg_kt = comp_ntype(c, argv[0]);
         TyKind hash_kt = ty_hash_key(rt);
         /* key type mismatch: sym key on str-keyed hash (or vice versa) -- the key
-           can never exist in the hash, so always return the hash's default value */
+           can never exist in the hash, so always return the hash's default value.
+           Exception: a symbol key on a string-keyed hash is coerced to its name
+           (the Hash.new{} StrPolyHash model), so it is NOT a mismatch. */
         if (hash_kt != TY_POLY && hash_kt != TY_UNKNOWN &&
-            arg_kt != TY_POLY && arg_kt != TY_UNKNOWN && arg_kt != hash_kt) {
+            arg_kt != TY_POLY && arg_kt != TY_UNKNOWN && arg_kt != hash_kt &&
+            !(hash_kt == TY_STRING && arg_kt == TY_SYMBOL)) {
           TyKind vt = ty_hash_val(rt);
           int t = ++g_tmp;
           buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -11286,7 +11355,7 @@ static int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "sp_%sHash_set(", hn);
       emit_expr(c, recv, b); buf_puts(b, ", ");
-      if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
+      if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b); else emit_hash_key(c, argv[0], ty_hash_key(rt), b);
       buf_puts(b, ", ");
       if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[1], b);
       else emit_expr(c, argv[1], b);
@@ -14214,6 +14283,11 @@ static void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   }
   else if (is_empty_array && lv && lv->type == TY_POLY_ARRAY) {
     buf_puts(b, "sp_PolyArray_new()");
+  }
+  else if (is_hash_new && nt_ref(c->nt, v, "block") >= 0) {
+    /* Hash.new { |hash, key| ... }: emit through emit_call so the dproc
+       function + sp_StrPolyHash_new_dproc path runs. */
+    emit_expr(c, v, b);
   }
   else if ((is_empty_hash || is_hash_new) && lv && ty_hash_cname(lv->type)) {
     const char *hcn = ty_hash_cname(lv->type);

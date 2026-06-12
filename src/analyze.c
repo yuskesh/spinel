@@ -792,6 +792,9 @@ static TyKind infer_call(Compiler *c, int id) {
       if (cn && !strcmp(cn, "String")) return TY_STRING;
       if (cn && !strcmp(cn, "StringIO")) return TY_STRINGIO;
       if (cn && !strcmp(cn, "StringScanner")) return TY_STRINGSCANNER;
+      /* Hash.new { |hash, key| default } : a string-keyed poly hash with a
+         default-proc (the block computes the missing-key value). */
+      if (cn && !strcmp(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_STR_POLY_HASH;
       if (cn && !strcmp(cn, "Hash")) return TY_UNKNOWN; /* hash type determined by key usage */
       if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */
@@ -5649,6 +5652,33 @@ static int infer_block_params(Compiler *c) {
       if (!p) continue;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
       if (lv->type == TY_UNKNOWN) { lv->type = TY_INT; changed = 1; }
+    }
+  }
+
+  /* Hash.new { |hash, key| } : hash is the StrPolyHash, key the string key. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *cname = nt_str(nt, id, "name");
+    if (!cname || strcmp(cname, "new")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "ConstantReadNode")) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || strcmp(rn, "Hash")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0) continue;
+    int pn = nt_ref(nt, blk, "parameters");
+    if (pn < 0) continue;
+    int inner = nt_ref(nt, pn, "parameters");
+    int pnode = inner >= 0 ? inner : pn;
+    int rnp = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rnp);
+    Scope *bs = comp_scope_of(c, blk);
+    for (int k = 0; k < rnp; k++) {
+      const char *p = nt_str(nt, reqs[k], "name");
+      if (!p) continue;
+      TyKind want = (k == 0) ? TY_STR_POLY_HASH : TY_STRING;
+      LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
+      if (lv->type != want) { lv->type = want; changed = 1; }
     }
   }
 
