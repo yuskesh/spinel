@@ -15021,6 +15021,21 @@ static void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const c
       if (!first) buf_puts(b, " || ");
       first = 0;
       const char *ename = nt_str(nt, exc[i], "name");
+      /* A builtin namespaced exception (e.g. StringScanner::Error) is raised
+         under its flattened runtime name "StringScanner_Error". Map the path
+         to that form only when it names a known builtin exception, so user
+         classes like M::Err keep matching on their leaf name. */
+      char enbuf[128];
+      if (!strcmp(en, "ConstantPathNode")) {
+        int par = nt_ref(nt, exc[i], "parent");
+        const char *pnm = (par >= 0 && nt_type(nt, par) &&
+                           !strcmp(nt_type(nt, par), "ConstantReadNode"))
+                          ? nt_str(nt, par, "name") : NULL;
+        if (pnm && ename) {
+          snprintf(enbuf, sizeof enbuf, "%s_%s", pnm, ename);
+          if (is_exc_name(enbuf)) ename = enbuf;
+        }
+      }
       /* use hierarchy-aware check for exception classes */
       int is_exc_cls = (ename && is_exc_name(ename)) ||
                        (ename && comp_class_index(c, ename) >= 0 &&
@@ -17537,7 +17552,7 @@ static int is_exc_name(const char *n) {
     "KeyError", "RangeError", "IOError", "EOFError",
     "ZeroDivisionError", "NotImplementedError", "StopIteration",
     "FloatDomainError", "FrozenError", "EncodingError", "LoadError",
-    "RegexpError", NULL
+    "RegexpError", "StringScanner_Error", "FiberError", NULL
   };
   for (int i = 0; EX[i]; i++) if (!strcmp(n, EX[i])) return 1;
   return 0;
@@ -17904,6 +17919,9 @@ static void emit_regex_section(Buf *b) {
       buf_printf(b, "  } else {\n    sp_re_pat_%d = NULL;\n  }\n", i);
     }
   }
+  /* From here on (runtime Regexp.new / dynamic patterns), a compile error
+     raises a catchable RegexpError via sp_raise_cls instead of aborting. */
+  buf_puts(b, "  sp_re_set_error_handler(sp_re_default_error_handler);\n");
   buf_puts(b, "}\n\n");
 }
 
