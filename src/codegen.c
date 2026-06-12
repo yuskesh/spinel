@@ -8190,6 +8190,14 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           emit_boxed_text(c, at, tn, b);
           buf_printf(b, "; _t%d = sp_PolyArray_include((sp_PolyArray *)_t%d.v.p, _t%d); break; }", tr, tv, tbox);
         }
+        /* PolyPolyHash: keys are boxed sp_RbVal */
+        {
+          int tbox = ++g_tmp;
+          buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: { sp_RbVal _t%d = ", tbox);
+          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+          emit_boxed_text(c, at, tn, b);
+          buf_printf(b, "; _t%d = sp_PolyPolyHash_has_key((sp_PolyPolyHash *)_t%d.v.p, _t%d); break; }", tr, tv, tbox);
+        }
       }
       /* the poly value may actually be a string-keyed hash: dispatch `[]` /
          `fetch` to the matching hash storage, boxing the value into the poly
