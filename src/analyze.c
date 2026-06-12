@@ -5607,6 +5607,15 @@ static int infer_param_types(Compiler *c) {
       }
       continue;
     }
+    /* `Module.accessor.cmethod(args)` folded to a constant: bind args to the
+       resolved class method's params (so it is not dropped as untyped). */
+    {
+      int fold_ci = comp_sg_reader_const(c, recv);
+      if (fold_ci >= 0) {
+        int fmi = comp_cmethod_in_chain(c, fold_ci, name, NULL);
+        if (fmi >= 0) { changed |= bind_call_params(c, id, fmi); continue; }
+      }
+    }
     /* Class.new -> initialize params; Class.cmethod -> cmethod params */
     {
       const char *rty = nt_type(nt, recv);
