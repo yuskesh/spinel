@@ -683,7 +683,7 @@ static TyKind infer_call(Compiler *c, int id) {
     if (ty_is_object(rt)) return TY_CLASS;  /* user object: return sp_Class value */
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
-        rt == TY_METHOD || rt == TY_PROC ||
+        rt == TY_METHOD || rt == TY_PROC || rt == TY_IO ||
         ty_is_array(rt) || ty_is_hash(rt))
       return TY_STRING;
   }
@@ -4514,6 +4514,21 @@ static int infer_write_types(Compiler *c) {
     const int *lefts = nt_arr(nt, id, "lefts", &ln);
     int value = nt_ref(nt, id, "value");
     const char *vty = nt_type(nt, value);
+    /* `r, w = IO.pipe` -> both targets are IO handles. */
+    if (ln == 2 && vty && !strcmp(vty, "CallNode") && nt_str(nt, value, "name") &&
+        !strcmp(nt_str(nt, value, "name"), "pipe")) {
+      int vrecv = nt_ref(nt, value, "receiver");
+      if (vrecv >= 0 && nt_type(nt, vrecv) && !strcmp(nt_type(nt, vrecv), "ConstantReadNode") &&
+          nt_str(nt, vrecv, "name") && !strcmp(nt_str(nt, vrecv, "name"), "IO")) {
+        for (int i = 0; i < 2; i++) {
+          if (strcmp(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, lefts[i], "name");
+          LocalVar *lv = lnm ? scope_local_intern(comp_scope_of(c, id), lnm) : NULL;
+          if (lv && lv->type != TY_IO) { lv->type = TY_IO; changed = 1; }
+        }
+        continue;
+      }
+    }
     if (!vty || strcmp(vty, "ArrayNode")) {
       /* scalar RHS (`a, b = 1`): the first target gets the scalar, the rest
          their slot default. Type every target as the scalar's kind. Array /

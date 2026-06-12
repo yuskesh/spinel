@@ -5012,6 +5012,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
     else if (rt == TY_SYMBOL) cn = "Symbol";
     else if (rt == TY_RANGE) cn = "Range";
     else if (rt == TY_TIME) cn = "Time";
+    else if (rt == TY_IO) cn = "IO";
     else if (rt == TY_NIL) cn = "NilClass";
     else if (rt == TY_METHOD) cn = "Method";
     else if (rt == TY_PROC) cn = "Proc";
@@ -16567,6 +16568,26 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     const int *lefts = nt_arr(nt, id, "lefts", &ln);
     int value = nt_ref(nt, id, "value");
     const char *vty = nt_type(nt, value);
+    /* `r, w = IO.pipe` -> make a pipe, bind both ends as IO handles. */
+    if (ln == 2 && vty && !strcmp(vty, "CallNode") && nt_str(nt, value, "name") &&
+        !strcmp(nt_str(nt, value, "name"), "pipe")) {
+      int vrecv = nt_ref(nt, value, "receiver");
+      if (vrecv >= 0 && nt_type(nt, vrecv) && !strcmp(nt_type(nt, vrecv), "ConstantReadNode") &&
+          nt_str(nt, vrecv, "name") && !strcmp(nt_str(nt, vrecv, "name"), "IO") &&
+          nt_type(nt, lefts[0]) && !strcmp(nt_type(nt, lefts[0]), "LocalVariableTargetNode") &&
+          nt_type(nt, lefts[1]) && !strcmp(nt_type(nt, lefts[1]), "LocalVariableTargetNode")) {
+        const char *rn0 = nt_str(nt, lefts[0], "name");
+        const char *wn0 = nt_str(nt, lefts[1], "name");
+        if (rn0 && wn0) {
+          int tf = ++g_tmp;
+          emit_indent(b, indent);
+          buf_printf(b, "{ int _t%d[2]; sp_io_make_pipe(_t%d); ", tf, tf);
+          buf_printf(b, "lv_%s = sp_io_fdopen(_t%d[0], \"r\"); ", rn0, tf);
+          buf_printf(b, "lv_%s = sp_io_fdopen(_t%d[1], \"w\"); }\n", wn0, tf);
+          return;
+        }
+      }
+    }
     int en = 0;
     const int *els = (vty && !strcmp(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
     int rn = 0;
