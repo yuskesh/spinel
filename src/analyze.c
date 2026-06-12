@@ -5893,10 +5893,21 @@ static int infer_block_params(Compiler *c) {
     if (blk < 0) continue;
     int pn = nt_ref(nt, blk, "parameters");
     if (pn < 0) continue;
+    Scope *bs = comp_scope_of(c, blk);
+    const char *pnty = nt_type(nt, pn);
+    if (pnty && !strcmp(pnty, "NumberedParametersNode")) {
+      /* `{ _1.method }` : _1.._N all receive self (the receiver). */
+      int maxn = (int)nt_int(nt, pn, "maximum", 0);
+      for (int k = 1; k <= maxn; k++) {
+        char nm[8]; snprintf(nm, sizeof nm, "_%d", k);
+        LocalVar *lv = scope_local_intern(bs, nm); lv->is_block_param = 1;
+        if (lv->type != rt) { lv->type = rt; changed = 1; }
+      }
+      continue;
+    }
     int inner = nt_ref(nt, pn, "parameters");
     int pnode = inner >= 0 ? inner : pn;
     int rnp = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rnp);
-    Scope *bs = comp_scope_of(c, blk);
     for (int k = 0; k < rnp; k++) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;

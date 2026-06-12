@@ -5209,11 +5209,25 @@ static void emit_call(Compiler *c, int id, Buf *b) {
       {
         int is_exec = ie_tramp ? (ie_tramp == 2) : !strcmp(name, "instance_exec");
         int bp_node = nt_ref(nt, blk, "parameters");
+        const char *bpty = bp_node >= 0 ? nt_type(nt, bp_node) : NULL;
+        int iargs = nt_ref(nt, id, "arguments");
+        int iac = 0; const int *iav = iargs >= 0 ? nt_arr(nt, iargs, "arguments", &iac) : NULL;
+        if (bpty && !strcmp(bpty, "NumberedParametersNode")) {
+          /* `{ _1.method }`: _1.._N bind like positional block params. */
+          int maxn = (int)nt_int(nt, bp_node, "maximum", 0);
+          for (int p = 0; p < maxn; p++) {
+            char pn[8]; snprintf(pn, sizeof pn, "_%d", p + 1);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+            if (is_exec) { if (p < iac) emit_expr(c, iav[p], g_pre); else buf_puts(g_pre, "0"); }
+            else buf_printf(g_pre, "_t%d", tr);
+            buf_puts(g_pre, ";\n");
+          }
+        }
+        else {
         int inner = bp_node >= 0 ? nt_ref(nt, bp_node, "parameters") : -1;
         int pnode = inner >= 0 ? inner : bp_node;
         int npar = 0; const int *reqs = pnode >= 0 ? nt_arr(nt, pnode, "requireds", &npar) : NULL;
-        int iargs = nt_ref(nt, id, "arguments");
-        int iac = 0; const int *iav = iargs >= 0 ? nt_arr(nt, iargs, "arguments", &iac) : NULL;
         for (int p = 0; p < npar; p++) {
           const char *pn = nt_str(nt, reqs[p], "name");
           if (!pn) continue;
@@ -5222,6 +5236,7 @@ static void emit_call(Compiler *c, int id, Buf *b) {
           if (is_exec) { if (p < iac) emit_expr(c, iav[p], g_pre); else buf_puts(g_pre, "0"); }
           else buf_printf(g_pre, "_t%d", tr);  /* instance_eval yields self */
           buf_puts(g_pre, ";\n");
+        }
         }
       }
       if (ie_bn > 0) {
