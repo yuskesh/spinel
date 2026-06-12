@@ -14847,6 +14847,37 @@ static int static_isa_cond(Compiler *c, int pred) {
   return 0;
 }
 
+/* An ivar read whose every program-wide write is nil is statically falsy
+   (`@mode = nil` and never reassigned -> `if @mode` never fires). Returns 0
+   for always-false, -1 otherwise. */
+static int static_nil_ivar_cond(Compiler *c, int pred) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0 || !nt_type(nt, pred) || strcmp(nt_type(nt, pred), "InstanceVariableReadNode")) return -1;
+  const char *nm = nt_str(nt, pred, "name");
+  if (!nm) return -1;
+  int saw_write = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty) continue;
+    if (!strcmp(ty, "InstanceVariableWriteNode")) {
+      const char *wn = nt_str(nt, id, "name");
+      if (!wn || strcmp(wn, nm)) continue;
+      saw_write = 1;
+      int v = nt_ref(nt, id, "value");
+      const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+      if (!vty || strcmp(vty, "NilNode")) return -1;  /* a non-nil write */
+    }
+    else if (!strcmp(ty, "InstanceVariableOrWriteNode") ||
+             !strcmp(ty, "InstanceVariableAndWriteNode") ||
+             !strcmp(ty, "InstanceVariableOperatorWriteNode") ||
+             !strcmp(ty, "InstanceVariableTargetNode")) {
+      const char *wn = nt_str(nt, id, "name");
+      if (wn && !strcmp(wn, nm)) return -1;  /* other write forms: unknown */
+    }
+  }
+  return saw_write ? 0 : -1;
+}
+
 static void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -14856,6 +14887,7 @@ static void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int 
   /* Statically-decidable guard: drop the dead branch entirely. */
   {
     int sc = static_isa_cond(c, pred);
+    if (sc < 0) sc = static_nil_ivar_cond(c, pred);
     int eff = (sc < 0) ? -1 : (is_unless ? !sc : sc);
     if (eff == 1) {
       /* condition always true: emit only the then-branch */
@@ -16429,6 +16461,14 @@ static void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "%s = sp_box_obj(sp_%s_%s((sp_%s *)(%s).v.p, _t%d), %d);\n",
                    ref, c->classes[poly_defcls].name, mc(pms->name),
                    c->classes[poly_defcls].name, ref, iatmp, poly_defcls);
+      }
+      else if ((!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*") || !strcmp(op, "/"))) {
+        /* numeric op on a poly slot: runtime poly arithmetic with a boxed rhs */
+        const char *pfn = !strcmp(op, "+") ? "sp_poly_add" : !strcmp(op, "-") ? "sp_poly_sub"
+                        : !strcmp(op, "*") ? "sp_poly_mul" : "sp_poly_div";
+        buf_printf(b, "%s = %s(%s, ", ref, pfn, ref);
+        emit_boxed(c, nt_ref(nt, id, "value"), b);
+        buf_puts(b, ");\n");
       }
       else {
         buf_printf(b, "%s %s= ", ref, op);

@@ -5065,7 +5065,10 @@ static int infer_write_types(Compiler *c) {
           if (lv2) rslot = lv2->type;
         }
         else if (rrty && !strcmp(rrty, "InstanceVariableReadNode")) {
-          /* handled via slot below if it's TY_UNKNOWN */
+          /* an already-typed ivar hash must not be re-promoted: unifying e.g.
+             a str_str_hash with the promotion's str_poly target would widen the
+             slot to poly. Only an untyped (empty-{}) ivar promotes here. */
+          rslot = infer_type(c, recv);
         }
         if (rslot != TY_UNKNOWN) continue;  /* already typed, skip */
         /* Only promote via [] read if the receiver local has at least one
