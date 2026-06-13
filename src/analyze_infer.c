@@ -1121,6 +1121,15 @@ else {
         const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
       }
+      if (!strcmp(name, "flat_map") || !strcmp(name, "collect_concat")) {
+        int body = nt_ref(nt, block, "body");
+        int bn = 0;
+        const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        TyKind bret = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        /* block returns an array -> flatten one level keeps its element type;
+           a scalar block return behaves like map (each wrapped element). */
+        return ty_is_array(bret) ? bret : ty_array_of(bret);
+      }
       if (!strcmp(name, "select") || !strcmp(name, "reject") ||
           !strcmp(name, "filter") || !strcmp(name, "sort_by") ||
           !strcmp(name, "take_while") || !strcmp(name, "drop_while"))
@@ -1774,6 +1783,11 @@ else {
       if (rt == TY_BIGINT || a0 == TY_BIGINT) return TY_BIGINT;
       return TY_INT;
     }
+    /* a poly operand makes the +,-,*,/ result poly: codegen lowers these to
+       sp_poly_<op>, which returns a (boxed) poly, so the static type must agree. */
+    if ((rt == TY_POLY || a0 == TY_POLY) &&
+        (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")))
+      return TY_POLY;
     return TY_UNKNOWN;
   }
   if (recv >= 0 && argc == 1 && !strcmp(name, "<=>")) return TY_INT;

@@ -83,6 +83,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_predicate_expr(c, id, b)) return;
   if (emit_grep_expr(c, id, b)) return;
   if (emit_minmax_by_expr(c, id, b)) return;
+  if (emit_flat_map_expr(c, id, b)) return;
   if (emit_poly_uniq_block(c, id, b)) return;
   if (emit_sort_cmp_expr(c, id, b)) return;
   if (emit_minmax_cmp_expr(c, id, b)) return;

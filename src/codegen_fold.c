@@ -491,6 +491,86 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
 
 /* array.max_by / min_by { |x| key } -> the element with the largest/smallest
    (int/float) key. Loop in the statement prelude; value is the best element. */
+/* Emit `src` (a poly sp_RbVal C-expression) coerced to scalar type `dst`. */
+static void flatmap_coerce_from_poly(TyKind dst, const char *src, Buf *out) {
+  if (dst == TY_INT || dst == TY_BOOL) buf_printf(out, "sp_poly_to_i(%s)", src);
+  else if (dst == TY_FLOAT) buf_printf(out, "sp_poly_to_f(%s)", src);
+  else buf_puts(out, src);  /* poly (or other): pass through */
+}
+
+/* `array.flat_map { |params| block-returning-array }` as an expression: map each
+   element through the block and concatenate the returned arrays (flatten one
+   level). Handles a single block param (bound to the element) and a flat
+   multi-param destructure of a poly-array element. Returns 1 if handled. */
+int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (strcmp(name, "flat_map") && strcmp(name, "collect_concat"))) return 0;
+  int block = nt_ref(nt, id, "block");
+  int recv = nt_ref(nt, id, "receiver");
+  if (block < 0 || recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt)) return 0;
+  const char *rk = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!rk) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  TyKind bret = comp_ntype(c, bb[bn - 1]);
+  if (!ty_is_array(bret)) return 0;  /* only array-returning blocks */
+  const char *bk = (bret == TY_POLY_ARRAY) ? "Poly" : array_kind(bret);
+  if (!bk) return 0;
+  int np = 0; while (block_param_name(c, block, np)) np++;
+  if (np > 1 && rt != TY_POLY_ARRAY) return 0;  /* destructure needs poly elements */
+  TyKind et = ty_array_elem(rt);
+  int ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", bk, tres, bk, tres);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, rk, ta, ti);
+  if (np <= 1) {
+    const char *p0 = block_param_name(c, block, 0);
+    if (p0) {
+      const char *p0r = rename_local(p0);
+      LocalVar *lv = scope_local(comp_scope_of(c, block), p0);
+      TyKind pt = lv ? lv->type : et;
+      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = ", p0r);
+      char src[64]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", rk, ta, ti);
+      if (pt == et) buf_puts(g_pre, src);
+      else if (et == TY_POLY) { Buf cv; memset(&cv,0,sizeof cv); flatmap_coerce_from_poly(pt, src, &cv); buf_puts(g_pre, cv.p?cv.p:src); free(cv.p); }
+      else buf_puts(g_pre, src);
+      buf_puts(g_pre, ";\n");
+    }
+  }
+  else {
+    int te = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", te, ta, ti);
+    for (int pj = 0; pj < np; pj++) {
+      const char *pn = block_param_name(c, block, pj); if (!pn) break;
+      const char *pnr = rename_local(pn);
+      LocalVar *lv = scope_local(comp_scope_of(c, block), pn);
+      TyKind pt = lv ? lv->type : TY_POLY;
+      char src[96]; snprintf(src, sizeof src, "sp_poly_index_poly(_t%d, sp_box_int(%d))", te, pj);
+      emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = ", pnr);
+      Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(pt, src, &cv);
+      buf_puts(g_pre, cv.p ? cv.p : src); free(cv.p); buf_puts(g_pre, ";\n");
+    }
+  }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  int tbv = ++g_tmp, tj = ++g_tmp;
+  int save = g_indent; g_indent++;
+  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  emit_indent(g_pre, g_indent + 1); emit_ctype(c, bret, g_pre);
+  buf_printf(g_pre, " _t%d = %s;\n", tbv, vb.p ? vb.p : "NULL"); free(vb.p);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
+             tj, tj, bk, tbv, tj, bk, tres, bk, tbv, tj);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");

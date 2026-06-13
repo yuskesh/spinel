@@ -469,6 +469,13 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "sp_StrPolyHash_from_%s(", comp_ntype(c, v) == TY_STR_STR_HASH ? "str_str_hash" : "str_int_hash");
     emit_expr(c, v, b); buf_puts(b, ")");
   }
+  else if (lv && (lv->type == TY_INT || lv->type == TY_BOOL) && comp_ntype(c, v) == TY_POLY) {
+    /* scalar slot, poly RHS (e.g. `x = (a + b) * 2` with poly a/b): coerce. */
+    buf_puts(b, "sp_poly_to_i("); emit_expr(c, v, b); buf_puts(b, ")");
+  }
+  else if (lv && lv->type == TY_FLOAT && comp_ntype(c, v) == TY_POLY) {
+    buf_puts(b, "sp_poly_to_f("); emit_expr(c, v, b); buf_puts(b, ")");
+  }
   else {
     emit_expr(c, v, b);
   }
@@ -542,6 +549,11 @@ else {
   }
   if (t == TY_FLOAT && (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*") || !strcmp(op, "/"))) {
     buf_printf(b, "lv_%s %s= ", en, op); emit_expr(c, v, b); buf_puts(b, ";\n");
+    return;
+  }
+  if (t == TY_COMPLEX && (!strcmp(op, "+") || !strcmp(op, "*"))) {
+    buf_printf(b, "lv_%s = sp_complex_%s(lv_%s, ", en, !strcmp(op, "+") ? "add" : "mul", en);
+    emit_expr(c, v, b); buf_puts(b, ");\n");
     return;
   }
   if (ty_is_object(t)) {
@@ -2332,8 +2344,19 @@ else {
       }
     }
     else {
+      int ival = nt_ref(nt, id, "value");
+      TyKind rhst = comp_ntype(c, ival);
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
-      emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ";\n");
+      /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
+         scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */
+      if (rhst == TY_POLY && (vt == TY_INT || vt == TY_BOOL)) {
+        buf_puts(b, "sp_poly_to_i("); emit_expr(c, ival, b); buf_puts(b, ")");
+      }
+      else if (rhst == TY_POLY && vt == TY_FLOAT) {
+        buf_puts(b, "sp_poly_to_f("); emit_expr(c, ival, b); buf_puts(b, ")");
+      }
+      else emit_expr(c, ival, b);
+      buf_puts(b, ";\n");
     }
     return;
   }

@@ -312,6 +312,7 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b);
 int emit_bsearch_expr(Compiler *c, int id, Buf *b);
 int emit_minmax_by_expr(Compiler *c, int id, Buf *b);
 int emit_poly_uniq_block(Compiler *c, int id, Buf *b);
+int emit_flat_map_expr(Compiler *c, int id, Buf *b);
 int emit_gsub_block_expr(Compiler *c, int id, Buf *b);
 int emit_sum_block_expr(Compiler *c, int id, Buf *b);
 int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b);
