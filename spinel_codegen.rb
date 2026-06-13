@@ -27559,6 +27559,16 @@ class Compiler
       if mname == "to_a"
         return rc
       end
+ # transpose on an untyped nested array (poly_array of rows). The
+ # statically-typed nested-array shapes are handled inline above; this
+ # is the fallback that preserves each element's runtime type via
+ # sp_poly_array_transpose.
+      if mname == "transpose"
+        @needs_poly_array = 1
+        @needs_rb_value = 1
+        @needs_gc = 1
+        return "sp_poly_array_transpose(" + rc + ")"
+      end
  # `[[k,v], ...].to_h` -- build a hash from 2-element pairs. Each pair
  # is a poly-boxed inner array; key/value are extracted as poly and
  # stored in a poly_poly_hash (boxed key/value types preserved).

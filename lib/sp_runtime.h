@@ -3167,6 +3167,65 @@ static sp_PolyArray *sp_PolyArray_flatten_n(sp_PolyArray *a, mrb_int depth) {
   for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_n(b, a->data[i], depth);
   return b;
 }
+/* Transpose a poly-array of int-arrays (or int-arrays boxed in poly).
+   Used by `Array#transpose` on a matrix whose rows are IntArrays. */
+/* sp_poly_array_transpose is defined below, after the sp_poly_length /
+   sp_poly_int_get element accessors it relies on. */
+/* Runtime dispatch: .length/.size on a boxed array value (sp_RbVal). */
+static mrb_int sp_poly_length(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ) return 0;
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY)   return sp_IntArray_length((sp_IntArray *)v.v.p);
+  if (v.cls_id == SP_BUILTIN_STR_ARRAY)   return ((sp_StrArray *)v.v.p)->len;
+  if (v.cls_id == SP_BUILTIN_POLY_ARRAY)  return ((sp_PolyArray *)v.v.p)->len;
+  if (v.cls_id == SP_BUILTIN_FLT_ARRAY)   return ((sp_FloatArray *)v.v.p)->len;
+  return 0;
+}
+/* Runtime dispatch: [] on a boxed array value with integer index -> boxed element. */
+static sp_RbVal sp_poly_int_get(sp_RbVal v, mrb_int i) {
+  if (v.tag != SP_TAG_OBJ) return sp_box_nil();
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY) {
+    mrb_int val = sp_IntArray_get((sp_IntArray *)v.v.p, i);
+    return val == SP_INT_NIL ? sp_box_nil() : sp_box_int(val);
+  }
+  if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
+    sp_PolyArray *a = (sp_PolyArray *)v.v.p;
+    if (i < 0 || i >= a->len) return sp_box_nil();
+    return a->data[i];
+  }
+  if (v.cls_id == SP_BUILTIN_STR_ARRAY) {
+    sp_StrArray *a = (sp_StrArray *)v.v.p;
+    if (i < 0 || i >= a->len) return sp_box_nil();
+    return sp_box_str(sp_StrArray_get(a, i));
+  }
+  if (v.cls_id == SP_BUILTIN_FLT_ARRAY) {
+    sp_FloatArray *a = (sp_FloatArray *)v.v.p;
+    if (i < 0 || i >= a->len) return sp_box_nil();
+    return sp_box_float(sp_FloatArray_get(a, i));
+  }
+  return sp_box_nil();
+}
+/* Array#transpose on a poly_array (untyped nested array). Swaps rows and
+   columns, preserving each element's runtime type via sp_poly_int_get
+   (int / float / str / poly rows). Returns a poly_array of poly_array
+   columns; the statically-typed nested-array paths are handled inline by
+   codegen. Row length is taken from the first row (CRuby raises on a
+   ragged matrix; here a short row reads nil past its end). */
+static sp_PolyArray *sp_poly_array_transpose(sp_PolyArray *rows) {
+  SP_GC_SAVE();
+  if (!rows || rows->len == 0) return sp_PolyArray_new();
+  mrb_int ncols = sp_poly_length(rows->data[0]);
+  sp_PolyArray *result = sp_PolyArray_new();
+  SP_GC_ROOT(result);
+  for (mrb_int j = 0; j < ncols; j++) {
+    sp_PolyArray *col = sp_PolyArray_new();
+    SP_GC_ROOT(col);
+    for (mrb_int i = 0; i < rows->len; i++) {
+      sp_PolyArray_push(col, sp_poly_int_get(rows->data[i], j));
+    }
+    sp_PolyArray_push(result, sp_box_poly_array(col));
+  }
+  return result;
+}
 /* Sum the integer-tagged elements of a poly_array. Used by
    `Array#sum` on a poly_array whose runtime tags are uniform int
    (e.g. the result of `arr.map { _1[:int_key] }`). Non-int tags

@@ -6377,6 +6377,11 @@ class Compiler
         if is_ptr_array_type(rt) == 1
           return rt
         end
+ # Untyped nested array: transpose returns a poly_array of columns
+ # (sp_poly_array_transpose), preserving each element's runtime type.
+        if rt == "poly_array"
+          return "poly_array"
+        end
       end
     end
     if mname == "flat_map"
