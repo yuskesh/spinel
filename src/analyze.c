@@ -1341,6 +1341,11 @@ void analyze_program(Compiler *c) {
      a local like `xfine = 8 - (data & 0x7)` only becomes int once its method's
      `data` param is pinned to int by the backstop. */
   for (int iter = 0; iter < 8; iter++) if (!infer_write_types(c)) break;
+  /* The write-type re-run can re-derive a hash/array container type for an
+     iteration-bound block param from its element-index usage (e.g. `a[1]=v`),
+     clobbering the TY_POLY the block-param pass pinned for a poly-collection
+     `.each`. Re-pin block-param types so poly elements stay poly. */
+  for (int iter = 0; iter < 8; iter++) if (!infer_block_params(c)) break;
   /* infer_write_types resets non-param locals, undoing the earlier bigint
      loop-variable promotion, so re-apply it. */
   detect_bigint_loop_vars(c);
