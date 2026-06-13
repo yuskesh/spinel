@@ -1289,6 +1289,33 @@ void analyze_program(Compiler *c) {
     else sc->reachable = 0;
   }
 
+  /* Propagate ivar types up the inheritance chain: a base-class method runs on
+     subclass instances, so an ivar it reads must carry the union of every
+     subclass's assignments. Without this, an abstract base whose @x is only set
+     to nil/placeholder there sees the wrong type when it calls `@x.foo`, even
+     though every concrete subclass assigns @x a real object. Monotonic (unify
+     only widens), so iterate to a fixpoint. */
+  for (int iter = 0; iter < 16; iter++) {
+    int prop_changed = 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *kc = &c->classes[k];
+      for (int iv = 0; iv < kc->nivars; iv++) {
+        TyKind kt = kc->ivar_types[iv];
+        if (kt == TY_UNKNOWN) continue;
+        const char *ivn = kc->ivars[iv];
+        for (int a = kc->parent; a >= 0; a = c->classes[a].parent) {
+          int ai = comp_ivar_index(&c->classes[a], ivn);
+          if (ai < 0) continue;
+          TyKind merged = ty_unify(c->classes[a].ivar_types[ai], kt);
+          if (merged != c->classes[a].ivar_types[ai]) {
+            c->classes[a].ivar_types[ai] = merged; prop_changed = 1;
+          }
+        }
+      }
+    }
+    if (!prop_changed) break;
+  }
+
   /* A block param that inference never resolved holds a yielded value of
      unknown static type (e.g. an element of a poly receiver iterated by
      uniq!/each): declare it boxed (poly) rather than failing codegen. Set
