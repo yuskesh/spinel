@@ -124,12 +124,12 @@ void emit_call(Compiler *c, int id, Buf *b) {
     /* Complex.polar(magnitude, angle) */
     if (rrty && !strcmp(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
         !strcmp(nt_str(nt, recv, "name"), "Complex") && !strcmp(name, "polar") && argc >= 1) {
-      buf_puts(b, "sp_complex_polar((mrb_float)(");
-      emit_expr(c, argv[0], b);
-      buf_puts(b, "), (mrb_float)(");
-      if (argc >= 2) emit_expr(c, argv[1], b);
+      buf_puts(b, "sp_complex_polar(");
+      emit_float_expr(c, argv[0], b);
+      buf_puts(b, ", ");
+      if (argc >= 2) emit_float_expr(c, argv[1], b);
       else buf_puts(b, "0");
-      buf_puts(b, "))");
+      buf_puts(b, ")");
       return;
     }
     TyKind crt = comp_ntype(c, recv);
@@ -8259,15 +8259,40 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     /* Process each arg sequentially, snapshotting each arg's length before
        its own loop (the test expects sequential/non-snapshotted behavior). */
     int tr = ++g_tmp;
+    TyKind et = ty_array_elem(rt);
     emit_indent(b, indent);
     buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
     for (int a = 0; a < argc; a++) {
       int tn = ++g_tmp, ti = ++g_tmp;
+      /* the source array may be a different kind than the receiver (e.g.
+         IntArray#concat(PolyArray)); read with the source's kind and coerce
+         each element into the receiver's element representation. */
+      TyKind at = comp_ntype(c, argv[a]);
+      const char *ak = (at == TY_POLY_ARRAY) ? "Poly" : array_kind(at);
+      if (!ak) ak = k;
       emit_indent(b, indent + 1);
-      buf_printf(b, "{ mrb_int _t%d = sp_%sArray_length(", tn, k); emit_expr(c, argv[a], b);
-      buf_printf(b, "); for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(",
-                 ti, ti, tn, ti, k, tr, k);
-      emit_expr(c, argv[a], b); buf_printf(b, ", _t%d)); }\n", ti);
+      buf_printf(b, "{ mrb_int _t%d = sp_%sArray_length(", tn, ak); emit_expr(c, argv[a], b);
+      buf_printf(b, "); for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, ",
+                 ti, ti, tn, ti, k, tr);
+      char getexpr[256];
+      /* element accessor on the source */
+      Buf eb; memset(&eb, 0, sizeof eb);
+      buf_printf(&eb, "sp_%sArray_get(", ak); { Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, argv[a], &ab); buf_puts(&eb, ab.p ? ab.p : ""); free(ab.p); }
+      buf_printf(&eb, ", _t%d)", ti);
+      snprintf(getexpr, sizeof getexpr, "%s", eb.p ? eb.p : ""); free(eb.p);
+      if (!strcmp(k, "Poly") && strcmp(ak, "Poly")) {
+        /* box the source scalar into the poly receiver */
+        emit_boxed_text(c, ty_array_elem(at), getexpr, b);
+      }
+      else if (strcmp(k, "Poly") && !strcmp(ak, "Poly")) {
+        /* unbox the source poly element into the receiver's scalar */
+        if (et == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", getexpr);
+        else if (et == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", getexpr);
+        else if (et == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getexpr);
+        else buf_puts(b, getexpr);
+      }
+      else buf_puts(b, getexpr);
+      buf_puts(b, "); }\n");
     }
     emit_indent(b, indent);
     buf_puts(b, "}\n");

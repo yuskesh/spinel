@@ -2089,6 +2089,18 @@ else {
       else       buf_printf(b, "if (%s) %s = ", ref2, ref2);
       emit_expr(c, v, b); buf_puts(b, ";\n");
     }
+    /* a pointer-backed ivar (fiber/proc/object/array/hash/...) reads falsy
+       when NULL, so `@x ||= v` is `if (!@x) @x = v` (e.g. PPU's
+       `@fiber ||= Fiber.new { ... }`). Without this the init was dropped. */
+    else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) ||
+             ivt2 == TY_FIBER || ivt2 == TY_PROC || ivt2 == TY_IO ||
+             ivt2 == TY_STRINGIO || ivt2 == TY_STRINGSCANNER ||
+             ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
+      emit_indent(b, indent);
+      if (is_or) buf_printf(b, "if (!%s) %s = ", ref2, ref2);
+      else       buf_printf(b, "if (%s) %s = ", ref2, ref2);
+      emit_expr(c, v, b); buf_puts(b, ";\n");
+    }
     else if (!is_or) {
       emit_indent(b, indent);
       buf_printf(b, "%s = ", ref2); emit_expr(c, v, b); buf_puts(b, ";\n");

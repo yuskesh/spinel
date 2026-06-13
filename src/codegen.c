@@ -52,6 +52,15 @@ void emit_int_expr(Compiler *c, int node, Buf *b) {
   else emit_expr(c, node, b);
 }
 
+/* Emit a node as an mrb_float. A poly value is unboxed via sp_poly_to_f; any
+   other (numeric) value is plain-cast, matching the legacy `(mrb_float)(...)`. */
+void emit_float_expr(Compiler *c, int node, Buf *b) {
+  if (comp_ntype(c, node) == TY_POLY) {
+    buf_puts(b, "sp_poly_to_f("); emit_expr(c, node, b); buf_puts(b, ")");
+  }
+  else { buf_puts(b, "(mrb_float)("); emit_expr(c, node, b); buf_puts(b, ")"); }
+}
+
 void emit_boxed(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_POLY) { emit_expr(c, node, b); return; }
