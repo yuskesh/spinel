@@ -49,7 +49,15 @@ static sp_FiberStore *sp_FiberStore_dup(sp_FiberStore *o) {
   return s;
 }
 
-static sp_Fiber sp_fiber_root;
+/* The root fiber is a static, not a GC allocation — but `Fiber.current`
+   hands it to user code, where a rooted local makes the collector mark
+   it. Lay a 0xfd skip byte directly before it so sp_gc_mark's tag-byte
+   protocol bails out instead of treating .bss as a GC header. The guard
+   array is exactly one alignment unit, so its last byte always directly
+   precedes `root` (no compiler padding can slip in between). */
+static struct { char guard[_Alignof(sp_Fiber)]; sp_Fiber root; } sp_fiber_root_box
+    = { .guard = { [_Alignof(sp_Fiber) - 1] = (char)0xfd }, .root = {0} };
+#define sp_fiber_root (sp_fiber_root_box.root)
 sp_Fiber *sp_fiber_current = &sp_fiber_root;   /* extern: read by the generated TU */
 static sp_Fiber *sp_fiber_list_head = NULL;
 
@@ -63,7 +71,7 @@ static void sp_mark_suspended_fibers(void){sp_mark_fiber_roots(&sp_fiber_root);s
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
 static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->ctx)DeleteFiber(f->ctx);if(f->saved_roots)free(f->saved_roots);sp_fiber_list_remove(f);}
 static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);if(f->storage)sp_gc_mark(f->storage);}
-sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);f->ctx=NULL;f->caller_ctx=NULL;f->stack=NULL;f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->caller=NULL;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage)f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);return f;}
+sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);f->ctx=NULL;f->caller_ctx=NULL;f->stack=NULL;f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->caller=NULL;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}return f;}
 sp_RbVal sp_Fiber_storage_get(sp_Fiber*f,sp_sym k){if(!f->storage)return sp_box_nil();return sp_FiberStore_get((sp_FiberStore*)f->storage,k);}
 void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){if(!f->storage)f->storage=sp_FiberStore_new();sp_FiberStore_set((sp_FiberStore*)f->storage,k,v);}
 static VOID CALLBACK sp_fiber_trampoline(LPVOID param){sp_Fiber*f=(sp_Fiber*)param;f->body(f);f->state=3;if(f->transferred){sp_fiber_current=&sp_fiber_root;SwitchToFiber(sp_fiber_root.ctx);}else{SwitchToFiber(f->caller->ctx);}}
@@ -82,7 +90,7 @@ static void sp_mark_suspended_fibers(void){sp_mark_fiber_roots(&sp_fiber_root);s
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
 static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,SP_FIBER_STACK_SIZE);if(f->saved_roots)free(f->saved_roots);sp_fiber_list_remove(f);}
 static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_mark(f->user_data);if(f->storage)sp_gc_mark(f->storage);}
-sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);f->stack=(char*)mmap(NULL,SP_FIBER_STACK_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage)f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);return f;}
+sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);f->stack=(char*)mmap(NULL,SP_FIBER_STACK_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}return f;}
 sp_RbVal sp_Fiber_storage_get(sp_Fiber*f,sp_sym k){if(!f->storage)return sp_box_nil();return sp_FiberStore_get((sp_FiberStore*)f->storage,k);}
 void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){if(!f->storage)f->storage=sp_FiberStore_new();sp_FiberStore_set((sp_FiberStore*)f->storage,k,v);}
 static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;f->body(f);f->state=3;if(f->transferred){sp_fiber_current=&sp_fiber_root;setcontext(&sp_fiber_root.ctx);}else{swapcontext(&f->ctx,&f->caller_ctx);}}
