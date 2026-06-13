@@ -3520,13 +3520,18 @@ else {
     unsupported(c, id, "arithmetic");
   }
 
-  /* integer bitwise operators */
-  if (recv >= 0 && argc == 1 && rt == TY_INT &&
-      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
-       !strcmp(name, "<<") || !strcmp(name, ">>"))) {
+  /* integer bitwise operators. A poly receiver is coerced to int (the matching
+     inference types these TY_INT); `<<` on a poly is handled earlier as the
+     ambiguous shift/append via sp_poly_shl, so only &,|,^,>> reach here. */
+  if (recv >= 0 && argc == 1 &&
+      ((rt == TY_INT && (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
+                         !strcmp(name, "<<") || !strcmp(name, ">>"))) ||
+       (rt == TY_POLY && (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
+                          !strcmp(name, ">>"))))) {
     TyKind at0 = comp_ntype(c, argv[0]);
     buf_puts(b, "(");
-    emit_expr(c, recv, b);
+    if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    else emit_expr(c, recv, b);
     buf_printf(b, " %s ", name);
     if (at0 == TY_POLY) {
       buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")");
