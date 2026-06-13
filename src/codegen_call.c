@@ -3332,10 +3332,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
   if (!strcmp(name, "!") && recv >= 0 && argc == 0) {
-    /* Ruby truthiness: only nil and false are falsy */
+    /* Ruby truthiness: only nil and false are falsy. `!x` negates the same
+       per-type truthiness emit_cond uses -- a poly / nullable scalar / nullable
+       pointer can be falsy, so the result is not unconditionally false. */
     if (rt == TY_BOOL) { buf_puts(b, "(!"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else if (rt == TY_NIL) { buf_puts(b, "1"); }
-    else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }  /* truthy -> false */
+    else if (rt == TY_POLY) { buf_puts(b, "(!sp_poly_truthy("); emit_expr(c, recv, b); buf_puts(b, "))"); }
+    else if (rt == TY_INT) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)"); }
+    else if (rt == TY_FLOAT) { buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+    else if (rt == TY_STRING || ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt) ||
+             rt == TY_PROC || rt == TY_STRINGIO || rt == TY_STRINGSCANNER ||
+             rt == TY_MATCHDATA || rt == TY_EXCEPTION || rt == TY_FIBER || rt == TY_IO) {
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");  /* NULL pointer is falsy */
+    }
+    else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }  /* always-truthy -> false */
     return;
   }
 
