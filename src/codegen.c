@@ -1140,6 +1140,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
     /* Struct constructor: one parameter per member, set the backing ivars. */
+    buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->name);
     buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
     for (int i = 0; i < ci->nivars; i++) {
       if (i) buf_puts(b, ", ");
@@ -1147,10 +1148,11 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, " a%d", i);
     }
     if (ci->nivars == 0) buf_puts(b, "void");
-    buf_printf(b, ") {\n  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, %s%s%s);\n",
-              ci->name, ci->name, ci->name,
+    buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
+              ci->name, ci->name,
               class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
               class_needs_scan(ci) ? "_scan" : "");
+    buf_puts(b, "  memset(self, 0, sizeof(*self));\n");  /* recycled slots are not zeroed */
     buf_puts(b, "  SP_GC_ROOT(self);\n");
     buf_printf(b, "  self->cls_id = %d;\n", cid);
     for (int i = 0; i < ci->nivars; i++)
@@ -1184,6 +1186,11 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_puts(b, "  return self;\n}\n");
     return;
   }
+  /* per-class free-list pool: sp_gc_collect recycles unmarked instances onto
+     the pool instead of free()ing them, and sp_X_new reuses them -- this
+     removes the malloc/free churn of allocation-heavy workloads. Exception
+     subclasses use sp_exc_new_sub storage, so they are not pooled. */
+  if (!class_is_exc_subclass(c, cid)) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->name);
   buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
   if (init >= 0 && c->scopes[init].nparams > 0) {
     Scope *s = &c->scopes[init];
@@ -1208,10 +1215,11 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_printf(b, "  SP_GC_ROOT(self);\n");
   }
   else {
-  buf_printf(b, ") {\n  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, %s%s%s);\n",
-            ci->name, ci->name, ci->name,
+  buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
+            ci->name, ci->name,
             class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
             class_needs_scan(ci) ? "_scan" : "");
+  buf_puts(b, "  memset(self, 0, sizeof(*self));\n");  /* recycled slots are not zeroed */
   buf_printf(b, "  SP_GC_ROOT(self);\n");
   buf_printf(b, "  self->cls_id = %d;\n", cid);
   /* calloc zero-inits fields; a poly (boxed) ivar's zero pattern is not nil,
