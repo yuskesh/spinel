@@ -643,13 +643,11 @@ int static_isa_cond(Compiler *c, int pred) {
   return 0;
 }
 
-/* An ivar read whose every program-wide write is nil is statically falsy
-   (`@mode = nil` and never reassigned -> `if @mode` never fires). Returns 0
-   for always-false, -1 otherwise. */
-int static_nil_ivar_cond(Compiler *c, int pred) {
+/* Scan every program-wide write to ivar `nm` ("@foo"): returns 0 when at least
+   one write exists and all of them assign nil (statically falsy), -1 otherwise
+   (no writes seen, a non-nil write, or an opaque write form). */
+static int ivar_all_writes_nil(Compiler *c, const char *nm) {
   const NodeTable *nt = c->nt;
-  if (pred < 0 || !nt_type(nt, pred) || strcmp(nt_type(nt, pred), "InstanceVariableReadNode")) return -1;
-  const char *nm = nt_str(nt, pred, "name");
   if (!nm) return -1;
   int saw_write = 0;
   for (int id = 0; id < nt->count; id++) {
@@ -674,6 +672,46 @@ int static_nil_ivar_cond(Compiler *c, int pred) {
   return saw_write ? 0 : -1;
 }
 
+/* An ivar read whose every program-wide write is nil is statically falsy
+   (`@mode = nil` and never reassigned -> `if @mode` never fires). Returns 0
+   for always-false, -1 otherwise. */
+int static_nil_ivar_cond(Compiler *c, int pred) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0 || !nt_type(nt, pred) || strcmp(nt_type(nt, pred), "InstanceVariableReadNode")) return -1;
+  return ivar_all_writes_nil(c, nt_str(nt, pred, "name"));
+}
+
+/* `recv.reader` (no args, no block) where `reader` names an attr_reader-backed
+   ivar @reader whose every program-wide write is nil is a falsy constant, so
+   `if @conf.stackprof_mode` is statically dead. The receiver is restricted to a
+   pure, object-typed form so dropping the branch skips no side effects and the
+   call really is a getter. This resolves through the backing ivar rather than
+   the inferred return type, which can mis-widen a nil-pinned ivar. Returns 0
+   for always-false, -1 otherwise. */
+int static_nil_reader_cond(Compiler *c, int pred) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0 || !nt_type(nt, pred) || strcmp(nt_type(nt, pred), "CallNode")) return -1;
+  const char *cn = nt_str(nt, pred, "name");
+  if (!cn) return -1;
+  int args = nt_ref(nt, pred, "arguments");
+  if (args >= 0) {
+    int ac = 0; nt_arr(nt, args, "arguments", &ac);
+    if (ac != 0) return -1;
+  }
+  if (nt_ref(nt, pred, "block") >= 0) return -1;
+  int recv = nt_ref(nt, pred, "receiver");
+  if (recv < 0) return -1;
+  const char *rty = nt_type(nt, recv);
+  if (!rty) return -1;
+  if (strcmp(rty, "InstanceVariableReadNode") &&
+      strcmp(rty, "LocalVariableReadNode") &&
+      strcmp(rty, "SelfNode")) return -1;
+  if (!ty_is_object(comp_ntype(c, recv))) return -1;  /* a real getter receiver */
+  char nm[256];
+  snprintf(nm, sizeof nm, "@%s", cn);
+  return ivar_all_writes_nil(c, nm);
+}
+
 void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -684,6 +722,7 @@ void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
   {
     int sc = static_isa_cond(c, pred);
     if (sc < 0) sc = static_nil_ivar_cond(c, pred);
+    if (sc < 0) sc = static_nil_reader_cond(c, pred);
     int eff = (sc < 0) ? -1 : (is_unless ? !sc : sc);
     if (eff == 1) {
       /* condition always true: emit only the then-branch */
