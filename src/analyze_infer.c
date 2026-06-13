@@ -1325,8 +1325,11 @@ else {
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */
   if (recv >= 0 && (rt == TY_POLY || a0 == TY_POLY)) {
-    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") ||
-        !strcmp(name, "/") || !strcmp(name, "%") || !strcmp(name, "**"))
+    /* `str % poly_args` is printf-style formatting (result string), not a poly
+       arithmetic modulo -- defer to the rt==TY_STRING path below. */
+    if (!(rt == TY_STRING && !strcmp(name, "%")) &&
+        (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") ||
+         !strcmp(name, "/") || !strcmp(name, "%") || !strcmp(name, "**")))
       return TY_POLY;
     if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
         !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!=") ||
