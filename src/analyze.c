@@ -54,6 +54,19 @@ void compute_reachable(Compiler *c) {
     for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
   }
 
+  /* The synthesized compiler_state dump method calls ir_emit_int/str/sa/ia,
+     but it has no AST so the BFS above can't see those calls. Mark them
+     reachable when any class declares compiler_state fields. */
+  {
+    int any_cs = 0;
+    for (int ci = 0; ci < c->nclasses; ci++) if (c->classes[ci].ncs > 0) { any_cs = 1; break; }
+    if (any_cs) {
+      MARK_NAME("ir_emit_int"); MARK_NAME("ir_emit_str");
+      MARK_NAME("ir_emit_sa");  MARK_NAME("ir_emit_ia");
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+    }
+  }
+
   /* Alias/prep_to propagation: when alias_new (or alias_old) is in called_names,
      make the counterpart reachable too (aliases have no scope of their own). */
   int changed = 1;

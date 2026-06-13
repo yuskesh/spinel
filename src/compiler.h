@@ -46,6 +46,11 @@ typedef struct {
   char *dm_subst_name;
   int dm_subst_node;
 
+  /* Synthesized compiler_state method (no AST body): codegen emits a
+     hand-built body looping over the owning class's compiler_state entries.
+     0=not synthesized, else CS_SYNTH_* (see codegen). */
+  int cs_synth;
+
   char **pnames;    /* parameter names, in order (requireds then optionals) */
   int *pdefault;    /* per-param default-value node id, or -1 if required */
   int nparams;
@@ -105,6 +110,12 @@ typedef struct {
   int nprep_chain, cprep_chain;
   int prep_shadow_count; /* next shadow index to assign */
   int enclosing_class;   /* index of enclosing module/class, or -1 for top-level */
+  /* compiler_state_* declared fields: parallel arrays of field name (no '@')
+     and kind ("int"/"str"/"sa"/"ia"). codegen's synthesized init/dump/set
+     methods iterate these. */
+  char **cs_names;
+  char **cs_kinds;
+  int ncs, ccs;
 } ClassInfo;
 
 typedef struct {

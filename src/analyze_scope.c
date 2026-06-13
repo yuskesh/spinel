@@ -254,6 +254,83 @@ const char *resolve_class_alias(Compiler *c, const char *cname) {
   return NULL;
 }
 
+/* compiler_state_* class macros (see legacy/compiler_helpers.rb): declare a
+   bag of typed instance variables and auto-synthesize init/dump/set methods.
+   The CRuby shim that would define these via define_method is dead code under
+   RUBY_ENGINE != "ruby"; spinelc recognizes the macros natively here. */
+const char *cs_macro_kind(const char *nm) {
+  if (!nm) return NULL;
+  if (!strcmp(nm, "compiler_state_int")) return "int";
+  if (!strcmp(nm, "compiler_state_str")) return "str";
+  if (!strcmp(nm, "compiler_state_sa"))  return "sa";
+  if (!strcmp(nm, "compiler_state_ia"))  return "ia";
+  return NULL;
+}
+static TyKind cs_field_type(const char *kind) {
+  if (!strcmp(kind, "str")) return TY_STRING;
+  if (!strcmp(kind, "sa"))  return TY_STR_ARRAY;
+  if (!strcmp(kind, "ia"))  return TY_INT_ARRAY;
+  return TY_INT;
+}
+/* CS_SYNTH_* markers; mirrored in codegen. */
+enum { CS_INIT = 1, CS_DUMP, CS_SET_INT, CS_SET_STR, CS_SET_SA, CS_SET_IA };
+static void cs_synth_method(Compiler *c, int class_id, int def_node, const char *name,
+                            int cs_synth, TyKind ret, const char **pnames,
+                            const TyKind *ptypes, int nparams) {
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].class_id == class_id && c->scopes[s].name &&
+        !strcmp(c->scopes[s].name, name)) return;  /* already present */
+  Scope *s = comp_scope_new(c, name, def_node);
+  s->class_id = class_id;
+  s->cs_synth = cs_synth;
+  s->ret = ret;
+  s->body = -1;
+  for (int i = 0; i < nparams; i++) {
+    scope_add_param(s, pnames[i], -1);
+    LocalVar *lv = scope_local(s, pnames[i]);
+    if (lv) lv->type = ptypes[i];
+  }
+}
+void collect_compiler_state(Compiler *c, int id, int class_id) {
+  const NodeTable *nt = c->nt;
+  const char *kind = cs_macro_kind(nt_str(nt, id, "name"));
+  if (!kind || class_id < 0) return;
+  ClassInfo *ci = &c->classes[class_id];
+  /* synthesize the 6 methods once (on the first compiler_state_* decl) */
+  { const char *p0[] = {"buf"}; TyKind t0[] = {TY_STRING};
+    const char *p2i[] = {"name", "val"}; TyKind t2i[] = {TY_STRING, TY_INT};
+    const char *p2s[] = {"name", "val"}; TyKind t2s[] = {TY_STRING, TY_STRING};
+    const char *p2sa[] = {"name", "val"}; TyKind t2sa[] = {TY_STRING, TY_STR_ARRAY};
+    const char *p2ia[] = {"name", "val"}; TyKind t2ia[] = {TY_STRING, TY_INT_ARRAY};
+    cs_synth_method(c, class_id, id, "init_compiler_state", CS_INIT, TY_INT, NULL, NULL, 0);
+    cs_synth_method(c, class_id, id, "dump_compiler_state_ir", CS_DUMP, TY_STRING, p0, t0, 1);
+    cs_synth_method(c, class_id, id, "compiler_state_set_int", CS_SET_INT, TY_INT, p2i, t2i, 2);
+    cs_synth_method(c, class_id, id, "compiler_state_set_str", CS_SET_STR, TY_INT, p2s, t2s, 2);
+    cs_synth_method(c, class_id, id, "compiler_state_set_sa", CS_SET_SA, TY_INT, p2sa, t2sa, 2);
+    cs_synth_method(c, class_id, id, "compiler_state_set_ia", CS_SET_IA, TY_INT, p2ia, t2ia, 2);
+  }
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int a = 0; a < an; a++) {
+    const char *aty = nt_type(nt, argv[a]);
+    if (!aty || strcmp(aty, "SymbolNode")) continue;
+    const char *fname = nt_str(nt, argv[a], "value");
+    if (!fname) continue;
+    char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", fname);
+    int iv = comp_ivar_intern(ci, ivn);
+    ci->ivar_types[iv] = cs_field_type(kind);
+    if (ci->ncs >= ci->ccs) {
+      ci->ccs = ci->ccs ? ci->ccs * 2 : 16;
+      ci->cs_names = realloc(ci->cs_names, sizeof(char *) * (size_t)ci->ccs);
+      ci->cs_kinds = realloc(ci->cs_kinds, sizeof(char *) * (size_t)ci->ccs);
+    }
+    ci->cs_names[ci->ncs] = strdup(fname);
+    ci->cs_kinds[ci->ncs] = strdup(kind);
+    ci->ncs++;
+  }
+}
+
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -332,6 +409,12 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
        method per element. Handled wholesale; skip the generic recursion so
        the inner define_method isn't also processed as a normal call. */
     if (class_id >= 0 && collect_dm_each_unroll(c, id, class_id)) return;
+    /* compiler_state_int/str/sa/ia :fields -- declare ivars + synthesize the
+       init/dump/set methods (the metaprogramming is native, not define_method). */
+    if (class_id >= 0 && cs_macro_kind(nt_str(c->nt, id, "name"))) {
+      collect_compiler_state(c, id, class_id);
+      return;
+    }
     /* define_method(:literal_name) { ... }: register as a method scope.
        At class scope it becomes an instance method; at top level a free
        function (class_id stays -1), matching `def`. */

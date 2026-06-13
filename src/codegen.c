@@ -288,7 +288,62 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* CS_SYNTH_* markers (mirror of analyze_scope.c). */
+enum { CG_CS_INIT = 1, CG_CS_DUMP, CG_CS_SET_INT, CG_CS_SET_STR, CG_CS_SET_SA, CG_CS_SET_IA };
+
+/* Emit a synthesized compiler_state method body (no AST). */
+static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
+  emit_method_signature(c, s, b);
+  buf_puts(b, " {\n");
+  ClassInfo *ci = &c->classes[s->class_id];
+  const char *cn = ci->name;
+  if (s->cs_synth == CG_CS_INIT) {
+    for (int i = 0; i < ci->ncs; i++) {
+      const char *nm = ci->cs_names[i], *k = ci->cs_kinds[i];
+      buf_printf(b, "  self->iv_%s = ", nm);
+      if (!strcmp(k, "str")) emit_str_literal(b, "");
+      else if (!strcmp(k, "sa")) buf_puts(b, "sp_StrArray_new()");
+      else if (!strcmp(k, "ia")) buf_puts(b, "sp_IntArray_new()");
+      else buf_puts(b, "0");
+      buf_puts(b, ";\n");
+    }
+    buf_puts(b, "  return 0;\n}\n");
+  }
+  else if (s->cs_synth == CG_CS_DUMP) {
+    int defcls = -1;
+    if (comp_method_in_chain(c, s->class_id, "ir_emit_int", &defcls) < 0) {
+      buf_puts(b, "  return lv_buf;\n}\n");
+      return;
+    }
+    const char *ecn = c->classes[defcls].name;
+    for (int i = 0; i < ci->ncs; i++) {
+      const char *nm = ci->cs_names[i], *k = ci->cs_kinds[i];
+      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
+      buf_printf(b, "  lv_buf = sp_%s_ir_emit_%s(self, lv_buf, ", ecn, k);
+      emit_str_literal(b, ivn);
+      buf_printf(b, ", self->iv_%s);\n", nm);
+    }
+    buf_puts(b, "  return lv_buf;\n}\n");
+  }
+  else {
+    const char *want = s->cs_synth == CG_CS_SET_INT ? "int" :
+                       s->cs_synth == CG_CS_SET_STR ? "str" :
+                       s->cs_synth == CG_CS_SET_SA  ? "sa"  : "ia";
+    for (int i = 0; i < ci->ncs; i++) {
+      if (strcmp(ci->cs_kinds[i], want)) continue;
+      const char *nm = ci->cs_names[i];
+      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
+      buf_puts(b, "  if (sp_str_eq(lv_name, ");
+      emit_str_literal(b, ivn);
+      buf_printf(b, ")) { self->iv_%s = lv_val; }\n", nm);
+    }
+    buf_puts(b, "  return 0;\n}\n");
+  }
+  (void)cn;
+}
+
 void emit_method(Compiler *c, Scope *s, Buf *b) {
+  if (s->cs_synth) { emit_compiler_state_method(c, s, b); return; }
   /* instance_eval/exec trampolines are inlined at every call site; the
      method body itself is an unreachable stub (matches the legacy compiler). */
   if (s->class_id >= 0 && !s->is_cmethod && s->name &&

@@ -2540,6 +2540,8 @@ int infer_return_types(Compiler *c) {
     /* Specialized inherited-cls-new copies keep their fixed subclass return
        type (the shared body's bare `new` would otherwise infer the base). */
     if (sc->ret_specialized) continue;
+    /* synthesized compiler_state methods carry a fixed return type (no AST). */
+    if (sc->cs_synth) continue;
     /* An empty method body returns nil; if its value is used at all it must
        be poly (a void C function yields nothing to read). */
     int empty_body = sc->body < 0;
