@@ -326,11 +326,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (cws && cws->is_cmethod && cid2 >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, nm + 1);
     else if (cid2 < 0 && g_ie_class_id >= 0)
-      snprintf(ref2e, sizeof ref2e, "%s->iv_%s", g_self, nm + 1);
+      snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", nm + 1);
     else
-      snprintf(ref2e, sizeof ref2e, "%s->iv_%s", g_self, nm + 1);
+      snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     buf_puts(b, "({ ");
     buf_printf(b, "%s = ", ref2e);
     if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
@@ -365,7 +365,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (cws3 && cws3->is_cmethod && cid3 >= 0)
       snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, nm + 1);
     else
-      snprintf(ref3, sizeof ref3, "%s->iv_%s", g_self, nm + 1);
+      snprintf(ref3, sizeof ref3, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     if (ivt3 == TY_POLY) {
       buf_printf(b, "({ if (%ssp_poly_truthy(%s)) %s = ", is_or ? "!" : "", ref3, ref3);
       emit_boxed(c, v, b);
@@ -552,15 +552,15 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);  /* module/class-level ivar */
     else if (cs && cs->class_id < 0 && g_ie_class_id >= 0)
       /* inside instance_eval block: access ivar via receiver pointer */
-      buf_printf(b, "%s->iv_%s", g_self, nm + 1);
+      buf_printf(b, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     else if (cs && cs->class_id < 0) {
       /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
       int tl = comp_class_index(c, "Toplevel");
       if (tl >= 0) buf_printf(b, "civ_Toplevel_%s", nm + 1);
-      else buf_printf(b, "%s->iv_%s", g_self, nm + 1);
+      else buf_printf(b, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     }
     else
-      buf_printf(b, "%s->iv_%s", g_self, nm + 1);
+      buf_printf(b, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     return;
   }
   if (!strcmp(ty, "ClassVariableReadNode")) {
@@ -1300,7 +1300,7 @@ else {
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);
     else
-      snprintf(ref, sizeof ref, "%s->iv_%s", g_self, nm + 1);
+      snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     if (g_pre) {
       emit_stmt(c, id, g_pre, g_indent);
       buf_puts(b, ref);

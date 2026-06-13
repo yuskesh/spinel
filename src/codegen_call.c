@@ -1394,6 +1394,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (ty_is_object(rt)) {
       /* user object: .class returns a TY_CLASS value */
       int _cidx = ty_object_class(rt);
+      /* a value-type instance has the class's static cls_id (no NULL case) */
+      if (comp_ty_value_obj(c, rt)) { buf_printf(b, "((sp_Class){%d})", _cidx); return; }
       int _tobj = ++g_tmp;
       emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _tobj);
       Buf _rb; memset(&_rb, 0, sizeof _rb); emit_expr(c, recv, &_rb);
@@ -1763,7 +1765,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (dispatch_cid >= 0) {
       if (comp_reader_in_chain(c, dispatch_cid, name, NULL)) {
         const char *rn = comp_resolve_alias(c, dispatch_cid, name);
-        buf_printf(b, "%s->iv_%s", g_self, rn);
+        buf_printf(b, "%s%siv_%s", g_self, g_self_deref, rn);
         return;
       }
       int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
@@ -1904,7 +1906,6 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     int has_sub = 0;
     for (int j = 0; cid >= 0 && j < c->nclasses; j++) if (c->classes[j].parent == cid) { has_sub = 1; break; }
     if (cid >= 0 && !has_sub) {
-      if (c->classes[cid].is_value_type) { emit_value_obj_new(c, cid, id, b); return; }
       buf_printf(b, "sp_%s_new(", c->classes[cid].name);
       for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
       buf_puts(b, ")");
@@ -1948,7 +1949,6 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
       if (!c->classes[ci].is_struct) {
-        if (c->classes[ci].is_value_type) { emit_value_obj_new(c, ci, id, b); return; }
         buf_printf(b, "sp_%s_new(", c->classes[ci].name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
@@ -2023,7 +2023,6 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_puts(b, ")");
           return;
         }
-        if (c->classes[ci].is_value_type) { emit_value_obj_new(c, ci, id, b); return; }
         buf_printf(b, "sp_%s_new(", c->classes[ci].name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
@@ -4576,11 +4575,32 @@ else {
     /* attr reader -> field access (recv).iv_x */
     if (comp_reader_in_chain(c, cid, name, NULL)) {
       const char *rn2 = comp_resolve_alias(c, cid, name);
-      buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s", rn2);
+      buf_puts(b, "("); emit_expr(c, recv, b);
+      buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", rn2);
       return;
     }
     int mi = comp_method_in_chain(c, cid, name, NULL);
     if (mi >= 0) {
+      /* a value-type receiver is passed by value; an ordinary object by
+         pointer. For a value recv we hand emit_dispatch the value expression
+         (lvalue or hoisted temp); the method takes `self` by value. */
+      if (comp_ty_value_obj(c, rt)) {
+        char selfv[64];
+        const char *rty = nt_type(nt, recv);
+        if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          snprintf(selfv, sizeof selfv, "%s", rb.p ? rb.p : ""); free(rb.p);
+        }
+        else {
+          int t = ++g_tmp;
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+          buf_printf(g_pre, " _t%d = ", t); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+          snprintf(selfv, sizeof selfv, "_t%d", t);
+        }
+        emit_dispatch(c, cid, name, selfv, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+        return;
+      }
       /* receiver is a pointer; reuse it directly if it's a simple lvalue,
          else stash in a temp (the virtual-dispatch switch references it
          multiple times) */
@@ -8063,30 +8083,6 @@ else {
 
 /* Array-mutating calls emitted as statements: a[i]=v, a.push(v), a<<v.
    Returns 1 if handled. */
-/* Construct a value-type object on the stack (no heap alloc / GC). The storage
-   is a block-scoped temp declared in g_pre; the expression yields its address.
-   Safe because value-type instances never escape their enclosing scope (see
-   detect_value_types). Stage 1 handles no-arg constructors only. */
-void emit_value_obj_new(Compiler *c, int ci, int id, Buf *b) {
-  int t = ++g_tmp;
-  emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_%s _t%d = {0}; _t%d.cls_id = %d;\n",
-             c->classes[ci].name, t, t, ci);
-  int defcls = ci;
-  int im = comp_method_in_chain(c, ci, "initialize", &defcls);
-  if (im >= 0 && c->scopes[im].reachable && !c->scopes[im].yields) {
-    /* arg expressions go to a local buf; any GC-hoist preludes flow to g_pre
-       (emitted before the initialize call, in the right order). */
-    Buf ab; memset(&ab, 0, sizeof ab);
-    emit_args_filled(c, im, nt_ref(c->nt, id, "arguments"), "", &ab);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_%s_initialize(&_t%d%s%s);\n",
-               c->classes[defcls].name, t, (ab.p && ab.p[0]) ? ", " : "", ab.p ? ab.p : "");
-    free(ab.p);
-  }
-  buf_printf(b, "&_t%d", t);
-}
-
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");

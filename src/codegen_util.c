@@ -63,6 +63,9 @@ int  g_block_id = -1;
 int  g_yield_block_fallback = -1;
 const char *g_block_param_name = NULL;
 const char *g_self = "self";
+/* Member-access operator for `self`: "->" when self is a pointer (the usual
+   heap object), "." when emitting a value-type method body (self is a value). */
+const char *g_self_deref = "->";
 int g_class_body_id = -1;
 int g_emitting_class_id = -1;
 const char *g_dm_subst_name = NULL;
@@ -410,7 +413,8 @@ const char *default_value(TyKind t) {
 void emit_ctype(Compiler *c, TyKind t, Buf *b) {
   if (ty_is_object(t)) {
     int cid = ty_object_class(t);
-    buf_printf(b, "sp_%s *", c->classes[cid].name);  /* objects are heap pointers (reference semantics) */
+    /* value-type classes are stored inline (sp_X); others are heap pointers */
+    buf_printf(b, "sp_%s %s", c->classes[cid].name, c->classes[cid].is_value_type ? "" : "*");
   }
   else {
     const char *n = c_type_name(t);

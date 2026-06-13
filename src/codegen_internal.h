@@ -59,6 +59,7 @@ extern const char *g_block_param_name;
 /* The C expression for `self` (a pointer). Overridden while inlining an
    instance method at a call site (where there is no real `self` param). */
 extern const char *g_self;
+extern const char *g_self_deref;
 /* When emitting class/module body statements, the class index (-1 outside). */
 extern int g_class_body_id;
 /* Class id of the scope currently being emitted (-1 if none). Used to resolve
@@ -345,7 +346,6 @@ int sp_is_fiber_storage_recv(const NodeTable *nt, int recv);
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b);
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
-void emit_value_obj_new(Compiler *c, int ci, int id, Buf *b);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);
 int scope_has_return(Compiler *c, int scope_idx);

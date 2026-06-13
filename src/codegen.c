@@ -162,7 +162,8 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
     case TY_POLY:   buf_puts(&cty, "sp_RbVal"); init = "sp_box_nil()"; break;
     case TY_CLASS:  buf_puts(&cty, "sp_Class"); init = "((sp_Class){-1})"; break;
     default:
-      if (is_scalar_ret(t) && t != TY_UNKNOWN) { emit_ctype(c, t, &cty); init = "NULL"; ptr = 1; }
+      if (comp_ty_value_obj(c, t)) { emit_ctype(c, t, &cty); init = "{0}"; ptr = 0; }
+      else if (is_scalar_ret(t) && t != TY_UNKNOWN) { emit_ctype(c, t, &cty); init = "NULL"; ptr = 1; }
       else {
         fprintf(stderr, "spinelc: local '%s' has unsupported type %s\n", lv->name, ty_name(t));
         exit(1);
@@ -266,7 +267,13 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     else if (!strcmp(cn, "TrueClass") || !strcmp(cn, "FalseClass") || !strcmp(cn, "NilClass")) { buf_puts(b, "int self"); }
     else if (!strcmp(cn, "Array"))   { buf_puts(b, "sp_RbVal self"); }
     else if (!strcmp(cn, "Object") || !strcmp(cn, "Numeric")) { buf_puts(b, "sp_RbVal self"); }
-    else { buf_printf(b, "sp_%s *self", cn); }
+    else {
+      /* value-type reader methods take self by value; initialize keeps a
+         pointer so it can populate the fields during construction. */
+      int vt = c->classes[s->class_id].is_value_type;
+      int is_init = s->name && !strcmp(s->name, "initialize");
+      buf_printf(b, "sp_%s %sself", cn, (vt && !is_init) ? "" : "*");
+    }
     wrote = 1;
   }
   for (int i = 0; i < s->nparams; i++) {
@@ -368,6 +375,10 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   const char *saved_dmn = g_dm_subst_name; int saved_dmnode = g_dm_subst_node;
   g_dm_subst_name = s->dm_subst_name; g_dm_subst_node = s->dm_subst_node;
   int saved_lowered = g_current_scope_is_lowered; g_current_scope_is_lowered = s->is_lowered_yield;
+  /* value-type reader methods receive self by value, so ivar access uses `.` */
+  const char *saved_deref = g_self_deref;
+  g_self_deref = (s->class_id >= 0 && !s->is_cmethod && c->classes[s->class_id].is_value_type &&
+                  s->name && strcmp(s->name, "initialize")) ? "." : "->";
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   if (method_is_void(s)) {
     emit_stmts(c, s->body, b, 1);
@@ -375,9 +386,13 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   else {
     emit_stmts_tail(c, s->body, b, 1);
     buf_puts(b, "  return ");
-    if (ty_is_object(s->ret)) { buf_puts(b, "NULL;\n"); /* unreachable default (object pointer) */ }
+    if (ty_is_object(s->ret)) {
+      if (comp_ty_value_obj(c, s->ret)) buf_printf(b, "(sp_%s){0};\n", c->classes[ty_object_class(s->ret)].name);
+      else buf_puts(b, "NULL;\n"); /* unreachable default (object pointer) */
+    }
     else buf_printf(b, "%s;\n", default_value(s->ret));
   }
+  g_self_deref = saved_deref;
   g_ret_type = saved_rt; g_ensure_depth = saved_ed;
   g_emitting_class_id = saved_emcls;
   g_dm_subst_name = saved_dmn; g_dm_subst_node = saved_dmnode;
@@ -1137,6 +1152,30 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   }
   int initcls = cid;
   int init = comp_method_in_chain(c, cid, "initialize", &initcls);
+  if (ci->is_value_type) {
+    /* value-type: build on the stack and return by value (no heap / GC) */
+    buf_printf(b, "static sp_%s sp_%s_new(", ci->name, ci->name);
+    if (init >= 0 && c->scopes[init].nparams > 0) {
+      Scope *s = &c->scopes[init];
+      for (int i = 0; i < s->nparams; i++) {
+        if (i) buf_puts(b, ", ");
+        LocalVar *p = scope_local(s, s->pnames[i]);
+        TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
+        emit_ctype(c, pt, b);
+        buf_printf(b, " lv_%s", s->pnames[i]);
+      }
+    }
+    else buf_puts(b, "void");
+    buf_printf(b, ") {\n  sp_%s self = {0};\n  self.cls_id = %d;\n", ci->name, cid);
+    if (init >= 0 && c->scopes[init].reachable && !c->scopes[init].yields) {
+      buf_printf(b, "  sp_%s_initialize(&self", c->classes[initcls].name);
+      Scope *s = &c->scopes[init];
+      for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
+      buf_puts(b, ");\n");
+    }
+    buf_puts(b, "  return self;\n}\n");
+    return;
+  }
   buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
   if (init >= 0 && c->scopes[init].nparams > 0) {
     Scope *s = &c->scopes[init];
@@ -1820,8 +1859,9 @@ char *codegen_program(const NodeTable *nt) {
     else {
       int icid = i;
       int init = comp_method_in_chain(c, i, "initialize", &icid);
+      const char *star = ci->is_value_type ? "" : "*";
       if (init >= 0 && c->scopes[init].nparams > 0) {
-        buf_printf(&b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+        buf_printf(&b, "static sp_%s %ssp_%s_new(", ci->name, star, ci->name);
         Scope *s = &c->scopes[init];
         for (int m = 0; m < s->nparams; m++) {
           if (m) buf_puts(&b, ", ");
@@ -1831,7 +1871,7 @@ char *codegen_program(const NodeTable *nt) {
         }
         buf_puts(&b, ");\n");
       }
-      else buf_printf(&b, "static sp_%s *sp_%s_new(void);\n", ci->name, ci->name);
+      else buf_printf(&b, "static sp_%s %ssp_%s_new(void);\n", ci->name, star, ci->name);
     }
   }
   if (c->nscopes > 1 || c->nclasses > 0) buf_puts(&b, "\n");

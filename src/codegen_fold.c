@@ -2705,7 +2705,11 @@ else {
   int virtual = is_scalar_ret(ret) && (impl_n > 1 || (!m && impl_n >= 1));
 
   if (!virtual) {
-    buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
+    /* a value-type receiver is passed by value (no pointer cast) */
+    if (comp_ty_value_obj(c, ty_object(cid)))
+      buf_printf(b, "sp_%s_%s(%s", c->classes[defcls].name, mc(mname), selfptr);
+    else
+      buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
     for (int k = 0; k < np; k++) buf_printf(b, ", _t%d", atmp[k]);
     if (needs_blk_arg) {
       if (blk_tmp >= 0) buf_printf(b, ", _t%d", blk_tmp);

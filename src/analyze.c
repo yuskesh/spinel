@@ -1528,6 +1528,18 @@ void analyze_program(Compiler *c) {
         TyKind rt = comp_ntype(c, recv);
         if (ty_is_object(rt)) { int q = ty_object_class(rt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
       }
+      /* `method(:foo)` with no receiver captures `self`; a bound Method needs a
+         stable heap pointer, so the enclosing class can't be a value type. */
+      if (nm && !strcmp(nm, "method") && recv < 0) {
+        Scope *s = comp_scope_of(c, id);
+        if (s && s->class_id >= 0 && s->class_id < c->nclasses) c->classes[s->class_id].is_value_type = 0;
+      }
+      /* instance_eval/exec lifts the block body into a method on the receiver
+         that needs a by-pointer self; exclude such receivers. */
+      if (nm && (!strcmp(nm, "instance_eval") || !strcmp(nm, "instance_exec")) && recv >= 0) {
+        TyKind rt = comp_ntype(c, recv);
+        if (ty_is_object(rt)) { int q = ty_object_class(rt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
+      }
       int args = nt_ref(c->nt, id, "arguments"); int an = 0;
       const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
       for (int k = 0; k < an; k++) {
@@ -1554,14 +1566,6 @@ void analyze_program(Compiler *c) {
       }
     }
   }
-  /* A value-type instance returned from a method would be a pointer into that
-     method's frame -- it dangles once the method returns. Exclude any class
-     that is some method's return type. (Returning by value would need the
-     full value representation; that is a later stage.) */
-  for (int s = 0; s < c->nscopes; s++) {
-    TyKind rt = c->scopes[s].ret;
-    if (ty_is_object(rt)) { int q = ty_object_class(rt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
-  }
   /* An instance built inside a poly-returning method is liable to be boxed at
      the (poly) return -- sp_box_obj would carry a stack pointer. And an
      instance that is a block's result is collected (map/collect -> a boxed
@@ -1572,7 +1576,9 @@ void analyze_program(Compiler *c) {
     int q = ty_object_class(t);
     if (q < 0 || q >= c->nclasses || !c->classes[q].is_value_type) continue;
     Scope *s = comp_scope_of(c, id);
-    if (s && s->ret == TY_POLY) c->classes[q].is_value_type = 0;
+    /* poly scalar return boxes; a tuple return (POLY_ARRAY, e.g. `return a, b, c`)
+       boxes each element. Either way a value instance here would be boxed. */
+    if (s && (s->ret == TY_POLY || s->ret == TY_POLY_ARRAY)) c->classes[q].is_value_type = 0;
   }
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
