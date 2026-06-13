@@ -712,8 +712,24 @@ int infer_write_types(Compiler *c) {
     TyKind *slot = NULL;
     if (rty && !strcmp(rty, "LocalVariableReadNode")) {
       const char *rnm = nt_str(nt, recv, "name");
-      LocalVar *lv = rnm ? scope_local(comp_scope_of(c, recv), rnm) : NULL;
+      Scope *lsc = rnm ? comp_scope_of(c, recv) : NULL;
+      LocalVar *lv = lsc ? scope_local(lsc, rnm) : NULL;
       if (!lv || lv->is_param || lv->is_block_param) continue;
+      /* A bare `x[i]` read must not promote `x` to a hash if `x` elsewhere gets
+         an array-typed write (`x = arr.sort_by{}` etc.): it is an array, and the
+         hash type would otherwise collide with it. Mirrors the ivar guard. */
+      if (!is_push && !is_idx_write && lv->type == TY_UNKNOWN) {
+        int has_array_write = 0;
+        for (int w = 0; w < nt->count && !has_array_write; w++) {
+          const char *wty = nt_type(nt, w);
+          if (!wty || strcmp(wty, "LocalVariableWriteNode")) continue;
+          const char *wn = nt_str(nt, w, "name");
+          if (!wn || strcmp(wn, rnm) || comp_scope_of(c, w) != lsc) continue;
+          int wv = nt_ref(nt, w, "value");
+          if (wv >= 0 && ty_is_array(infer_type(c, wv))) has_array_write = 1;
+        }
+        if (has_array_write) continue;
+      }
       slot = &lv->type;
     }
     else if (rty && !strcmp(rty, "InstanceVariableReadNode")) {

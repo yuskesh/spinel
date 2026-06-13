@@ -402,6 +402,18 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *vty = nt_type(c->nt, v);
   int vn = 0;
   int is_empty_array = vty && !strcmp(vty, "ArrayNode") && (nt_arr(c->nt, v, "elements", &vn), vn == 0);
+  /* a bare `Array.new` (no size/block) is an empty array of the target's type */
+  if (!is_empty_array && vty && !strcmp(vty, "CallNode") &&
+      !strcmp(nt_str(c->nt, v, "name") ? nt_str(c->nt, v, "name") : "", "new") &&
+      nt_ref(c->nt, v, "block") < 0) {
+    int ar = nt_ref(c->nt, v, "receiver");
+    const char *art = ar >= 0 ? nt_type(c->nt, ar) : NULL;
+    int aargs = nt_ref(c->nt, v, "arguments"); int aac = 0;
+    if (aargs >= 0) nt_arr(c->nt, aargs, "arguments", &aac);
+    if (art && !strcmp(art, "ConstantReadNode") &&
+        !strcmp(nt_str(c->nt, ar, "name") ? nt_str(c->nt, ar, "name") : "", "Array") && aac == 0)
+      is_empty_array = 1;
+  }
   int hn = 0;
   int is_empty_hash = vty && !strcmp(vty, "HashNode") && (nt_arr(c->nt, v, "elements", &hn), hn == 0);
   /* h = Hash.new / Hash.new(default) */

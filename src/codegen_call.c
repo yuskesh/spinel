@@ -3666,7 +3666,20 @@ else {
   if (recv >= 0 && argc == 1 &&
       (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?")) &&
       nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")) {
-    int yes = ty_matches_class(rt, nt_str(nt, argv[0], "name"), !strcmp(name, "instance_of?"));
+    /* `[]` and a bare `Array.new` are arrays even when their element type (and
+       so the inferred type) is still UNKNOWN -- treat them as such for the fold. */
+    TyKind eff_rt = rt;
+    if (eff_rt == TY_UNKNOWN) {
+      const char *rvt = nt_type(nt, recv);
+      if (rvt && !strcmp(rvt, "ArrayNode")) eff_rt = TY_POLY_ARRAY;
+      else if (rvt && !strcmp(rvt, "CallNode") && nt_str(nt, recv, "name") &&
+               !strcmp(nt_str(nt, recv, "name"), "new")) {
+        int rr = nt_ref(nt, recv, "receiver");
+        if (rr >= 0 && nt_type(nt, rr) && !strcmp(nt_type(nt, rr), "ConstantReadNode") &&
+            nt_str(nt, rr, "name") && !strcmp(nt_str(nt, rr, "name"), "Array")) eff_rt = TY_POLY_ARRAY;
+      }
+    }
+    int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), !strcmp(name, "instance_of?"));
     if (yes >= 0) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes); return; }
   }
 

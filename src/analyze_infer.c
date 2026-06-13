@@ -405,6 +405,9 @@ else {
           int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
           if (bn > 0 && bb) { TyKind et = infer_type(c, bb[bn - 1]); if (et != TY_UNKNOWN) return ty_array_of(et); }
         }
+        /* a bare `Array.new` carries no element type; leave it UNKNOWN (like an
+           empty `[]`) so the push-promotion pass can narrow it from `<<`/push. */
+        if (argc == 0 && blk < 0) return TY_UNKNOWN;
         return TY_POLY_ARRAY;
       }
       if (cn && !strcmp(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
