@@ -685,7 +685,11 @@ int infer_write_types(Compiler *c) {
         kt = infer_type(c, argv[0]);
         if (kt == TY_SYMBOL) { vt = TY_INT; /* dummy: sym hash val is always poly */ }
         else if (kt == TY_STRING) { vt = TY_POLY; /* will map to STR_POLY */ }
-        else if (kt == TY_INT)    { vt = TY_POLY; /* will map to POLY_POLY */ }
+        /* An int-key bare read (`x[i]`) is NOT strong hash evidence: arrays
+           index by int too, and an array-returning method assigned to `x` may
+           not have settled its element type yet, so promoting here would lock
+           the slot to a hash before the array write is recognized. A genuine
+           int-keyed hash is typed by its `[]=` writes or literal instead. */
         else continue;
       }
       else continue;
@@ -716,10 +720,11 @@ int infer_write_types(Compiler *c) {
       Scope *lsc = rnm ? comp_scope_of(c, recv) : NULL;
       LocalVar *lv = lsc ? scope_local(lsc, rnm) : NULL;
       if (!lv || lv->is_param || lv->is_block_param) continue;
-      /* A bare `x[i]` read must not promote `x` to a hash if `x` elsewhere gets
-         an array-typed write (`x = arr.sort_by{}` etc.): it is an array, and the
-         hash type would otherwise collide with it. Mirrors the ivar guard. */
-      if (!is_push && !is_idx_write && lv->type == TY_UNKNOWN) {
+      /* A bare `x[i]` read OR an `x[i] = v` element assignment must not promote
+         `x` to a hash if `x` elsewhere gets an array-typed write (`x = a.split`
+         etc.): it is an array indexed/assigned by position, and the hash type
+         would otherwise collide with it. Mirrors the ivar guard. */
+      if (!is_push && lv->type == TY_UNKNOWN) {
         int has_array_write = 0;
         for (int w = 0; w < nt->count && !has_array_write; w++) {
           const char *wty = nt_type(nt, w);

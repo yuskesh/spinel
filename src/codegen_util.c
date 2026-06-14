@@ -277,7 +277,12 @@ void unsupported(Compiler *c, int id, const char *what) {
   else
     fprintf(stderr, "spinelc: unsupported %s: node %d (%s)\n",
             what, id, ty ? ty : "?");
-  exit(1);
+  /* SP_COLLECT_ERRORS: don't abort on the first gap -- keep going so one
+     run surfaces every unsupported construct (the emitted C is then
+     malformed and only the stderr list is useful). */
+  static int collect = -1;
+  if (collect < 0) collect = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
+  if (!collect) exit(1);
 }
 int builtin_class_id(const char *name) {
   if (!name) return 0;
