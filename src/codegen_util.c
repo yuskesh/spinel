@@ -79,6 +79,12 @@ int g_redo_depth = 0;
 const char *g_loop_break_var = NULL;
 const char *g_result_var = NULL;
 int g_result_poly = 0;
+/* Loop-invariant string-length hoisting: while a loop whose receiver string is
+   not mutated in its body is being emitted, g_hoist_len_recv holds that
+   receiver's AST local name and g_hoist_len_var the C temp caching its length;
+   a matching `s.length`/`s.size` then emits the temp instead of strlen. */
+const char *g_hoist_len_var = NULL;
+const char *g_hoist_len_recv = NULL;
 TyKind g_ret_type = TY_UNKNOWN;
 int g_current_scope_is_lowered = 0;
 EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];

@@ -1413,6 +1413,68 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
   buf_printf(b, "_cr%d; })", cr);
 }
 
+/* Find a string-typed `s.length`/`s.size` (s a bare local var) anywhere in
+   `root`; return the receiver node id, or -1. The receiver's length is then a
+   candidate to hoist out of a loop. */
+static int find_hoistable_strlen(Compiler *c, int root) {
+  if (root < 0) return -1;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty && !strcmp(ty, "CallNode")) {
+    const char *nm = nt_str(nt, root, "name");
+    int recv = nt_ref(nt, root, "receiver");
+    int args = nt_ref(nt, root, "arguments");
+    int an = 0; if (args >= 0) nt_arr(nt, args, "arguments", &an);
+    if (nm && (!strcmp(nm, "length") || !strcmp(nm, "size")) && an == 0 && recv >= 0 &&
+        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "LocalVariableReadNode") &&
+        nt_str(nt, recv, "name") && comp_ntype(c, recv) == TY_STRING)
+      return recv;
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) { int r = find_hoistable_strlen(c, nt_ref_at(nt, root, i)); if (r >= 0) return r; }
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *el = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++) { int r = find_hoistable_strlen(c, el[j]); if (r >= 0) return r; }
+  }
+  return -1;
+}
+
+/* Whether `root`'s subtree mutates the local `name` (reassignment or an
+   in-place mutating method on it). Mirrors legacy body_mutates_var?. */
+static int subtree_mutates_local(Compiler *c, int root, const char *name) {
+  if (root < 0) return 0;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty) {
+    if (!strcmp(ty, "CallNode")) {
+      const char *mn = nt_str(nt, root, "name");
+      int recv = nt_ref(nt, root, "receiver");
+      if (mn && recv >= 0 && nt_type(nt, recv) &&
+          !strcmp(nt_type(nt, recv), "LocalVariableReadNode") &&
+          nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), name)) {
+        static const char *const mut[] = {"push","pop","shift","unshift","<<","[]=","delete",
+          "delete_at","clear","insert","replace","concat","sort!","reverse!","compact!","uniq!",
+          "merge!","store","update","fill","prepend","gsub!","sub!","upcase!","downcase!",
+          "strip!","chomp!","slice!","squeeze!","force_encoding", NULL};
+        for (int i = 0; mut[i]; i++) if (!strcmp(mn, mut[i])) return 1;
+      }
+    }
+    if ((!strcmp(ty, "LocalVariableWriteNode") || !strcmp(ty, "LocalVariableOperatorWriteNode") ||
+         !strcmp(ty, "LocalVariableOrWriteNode") || !strcmp(ty, "LocalVariableAndWriteNode")) &&
+        nt_str(nt, root, "name") && !strcmp(nt_str(nt, root, "name"), name))
+      return 1;
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) if (subtree_mutates_local(c, nt_ref_at(nt, root, i), name)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *el = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++) if (subtree_mutates_local(c, el[j], name)) return 1;
+  }
+  return 0;
+}
+
 void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -1432,6 +1494,23 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     buf_puts(b, ");\n");
     return;
   }
+  /* Hoist a loop-invariant string length out of the loop: if the predicate
+     tests `s.length`/`s.size` for a string local `s` the body never mutates,
+     compute strlen once before the loop and reuse it (avoids O(n) strlen per
+     iteration). Save/restore the outer hoist state for nested loops. */
+  const char *sv_hvar = g_hoist_len_var, *sv_hrecv = g_hoist_len_recv;
+  char hbuf[24];
+  int hr = find_hoistable_strlen(c, pred);
+  if (hr >= 0) {
+    const char *hn = nt_str(nt, hr, "name");
+    if (hn && !subtree_mutates_local(c, body, hn)) {
+      int ht = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "mrb_int _t%d = sp_str_length(", ht); emit_expr(c, hr, b); buf_puts(b, ");\n");
+      snprintf(hbuf, sizeof hbuf, "_t%d", ht);
+      g_hoist_len_var = hbuf; g_hoist_len_recv = hn;
+    }
+  }
   emit_indent(b, indent);
   buf_puts(b, "while (");
   if (is_until) buf_puts(b, "!(");
@@ -1441,6 +1520,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   emit_loop_body(c, body, b, indent + 1);
   emit_indent(b, indent);
   buf_puts(b, "}\n");
+  g_hoist_len_var = sv_hvar; g_hoist_len_recv = sv_hrecv;
 }
 
 void emit_for(Compiler *c, int id, Buf *b, int indent) {

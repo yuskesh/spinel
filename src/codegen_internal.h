@@ -90,6 +90,8 @@ extern int g_redo_depth;
 
 /* When set inside a loop-as-expression, BreakNode assigns its value here. */
 extern const char *g_loop_break_var;
+extern const char *g_hoist_len_var;
+extern const char *g_hoist_len_recv;
 /* When set, tail positions assign to this var instead of `return`ing
    (used to give a begin/rescue a value). */
 extern const char *g_result_var;

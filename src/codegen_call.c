@@ -7353,7 +7353,13 @@ else {
         buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
       else if (!strcmp(name, "to_sym") || !strcmp(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
-      else if (!strcmp(name, "length") || !strcmp(name, "size")) buf_printf(b, "sp_str_length(%s)", r);
+      else if (!strcmp(name, "length") || !strcmp(name, "size")) {
+        if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
+            !strcmp(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
+            !strcmp(nt_str(nt, recv, "name"), g_hoist_len_recv))
+          buf_puts(b, g_hoist_len_var);
+        else buf_printf(b, "sp_str_length(%s)", r);
+      }
       else if (!strcmp(name, "bytesize")) buf_printf(b, "(mrb_int)sp_str_byte_len(%s)", r);
       else if (!strcmp(name, "upcase"))     buf_printf(b, "sp_str_upcase(%s)", r);
       else if (!strcmp(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
