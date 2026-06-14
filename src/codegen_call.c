@@ -893,9 +893,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int t = ++g_tmp;
     buf_puts(b, "({ ");
     emit_ctype(c, art, b); buf_printf(b, " _t%d = ", t); emit_expr(c, recv, b); buf_puts(b, "; ");
+    TyKind elem = ty_array_elem(art);
     for (int a = 0; a < argc; a++) {
       buf_printf(b, "sp_%sArray_push(_t%d, ", k, t);
-      if (art == TY_POLY_ARRAY) emit_boxed(c, argv[a], b); else emit_expr(c, argv[a], b);
+      if (art == TY_POLY_ARRAY) emit_boxed(c, argv[a], b);
+      else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_STRING) {
+        /* a poly value (holds a string at runtime) into a str_array: coerce */
+        buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")");
+      }
+      else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_INT) {
+        buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[a], b); buf_puts(b, ")");
+      }
+      else if (comp_ntype(c, argv[a]) == TY_POLY && elem == TY_FLOAT) {
+        buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[a], b); buf_puts(b, ")");
+      }
+      else emit_expr(c, argv[a], b);
       buf_puts(b, "); ");
     }
     buf_printf(b, "_t%d; })", t);
@@ -8454,11 +8466,19 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
   if ((!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) && argc >= 1) {
+    TyKind et = ty_array_elem(rt);
     for (int a = 0; a < argc; a++) {
       emit_indent(b, indent);
       buf_printf(b, "sp_%sArray_push(", k);
       emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[a], b); buf_puts(b, ");\n");
+      /* coerce a poly value (holds the element type at runtime) to the typed
+         array's element representation */
+      TyKind vt = comp_ntype(c, argv[a]);
+      if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+      else if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+      else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[a], b);
+      buf_puts(b, ");\n");
     }
     return 1;
   }
