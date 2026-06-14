@@ -984,6 +984,47 @@ void analyze_program(Compiler *c) {
     if (!ch) break;
   }
 
+  /* Optimistic re-narrow: the monotonic fixpoint locks a slot to poly the
+     first time it sees a transient poly (a value read before its type settled,
+     or an index/hash promotion driven by a then-poly key). Reset every poly
+     ivar and poly (non-block) param to UNKNOWN once, then re-run the monotonic
+     passes. With the now-stable concrete slots feeding them, a slot whose
+     entire contribution closure is concrete re-narrows; one with a genuine
+     heterogeneous contribution re-widens to poly. Sound (monotonic re-derive
+     over fixed inputs); dissolves the cleared transient-poly cycles. */
+  {
+    int any = 0;
+    for (int ci = 0; ci < c->nclasses; ci++)
+      for (int iv = 0; iv < c->classes[ci].nivars; iv++)
+        if (c->classes[ci].ivar_types[iv] == TY_POLY) { c->classes[ci].ivar_types[iv] = TY_UNKNOWN; any = 1; }
+    for (int s = 0; s < c->nscopes; s++) {
+      Scope *sc = &c->scopes[s];
+      for (int i = 0; i < sc->nparams; i++) {
+        LocalVar *p = scope_local(sc, sc->pnames[i]);
+        if (p && p->type == TY_POLY && !p->is_block_param) { p->type = TY_UNKNOWN; any = 1; }
+      }
+    }
+    if (any) {
+      for (int iter = 0; iter < 128; iter++) {
+        int ch = 0;
+        ch |= infer_write_types(c);
+        ch |= infer_param_types(c);
+        ch |= propagate_prep_params(c);
+        ch |= infer_string_params(c);
+        ch |= infer_default_param_types(c);
+        ch |= infer_block_params(c);
+        ch |= infer_for_index(c);
+        ch |= infer_global_const_types(c);
+        ch |= infer_multiwrite_const_types(c);
+        ch |= infer_ivar_types(c);
+        ch |= infer_cvar_types(c);
+        ch |= infer_inherited_ivars(c);
+        ch |= infer_return_types(c);
+        if (!ch) break;
+      }
+    }
+  }
+
   /* Backstop: a parameter still unknown but with a `= nil` default is a
      nullable param -- represent it as poly so it can hold nil or a value.
      Also widen TY_SYMBOL/TY_BOOL params: those types have no nil sentinel
