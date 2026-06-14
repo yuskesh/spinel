@@ -63,9 +63,9 @@ int infer_write_types(Compiler *c) {
       nm = nt_str(nt, id, "name");
       int val_id = nt_ref(nt, id, "value");
       newt = infer_type(c, val_id);
-      /* a `x = nil` write doesn't pin the type: nil is the absent/default
-         value, so the variable takes its non-nil assignments' type */
-      if (newt == TY_NIL) newt = TY_POLY;
+      /* a `x = nil` write doesn't pin the type: flow it as TY_NIL so ty_unify
+         can narrow it against an object write (NULL encodes nil); a purely-nil
+         local is mapped to poly by a post-fixpoint backstop. */
       /* Empty-collection literal `x = []` / `x = {}` returns TY_UNKNOWN from
          infer_type. If the container-fold from a prior iteration already gave
          this local a meaningful type (stored in gc_root), preserve it so that
@@ -919,11 +919,13 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
     }
 else {
       at = infer_type(c, argv[k]);
-      /* nil is not a first-class param type; a nil arg widens the param to poly */
-      if (at == TY_NIL) at = TY_POLY;
     }
     LocalVar *p = scope_local(m, m->pnames[k]);
     if (!p) continue;
+    /* A nil arg narrows against an object param (NULL encodes nil) but widens
+       any non-object param to poly. Pass nil through to ty_unify only while
+       the param is still unknown or already an object. */
+    if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
     TyKind merged = ty_unify(p->type, at);
     if (merged != p->type) { p->type = merged; changed = 1; }
     if (merged == TY_PROC) {
@@ -937,10 +939,10 @@ else {
       int pi = m->rest_idx + 1 + j;
       int ai = pos_argc - m->npost_rest + j;
       if (pi >= m->nparams || ai < 0 || ai >= pos_argc || !argv) continue;
-      TyKind at = infer_type(c, argv[ai]);
-      if (at == TY_NIL) at = TY_POLY;
       LocalVar *p = scope_local(m, m->pnames[pi]);
       if (!p) continue;
+      TyKind at = infer_type(c, argv[ai]);
+      if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
       TyKind merged = ty_unify(p->type, at);
       if (merged != p->type) { p->type = merged; changed = 1; }
     }

@@ -1376,7 +1376,22 @@ void analyze_program(Compiler *c) {
     for (int i = 0; i < c->scopes[s].nlocals; i++) {
       LocalVar *blv = &c->scopes[s].locals[i];
       if (!blv->is_param && blv->type == TY_UNKNOWN) blv->type = TY_POLY;
+      /* A slot left at TY_NIL only ever saw nil (it never narrowed against an
+         object). It has no object class, so represent it as a boxed-nil poly.
+         Applies to params too (a purely-nil param). */
+      if (blv->type == TY_NIL) blv->type = TY_POLY;
     }
+
+  /* Re-run ivar inference now that purely-nil params/locals became poly: an
+     ivar fed by such a param (`@x = idx` where every `set` call passed nil)
+     was skipped during the fixpoint (its value read as TY_NIL) and may have
+     stayed a narrower scalar; with the param now poly the write contributes
+     poly so the ivar widens to match. */
+  for (int it = 0; it < 8; it++) {
+    int ch = infer_ivar_types(c);
+    ch |= infer_inherited_ivars(c);
+    if (!ch) break;
+  }
 
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)
@@ -1565,6 +1580,31 @@ void analyze_program(Compiler *c) {
           LocalVar *lv = (vn && s) ? scope_local(s, vn) : NULL;
           if (lv && lv->type != vt) { int q = ty_object_class(vt); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
         }
+      }
+    }
+    /* A nil assignment to a value-object-typed slot makes it nullable. Value
+       types are stack values with no NULL encoding, so the class must be a
+       heap object instead. (ty_unify keeps an object type when it also sees
+       nil; this disqualifies the value-type representation for such a class.) */
+    if (!strcmp(ty, "LocalVariableWriteNode") || !strcmp(ty, "InstanceVariableWriteNode")) {
+      int v = nt_ref(c->nt, id, "value");
+      if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "NilNode")) {
+        TyKind st = TY_UNKNOWN;
+        Scope *s = comp_scope_of(c, id);
+        const char *nm = nt_str(c->nt, id, "name");
+        if (!strcmp(ty, "LocalVariableWriteNode")) {
+          LocalVar *lv = (nm && s) ? scope_local(s, nm) : NULL;
+          if (lv) st = lv->type;
+        }
+        else {
+          int cid2 = s ? s->class_id : -1;
+          if (cid2 < 0 && c->node_cbody[id] >= 0) cid2 = c->node_cbody[id];
+          if (cid2 >= 0 && cid2 < c->nclasses && nm) {
+            int iv = comp_ivar_index(&c->classes[cid2], nm);
+            if (iv >= 0) st = c->classes[cid2].ivar_types[iv];
+          }
+        }
+        if (ty_is_object(st)) { int q = ty_object_class(st); if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0; }
       }
     }
   }

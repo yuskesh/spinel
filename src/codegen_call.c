@@ -7858,9 +7858,11 @@ else {
   if (recv >= 0 && argc == 0 && !strcmp(name, "to_s")) {
     buf_puts(b, "\"\""); return;
   }
-  /* nil? on an object type: objects are never nil */
+  /* nil? on an object type: a value-type object is never nil; a heap object
+     reference is nil exactly when its pointer is NULL. */
   if (recv >= 0 && argc == 0 && !strcmp(name, "nil?") && ty_is_object(rt)) {
-    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+    if (comp_ty_value_obj(c, rt)) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }
+    else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)"); }
     return;
   }
 
