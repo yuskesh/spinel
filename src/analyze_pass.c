@@ -131,6 +131,26 @@ int infer_param_hash_value(Compiler *c) {
   return changed;
 }
 
+/* 1 if local `name` in scope `sc` has at least one write and every write
+   assigns an empty `{}` hash literal -- i.e. it is a hash container whose
+   contents come from elsewhere (passed by reference into a callee). Such a
+   local can safely adopt a hash type from a parameter it is passed to. */
+static int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
+  const NodeTable *nt = c->nt;
+  int saw = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || strcmp(wn, name) || comp_scope_of(c, id) != sc) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_HashNode) return 0;
+    int hn = 0; nt_arr(nt, v, "elements", &hn);
+    if (hn != 0) return 0;
+    saw = 1;
+  }
+  return saw;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -1043,6 +1063,20 @@ else {
     if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
     TyKind merged = ty_unify(p->type, at);
     if (merged != p->type) { p->type = merged; changed = 1; }
+    /* Reverse binding: an empty-`{}`-only local passed to a hash parameter is
+       that hash container, filled inside the callee through the reference.
+       Type the local as the param's hash so it is constructed (sp_<H>Hash_new)
+       rather than passed as a NULL-deref'ing poly nil. */
+    if (ty_is_hash(p->type) && apty && !strcmp(apty, "LocalVariableReadNode")) {
+      const char *an = nt_str(nt, argv[k], "name");
+      Scope *asc = an ? comp_scope_of(c, argv[k]) : NULL;
+      LocalVar *al = asc ? scope_local(asc, an) : NULL;
+      if (al && !al->is_param && !al->is_block_param &&
+          (al->type == TY_UNKNOWN || al->type == TY_POLY) &&
+          local_all_writes_empty_hash(c, asc, an)) {
+        al->type = p->type; changed = 1;
+      }
+    }
     if (merged == TY_PROC) {
       TyKind pr = proc_ret_of(c, argv[k]);
       if (pr != TY_UNKNOWN && p->proc_ret != (int)pr) { p->proc_ret = (int)pr; changed = 1; }

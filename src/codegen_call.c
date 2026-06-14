@@ -4239,8 +4239,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, eq ? "sp_float_is_nil(" : "(!sp_float_is_nil(");
         emit_expr(c, other, b); buf_puts(b, eq ? ")" : "))");
       }
-      else if (ot == TY_STRING || ot == TY_MATCHDATA || ot == TY_STRINGIO || ot == TY_STRINGSCANNER) {
-        /* nullable pointer: NULL == nil */
+      else if (ot == TY_STRING || ot == TY_MATCHDATA || ot == TY_STRINGIO || ot == TY_STRINGSCANNER ||
+               ty_is_hash(ot) || ty_is_array(ot) || ot == TY_PROC || ot == TY_IO ||
+               ot == TY_FIBER || ot == TY_EXCEPTION || ot == TY_REGEX) {
+        /* nullable heap pointer: a NULL pointer encodes nil (a `@h = {}` slot is
+           still NULL until assigned, so `@h == nil` must be a NULL test, not the
+           always-false fallback below). */
         buf_puts(b, "(("); emit_expr(c, other, b); buf_printf(b, ") %s 0)", eq ? "==" : "!=");
       }
       else { buf_puts(b, "(("); emit_expr(c, other, b); buf_printf(b, "), %d)", eq ? 0 : 1); }
