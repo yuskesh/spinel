@@ -1537,6 +1537,163 @@ static char *build_symbol_map_json(Compiler *c) {
   return b.p ? b.p : strdup("{\n  \"symbols\": [\n\n  ]\n}\n");
 }
 
+/* Append the RBS form of `t`. Containers recurse via the type lattice's
+   element/key/value accessors; the boxed `poly` family and anything
+   unrecognized degrade to `untyped`. */
+static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
+  if (ty_is_object(t)) {
+    int cid = ty_object_class(t);
+    if (cid >= 0 && cid < c->nclasses && c->classes[cid].name)
+      class_ruby_name_into(b, c->classes[cid].name);
+    else
+      buf_puts(b, "untyped");
+    return;
+  }
+  if (ty_is_array(t)) {
+    buf_puts(b, "Array[");
+    ty_to_rbs_into(c, ty_array_elem(t), b);
+    buf_puts(b, "]");
+    return;
+  }
+  if (ty_is_hash(t)) {
+    buf_puts(b, "Hash[");
+    ty_to_rbs_into(c, ty_hash_key(t), b);
+    buf_puts(b, ", ");
+    ty_to_rbs_into(c, ty_hash_val(t), b);
+    buf_puts(b, "]");
+    return;
+  }
+  switch (t) {
+    case TY_INT: case TY_BIGINT:   buf_puts(b, "Integer"); break;
+    case TY_FLOAT:                 buf_puts(b, "Float"); break;
+    case TY_STRING: case TY_STRBUF: buf_puts(b, "String"); break;
+    case TY_SYMBOL:                buf_puts(b, "Symbol"); break;
+    case TY_BOOL:                  buf_puts(b, "bool"); break;
+    case TY_NIL:                   buf_puts(b, "nil"); break;
+    case TY_VOID:                  buf_puts(b, "void"); break;
+    case TY_RANGE:                 buf_puts(b, "Range[Integer]"); break;
+    case TY_TIME:                  buf_puts(b, "Time"); break;
+    case TY_REGEX:                 buf_puts(b, "Regexp"); break;
+    case TY_MATCHDATA:             buf_puts(b, "MatchData"); break;
+    case TY_EXCEPTION:             buf_puts(b, "Exception"); break;
+    case TY_COMPLEX:               buf_puts(b, "Complex"); break;
+    case TY_RATIONAL:              buf_puts(b, "Rational"); break;
+    case TY_STRINGIO:              buf_puts(b, "StringIO"); break;
+    case TY_STRINGSCANNER:         buf_puts(b, "StringScanner"); break;
+    case TY_PROC: case TY_CURRY:   buf_puts(b, "Proc"); break;
+    case TY_FIBER:                 buf_puts(b, "Fiber"); break;
+    case TY_RANDOM:                buf_puts(b, "Random"); break;
+    case TY_METHOD:                buf_puts(b, "Method"); break;
+    case TY_IO:                    buf_puts(b, "IO"); break;
+    case TY_CLASS:                 buf_puts(b, "Class"); break;
+    default:                       buf_puts(b, "untyped"); break;
+  }
+}
+
+/* A type that landed on the boxed slow path -- its RBS is `untyped`, so the
+   method line gets a "widened" comment. */
+static int ty_is_degraded(TyKind t) {
+  return t == TY_POLY || t == TY_POLY_ARRAY || t == TY_POLY_POLY_HASH ||
+         t == TY_SYM_POLY_HASH || t == TY_STR_POLY_HASH;
+}
+
+/* Emit one `  <defprefix>: (params) -> ret` RBS line for scope `s`, with a
+   degrade comment when any param/return widened to untyped. */
+static void rbs_method_line(Compiler *c, Buf *b, const char *defprefix, Scope *s) {
+  int degraded = 0;
+  buf_printf(b, "  %s: (", defprefix);
+  int j = 0;
+  for (int i = 0; i < s->nparams; i++) {
+    LocalVar *p = scope_local(s, s->pnames[i]);
+    TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
+    if (j > 0) buf_puts(b, ", ");
+    ty_to_rbs_into(c, pt, b);
+    if (ty_is_degraded(pt)) degraded = 1;
+    j++;
+  }
+  buf_puts(b, ") -> ");
+  if (s->ret == TY_UNKNOWN || s->ret == TY_VOID) {
+    buf_puts(b, "void");
+  }
+  else {
+    ty_to_rbs_into(c, s->ret, b);
+    if (ty_is_degraded(s->ret)) degraded = 1;
+  }
+  if (degraded) buf_puts(b, " # spinel: widened to untyped (slow path)");
+  buf_puts(b, "\n");
+}
+
+/* Append every method scope of class `ci` (instance methods when cmeth==0,
+   singleton methods when cmeth==1) as RBS lines. */
+static void rbs_class_methods(Compiler *c, Buf *b, int ci, int cmeth) {
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->class_id != ci || !!s->is_cmethod != !!cmeth) continue;
+    if (!s->name || !*s->name) continue;
+    Buf pre; memset(&pre, 0, sizeof pre);
+    buf_printf(&pre, "def %s%s", cmeth ? "self." : "", s->name);
+    rbs_method_line(c, b, pre.p ? pre.p : "def ?", s);
+    free(pre.p);
+  }
+}
+
+/* Build the inferred-signature dump as RBS, mirroring the legacy backend:
+   top-level methods wrapped in `class Object`, then a `class` block per user
+   class with its ivars and instance/singleton methods. */
+static char *build_rbs_text(Compiler *c) {
+  Buf b; memset(&b, 0, sizeof b);
+  int has_top = 0;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->class_id < 0 && s->name && *s->name) { has_top = 1; break; }
+  }
+  if (has_top) {
+    buf_puts(&b, "class Object\n");
+    for (int si = 1; si < c->nscopes; si++) {
+      Scope *s = &c->scopes[si];
+      if (s->class_id < 0 && s->name && *s->name) {
+        Buf pre; memset(&pre, 0, sizeof pre);
+        buf_printf(&pre, "def %s", s->name);
+        rbs_method_line(c, &b, pre.p ? pre.p : "def ?", s);
+        free(pre.p);
+      }
+    }
+    buf_puts(&b, "end\n\n");
+  }
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cls = &c->classes[ci];
+    if (!cls->name || !*cls->name) continue;
+    /* Skip the Spinel-injected Method class so the .rbs reflects only the
+       user's program (matches the legacy filter). */
+    if (!strcmp(cls->name, "Method")) continue;
+    Buf nb; memset(&nb, 0, sizeof nb);
+    class_ruby_name_into(&nb, cls->name);
+    buf_printf(&b, "class %s", nb.p ? nb.p : "");
+    free(nb.p);
+    if (cls->parent >= 0 && cls->parent < c->nclasses) {
+      const char *pn = c->classes[cls->parent].name;
+      if (pn && *pn && strcmp(pn, "Object") != 0) {
+        Buf pb; memset(&pb, 0, sizeof pb);
+        class_ruby_name_into(&pb, pn);
+        buf_printf(&b, " < %s", pb.p ? pb.p : "");
+        free(pb.p);
+      }
+    }
+    buf_puts(&b, "\n");
+    for (int k = 0; k < cls->nivars; k++) {
+      const char *iv = cls->ivars[k];
+      if (!iv || !*iv) continue;
+      buf_printf(&b, "  %s: ", iv);
+      ty_to_rbs_into(c, cls->ivar_types[k], &b);
+      buf_puts(&b, "\n");
+    }
+    rbs_class_methods(c, &b, ci, 0);
+    rbs_class_methods(c, &b, ci, 1);
+    buf_puts(&b, "end\n\n");
+  }
+  return b.p ? b.p : strdup("");
+}
+
 /* Write `text` to `path`; warn (but don't abort) on failure. */
 static int emit_write_file(const char *path, const char *text) {
   FILE *f = fopen(path, "wb");
@@ -1568,6 +1725,14 @@ char *codegen_program(const NodeTable *nt) {
     char *json = build_symbol_map_json(c);
     emit_write_file(sym_out, json);
     free(json);
+    comp_free(c);
+    return strdup("");
+  }
+  const char *rbs_out = getenv("SPINEL_EMIT_RBS");
+  if (rbs_out && *rbs_out) {
+    char *rbs = build_rbs_text(c);
+    emit_write_file(rbs_out, rbs);
+    free(rbs);
     comp_free(c);
     return strdup("");
   }
