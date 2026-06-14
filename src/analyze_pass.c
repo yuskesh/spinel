@@ -748,7 +748,12 @@ int infer_write_types(Compiler *c) {
          (but allow push-driven array promotion through). Without this guard,
          @free[0] read promotes @free to poly_poly_hash before @free = []
          has been processed as an array. */
-      if (!is_push && !is_idx_write && *slot == TY_UNKNOWN && inm) {
+      /* A typed (non-nil) construction write — `@a = [x]*n`, `@a = arr.map{}`,
+         or an `@a = []` literal — means this ivar is an array filled by index,
+         not a hash. Skip usage-driven hash promotion for both plain reads and
+         `@a[k]=v` index-writes. A genuine hash (`@h = {}`) infers UNKNOWN from
+         its empty literal and is unaffected. */
+      if (!is_push && *slot == TY_UNKNOWN && inm) {
         int has_typed_write = 0;
         for (int _wi = 0; _wi < nt->count && !has_typed_write; _wi++) {
           if (!nt_type(nt, _wi) || strcmp(nt_type(nt, _wi), "InstanceVariableWriteNode")) continue;
