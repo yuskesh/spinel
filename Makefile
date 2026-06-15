@@ -38,7 +38,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all parse spinelc legacy bootstrap codegen regexp rbs_extract rbs-test \
+.PHONY: all parse legacy bootstrap codegen regexp rbs_extract rbs-test \
         analyze-fail-test test test-run clean-test-results regen-rbs-expected \
         regen-expected bench optcarrot gate check gate-legs gate-test gate-bench \
         gate-optcarrot clean install uninstall deps
@@ -51,10 +51,11 @@ else
   RBS_EXTRACT_TARGET =
 endif
 
-# Note: use the phony `spinelc` alias here, not `$(SPINEL)` directly -- SPINEL
-# is defined further down, and prerequisites are expanded when this line is
-# read (it would expand to empty here).
-all: parse regexp spinelc $(RBS_EXTRACT_TARGET)
+# The single Spinel binary (compiler + cc driver). Defined here, before the
+# `all` rule, because a rule's prerequisites are expanded as it is read.
+SPINEL = build/spinel$(EXE)
+
+all: parse regexp $(SPINEL) $(RBS_EXTRACT_TARGET)
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -126,8 +127,8 @@ spinel_parse$(EXE): spinel_parse.c $(PRISM_LIB)
 # Reuses spinel_parse.c's Prism walk (compiled with -DSPINEL_PARSE_AS_LIB so
 # its standalone main() drops out and sp_parse_file_to_text is exposed).
 # `spinel` is the single binary: it emits C and then drives cc to link it.
+# (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL      = build/spinel$(EXE)
 SPINEL_HDRS = src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o \
@@ -149,9 +150,6 @@ $(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o $(PRISM_LIB)
 	@# Dev convenience: a repo-root `./spinel` pointing at the built binary
 	@# (the installed command is `spinel` too). Best-effort; gitignored.
 	@ln -sf $@ spinel 2>/dev/null || cp $@ spinel 2>/dev/null || true
-
-# Backward-compatible alias for `make spinelc` (the binary is build/spinel now).
-spinelc: $(SPINEL)
 
 # ---- Legacy Ruby compiler (regression oracle) ----
 # Lives in legacy/ with its own Makefile; these are thin delegators.
