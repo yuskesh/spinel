@@ -54,11 +54,12 @@ jobs:
         run: make -j$(getconf _NPROCESSORS_ONLN) LTO=0 all
 
       - name: Run tests
-        # OPT=-O0 cuts cc time per test (each .rb compiles its own
-        # generated C with $(CFLAGS) -Werror). Type-checking still
-        # happens; we just skip the optimizer.
-        # -j$(...) overlaps the per-test cc invocations.
-        run: make -j$(getconf _NPROCESSORS_ONLN) test OPT=-O0
+        # OPT=-O1, counter-intuitively, compiles each test ~3x FASTER than
+        # -O0: the generated C pulls in lib/sp_runtime.h (800+ static fns), and
+        # at -O1 gcc/clang prune unreferenced statics + DCE before the costly
+        # codegen stages, emitting far less than -O0 does. -j overlaps the
+        # per-test cc invocations.
+        run: make -j$(getconf _NPROCESSORS_ONLN) test OPT=-O1
 
       # Benchmark integration test. Compiles every benchmark/*.rb through
       # the full pipeline (cc -Werror) and diffs the output against CRuby.
@@ -149,12 +150,13 @@ jobs:
         run: make -j$(nproc) LTO=0 all
 
       - name: Run tests
-        # Oversubscribe -j (process-spawn/link-latency bound on Windows, not
-        # CPU bound) and use plain gcc: each test's generated C is unique, so
-        # the sccache wrapper only adds miss-overhead per compile here (the
-        # build step above keeps sccache, where caching the runtime/prism
-        # objects pays off).
-        run: make -j$(( $(nproc) * 2 )) test OPT=-O0 CC=gcc
+        # OPT=-O1 is the big lever here: each per-test cc compiles the
+        # sp_runtime.h-heavy generated C ~3x faster than at -O0 (gcc prunes the
+        # 800+ unreferenced static fns before codegen). Plain gcc (not the
+        # sccache wrapper): the generated C is unique per test so sccache only
+        # adds miss-overhead; the build step above keeps sccache where caching
+        # the runtime/prism objects pays off.
+        run: make -j$(nproc) test OPT=-O1 CC=gcc
 
       - name: sccache stats
         if: always()

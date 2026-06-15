@@ -474,12 +474,13 @@ optcarrot: $(SPINEL) $(SP_RT_LIB)
 # jobserver fd is inherited; none pass an explicit -j (which would force
 # a sub-make to spawn its own pool → oversubscription).
 
-# Fast pre-commit: rebuild the compiler and run the suite with the
-# optimizer off (type-checking still happens). Skips bench/optcarrot/
+# Fast pre-commit: rebuild the compiler and run the suite. OPT=-O1 compiles
+# the sp_runtime.h-heavy per-test C ~3x faster than -O0 (the optimizer prunes
+# the 800+ unreferenced static fns before codegen). Skips bench/optcarrot/
 # bootstrap — run `make gate` before pushing for those.
 check:
 	+@$(MAKE) --no-print-directory LTO=0 all
-	+@$(MAKE) --no-print-directory test OPT=-O0
+	+@$(MAKE) --no-print-directory test OPT=-O1
 
 # Full pre-push gate: test || bench || optcarrot in parallel, then the
 # legacy self-host bootstrap.
@@ -492,7 +493,7 @@ gate:
 
 gate-legs: gate-test gate-bench gate-optcarrot
 gate-test:
-	+@$(MAKE) --no-print-directory test OPT=-O0
+	+@$(MAKE) --no-print-directory test OPT=-O1
 gate-bench:
 	+@$(MAKE) --no-print-directory bench
 gate-optcarrot:
