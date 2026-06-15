@@ -1878,9 +1878,11 @@ int infer_ivar_types(Compiler *c) {
         else
           vt = ci->ivar_types[iv];  /* keep existing type, don't widen */
       }
-      TyKind merged = ty_unify(ci->ivar_types[iv], vt);
-      sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
-      if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+      if (!class_ivar_pinned(ci, nm)) {
+        TyKind merged = ty_unify(ci->ivar_types[iv], vt);
+        sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
+        if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
+      }
       /* Propagate to transplanted copies (module included into a class).
          Body nodes still point to the module scope, so cls_id2 is the module.
          Any scope sharing the same def_node but with a different class_id is
@@ -1892,6 +1894,7 @@ int infer_ivar_types(Compiler *c) {
           Scope *ts = &c->scopes[si];
           if (ts->def_node != sdef || ts->class_id == orig_cid || ts->class_id < 0) continue;
           ClassInfo *tc = &c->classes[ts->class_id];
+          if (class_ivar_pinned(tc, nm)) continue;
           int tiv = comp_ivar_intern(tc, nm);
           TyKind tmerged = ty_unify(tc->ivar_types[tiv], vt);
           sp_ivwatch(nm, "transplant_merge", tc->ivar_types[tiv], tmerged);
@@ -1919,7 +1922,7 @@ int infer_ivar_types(Compiler *c) {
       char ivname[256];
       snprintf(ivname, sizeof ivname, "@%s", base);
       int iv = comp_ivar_index(ci, ivname);
-      if (iv < 0) continue;
+      if (iv < 0 || class_ivar_pinned(ci, ivname)) continue;
       TyKind vt = infer_type(c, argv[0]);
       TyKind merged = ty_unify(ci->ivar_types[iv], vt);
       if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }

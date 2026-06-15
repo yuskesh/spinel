@@ -101,7 +101,7 @@ int infer_param_hash_value(Compiler *c) {
       TyKind cur = lv->type;
       int seedable = cur == TY_UNKNOWN || cur == TY_POLY ||
                      (ty_is_hash(cur) && ty_hash_val(cur) == TY_POLY);
-      if (!seedable) continue;
+      if (!seedable || lv->rbs_seeded) continue;
       TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
       int saw = 0, ambiguous = 0;
       for (int id = 0; id < nt->count; id++) {
@@ -249,7 +249,7 @@ int infer_write_types(Compiler *c) {
        of a different type widens them too (e.g. `x = "s"` in an int param's
        body -> poly). Only widen -- never let an unknown RHS reset them. */
     if (lv->is_param) {
-      if (newt != TY_UNKNOWN) {
+      if (newt != TY_UNKNOWN && !lv->rbs_seeded) {
         TyKind m2 = ty_unify(lv->type, newt);
         if (m2 != lv->type) { lv->type = m2; changed = 1; }
       }
@@ -360,7 +360,7 @@ int infer_write_types(Compiler *c) {
                      ms_arr && ms_arr->class_id >= 0) {
               const char *ivnm = nt_str(nt, lefts[i], "name");
               int iv_ms = ivnm ? comp_ivar_index(&c->classes[ms_arr->class_id], ivnm) : -1;
-              if (iv_ms < 0) continue;
+              if (iv_ms < 0 || class_ivar_pinned(&c->classes[ms_arr->class_id], ivnm)) continue;
               TyKind mg = ty_unify(c->classes[ms_arr->class_id].ivar_types[iv_ms], elem);
               if (mg != c->classes[ms_arr->class_id].ivar_types[iv_ms]) {
                 c->classes[ms_arr->class_id].ivar_types[iv_ms] = mg; changed = 1;
@@ -386,7 +386,7 @@ int infer_write_types(Compiler *c) {
                      ms_arr && ms_arr->class_id >= 0) {
               const char *ivnm2 = nt_str(nt, rights2[j], "name");
               int iv_ms2 = ivnm2 ? comp_ivar_index(&c->classes[ms_arr->class_id], ivnm2) : -1;
-              if (iv_ms2 < 0) continue;
+              if (iv_ms2 < 0 || class_ivar_pinned(&c->classes[ms_arr->class_id], ivnm2)) continue;
               TyKind mg2 = ty_unify(c->classes[ms_arr->class_id].ivar_types[iv_ms2], elem);
               if (mg2 != c->classes[ms_arr->class_id].ivar_types[iv_ms2]) {
                 c->classes[ms_arr->class_id].ivar_types[iv_ms2] = mg2; changed = 1;
@@ -446,7 +446,7 @@ int infer_write_types(Compiler *c) {
         if (iv_cid < 0) continue;
         const char *ivnm = nt_str(nt, lefts[i], "name");
         int iv_idx = ivnm ? comp_ivar_index(&c->classes[iv_cid], ivnm) : -1;
-        if (iv_idx < 0) continue;
+        if (iv_idx < 0 || class_ivar_pinned(&c->classes[iv_cid], ivnm)) continue;
         TyKind et = infer_type(c, els[i]);
         if (et == TY_NIL) continue;
         TyKind mg = ty_unify(c->classes[iv_cid].ivar_types[iv_idx], et);
@@ -503,7 +503,7 @@ int infer_write_types(Compiler *c) {
         if (iv_cid3 < 0) continue;
         const char *ivnm3 = nt_str(nt, rights[j], "name");
         int iv_idx3 = ivnm3 ? comp_ivar_index(&c->classes[iv_cid3], ivnm3) : -1;
-        if (iv_idx3 < 0) continue;
+        if (iv_idx3 < 0 || class_ivar_pinned(&c->classes[iv_cid3], ivnm3)) continue;
         TyKind mg4 = ty_unify(c->classes[iv_cid3].ivar_types[iv_idx3], et);
         if (mg4 != c->classes[iv_cid3].ivar_types[iv_idx3]) {
           c->classes[iv_cid3].ivar_types[iv_idx3] = mg4; changed = 1;
@@ -1056,7 +1056,7 @@ else {
       at = infer_type(c, argv[k]);
     }
     LocalVar *p = scope_local(m, m->pnames[k]);
-    if (!p) continue;
+    if (!p || p->rbs_seeded) continue;
     /* A nil arg narrows against an object param (NULL encodes nil) but widens
        any non-object param to poly. Pass nil through to ty_unify only while
        the param is still unknown or already an object. */
@@ -1089,7 +1089,7 @@ else {
       int ai = pos_argc - m->npost_rest + j;
       if (pi >= m->nparams || ai < 0 || ai >= pos_argc || !argv) continue;
       LocalVar *p = scope_local(m, m->pnames[pi]);
-      if (!p) continue;
+      if (!p || p->rbs_seeded) continue;
       TyKind at = infer_type(c, argv[ai]);
       if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
       TyKind merged = ty_unify(p->type, at);
@@ -1120,7 +1120,7 @@ else {
       for (int i = 0; i < m->nparams; i++) {
         if (!m->pnames[i]) continue;
         LocalVar *p = scope_local(m, m->pnames[i]);
-        if (!p) continue;
+        if (!p || p->rbs_seeded) continue;
         TyKind merged = ty_unify(p->type, at);
         if (merged != p->type) { p->type = merged; changed = 1; }
       }
@@ -1135,7 +1135,7 @@ else {
         const char *kname = (kty && !strcmp(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
         if (!kname) continue;
         LocalVar *p = scope_local(m, kname);
-        if (!p) continue;
+        if (!p || p->rbs_seeded) continue;
         TyKind at = infer_type(c, val);
         TyKind merged = ty_unify(p->type, at);
         if (merged != p->type) { p->type = merged; changed = 1; }
@@ -1147,7 +1147,7 @@ else {
          to TY_SYM_POLY_HASH so the backstop doesn't kill the method. */
       if (!any_kw_bound && pos_argc < max_bind && max_bind > 0) {
         LocalVar *p = m->pnames[pos_argc] ? scope_local(m, m->pnames[pos_argc]) : NULL;
-        if (p) {
+        if (p && !p->rbs_seeded) {
           TyKind merged = ty_unify(p->type, TY_SYM_POLY_HASH);
           if (merged != p->type) { p->type = merged; changed = 1; }
         }
@@ -1182,7 +1182,7 @@ int propagate_prep_params(Compiler *c) {
       for (int i = 0; i < n; i++) {
         LocalVar *fp = scope_local(fs, fs->pnames[i]);
         LocalVar *tp = scope_local(ts, ts->pnames[i]);
-        if (!fp || !tp || fp->type == TY_UNKNOWN) continue;
+        if (!fp || !tp || fp->type == TY_UNKNOWN || tp->rbs_seeded) continue;
         TyKind merged = ty_unify(tp->type, fp->type);
         if (merged != tp->type) { tp->type = merged; changed = 1; }
       }
@@ -1210,7 +1210,7 @@ int infer_default_param_types(Compiler *c) {
       }
       if (dt == TY_NIL || dt == TY_UNKNOWN) continue;
       LocalVar *p = scope_local(sc, sc->pnames[i]);
-      if (!p) continue;
+      if (!p || p->rbs_seeded) continue;
       TyKind merged = ty_unify(p->type, dt);
       if (merged != p->type) { p->type = merged; changed = 1; }
     }
@@ -1386,7 +1386,7 @@ int infer_array_params(Compiler *c) {
     LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
     /* If caller-side [] read already widened this param to a hash type,
        push wins: a param that receives push() is an array, not a hash. */
-    if (lv && lv->is_param && (lv->type == TY_UNKNOWN || ty_is_hash(lv->type))) { lv->type = TY_POLY_ARRAY; changed = 1; }
+    if (lv && lv->is_param && !lv->rbs_seeded && (lv->type == TY_UNKNOWN || ty_is_hash(lv->type))) { lv->type = TY_POLY_ARRAY; changed = 1; }
   }
   return changed;
 }
@@ -1432,7 +1432,7 @@ int infer_param_types(Compiler *c) {
         for (int k = 0; k < n; k++) {
           LocalVar *src = scope_local(s, s->pnames[k]);
           LocalVar *dst = scope_local(pm, pm->pnames[k]);
-          if (!src || !dst) continue;
+          if (!src || !dst || dst->rbs_seeded) continue;
           TyKind at = src->type;
           if (at == TY_UNKNOWN) continue;
           TyKind mg = ty_unify(dst->type, at);
@@ -1478,7 +1478,7 @@ int infer_param_types(Compiler *c) {
       Scope *ms2 = &c->scopes[mi2];
       if (ms2->nparams < 1) continue;
       LocalVar *pp = scope_local(ms2, ms2->pnames[0]);
-      if (!pp) continue;
+      if (!pp || pp->rbs_seeded) continue;
       TyKind at2 = infer_type(c, val);
       TyKind mg2 = ty_unify(pp->type, at2);
       if (mg2 != pp->type) { pp->type = mg2; changed = 1; }
@@ -1617,6 +1617,7 @@ int infer_param_types(Compiler *c) {
                 }
               }
               else if (a < an) vnode = argv[a];
+              if (class_ivar_pinned(cls, cls->ivars[a])) continue;
               TyKind at = vnode >= 0 ? infer_type(c, vnode) : TY_NIL;
               TyKind m = ty_unify(cls->ivar_types[a], at);
               if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
@@ -2724,8 +2725,9 @@ int infer_return_types(Compiler *c) {
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     /* Specialized inherited-cls-new copies keep their fixed subclass return
-       type (the shared body's bare `new` would otherwise infer the base). */
-    if (sc->ret_specialized) continue;
+       type (the shared body's bare `new` would otherwise infer the base).
+       An --rbs-seeded return is likewise pinned. */
+    if (sc->ret_specialized || sc->ret_rbs_seeded) continue;
     /* synthesized compiler_state methods carry a fixed return type (no AST). */
     if (sc->cs_synth) continue;
     /* An empty method body returns nil; if its value is used at all it must
@@ -2896,7 +2898,7 @@ static int bi_reaches(const BiPair *pairs, int np, const char *var, const char *
 static void bi_promote(Compiler *c, int write_id, const char *lname) {
   Scope *s = comp_scope_of(c, write_id);
   LocalVar *lv = s ? scope_local(s, lname) : NULL;
-  if (lv && (lv->type == TY_UNKNOWN || lv->type == TY_INT)) lv->type = TY_BIGINT;
+  if (lv && !lv->rbs_seeded && (lv->type == TY_UNKNOWN || lv->type == TY_INT)) lv->type = TY_BIGINT;
 }
 
 static void bi_scan_loop_node(Compiler *c, int id, const BiPair *pairs, int np) {

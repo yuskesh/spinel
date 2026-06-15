@@ -341,7 +341,7 @@ void detect_bigint_loop_vars(Compiler *c) {
     for (int k = 0; k < ncands; k++) {
       Scope *s = comp_scope_of(c, id);
       LocalVar *lv = s ? scope_local(s, cands[k]) : NULL;
-      if (lv && lv->type == TY_INT) lv->type = TY_BIGINT;
+      if (lv && lv->type == TY_INT && !lv->rbs_seeded) lv->type = TY_BIGINT;
     }
     free(cands);
   }
@@ -361,7 +361,7 @@ void propagate_bigint_cascade(Compiler *c) {
         const char *nm = nt_str(nt, id, "name");
         Scope *s = comp_scope_of(c, id);
         LocalVar *lv = nm ? scope_local(s, nm) : NULL;
-        if (!lv || lv->type != TY_INT) continue;
+        if (!lv || lv->type != TY_INT || lv->rbs_seeded) continue;
         TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
         if (vt == TY_BIGINT) { lv->type = TY_BIGINT; changed = 1; }
       }
@@ -369,7 +369,7 @@ void propagate_bigint_cascade(Compiler *c) {
         const char *nm = nt_str(nt, id, "name");
         Scope *s = comp_scope_of(c, id);
         LocalVar *lv = nm ? scope_local(s, nm) : NULL;
-        if (!lv || lv->type != TY_INT) continue;
+        if (!lv || lv->type != TY_INT || lv->rbs_seeded) continue;
         TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
         if (vt == TY_BIGINT) { lv->type = TY_BIGINT; changed = 1; }
       }
@@ -786,6 +786,157 @@ void rename_shadowing_block_params(Compiler *c) {
   free(inbody);
 }
 
+/* ---- --rbs advisory type seeds ----
+   spinel_rbs_extract emits line-oriented seeds, read from the file named by
+   SPINEL_RBS_SEED. Before the fixpoint we pin the named params / returns /
+   ivars to the seeded type; guards at the inference write sites then keep the
+   fixpoint from widening a pinned slot (legacy "RBS wins" semantics). Type
+   tokens with no precise C kind (poly*, sym_array, obj_X_ptr_array, unknown
+   classes) are skipped, so a seed never makes inference worse. Entirely inert
+   when SPINEL_RBS_SEED is unset -- the normal compile path is unchanged. */
+
+static TyKind parse_seed_type(Compiler *c, const char *tok) {
+  if (!tok || !*tok) return TY_UNKNOWN;
+  size_t n = strlen(tok);
+  char buf[128];
+  if (n >= sizeof buf) return TY_UNKNOWN;
+  memcpy(buf, tok, n + 1);
+  /* A trailing nullable '?' has no C scalar kind (objects are NULL-nullable
+     already); pin to the base type. */
+  if (n > 0 && buf[n - 1] == '?') buf[--n] = '\0';
+  if (!strcmp(buf, "int"))    return TY_INT;
+  if (!strcmp(buf, "float"))  return TY_FLOAT;
+  if (!strcmp(buf, "string") || !strcmp(buf, "str")) return TY_STRING;
+  if (!strcmp(buf, "symbol") || !strcmp(buf, "sym")) return TY_SYMBOL;
+  if (!strcmp(buf, "bool"))   return TY_BOOL;
+  if (!strcmp(buf, "nil"))    return TY_NIL;
+  if (!strcmp(buf, "void"))   return TY_VOID;
+  if (!strcmp(buf, "int_array"))    return TY_INT_ARRAY;
+  if (!strcmp(buf, "float_array"))  return TY_FLOAT_ARRAY;
+  if (!strcmp(buf, "str_array"))    return TY_STR_ARRAY;
+  if (!strcmp(buf, "str_int_hash"))   return TY_STR_INT_HASH;
+  if (!strcmp(buf, "str_str_hash"))   return TY_STR_STR_HASH;
+  if (!strcmp(buf, "int_int_hash"))   return TY_INT_INT_HASH;
+  if (!strcmp(buf, "int_str_hash"))   return TY_INT_STR_HASH;
+  if (!strcmp(buf, "sym_poly_hash"))  return TY_SYM_POLY_HASH;
+  if (!strcmp(buf, "str_poly_hash"))  return TY_STR_POLY_HASH;
+  if (!strcmp(buf, "poly_poly_hash")) return TY_POLY_POLY_HASH;
+  if (!strncmp(buf, "obj_", 4)) {
+    int ci = comp_class_index(c, buf + 4);
+    return ci >= 0 ? ty_object(ci) : TY_UNKNOWN;
+  }
+  return TY_UNKNOWN;
+}
+
+/* Class index for a seed `class` line, normalizing `::` to the `_` form used
+   in the compiler's class table. -1 if no such user class. */
+static int seed_class_index(Compiler *c, const char *name) {
+  char buf[256];
+  size_t j = 0;
+  for (const char *p = name; *p && j < sizeof buf - 1; ) {
+    if (p[0] == ':' && p[1] == ':') { buf[j++] = '_'; p += 2; }
+    else buf[j++] = *p++;
+  }
+  buf[j] = '\0';
+  return comp_class_index(c, buf);
+}
+
+static Scope *find_method_scope(Compiler *c, int class_id, const char *name, int is_cmethod) {
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->class_id != class_id) continue;
+    if (!!s->is_cmethod != !!is_cmethod) continue;
+    if (s->name && !strcmp(s->name, name)) return s;
+  }
+  return NULL;
+}
+
+int class_ivar_pinned(ClassInfo *ci, const char *name) {
+  for (int i = 0; i < ci->n_rbs_pin_ivars; i++)
+    if (!strcmp(ci->rbs_pin_ivars[i], name)) return 1;
+  return 0;
+}
+
+static void class_pin_ivar(ClassInfo *ci, const char *name) {
+  if (class_ivar_pinned(ci, name)) return;
+  if (ci->n_rbs_pin_ivars >= ci->c_rbs_pin_ivars) {
+    int nc = ci->c_rbs_pin_ivars ? ci->c_rbs_pin_ivars * 2 : 4;
+    ci->rbs_pin_ivars = realloc(ci->rbs_pin_ivars, sizeof(char *) * (size_t)nc);
+    ci->c_rbs_pin_ivars = nc;
+  }
+  ci->rbs_pin_ivars[ci->n_rbs_pin_ivars++] = strdup(name);
+}
+
+/* Pin scope `s`'s return and each named parameter to its seeded type. ptypes
+   is a comma-separated, param-index-aligned list (empty fields preserved so a
+   skipped middle param doesn't shift the rest). */
+static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes) {
+  if (!s) return;
+  TyKind rt = parse_seed_type(c, ret_tok);
+  if (rt != TY_UNKNOWN) { s->ret = rt; s->ret_rbs_seeded = 1; }
+  if (!ptypes) return;
+  char *p = ptypes;
+  int pi = 0;
+  while (p && pi < s->nparams) {
+    char *comma = strchr(p, ',');
+    if (comma) *comma = '\0';
+    TyKind pt = parse_seed_type(c, p);
+    if (pt != TY_UNKNOWN) {
+      LocalVar *lv = scope_local(s, s->pnames[pi]);
+      if (lv) { lv->type = pt; lv->rbs_seeded = 1; }
+    }
+    pi++;
+    if (!comma) break;
+    p = comma + 1;
+  }
+}
+
+static void apply_rbs_seeds(Compiler *c, const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return;
+  int cur_ci = -1;       /* current class index; -2 = top level (Object) */
+  char line[2048];
+  while (fgets(line, sizeof line, f)) {
+    size_t L = strlen(line);
+    while (L && (line[L - 1] == '\n' || line[L - 1] == '\r')) line[--L] = '\0';
+    if (L == 0) continue;
+    /* split into keyword + up to 3 fields (the 3rd holds the rest of line) */
+    char *kw = line, *a1 = NULL, *a2 = NULL, *a3 = NULL;
+    char *s1 = strchr(line, ' ');
+    if (s1) {
+      *s1 = '\0'; a1 = s1 + 1;
+      char *s2 = strchr(a1, ' ');
+      if (s2) {
+        *s2 = '\0'; a2 = s2 + 1;
+        char *s3 = strchr(a2, ' ');
+        if (s3) { *s3 = '\0'; a3 = s3 + 1; }
+      }
+    }
+    if (!strcmp(kw, "class")) {
+      if (a1 && !strcmp(a1, "Object")) cur_ci = -2;
+      else cur_ci = a1 ? seed_class_index(c, a1) : -1;
+    }
+    else if (!strcmp(kw, "ivar") && a1 && a2 && cur_ci >= 0) {
+      TyKind t = parse_seed_type(c, a2);
+      if (t != TY_UNKNOWN) {
+        ClassInfo *ci = &c->classes[cur_ci];
+        int idx = comp_ivar_intern(ci, a1);
+        ci->ivar_types[idx] = t;
+        class_pin_ivar(ci, a1);
+      }
+    }
+    else if (!strcmp(kw, "meth") && a1 && a2) {
+      int class_id = (cur_ci == -2) ? -1 : cur_ci;
+      if (cur_ci == -2 || cur_ci >= 0)
+        seed_method(c, find_method_scope(c, class_id, a1, 0), a2, a3);
+    }
+    else if (!strcmp(kw, "cmeth") && a1 && a2 && cur_ci >= 0) {
+      seed_method(c, find_method_scope(c, cur_ci, a1, 1), a2, a3);
+    }
+  }
+  fclose(f);
+}
+
 void analyze_program(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
@@ -960,6 +1111,14 @@ void analyze_program(Compiler *c) {
     for (int k = 0; k < rn; k++) { const char *nm = nt_str(c->nt, reqs[k], "name"); if (nm) comp_sym_intern(c, nm); }
   }
 
+  /* Apply --rbs advisory seeds (pin param/return/ivar types) before the
+     fixpoint so the inference passes observe the pinned types from round one.
+     No-op unless SPINEL_RBS_SEED names a seed file. */
+  {
+    const char *seed = getenv("SPINEL_RBS_SEED");
+    if (seed && *seed) apply_rbs_seeds(c, seed);
+  }
+
   for (int iter = 0; iter < 128; iter++) {
     int ch = 0;
     sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
@@ -1040,7 +1199,7 @@ void analyze_program(Compiler *c) {
       const char *dty = nt_type(c->nt, sc->pdefault[i]);
       if (!dty || strcmp(dty, "NilNode")) continue;
       LocalVar *p = scope_local(sc, sc->pnames[i]);
-      if (!p) continue;
+      if (!p || p->rbs_seeded) continue;
       if (p->type == TY_UNKNOWN || p->type == TY_SYMBOL || p->type == TY_BOOL)
         p->type = TY_POLY;
     }
@@ -1106,7 +1265,7 @@ void analyze_program(Compiler *c) {
     /* Also reset any hash type that crept in via premature [] read
        promotion: a variable whose only write is an empty array literal
        is definitively an array, not a hash. */
-    if (lv && (lv->type == TY_UNKNOWN || ty_is_hash(lv->type))) lv->type = TY_POLY_ARRAY;
+    if (lv && !lv->rbs_seeded && (lv->type == TY_UNKNOWN || ty_is_hash(lv->type))) lv->type = TY_POLY_ARRAY;
   }
   /* A read-only ivar (referenced but never assigned a typed value) stays
      TY_UNKNOWN -> it has no C type. Such a slot always reads nil at runtime;
@@ -1133,6 +1292,7 @@ void analyze_program(Compiler *c) {
       char ivname[300]; snprintf(ivname, sizeof ivname, "@%s", rname);
       int iv = comp_ivar_index(cl, ivname);
       if (iv < 0) continue;
+      if (class_ivar_pinned(cl, ivname)) continue;  /* --rbs seed pins the type */
       TyKind t = cl->ivar_types[iv];
       if (t != TY_INT && t != TY_FLOAT && t != TY_STRING &&
           t != TY_SYMBOL && t != TY_BOOL) continue;
@@ -1305,7 +1465,7 @@ void analyze_program(Compiler *c) {
           if (!copy->pnames[p]) continue;
           LocalVar *slv = scope_local(copy, copy->pnames[p]);
           LocalVar *dlv = scope_local(dst,  dst->pnames[p]);
-          if (!slv || !dlv || dlv->type == TY_UNKNOWN) continue;
+          if (!slv || !dlv || dlv->type == TY_UNKNOWN || slv->rbs_seeded) continue;
           TyKind mg = ty_unify(slv->type, dlv->type);
           if (mg != slv->type) slv->type = mg;
         }
@@ -1367,6 +1527,7 @@ void analyze_program(Compiler *c) {
         for (int a = kc->parent; a >= 0; a = c->classes[a].parent) {
           int ai = comp_ivar_index(&c->classes[a], ivn);
           if (ai < 0) continue;
+          if (class_ivar_pinned(&c->classes[a], ivn)) continue;  /* --rbs seed pins it */
           TyKind merged = ty_unify(c->classes[a].ivar_types[ai], kt);
           sp_ivwatch(ivn[0] == '@' ? ivn + 1 : ivn, "inherited_merge", c->classes[a].ivar_types[ai], merged);
           if (merged != c->classes[a].ivar_types[ai]) {
@@ -1451,8 +1612,9 @@ void analyze_program(Compiler *c) {
       if (!blv->is_param && blv->type == TY_UNKNOWN) blv->type = TY_POLY;
       /* A slot left at TY_NIL only ever saw nil (it never narrowed against an
          object). It has no object class, so represent it as a boxed-nil poly.
-         Applies to params too (a purely-nil param). */
-      if (blv->type == TY_NIL) blv->type = TY_POLY;
+         Applies to params too (a purely-nil param). An --rbs-seeded slot keeps
+         its pinned type. */
+      if (blv->type == TY_NIL && !blv->rbs_seeded) blv->type = TY_POLY;
     }
 
   /* Re-run ivar inference now that purely-nil params/locals became poly: an
@@ -1560,6 +1722,7 @@ void analyze_program(Compiler *c) {
         has_reassign_mutate = 1;
     }
     if (has_reassign_mutate) continue;
+    if (lv->rbs_seeded) continue;
     lv->type = TY_STRBUF;
   }
 

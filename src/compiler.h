@@ -25,6 +25,8 @@ typedef struct {
                        scope share mutable storage */
   int init_guarded; /* (consts) initialized via `CONST = Class.new(...)`: reads
                        during the init raise NameError (uninitialized constant) */
+  int rbs_seeded;   /* param type pinned from an --rbs advisory seed: the
+                       fixpoint must not widen it (see apply_rbs_seeds) */
 } LocalVar;
 
 typedef struct {
@@ -62,6 +64,8 @@ typedef struct {
   TyKind ret;       /* inferred return type */
   int ret_specialized; /* ret was set by specialization (inherited-cls-new copy);
                           don't overwrite it from the shared body in the fixpoint */
+  int ret_rbs_seeded;  /* ret pinned from an --rbs advisory seed: the fixpoint
+                          must not recompute it from the body */
   int ret_proc_ret; /* when ret==TY_PROC: the returned proc's body return type
                        (TyKind), so a caller's `m.call` knows the result type */
   int blk_ret;      /* for a method with a &block param: the unified value type
@@ -79,6 +83,9 @@ typedef struct {
   char **ivars;        /* instance variable names, incl. leading '@' */
   TyKind *ivar_types;
   int nivars, civars;
+  char **rbs_pin_ivars; /* ivar names (incl '@') pinned by an --rbs seed: the
+                           fixpoint must not widen their type */
+  int n_rbs_pin_ivars, c_rbs_pin_ivars;
   char **cvars;        /* class variable names, incl. leading '@@' */
   TyKind *cvar_types;
   int ncvars, ccvars;

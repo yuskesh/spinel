@@ -47,6 +47,8 @@ void comp_free(Compiler *c) {
     for (int j = 0; j < c->classes[i].nivars; j++) free(c->classes[i].ivars[j]);
     free(c->classes[i].ivars);
     free(c->classes[i].ivar_types);
+    for (int j = 0; j < c->classes[i].n_rbs_pin_ivars; j++) free(c->classes[i].rbs_pin_ivars[j]);
+    free(c->classes[i].rbs_pin_ivars);
     for (int j = 0; j < c->classes[i].nreaders; j++) free(c->classes[i].readers[j]);
     free(c->classes[i].readers);
     for (int j = 0; j < c->classes[i].nwriters; j++) free(c->classes[i].writers[j]);
@@ -534,6 +536,8 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->is_block_param = 0;
   lv->proc_ret = TY_UNKNOWN;
   lv->is_cell = 0;
+  lv->init_guarded = 0;
+  lv->rbs_seeded = 0;
   return lv;
 }
 

@@ -34,6 +34,7 @@
 #              generated C, not the Ruby source)
 #   --cc=CMD   C compiler command (default: cc)
 #   -e STR     Inline Ruby source (repeatable; multiple -e join with \n)
+#   --rbs DIR  Seed the analyzer with advisory RBS signatures from DIR
 #   --int-overflow=MODE  Int +/-/* overflow handling (default: raise)
 #              raise | wrap | promote
 
@@ -46,6 +47,15 @@ SPINELC="$DIR/build/spinelc"
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
     [ ! -x "$SPINELC" ] && [ -x "$SPINELC.exe" ] && SPINELC="$SPINELC.exe"
+    ;;
+esac
+
+# RBS seed extractor (built by `make`); used by --rbs to turn a dir of *.rbs
+# into advisory type seeds for the analyzer.
+RBS_EXTRACT_BIN="$DIR/spinel_rbs_extract"
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    [ ! -x "$RBS_EXTRACT_BIN" ] && [ -x "$RBS_EXTRACT_BIN.exe" ] && RBS_EXTRACT_BIN="$RBS_EXTRACT_BIN.exe"
     ;;
 esac
 
@@ -66,6 +76,8 @@ RUN_TMP_DIR=""
 EVAL_SCRIPT=""
 EVAL_USED=0
 EVAL_TMP=""
+RBS_DIR=""
+SEED_TMP=""
 INT_OVERFLOW="raise"
 DEBUG=0
 # #line directives are on by default: they cost nothing at runtime (the binary
@@ -82,6 +94,8 @@ while [ $# -gt 0 ]; do
     --source=*) SOURCE="${1#--source=}"; shift ;;
     --output=*) OUTPUT="${1#--output=}"; shift ;;
     --cc=*)     CC_CMD="${1#--cc=}"; shift ;;
+    --rbs=*)    RBS_DIR="${1#--rbs=}"; shift ;;
+    --rbs)      shift; RBS_DIR="$1"; shift ;;
     --int-overflow=*) INT_OVERFLOW="${1#--int-overflow=}"; shift ;;
     --int-overflow)   shift; INT_OVERFLOW="$1"; shift ;;
     --)         # `--` ends spinel-flag parsing.
@@ -202,6 +216,7 @@ if [ -z "$SOURCE" ]; then
   echo "              against generated C, not the Ruby source)" >&2
   echo "  --cc=CMD    C compiler (default: cc)" >&2
   echo "  -e STR      Inline Ruby source (repeatable; joined with newlines)" >&2
+  echo "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)" >&2
   echo "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)" >&2
   exit 1
 fi
@@ -221,7 +236,20 @@ if [ "$EVAL_USED" -eq 1 ]; then
 else
   BASENAME="$(basename "$SOURCE" .rb)"
 fi
-trap 'rm -f "$EVAL_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"; [ -n "$RUN_TMP_DIR" ] && rm -rf "$RUN_TMP_DIR"' EXIT
+trap 'rm -f "$EVAL_TMP" "$SEED_TMP"; [ -n "$C_TMP_DIR" ] && rm -rf "$C_TMP_DIR"; [ -n "$RUN_TMP_DIR" ] && rm -rf "$RUN_TMP_DIR"' EXIT
+
+# --rbs DIR: extract advisory type seeds from *.rbs in DIR and hand them to
+# spinelc via SPINEL_RBS_SEED. A missing dir / unbuilt extractor / empty result
+# is a silent no-op (spinel still compiles, just without seeds); the seeded
+# types are advisory -- inference pins them but unseeded slots infer normally.
+if [ -n "$RBS_DIR" ] && [ -x "$RBS_EXTRACT_BIN" ] && [ -d "$RBS_DIR" ]; then
+  SEED_TMP="$(mktemp /tmp/spinel_seed.XXXXXX)"
+  if "$RBS_EXTRACT_BIN" "$RBS_DIR" > "$SEED_TMP" && [ -s "$SEED_TMP" ]; then
+    export SPINEL_RBS_SEED="$SEED_TMP"
+  else
+    rm -f "$SEED_TMP"; SEED_TMP=""
+  fi
+fi
 
 # Source mapping: spinelc's parser stamps per-node source lines and codegen
 # emits `#line N "file"` when SPINEL_DEBUG / SPINEL_LINE_MAP is set, so a C
