@@ -3131,6 +3131,26 @@ static void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if 
 static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } return a->data[--a->len]; }
 static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
 static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (mrb_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
+
+/* FFI array hand-off. Concrete arrays expose their element storage zero-copy
+   (mrb_int/mrb_float are int64/double on 64-bit targets). A poly_array can't
+   be punned -- its ->data is sp_RbVal[] (boxed) -- so unbox element-wise into
+   a fresh GC-tracked buffer (sp_gc_alloc_nogc: no collection mid-build, so a
+   sibling array arg's buffer can't be swept; freed at a later GC). */
+static const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) { return a ? (const int64_t *)(a->data + a->start) : (const int64_t *)0; }
+static const double  *sp_FloatArray_ffi_data(sp_FloatArray *a) { return a ? (const double *)a->data : (const double *)0; }
+static const int64_t *sp_PolyArray_ffi_int_data(sp_PolyArray *a) {
+  if (!a || a->len <= 0) return (const int64_t *)0;
+  int64_t *buf = (int64_t *)sp_gc_alloc_nogc((size_t)a->len * sizeof(int64_t), NULL, NULL);
+  for (mrb_int i = 0; i < a->len; i++) buf[i] = (int64_t)a->data[i].v.i;
+  return buf;
+}
+static const double *sp_PolyArray_ffi_float_data(sp_PolyArray *a) {
+  if (!a || a->len <= 0) return (const double *)0;
+  double *buf = (double *)sp_gc_alloc_nogc((size_t)a->len * sizeof(double), NULL, NULL);
+  for (mrb_int i = 0; i < a->len; i++) buf[i] = (double)a->data[i].v.f;
+  return buf;
+}
 static sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
   sp_PolyArray *arr = sp_PolyArray_new();
   SP_GC_ROOT(arr);

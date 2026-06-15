@@ -2799,6 +2799,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             }
             else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
+          else if (!strcmp(spec, "int_array")) {
+            /* Hand off element data, never the array struct pointer (which
+               would pun the header / read boxed sp_RbVal tags as ints). */
+            if (at == TY_INT_ARRAY)        { buf_puts(&call_buf, "sp_IntArray_ffi_data(");   emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            else if (at == TY_POLY_ARRAY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_int_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_PolyArray_ffi_int_data((sp_PolyArray *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.p)"); }
+            else                           { buf_puts(&call_buf, "((const int64_t *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+          }
+          else if (!strcmp(spec, "float_array")) {
+            if (at == TY_FLOAT_ARRAY)      { buf_puts(&call_buf, "sp_FloatArray_ffi_data(");  emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            else if (at == TY_POLY_ARRAY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_float_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_PolyArray_ffi_float_data((sp_PolyArray *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.p)"); }
+            else                           { buf_puts(&call_buf, "((const double *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+          }
           else {
             /* integer-like: int, uint32, size_t, long, etc. */
             if (at == TY_POLY) {
