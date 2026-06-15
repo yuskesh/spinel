@@ -165,7 +165,7 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
       if (comp_ty_value_obj(c, t)) { emit_ctype(c, t, &cty); init = "{0}"; ptr = 0; }
       else if (is_scalar_ret(t) && t != TY_UNKNOWN) { emit_ctype(c, t, &cty); init = "NULL"; ptr = 1; }
       else {
-        fprintf(stderr, "spinelc: local '%s' has unsupported type %s\n", lv->name, ty_name(t));
+        fprintf(stderr, "spinel: local '%s' has unsupported type %s\n", lv->name, ty_name(t));
         exit(1);
       }
   }
@@ -289,7 +289,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
     LocalVar *p = scope_local(s, s->pnames[i]);
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
     if (!is_scalar_ret(pt)) {
-      fprintf(stderr, "spinelc: method '%s' param '%s' has unsupported type %s\n",
+      fprintf(stderr, "spinel: method '%s' param '%s' has unsupported type %s\n",
               s->name, s->pnames[i], ty_name(pt));
       exit(1);
     }
@@ -1789,7 +1789,7 @@ static char *build_types_json(Compiler *c) {
 static int emit_write_file(const char *path, const char *text) {
   FILE *f = fopen(path, "wb");
   if (!f) {
-    fprintf(stderr, "spinelc: cannot write '%s'\n", path);
+    fprintf(stderr, "spinel: cannot write '%s'\n", path);
     return 0;
   }
   fputs(text, f);

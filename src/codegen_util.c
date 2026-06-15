@@ -267,7 +267,7 @@ void unsupported(Compiler *c, int id, const char *what) {
     int recv = nt_ref(c->nt, id, "receiver");
     int args = nt_ref(c->nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
-    fprintf(stderr, "spinelc: unsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
+    fprintf(stderr, "spinel: unsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
             what, id, ty, mname,
             recv >= 0 ? nt_type(c->nt, recv) : "-",
             recv >= 0 ? (int)comp_ntype(c, recv) : -1, ac);
@@ -275,7 +275,7 @@ void unsupported(Compiler *c, int id, const char *what) {
     fprintf(stderr, "\n");
   }
   else
-    fprintf(stderr, "spinelc: unsupported %s: node %d (%s)\n",
+    fprintf(stderr, "spinel: unsupported %s: node %d (%s)\n",
             what, id, ty ? ty : "?");
   /* SP_COLLECT_ERRORS: don't abort on the first gap -- keep going so one
      run surfaces every unsupported construct (the emitted C is then
