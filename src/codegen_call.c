@@ -151,6 +151,19 @@ static int ie_body_has_break_next(Compiler *c, int node) {
 
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* `require` / `require_relative` is a compile-time directive: top-level ones
+     are textually spliced away before codegen, and native libs are provided by
+     the runtime. One that still reaches codegen -- indented inside an `if`,
+     module, or method body -- is a runtime no-op (it would otherwise be an
+     unsupported CallNode). Returns nil in value position via emit_boxed. */
+  {
+    int rcv = nt_ref(nt, id, "receiver");
+    const char *cn = nt_str(nt, id, "name");
+    if (rcv < 0 && cn && (!strcmp(cn, "require") || !strcmp(cn, "require_relative"))) {
+      buf_puts(b, "0");
+      return;
+    }
+  }
   if (emit_partition_expr(c, id, b)) return;
   if (emit_collect_expr(c, id, b)) return;
   if (emit_predicate_expr(c, id, b)) return;
