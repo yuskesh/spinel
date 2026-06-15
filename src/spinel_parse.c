@@ -1875,6 +1875,9 @@ static char *resolve_plain_requires(char *source, const char *exe_path) {
 
   char *result = source;
   char *pos;
+  /* `scan` lets us step past a computed-argument require without aborting
+     the loop; it resets to `result` after each rebuild below. */
+  char *scan = result;
   /* Match a `require` at the very start of the buffer (offset 0) or
      immediately after a newline. Re-checking offset 0 every iteration --
      not just while `result == source` -- is what lets a first-line
@@ -1882,16 +1885,31 @@ static char *resolve_plain_requires(char *source, const char *exe_path) {
      buffer is rebuilt below, `result != source`, and the old condition
      stranded the line-1 require. */
   for (;;) {
-    if (strncmp(result, "require ", 8) == 0) {
+    if (scan == result && strncmp(result, "require ", 8) == 0) {
       pos = result;
     }
 else {
-      pos = strstr(result, "\nrequire ");
+      pos = strstr(scan, "\nrequire ");
       if (pos == NULL) break;
       pos++; /* skip the matched newline */
     }
     char *line_end = strchr(pos, '\n');
     if (!line_end) line_end = pos + strlen(pos);
+
+    /* Only a bare string-literal argument is inlined. A computed argument
+       (`require File.expand_path('x', __dir__)`, `require some_const`) is
+       left untouched: grabbing the first quote on the line would mistake an
+       inner string literal for the lib name and strand the rest of the
+       expression, producing invalid syntax. Skip past it and keep
+       scanning later lines. (#1383) */
+    {
+      const char *arg = pos + 8;
+      while (arg < line_end && (*arg == ' ' || *arg == '\t')) arg++;
+      if (arg >= line_end || (*arg != '"' && *arg != '\'')) {
+        scan = line_end;
+        continue;
+      }
+    }
 
     /* Must be: require "name" or require 'name' */
     char *q1 = strchr(pos + 7, '"');
@@ -1987,6 +2005,7 @@ else {
                result_len - before_len - rl_len + 1);
         free(result);
         result = new_result;
+        scan = result;
         continue;
       }
     }
@@ -2016,6 +2035,7 @@ else {
     memcpy(new_result + before_len + content_len, pos + line_len, result_len - before_len - line_len + 1);
     free(result);
     result = new_result;
+    scan = result;
     free(content);
   }
   return result;
