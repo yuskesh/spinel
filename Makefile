@@ -51,7 +51,13 @@ else
   RBS_EXTRACT_TARGET =
 endif
 
-all: parse regexp spinelc $(RBS_EXTRACT_TARGET)
+all: parse regexp spinelc $(RBS_EXTRACT_TARGET) spinel
+
+# Dev convenience: a `./spinel` pointing at the built single binary (the
+# installed command is `spinel` too). Best-effort symlink, copy fallback for
+# filesystems without symlinks.
+spinel: $(SPINELC)
+	@ln -sf $(SPINELC) spinel 2>/dev/null || cp $(SPINELC) spinel
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -329,7 +335,7 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) | $(SPINELC)
 	args=""; \
 	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 	rm -f "$@.diff"; \
-	$(SPINELC) "$<" -o "$$cfile" 2>/dev/null && \
+	$(SPINELC) "$<" -c --no-line-map -o "$$cfile" 2>/dev/null && \
 	$(CC) $(CFLAGS) -Werror $(SEC_FLAGS) -Ilib -c "$$cfile" -o "$$cfile.o" 2>/dev/null && \
 	$(CC) $(CFLAGS) "$$cfile.o" $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
 	if [ $$? -eq 0 ]; then \
@@ -395,7 +401,7 @@ bench: $(SPINELC) $(SP_RT_LIB)
 	  i=$$((i+1)); \
 	  bn=$$(basename "$$f" .rb); \
 	  if [ "$$tty" = 1 ]; then printf '\r\033[K  [%d/%d] %s' "$$i" "$$total" "$$bn"; fi; \
-	  $(TIMEOUT10) $(SPINELC) "$$f" -o /tmp/_sp_b.c 2>/dev/null && \
+	  $(TIMEOUT10) $(SPINELC) "$$f" -c --no-line-map -o /tmp/_sp_b.c 2>/dev/null && \
 	  $(CC) $(CFLAGS) -Werror $(SEC_FLAGS) -Ilib -c /tmp/_sp_b.c -o /tmp/_sp_b.c.o 2>/dev/null && \
 	  $(CC) $(CFLAGS) /tmp/_sp_b.c.o $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_b_bin$(EXE) 2>/dev/null; \
 	  if [ $$? -eq 0 ]; then \
@@ -441,7 +447,7 @@ optcarrot: $(SPINELC) $(SP_RT_LIB)
 	  git clone --depth=1 --branch=$(OPTCARROT_BRANCH) $(OPTCARROT_REPO) $(OPTCARROT_DIR); \
 	fi
 	@ruby $(OPTCARROT_DIR)/tools/pack-for-spinel.rb > build/optcarrot-single.rb
-	@$(SPINELC) build/optcarrot-single.rb -o build/optcarrot-single.c
+	@$(SPINELC) build/optcarrot-single.rb -c --no-line-map -o build/optcarrot-single.c
 	@$(CC) $(CFLAGS) -DSP_INT_OVERFLOW_MODE_WRAP -Ilib build/optcarrot-single.c $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o build/optcarrot-single
 	@out=$$($(TIMEOUT60) ./build/optcarrot-single 2>&1); \
 	echo "$$out"; \
@@ -495,8 +501,7 @@ SPNLDIR   = $(PREFIX)/lib/spinel
 # shipped — `legacy/spinel-legacy` stays in the source tree for comparison.
 install: all
 	install -d $(SPNLDIR)/lib
-	install -m 755 spinel                $(SPNLDIR)/
-	install -m 755 $(SPINELC)            $(SPNLDIR)/spinelc$(EXE)
+	install -m 755 $(SPINELC)            $(SPNLDIR)/spinel$(EXE)
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_types.h        $(SPNLDIR)/lib/
@@ -522,4 +527,4 @@ uninstall:
 # intermediates). Only the root-level C artifacts need an explicit rm.
 clean:
 	rm -rf build/ legacy/build/
-	rm -f spinel_parse$(EXE) spinel_rbs_extract$(EXE)
+	rm -f spinel_parse$(EXE) spinel_rbs_extract$(EXE) spinel

@@ -1968,6 +1968,10 @@ void emit_line_directive(Compiler *c, int id, Buf *b) {
   const char *path = nt_file_path(c->nt, fid);
   if (!path) path = c->nt->source_file;
   if (!path || !*path) path = "source.rb";
+  /* A `#line` directive must start a line. When this statement is emitted
+     mid-line (e.g. an inlined block/proc body written after `{ `), break the
+     line first so the `#` lands in column 0 rather than as a stray token. */
+  if (b->len > 0 && b->p[b->len - 1] != '\n') buf_puts(b, "\n");
   buf_printf(b, "#line %d \"%s\"\n", ln, path);
 }
 

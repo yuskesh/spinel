@@ -86,11 +86,14 @@ RUBY
 ./spinel app.rb --int-overflow=wrap   # +/-/* wrap silently instead of raising
 ```
 
-`./spinel` drives the C compiler (`build/spinelc`) and supports the full
-option set, including `--rbs DIR` (RBS-seeded inference) and the
-`--emit-rbs` / `--emit-types` / `--emit-symbol-map` analysis modes. The
-legacy Ruby backend is kept as a regression oracle and has its own driver,
-`./legacy/spinel-legacy`.
+`./spinel` is the compiler: a single native binary (`build/spinelc`; the
+repo-root `spinel` is a convenience symlink `make` creates) that parses,
+infers types, emits C, invokes `cc` to link it, and can run the result —
+no shell wrapper or chained helper binaries, so it works on Windows
+natively. It supports the full option set, including `--rbs DIR`
+(RBS-seeded inference) and the `--emit-rbs` / `--emit-types` /
+`--emit-symbol-map` analysis modes. The legacy Ruby backend is kept as a
+regression oracle and has its own driver, `./legacy/spinel-legacy`.
 
 #### Integer overflow
 
@@ -353,7 +356,7 @@ Whole-program type inference drives several compile-time optimizations:
 ## Architecture
 
 ```
-spinel                One-command wrapper script (POSIX shell)
+spinel                Single binary: compiler + cc driver (symlink to build/spinelc)
 spinel_parse.c        C frontend: libprism → text AST (1_608 lines)
 spinel_analyze.rb     Type inference: AST → IR (21_162 lines, self-hosted)
 spinel_codegen.rb     C emission: AST + IR → C (30_411 lines, self-hosted)
