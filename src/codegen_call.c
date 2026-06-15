@@ -130,6 +130,25 @@ static int emit_strchar_cmp(Compiler *c, int recv, int arg, int eq, Buf *b) {
   return 1;
 }
 
+/* Does `node` (an instance_exec body subtree) contain a break/next that binds
+   to the splice itself -- i.e. not consumed by a nested loop or block? */
+static int ie_body_has_break_next(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return 0;
+  if (!strcmp(ty, "BreakNode") || !strcmp(ty, "NextNode")) return 1;
+  /* constructs that bind their own break/next */
+  if (!strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
+      !strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode") || !strcmp(ty, "DefNode") ||
+      !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return 0;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (ie_body_has_break_next(c, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(nt, node, i, &n); for (int k = 0; k < n; k++) if (ie_body_has_break_next(c, ids[k])) return 1; }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_partition_expr(c, id, b)) return;
@@ -1856,6 +1875,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int last_as_stmt = g_ie_discard_value && !scalar_res;
         int upto = last_as_stmt ? ie_bn : ie_bn - 1;
         int saved_discard = g_ie_discard_value; g_ie_discard_value = 0;
+        /* A break/next that binds to the splice (not a nested loop) needs a C
+           loop to target: wrap the body in do{}while(0). `break <v>` captures
+           into the result temp via g_loop_break_var; `next <v>` via
+           g_ie_next_var. A `return` still returns from the enclosing function. */
+        int ie_bn_wrap = ie_body_has_break_next(c, blk_body);
+        const char *sv_lb = g_loop_break_var, *sv_nx = g_ie_next_var;
+        char bvbuf[32];
+        if (ie_bn_wrap) {
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n"); g_indent++;
+          if (scalar_res) { snprintf(bvbuf, sizeof bvbuf, "_t%d", tres); g_loop_break_var = bvbuf; g_ie_next_var = bvbuf; }
+          else { g_loop_break_var = NULL; g_ie_next_var = NULL; }
+        }
         for (int j = 0; j < upto; j++) emit_stmt(c, ie_bb[j], g_pre, g_indent);
         if (!last_as_stmt) {
           Buf vb; memset(&vb, 0, sizeof vb);
@@ -1870,6 +1901,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             buf_printf(g_pre, "_t%d = %s;\n", tres, vb.p ? vb.p : "0");
           }
           free(vb.p);
+        }
+        if (ie_bn_wrap) {
+          g_loop_break_var = sv_lb; g_ie_next_var = sv_nx;
+          g_indent--; emit_indent(g_pre, g_indent); buf_puts(g_pre, "} while (0);\n");
         }
         g_ie_discard_value = saved_discard;
       }

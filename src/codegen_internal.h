@@ -63,6 +63,9 @@ extern int  g_yield_block_fallback;
 /* Name of the `&block` parameter of the method currently being inlined, so
    `<blk>.call(args)` inside it expands the active block like `yield args`. */
 extern const char *g_block_param_name;
+/* Result temp for a do{}while(0)-wrapped instance_exec splice; a top-level
+   `next <v>` captures into it before continuing out. NULL otherwise. */
+extern const char *g_ie_next_var;
 /* The C expression for `self` (a pointer). Overridden while inlining an
    instance method at a call site (where there is no real `self` param). */
 extern const char *g_self;

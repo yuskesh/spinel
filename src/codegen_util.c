@@ -77,6 +77,10 @@ const char *g_retry_label = NULL;
 int g_redo_stack[64];
 int g_redo_depth = 0;
 const char *g_loop_break_var = NULL;
+/* When a direct instance_exec/eval splice is wrapped in a do{}while(0), this
+   holds the C result temp so a top-level `next <v>` captures its value before
+   continuing out of the splice (mirrors g_loop_break_var for `break`). */
+const char *g_ie_next_var = NULL;
 const char *g_result_var = NULL;
 int g_result_poly = 0;
 /* Loop-invariant string-length hoisting: while a loop whose receiver string is

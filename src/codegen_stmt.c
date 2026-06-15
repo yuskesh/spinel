@@ -3363,7 +3363,14 @@ else {
     }
     emit_indent(b, indent); buf_puts(b, "break;\n"); return;
   }
-  if (!strcmp(ty, "NextNode"))   { emit_indent(b, indent); buf_puts(b, "continue;\n"); return; }
+  if (!strcmp(ty, "NextNode")) {
+    if (g_ie_next_var) {
+      int nargs = nt_ref(nt, id, "arguments");
+      int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;
+      if (nvc > 0) { emit_indent(b, indent); buf_printf(b, "%s = ", g_ie_next_var); emit_expr(c, nv[0], b); buf_puts(b, ";\n"); }
+    }
+    emit_indent(b, indent); buf_puts(b, "continue;\n"); return;
+  }
   if (!strcmp(ty, "RedoNode"))   {
     emit_indent(b, indent);
     if (g_redo_depth > 0) buf_printf(b, "goto _redo_%d;\n", g_redo_stack[g_redo_depth - 1]);
