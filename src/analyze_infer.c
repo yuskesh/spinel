@@ -2104,6 +2104,14 @@ else {
 
   if (is_void_call(name) && recv < 0) return TY_VOID;
 
+  /* $stdout/$stderr.puts/print/write return nil (so a value-position use --
+     an if/else arm or assignment -- unifies and boxes as nil). */
+  if (recv >= 0 && (!strcmp(name, "puts") || !strcmp(name, "print") || !strcmp(name, "write")) &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "GlobalVariableReadNode")) {
+    const char *gv = nt_str(nt, recv, "name");
+    if (gv && (!strcmp(gv, "$stdout") || !strcmp(gv, "$stderr"))) return TY_NIL;
+  }
+
   /* tap: run block, return self */
   if (!strcmp(name, "tap") && recv >= 0) return rt;
   /* then / yield_self: run block, return block result */

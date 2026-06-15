@@ -7935,12 +7935,16 @@ else {
       const char *fd = is_err ? "stderr" : "stdout";
       if (!strcmp(name, "puts") || !strcmp(name, "print")) {
         int want_nl = !strcmp(name, "puts");
+        /* Join with the comma operator so the whole thing stays a single C
+           expression -- valid both as a statement and in value position (a
+           return/if-else arm). puts adds a newline after each argument. */
         for (int k = 0; k < argc; k++) {
+          if (k > 0) buf_puts(b, ", ");
           TyKind at = comp_ntype(c, argv[k]);
           if (at == TY_STRING) { buf_printf(b, "fputs("); emit_expr(c, argv[k], b); buf_printf(b, ", %s)", fd); }
           else if (at == TY_INT) { buf_printf(b, "fprintf(%s, \"%%lld\", (long long)(", fd); emit_expr(c, argv[k], b); buf_puts(b, "))"); }
           else { buf_printf(b, "fputs(sp_poly_to_s("); emit_expr(c, argv[k], b); buf_printf(b, "), %s)", fd); }
-          if (want_nl && k == argc - 1) buf_printf(b, "; fputc('\\n', %s)", fd);
+          if (want_nl) buf_printf(b, ", fputc('\\n', %s)", fd);
         }
         if (argc == 0 && want_nl) buf_printf(b, "fputc('\\n', %s)", fd);
         return;
