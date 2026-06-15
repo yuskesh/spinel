@@ -149,6 +149,23 @@ static int ie_body_has_break_next(Compiler *c, int node) {
   return 0;
 }
 
+/* Emit a valid assignment rvalue for an instance_exec block param the caller
+   omitted, given its slot type. default_value() is rvalue-safe for scalars,
+   pointers, and the compound-literal value types (Range/Time/Complex/Rational),
+   but returns "NULL" for an object type -- correct for a heap object, invalid
+   for a value-type object whose C type is a struct (`lv = NULL` won't compile).
+   Emit a zero compound literal `(sp_Name){0}` in that case. */
+static void emit_ie_param_default(Compiler *c, TyKind t, Buf *b) {
+  if (ty_is_object(t)) {
+    int cid = ty_object_class(t);
+    if (cid >= 0 && cid < c->nclasses && c->classes[cid].is_value_type) {
+      buf_printf(b, "(sp_%s){0}", c->classes[cid].name);
+      return;
+    }
+  }
+  buf_puts(b, default_value(t));
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_partition_expr(c, id, b)) return;
@@ -1811,7 +1828,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             char pn[8]; snprintf(pn, sizeof pn, "_%d", p + 1);
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "lv_%s = ", rename_local(pn));
-            if (is_exec) { if (p < iac) emit_expr(c, iav[p], g_pre); else buf_puts(g_pre, "0"); }
+            if (is_exec) {
+              if (p < iac) emit_expr(c, iav[p], g_pre);
+              else { LocalVar *plv = scope_local(comp_scope_of(c, id), pn); emit_ie_param_default(c, plv ? plv->type : TY_POLY, g_pre); }
+            }
             else buf_printf(g_pre, "_t%d", tr);
             buf_puts(g_pre, ";\n");
           }
@@ -1849,7 +1869,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (an >= 0) emit_expr(c, an, &eb); else buf_puts(&eb, "0");
             buf_puts(g_pre, eb.p ? eb.p : "0"); free(eb.p);
           }
-          else if (is_exec) { if (p < iac) emit_expr(c, iav[p], g_pre); else buf_puts(g_pre, "0"); }
+          else if (is_exec) {
+            if (p < iac) emit_expr(c, iav[p], g_pre);
+            else { LocalVar *plv = scope_local(comp_scope_of(c, id), pn); emit_ie_param_default(c, plv ? plv->type : TY_POLY, g_pre); }
+          }
           else buf_printf(g_pre, "_t%d", tr);  /* instance_eval yields self */
           buf_puts(g_pre, ";\n");
         }
