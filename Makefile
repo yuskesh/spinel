@@ -119,13 +119,14 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 
 parse: spinel_parse$(EXE)
 
-spinel_parse$(EXE): spinel_parse.c $(PRISM_LIB)
-	$(CC) $(CFLAGS) -I$(PRISM_INC) spinel_parse.c $(PRISM_LIB) -lm -o $@
+spinel_parse$(EXE): legacy/spinel_parse.c $(PRISM_LIB)
+	$(CC) $(CFLAGS) -I$(PRISM_INC) legacy/spinel_parse.c $(PRISM_LIB) -lm -o $@
 
 # ---- C compiler (src/) ----
 # The single-binary C reimplementation of the analyzer + code generator.
-# Reuses spinel_parse.c's Prism walk (compiled with -DSPINEL_PARSE_AS_LIB so
-# its standalone main() drops out and sp_parse_file_to_text is exposed).
+# Links src/spinel_parse.c, the library copy of the Prism walk (no main();
+# exposes sp_parse_file_to_text). The standalone-with-main copy used by the
+# legacy `parse` target lives in legacy/spinel_parse.c.
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
@@ -142,8 +143,8 @@ build/csrc:
 build/csrc/%.o: src/%.c $(SPINEL_HDRS) | build/csrc
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
-build/csrc/sp_parse_lib.o: spinel_parse.c $(PRISM_LIB) | build/csrc
-	$(CC) $(CFLAGS) -DSPINEL_PARSE_AS_LIB -I$(PRISM_INC) -c spinel_parse.c -o $@
+build/csrc/sp_parse_lib.o: src/spinel_parse.c $(PRISM_LIB) | build/csrc
+	$(CC) $(CFLAGS) -I$(PRISM_INC) -c src/spinel_parse.c -o $@
 
 $(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o $(PRISM_LIB)
 	$(CC) $(CFLAGS) $(SPINEL_OBJ) build/csrc/sp_parse_lib.o $(PRISM_LIB) -lm $(LDFLAGS) -o $@
