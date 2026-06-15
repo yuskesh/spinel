@@ -401,6 +401,23 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   int v = nt_ref(c->nt, id, "value");
   LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
   emit_indent(b, indent);
+  /* A TY_PROC value lives in an int cell as (mrb_int)(uintptr_t)sp_Proc*. The
+     write target must be the raw cell deref (an lvalue) with the pointer
+     re-encoded as int; emit_local_ref's read form casts to sp_Proc* and is not
+     assignable (self-recursive `f = proc { f.call(...) }`). */
+  if (lv && lv->type == TY_PROC &&
+      (lv->is_cell || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm)))) {
+    if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm))
+      buf_printf(b, "*((%s *)_cap)->%s", g_cap_struct, nm);
+    else
+      buf_printf(b, "*_cell_%s", nm);
+    buf_puts(b, " = (mrb_int)(uintptr_t)(");
+    const char *pvty = nt_type(c->nt, v);
+    if (pvty && !strcmp(pvty, "NilNode")) buf_puts(b, "NULL");
+    else emit_expr(c, v, b);
+    buf_puts(b, ");\n");
+    return;
+  }
   emit_local_ref(c, id, nm, b);
   buf_puts(b, " = ");
   /* `x = nil` -> the variable's type-appropriate default */
