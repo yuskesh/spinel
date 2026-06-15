@@ -1007,6 +1007,11 @@ else if (orecv >= 0 && onm) {
     if (g_pre) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "_proc_cap_%d *_capv_%d = (_proc_cap_%d *)sp_gc_alloc(sizeof(_proc_cap_%d), NULL, _proc_cap_scan_%d);\n", pid, pid, pid, pid, pid);
+      /* Root the capture struct: sp_proc_new_meta allocates the proc box and
+         can fire a GC that would otherwise sweep this still-unreferenced
+         struct before the box adopts it. */
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT(_capv_%d);\n", pid);
       for (int i = 0; i < ncap; i++) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->%s = _cell_%s;\n", pid, caps.v[i], caps.v[i]); }
     }
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
