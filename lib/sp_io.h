@@ -28,4 +28,10 @@ void sp_File_print(sp_File *f, const char *s);
 mrb_int sp_File_flush(sp_File *f);
 mrb_bool sp_File_eof_p(sp_File *f);
 
+/* File metadata predicates (libc/WinAPI only; defined in sp_io.c). */
+mrb_bool sp_file_directory(const char *path);
+mrb_bool sp_file_file(const char *path);
+mrb_bool sp_file_exist(const char *path);
+void sp_file_delete(const char *path);
+
 #endif

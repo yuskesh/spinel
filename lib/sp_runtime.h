@@ -4781,42 +4781,8 @@ static void sp_sleep(mrb_float s) {
 #endif
 }
 
-#ifdef _WIN32
-static DWORD sp_file_attributes(const char *path) {
-  if (!path) return INVALID_FILE_ATTRIBUTES;
-  int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-  if (len <= 0) return INVALID_FILE_ATTRIBUTES;
-  wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)len);
-  if (!wpath) return INVALID_FILE_ATTRIBUTES;
-  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, len) <= 0) {
-    free(wpath);
-    return INVALID_FILE_ATTRIBUTES;
-  }
-  DWORD attrs = GetFileAttributesW(wpath);
-  free(wpath);
-  return attrs;
-}
-
-static mrb_bool sp_file_directory(const char *path) {
-  DWORD attrs = sp_file_attributes(path);
-  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static mrb_bool sp_file_file(const char *path) {
-  DWORD attrs = sp_file_attributes(path);
-  return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
-}
-#else
-static mrb_bool sp_file_directory(const char *path) {
-  struct stat st;
-  return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
-}
-
-static mrb_bool sp_file_file(const char *path) {
-  struct stat st;
-  return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
-}
-#endif
+/* File metadata predicates (sp_file_directory/file/exist/delete) moved to
+   lib/sp_io.c (libspinel_rt.a); prototypes come from sp_io.h. */
 
 /* Text mode ("r") matches CRuby's File.read: on Windows, CRLF is
    normalized to LF on read, which cancels out fopen("w")'s
@@ -4854,8 +4820,6 @@ static void sp_file_write(const char *path, const char *data) {
     fclose(f);
   }
 }
-static mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }
-static void sp_file_delete(const char *path) { remove(path); }
 static sp_Time sp_file_mtime(const char *path) {
   if (!path) {
     sp_raise_cls("TypeError", "no implicit conversion of nil into String");

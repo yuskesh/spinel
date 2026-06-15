@@ -14,10 +14,12 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
-#include <io.h>      /* _pipe */
-#include <fcntl.h>   /* _O_BINARY */
+#include <io.h>       /* _pipe */
+#include <fcntl.h>    /* _O_BINARY */
+#include <windows.h>  /* GetFileAttributesW for the File predicates */
 #else
-#include <unistd.h>  /* pipe */
+#include <unistd.h>   /* pipe */
+#include <sys/stat.h> /* stat() for the File predicates */
 #endif
 
 /* Provided by the generated TU / libspinel_rt.a. */
@@ -96,3 +98,46 @@ mrb_bool sp_File_eof_p(sp_File *f) {
   ungetc(c, f->fp);
   return FALSE;
 }
+
+/* ---- File metadata predicates ----
+   libc / WinAPI only, no spinel-string allocation and no shared mutable
+   state, so they live here rather than inline in sp_runtime.h. */
+#ifdef _WIN32
+static DWORD sp_file_attributes(const char *path) {
+  if (!path) return INVALID_FILE_ATTRIBUTES;
+  int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+  if (len <= 0) return INVALID_FILE_ATTRIBUTES;
+  wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)len);
+  if (!wpath) return INVALID_FILE_ATTRIBUTES;
+  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, len) <= 0) {
+    free(wpath);
+    return INVALID_FILE_ATTRIBUTES;
+  }
+  DWORD attrs = GetFileAttributesW(wpath);
+  free(wpath);
+  return attrs;
+}
+
+mrb_bool sp_file_directory(const char *path) {
+  DWORD attrs = sp_file_attributes(path);
+  return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+mrb_bool sp_file_file(const char *path) {
+  DWORD attrs = sp_file_attributes(path);
+  return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+#else
+mrb_bool sp_file_directory(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+mrb_bool sp_file_file(const char *path) {
+  struct stat st;
+  return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+#endif
+
+mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }
+void sp_file_delete(const char *path) { remove(path); }
