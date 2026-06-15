@@ -1,8 +1,8 @@
 @echo off
 rem Spinel AOT Compiler (LEGACY Ruby backend) - Ruby to native binary (Windows)
 rem
-rem Drives the legacy self-hosted codegen built under build\legacy\ by
-rem `make legacy`. The primary compiler is the C `spinel` driver.
+rem Drives the legacy self-hosted codegen built under legacy\build\ by
+rem `make legacy`. The primary compiler is the C `spinel` driver in the parent.
 rem
 rem Usage:
 rem   spinel app.rb                  - compiles to .\app.exe
@@ -20,13 +20,17 @@ rem   --lonig    Link with oniguruma (for regexp programs)
 
 setlocal
 
+rem This script lives in legacy\. The Ruby sources sit beside it and the
+rem legacy binaries build under legacy\build; the parser and runtime lib are
+rem shared from the parent (root) tree.
 set "DIR=%~dp0"
 if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
+for %%I in ("%DIR%\..") do set "ROOT=%%~fI"
 
-set "PARSE_RB=%DIR%\spinel_parse.rb"
-set "PARSE_BIN=%DIR%\spinel_parse.exe"
-set "CODEGEN_RB=%DIR%\legacy\spinel_codegen.rb"
-set "CODEGEN_BIN=%DIR%\build\legacy\spinel_codegen.exe"
+set "PARSE_RB=%ROOT%\spinel_parse.rb"
+set "PARSE_BIN=%ROOT%\spinel_parse.exe"
+set "CODEGEN_RB=%DIR%\spinel_codegen.rb"
+set "CODEGEN_BIN=%DIR%\build\spinel_codegen.exe"
 
 set "SOURCE="
 set "OUTPUT="
@@ -129,8 +133,8 @@ if defined OUTPUT (
   set "BIN_FILE=%BASENAME%"
 )
 
-set "SP_RT_LIB=%DIR%\lib\libspinel_rt.a"
-set "INCLUDE_FLAGS=-I"%DIR%\lib" -I"%DIR%\lib\regexp""
+set "SP_RT_LIB=%ROOT%\lib\libspinel_rt.a"
+set "INCLUDE_FLAGS=-I"%ROOT%\lib" -I"%ROOT%\lib\regexp""
 if exist "%SP_RT_LIB%" (
   if defined EXTRA_FLAGS (
     set "EXTRA_FLAGS=%EXTRA_FLAGS% "%SP_RT_LIB%""

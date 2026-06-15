@@ -491,8 +491,8 @@ PREFIX   ?= /usr/local
 SPNLDIR   = $(PREFIX)/lib/spinel
 
 # Install the C compiler only. The legacy Ruby compiler is a local
-# regression oracle (build/legacy/, `make legacy`/`bootstrap`) and is not
-# shipped — `spinel-legacy` stays in the source tree for comparison.
+# regression oracle (legacy/, `make legacy`/`bootstrap`) and is not
+# shipped — `legacy/spinel-legacy` stays in the source tree for comparison.
 install: all
 	install -d $(SPNLDIR)/lib
 	install -m 755 spinel                $(SPNLDIR)/
@@ -517,9 +517,9 @@ uninstall:
 
 # ---- Clean ----
 
-# `rm -rf build/` also wipes build/legacy (the legacy compiler's binaries
-# and bootstrap intermediates). Only the root-level C artifacts need an
-# explicit rm; the legacy binaries no longer live at the repo root.
+# Wipe the root build tree plus the legacy subtree's own build dir
+# (legacy/build holds the legacy compiler's binaries + bootstrap
+# intermediates). Only the root-level C artifacts need an explicit rm.
 clean:
-	rm -rf build/
+	rm -rf build/ legacy/build/
 	rm -f spinel_parse$(EXE) spinel_rbs_extract$(EXE)

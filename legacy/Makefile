@@ -1,7 +1,7 @@
 # Legacy Ruby compiler — bootstrap + self-host fixpoint oracle.
 #
 # This builds the self-hosted Ruby analyzer/codegen binaries
-# (build/legacy/spinel_analyze / spinel_codegen) by interpreting the
+# (legacy/build/spinel_analyze / spinel_codegen) by interpreting the
 # compiler on its own source through CRuby, then verifies the self-host
 # fixpoint. The C compiler in ../src is the primary product; this tree is
 # kept as a regression oracle and for IR-diff / .expected regeneration.
@@ -11,7 +11,8 @@
 # the parent Makefile's `bootstrap` / `legacy` targets delegate here.
 
 ROOT  := ..
-BUILD := $(ROOT)/build/legacy
+# Legacy artifacts live under legacy/build (self-contained in this subtree).
+BUILD := build
 include $(ROOT)/common.mk
 
 .PHONY: all legacy bootstrap bootstrap-fixpoint codegen root-build \
@@ -112,7 +113,7 @@ $(BUILD)/codegen3.c: $(BUILD)/codegen.ast $(BUILD)/codegen3.ir $(BUILD)/bin2_cod
 
 # bootstrap: the CRuby-seeded self-host fixpoint AUTHORITY (CI/release).
 # Verifies round2 == round3 byte-for-byte, then promotes bin2 to the
-# build/legacy binaries.
+# legacy/build binaries.
 bootstrap: bootstrap-fixpoint
 bootstrap-fixpoint: $(BUILD)/analyze3.c $(BUILD)/codegen3.c
 	@diff $(BUILD)/analyze2.ir $(BUILD)/analyze3.ir > /dev/null && echo "analyze.rb: IR fixpoint OK" || (echo "BOOTSTRAP FAILED: analyze.rb IR diverged" && exit 1)
@@ -164,7 +165,7 @@ analyze-fail-test: $(BUILD)/spinel_analyze$(EXE) | root-build
 	echo "Analyze-fail tests: $$n pass"; \
 	if [ $$fail -ne 0 ]; then exit 1; fi
 
-# All legacy artifacts live under ../build/legacy; `make -C .. clean`
-# wipes the whole ../build tree. This target just drops the binaries.
+# All legacy artifacts live under legacy/build; `make -C .. clean` wipes it
+# along with the root build tree. This target just drops the binaries.
 clean:
 	rm -f $(BUILD)/spinel_analyze$(EXE) $(BUILD)/spinel_codegen$(EXE)

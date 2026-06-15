@@ -2,8 +2,8 @@
 # Spinel AOT Compiler (LEGACY Ruby backend) - Ruby to native binary
 #
 # This drives the legacy self-hosted analyzer/codegen, built under
-# build/legacy/ by `make legacy`, and kept as a regression oracle. The
-# primary compiler is the C `spinel` driver in this directory.
+# legacy/build/ by `make legacy`, and kept as a regression oracle. The
+# primary compiler is the C `spinel` driver in the parent directory.
 #
 # Usage:
 #   spinel app.rb                  - compiles to ./app
@@ -28,13 +28,17 @@
 #   --cc=CMD   C compiler command (default: cc)
 #   -e STR     Inline Ruby source (repeatable; multiple -e join with \n)
 
+# This script lives in legacy/. The Ruby sources sit beside it; the parser,
+# runtime lib and RBS extractor are shared from the parent (root) tree, and
+# the compiled legacy binaries are built under legacy/build.
 DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")" && pwd)"
-PARSE_BIN="$DIR/spinel_parse"
-ANALYZE_RB="$DIR/legacy/spinel_analyze.rb"
-ANALYZE_BIN="$DIR/build/legacy/spinel_analyze"
-CODEGEN_RB="$DIR/legacy/spinel_codegen.rb"
-CODEGEN_BIN="$DIR/build/legacy/spinel_codegen"
-RBS_EXTRACT_BIN="$DIR/spinel_rbs_extract"
+ROOT="$(cd "$DIR/.." && pwd)"
+PARSE_BIN="$ROOT/spinel_parse"
+ANALYZE_RB="$DIR/spinel_analyze.rb"
+ANALYZE_BIN="$DIR/build/spinel_analyze"
+CODEGEN_RB="$DIR/spinel_codegen.rb"
+CODEGEN_BIN="$DIR/build/spinel_codegen"
+RBS_EXTRACT_BIN="$ROOT/spinel_rbs_extract"
 
 # On Windows (MSYS2 / Cygwin / MinGW) the compiled binaries carry a .exe
 # suffix; fall back to that when the unsuffixed path is absent.
@@ -441,18 +445,18 @@ if [ "$RUN_MODE" -eq 1 ]; then
 else
   BIN_FILE="${OUTPUT:-$BASENAME}"
 fi
-# Runtime library (bigint + regexp)
-SP_RT_LIB="$DIR/lib/libspinel_rt.a"
-INCLUDE_FLAGS="-I$DIR/lib"
+# Runtime library (bigint + regexp), shared from the root tree.
+SP_RT_LIB="$ROOT/lib/libspinel_rt.a"
+INCLUDE_FLAGS="-I$ROOT/lib"
 if [ -f "$SP_RT_LIB" ]; then
   EXTRA_FLAGS="$EXTRA_FLAGS $SP_RT_LIB"
 fi
 # Legacy: optional standalone regexp lib (retained for backward compat)
-RE_LIB="$DIR/lib/regexp/libspre.a"
+RE_LIB="$ROOT/lib/regexp/libspre.a"
 if grep -q 're_compile' "$C_FILE" 2>/dev/null && [ ! -f "$SP_RT_LIB" ] && [ -f "$RE_LIB" ]; then
   EXTRA_FLAGS="$EXTRA_FLAGS $RE_LIB"
 fi
-INCLUDE_FLAGS="$INCLUDE_FLAGS -I$DIR/lib/regexp"
+INCLUDE_FLAGS="$INCLUDE_FLAGS -I$ROOT/lib/regexp"
 # Scrape FFI link/cflag markers emitted by the codegen. Each line looks
 # like "/* SPINEL_LINK: -lraylib */" or "/* SPINEL_CFLAGS: -I/foo */"
 # and comes from an ffi_lib / ffi_cflags declaration.
