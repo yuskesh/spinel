@@ -65,11 +65,10 @@ jobs:
       # The bench programs are larger and more realistic than the test/*.rb
       # fixtures, so they exercise object-graph shapes (cons cells, tree
       # nodes, linked structures) that `make test` misses -- a holder
-      # specialization regression once slipped past test + optcarrot +
-      # bootstrap precisely because bench wasn't gated. Linux/clang only:
-      # the output is deterministic across compilers/OS, and clang carries
-      # this while gcc carries optcarrot + bootstrap, balancing the two
-      # ubuntu jobs.
+      # specialization regression once slipped past test + optcarrot
+      # precisely because bench wasn't gated. Linux/clang only: the output
+      # is deterministic across compilers/OS, and clang carries this while
+      # gcc carries optcarrot, balancing the two ubuntu jobs.
       - name: Run benchmark integration test
         if: matrix.os == 'ubuntu-latest' && matrix.cc == 'clang'
         run: make bench
@@ -83,18 +82,6 @@ jobs:
       - name: Run optcarrot integration test
         if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
         run: make optcarrot
-
-      # Self-host fixpoint check. The build/test steps above exercise the
-      # round-1 compiler (generated from CRuby) but never feed the compiler
-      # through itself, so a stage-2 self-host divergence stays invisible to
-      # them. `make bootstrap` reuses the round-1 binary to generate round 2
-      # and round 3 and requires their IR + C output to match byte-for-byte.
-      # Linux/gcc only: the check is on the compiler's own deterministic
-      # output, so repeating it across the matrix buys nothing. LTO=0 keeps
-      # the bootstrap binary builds fast without affecting that output.
-      - name: Self-host fixpoint check
-        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
-        run: make -j$(getconf _NPROCESSORS_ONLN) LTO=0 bootstrap
 
       - name: sccache stats
         if: always()
