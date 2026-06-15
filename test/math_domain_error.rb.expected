@@ -1,0 +1,21 @@
+2.0
+1.4142
+0.0
+0.0
+0.0
+sqrt: Numerical argument is out of domain - sqrt
+log: Numerical argument is out of domain - log
+log2: Numerical argument is out of domain - log2
+log10: Numerical argument is out of domain - log10
+acos: Numerical argument is out of domain - acos
+asin: Numerical argument is out of domain - asin
+acosh: Numerical argument is out of domain - acosh
+atanh: Numerical argument is out of domain - atanh
+isqrt: Numerical argument is out of domain - "isqrt"
+as Std: caught
+as Exc: caught
+bare-rescue: Numerical argument is out of domain - sqrt
+1.0
+2.7183
+3.0
+log neg base: Numerical argument is out of domain - log

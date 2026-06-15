@@ -246,6 +246,26 @@ const char *sp_sprintf(const char *fmt, ...);
 /* system()/backtick ($?) support now lives in libspinel_rt.a (lib/sp_system.c). */
 #include "sp_system.h"
 
+/* Math.* wrappers that raise Math::DomainError on out-of-domain input, per
+   CRuby. The runtime exception name is the flattened "Math_DomainError"
+   (the codegen maps a `rescue Math::DomainError` path to that form, matching
+   the StringScanner::Error -> StringScanner_Error precedent). Only the
+   domain-restricted methods get wrappers; cos/sin/tan/atan/sinh/cosh/tanh/
+   asinh/exp/cbrt/erf/erfc/atan2/hypot accept all reals and call libc
+   directly from codegen. log(0) is -Infinity in CRuby (no raise); only a
+   negative argument raises. atanh's endpoints (|x| == 1) yield ±Infinity and
+   do NOT raise in CRuby -- only |x| > 1 is out of domain. CRuby's Math.*
+   message names the function WITHOUT quotes (e.g. `... out of domain - sqrt`),
+   unlike Integer.sqrt which quotes "isqrt". */
+static inline mrb_float sp_math_sqrt(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - sqrt");return sqrt(x);}
+static inline mrb_float sp_math_log(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - log");return log(x);}
+static inline mrb_float sp_math_log2(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - log2");return log2(x);}
+static inline mrb_float sp_math_log10(mrb_float x){if(x<0.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - log10");return log10(x);}
+static inline mrb_float sp_math_acos(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - acos");return acos(x);}
+static inline mrb_float sp_math_asin(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - asin");return asin(x);}
+static inline mrb_float sp_math_acosh(mrb_float x){if(x<1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - acosh");return acosh(x);}
+static inline mrb_float sp_math_atanh(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - atanh");return atanh(x);}
+
 static sp_Range sp_range_new(mrb_int f,mrb_int l,mrb_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;return r;}
 static mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.last==b.last&&a.excl==b.excl;}
 /* `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ cls_id
@@ -4677,6 +4697,7 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"NotImplementedError",   "StandardError"},
     {"StopIteration",         "IndexError"},
     {"FloatDomainError",      "RangeError"},
+    {"Math_DomainError",      "StandardError"},
     {"FrozenError",           "RuntimeError"},
     {"EncodingError",         "StandardError"},
     {"LoadError",             "StandardError"},
@@ -4735,6 +4756,7 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
     {"NotImplementedError",  "StandardError"},
     {"StopIteration",        "IndexError"},
     {"FloatDomainError",     "RangeError"},
+    {"Math_DomainError",     "StandardError"},
     {"FrozenError",          "RuntimeError"},
     {"EncodingError",        "StandardError"},
     {"LoadError",            "StandardError"},
