@@ -580,7 +580,7 @@ static mrb_int sp_str_ord(const char*s){if(!s)sp_raise_cls("ArgumentError","empt
    dereference NULL on either side. nil-vs-string equality is false in
    Ruby; nil == nil is true, so falling back to pointer equality on the
    NULL path covers both. */
-static inline int sp_str_eq(const char*a,const char*b){if(!a||!b)return a==b;return strcmp(a,b)==0;}
+static inline int sp_str_eq(const char*a,const char*b){if(a==b)return 1;if(!a||!b)return 0;return strcmp(a,b)==0;}
 static size_t sp_utf8_byte_offset(const char*s,mrb_int char_idx){
   if (!s || char_idx <= 0) return 0;
   if (sp_str_cacheable(s)) {
