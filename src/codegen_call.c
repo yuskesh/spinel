@@ -1547,8 +1547,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                           ? nt_str(nt, recv, "name") : NULL;
         int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
         if (ci2 >= 0) {
+          /* Build a real sp_PolyArray of boxed symbols so the declared
+             TY_POLY_ARRAY type matches the runtime value -- chained ops like
+             `.map(&:to_s).sort` then iterate it correctly (a boxed SYM_ARRAY
+             obj is opaque to the poly-array path and iterated as empty). */
           int ta = ++g_tmp;
-          buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
+          buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
           /* user-defined instance methods */
           for (int si = 0; si < c->nscopes; si++) {
             Scope *s = &c->scopes[si];
@@ -1556,16 +1560,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (!s->name || !s->name[0]) continue;
             /* skip shadow methods */
             if (strncmp(s->name, "__prep_", 7) == 0) continue;
-            buf_printf(b, "sp_IntArray_push(_t%d, sp_sym_intern(\"%s\")); ", ta, s->name);
+            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, s->name);
           }
           /* attr_readers */
           ClassInfo *ci3 = &c->classes[ci2];
           for (int ri = 0; ri < ci3->nreaders; ri++)
-            buf_printf(b, "sp_IntArray_push(_t%d, sp_sym_intern(\"%s\")); ", ta, ci3->readers[ri]);
+            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, ci3->readers[ri]);
           /* attr_writers */
           for (int wi = 0; wi < ci3->nwriters; wi++)
-            buf_printf(b, "sp_IntArray_push(_t%d, sp_sym_intern(\"%s=\")); ", ta, ci3->writers[wi]);
-          buf_printf(b, "sp_box_obj(_t%d, SP_BUILTIN_SYM_ARRAY); })", ta);
+            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s=\"))); ", ta, ci3->writers[wi]);
+          buf_printf(b, "sp_box_poly_array(_t%d); })", ta);
           return;
         }
       }

@@ -3062,7 +3062,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
       switch (v.cls_id) {
         case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
         case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
-        case SP_BUILTIN_PTR_ARRAY: return SPL("Array");
+        case SP_BUILTIN_PTR_ARRAY: case SP_BUILTIN_POLY_ARRAY: return SPL("Array");
         case SP_BUILTIN_RANGE: return SPL("Range");
         case SP_BUILTIN_TIME: return SPL("Time");
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
