@@ -650,15 +650,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
     int unbox_ptr = proc_slot_is_ptr(rty);
     int unbox_poly = (rty == TY_POLY);
+    int unbox_float = (rty == TY_FLOAT);     /* boxed in the poly slot, read back as float */
     /* Ensure _sp_proc_poly_ret is declared even when triggered from a call site
        (e.g. ivar-stored proc whose proc_ret is TY_UNKNOWN → TY_POLY at analysis). */
-    if (unbox_poly && !g_needs_proc_poly_retslot) {
+    if ((unbox_poly || unbox_float) && !g_needs_proc_poly_retslot) {
       g_needs_proc_poly_retslot = 1;
       buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_ret;\n");
     }
     if (unbox_ptr) { buf_puts(b, "("); emit_ctype(c, rty, b); buf_puts(b, ")(uintptr_t)("); }
-    /* poly return: proc stores result in _sp_proc_poly_ret; read it back after the call */
-    if (unbox_poly) buf_puts(b, "((void)");
+    /* poly/float return: proc stores the boxed result in _sp_proc_poly_ret;
+       read it back after the call (float unboxes via sp_poly_to_f). */
+    if (unbox_poly || unbox_float) buf_puts(b, "((void)");
     buf_puts(b, "sp_proc_call(");
     emit_expr(c, recv, b);
     buf_puts(b, ", (mrb_int[16]){");
@@ -671,6 +673,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "})");
     if (unbox_ptr) buf_puts(b, ")");
     if (unbox_poly) buf_puts(b, ", _sp_proc_poly_ret)");
+    if (unbox_float) buf_puts(b, ", sp_poly_to_f(_sp_proc_poly_ret))");
     return;
   }
 

@@ -870,15 +870,17 @@ else if (orecv >= 0 && onm) {
   }
   /* The proc fn returns mrb_int (the ABI); heap-pointer values (strings,
      arrays, hashes, objects) are laundered through (mrb_int)(uintptr_t).
-     TY_POLY values are stored in _sp_proc_poly_ret (file-static sp_RbVal)
-     before return; the call site reads it back.
-     Float/range/time don't fit the slot and defer. */
+     TY_POLY and float values are stored in _sp_proc_poly_ret (file-static
+     sp_RbVal) before return -- float boxed via sp_box_float -- and the call
+     site reads it back (unboxing float with sp_poly_to_f).
+     Range/time don't fit the slot and defer. */
   int ret_ptr = proc_slot_is_ptr(ret);
   int ret_void = (ret == TY_VOID);  /* body's last expr has no value (e.g. puts) */
   int ret_poly = (ret == TY_POLY);
-  if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_void && !ret_poly) {
+  int ret_fbox = (ret == TY_FLOAT);  /* boxed through the poly return slot */
+  if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_void && !ret_poly && !ret_fbox) {
     free(params.v); free(used.v); free(locals.v); free(caps.v);
-    unsupported(c, create, "proc with float/range/time return (later slice)");
+    unsupported(c, create, "proc with range/time return (later slice)");
     return;
   }
 
@@ -969,9 +971,10 @@ else if (orecv >= 0 && onm) {
     }
     else buf_puts(pb, "  return 0;\n");
   }
-  else if (ret_poly) {
-    /* Store the sp_RbVal result in the file-static _sp_proc_poly_ret slot;
-       the call site reads it back after sp_proc_call returns. */
+  else if (ret_poly || ret_fbox) {
+    /* Store the result in the file-static _sp_proc_poly_ret slot (boxed:
+       a float tail becomes sp_box_float via g_result_poly); the call site
+       reads it back after sp_proc_call returns. */
     if (!g_needs_proc_poly_retslot) {
       g_needs_proc_poly_retslot = 1;
       buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_ret;\n");
