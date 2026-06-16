@@ -1319,7 +1319,11 @@ void resolve_parents(Compiler *c) {
     int sc = nt_ref(nt, c->classes[i].def_node, "superclass");
     if (sc < 0) continue;
     const char *sty = nt_type(nt, sc);
-    if (sty && !strcmp(sty, "ConstantReadNode")) {
+    /* A module-qualified superclass (`class Child < M::Handler`) is a
+       ConstantPathNode whose `name` is the last segment ("Handler").
+       Classes are registered under that bare last name, so resolve it the
+       same way as an unqualified ConstantReadNode superclass. */
+    if (sty && (!strcmp(sty, "ConstantReadNode") || !strcmp(sty, "ConstantPathNode"))) {
       int p = comp_class_index(c, nt_str(nt, sc, "name"));
       if (p >= 0 && p != i) c->classes[i].parent = p;
     }
