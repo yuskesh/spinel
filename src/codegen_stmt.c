@@ -1721,6 +1721,16 @@ static void emit_ret_nil(Compiler *c, TyKind t, Buf *b) {
    unchanged. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   if (g_ret_type == TY_POLY) { emit_expr(c, node, b); return; }
+  /* An empty `{}` literal defaults to StrPolyHash, but in a hash-returning tail
+     it must take the return type (e.g. a SymPolyHash-returning method whose
+     other branch is `{ a: 1 }`); otherwise the StrPolyHash* return is an
+     incompatible pointer type. Same idea as the empty-`[]` array handling. */
+  const char *nty = nt_type(c->nt, node);
+  if (nty && (!strcmp(nty, "HashNode") || !strcmp(nty, "KeywordHashNode")) && ty_is_hash(g_ret_type)) {
+    int hc = 0; nt_arr(c->nt, node, "elements", &hc);
+    const char *hcn = ty_hash_cname(g_ret_type);
+    if (hc == 0 && hcn) { buf_printf(b, "sp_%sHash_new()", hcn); return; }
+  }
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
   const char *txt = tmp.p ? tmp.p : "";

@@ -1121,6 +1121,11 @@ else {
           if (_bn == 0) { const char *_rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
             buf_printf(b, "sp_%sArray_new()", _rk ? _rk : "Int"); }
           else emit_expr(c, nd, b);
+        }
+        else if (ty_is_hash(res) && _bty && (!strcmp(_bty, "HashNode") || !strcmp(_bty, "KeywordHashNode"))) {
+          int _bn = 0; nt_arr(nt, nd, "elements", &_bn); const char *_hc = ty_hash_cname(res);
+          if (_bn == 0 && _hc) buf_printf(b, "sp_%sHash_new()", _hc);
+          else emit_expr(c, nd, b);
         } else emit_expr(c, nd, b); }
       buf_puts(b, " : ");
       { int nd = eb[0]; const char *_bty = nt_type(nt, nd);
@@ -1129,6 +1134,11 @@ else {
           int _bn = 0; nt_arr(nt, nd, "elements", &_bn);
           if (_bn == 0) { const char *_rk = (res == TY_POLY_ARRAY) ? "Poly" : array_kind(res);
             buf_printf(b, "sp_%sArray_new()", _rk ? _rk : "Int"); }
+          else emit_expr(c, nd, b);
+        }
+        else if (ty_is_hash(res) && _bty && (!strcmp(_bty, "HashNode") || !strcmp(_bty, "KeywordHashNode"))) {
+          int _bn = 0; nt_arr(nt, nd, "elements", &_bn); const char *_hc = ty_hash_cname(res);
+          if (_bn == 0 && _hc) buf_printf(b, "sp_%sHash_new()", _hc);
           else emit_expr(c, nd, b);
         } else emit_expr(c, nd, b); }
       buf_puts(b, ")");
