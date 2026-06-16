@@ -1854,11 +1854,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       TyKind body_ty = ie_bn > 0 ? comp_ntype(c, ie_bb[ie_bn - 1]) : TY_NIL;
       int scalar_res = is_scalar_ret(body_ty) && body_ty != TY_VOID && body_ty != TY_NIL && body_ty != TY_UNKNOWN;
       int tr = ++g_tmp, tres = ++g_tmp;
+      int self_is_val = c->classes[cls_id].is_value_type;
       Buf rb; memset(&rb, 0, sizeof rb);
       if (ie_self_cls >= 0) buf_puts(&rb, g_self);  /* implicit self */
       else emit_expr(c, recv, &rb);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_%s *_t%d = %s;\n", c->classes[cls_id].name, tr, rb.p ? rb.p : "NULL");
+      /* A value-type receiver is a stack struct, not a pointer: bind the
+         rebound self by value and dereference its ivars with `.` in the
+         splice. Value types are immutable, so the copy is transparent. */
+      buf_printf(g_pre, "sp_%s %s_t%d = %s;\n", c->classes[cls_id].name,
+                 self_is_val ? "" : "*", tr,
+                 rb.p ? rb.p : (self_is_val ? "{0}" : "NULL"));
       free(rb.p);
       if (scalar_res) {
         emit_indent(g_pre, g_indent); emit_ctype(c, body_ty, g_pre);
@@ -1866,6 +1872,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       char selfbuf[64]; snprintf(selfbuf, sizeof selfbuf, "_t%d", tr);
       const char *saved_self2 = g_self; g_self = selfbuf;
+      const char *saved_deref2 = g_self_deref; g_self_deref = self_is_val ? "." : "->";
       int saved_ie = g_ie_class_id; g_ie_class_id = cls_id;
       /* Bind the block params (interned in the enclosing scope, declared
          there): instance_exec assigns the call-site args; instance_eval
@@ -1991,6 +1998,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       g_ie_class_id = saved_ie;
       g_self = saved_self2;
+      g_self_deref = saved_deref2;
       if (scalar_res) buf_printf(b, "_t%d", tres);
       else buf_printf(b, "_t%d", tr);  /* statement use: value is the receiver */
       return;
