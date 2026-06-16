@@ -967,6 +967,27 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
   return TY_UNKNOWN;
 }
 
+/* Build ci's fully-qualified name as `Outer_Inner_Leaf` -- the module path
+   joined with `_`, matching the form spinel_rbs_extract emits for a seed
+   `class` line. The compiler's class table stores only the leaf name (e.g.
+   `Flash`) plus an enclosing_class link, so a qualified seed name needs this
+   to match. */
+static void class_qualified_name(Compiler *c, int ci, char *out, size_t cap) {
+  int chain[64];
+  int n = 0;
+  for (int x = ci; x >= 0 && n < (int)(sizeof chain / sizeof chain[0]);
+       x = c->classes[x].enclosing_class)
+    chain[n++] = x;
+  size_t j = 0;
+  for (int i = n - 1; i >= 0; i--) {
+    const char *nm = c->classes[chain[i]].name;
+    if (!nm) continue;
+    if (j && j + 1 < cap) out[j++] = '_';
+    for (const char *p = nm; *p && j + 1 < cap; p++) out[j++] = *p;
+  }
+  out[j < cap ? j : (cap ? cap - 1 : 0)] = '\0';
+}
+
 /* Class index for a seed `class` line, normalizing `::` to the `_` form used
    in the compiler's class table. -1 if no such user class. */
 static int seed_class_index(Compiler *c, const char *name) {
@@ -977,7 +998,18 @@ static int seed_class_index(Compiler *c, const char *name) {
     else buf[j++] = *p++;
   }
   buf[j] = '\0';
-  return comp_class_index(c, buf);
+  int direct = comp_class_index(c, buf);
+  if (direct >= 0) return direct;
+  /* A module-nested class (`module M; class C`) is stored under its leaf name
+     `C` with enclosing_class = M, but the extractor emits the qualified
+     `M_C`. Match against each class's reconstructed qualified name so the
+     seed's ivar/method types are not silently dropped. */
+  for (int i = 0; i < c->nclasses; i++) {
+    char qn[256];
+    class_qualified_name(c, i, qn, sizeof qn);
+    if (!strcmp(qn, buf)) return i;
+  }
+  return -1;
 }
 
 static Scope *find_method_scope(Compiler *c, int class_id, const char *name, int is_cmethod) {

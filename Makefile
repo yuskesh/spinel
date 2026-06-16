@@ -38,7 +38,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all parse legacy bootstrap codegen regexp rbs_extract rbs-test \
+.PHONY: all parse legacy bootstrap codegen regexp rbs_extract rbs-test rbs-seed-test \
         analyze-fail-test test test-run clean-test-results regen-rbs-expected \
         regen-expected bench optcarrot gate check gate-legs gate-test gate-bench \
         gate-optcarrot clean install uninstall deps
@@ -270,9 +270,10 @@ test:
 	+@$(MAKE) --no-print-directory test-run
 
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
-# analyze-fail (legacy-analyzer diagnostics) lives in legacy/ now and runs
-# as part of `make gate`, not the hot `make test` loop.
-test-run: rbs-test $(TEST_TARGETS)
+# rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
+# classes, #1417). analyze-fail (legacy-analyzer diagnostics) lives in legacy/
+# now and runs as part of `make gate`, not the hot `make test` loop.
+test-run: rbs-test rbs-seed-test $(TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
 	@pass=$$(grep -l '^PASS' build/test-results/*.ok 2>/dev/null | wc -l); \
@@ -322,6 +323,31 @@ regen-rbs-expected: spinel_rbs_extract$(EXE)
 	  ./spinel_rbs_extract$(EXE) "$$f" > "$${f%.rbs}.seed.expected"; \
 	  echo "regen: $${f%.rbs}.seed.expected"; \
 	done
+endif
+
+# End-to-end --rbs seeding check (#1417). The extractor emits a module-nested
+# class under its qualified name (`Outer_Box`), but the compiler's class table
+# stores the leaf name (`Box`) + enclosing_class. seed_class_index must match
+# the two so the seed reaches the class. The fixture's `@label` is declared
+# `String?` but only ever assigned nil, so inference alone leaves it poly --
+# only an applied seed pins it to a `const char *` field. The extractor must sit
+# beside $(SPINEL) (main.c looks for it as a sibling), so copy it there first.
+ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
+rbs-seed-test:
+	@echo "rbs-seed-test: skipped (vendor/rbs not fetched; run 'make deps')"
+else
+rbs-seed-test: $(SPINEL) spinel_rbs_extract$(EXE)
+	@cp -f spinel_rbs_extract$(EXE) $(dir $(SPINEL))spinel_rbs_extract$(EXE)
+	@tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); \
+	$(SPINEL) test/rbs-seed/nested_ivar.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/out.c" 2>/dev/null; \
+	ok=1; \
+	grep -q 'const char \* iv_label' "$$tmp/out.c" || ok=0; \
+	if grep -q 'sp_RbVal iv_label' "$$tmp/out.c"; then ok=0; fi; \
+	$(CC) -fsyntax-only -Ilib "$$tmp/out.c" 2>/dev/null || ok=0; \
+	rm -rf "$$tmp"; \
+	if [ $$ok -eq 1 ]; then echo "rbs-seed-test: pass"; \
+	else echo "rbs-seed-test: FAIL (#1417: module-nested-class seed not applied)"; exit 1; fi
 endif
 
 # Analyze-fail fixtures test the legacy analyzer's rejection diagnostics;
