@@ -1034,6 +1034,23 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   int changed = 0;
+  /* `callee(...)`: the arg list is a single ForwardingArgumentsNode. Bind the
+     callee's params from the enclosing `def foo(...)` method's synthesized
+     __fwd_* params, positionally, so the callee's return type resolves (#1288). */
+  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
+      !strcmp(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
+    Scope *encl = comp_scope_of(c, argv[0]);
+    if (!encl) return 0;
+    int n = m->nparams < encl->nparams ? m->nparams : encl->nparams;
+    for (int k = 0; k < n; k++) {
+      LocalVar *p = scope_local(m, m->pnames[k]);
+      LocalVar *ep = scope_local(encl, encl->pnames[k]);
+      if (!p || p->rbs_seeded || !ep || ep->type == TY_UNKNOWN) continue;
+      TyKind merged = ty_unify(p->type, ep->type);
+      if (merged != p->type) { p->type = merged; changed = 1; }
+    }
+    return changed;
+  }
   /* Separate positional args from the trailing keyword-hash arg (if any). */
   int kwh = -1;
   int pos_argc = argc;

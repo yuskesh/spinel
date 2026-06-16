@@ -2392,6 +2392,28 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   const NodeTable *nt = c->nt;
   int argc = 0;
   const int *argv = argsNode >= 0 ? nt_arr(nt, argsNode, "arguments", &argc) : NULL;
+  /* `bar(...)`: the ArgumentsNode holds a single ForwardingArgumentsNode.
+     Forward the enclosing `def foo(...)` method's synthesized __fwd_* params
+     directly to the callee, positionally (#1288). The compiler already knows
+     foo's args; no rest array / splat is materialized. */
+  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
+      !strcmp(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
+    Scope *encl = comp_scope_of(c, argv[0]);
+    for (int i = 0; i < m->nparams; i++) {
+      buf_puts(out, i == 0 ? lead : ", ");
+      if (encl && i < encl->nparams) {
+        LocalVar *ep = scope_local(encl, encl->pnames[i]);
+        LocalVar *mp = scope_local(m, m->pnames[i]);
+        TyKind et = ep ? ep->type : TY_POLY;
+        TyKind mt = mp ? mp->type : TY_POLY;
+        char txt[80]; snprintf(txt, sizeof txt, "lv_%s", encl->pnames[i]);
+        if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, out);
+        else buf_puts(out, txt);
+      }
+      else emit_arg_or_default(c, m, i, -1, out);
+    }
+    return;
+  }
   /* Separate trailing keyword-hash arg (if any) from positional args. */
   int kwh = -1;
   int pos_argc = argc;
@@ -2646,6 +2668,12 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
 
   int argc = 0;
   const int *argv = argsNode >= 0 ? nt_arr(nt, argsNode, "arguments", &argc) : NULL;
+  /* `callee(...)`: forward the enclosing `def foo(...)` method's synthesized
+     __fwd_* params positionally (#1288), same as the emit_args_filled path. */
+  Scope *fwd_encl = NULL;
+  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
+      !strcmp(nt_type(nt, argv[0]), "ForwardingArgumentsNode"))
+    fwd_encl = comp_scope_of(c, argv[0]);
   /* separate keyword-hash arg */
   int kwh_d = -1, pos_argc_d = argc;
   if (argc > 0 && nt_type(nt, argv[argc - 1]) &&
@@ -2666,6 +2694,21 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       emit_rest_pack(c, k, pos_argc_d, argv, &ab);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", atmp[k], ab.p ? ab.p : "sp_PolyArray_new()");
+    }
+    else if (fwd_encl && k < fwd_encl->nparams) {
+      LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[k]);
+      TyKind et = ep ? ep->type : TY_POLY;
+      char txt[80]; snprintf(txt, sizeof txt, "lv_%s", fwd_encl->pnames[k]);
+      if (p && p->type == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, &ab);
+      else buf_puts(&ab, txt);
+      TyKind att = p ? p->type : et;
+      emit_indent(g_pre, g_indent);
+      emit_ctype(c, att, g_pre);
+      buf_printf(g_pre, " _t%d = ", atmp[k]);
+      buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
+      if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
+      free(ab.p);
+      continue;
     }
 else {
       int kv = (m && kwh_d >= 0) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;

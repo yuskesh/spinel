@@ -17,6 +17,31 @@ void sp_ivwatch(const char *name, const char *where, TyKind old, TyKind nw) {
           (int)nw, ty_name(nw < 1000 ? nw : TY_POLY));
 }
 
+/* `...` forwards the caller's args verbatim, so rather than a rest array we
+   synthesize concrete positional params whose count is the widest positional
+   arg count across this method's call sites (the compiler already knows the
+   args it receives). Returns that count. Matches call sites by name -- the
+   common free-function / single-definition forwarding case (#1288). */
+static int forwarding_call_arity(Compiler *c, const char *mname) {
+  const NodeTable *nt = c->nt;
+  int maxarg = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || strcmp(cn, mname)) continue;
+    int a = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an == 0) continue;
+    /* a `foo(...)` forwarding call is not a concrete arg count */
+    if (an == 1 && nt_type(nt, av[0]) && !strcmp(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+    int pos = an;
+    if (an > 0 && nt_type(nt, av[an - 1]) && !strcmp(nt_type(nt, av[an - 1]), "KeywordHashNode")) pos = an - 1;
+    if (pos > maxarg) maxarg = pos;
+  }
+  return maxarg;
+}
+
 void collect_def_params(Compiler *c, int def_id, Scope *s) {
   int pn = nt_ref(c->nt, def_id, "parameters");
   if (pn < 0) return;
@@ -98,6 +123,103 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
       LocalVar *blv = scope_local_intern(s, bn);
       blv->is_param = 1;
       blv->type = TY_PROC;
+    }
+  }
+  /* `def foo(...)`: Prism attaches a ForwardingParameterNode as keyword_rest.
+     Synthesize concrete positional params __fwd_0.. (arity from the call
+     sites); their types fall out of the normal call-site param seeding and a
+     `bar(...)` body forwards them directly -- no rest/splat machinery (#1288). */
+  {
+    int kwr = nt_ref(c->nt, pn, "keyword_rest");
+    if (kwr >= 0 && nt_type(c->nt, kwr) &&
+        !strcmp(nt_type(c->nt, kwr), "ForwardingParameterNode") && s->name) {
+      int arity = forwarding_call_arity(c, s->name);
+      for (int i = 0; i < arity; i++) {
+        char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", i);
+        scope_add_param(s, nm, -1);
+      }
+      /* Keyword args ride the same model: spinel compiles keyword params as
+         positional C params mapped at the call site by name, so synthesizing a
+         param named after each forwarded key lets the positional forward carry
+         it (#1288). Collect the union of keys across the call sites. */
+      const NodeTable *nt = c->nt;
+      for (int id = 0; id < nt->count; id++) {
+        const char *ty = nt_type(nt, id);
+        if (!ty || strcmp(ty, "CallNode") || !nt_str(nt, id, "name") ||
+            strcmp(nt_str(nt, id, "name"), s->name)) continue;
+        int a = nt_ref(nt, id, "arguments");
+        int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        if (an == 0 || !nt_type(nt, av[an - 1]) ||
+            strcmp(nt_type(nt, av[an - 1]), "KeywordHashNode")) continue;
+        int en = 0; const int *els = nt_arr(nt, av[an - 1], "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int key = nt_ref(nt, els[e], "key");
+          const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+          const char *kn = (kty && !strcmp(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+          if (!kn) continue;
+          int dup = 0;
+          for (int p = 0; p < s->nparams; p++) if (!strcmp(s->pnames[p], kn)) { dup = 1; break; }
+          if (!dup) scope_add_param(s, kn, -1);
+        }
+      }
+    }
+  }
+}
+
+/* True if `s` is a `def m(...)` forwarding method (keyword_rest is a
+   ForwardingParameterNode). */
+static int scope_is_forwarding(Compiler *c, Scope *s) {
+  if (!s || s->def_node < 0) return 0;
+  int pn = nt_ref(c->nt, s->def_node, "parameters");
+  if (pn < 0) return 0;
+  int kwr = nt_ref(c->nt, pn, "keyword_rest");
+  return kwr >= 0 && nt_type(c->nt, kwr) &&
+         !strcmp(nt_type(c->nt, kwr), "ForwardingParameterNode");
+}
+
+/* The method `s`'s body forwards `...` to (a `callee(...)` call). Returns the
+   callee scope index, or -1 if none/unresolved. */
+static int forwarding_target_idx(Compiler *c, Scope *s) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode") || comp_scope_of(c, id) != s) continue;
+    int a = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an != 1 || !nt_type(nt, av[0]) ||
+        strcmp(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv >= 0) continue;  /* receiver-qualified target: not resolved here */
+    int mi = comp_method_index(c, cn);
+    if (mi < 0 && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, cn, NULL);
+    if (mi < 0 && s->class_id >= 0) mi = comp_cmethod_in_chain(c, s->class_id, cn, NULL);
+    if (mi >= 0) return mi;
+  }
+  return -1;
+}
+
+/* Chained `...`: a forwarding method called only via another `f(...)` forward
+   has no concrete call site, so its call-site arity is 0. Top its synthesized
+   positional params up to its forwarding target's arity, to a fixpoint, so
+   `def h(...); f(...); end; def f(...); g(a,b); end` propagates g's arity back
+   through f and h (#1288). */
+void topup_forwarding_arity(Compiler *c) {
+  int changed = 1;
+  for (int iter = 0; iter < 32 && changed; iter++) {
+    changed = 0;
+    for (int s = 1; s < c->nscopes; s++) {
+      Scope *sc = &c->scopes[s];
+      if (!scope_is_forwarding(c, sc)) continue;
+      int tgt = forwarding_target_idx(c, sc);
+      if (tgt < 0 || tgt == s) continue;
+      int want = c->scopes[tgt].nparams;
+      while (sc->nparams < want) {
+        char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", sc->nparams);
+        scope_add_param(sc, nm, -1);
+        changed = 1;
+      }
     }
   }
 }
