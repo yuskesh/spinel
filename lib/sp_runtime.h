@@ -3571,9 +3571,13 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
     char spec[64]; size_t sl = 0; spec[sl++] = *p++;
     /* positional argument reference: %N$conv selects the Nth (1-based) arg */
     {
-      const char *q = p; mrb_int argnum = 0;
-      while (*q >= '0' && *q <= '9') { argnum = argnum * 10 + (*q - '0'); q++; }
-      if (argnum > 0 && *q == '$') { idx = argnum - 1; p = q + 1; }
+      const char *q = p; mrb_int argnum = 0; mrb_bool overflow = FALSE;
+      while (*q >= '0' && *q <= '9') {
+        if (sp_int_mul_overflow_p(argnum, 10, &argnum) ||
+            sp_int_add_overflow_p(argnum, *q - '0', &argnum)) { overflow = TRUE; break; }
+        q++;
+      }
+      if (!overflow && argnum > 0 && *q == '$') { idx = argnum - 1; p = q + 1; }
     }
     while (*p && sl < sizeof(spec) - 4) {
       char c = *p;
