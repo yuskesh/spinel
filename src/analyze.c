@@ -399,6 +399,7 @@ void propagate_bigint_cascade(Compiler *c) {
    elsewhere. Lets bare calls/ivar refs in the block resolve against the
    receiver's class during inference (codegen mirrors this via an_ie_class_id). */
 int *g_ie_node_class = NULL;
+static int g_ie_node_class_cap = 0;
 
 void mark_ie_subtree(Compiler *c, int node, int cls) {
   if (node < 0) return;
@@ -542,7 +543,14 @@ int ie_tramp_effective_arg(Compiler *c, int caller_id, int p) {
 /* (Re)build the instance_eval/exec node→class map from current receiver types. */
 void build_ie_map(Compiler *c) {
   const NodeTable *nt = c->nt;
-  if (!g_ie_node_class) g_ie_node_class = malloc(sizeof(int) * (size_t)nt->count);
+  /* sized to nt->count, which can grow mid-analysis when forwarded callables
+     are desugared into synthetic blocks; resize so per-node writes stay bounded */
+  if (g_ie_node_class_cap < nt->count) {
+    int *grown = realloc(g_ie_node_class, sizeof(int) * (size_t)nt->count);
+    if (!grown) return;  /* OOM: keep the old map rather than leak/deref NULL */
+    g_ie_node_class = grown;
+    g_ie_node_class_cap = nt->count;
+  }
   for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = -1;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -1526,6 +1534,7 @@ void analyze_program(Compiler *c) {
     ch |= propagate_prep_params(c);
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
+    ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
     ch |= infer_block_params(c);
     ch |= infer_for_index(c);
     /* Resolve constant types before ivar inference: a destructured constant
