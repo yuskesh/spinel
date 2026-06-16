@@ -1711,6 +1711,18 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     }
     buf_printf(b, " return _t%d; }\n", ta);
   }
+  else if (n > 0 && g_ret_type == TY_VOID) {
+    /* void function: a `return <expr>` (typically `return nil`) discards its
+       value. Evaluate a non-literal expr for side effects, then a bare return,
+       so the generated C doesn't `return <value>` from a void function. */
+    const char *aty = nt_type(c->nt, a[0]);
+    int trivial = aty && (!strcmp(aty, "NilNode") || !strcmp(aty, "IntegerNode") ||
+                          !strcmp(aty, "FloatNode") || !strcmp(aty, "StringNode") ||
+                          !strcmp(aty, "SymbolNode") || !strcmp(aty, "TrueNode") ||
+                          !strcmp(aty, "FalseNode"));
+    if (!trivial) { buf_puts(b, "(void)("); emit_expr(c, a[0], b); buf_puts(b, "); "); }
+    buf_puts(b, "return;\n");
+  }
   else if (n > 0) {
     buf_puts(b, "return ");
     TyKind r0 = comp_ntype(c, a[0]);
@@ -1723,7 +1735,14 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, ";\n");
   }
   else if (g_ret_type == TY_POLY) buf_puts(b, "return sp_box_nil();\n");
-  else buf_puts(b, "return;\n");
+  else if (g_ret_type == TY_VOID || g_ret_type == TY_UNKNOWN) buf_puts(b, "return;\n");
+  /* bare `return` is Ruby nil: emit the return type's nil representation, not a
+     bare `return;` (illegal in a non-void C function -- e.g. `Db.close` returns
+     a nullable DbPool*, where nil is NULL). */
+  else if (g_ret_type == TY_INT) buf_puts(b, "return SP_INT_NIL;\n");
+  else if (g_ret_type == TY_FLOAT) buf_puts(b, "return sp_float_nil();\n");
+  else if (g_ret_type == TY_STRING) buf_puts(b, "return NULL;\n");
+  else buf_printf(b, "return %s;\n", default_value(g_ret_type));
 }
 
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent);
