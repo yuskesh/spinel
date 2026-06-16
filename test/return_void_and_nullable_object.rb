@@ -35,9 +35,7 @@ class Logger
 end
 
 class Counter
-  def self.reset
-    @count = 0
-  end
+  @count = 0
   def self.bump
     @count = @count + 1
     nil
@@ -61,7 +59,6 @@ p Db.pool.nil?
 Logger.log("")
 Logger.log("hi")
 
-Counter.reset
 Counter.tick(false)
 p Counter.count
 Counter.tick(true)

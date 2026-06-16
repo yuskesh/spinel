@@ -1700,7 +1700,8 @@ static int node_is_pure_literal(const NodeTable *nt, int node) {
   return ty && (!strcmp(ty, "NilNode") || !strcmp(ty, "IntegerNode") ||
                 !strcmp(ty, "FloatNode") || !strcmp(ty, "StringNode") ||
                 !strcmp(ty, "SymbolNode") || !strcmp(ty, "TrueNode") ||
-                !strcmp(ty, "FalseNode"));
+                !strcmp(ty, "FalseNode") || !strcmp(ty, "RationalNode") ||
+                !strcmp(ty, "ImaginaryNode"));
 }
 
 void emit_return(Compiler *c, int id, Buf *b, int indent) {
