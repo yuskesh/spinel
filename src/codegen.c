@@ -220,11 +220,19 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
         else buf_printf(b, "    *_cell_%s = 0;\n", lv->name);
         continue;
       }
-      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN)
+      /* A pointer (string / array / hash / heap object) capture is laundered
+         through the int cell as (uintptr_t)<ptr>, with a cell scan that marks
+         the referent. Int / bool stay direct. Float / poly / by-value structs
+         don't fit a single int cell -- still deferred. */
+      int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
+      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN && !ptr_cell)
         unsupported(c, s->def_node, "closure capturing a non-integer variable (later slice)");
-      buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);\n", lv->name);
+      const char *cell_scan = !ptr_cell ? "NULL"
+                            : (lv->type == TY_STRING ? "sp_cell_scan_str" : "sp_cell_scan_ptr");
+      buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, %s);\n", lv->name, cell_scan);
       buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
-      if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
+      if (lv->is_param && ptr_cell) buf_printf(b, "    *_cell_%s = (mrb_int)(uintptr_t)lv_%s;\n", lv->name, lv->name);
+      else if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
       else buf_printf(b, "    *_cell_%s = 0;\n", lv->name);
       continue;
     }
@@ -898,7 +906,9 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
     if (nameset_has(&params, nm)) continue;
     LocalVar *lv = scope_local(bs, nm);
     if (lv && lv->is_cell) {
-      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN && lv->type != TY_PROC) {
+      int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
+      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN &&
+          lv->type != TY_PROC && !ptr_cell) {
         free(params.v); free(used.v); free(locals.v); free(caps.v);
         unsupported(c, create, "proc capturing a non-integer variable (later slice)");
         return;

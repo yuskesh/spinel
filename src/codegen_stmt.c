@@ -405,7 +405,9 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
      write target must be the raw cell deref (an lvalue) with the pointer
      re-encoded as int; emit_local_ref's read form casts to sp_Proc* and is not
      assignable (self-recursive `f = proc { f.call(...) }`). */
-  if (lv && lv->type == TY_PROC &&
+  int laundered_cell = lv && (lv->type == TY_PROC ||
+                              (proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type)));
+  if (laundered_cell &&
       (lv->is_cell || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm)))) {
     if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm))
       buf_printf(b, "*((%s *)_cap)->%s", g_cap_struct, nm);

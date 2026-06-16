@@ -70,6 +70,11 @@ static inline void sp_mark_rbval(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) sp_mark_string(v.v.s);
   else if (v.tag == SP_TAG_OBJ) sp_gc_mark(v.v.p);
 }
+/* Closure-cell content markers. A captured non-int local is laundered into the
+   pointer-sized mrb_int cell as (uintptr_t)<ptr>; the cell's GC scan marks the
+   referent so it survives as long as the capturing proc does. */
+static inline void sp_cell_scan_str(void *p) { sp_mark_string(*(const char **)p); }
+static inline void sp_cell_scan_ptr(void *p) { sp_gc_mark(*(void **)p); }
 /* A low-bit-tagged root entry is an sp_RbVal* (see SP_GC_ROOT_RBVAL);
    an untagged entry is a plain void** to a direct GC pointer. */
 static inline void sp_gc_mark_root_entry(void **e) {
