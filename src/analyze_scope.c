@@ -470,6 +470,77 @@ void collect_compiler_state(Compiler *c, int id, int class_id) {
   }
 }
 
+/* If `id` is a receiverless `define_method(:lit) { }` that walk_scope will
+   register as a method scope, return that literal method name; else NULL.
+   walk_scope only registers when the name is a literal symbol/string AND a block
+   is present, so this mirrors that exact gate. Keeping class_eval_reopen_class's
+   purity test in lockstep with it prevents a `define_method` that the registrar
+   silently skips (blockless, or a dynamic name) from making the block look like a
+   pure reopen -- which would no-op the whole call and drop it without a diagnostic. */
+static const char *dm_registerable_name(const NodeTable *nt, int id) {
+  const char *ty = nt_type(nt, id);
+  if (!ty || strcmp(ty, "CallNode")) return NULL;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || strcmp(nm, "define_method") || nt_ref(nt, id, "receiver") >= 0) return NULL;
+  if (nt_ref(nt, id, "block") < 0) return NULL;
+  int args = nt_ref(nt, id, "arguments");
+  int na = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &na) : NULL;
+  if (na < 1) return NULL;
+  const char *aty = nt_type(nt, argv[0]);
+  if (aty && !strcmp(aty, "SymbolNode")) return nt_str(nt, argv[0], "value");
+  if (aty && !strcmp(aty, "StringNode")) return nt_str(nt, argv[0], "content");
+  return NULL;
+}
+
+/* `Klass.class_eval { ... }` / `Klass.module_eval { ... }` (and the bare/`self.`
+   forms inside a class body) where the target is a known class and the block body
+   is purely method definitions (`def` or a registerable `define_method`). Returns
+   the target's class index, else -1.
+
+   The receiver may be a constant (`Klass` / `M::Klass`), resolved by short name;
+   or `self`/absent, which reopens `enclosing_class` -- the class whose body we are
+   directly in (analyze passes g_cbody_direct, codegen passes g_class_body_id, both
+   -1 inside method bodies). Restricting to definition-only blocks keeps a
+   class_eval that runs other code falling through to the normal (unsupported) path
+   instead of being silently dropped. Used by both analyze (to register the methods
+   on the target) and codegen (to emit the call as a no-op). */
+int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty || strcmp(ty, "CallNode")) return -1;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || (strcmp(nm, "class_eval") && strcmp(nm, "module_eval"))) return -1;
+  int blk = nt_ref(nt, id, "block");
+  if (blk < 0) return -1;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *recv_ty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  int ci;
+  if (recv < 0 || (recv_ty && !strcmp(recv_ty, "SelfNode"))) {
+    /* bare / `self.` receiver reopens the enclosing class -- but only at
+       class-body level, where `self` is the class object. */
+    if (enclosing_class < 0) return -1;
+    ci = enclosing_class;
+  } else if (recv_ty && (!strcmp(recv_ty, "ConstantReadNode") ||
+                         !strcmp(recv_ty, "ConstantPathNode"))) {
+    const char *recv_name = nt_str(nt, recv, "name");
+    if (!recv_name) return -1;
+    ci = comp_class_index(c, recv_name);
+    if (ci < 0) return -1;
+  } else {
+    return -1;
+  }
+  int body = nt_ref(nt, blk, "body");
+  int n = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  for (int k = 0; k < n; k++) {
+    const char *sty = nt_type(nt, stmts[k]);
+    if (sty && !strcmp(sty, "DefNode")) continue;
+    if (dm_registerable_name(nt, stmts[k])) continue;
+    return -1;  /* a non-definition statement: not a pure reopen */
+  }
+  return ci;
+}
+
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -545,6 +616,16 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
     child = new_idx;
   }
   else if (ty && !strcmp(ty, "CallNode")) {
+    /* `Klass.class_eval/module_eval { defs }` (and the bare/`self.` forms in a
+       class body) reopens the class: its block body's `def` and `define_method`
+       become instance methods on it, exactly like a `class Klass ... end` reopen.
+       Set child_class to the target so the generic recursion below registers them
+       there (and register_locals interns any ivars first assigned inside those
+       methods). g_cbody_direct gives the enclosing class for bare/self receivers. */
+    {
+      int ce_ci = class_eval_reopen_class(c, id, g_cbody_direct);
+      if (ce_ci >= 0) child_class = ce_ci;
+    }
     /* [lits].each { |v| define_method("m_#{v}") { body } } -- unroll into one
        method per element. Handled wholesale; skip the generic recursion so
        the inner define_method isn't also processed as a normal call. */
@@ -594,7 +675,14 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   }
 
   int saved_cbody = g_cbody_class_id;
+  int saved_direct = g_cbody_direct;
   if (child_class >= 0) g_cbody_class_id = child_class;
+  /* g_cbody_direct tracks the class whose body we are *directly* in (where `self`
+     is the class). A method/block scope is entered exactly when `child` was
+     reassigned (DefNode/define_method/block); there `self` is no longer the class,
+     so clear it. ClassNode/ModuleNode leave child == scope_idx. */
+  if (child != scope_idx) g_cbody_direct = -1;
+  else if (child_class >= 0) g_cbody_direct = child_class;
 
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
@@ -609,6 +697,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
       if (ids[j] >= 0) walk_scope(c, ids[j], child, child_class);
   }
   g_cbody_class_id = saved_cbody;
+  g_cbody_direct = saved_direct;
 }
 
 /* Mark methods following `module_function` in a module body as class-level

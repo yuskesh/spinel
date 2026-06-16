@@ -56,6 +56,12 @@ extern int an_ie_class_id;
 /* Class index of the class/module body currently being analyzed (set around
    ClassNode/ModuleNode body traversal). -1 outside any class body. */
 extern int g_cbody_class_id;
+/* Like g_cbody_class_id, but cleared when descending into a method/block scope:
+   the class index only while walking a class/module body's *direct* statements,
+   where `self` is the class object. -1 inside method bodies and at top level.
+   Mirrors codegen's g_class_body_id so a self/bare `class_eval` reopen is
+   recognized identically by analyze and codegen. */
+extern int g_cbody_direct;
 
 /* Scan a subtree for BreakNode values and return their unified type.
    Stops at DefNode/BlockNode boundaries (inner blocks have their own break scope). */
