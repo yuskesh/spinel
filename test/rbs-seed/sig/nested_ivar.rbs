@@ -1,0 +1,7 @@
+module Outer
+  class Box
+    @label: String?
+    def initialize: () -> void
+    def label: () -> String?
+  end
+end
