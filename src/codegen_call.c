@@ -8085,14 +8085,25 @@ else {
       if (hn) {
         int tv = ++g_tmp;
         int is_poly_hash = (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH);
+        TyKind hvt = ty_hash_val(rt);
+        /* A poly value into a typed-value hash (e.g. a String? guarded non-nil
+           stored into a Hash[String, String]): unbox to the value type. */
+        int unbox_poly_val = (!is_poly_hash && vt == TY_POLY &&
+                              (hvt == TY_STRING || hvt == TY_INT || hvt == TY_FLOAT));
         buf_puts(b, "({ ");
         /* For poly hashes with scalar values, store the scalar and box it for the hash call. */
-        TyKind decl_type = (is_poly_hash && vt != TY_UNKNOWN && vt != TY_POLY) ? vt : (vt != TY_UNKNOWN ? vt : TY_POLY);
+        TyKind decl_type = unbox_poly_val ? hvt
+                         : (is_poly_hash && vt != TY_UNKNOWN && vt != TY_POLY) ? vt
+                         : (vt != TY_UNKNOWN ? vt : TY_POLY);
         emit_ctype(c, decl_type, b);
         buf_printf(b, " _t%d = ", tv);
         /* When the slot is poly but the rhs has no type yet (e.g. `{}`),
            emit a boxed value so the sp_RbVal temp initialises correctly. */
-        if (decl_type == TY_POLY) emit_boxed(c, argv[1], b);
+        if (unbox_poly_val) {
+          const char *fn = hvt == TY_STRING ? "sp_poly_to_s" : hvt == TY_INT ? "sp_poly_to_i" : "sp_poly_to_f";
+          buf_printf(b, "%s(", fn); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        }
+        else if (decl_type == TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
         buf_printf(b, "; if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash(); ");
         buf_printf(b, "sp_%sHash_set(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -8111,6 +8122,11 @@ else {
           buf_puts(b, "); ");
           if (decl_type == TY_POLY) buf_printf(b, "_t%d; })", tv);
           else { Buf _bx; memset(&_bx, 0, sizeof _bx); emit_boxed_text(c, decl_type, tvn, &_bx); buf_printf(b, "%s; })", _bx.p ? _bx.p : tvn); free(_bx.p); }
+        }
+        else if (unbox_poly_val) {
+          /* value was poly (the `[]=` expression's value type); box the
+             unboxed temp back so the expression result stays poly. */
+          buf_puts(b, "); "); emit_boxed_text(c, hvt, tvn, b); buf_puts(b, "; })");
         }
         else {
           buf_printf(b, "); _t%d; })", tv);
@@ -8679,7 +8695,16 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b); else emit_hash_key(c, argv[0], ty_hash_key(rt), b);
       buf_puts(b, ", ");
       if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[1], b);
-      else emit_expr(c, argv[1], b);
+      else {
+        /* A poly value (holds the hash's value type at runtime, e.g. a String?
+           guarded non-nil) into a typed-value hash: coerce to its element
+           representation, as the typed-array `[]=` path does. */
+        TyKind hvt = ty_hash_val(rt), vt = comp_ntype(c, argv[1]);
+        if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[1], b);
+      }
       buf_puts(b, ");\n");
       return 1;
     }
