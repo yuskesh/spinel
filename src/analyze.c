@@ -918,6 +918,81 @@ void qualify_colliding_consts(Compiler *c) {
   free(ws);
 }
 
+/* ---- Colliding class/module-name qualification ------------------------
+ * Classes/modules live in a flat sp_<Name> C namespace keyed by the leaf
+ * name, so `Web::Response` and `Chat::Response` collapse onto one ClassInfo
+ * (struct + methods merge, the last `initialize` wins -> uninitialized ivars
+ * -> SIGSEGV). This is the class-definition analogue of the nested-constant
+ * pass above: when the same class/module leaf name is defined under 2+
+ * distinct module paths, rename each nested definition to a qualified
+ * `<Mod>__..__<NAME>` and rewrite every reference to whichever qualified
+ * class it denotes (relative reads prefer the lexically enclosing module
+ * chain; `::`-anchored reads resolve from the root). Collision-gated: a
+ * program whose class names are all unique is untouched (so the common case,
+ * optcarrot, and the self-host build see zero change). The rewrite happens
+ * before walk_scope, so registration (comp_class_new) and every reference
+ * lookup (comp_class_index) naturally key on the now-distinct names, and the
+ * emitted C identifier (sp_<name>) is distinct too -- no change to the many
+ * leaf-name read sites. */
+void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
+                             QCWrite **ws, int *n, int *cap) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return;
+  if ((!strcmp(ty, "ModuleNode") || !strcmp(ty, "ClassNode")) && depth < QC_MAXDEPTH) {
+    int cp = nt_ref(nt, node, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (mn) {
+      /* record this class/module definition as a "write" at the current
+         (pre-push) depth -- ws[i].node is the constant_path node whose name
+         the write-rewrite pass will qualify. */
+      if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
+      QCWrite *w = &(*ws)[(*n)++];
+      w->node = cp; w->depth = depth;
+      for (int i = 0; i < depth; i++) snprintf(w->path[i], 64, "%s", path[i]);
+      snprintf(w->name, sizeof w->name, "%s", mn);
+      snprintf(path[depth], 64, "%s", mn);
+      depth++;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) qc_collect_class_writes(c, nt_ref_at(nt, node, i), path, depth, ws, n, cap);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, node, i, &m); for (int k = 0; k < m; k++) qc_collect_class_writes(c, ids[k], path, depth, ws, n, cap); }
+}
+
+void qualify_colliding_classes(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  QCWrite *ws = NULL; int wn = 0, wcap = 0;
+  char path[QC_MAXDEPTH][64];
+  qc_collect_class_writes(c, nt->root_id, path, 0, &ws, &wn, &wcap);
+  /* keep only leaf names defined under 2+ distinct module paths */
+  int any = 0;
+  for (int i = 0; i < wn; i++) {
+    int collide = 0;
+    for (int j = 0; j < wn && !collide; j++) {
+      if (i == j || strcmp(ws[i].name, ws[j].name)) continue;
+      if (ws[i].depth != ws[j].depth) { collide = 1; break; }
+      for (int k = 0; k < ws[i].depth; k++) if (strcmp(ws[i].path[k], ws[j].path[k])) { collide = 1; break; }
+    }
+    if (!collide) { ws[i] = ws[--wn]; i--; continue; }
+    any = 1;
+  }
+  if (any) {
+    /* rewrite references first (they match against the original leaf names),
+       then qualify the nested definitions themselves */
+    char mods[QC_MAXDEPTH][64];
+    qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
+    for (int i = 0; i < wn; i++) {
+      if (ws[i].depth == 0) continue;
+      char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[i]);
+      nt_set_str((NodeTable *)nt, ws[i].node, "name", qn);
+    }
+  }
+  free(ws);
+}
+
 void rename_shadowing_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -1046,6 +1121,16 @@ static int seed_class_index(Compiler *c, const char *name) {
   buf[j] = '\0';
   int direct = comp_class_index(c, buf);
   if (direct >= 0) return direct;
+  /* A class whose leaf name collided across modules was renamed to the
+     `<Mod>__..__<Leaf>` form by qualify_colliding_classes; match that too. */
+  char buf2[256];
+  size_t j2 = 0;
+  for (const char *p = name; *p && j2 < sizeof buf2 - 1; ) {
+    if (p[0] == ':' && p[1] == ':') { if (j2 + 2 < sizeof buf2) { buf2[j2++] = '_'; buf2[j2++] = '_'; } p += 2; }
+    else buf2[j2++] = *p++;
+  }
+  buf2[j2] = '\0';
+  if (strcmp(buf, buf2)) { int q2 = comp_class_index(c, buf2); if (q2 >= 0) return q2; }
   /* A module-nested class (`module M; class C`) is stored under its leaf name
      `C` with enclosing_class = M, but the extractor emits the qualified
      `M_C`. Match against each class's reconstructed qualified name so the
@@ -1231,6 +1316,7 @@ void analyze_program(Compiler *c) {
 
   rename_shadowing_block_params(c);
   qualify_colliding_consts(c);
+  qualify_colliding_classes(c);
   walk_scope(c, c->nt->root_id, 0, -1);
   register_structs(c);
   fix_struct_block_scopes(c);
