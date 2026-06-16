@@ -359,6 +359,35 @@ static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
   (void)cn;
 }
 
+/* An `include M` into a user class clones M's instance methods into a scope
+   owned by the class, but that clone *shares* the source's body AST and only
+   registers the params -- the body locals stay on the source scope, which
+   codegen skips (is_transplanted_source). Since codegen emits the clone, its
+   declarations would be missing and every `lv_<name>` body reference would be
+   undeclared (#1435). Copy the source's body locals onto the clone, reusing
+   their already-inferred types. Gated on a shared body so the builtin-target
+   clone (which re-walks its own body copy and registers its own locals) is
+   left untouched. */
+static void inherit_transplant_locals(Compiler *c, Scope *s) {
+  if (s->def_node < 0 || s->is_transplanted_source) return;
+  for (int i = 0; i < c->nscopes; i++) {
+    Scope *src = &c->scopes[i];
+    if (src == s || !src->is_transplanted_source ||
+        src->def_node != s->def_node || src->body != s->body) continue;
+    for (int k = 0; k < src->nlocals; k++) {
+      LocalVar sl = src->locals[k];  /* copy: intern may realloc src->locals */
+      if (!sl.name || scope_local(s, sl.name)) continue;
+      LocalVar *dl = scope_local_intern(s, sl.name);
+      dl->type = sl.type;
+      dl->is_param = sl.is_param;
+      dl->is_block_param = sl.is_block_param;
+      dl->proc_ret = sl.proc_ret;
+      dl->is_cell = sl.is_cell;
+    }
+    break;
+  }
+}
+
 void emit_method(Compiler *c, Scope *s, Buf *b) {
   if (s->cs_synth) { emit_compiler_state_method(c, s, b); return; }
   /* instance_eval/exec trampolines are inlined at every call site; the
@@ -380,6 +409,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     }
     return;
   }
+  inherit_transplant_locals(c, s);
   emit_method_signature(c, s, b);
   buf_puts(b, " {\n");
   buf_puts(b, "    SP_GC_SAVE();\n");
