@@ -841,6 +841,33 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
   return 0;
 }
 
+/* Does node `id` (a method body subtree) store the &block param `bp` into an
+   instance variable -- `@x = blk`? Such a block is type-erased into a generic
+   sp_Proc* ivar; a later `@x.call` reads the boxed _sp_proc_poly_ret, so the
+   block must use the poly return ABI. (A block merely captured into a local
+   proc keeps its concrete return type tracked, so it is not forced.) */
+static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(c->nt, id);
+  if (!ty) return 0;
+  if (!strcmp(ty, "InstanceVariableWriteNode") || !strcmp(ty, "InstanceVariableOrWriteNode")) {
+    int v = nt_ref(c->nt, id, "value");
+    if (v >= 0) {
+      const char *vt = nt_type(c->nt, v);
+      if (vt && !strcmp(vt, "LocalVariableReadNode")) {
+        const char *vn = nt_str(c->nt, v, "name");
+        if (vn && !strcmp(vn, bp)) return 1;
+      }
+    }
+  }
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) if (block_stored_in_ivar(c, nt_ref_at(c->nt, id, i), bp)) return 1;
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (block_stored_in_ivar(c, ids[k], bp)) return 1; }
+  return 0;
+}
+
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
    standalone `static mrb_int _proc_N(void *cap, mrb_int argc, mrb_int *args)`
    (sp_proc_call's ABI) into g_procs, and emit the boxing `sp_proc_new_meta(...)`
@@ -923,7 +950,15 @@ else if (orecv >= 0 && onm) {
         TyKind ort = comp_ntype(c, orecv);
         if (ty_is_object(ort)) mi = comp_method_in_chain(c, ty_object_class(ort), onm, NULL);
       }
-      if (mi >= 0 && (TyKind)c->scopes[mi].blk_ret == TY_POLY) ret = TY_POLY;
+      /* Force the poly ABI when the owner method stores its &block into an ivar
+         (`@x = blk`): the block becomes a type-erased sp_Proc* called later via
+         a generic `@x.call` that reads the boxed _sp_proc_poly_ret. A proc
+         returning its scalar directly would be read as that stale poly slot
+         (returning nil). */
+      int escapes = mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] &&
+                    !c->scopes[mi].yields &&
+                    block_stored_in_ivar(c, c->scopes[mi].body, c->scopes[mi].blk_param);
+      if (mi >= 0 && ((TyKind)c->scopes[mi].blk_ret == TY_POLY || escapes)) ret = TY_POLY;
     }
   }
   /* The proc fn returns mrb_int (the ABI); heap-pointer values (strings,
