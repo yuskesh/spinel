@@ -641,6 +641,56 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "(const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name");
     return;
   }
+  /* <method>.arity -> a compile-time constant from the target method's param
+     shape, read straight off the DefNode's parameters node (the Scope counts
+     fold keyword and post-rest params into nparams/nrequired, so they cannot
+     reconstruct the arity). Per Ruby: a method is variadic (arity -(req + 1))
+     if it has an optional positional, a rest `*`, a forwarding `...`, or a
+     keyword block that is not mandatory; otherwise it reports its required
+     count. Required positionals, post-splat requireds, and a *mandatory*
+     keyword block (a required keyword, which counts as one fixed argument) all
+     contribute to that required count. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && !strcmp(name, "arity")) {
+    int mn = method_recv_node(c, recv);
+    int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    if (target >= 0 && c->scopes[target].def_node >= 0) {
+      int pn = nt_ref(c->nt, c->scopes[target].def_node, "parameters");
+      int ok = 1;
+      int n_req = 0, n_opt = 0, n_post = 0;
+      int has_rest = 0, has_forward = 0, kw_block = 0, has_req_kw = 0;
+      if (pn >= 0) {
+        nt_arr(c->nt, pn, "requireds", &n_req);
+        nt_arr(c->nt, pn, "optionals", &n_opt);
+        nt_arr(c->nt, pn, "posts", &n_post);
+        int rp = nt_ref(c->nt, pn, "rest");
+        if (rp >= 0) {
+          const char *rty = nt_type(c->nt, rp);
+          if (rty && !strcmp(rty, "RestParameterNode")) has_rest = 1;
+          else ok = 0;  /* e.g. ImplicitRestNode: leave unsupported */
+        }
+        int kn = 0;
+        const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
+        if (kn > 0) kw_block = 1;
+        for (int i = 0; i < kn; i++) {
+          const char *kty = nt_type(c->nt, kws[i]);
+          if (kty && !strcmp(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
+        }
+        int kwrp = nt_ref(c->nt, pn, "keyword_rest");
+        if (kwrp >= 0) {
+          const char *kty = nt_type(c->nt, kwrp);
+          if (kty && !strcmp(kty, "KeywordRestParameterNode")) kw_block = 1;
+          else if (kty && !strcmp(kty, "ForwardingParameterNode")) has_forward = 1;
+        }
+      }
+      if (ok) {
+        int req = n_req + n_post + (has_req_kw ? 1 : 0);
+        int variadic = n_opt > 0 || has_rest || has_forward || (kw_block && !has_req_kw);
+        int arity = variadic ? -(req + 1) : req;
+        buf_printf(b, "%d", arity);
+        return;
+      }
+    }
+  }
   /* <method>.call(args) / [] -> invoke the bound function. A top-level
      method ref calls its function directly; an object-bound Method casts
      fn through the (void *self, mrb_int...) ABI, evaluating recv once. */
