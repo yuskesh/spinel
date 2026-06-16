@@ -207,6 +207,22 @@ else {
       }
     }
     if (rmi != mi) continue;
+    /* `mi(&b)`: the call forwards the block of its enclosing method rather
+       than passing a literal. The value `mi` yields is then whatever that
+       forwarded block produces -- i.e. the enclosing method's yield value. */
+    const char *blkty = nt_type(nt, blk);
+    if (blkty && !strcmp(blkty, "BlockArgumentNode")) {
+      Scope *encl = comp_scope_of(c, cid);
+      int emi = encl ? (int)(encl - c->scopes) : -1;
+      TyKind ft = (emi >= 0 && emi != mi) ? yield_value_type(c, emi) : TY_UNKNOWN;
+      if (ft == TY_VOID) ft = TY_NIL;
+      if (c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) {
+        if (ft != TY_UNKNOWN) { result = ft; break; }
+        continue;
+      }
+      result = ty_unify(result, ft);
+      continue;
+    }
     int bb = nt_ref(nt, blk, "body");
     int bn = 0; const int *bd = bb >= 0 ? nt_arr(nt, bb, "body", &bn) : NULL;
     TyKind bt;
@@ -237,6 +253,18 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   if (c->scopes[mi].is_lowered_yield || is_yield || is_blk_param_call(c, last, mi)) {
     int blk = nt_ref(c->nt, call_id, "block");
     if (blk >= 0) {
+      const char *bty = nt_type(c->nt, blk);
+      if (bty && !strcmp(bty, "BlockArgumentNode")) {
+        /* `callee(&b)` forwards the block active in the enclosing method, so
+           the value `callee` yields is whatever that forwarded block produces
+           -- i.e. the enclosing method's own per-call-site yield value. */
+        Scope *encl = comp_scope_of(c, call_id);
+        int emi = encl ? (int)(encl - c->scopes) : -1;
+        if (emi >= 0 && emi != mi) {
+          TyKind ft = yield_value_type(c, emi);
+          if (ft != TY_UNKNOWN && ft != TY_VOID) return ft;
+        }
+      }
       int bbody = nt_ref(c->nt, blk, "body");
       int bn = 0; const int *bb = bbody >= 0 ? nt_arr(c->nt, bbody, "body", &bn) : NULL;
       if (bn > 0) {
