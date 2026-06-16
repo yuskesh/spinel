@@ -6,46 +6,10 @@
  * and OriPekelman/tep#12. HTTP framing + WebSocket accessors + TLS stay
  * framework-side.
  *
- * Platform split: sp_net is a POSIX prefork/poll runtime (sockets,
- * poll(2), fork, sigaction). Those APIs don't exist under MinGW, so on
- * Windows the whole TU compiles to thin error-sentinel stubs -- the
- * functionality is simply absent there, but libspinel_rt.a still
- * builds everywhere. Mirrors sp_runtime.h's per-platform fiber backend
- * (Win32 Fiber vs POSIX ucontext). */
+ * sp_net is a POSIX prefork/poll runtime (sockets, poll(2), fork,
+ * sigaction). */
 #include "sp_net.h"
 
-#if defined(_WIN32)
-
-/* ---------- Windows (MinGW): no POSIX net/process surface ---------- */
-
-int sp_net_install_term_handlers(void) { return -1; }
-int sp_net_shutdown_requested(void)    { return 0; }
-
-int sp_net_listen(int port, int reuseport) { (void)port; (void)reuseport; return -1; }
-int sp_net_accept(int sfd)                 { (void)sfd; return -1; }
-int sp_net_accept_nb(int sfd)              { (void)sfd; return -1; }
-int sp_net_connect(const char *host, int port) { (void)host; (void)port; return -1; }
-int sp_net_close(int fd)                   { (void)fd; return -1; }
-int sp_net_set_nonblock(int fd)            { (void)fd; return -1; }
-
-int         sp_net_write_str(int fd, const char *s) { (void)fd; (void)s; return -1; }
-int         sp_net_write_bytes(int fd, const char *data, int n) { (void)fd; (void)data; (void)n; return -1; }
-const char *sp_net_recv_some(int fd, int maxlen) { (void)fd; (void)maxlen; return ""; }
-const char *sp_net_recv_all(int fd, int max_bytes) { (void)fd; (void)max_bytes; return ""; }
-
-int sp_net_poll_reset(void)               { return 0; }
-int sp_net_poll_add(int fd, int mode_bits) { (void)fd; (void)mode_bits; return -1; }
-int sp_net_poll_run(int timeout_ms)       { (void)timeout_ms; return -1; }
-int sp_net_poll_ready(int slot)           { (void)slot; return 0; }
-
-int sp_net_fork(void)                     { return -1; }
-int sp_net_exit(int status)               { (void)status; return -1; }
-int sp_net_getpid(void)                   { return -1; }
-int sp_net_wait_any(void)                 { return -1; }
-
-const char *sp_net_shell_capture(const char *cmd, int max_bytes) { (void)cmd; (void)max_bytes; return ""; }
-
-#else /* POSIX */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -379,5 +343,3 @@ const char *sp_net_shell_capture(const char *cmd, int max_bytes) {
     pclose(fp);
     return sp_net_shell_buf;
 }
-
-#endif /* _WIN32 */

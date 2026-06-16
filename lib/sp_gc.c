@@ -6,15 +6,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#if !defined(__APPLE__) && !defined(_WIN32) && !defined(__FreeBSD__)
+#if !defined(__APPLE__) && !defined(__FreeBSD__)
 #include <malloc.h>
 #else
 /* Darwin's libc has no malloc_trim; make it a no-op so call sites stay portable. */
 #define malloc_trim(x) ((void)0)
 #endif
-#ifndef _WIN32
 #include <unistd.h>
-#endif
 #include "sp_gc.h"
 
 /* ---- Globals shared with the generated TU (declared extern in sp_gc.h) ---- */

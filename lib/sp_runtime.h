@@ -29,40 +29,19 @@
    Ruby-style backtrace — no per-method shadow frames needed. Off unless the
    generated main() sets sp_bt_enabled (debug builds), so non-debug behaviour
    and cost are unchanged. execinfo is POSIX-ish; absent on Windows. */
-#if !defined(_WIN32)
 #include <execinfo.h>
 #define SP_BT_AVAILABLE 1
-#else
-#define SP_BT_AVAILABLE 0
-#endif
 static int sp_bt_enabled = 0;          /* set to 1 by debug-build main() */
 static const char *sp_bt_srcfile = ""; /* toplevel .rb path, set by debug main() */
 #if SP_BT_AVAILABLE
 static void *sp_bt_buf[256];       /* frames captured at the last raise */
 static int sp_bt_n = 0;
 #endif
-#ifdef _WIN32
-#include <windows.h>
-#include <process.h>
-#include <direct.h>
-#include <io.h>      /* _pipe (POSIX pipe(2) is absent on MinGW) */
-#include <fcntl.h>   /* _O_BINARY */
-/* POSIX compat shims for MinGW */
-#define mmap(a,l,p,f,fd,off) VirtualAlloc(NULL,(l),MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE)
-#define munmap(a,l) (VirtualFree((a),0,MEM_RELEASE)?0:-1)
-#define MAP_FAILED NULL
-#define PROT_READ 0
-#define PROT_WRITE 0
-#define MAP_PRIVATE 0
-#define MAP_ANONYMOUS 0
-#define MAP_NORESERVE 0
-#else
 #include <ucontext.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
-#endif
-#if !defined(__APPLE__) && !defined(_WIN32) && !defined(__FreeBSD__)
+#if !defined(__APPLE__) && !defined(__FreeBSD__)
 #include <malloc.h>
 #else
 /* Darwin's libc has no malloc_trim; make it a no-op so call sites stay portable. */
@@ -402,8 +381,6 @@ static const char sp_str_empty_data[] = "\xff";
 #  define SP_RUBY_OS "linux"
 #elif defined(__APPLE__)
 #  define SP_RUBY_OS "darwin"
-#elif defined(_WIN32) || defined(_WIN64)
-#  define SP_RUBY_OS "mingw32"
 #elif defined(__FreeBSD__)
 #  define SP_RUBY_OS "freebsd"
 #else
@@ -412,14 +389,9 @@ static const char sp_str_empty_data[] = "\xff";
 static const char sp_ruby_platform_data[] = "\xff" SP_RUBY_ARCH "-" SP_RUBY_OS;
 static inline const char *sp_ruby_platform_str(void) { return sp_ruby_platform_data + 1; }
 
-/* Process.ppid wrapper. MinGW's unistd.h doesn't expose getppid;
-   return 0 there. Issue #893. */
+/* Process.ppid wrapper. */
 static inline mrb_int sp_process_ppid(void) {
-#ifdef _WIN32
-  return 0;
-#else
   return (mrb_int)getppid();
-#endif
 }
 
 static inline double sp_process_clock_gettime(void) {
@@ -4853,18 +4825,12 @@ static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; w
    inputs no-op. */
 static void sp_sleep(mrb_float s) {
   if (!(s > 0.0)) return;
-#ifdef _WIN32
-  DWORD ms = (DWORD)(s * 1000.0);
-  if (ms == 0) ms = 1;
-  Sleep(ms);
-#else
   struct timespec req;
   req.tv_sec = (time_t)s;
   req.tv_nsec = (long)((s - (double)req.tv_sec) * 1e9);
   if (req.tv_nsec < 0) req.tv_nsec = 0;
   if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
   while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
-#endif
 }
 
 /* File metadata predicates (sp_file_directory/file/exist/delete) moved to
@@ -4918,28 +4884,6 @@ static sp_Time sp_file_mtime(const char *path) {
     sp_raise_cls("TypeError", "no implicit conversion of nil into String");
     return (sp_Time){0, 0, 0};
   }
-#if defined(_WIN32)
-  int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-  if (len > 0) {
-    wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)len);
-    if (wpath) {
-      if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, len) > 0) {
-        WIN32_FILE_ATTRIBUTE_DATA attr_data;
-        if (GetFileAttributesExW(wpath, GetFileExInfoStandard, &attr_data)) {
-          free(wpath);
-          ULARGE_INTEGER ull;
-          ull.LowPart = attr_data.ftLastWriteTime.dwLowDateTime;
-          ull.HighPart = attr_data.ftLastWriteTime.dwHighDateTime;
-          int64_t total_ns = (ull.QuadPart - 116444736000000000ULL) * 100;
-          return (sp_Time){total_ns / 1000000000LL, (int32_t)(total_ns % 1000000000LL), 0};
-        }
-      }
-      free(wpath);
-    }
-  }
-  sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory @ File.mtime - %s", path));
-  return (sp_Time){0, 0, 0};
-#else
   struct stat st;
   if (stat(path, &st) == -1) {
     sp_raise_cls(errno == ENOENT ? "Errno::ENOENT" : "RuntimeError", sp_sprintf("%s @ File.mtime - %s", strerror(errno), path));
@@ -4953,7 +4897,6 @@ static sp_Time sp_file_mtime(const char *path) {
   /* Linux / others with st_mtim */
   return (sp_Time){(int64_t)st.st_mtim.tv_sec, (int32_t)st.st_mtim.tv_nsec, 0};
 #endif
-#endif
 }
 static const char *sp_backtick(const char *cmd) {
   FILE *p = popen(cmd, "r");
@@ -4964,11 +4907,7 @@ static const char *sp_backtick(const char *cmd) {
   int st = pclose(p);
   /* Mirror sp_system_args' $? layout: POSIX pclose returns a wait-status,
      MSVCRT _pclose returns the plain exit code (shift to match). */
-#ifdef _WIN32
-  sp_last_status = st << 8;
-#else
   sp_last_status = st;
-#endif
   return buf;
 }
 static const char *sp_file_basename(const char *path) {
@@ -5018,31 +4957,16 @@ static const char *sp_dir_pwd(void) {
    Windows _-prefixed variants take a single path argument); each returns
    0 on success, matching CRuby's `Dir.mkdir` etc. */
 static mrb_int sp_dir_mkdir(const char *path) {
-#ifdef _WIN32
-  return (mrb_int)_mkdir(path);
-#else
   return (mrb_int)mkdir(path, 0777);
-#endif
 }
 static mrb_int sp_dir_rmdir(const char *path) {
-#ifdef _WIN32
-  return (mrb_int)_rmdir(path);
-#else
   return (mrb_int)rmdir(path);
-#endif
 }
 static mrb_int sp_dir_chdir(const char *path) {
-#ifdef _WIN32
-  return (mrb_int)_chdir(path);
-#else
   return (mrb_int)chdir(path);
-#endif
 }
 static const char *sp_dir_home(void) {
   const char *h = getenv("HOME");
-#ifdef _WIN32
-  if (!h || !*h) h = getenv("USERPROFILE");
-#endif
   if (!h) return sp_str_empty;
   return sp_str_dup_external(h);
 }
@@ -5454,11 +5378,7 @@ static mrb_bool sp_StringIO_isatty(sp_StringIO *s) { (void)s; return 0; }
 typedef struct sp_Val sp_Val;
 typedef sp_Val *(*sp_fn_t)(sp_Val *self, sp_Val *arg);
 struct sp_Val { enum { SP_PROC2, SP_INT2, SP_BOOL2, SP_NIL2 } tag; union { struct { sp_fn_t fn; int ncaptures; } proc; mrb_int ival; mrb_bool bval; } u; sp_Val *captures[]; };
-#ifdef _WIN32
-#define SP_ARENA_SIZE ((size_t)256ULL * 1024 * 1024)
-#else
 #define SP_ARENA_SIZE ((size_t)16ULL * 1024 * 1024 * 1024)
-#endif
 static char *sp_arena = NULL; static size_t sp_arena_pos = 0;
 static void *sp_lam_alloc(size_t sz) { sz = (sz + 7) & ~(size_t)7; if (!sp_arena) { sp_arena = (char *)mmap(NULL, SP_ARENA_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0); if (sp_arena == MAP_FAILED) { perror("mmap"); exit(1); } sp_arena_pos = 0; } if (sp_arena_pos + sz > SP_ARENA_SIZE) { fprintf(stderr, "arena exhausted\n"); exit(1); } void *p = sp_arena + sp_arena_pos; sp_arena_pos += sz; return p; }
 static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + sizeof(sp_Val *) * ncap); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }

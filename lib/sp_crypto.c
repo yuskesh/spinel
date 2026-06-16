@@ -33,9 +33,6 @@
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #  include <stdlib.h>  /* arc4random_buf */
 #endif
-#if defined(_WIN32) || defined(_WIN64)
-#  include <windows.h>  /* LoadLibraryA / GetProcAddress for BCryptGenRandom */
-#endif
 
 /* ---------- SHA-256 ----------
  * FIPS-180-4. Compact reference implementation -- public domain.
@@ -509,39 +506,6 @@ const char *sp_crypto_random_b64url(int nbytes) {
     uint8_t r[64];
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
     arc4random_buf(r, nbytes);
-#elif defined(_WIN32) || defined(_WIN64)
-    /* Windows: BCryptGenRandom via runtime LoadLibrary so no
-     * link-time -lbcrypt is needed. Cached function pointer.
-     * Fall through to the time-mixed path if loading fails
-     * (rare; only on pre-Vista where bcrypt.dll isn't present). */
-    {
-        typedef long (__stdcall *sp_BCryptGenRandom_fn)(void *, unsigned char *, unsigned long, unsigned long);
-        static sp_BCryptGenRandom_fn sp_bcrypt_gen_random = NULL;
-        static int sp_bcrypt_resolved = 0;
-        if (!sp_bcrypt_resolved) {
-            sp_bcrypt_resolved = 1;
-            void *h = (void *)LoadLibraryA("bcrypt.dll");
-            if (h) sp_bcrypt_gen_random = (sp_BCryptGenRandom_fn)GetProcAddress((HMODULE)h, "BCryptGenRandom");
-        }
-        int ok = 0;
-        if (sp_bcrypt_gen_random) {
-            if (sp_bcrypt_gen_random(NULL, r, (unsigned long)nbytes, 0x00000002UL /* BCRYPT_USE_SYSTEM_PREFERRED_RNG */) == 0) {
-                ok = 1;
-            }
-        }
-        if (!ok) {
-            /* Counter-mixed time fallback so the test's "two calls
-             * must differ" invariant holds even when BCrypt is
-             * unavailable. NOT cryptographically secure. */
-            static uint64_t sp_crypto_fallback_ctr = 0;
-            sp_crypto_fallback_ctr++;
-            uint64_t mix = (uint64_t)time(NULL) ^ (sp_crypto_fallback_ctr * 0x9e3779b97f4a7c15ULL);
-            for (int k = 0; k < nbytes; k++) {
-                mix ^= mix << 13; mix ^= mix >> 7; mix ^= mix << 17;
-                r[k] = (uint8_t)mix;
-            }
-        }
-    }
 #else
     FILE *f = fopen("/dev/urandom", "rb");
     if (f) {

@@ -9,8 +9,6 @@
  *      libspinel_rt.a into a native binary, and
  *   4. optionally runs that binary (-E).
  *
- * Being a single native binary, it works on Windows without a POSIX shell.
- *
  * Usage:
  *   spinel app.rb               compile to ./app
  *   spinel app.rb -o myapp      compile to ./myapp
@@ -26,20 +24,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
-  #include <process.h>
-  #include <windows.h>
-  #define PATH_SEP '\\'
-  #define EXE_SUFFIX ".exe"
-#else
-  #include <unistd.h>
-  #if defined(__APPLE__)
-    #include <mach-o/dyld.h>
-  #endif
-  #include <sys/wait.h>
-  #define PATH_SEP '/'
-  #define EXE_SUFFIX ""
+#include <unistd.h>
+#if defined(__APPLE__)
+  #include <mach-o/dyld.h>
 #endif
+#include <sys/wait.h>
+#define PATH_SEP '/'
+#define EXE_SUFFIX ""
 
 /* Defined in spinel_parse.c (compiled with -DSPINEL_PARSE_AS_LIB). */
 char *sp_parse_file_to_text(const char *source_file, const char *argv0);
@@ -67,11 +58,7 @@ static void s_add_arg(Str *s, const char *t) {
 }
 
 static void set_env(const char *k, const char *v) {
-#if defined(_WIN32)
-  _putenv_s(k, v);
-#else
   setenv(k, v, 1);
-#endif
 }
 
 static int file_exists(const char *p) {
@@ -81,20 +68,12 @@ static int file_exists(const char *p) {
 }
 
 static int proc_id(void) {
-#if defined(_WIN32)
-  return (int)GetCurrentProcessId();
-#else
   return (int)getpid();
-#endif
 }
 
 static const char *temp_dir(void) {
-  const char *t;
-#if defined(_WIN32)
-  t = getenv("TEMP"); if (!t) t = getenv("TMP"); if (!t) t = ".";
-#else
-  t = getenv("TMPDIR"); if (!t) t = "/tmp";
-#endif
+  const char *t = getenv("TMPDIR");
+  if (!t) t = "/tmp";
   return t;
 }
 
@@ -107,10 +86,7 @@ static void make_temp_path(char *out, size_t sz, const char *tag, int n, const c
 static void exe_dir(const char *argv0, char *out, size_t outsz) {
   char buf[4096];
   buf[0] = '\0';
-#if defined(_WIN32)
-  DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)sizeof buf);
-  if (n == 0 || n >= sizeof buf) buf[0] = '\0';
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
   uint32_t bsz = (uint32_t)sizeof buf;
   if (_NSGetExecutablePath(buf, &bsz) != 0) buf[0] = '\0';
 #else
@@ -119,17 +95,9 @@ static void exe_dir(const char *argv0, char *out, size_t outsz) {
 #endif
   if (!buf[0]) {
     /* Fall back to argv0 (resolve when it carries a path). */
-#if defined(_WIN32)
-    if (!_fullpath(buf, argv0, sizeof buf)) { strncpy(buf, argv0, sizeof buf - 1); buf[sizeof buf - 1] = '\0'; }
-#else
     if (!realpath(argv0, buf)) { strncpy(buf, argv0, sizeof buf - 1); buf[sizeof buf - 1] = '\0'; }
-#endif
   }
   char *slash = strrchr(buf, '/');
-#if defined(_WIN32)
-  char *bslash = strrchr(buf, '\\');
-  if (bslash && (!slash || bslash > slash)) slash = bslash;
-#endif
   if (slash) *slash = '\0';
   else strcpy(buf, ".");
   strncpy(out, buf, outsz - 1);
@@ -315,10 +283,6 @@ int main(int argc, char **argv) {
     const char *b = source;
     const char *sl = strrchr(source, '/');
     if (sl) b = sl + 1;
-#if defined(_WIN32)
-    const char *bs = strrchr(source, '\\');
-    if (bs && (!sl || bs > sl)) b = bs + 1;
-#endif
     strncpy(basename, b, sizeof basename - 1);
     basename[sizeof basename - 1] = '\0';
     char *dot = strstr(basename, ".rb");
@@ -450,11 +414,8 @@ int main(int argc, char **argv) {
   snprintf(tmp, sizeof tmp, "\"%s%clibspinel_rt.a\" ", lib_dir, PATH_SEP); s_add(&cmd, tmp);
   s_add(&cmd, ov_define); s_add(&cmd, " ");
   if (want_g) s_add(&cmd, "-g ");
-#if !defined(_WIN32) && !defined(__CYGWIN__) && !defined(__APPLE__)
+#if !defined(__APPLE__)
   if (debug) s_add(&cmd, "-rdynamic ");  /* ELF: name user frames in backtraces */
-#endif
-#if defined(_WIN32) || defined(__CYGWIN__)
-  s_add(&cmd, "-Wl,--stack,67108864 ");  /* MinGW's 1MB default overflows */
 #endif
   if (ffi_links.p) s_add(&cmd, ffi_links.p);
 #if defined(__APPLE__)
@@ -488,10 +449,6 @@ int main(int argc, char **argv) {
   int run_rc = system(run.p);
   free(run.p);
   remove(bin_path);
-#if defined(_WIN32)
-  return run_rc;
-#else
   if (WIFEXITED(run_rc)) return WEXITSTATUS(run_rc);
   return run_rc ? 1 : 0;
-#endif
 }

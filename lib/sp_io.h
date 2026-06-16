@@ -16,7 +16,7 @@ typedef struct { FILE *fp; const char *path; const char *mode; } sp_File;
 
 /* File.open(path, mode) -> GC-managed handle (block form is codegen-only). */
 sp_File *sp_File_open(const char *path, const char *mode);
-/* pipe(2) portability shim: POSIX pipe / MinGW _pipe. 0 ok, -1 error. */
+/* pipe(2) wrapper. 0 ok, -1 error. */
 int sp_io_make_pipe(int fds[2]);
 /* IO.pipe end: wrap a raw pipe fd in a GC-managed sp_File. */
 sp_File *sp_io_fdopen(int fd, const char *mode);

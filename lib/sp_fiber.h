@@ -1,27 +1,19 @@
 /* sp_fiber.h -- Fiber runtime surface.
  *
- * The sp_Fiber struct (a cooperative coroutine over Win32 fibers or
- * POSIX ucontext) is shared between the generated translation unit and
- * lib/sp_fiber.c, which holds the function bodies. `storage` is an opaque pointer to fiber-local variable storage
- * (defined in lib/sp_fiber.c). */
+ * The sp_Fiber struct (a cooperative coroutine over POSIX ucontext) is
+ * shared between the generated translation unit and lib/sp_fiber.c, which
+ * holds the function bodies. `storage` is an opaque pointer to fiber-local
+ * variable storage (defined in lib/sp_fiber.c). */
 #ifndef SP_FIBER_H
 #define SP_FIBER_H
 
 #include "sp_gc.h"   /* sp_RbVal */
-#ifdef _WIN32
-#include <windows.h>
-#else
 #include <ucontext.h>
-#endif
 
 
 #define SP_FIBER_STACK_SIZE (64*1024)
 
-#ifdef _WIN32
-typedef struct sp_Fiber{LPVOID ctx;LPVOID caller_ctx;char*stack;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;struct sp_Fiber*caller;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;}sp_Fiber;
-#else
 typedef struct sp_Fiber{ucontext_t ctx;ucontext_t caller_ctx;char*stack;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;}sp_Fiber;
-#endif
 
 /* The currently-running fiber; the generated TU reads it directly for
    `Fiber.current` and as the implicit receiver of Fiber operations. */

@@ -1581,11 +1581,7 @@ static int sp_included_cap = 0;
    read, which fails through the normal LoadError path). */
 static char *sp_canonical_path(const char *path) {
   if (!path) { char *e = strdup(""); return e ? e : NULL; }
-#ifdef _WIN32
-  char *real = _fullpath(NULL, path, 0);
-#else
   char *real = realpath(path, NULL);
-#endif
   if (real) return real;
   char *d = strdup(path);
   if (d) return d;
