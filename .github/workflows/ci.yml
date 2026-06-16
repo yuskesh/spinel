@@ -30,11 +30,19 @@ jobs:
       # the compile step is in sccache's cacheable pattern.
       CC: sccache ${{ matrix.cc }}
       SCCACHE_GHA_ENABLED: "true"
+      # Room for the slow GHA-backed server startup (default ~10s); keep it
+      # alive across steps. See the pre-start step below.
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@v6
 
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.10
+
+      # Start the server once here so `make -j` clients don't race to start it.
+      - name: Pre-start sccache server
+        run: sccache --start-server
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
