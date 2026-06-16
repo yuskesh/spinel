@@ -88,8 +88,7 @@ RUBY
 `./spinel` is the compiler: a single native binary (`build/spinel`; the
 repo-root `spinel` is a convenience symlink `make` creates) that parses,
 infers types, emits C, invokes `cc` to link it, and can run the result —
-no shell wrapper or chained helper binaries, so it works on Windows
-natively. It supports the full option set, including `--rbs DIR`
+no shell wrapper or chained helper binaries. It supports the full option set, including `--rbs DIR`
 (RBS-seeded inference) and the `--emit-rbs` / `--emit-types` /
 `--emit-symbol-map` analysis modes. The legacy Ruby backend is kept only as
 a headless regression oracle (the self-host fixpoint and analyze-fail
@@ -481,24 +480,23 @@ links `libspinel_rt.a` (the out-of-line runtime: bigint, regexp, GC,
 fiber, I/O); `--gc-sections` then drops whatever the program doesn't
 use. No CRuby and no `spinel` binary are needed on the target machine.
 
-The runtime is POSIX-flavoured but covers every platform CI exercises:
+The runtime is POSIX-flavoured and targets POSIX platforms:
 
 | Platform | Status | Compiler |
 |---|---|---|
 | Linux (x86-64, arm64) | Supported | gcc, clang |
 | macOS (Intel, Apple Silicon) | Supported | clang |
 | *BSD | Expected to work; not in CI | clang |
-| Windows | Supported via [MSYS2](https://www.msys2.org/) / MinGW | gcc |
-| Windows native (MSVC) | Not supported | -- |
+| Windows | Use [WSL](https://learn.microsoft.com/windows/wsl/) (builds/runs as Linux) | gcc, clang |
 
-Every PR runs `ubuntu-latest / gcc`, `ubuntu-latest / clang`,
-`macos-latest / clang`, and `windows-mingw` jobs end-to-end (parser
-build, codegen build, fixed-point bootstrap, full test + benchmark
-suites). MSVC isn't supported because the runtime relies on POSIX
-assumptions (`<ucontext.h>` for `Fiber`, `<sys/mman.h>` for the
-regexp engine's executable buffers, GCC's `__attribute__((cleanup))`
-for the GC root stack); a port would either replace those or guard
-them behind compile-time switches.
+Every PR runs `ubuntu-latest / gcc`, `ubuntu-latest / clang`, and
+`macos-latest / clang` jobs end-to-end (parser build, codegen build,
+full test + benchmark suites). Native Windows (MinGW / MSVC) is not
+supported: the runtime relies on POSIX assumptions (`<ucontext.h>` for
+`Fiber`, `<sys/mman.h>` for the regexp engine's executable buffers,
+GCC's `__attribute__((cleanup))` for the GC root stack). Windows users
+run Spinel under WSL, where it builds and runs as a native Linux
+toolchain.
 
 ## Limitations
 
