@@ -69,6 +69,9 @@ static int sp_bt_n = 0;
 /* sp_Ractor + the Ractor API; the bodies live in libspinel_rt.a (lib/sp_ractor.c). */
 #include "sp_ractor.h"
 static const char *sp_sym_to_s(sp_sym id);
+/* Emitted later in the generated TU (emit_sym_runtime); forward-declared here
+   so the Ractor message codec can re-intern symbols by name on receive. */
+static sp_sym sp_sym_intern(const char *s);
 
 /* sp_raise_cls forward decl — defined later in this header (line ~1017).
    Used by the integer-division helpers below to match CRuby semantics:
@@ -5555,6 +5558,138 @@ const char *sp_ext_str_empty(void) { return sp_str_empty; }
 size_t sp_ext_str_byte_len(const char *s) { return sp_str_byte_len(s); }
 void *sp_ext_gc_alloc(size_t sz, void (*fin)(void *), void (*scan)(void *)) { return sp_gc_alloc(sz, fin, scan); }
 void sp_ext_mark_string(const char *s) { sp_mark_string(s); }
+
+/* ====================================================================
+ * Ractor message codec (Milestone 2)
+ *
+ * Deep-copy values across the Ractor heap boundary through a malloc'd,
+ * pointer-free blob: the sender serializes from its private heap, the blob
+ * travels the queue, the receiver rebuilds into its own heap. Lives here (not
+ * in lib/sp_ractor.c) because rebuilding needs the heap allocators that are
+ * static to the generated TU. Installed into the runtime hooks by sp_re_init.
+ *
+ * Wire format: a tag byte, then payload. Scalars use the SP_TAG_* values;
+ * containers use the SPR_* codes below. Shareable: Integer/Float/true/false/
+ * nil/Symbol(by name)/String/Array(poly,int,float,str, recursively). Anything
+ * else raises Ractor::Error. ==================================================*/
+#define SPR_POLY_ARRAY  100
+#define SPR_INT_ARRAY   101
+#define SPR_FLT_ARRAY   102
+#define SPR_STR_ARRAY   103
+
+typedef struct { char *p; size_t len, cap; } sp_RacBuf;
+static void sp_racbuf_put(sp_RacBuf *b, const void *src, size_t n) {
+  if (b->len + n > b->cap) { b->cap = (b->len + n) * 2 + 64; b->p = (char *)realloc(b->p, b->cap); if (!b->p) sp_oom_die(); }
+  memcpy(b->p + b->len, src, n); b->len += n;
+}
+static void sp_racbuf_u8(sp_RacBuf *b, uint8_t v) { sp_racbuf_put(b, &v, 1); }
+static void sp_racbuf_i64(sp_RacBuf *b, int64_t v) { sp_racbuf_put(b, &v, sizeof v); }
+static void sp_racbuf_f64(sp_RacBuf *b, double v) { sp_racbuf_put(b, &v, sizeof v); }
+static void sp_racbuf_sz(sp_RacBuf *b, size_t v) { sp_racbuf_put(b, &v, sizeof v); }
+static void sp_racbuf_bytes(sp_RacBuf *b, const char *s, size_t n) { sp_racbuf_sz(b, n); sp_racbuf_put(b, s, n); }
+
+static void sp_ractor_unshareable(int tag) {
+  char m[160];
+  snprintf(m, sizeof m, "Ractor: unshareable value crossed the boundary (tag %d); "
+                        "only immediates, Symbol, String and Arrays are supported", tag);
+  sp_raise_cls("Ractor::Error", m);
+}
+
+static void sp_ractor_ser_val(sp_RacBuf *b, sp_RbVal v) {
+  switch (v.tag) {
+    case SP_TAG_INT:  sp_racbuf_u8(b, SP_TAG_INT);  sp_racbuf_i64(b, (int64_t)v.v.i); return;
+    case SP_TAG_FLT:  sp_racbuf_u8(b, SP_TAG_FLT);  sp_racbuf_f64(b, (double)v.v.f); return;
+    case SP_TAG_BOOL: sp_racbuf_u8(b, SP_TAG_BOOL); sp_racbuf_u8(b, v.v.b ? 1 : 0); return;
+    case SP_TAG_NIL:  sp_racbuf_u8(b, SP_TAG_NIL); return;
+    case SP_TAG_SYM:  { const char *s = sp_sym_to_s((sp_sym)v.v.i); sp_racbuf_u8(b, SP_TAG_SYM); sp_racbuf_bytes(b, s, strlen(s)); return; }
+    case SP_TAG_STR:  { const char *s = v.v.s ? v.v.s : sp_str_empty; sp_racbuf_u8(b, SP_TAG_STR); sp_racbuf_bytes(b, s, sp_str_byte_len(s)); return; }
+    case SP_TAG_OBJ:
+      if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
+        sp_PolyArray *a = (sp_PolyArray *)v.v.p; sp_racbuf_u8(b, SPR_POLY_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
+        for (mrb_int i = 0; i < a->len; i++) sp_ractor_ser_val(b, a->data[i]); return;
+      }
+      if (v.cls_id == SP_BUILTIN_INT_ARRAY) {
+        sp_IntArray *a = (sp_IntArray *)v.v.p; sp_racbuf_u8(b, SPR_INT_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
+        for (mrb_int i = 0; i < a->len; i++) sp_racbuf_i64(b, (int64_t)a->data[a->start + i]); return;
+      }
+      if (v.cls_id == SP_BUILTIN_FLT_ARRAY) {
+        sp_FloatArray *a = (sp_FloatArray *)v.v.p; sp_racbuf_u8(b, SPR_FLT_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
+        for (mrb_int i = 0; i < a->len; i++) sp_racbuf_f64(b, (double)a->data[i]); return;
+      }
+      if (v.cls_id == SP_BUILTIN_STR_ARRAY) {
+        sp_StrArray *a = (sp_StrArray *)v.v.p; sp_racbuf_u8(b, SPR_STR_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
+        for (mrb_int i = 0; i < a->len; i++) { const char *s = a->data[i] ? a->data[i] : sp_str_empty; sp_racbuf_bytes(b, s, sp_str_byte_len(s)); }
+        return;
+      }
+      sp_ractor_unshareable(v.tag); return;
+    default: sp_ractor_unshareable(v.tag); return;
+  }
+}
+
+static sp_RactorBlob sp_ractor_serialize(sp_RbVal v) {
+  sp_RacBuf b = {0}; sp_ractor_ser_val(&b, v);
+  sp_RactorBlob out; out.data = b.p; out.len = b.len; return out;
+}
+
+typedef struct { const char *p; size_t len, pos; } sp_RacRd;
+static void sp_racrd_read(sp_RacRd *r, void *dst, size_t n) {
+  if (r->pos + n > r->len) { sp_raise_cls("Ractor::Error", "truncated Ractor message"); return; }
+  memcpy(dst, r->p + r->pos, n); r->pos += n;
+}
+static uint8_t sp_racrd_u8(sp_RacRd *r) { uint8_t v = 0; sp_racrd_read(r, &v, 1); return v; }
+static int64_t sp_racrd_i64(sp_RacRd *r) { int64_t v = 0; sp_racrd_read(r, &v, sizeof v); return v; }
+static double sp_racrd_f64(sp_RacRd *r) { double v = 0; sp_racrd_read(r, &v, sizeof v); return v; }
+static size_t sp_racrd_sz(sp_RacRd *r) { size_t v = 0; sp_racrd_read(r, &v, sizeof v); return v; }
+
+static sp_RbVal sp_ractor_deser_val(sp_RacRd *r) {
+  uint8_t tag = sp_racrd_u8(r);
+  switch (tag) {
+    case SP_TAG_INT:  return sp_box_int((mrb_int)sp_racrd_i64(r));
+    case SP_TAG_FLT:  return sp_box_float((mrb_float)sp_racrd_f64(r));
+    case SP_TAG_BOOL: return sp_box_bool(sp_racrd_u8(r) ? true : false);
+    case SP_TAG_NIL:  return sp_box_nil();
+    case SP_TAG_SYM:  {
+      size_t n = sp_racrd_sz(r);
+      char *tmp = (char *)malloc(n + 1); if (!tmp) sp_oom_die();
+      sp_racrd_read(r, tmp, n); tmp[n] = 0;
+      sp_sym id = sp_sym_intern(tmp); free(tmp);
+      return sp_box_sym(id);
+    }
+    case SP_TAG_STR:  { size_t n = sp_racrd_sz(r); const char *s = sp_str_from_bytes(r->p + r->pos, n); r->pos += n; return sp_box_str(s); }
+    case SPR_POLY_ARRAY: {
+      size_t n = sp_racrd_sz(r); sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+      for (size_t i = 0; i < n; i++) { sp_RbVal e = sp_ractor_deser_val(r); SP_GC_ROOT_RBVAL(e); sp_PolyArray_push(a, e); }
+      return sp_box_poly_array(a);
+    }
+    case SPR_INT_ARRAY: {
+      size_t n = sp_racrd_sz(r); sp_IntArray *a = sp_IntArray_new(); SP_GC_ROOT(a);
+      for (size_t i = 0; i < n; i++) sp_IntArray_push(a, (mrb_int)sp_racrd_i64(r));
+      return sp_box_int_array(a);
+    }
+    case SPR_FLT_ARRAY: {
+      size_t n = sp_racrd_sz(r); sp_FloatArray *a = sp_FloatArray_new(); SP_GC_ROOT(a);
+      for (size_t i = 0; i < n; i++) sp_FloatArray_push(a, (mrb_float)sp_racrd_f64(r));
+      return sp_box_float_array(a);
+    }
+    case SPR_STR_ARRAY: {
+      size_t n = sp_racrd_sz(r); sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
+      for (size_t i = 0; i < n; i++) { size_t m = sp_racrd_sz(r); const char *s = sp_str_from_bytes(r->p + r->pos, m); r->pos += m; sp_StrArray_push(a, s); }
+      return sp_box_str_array(a);
+    }
+    default: sp_ractor_unshareable(tag); return sp_box_nil();
+  }
+}
+
+static sp_RbVal sp_ractor_deserialize(sp_RactorBlob b) {
+  sp_RacRd r; r.p = (const char *)b.data; r.len = b.len; r.pos = 0;
+  return sp_ractor_deser_val(&r);
+}
+
+/* Install the codec into the library's hooks. Called from sp_re_init. */
+static void sp_ractor_codec_install(void) {
+  sp_ractor_serialize_hook = sp_ractor_serialize;
+  sp_ractor_deserialize_hook = sp_ractor_deserialize;
+}
 
 #ifdef __APPLE__
 #pragma clang diagnostic pop

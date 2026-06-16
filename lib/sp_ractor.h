@@ -8,17 +8,32 @@
  * with no global GC lock. The only genuinely shared, lock-guarded state is the
  * per-Ractor mailbox/outgoing queues defined here.
  *
- * Milestone 1 deep-copies only immediate (non-heap) values across the
- * boundary: Integer / Float / true / false / nil travel by value through the
- * queues. Any heap-backed value (String, Array, Hash, object, Symbol) raises
- * Ractor::Error -- the serialization codec for those is a later milestone.
+ * Values crossing the boundary are deep-copied through a heap-neutral, malloc'd
+ * serialization blob: the sender serializes from its private heap into a blob
+ * (no GC pointers), the blob sits in the queue, and the receiver deserializes
+ * it into its own heap. The codec itself (sp_ractor_serialize / _deserialize)
+ * lives in the generated TU -- it needs the heap allocators that are static
+ * there -- and is installed into the hooks below at startup, the same way the
+ * GC mark-globals hook is. Integer/Float/true/false/nil/Symbol/String and
+ * Arrays (poly + typed) are shareable; objects/procs/hashes raise Ractor::Error.
  */
 #ifndef SP_RACTOR_H
 #define SP_RACTOR_H
 
+#include <stddef.h>
 #include "sp_gc.h"   /* sp_RbVal + tag constants */
 
 typedef struct sp_Ractor sp_Ractor;
+
+/* A heap-neutral serialized message: malloc'd bytes, no GC/heap pointers, so
+   it is safe to hold in a queue across the Ractor heap boundary. */
+typedef struct { void *data; size_t len; } sp_RactorBlob;
+
+/* Codec hooks, installed by the generated TU at startup (see emit_regex_section
+   / sp_re_init). The library calls through them so the heap-touching codec can
+   live in the TU where the allocators are visible. */
+extern sp_RactorBlob (*sp_ractor_serialize_hook)(sp_RbVal v);
+extern sp_RbVal      (*sp_ractor_deserialize_hook)(sp_RactorBlob b);
 
 /* The Ractor running on the calling pthread; NULL on the main thread.
    Read by Ractor.receive / Ractor.yield as the implicit receiver. */

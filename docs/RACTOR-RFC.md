@@ -1,6 +1,7 @@
 # RFC: A Minimal Ractor for Spinel
 
-Status: **experimental / Milestone 1**. This document is both the design
+Status: **experimental / Milestone 2** (working; ported to the C compiler in
+`src/`). This document is both the design
 rationale and the record of what currently ships. It proposes whether to
 graduate to a full implementation (see *Path forward*).
 
@@ -92,40 +93,50 @@ compile-time `Ractor::IsolationError`.
 
 ## Implementation map
 
-- **`lib/sp_runtime.h`** — `__thread` on the bucket-(a) globals (both fiber
-  `#ifdef` branches); the lazy `__thread` root pointer; `sp_thread_init()` + a
-  main-thread constructor; `__thread` on the `SP_POOL_DEFINE` macro body; and
-  the new `sp_Ractor` / `sp_RactorCtrl` (reference-counted, malloc'd control
-  block with mutex+condvar mailbox/outgoing queues), the scalar `sp_deep_copy`
-  codec (`sp_ractor_serialize`/`_deserialize`/`_shareable`), the
-  `sp_ractor_new/_send/_receive/_yield/_take` helpers, and the per-thread
-  top-level `setjmp` landing pad that re-raises an uncaught Ractor exception in
-  the taker.
-- **`spinel_analyze.rb`** — a `"ractor"` base type (added to
-  `type_is_pointer` / `is_nullable_pointer_type`); `Ractor.new → "ractor"` in
-  `infer_constructor_type`; and early inference arms for
-  `receive`/`recv`/`take`/`send`/`<<`/`yield` (placed before the generic
-  receiver-method dispatch so `take`/`send` aren't shadowed by `Array#take` /
-  the reflective `Object#send`).
-- **`spinel_codegen.rb`** — `c_type "ractor" → "sp_Ractor *"` and the matching
-  pointer-type lists; `compile_ractor_new` + `_ractor_body_N` (a clone of the
-  Fiber body-emission shape); the dispatch arms (with the `send` arm placed
-  before the reflective `Object#send`, gated on the ractor receiver type); and
-  mirrored cache-miss inference arms.
-- **`Makefile`** — `-pthread` in `CFLAGS`.
+(The active compiler is the C reimplementation under `src/`; the runtime is
+split across `lib/sp_gc.c`, `lib/sp_fiber.c`, and the header `lib/sp_runtime.h`.)
+
+- **`lib/sp_gc.{c,h}`, `lib/sp_fiber.{c,h}`, `lib/sp_runtime.h`** — `__thread` on
+  every per-execution-unit mutable global (collector heap/roots/mark-stack/
+  byte counters; fiber root/current/list; string heap + literal cache;
+  `SP_POOL_DEFINE` pools; exception + catch stacks; regex match state; at_exit;
+  lambda arena), plus `sp_fiber_thread_init()` (a main-thread constructor wires
+  the main thread), `sp_gc_thread_teardown()` (frees a Ractor's heaps on exit),
+  and the Milestone-2 message codec `sp_ractor_serialize`/`_deserialize`
+  (installed into the runtime hooks by `sp_re_init`).
+- **`lib/sp_ractor.{c,h}`** — `sp_Ractor` + mutex/condvar FIFO mailbox/outgoing
+  queues, the pthread entry trampoline, and the serialize/deserialize hook
+  plumbing. The generated body installs a top-level `setjmp` rescue pad so an
+  uncaught Ractor exception terminates one Ractor rather than the process.
+- **`src/analyze*.c`** — `TY_RACTOR`; `"Ractor"` as a builtin constant; inference
+  arms (`Ractor.new → ractor`, `receive`/`take → poly`, `yield → nil`,
+  `send`/`<< → ractor`).
+- **`src/codegen*.c`** — `c_type TY_RACTOR → "sp_Ractor *"` and the scalar-return
+  list; `emit_ractor_new` (Fiber-body-shaped, rejects captures/self with a
+  compile-time `Ractor::IsolationError`); the class/instance dispatch arms.
+- **`common.mk` / `src/main.c` / `Makefile`** — `-pthread` in `LDFLAGS`, in the
+  in-process `cc` link driver, and on the new `sp_ractor.o` build rule.
 
 ## Deliberate divergences (where "minimal" buys simplicity)
 
-1. **Value codec carries scalars only** — Integer / Float / true / false / nil.
-   Strings, Symbols, and containers (Array/Hash/objects) raise `Ractor::Error`
-   at the boundary. Extending the codec is the main follow-up.
-2. **Single-slot mailbox with backpressure**, not CRuby's unbounded mailbox.
-   `send`/`yield` block while a value is still pending.
-3. **`@@cvars` / `$globals` stay `static` (shared)**, not yet `__thread`. CRuby
-   isolates them per-Ractor and raises on cross-Ractor mutation; we have not
-   thread-local-ized them because class-body cvar initializers would need a
-   trampoline replay. Programs that touch cvars/gvars across Ractors are out of
-   scope for this milestone.
+1. **Value codec covers immediates, Symbol, String, and Arrays** (poly + typed
+   int/float/string), deep-copied through a heap-neutral malloc'd blob
+   (`sp_ractor_serialize`/`_deserialize`, installed via a hook because the
+   rebuild allocators are static to the generated TU). Hashes, plain objects,
+   Procs, Fibers, and IO raise `Ractor::Error` at the boundary — extending the
+   codec to those (and to nested objects) is the main follow-up. Symbols travel
+   by name and are re-interned in the receiver's per-Ractor table.
+2. **FIFO mailbox / outgoing queue** (mutex + condvar, grows on demand), so a
+   Ractor may `receive` several messages and a sender need not block per slot.
+3. **`@@cvars` / `$globals` are `__thread`** → isolated per Ractor, rather than
+   CRuby's "shared, raise on cross-Ractor mutation". Simpler and safe, but a
+   real semantic difference: a class-body cvar initializer has not run in a
+   child Ractor unless re-executed there. Programs that rely on cross-Ractor
+   cvar/gvar sharing are out of scope for this milestone.
+4. **`Ractor#send` with a bare String/Symbol *literal*** is parsed as a
+   reflective send (`recv.send("m")` → `recv.m`, a whole-program parser
+   behaviour), so send messages via `r << v` or a local (`r.send(v)`); literals
+   like `r.send(42)` / `r.send([..])` are unaffected.
 4. **No spawn args / block params** and **no shareable-by-value capture** yet:
    any captured outer variable or `self` is a compile-time
    `Ractor::IsolationError`. The block's return value is not delivered to

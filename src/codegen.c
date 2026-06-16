@@ -1584,6 +1584,9 @@ void emit_regex_section(Buf *b) {
      program's heap-typed globals/constants/class-ivars (it chains to
      sp_re_mark_globals itself). */
   buf_puts(b, "  sp_gc_mark_globals_hook = sp_mark_user_globals;\n");
+  /* Install the Ractor message codec (defined in sp_runtime.h, where the heap
+     allocators it rebuilds into are visible). */
+  buf_puts(b, "  sp_ractor_codec_install();\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
