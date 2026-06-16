@@ -549,6 +549,14 @@ Adjacent ecosystem (community-built, not part of this repo):
 - [rubocop_spinel](https://github.com/gurgeous/rubocop_spinel) —
   a RuboCop custom cop that flags Ruby code Spinel doesn't yet
   support.
+- [spinel-dev](https://github.com/OriPekelman/spinel-dev): developer
+  tooling for debugging Spinel builds (a `spinel doctor` health check, a
+  CRuby-vs-Spinel value bisector for silent miscompiles, a minimal-repro
+  reducer, a ruby-lsp type addon, and perf/flamegraph analysis).
+- [spinelgems](https://github.com/OriPekelman/spinelgems): a survey of
+  which RubyGems compile and run under Spinel, plus bundler-spinel, a
+  Bundler plugin that vendors and compatibility-gates `Gemfile`
+  dependencies.
 
 ## History
 
