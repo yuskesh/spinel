@@ -336,18 +336,22 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 rbs-seed-test:
 	@echo "rbs-seed-test: skipped (vendor/rbs not fetched; run 'make deps')"
 else
-rbs-seed-test: $(SPINEL) spinel_rbs_extract$(EXE)
+rbs-seed-test: $(SPINEL) spinel_rbs_extract$(EXE) $(SP_RT_LIB)
 	@cp -f spinel_rbs_extract$(EXE) $(dir $(SPINEL))spinel_rbs_extract$(EXE)
-	@tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); \
+	@tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); ok=1; \
 	$(SPINEL) test/rbs-seed/nested_ivar.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/out.c" 2>/dev/null; \
-	ok=1; \
-	grep -Eq 'const char[[:space:]]+\*[[:space:]]*iv_label' "$$tmp/out.c" || ok=0; \
-	if grep -Eq 'sp_RbVal[[:space:]]+iv_label' "$$tmp/out.c"; then ok=0; fi; \
-	$(CC) -fsyntax-only -Ilib "$$tmp/out.c" 2>/dev/null || ok=0; \
+	grep -Eq 'const char[[:space:]]+\*[[:space:]]*iv_label' "$$tmp/out.c" || { echo "rbs-seed-test: FAIL (#1417: module-nested-class seed not applied)"; ok=0; }; \
+	if grep -Eq 'sp_RbVal[[:space:]]+iv_label' "$$tmp/out.c"; then echo "rbs-seed-test: FAIL (#1417: ivar stayed poly)"; ok=0; fi; \
+	$(CC) -fsyntax-only -Ilib "$$tmp/out.c" 2>/dev/null || { echo "rbs-seed-test: FAIL (nested_ivar C invalid)"; ok=0; }; \
+	$(SPINEL) test/rbs-seed/boundary.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/b.c" 2>/dev/null; \
+	if $(CC) -O0 -Ilib "$$tmp/b.c" $(SP_RT_LIB) -lm -o "$$tmp/b" 2>"$$tmp/b.err"; then \
+	  "$$tmp/b" > "$$tmp/b.out" 2>/dev/null; \
+	  cmp -s "$$tmp/b.out" test/rbs-seed/boundary.expected || { echo "rbs-seed-test: FAIL (#1417 boundary output mismatch)"; diff -u test/rbs-seed/boundary.expected "$$tmp/b.out" || true; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (#1417 boundary coercion C did not compile)"; ok=0; fi; \
 	rm -rf "$$tmp"; \
-	if [ $$ok -eq 1 ]; then echo "rbs-seed-test: pass"; \
-	else echo "rbs-seed-test: FAIL (#1417: module-nested-class seed not applied)"; exit 1; fi
+	if [ $$ok -eq 1 ]; then echo "rbs-seed-test: pass"; else exit 1; fi
 endif
 
 # Analyze-fail fixtures test the legacy analyzer's rejection diagnostics;

@@ -2198,12 +2198,25 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
             return;
           }
         }
-        /* poly arg into a concrete scalar param (holds the right type at
-           runtime): coerce, else the generated C assigns sp_RbVal to a
-           const char* / mrb_int / mrb_float slot. */
+        /* poly arg into a concrete param (holds the right type at runtime):
+           coerce, else the generated C assigns sp_RbVal to a const char* /
+           mrb_int / mrb_float / sp_<Class>* slot. */
+        const char *ptn = c_type_name(pt);
         if (at == TY_POLY && pt == TY_STRING) { buf_puts(out, "sp_poly_to_s("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && pt == TY_FLOAT) { buf_puts(out, "sp_poly_to_f("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && (pt == TY_INT || pt == TY_BOOL)) { buf_puts(out, "sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }
+        /* poly arg into an object or other pointer-backed param (array, proc,
+           ...): unbox the pointer via emit_unbox_text (a nil box has v.p ==
+           NULL, the pointer-nil representation). The callee's RBS asserts the
+           type, mirroring the seed-trusting coercion on the return side. (Typed-
+           value hashes are handled by the ty_is_hash block above; by-value types
+           have no .v.p form and fall through to a plain emit.) */
+        else if (at == TY_POLY && (ty_is_object(pt) || (ptn && ptn[0] && ptn[strlen(ptn) - 1] == '*'))) {
+          Buf ub; memset(&ub, 0, sizeof ub);
+          emit_expr(c, provided, &ub);
+          emit_unbox_text(c, pt, ub.p ? ub.p : "", out);
+          free(ub.p);
+        }
         else emit_expr(c, provided, out);
       }
     }

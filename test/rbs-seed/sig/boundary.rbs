@@ -1,0 +1,18 @@
+module Outer
+  class Thing
+    @n: String
+    def initialize: (String n) -> void
+    def n: () -> String
+  end
+  module Slots
+    @h: Hash[Symbol, untyped]
+    def self.set: (Symbol k, untyped v) -> void
+    def self.get: (Symbol k) -> String?
+    def self.flag: (Symbol k) -> bool
+    def self.list: (Symbol k) -> Array[Integer]
+    def self.sum: (Array[Integer] a) -> Integer
+  end
+  module Use
+    def self.label: (Outer::Thing t) -> String
+  end
+end
