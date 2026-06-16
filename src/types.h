@@ -65,6 +65,16 @@ TyKind ty_hash_of(TyKind key, TyKind val); /* (key,val) -> hash kind (UNKNOWN if
 TyKind ty_hash_key(TyKind h);
 TyKind ty_hash_val(TyKind h);
 const char *ty_hash_cname(TyKind h);   /* "StrInt" etc, for sp_<X>Hash_* */
+
+/* Block-yield protocol for builtin iterators. The params a block bound to
+   `recv.<name>` receives, expressed purely against the receiver's
+   element/key/value -- i.e. the context-free iterators whose yield depends only
+   on the receiver shape, not on call arguments or a receiver chain. Writes up
+   to `max` param types into out[] and returns the count, or 0 if `name` is not
+   such an iterator on `recv`. The single source of truth for builtin block
+   protocols (forwarded-`&callable` desugar arity, builtin yield-stubs); keeps
+   that knowledge from being re-encoded as scattered method-name lists. */
+int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max);
 /* Merge two observed types into the narrowest type covering both.
    Equal -> same; UNKNOWN acts as identity; otherwise widen to POLY
    (numeric int+float stays POLY for now -- mixed-numeric vars are rare
