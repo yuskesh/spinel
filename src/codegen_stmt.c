@@ -1667,6 +1667,22 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
   emit_indent(b, indent); buf_puts(b, "/* unsupported for-loop collection */\n");
 }
 
+/* Emit `node` (statically poly) coerced to the non-poly return/slot type `t`.
+   int/float go through the converting sp_poly_to_i/f (matching the legacy
+   scalar-return coercion); a string is unboxed to its char* (a nil box has a
+   zeroed union, so `.v.s` is NULL and `String?` round-trips); an object/builtin
+   reference is cast out of the box. Other types fall back to a plain emit (no
+   coercion was applied for them before either). Used where a method's RBS
+   return type is narrower than its poly body value (#1417). */
+static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
+  if (t == TY_INT)         { buf_puts(b, "sp_poly_to_i("); emit_expr(c, node, b); buf_puts(b, ")"); }
+  else if (t == TY_FLOAT)  { buf_puts(b, "sp_poly_to_f("); emit_expr(c, node, b); buf_puts(b, ")"); }
+  else if (t == TY_STRING) { buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ").v.s"); }
+  else if (ty_is_object(t)){ buf_printf(b, "(sp_%s *)(", c->classes[ty_object_class(t)].name);
+                             emit_expr(c, node, b); buf_puts(b, ").v.p"); }
+  else emit_expr(c, node, b);
+}
+
 void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int args = nt_ref(c->nt, id, "arguments");
   int n = 0;
@@ -1715,10 +1731,10 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "return ");
     TyKind r0 = comp_ntype(c, a[0]);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
-    /* a poly return value feeding a scalar return slot (e.g. a method(:sym)
-       target pinned to mrb_int that returns a poly @ivar) needs coercing. */
-    else if (g_ret_type == TY_INT && r0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, a[0], b); buf_puts(b, ")"); }
-    else if (g_ret_type == TY_FLOAT && r0 == TY_POLY) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, a[0], b); buf_puts(b, ")"); }
+    /* a poly return value feeding a narrower (non-poly) return slot -- e.g. a
+       method(:sym) target pinned to mrb_int that returns a poly @ivar, or an
+       RBS-typed String/object method whose body yields poly -- needs coercing. */
+    else if (r0 == TY_POLY && g_ret_type != TY_POLY) emit_unbox_node(c, g_ret_type, a[0], b);
     else emit_expr(c, a[0], b);
     buf_puts(b, ";\n");
   }
@@ -3590,10 +3606,11 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   emit_tail_lead(b);
   int want_poly = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
   if (want_poly && comp_ntype(c, id) != TY_POLY) emit_boxed(c, id, b);
-  /* a poly tail value feeding a scalar return slot (e.g. a method(:sym) target
-     pinned to mrb_int returning a poly @ivar) needs coercing. */
-  else if (!g_result_var && g_ret_type == TY_INT && comp_ntype(c, id) == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, id, b); buf_puts(b, ")"); }
-  else if (!g_result_var && g_ret_type == TY_FLOAT && comp_ntype(c, id) == TY_POLY) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, id, b); buf_puts(b, ")"); }
+  /* a poly tail value feeding a narrower (non-poly) return slot -- a scalar
+     method(:sym) target, or an RBS-typed String/object method whose body yields
+     poly -- needs coercing. (Only for a real return slot, not a begin/rescue
+     result var, which stays poly.) */
+  else if (!g_result_var && g_ret_type != TY_POLY && comp_ntype(c, id) == TY_POLY) emit_unbox_node(c, g_ret_type, id, b);
   else emit_expr(c, id, b);
   buf_puts(b, ";\n");
 }

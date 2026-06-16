@@ -2198,12 +2198,16 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
             return;
           }
         }
-        /* poly arg into a concrete scalar param (holds the right type at
-           runtime): coerce, else the generated C assigns sp_RbVal to a
-           const char* / mrb_int / mrb_float slot. */
+        /* poly arg into a concrete param (holds the right type at runtime):
+           coerce, else the generated C assigns sp_RbVal to a const char* /
+           mrb_int / mrb_float / sp_<Class>* slot. */
         if (at == TY_POLY && pt == TY_STRING) { buf_puts(out, "sp_poly_to_s("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && pt == TY_FLOAT) { buf_puts(out, "sp_poly_to_f("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && (pt == TY_INT || pt == TY_BOOL)) { buf_puts(out, "sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }
+        /* poly arg into an object param: unbox the pointer (a nil box has v.p
+           == NULL, the object-nil representation). The callee's RBS asserts the
+           class, mirroring the seed-trusting coercion on the return side. */
+        else if (at == TY_POLY && ty_is_object(pt)) { buf_printf(out, "(sp_%s *)(", c->classes[ty_object_class(pt)].name); emit_expr(c, provided, out); buf_puts(out, ").v.p"); }
         else emit_expr(c, provided, out);
       }
     }
