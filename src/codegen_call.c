@@ -2951,6 +2951,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")(");
               emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.i)");
             }
+            else if (at == TY_BIGINT) {
+              /* An overflow-promoted integer (e.g. a backoff computed by
+                 repeated *2) arrives as sp_Bigint*. Narrow it to the C
+                 integer the FFI arg expects, not the pointer value. */
+              buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")sp_bigint_to_int(");
+              emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
+            }
             else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
         }
