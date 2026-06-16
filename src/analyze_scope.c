@@ -1756,11 +1756,14 @@ void specialize_inherited_cls_new(Compiler *c) {
     Scope *src = &c->scopes[s];
     if (!src->is_cmethod || !src->name || src->class_id < 0) continue;
     /* did we specialize this one into a subclass? (a fresh cmethod copy with
-       the same name was appended) */
+       the same name was appended in a descendant class). Match on the class
+       hierarchy, not just the name: an unrelated class's cmethod that merely
+       shares the name must not be treated as a transplanted source (and DCE'd). */
     int specialized = 0;
     for (int d = snap; d < c->nscopes; d++)
-      if (c->scopes[d].is_cmethod && c->scopes[d].name &&
-          !strcmp(c->scopes[d].name, src->name)) { specialized = 1; break; }
+      if (c->scopes[d].is_cmethod && c->scopes[d].name && c->scopes[d].class_id >= 0 &&
+          !strcmp(c->scopes[d].name, src->name) &&
+          is_descendant(c, c->scopes[d].class_id, src->class_id)) { specialized = 1; break; }
     if (!specialized) continue;
     /* keep it if called directly as <DefiningClass>.<name> */
     int called_direct = 0;

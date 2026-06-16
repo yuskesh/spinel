@@ -227,5 +227,7 @@ void topup_forwarding_arity(Compiler *c);
 /* Defined in codegen.c; the analyzer uses it to specialize/type a
    `rescue <UserExc> => e` binding (#1415). */
 int class_is_exc_subclass(Compiler *c, int ci);
+/* Defined in codegen_fold.c; 1 if class `k` is `anc` or a descendant of it. */
+int is_descendant(Compiler *c, int k, int anc);
 #endif
 
