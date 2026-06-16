@@ -8,6 +8,9 @@ module Outer
     @h: Hash[Symbol, untyped]
     def self.set: (Symbol k, untyped v) -> void
     def self.get: (Symbol k) -> String?
+    def self.flag: (Symbol k) -> bool
+    def self.list: (Symbol k) -> Array[Integer]
+    def self.sum: (Array[Integer] a) -> Integer
   end
   module Use
     def self.label: (Outer::Thing t) -> String

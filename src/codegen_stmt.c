@@ -1668,19 +1668,27 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
 }
 
 /* Emit `node` (statically poly) coerced to the non-poly return/slot type `t`.
-   int/float go through the converting sp_poly_to_i/f (matching the legacy
-   scalar-return coercion); a string is unboxed to its char* (a nil box has a
-   zeroed union, so `.v.s` is NULL and `String?` round-trips); an object/builtin
-   reference is cast out of the box. Other types fall back to a plain emit (no
-   coercion was applied for them before either). Used where a method's RBS
-   return type is narrower than its poly body value (#1417). */
+   int/bool/float go through the converting sp_poly_to_i/f (matching the legacy
+   scalar-return coercion; mrb_bool is int-backed). Strings, objects, and every
+   other pointer-backed reference (arrays, hashes, procs, fibers, ...) unbox via
+   emit_unbox_text: a string reads `.v.s` (a nil box has a zeroed union, so this
+   is NULL and `String?` round-trips); a pointer reads `(T *)(...).v.p`. The few
+   by-value types (Range/Time/Complex/...) have no `.v.p` form, so they fall back
+   to a plain emit (no coercion was applied for them before either, and no such
+   poly-bodied return arises). Used where a method's RBS return type is narrower
+   than its poly body value (#1417). */
 static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
-  if (t == TY_INT)         { buf_puts(b, "sp_poly_to_i("); emit_expr(c, node, b); buf_puts(b, ")"); }
-  else if (t == TY_FLOAT)  { buf_puts(b, "sp_poly_to_f("); emit_expr(c, node, b); buf_puts(b, ")"); }
-  else if (t == TY_STRING) { buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ").v.s"); }
-  else if (ty_is_object(t)){ buf_printf(b, "(sp_%s *)(", c->classes[ty_object_class(t)].name);
-                             emit_expr(c, node, b); buf_puts(b, ").v.p"); }
-  else emit_expr(c, node, b);
+  if (t == TY_INT || t == TY_BOOL) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, node, b); buf_puts(b, ")"); return; }
+  if (t == TY_FLOAT)               { buf_puts(b, "sp_poly_to_f("); emit_expr(c, node, b); buf_puts(b, ")"); return; }
+  const char *cn = c_type_name(t);
+  if (t == TY_STRING || ty_is_object(t) || (cn && cn[0] && cn[strlen(cn) - 1] == '*')) {
+    Buf tmp; memset(&tmp, 0, sizeof tmp);
+    emit_expr(c, node, &tmp);
+    emit_unbox_text(c, t, tmp.p ? tmp.p : "", b);
+    free(tmp.p);
+    return;
+  }
+  emit_expr(c, node, b);
 }
 
 void emit_return(Compiler *c, int id, Buf *b, int indent) {
