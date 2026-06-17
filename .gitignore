@@ -11,9 +11,10 @@
 
 # Build artifacts
 /build/
+/bin/
 /legacy/build/
 /vendor/
-# Dev convenience symlink to build/spinel (created by `make`)
+# Dev convenience symlink to bin/spinel (created by `make`)
 /spinel
 
 # Temp files

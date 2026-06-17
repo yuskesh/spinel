@@ -53,7 +53,9 @@ endif
 
 # The single Spinel binary (compiler + cc driver). Defined here, before the
 # `all` rule, because a rule's prerequisites are expanded as it is read.
-SPINEL = build/spinel$(EXE)
+# Built into bin/ alongside the companion tools (spinel-doctor, ...); bin/ sits
+# beside lib/ so the binary resolves its runtime lib via ../lib, same as before.
+SPINEL = bin/spinel$(EXE)
 
 all: parse regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools
 
@@ -147,6 +149,7 @@ build/csrc/sp_parse_lib.o: src/spinel_parse.c $(PRISM_LIB) | build/csrc
 	$(CC) $(CFLAGS) -I$(PRISM_INC) -c src/spinel_parse.c -o $@
 
 $(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o $(PRISM_LIB)
+	@mkdir -p bin
 	$(CC) $(CFLAGS) $(SPINEL_OBJ) build/csrc/sp_parse_lib.o $(PRISM_LIB) -lm $(LDFLAGS) -o $@
 	@# Dev convenience: a repo-root `./spinel` pointing at the built binary
 	@# (the installed command is `spinel` too). Best-effort; gitignored.
@@ -247,16 +250,16 @@ regexp: $(SP_RT_LIB)
 
 # spinel-doctor / spinel-reduce / spinel-flatten: written in the spinel subset
 # and compiled by spinel itself (dogfood), so their only runtime dependency is
-# cc — the same as the compiler. Each tools/<name>.rb becomes build/spinel-<name>;
-# install places them beside `spinel` so the `spinel-<name>` command is found
-# next to the compiler it drives. A tool that no longer fits the subset breaks
-# the build, which keeps them honest.
+# cc — the same as the compiler. Each tools/<name>.rb becomes bin/spinel-<name>,
+# beside the compiler, so the `spinel-<name>` command is found next to `spinel`.
+# A tool that no longer fits the subset breaks the build, which keeps them honest.
 TOOL_NAMES = doctor reduce flatten
-TOOL_BINS  = $(addprefix build/spinel-,$(TOOL_NAMES))
+TOOL_BINS  = $(addprefix bin/spinel-,$(TOOL_NAMES))
 
 tools: $(TOOL_BINS)
 
-build/spinel-%$(EXE): tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB)
+bin/spinel-%$(EXE): tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB)
+	@mkdir -p bin
 	$(SPINEL) $< -o $@
 
 # ---- Test ----
@@ -581,7 +584,7 @@ install: all
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
 	for t in $(TOOL_NAMES); do \
-	  install -m 755 build/spinel-$$t$(EXE) $(PREFIX)/bin/spinel-$$t$(EXE); \
+	  install -m 755 bin/spinel-$$t$(EXE) $(PREFIX)/bin/spinel-$$t$(EXE); \
 	done
 
 uninstall:
@@ -595,5 +598,5 @@ uninstall:
 # (legacy/build holds the legacy compiler's binaries + bootstrap
 # intermediates). Only the root-level C artifacts need an explicit rm.
 clean:
-	rm -rf build/ legacy/build/
+	rm -rf build/ bin/ legacy/build/
 	rm -f legacy/spinel_parse$(EXE) spinel_rbs_extract$(EXE) spinel
