@@ -2060,11 +2060,13 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (!name) continue;
     int encl = c->nscope[id];
     TyKind rt = infer_type(c, recv);
-    /* Hash `each`/`each_pair` yields the [k,v] pair (one arg to a 1-param proc,
-       destructured to a strict 2-param lambda) -- the pair/destructure semantics
-       don't reduce to the simple per-element call this desugar emits, so leave
-       hash receivers to their own path. */
-    if (ty_is_hash(rt)) continue;
+    /* Hash `each`/`each_pair` yields the [k,v] pair, forwarded as a single array
+       argument `c.call([k, v])` (built below). This is reliable for a method
+       object, whose array-ABI trampoline takes the pair directly; a proc/lambda
+       *value* would need its param's pair-array type inferred from the synthetic
+       call (proc-param array-input inference, not yet supported), so those hash
+       cases are left to their own path rather than forwarded incorrectly. */
+    if (ty_is_hash(rt) && ct != TY_METHOD) continue;
     TyKind pty[4];
     int arity = ty_block_yield(rt, name, pty, 4);
     if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
@@ -2091,7 +2093,14 @@ int desugar_value_callable_forwards(Compiler *c) {
     nt_node_set_ref(nt, bparams, "parameters", params);
 
     int callargs = nt_new_node(nt, "ArgumentsNode");
-    nt_node_set_arr(nt, callargs, "arguments", reads, arity);
+    /* hash each/each_pair (2 yielded params) forwards the [k, v] pair as one
+       array argument; element iterators forward their values positionally. */
+    if (ty_is_hash(rt) && arity == 2) {
+      int pairarr = nt_new_node(nt, "ArrayNode");
+      nt_node_set_arr(nt, pairarr, "elements", reads, 2);
+      nt_node_set_arr(nt, callargs, "arguments", &pairarr, 1);
+    }
+    else nt_node_set_arr(nt, callargs, "arguments", reads, arity);
     int callnode = nt_new_node(nt, "CallNode");
     nt_node_set_ref(nt, callnode, "receiver", proc_clone);
     nt_node_set_str(nt, callnode, "name", "call");
