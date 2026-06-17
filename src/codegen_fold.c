@@ -517,6 +517,23 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
+  /* Identity block `{ |x| x }` over an array of arrays is a one-level flatten,
+     equivalent to `flatten(1)`: each sub-array element is unboxed inline and
+     scalars pass through. The block returns the bare element (a poly element,
+     not statically an array), so the array-returning path below cannot handle
+     it; emit the runtime flatten directly. */
+  if (bn == 1 && rt == TY_POLY_ARRAY) {
+    const char *p0 = block_param_name(c, block, 0);
+    const char *sty = nt_type(nt, bb[0]);
+    if (p0 && !block_param_name(c, block, 1) && sty &&
+        !strcmp(sty, "LocalVariableReadNode") && nt_str(nt, bb[0], "name") &&
+        !strcmp(nt_str(nt, bb[0], "name"), p0)) {
+      buf_puts(b, "sp_PolyArray_flatten_n(");
+      emit_expr(c, recv, b);
+      buf_puts(b, ", 1)");
+      return 1;
+    }
+  }
   TyKind bret = comp_ntype(c, bb[bn - 1]);
   if (!ty_is_array(bret)) return 0;  /* only array-returning blocks */
   const char *bk = (bret == TY_POLY_ARRAY) ? "Poly" : array_kind(bret);
