@@ -1966,6 +1966,116 @@ static int forwarding_yield_target(Compiler *c, int mi, int depth) {
 }
 
 /* Bind block parameter types for supported iteration methods. */
+/* Desugar a forwarded callable *value* -- `recv.<iter>(&f)` where `f` is a Proc
+   value or a Method object rather than the active inlined &block -- into the
+   equivalent literal block `recv.<iter> { |__fwd_k...| f.call(__fwd_k...) }`.
+   The existing literal-block emitters then lower it for ANY iterator, instead of
+   a per-callable, per-iterator special case. This mirrors Ruby's own `&obj` =>
+   `obj.to_proc` model: once a callable is wrapped as a block, it is just a
+   block. The synthetic block's param arity and types come from ty_block_yield
+   (the builtin block-protocol oracle), so hash `each` (2 params),
+   each_with_index, ranges etc. desugar correctly -- not only 1-arg array maps.
+   (A `&:sym` block already lowers via its own to_proc path and is left alone.)
+
+   The callable expression is re-evaluated once per element, so this is
+   restricted to side-effect-free forms: a local or ivar read, or a `method(:m)`
+   call (a deterministic method-object lookup). The active inlined &block (a
+   forward whose expression names the enclosing method's block param) is left to
+   the inline-forward path. Runs in the inference fixpoint; once a call is
+   rewritten its block is a BlockNode, so it is never revisited. */
+int desugar_value_callable_forwards(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;  /* snapshot: synthetic nodes are appended past here */
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || strcmp(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0) continue;  /* anonymous `&`: inline-forward path, not a value */
+    const char *exty = nt_type(nt, ex);
+    if (!exty) continue;
+    int simple_ref = !strcmp(exty, "LocalVariableReadNode") ||
+                     !strcmp(exty, "InstanceVariableReadNode");
+    /* `&method(:m)`: a deterministic method-object lookup, safe to re-evaluate */
+    int method_obj = !strcmp(exty, "CallNode") && nt_str(nt, ex, "name") &&
+                     !strcmp(nt_str(nt, ex, "name"), "method");
+    /* `&->(x){...}`: an inline lambda literal, equivalent to the block itself;
+       building it per element has no observable side effect */
+    int inline_lambda = !strcmp(exty, "LambdaNode");
+    if (!simple_ref && !method_obj && !inline_lambda) continue;
+    TyKind ct = infer_type(c, ex);
+    if (ct != TY_PROC && ct != TY_METHOD) continue;  /* Proc / Method values */
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    const char *name = nt_str(nt, id, "name");
+    if (!name) continue;
+    int encl = c->nscope[id];
+    TyKind rt = infer_type(c, recv);
+    /* Hash `each`/`each_pair` yields the [k,v] pair (one arg to a 1-param proc,
+       destructured to a strict 2-param lambda) -- the pair/destructure semantics
+       don't reduce to the simple per-element call this desugar emits, so leave
+       hash receivers to their own path. */
+    if (ty_is_hash(rt)) continue;
+    TyKind pty[4];
+    int arity = ty_block_yield(rt, name, pty, 4);
+    if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
+
+    int base = nt->count;
+    int proc_clone = nt_clone_subtree(nt, ex);  /* re-read the proc per element */
+    if (proc_clone < 0) continue;
+
+    int reqs[4], reads[4];
+    char pn[48];
+    int alloc_ok = 1;
+    for (int k = 0; k < arity; k++) {
+      snprintf(pn, sizeof pn, "__fwd_%d_%d", id, k);
+      reqs[k] = nt_new_node(nt, "RequiredParameterNode");
+      nt_node_set_str(nt, reqs[k], "name", pn);
+      reads[k] = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, reads[k], "name", pn);
+      if (reqs[k] < 0 || reads[k] < 0) { alloc_ok = 0; break; }
+    }
+    if (!alloc_ok) continue;  /* node-table OOM: leave the call in its &-form */
+    int params = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, params, "requireds", reqs, arity);
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, bparams, "parameters", params);
+
+    int callargs = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, callargs, "arguments", reads, arity);
+    int callnode = nt_new_node(nt, "CallNode");
+    nt_node_set_ref(nt, callnode, "receiver", proc_clone);
+    nt_node_set_str(nt, callnode, "name", "call");
+    nt_node_set_ref(nt, callnode, "arguments", callargs);
+    nt_node_set_ref(nt, callnode, "block", -1);
+
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", &callnode, 1);
+    int blocknode = nt_new_node(nt, "BlockNode");
+    if (params < 0 || bparams < 0 || callargs < 0 || callnode < 0 || body < 0 ||
+        blocknode < 0)
+      continue;  /* node-table OOM: a -1 id is an out-of-bounds node index below */
+    nt_node_set_ref(nt, blocknode, "parameters", bparams);
+    nt_node_set_ref(nt, blocknode, "body", body);
+
+    nt_node_set_ref(nt, id, "block", blocknode);  /* call now takes a literal block */
+
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+
+    Scope *bs = comp_scope_of(c, blocknode);
+    for (int k = 0; k < arity; k++) {
+      snprintf(pn, sizeof pn, "__fwd_%d_%d", id, k);
+      LocalVar *lv = scope_local_intern(bs, pn);
+      lv->is_block_param = 1;
+      lv->type = pty[k];
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;

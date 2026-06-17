@@ -44,6 +44,8 @@ static char *unescape_dup(const char *s, size_t len, size_t *out_len) {
 
 /* ---- field append helpers ---- */
 
+static const SpNode *node_at(const NodeTable *nt, int id);
+
 static void ensure_cap(void **buf, int *cap, int need, size_t elem) {
   if (need <= *cap) return;
   int nc = *cap ? *cap * 2 : 4;
@@ -219,6 +221,7 @@ NodeTable *nt_load_text(const char *text) {
   }
 
   nt->count = max_id + 1;
+  nt->node_cap = nt->count;
   nt->nodes = calloc((size_t)nt->count, sizeof(SpNode));
   if (!nt->nodes) { free(nt); return NULL; }
 
@@ -346,8 +349,68 @@ int nt_clone_subtree(NodeTable *nt, int root) {
   }
   int newroot = map[root];
   nt->count = base + sn;
+  nt->node_cap = nt->count;  /* realloc above sized the array exactly */
   free(list); free(map);
   return newroot;
+}
+
+/* ---- synthetic node construction ---- */
+
+int nt_new_node(NodeTable *nt, const char *type) {
+  if (nt->count >= nt->node_cap) {
+    int nc = nt->node_cap ? nt->node_cap * 2 : 8;
+    if (nc <= nt->count) nc = nt->count + 1;
+    SpNode *grown = realloc(nt->nodes, sizeof(SpNode) * (size_t)nc);
+    if (!grown) return -1;
+    nt->nodes = grown;
+    nt->node_cap = nc;
+  }
+  int id = nt->count++;
+  SpNode *nd = &nt->nodes[id];
+  memset(nd, 0, sizeof(SpNode));
+  if (type) node_set_type(nd, type, strlen(type));
+  return id;
+}
+
+void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val) {
+  SpNode *nd = (SpNode *)node_at(nt, id);
+  if (!nd) return;
+  size_t klen = strlen(key), vlen = strlen(val);
+  for (int j = 0; j < nd->ns; j++)
+    if (strcmp(nd->s[j].key, key) == 0) {
+      free(nd->s[j].val); nd->s[j].val = dup_n(val, vlen); nd->s[j].val_len = vlen; return;
+    }
+  node_add_str(nd, key, klen, dup_n(val, vlen), vlen);
+}
+
+void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val) {
+  SpNode *nd = (SpNode *)node_at(nt, id);
+  if (!nd) return;
+  for (int j = 0; j < nd->ni; j++)
+    if (strcmp(nd->i[j].key, key) == 0) { nd->i[j].val = val; return; }
+  node_add_int(nd, key, strlen(key), val);
+}
+
+void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child) {
+  SpNode *nd = (SpNode *)node_at(nt, id);
+  if (!nd) return;
+  for (int j = 0; j < nd->nr; j++)
+    if (strcmp(nd->r[j].key, key) == 0) { nd->r[j].ref = child; return; }
+  node_add_ref(nd, key, strlen(key), child);
+}
+
+void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n) {
+  SpNode *nd = (SpNode *)node_at(nt, id);
+  if (!nd) return;
+  int *copy = NULL;
+  if (n > 0) {
+    copy = malloc(sizeof(int) * (size_t)n);
+    if (copy) memcpy(copy, ids, sizeof(int) * (size_t)n);
+    else n = 0;  /* OOM: store an empty array rather than a NULL/count mismatch */
+  }
+  for (int j = 0; j < nd->na; j++)
+    if (strcmp(nd->a[j].key, key) == 0) { free(nd->a[j].ids); nd->a[j].ids = copy; nd->a[j].n = n; return; }
+  node_add_arr(nd, key, strlen(key), copy, n);
 }
 
 void nt_free(NodeTable *nt) {

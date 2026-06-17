@@ -1,5 +1,6 @@
 #include "types.h"
 #include <stddef.h>
+#include <string.h>
 
 const char *ty_name(TyKind t) {
   switch (t) {
@@ -134,4 +135,52 @@ TyKind ty_promote_numeric(TyKind a, TyKind b) {
     return TY_BIGINT;  /* int + bigint */
   }
   return ty_unify(a, b);
+}
+
+/* The single-element-arg array iterators: a block bound to one of these
+   receives exactly one param = the array element. Enumerated once here so the
+   knowledge is not re-encoded as scattered method-name lists. */
+static int ty_is_array_elem_iter(const char *n) {
+  return !strcmp(n, "each") || !strcmp(n, "map") || !strcmp(n, "collect") ||
+         !strcmp(n, "select") || !strcmp(n, "reject") || !strcmp(n, "filter") ||
+         !strcmp(n, "find") || !strcmp(n, "detect") || !strcmp(n, "find_all") ||
+         !strcmp(n, "sort_by") || !strcmp(n, "min_by") || !strcmp(n, "max_by") ||
+         !strcmp(n, "count") || !strcmp(n, "sum") || !strcmp(n, "flat_map") ||
+         !strcmp(n, "filter_map") || !strcmp(n, "partition") || !strcmp(n, "group_by") ||
+         !strcmp(n, "any?") || !strcmp(n, "all?") || !strcmp(n, "none?") ||
+         !strcmp(n, "one?") || !strcmp(n, "take_while") || !strcmp(n, "drop_while") ||
+         !strcmp(n, "reverse_each") || !strcmp(n, "each_entry") || !strcmp(n, "find_index");
+}
+
+int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
+  if (!name || max < 1) return 0;
+#define BY_PUT(i, t) do { if ((i) < max) out[i] = (t); } while (0)
+  if (ty_is_array(recv)) {
+    TyKind e = ty_array_elem(recv);
+    if (ty_is_array_elem_iter(name)) { BY_PUT(0, e); return 1; }
+    if (!strcmp(name, "each_with_index")) { BY_PUT(0, e); BY_PUT(1, TY_INT); return 2; }
+    return 0;
+  }
+  if (ty_is_hash(recv)) {
+    if (!strcmp(name, "each") || !strcmp(name, "each_pair")) {
+      BY_PUT(0, ty_hash_key(recv)); BY_PUT(1, ty_hash_val(recv)); return 2;
+    }
+    if (!strcmp(name, "each_key")) { BY_PUT(0, ty_hash_key(recv)); return 1; }
+    if (!strcmp(name, "each_value")) { BY_PUT(0, ty_hash_val(recv)); return 1; }
+    return 0;
+  }
+  if (recv == TY_RANGE) {
+    /* a range yields ints to its element iterators */
+    if (!strcmp(name, "each_with_index")) { BY_PUT(0, TY_INT); BY_PUT(1, TY_INT); return 2; }
+    if (ty_is_array_elem_iter(name)) { BY_PUT(0, TY_INT); return 1; }
+    return 0;
+  }
+  if (recv == TY_INT) {
+    if (!strcmp(name, "times") || !strcmp(name, "upto") || !strcmp(name, "downto")) {
+      BY_PUT(0, TY_INT); return 1;
+    }
+    return 0;
+  }
+  return 0;
+#undef BY_PUT
 }

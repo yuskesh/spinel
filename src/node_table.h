@@ -35,6 +35,7 @@ typedef struct {
 typedef struct {
   SpNode *nodes;
   int count;           /* number of allocated node slots */
+  int node_cap;        /* capacity of `nodes`; >= count (for append growth) */
   int root_id;
   char *source_file;   /* SOURCE_FILE path (unescaped), NULL if none */
   char **files;        /* FILE id -> path (unescaped); for multi-file #line maps */
@@ -198,6 +199,18 @@ void nt_free(NodeTable *nt);
    Appends nodes and grows nt->count -- parallel per-node arrays must be
    resized to match afterward. */
 int nt_clone_subtree(NodeTable *nt, int root);
+
+/* ---- synthetic node construction ----
+   Append a freshly-typed node and populate its fields, for desugaring AST
+   in-place (e.g. a forwarded `&callable` into an equivalent block). Each
+   nt_new_node grows nt->count; like nt_clone_subtree, callers must resize the
+   parallel per-node arrays (comp_grow_node_arrays) afterward. The set_* helpers
+   overwrite a field of the same key if present, else append it. */
+int  nt_new_node(NodeTable *nt, const char *type);                 /* new id, -1 on OOM */
+void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val);
+void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val);
+void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child);
+void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int n);
 
 /* Accessors. id must be in [0, nt->count). Out-of-range ids return the
    given defaults so callers can walk freely without bounds checks. */
