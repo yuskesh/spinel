@@ -5702,6 +5702,11 @@ void sp_ext_mark_string(const char *s) { sp_mark_string(s); }
 #define SPR_INT_ARRAY   101
 #define SPR_FLT_ARRAY   102
 #define SPR_STR_ARRAY   103
+/* Hashes: the sender's typed variant is normalised to one of three key shapes;
+   the receiver rebuilds a poly hash (it receives the message as poly anyway). */
+#define SPR_STR_HASH    104   /* String keys -> poly values */
+#define SPR_SYM_HASH    105   /* Symbol keys -> poly values */
+#define SPR_POLY_HASH   106   /* poly keys   -> poly values */
 
 typedef struct { char *p; size_t len, cap; } sp_RacBuf;
 static void sp_racbuf_put(sp_RacBuf *b, const void *src, size_t n) {
@@ -5717,7 +5722,7 @@ static void sp_racbuf_bytes(sp_RacBuf *b, const char *s, size_t n) { sp_racbuf_s
 static void sp_ractor_unshareable(int tag) {
   char m[160];
   snprintf(m, sizeof m, "Ractor: unshareable value crossed the boundary (tag %d); "
-                        "only immediates, Symbol, String and Arrays are supported", tag);
+                        "only immediates, Symbol, String, Array and Hash are supported", tag);
   sp_raise_cls("Ractor::Error", m);
 }
 
@@ -5745,6 +5750,40 @@ static void sp_ractor_ser_val(sp_RacBuf *b, sp_RbVal v) {
       if (v.cls_id == SP_BUILTIN_STR_ARRAY) {
         sp_StrArray *a = (sp_StrArray *)v.v.p; sp_racbuf_u8(b, SPR_STR_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
         for (mrb_int i = 0; i < a->len; i++) { const char *s = a->data[i] ? a->data[i] : sp_str_empty; sp_racbuf_bytes(b, s, sp_str_byte_len(s)); }
+        return;
+      }
+      /* String-keyed hashes -> SPR_STR_HASH (key bytes, then poly value). */
+      if (v.cls_id == SP_BUILTIN_STR_INT_HASH) {
+        sp_StrIntHash *h = (sp_StrIntHash *)v.v.p; sp_racbuf_u8(b, SPR_STR_HASH); sp_racbuf_sz(b, (size_t)h->len);
+        for (mrb_int i = 0; i < h->len; i++) { const char *k = h->order[i]; sp_racbuf_bytes(b, k, sp_str_byte_len(k)); sp_ractor_ser_val(b, sp_box_int(sp_StrIntHash_get(h, k))); }
+        return;
+      }
+      if (v.cls_id == SP_BUILTIN_STR_STR_HASH) {
+        sp_StrStrHash *h = (sp_StrStrHash *)v.v.p; sp_racbuf_u8(b, SPR_STR_HASH); sp_racbuf_sz(b, (size_t)h->len);
+        for (mrb_int i = 0; i < h->len; i++) { const char *k = h->order[i]; const char *vv = sp_StrStrHash_get(h, k); sp_racbuf_bytes(b, k, sp_str_byte_len(k)); sp_ractor_ser_val(b, sp_box_str(vv ? vv : sp_str_empty)); }
+        return;
+      }
+      if (v.cls_id == SP_BUILTIN_STR_POLY_HASH) {
+        sp_StrPolyHash *h = (sp_StrPolyHash *)v.v.p; sp_racbuf_u8(b, SPR_STR_HASH); sp_racbuf_sz(b, (size_t)h->len);
+        for (mrb_int i = 0; i < h->len; i++) { const char *k = h->order[i]; sp_racbuf_bytes(b, k, sp_str_byte_len(k)); sp_ractor_ser_val(b, sp_StrPolyHash_get(h, k)); }
+        return;
+      }
+      /* Symbol-keyed hashes -> SPR_SYM_HASH (key name bytes, then poly value). */
+      if (v.cls_id == SP_BUILTIN_SYM_POLY_HASH) {
+        sp_SymPolyHash *h = (sp_SymPolyHash *)v.v.p; sp_racbuf_u8(b, SPR_SYM_HASH); sp_racbuf_sz(b, (size_t)h->len);
+        for (mrb_int i = 0; i < h->len; i++) { sp_sym k = h->order[i]; const char *kn = sp_sym_to_s(k); sp_racbuf_bytes(b, kn, strlen(kn)); sp_ractor_ser_val(b, sp_SymPolyHash_get(h, k)); }
+        return;
+      }
+      /* Int-keyed hash -> SPR_POLY_HASH (poly key, poly value). */
+      if (v.cls_id == SP_BUILTIN_INT_STR_HASH) {
+        sp_IntStrHash *h = (sp_IntStrHash *)v.v.p; sp_racbuf_u8(b, SPR_POLY_HASH); sp_racbuf_sz(b, (size_t)h->len);
+        for (mrb_int i = 0; i < h->len; i++) { mrb_int k = h->order[i]; const char *vv = sp_IntStrHash_get(h, k); sp_ractor_ser_val(b, sp_box_int(k)); sp_ractor_ser_val(b, sp_box_str(vv ? vv : sp_str_empty)); }
+        return;
+      }
+      /* Fully polymorphic hash -> SPR_POLY_HASH. */
+      if (v.cls_id == SP_BUILTIN_POLY_POLY_HASH) {
+        sp_PolyPolyHash *h = (sp_PolyPolyHash *)v.v.p; sp_racbuf_u8(b, SPR_POLY_HASH); sp_racbuf_sz(b, (size_t)h->len);
+        for (mrb_int i = 0; i < h->len; i++) { mrb_int idx = h->order[i]; sp_ractor_ser_val(b, h->keys[idx]); sp_ractor_ser_val(b, h->vals[idx]); }
         return;
       }
       sp_ractor_unshareable(v.tag); return;
@@ -5801,6 +5840,39 @@ static sp_RbVal sp_ractor_deser_val(sp_RacRd *r) {
       size_t n = sp_racrd_sz(r); sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
       for (size_t i = 0; i < n; i++) { size_t m = sp_racrd_sz(r); const char *s = sp_str_from_bytes(r->p + r->pos, m); r->pos += m; sp_StrArray_push(a, s); }
       return sp_box_str_array(a);
+    }
+    case SPR_STR_HASH: {
+      size_t n = sp_racrd_sz(r); sp_StrPolyHash *h = sp_StrPolyHash_new(); SP_GC_ROOT(h);
+      for (size_t i = 0; i < n; i++) {
+        size_t kl = sp_racrd_sz(r);
+        char *kb = (char *)malloc(kl ? kl : 1); if (!kb) sp_oom_die();
+        sp_racrd_read(r, kb, kl);
+        sp_RbVal val = sp_ractor_deser_val(r); SP_GC_ROOT_RBVAL(val);
+        const char *k = sp_str_from_bytes(kb, kl); free(kb);   /* key built after value: no unrooted-key GC window */
+        sp_StrPolyHash_set(h, k, val);
+      }
+      return sp_box_obj(h, SP_BUILTIN_STR_POLY_HASH);
+    }
+    case SPR_SYM_HASH: {
+      size_t n = sp_racrd_sz(r); sp_SymPolyHash *h = sp_SymPolyHash_new(); SP_GC_ROOT(h);
+      for (size_t i = 0; i < n; i++) {
+        size_t kl = sp_racrd_sz(r);
+        char *kb = (char *)malloc(kl + 1); if (!kb) sp_oom_die();
+        sp_racrd_read(r, kb, kl); kb[kl] = 0;
+        sp_RbVal val = sp_ractor_deser_val(r); SP_GC_ROOT_RBVAL(val);
+        sp_sym k = sp_sym_intern(kb); free(kb);
+        sp_SymPolyHash_set(h, k, val);
+      }
+      return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);
+    }
+    case SPR_POLY_HASH: {
+      size_t n = sp_racrd_sz(r); sp_PolyPolyHash *h = sp_PolyPolyHash_new(); SP_GC_ROOT(h);
+      for (size_t i = 0; i < n; i++) {
+        sp_RbVal k = sp_ractor_deser_val(r); SP_GC_ROOT_RBVAL(k);
+        sp_RbVal val = sp_ractor_deser_val(r); SP_GC_ROOT_RBVAL(val);
+        sp_PolyPolyHash_set(h, k, val);
+      }
+      return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
     }
     default: sp_ractor_unshareable(tag); return sp_box_nil();
   }
