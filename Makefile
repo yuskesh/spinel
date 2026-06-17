@@ -41,7 +41,7 @@ RBS_LIB      = build/librbs.a
 .PHONY: all parse legacy bootstrap codegen regexp rbs_extract rbs-test rbs-seed-test \
         analyze-fail-test test test-run clean-test-results regen-rbs-expected \
         regen-expected bench optcarrot gate check gate-legs gate-test gate-bench \
-        gate-optcarrot clean install uninstall deps
+        gate-optcarrot clean install uninstall deps tools
 
 # `make all` includes spinel_rbs_extract when vendor/rbs has been fetched
 # (via `make deps`); without it the extractor is silently omitted.
@@ -55,7 +55,7 @@ endif
 # `all` rule, because a rule's prerequisites are expanded as it is read.
 SPINEL = build/spinel$(EXE)
 
-all: parse regexp $(SPINEL) $(RBS_EXTRACT_TARGET)
+all: parse regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -242,6 +242,22 @@ $(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o buil
 	ar rcs $@ $^
 
 regexp: $(SP_RT_LIB)
+
+# ---- In-tree developer tools ----
+
+# spinel-doctor / spinel-reduce / spinel-flatten: written in the spinel subset
+# and compiled by spinel itself (dogfood), so their only runtime dependency is
+# cc — the same as the compiler. Each tools/<name>.rb becomes build/spinel-<name>;
+# install places them beside `spinel` so the `spinel-<name>` command is found
+# next to the compiler it drives. A tool that no longer fits the subset breaks
+# the build, which keeps them honest.
+TOOL_NAMES = doctor reduce flatten
+TOOL_BINS  = $(addprefix build/spinel-,$(TOOL_NAMES))
+
+tools: $(TOOL_BINS)
+
+build/spinel-%$(EXE): tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB)
+	$(SPINEL) $< -o $@
 
 # ---- Test ----
 
@@ -564,9 +580,13 @@ install: all
 	install -m 644 lib/*.rb              $(SPNLDIR)/lib/
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
+	for t in $(TOOL_NAMES); do \
+	  install -m 755 build/spinel-$$t$(EXE) $(PREFIX)/bin/spinel-$$t$(EXE); \
+	done
 
 uninstall:
 	rm -f $(PREFIX)/bin/spinel
+	for t in $(TOOL_NAMES); do rm -f $(PREFIX)/bin/spinel-$$t$(EXE); done
 	rm -rf $(SPNLDIR)
 
 # ---- Clean ----
