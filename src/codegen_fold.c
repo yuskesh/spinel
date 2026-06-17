@@ -1001,6 +1001,77 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* int_array.chunk_while { |a, b| cond }.to_a -> array of runs. Adjacent elements
+   stay in one run while the block is true; a boundary falls where it is false
+   (the inverse of slice_when). Materialized as a poly array of boxed int arrays
+   so the result is first-class -- `p`, indexing, and further iteration work.
+   Emits setup to g_pre and the result var to b. Returns 1 if handled. */
+int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || strcmp(name, "to_a")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "CallNode")) return 0;
+  const char *m = nt_str(nt, recv, "name");
+  if (!m || strcmp(m, "chunk_while")) return 0;
+  int block = nt_ref(nt, recv, "block");
+  if (block < 0) return 0;
+  int pr = nt_ref(nt, recv, "receiver");
+  if (pr < 0 || comp_ntype(c, pr) != TY_INT_ARRAY) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  const char *p0n = block_param_name(c, block, 0);
+  const char *p1n = block_param_name(c, block, 1);
+  if (!p0n || !p1n) return 0;
+  const char *p0 = rename_local(p0n), *p1 = rename_local(p1n);
+
+  int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, ti = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_IntArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);\n", tcur, tcur);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "lv_%s = sp_IntArray_get(_t%d, _t%d);\n", p0, ta, ti);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_IntArray_push(_t%d, lv_%s);\n", tcur, p0);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "if (_t%d + 1 < sp_IntArray_length(_t%d)) {\n", ti, ta);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "lv_%s = sp_IntArray_get(_t%d, _t%d + 1);\n", p1, ta, ti);
+  Scope *bsc = comp_scope_of(c, block);
+  LocalVar *lva = bsc ? scope_local(bsc, p0n) : NULL;
+  LocalVar *lvb = bsc ? scope_local(bsc, p1n) : NULL;
+  TyKind pta = lva ? lva->type : TY_UNKNOWN, ptb = lvb ? lvb->type : TY_UNKNOWN;
+  if (lva) lva->type = TY_INT;
+  if (lvb) lvb->type = TY_INT;
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
+  int save = g_indent; g_indent += 2;
+  Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
+  if (lva) lva->type = pta;
+  if (lvb) lvb->type = ptb;
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "if (!(%s)) {\n", cb.p ? cb.p : "0"); free(cb.p);
+  emit_indent(g_pre, g_indent + 3);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_int_array(_t%d));\n", tout, tcur);
+  emit_indent(g_pre, g_indent + 3);
+  buf_printf(g_pre, "_t%d = sp_IntArray_new();\n", tcur);
+  emit_indent(g_pre, g_indent + 2); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (sp_IntArray_length(_t%d) > 0) sp_PolyArray_push(_t%d, sp_box_int_array(_t%d));\n", tcur, tout, tcur);
+  buf_printf(b, "_t%d", tout);
+  return 1;
+}
+
 /* int_array.product(int_array)[.to_a].inspect -> the Cartesian product
    rendered as a nested-array string. The product result has no first-class
    type, so only this inline inspect chain is supported. Returns 1 if handled. */

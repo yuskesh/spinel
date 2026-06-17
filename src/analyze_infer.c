@@ -320,6 +320,15 @@ TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "respond_to?")) return TY_BOOL;
   }
 
+  /* int_array.chunk_while { |a, b| } .to_a -> a poly array of int-array runs */
+  if (recv >= 0 && !strcmp(name, "to_a") &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "chunk_while") &&
+      nt_ref(nt, recv, "block") >= 0) {
+    int pr = nt_ref(nt, recv, "receiver");
+    if (pr >= 0 && infer_type(c, pr) == TY_INT_ARRAY) return TY_POLY_ARRAY;
+  }
+
   /* an empty array literal used directly as a receiver (`[].flatten`) has no
      usage to fold an element type from; treat it as an empty poly array so
      array methods dispatch instead of falling through to unresolved. */

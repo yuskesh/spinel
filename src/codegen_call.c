@@ -212,6 +212,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_sort_cmp_expr(c, id, b)) return;
   if (emit_minmax_cmp_expr(c, id, b)) return;
   if (emit_step_array_expr(c, id, b)) return;
+  if (emit_chunk_while_expr(c, id, b)) return;
   if (emit_slice_when_chunk_inspect_expr(c, id, b)) return;
   if (emit_product_inspect_expr(c, id, b)) return;
   if (emit_bsearch_expr(c, id, b)) return;

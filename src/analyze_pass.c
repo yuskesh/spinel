@@ -2853,7 +2853,7 @@ int infer_block_params(Compiler *c) {
     /* array.sort/min/max/minmax/slice_when { |a, b| cmp } -- a comparator block
        binds both parameters to the element type */
     if ((!strcmp(name, "sort") || !strcmp(name, "sort!") || !strcmp(name, "min") || !strcmp(name, "max") ||
-         !strcmp(name, "minmax") || !strcmp(name, "slice_when")) && ty_is_array(rt)) {
+         !strcmp(name, "minmax") || !strcmp(name, "slice_when") || !strcmp(name, "chunk_while")) && ty_is_array(rt)) {
       Scope *cs = comp_scope_of(c, block);
       for (int pj = 0; pj < 2; pj++) {
         const char *pn = block_param_name(c, block, pj);
