@@ -5707,6 +5707,7 @@ void sp_ext_mark_string(const char *s) { sp_mark_string(s); }
 #define SPR_STR_HASH    104   /* String keys -> poly values */
 #define SPR_SYM_HASH    105   /* Symbol keys -> poly values */
 #define SPR_POLY_HASH   106   /* poly keys   -> poly values */
+#define SPR_OBJECT      107   /* user object: cls_id + ivars (each poly) */
 
 typedef struct { char *p; size_t len, cap; } sp_RacBuf;
 static void sp_racbuf_put(sp_RacBuf *b, const void *src, size_t n) {
@@ -5784,6 +5785,16 @@ static void sp_ractor_ser_val(sp_RacBuf *b, sp_RbVal v) {
       if (v.cls_id == SP_BUILTIN_POLY_POLY_HASH) {
         sp_PolyPolyHash *h = (sp_PolyPolyHash *)v.v.p; sp_racbuf_u8(b, SPR_POLY_HASH); sp_racbuf_sz(b, (size_t)h->len);
         for (mrb_int i = 0; i < h->len; i++) { mrb_int idx = h->order[i]; sp_ractor_ser_val(b, h->keys[idx]); sp_ractor_ser_val(b, h->vals[idx]); }
+        return;
+      }
+      /* User object (deep copy): cls_id is a stable class-table index shared by
+         every Ractor, so emit it + each ivar (boxed poly, recursed). The
+         per-class ivar accessors are installed by the generated TU. */
+      if (v.cls_id >= 0 && sp_ractor_obj_nivars_hook) {
+        int n = sp_ractor_obj_nivars_hook(v.cls_id);
+        if (n < 0) sp_ractor_unshareable(v.tag);
+        sp_racbuf_u8(b, SPR_OBJECT); sp_racbuf_i64(b, (int64_t)v.cls_id); sp_racbuf_sz(b, (size_t)n);
+        for (int i = 0; i < n; i++) sp_ractor_ser_val(b, sp_ractor_obj_getivar_hook(v.v.p, v.cls_id, i));
         return;
       }
       sp_ractor_unshareable(v.tag); return;
@@ -5873,6 +5884,18 @@ static sp_RbVal sp_ractor_deser_val(sp_RacRd *r) {
         sp_PolyPolyHash_set(h, k, val);
       }
       return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
+    }
+    case SPR_OBJECT: {
+      int cls_id = (int)sp_racrd_i64(r);
+      size_t n = sp_racrd_sz(r);
+      void *obj = sp_ractor_obj_alloc_hook ? sp_ractor_obj_alloc_hook(cls_id) : NULL;
+      if (!obj) sp_raise_cls("Ractor::Error", "cannot rebuild object across Ractor boundary");
+      sp_RbVal objv = sp_box_obj(obj, cls_id); SP_GC_ROOT_RBVAL(objv);   /* keep alive across ivar deser */
+      for (size_t i = 0; i < n; i++) {
+        sp_RbVal iv = sp_ractor_deser_val(r); SP_GC_ROOT_RBVAL(iv);
+        sp_ractor_obj_setivar_hook(obj, cls_id, (int)i, iv);
+      }
+      return objv;
     }
     default: sp_ractor_unshareable(tag); return sp_box_nil();
   }

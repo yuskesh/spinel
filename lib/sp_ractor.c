@@ -15,6 +15,10 @@ void sp_gc_thread_teardown(void);
 /* Codec hooks, installed by the generated TU at startup. */
 sp_RactorBlob (*sp_ractor_serialize_hook)(sp_RbVal v) = NULL;
 sp_RbVal      (*sp_ractor_deserialize_hook)(sp_RactorBlob b) = NULL;
+int      (*sp_ractor_obj_nivars_hook)(int cls_id) = NULL;
+sp_RbVal (*sp_ractor_obj_getivar_hook)(void *obj, int cls_id, int i) = NULL;
+void *   (*sp_ractor_obj_alloc_hook)(int cls_id) = NULL;
+void     (*sp_ractor_obj_setivar_hook)(void *obj, int cls_id, int i, sp_RbVal v) = NULL;
 
 /* A blocking single-ended FIFO of serialized message blobs guarded by a
    mutex+condvar. Each Ractor has two: `inbox` (messages sent to it; drained by

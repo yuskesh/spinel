@@ -35,6 +35,17 @@ typedef struct { void *data; size_t len; } sp_RactorBlob;
 extern sp_RactorBlob (*sp_ractor_serialize_hook)(sp_RbVal v);
 extern sp_RbVal      (*sp_ractor_deserialize_hook)(sp_RactorBlob b);
 
+/* User-object (deep-copy) codec hooks, installed by the generated TU. The
+   value codec stays in sp_runtime.h and drives the buffer/recursion; these
+   expose a class's ivars as poly values + allocate/populate an instance, so
+   the per-class layout knowledge lives where the class structs are emitted.
+   nivars returns -1 for a class that cannot be deep-copied (e.g. an exception
+   subclass), which the codec turns into Ractor::Error. */
+extern int      (*sp_ractor_obj_nivars_hook)(int cls_id);
+extern sp_RbVal (*sp_ractor_obj_getivar_hook)(void *obj, int cls_id, int i);
+extern void *   (*sp_ractor_obj_alloc_hook)(int cls_id);
+extern void     (*sp_ractor_obj_setivar_hook)(void *obj, int cls_id, int i, sp_RbVal v);
+
 /* The Ractor running on the calling pthread; NULL on the main thread.
    Read by Ractor.receive / Ractor.yield as the implicit receiver. */
 extern __thread sp_Ractor *sp_ractor_current;

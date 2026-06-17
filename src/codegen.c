@@ -1457,6 +1457,106 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_puts(b, "}\n");
 }
 
+/* Per-class user-object message codec (Ractor deep copy). Emits the four hooks
+   the runtime codec (sp_runtime.h) drives: nivars / getivar (box) / alloc /
+   setivar (unbox), as switches over the class table. cls_id is a stable index
+   shared by every Ractor, so it travels on the wire directly. Skips reopened
+   builtins (no sp_ struct) and exception subclasses (special layout) -- those
+   report nivars -1 and raise Ractor::Error if sent. Must be emitted after the
+   class structs + scan fns and before sp_re_init (which installs the hooks). */
+/* An ivar is codec-safe iff it is one of the deep-copyable types the value
+   codec handles end-to-end AND emit_boxed_text/emit_unbox_text round-trip:
+   scalars, nested objects, arrays, and hashes. Everything else -- by-value
+   structs (Class/Range/Time/...), and non-copyable references (Proc/Fiber/IO/
+   Method/StringIO/Regexp/...) -- makes the whole class non-deep-copyable, so
+   it reports nivars -1 and raises Ractor::Error if sent. (A POLY ivar is safe
+   to attempt; if it holds an unshareable value at runtime the value codec
+   raises then.) */
+static int ractor_ivar_safe(Compiler *c, TyKind t) {
+  (void)c;
+  if (t == TY_UNKNOWN) t = TY_INT;
+  switch (t) {
+    case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_STRING:
+    case TY_SYMBOL: case TY_POLY:
+    case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_POLY_ARRAY:
+      return 1;
+    default: break;
+  }
+  return ty_is_object(t) || ty_is_hash(t);
+}
+static int ractor_obj_serializable(Compiler *c, int i) {
+  if (is_builtin_reopen(c->classes[i].name) || class_is_exc_subclass(c, i)) return 0;
+  ClassInfo *ci = &c->classes[i];
+  for (int j = 0; j < ci->nivars; j++)
+    if (!ractor_ivar_safe(c, ci->ivar_types[j])) return 0;
+  return 1;
+}
+
+void emit_ractor_obj_codec(Compiler *c, Buf *b) {
+  #define SP_RACTOR_OBJ_SUPPORTED(i) ractor_obj_serializable(c, i)
+  char expr[320];
+
+  buf_puts(b, "static int sp_ractor_obj_nivars(int cls_id) {\n  switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++)
+    if (SP_RACTOR_OBJ_SUPPORTED(i))
+      buf_printf(b, "    case %d: return %d;\n", i, c->classes[i].nivars);
+  buf_puts(b, "    default: return -1;\n  }\n}\n");
+
+  buf_puts(b, "static sp_RbVal sp_ractor_obj_getivar(void *p, int cls_id, int i) {\n  (void)p; switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!SP_RACTOR_OBJ_SUPPORTED(i)) continue;
+    ClassInfo *ci = &c->classes[i];
+    if (ci->nivars == 0) continue;
+    buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; switch (i) {\n", i, ci->name, ci->name);
+    for (int j = 0; j < ci->nivars; j++) {
+      TyKind t = ci->ivar_types[j] == TY_UNKNOWN ? TY_INT : ci->ivar_types[j];
+      snprintf(expr, sizeof expr, "o->iv_%s", ci->ivars[j] + 1);
+      buf_printf(b, "      case %d: return ", j);
+      emit_boxed_text(c, t, expr, b);
+      buf_puts(b, ";\n");
+    }
+    buf_puts(b, "      default: break;\n    } break; }\n");
+  }
+  buf_puts(b, "  }\n  return sp_box_nil();\n}\n");
+
+  buf_puts(b, "static void *sp_ractor_obj_alloc(int cls_id) {\n  switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!SP_RACTOR_OBJ_SUPPORTED(i)) continue;
+    ClassInfo *ci = &c->classes[i];
+    if (class_needs_scan(ci))
+      buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s_scan); memset(o, 0, sizeof(*o)); o->cls_id = %d; return o; }\n",
+                 i, ci->name, ci->name, ci->name, ci->name, i);
+    else
+      buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, NULL); memset(o, 0, sizeof(*o)); o->cls_id = %d; return o; }\n",
+                 i, ci->name, ci->name, ci->name, i);
+  }
+  buf_puts(b, "    default: return NULL;\n  }\n}\n");
+
+  buf_puts(b, "static void sp_ractor_obj_setivar(void *p, int cls_id, int i, sp_RbVal v) {\n  (void)p; (void)v; switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!SP_RACTOR_OBJ_SUPPORTED(i)) continue;
+    ClassInfo *ci = &c->classes[i];
+    if (ci->nivars == 0) continue;
+    buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; switch (i) {\n", i, ci->name, ci->name);
+    for (int j = 0; j < ci->nivars; j++) {
+      TyKind t = ci->ivar_types[j] == TY_UNKNOWN ? TY_INT : ci->ivar_types[j];
+      buf_printf(b, "      case %d: o->iv_%s = ", j, ci->ivars[j] + 1);
+      emit_unbox_text(c, t, "v", b);
+      buf_puts(b, "; break;\n");
+    }
+    buf_puts(b, "      default: break;\n    } break; }\n");
+  }
+  buf_puts(b, "  }\n}\n");
+
+  buf_puts(b, "static void sp_ractor_obj_codec_install(void) {\n");
+  buf_puts(b, "  sp_ractor_obj_nivars_hook = sp_ractor_obj_nivars;\n");
+  buf_puts(b, "  sp_ractor_obj_getivar_hook = sp_ractor_obj_getivar;\n");
+  buf_puts(b, "  sp_ractor_obj_alloc_hook = sp_ractor_obj_alloc;\n");
+  buf_puts(b, "  sp_ractor_obj_setivar_hook = sp_ractor_obj_setivar;\n");
+  buf_puts(b, "}\n\n");
+  #undef SP_RACTOR_OBJ_SUPPORTED
+}
+
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
@@ -1768,6 +1868,7 @@ void emit_regex_section(Buf *b) {
   /* Install the Ractor message codec (defined in sp_runtime.h, where the heap
      allocators it rebuilds into are visible). */
   buf_puts(b, "  sp_ractor_codec_install();\n");
+  buf_puts(b, "  sp_ractor_obj_codec_install();\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -2735,6 +2836,10 @@ char *codegen_program(const NodeTable *nt) {
     }
     buf_puts(&b, "}\n\n");
   }
+
+  /* Per-class Ractor object codec — emitted after the class structs/scans and
+     before sp_re_init installs the hooks. */
+  emit_ractor_obj_codec(c, &b);
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
      proc literals they contain accumulate static functions into g_procs /
