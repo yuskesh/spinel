@@ -1087,10 +1087,18 @@ else if (orecv >= 0 && onm) {
      site reads it back (unboxing float with sp_poly_to_f).
      Range/time don't fit the slot and defer. */
   int ret_ptr = proc_slot_is_ptr(ret);
-  int ret_void = (ret == TY_VOID);  /* body's last expr has no value (e.g. puts) */
+  /* No usable value: run the body for effect and return nil (0). TY_NIL as
+     well as TY_VOID -- a method whose tail has no value (e.g. `puts`, or a
+     bare `yield if block`) is inferred TY_NIL but emitted as a C `void`
+     function (method_is_void() keys on !is_scalar_ret, which excludes
+     TY_NIL). Returning its result from the mrb_int proc trampoline would
+     emit `return <void-call>;` and fail to compile; a TY_NIL proc returns
+     nil regardless of the tail expression's value, so emit it as a
+     statement and fall through to `return 0`. */
+  int ret_no_value = (ret == TY_VOID || ret == TY_NIL);
   int ret_poly = (ret == TY_POLY);
   int ret_fbox = (ret == TY_FLOAT);  /* boxed through the poly return slot */
-  if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_void && !ret_poly && !ret_fbox) {
+  if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_no_value && !ret_poly && !ret_fbox) {
     free(params.v); free(used.v); free(locals.v); free(caps.v);
     unsupported(c, create, "proc with range/time return (later slice)");
     return;
@@ -1214,8 +1222,9 @@ else if (orecv >= 0 && onm) {
     g_result_var = NULL; g_result_poly = 0;
     buf_puts(pb, "  return 0;\n");
   }
-  else if (ret_void) {
-    /* no usable value: run the body as plain statements, return nil (0) */
+  else if (ret_no_value) {
+    /* no usable value (TY_VOID or TY_NIL): run the body as plain statements,
+       return nil (0) */
     emit_stmts(c, body, pb, 1);
     buf_puts(pb, "  return 0;\n");
   }

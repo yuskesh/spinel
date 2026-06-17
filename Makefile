@@ -354,6 +354,12 @@ rbs-seed-test: $(SPINEL) spinel_rbs_extract$(EXE) $(SP_RT_LIB)
 	  "$$tmp/b" > "$$tmp/b.out" 2>/dev/null; \
 	  cmp -s "$$tmp/b.out" test/rbs-seed/boundary.expected || { echo "rbs-seed-test: FAIL (#1417 boundary output mismatch)"; diff -u test/rbs-seed/boundary.expected "$$tmp/b.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#1417 boundary coercion C did not compile)"; ok=0; fi; \
+	$(SPINEL) test/rbs-seed/void_block_tail.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/v.c" 2>/dev/null; \
+	if $(CC) -O0 -Ilib "$$tmp/v.c" $(SP_RT_LIB) -lm -o "$$tmp/v" 2>"$$tmp/v.err"; then \
+	  "$$tmp/v" > "$$tmp/v.out" 2>/dev/null; \
+	  cmp -s "$$tmp/v.out" test/rbs-seed/void_block_tail.expected || { echo "rbs-seed-test: FAIL (void block tail output mismatch)"; diff -u test/rbs-seed/void_block_tail.expected "$$tmp/v.out" || true; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (void-returning call as proc tail: C did not compile)"; ok=0; fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "rbs-seed-test: pass"; else exit 1; fi
 endif

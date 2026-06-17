@@ -1,0 +1,5 @@
+class Sink
+  def emit: (String s) -> void
+  def around: () ?{ () -> void } -> void
+  def go: () -> void
+end
