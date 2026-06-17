@@ -215,6 +215,15 @@ else {
         int nci = comp_class_index(c, nt_str(nt, crecv, "name"));
         if (nci >= 0) rmi = comp_method_in_chain(c, nci, "initialize", NULL);
       }
+      /* `Klass.m { block }` / `Mod.m { block }`: a class/module self-method
+         (singleton). Resolve the constant and look up its singleton method so
+         the block's value type flows back to m's return type -- instance
+         methods resolve via the ty_is_object arm above (#1446). */
+      else if (nt_type(nt, crecv) &&
+               !strcmp(nt_type(nt, crecv), "ConstantReadNode")) {
+        int nci = comp_class_index(c, nt_str(nt, crecv, "name"));
+        if (nci >= 0) rmi = comp_cmethod_in_chain(c, nci, cn, NULL);
+      }
     }
     if (rmi != mi) continue;
     /* `mi(&b)` / `mi(...)`: the call forwards the block of its enclosing
