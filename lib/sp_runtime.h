@@ -4634,6 +4634,22 @@ static sp_StrArray *sp_caller_now(void) {
 #endif
 }
 
+/* Kernel#caller(start=1, length=nil): the current call stack, dropping the
+   first `start` frames (the running method itself at index 0, like CRuby's
+   `caller` == `caller(1)`), then up to `length` frames. Method-granularity
+   (no :lineno:), same substrate as Exception#backtrace; release builds (no
+   frame symbols) return []. */
+static sp_StrArray *sp_caller(mrb_int start, mrb_bool have_len, mrb_int len) {
+  sp_StrArray *full = sp_caller_now();
+  SP_GC_ROOT(full);
+  sp_StrArray *r = sp_StrArray_new();
+  SP_GC_ROOT(r);
+  mrb_int from = start < 0 ? 0 : start;
+  mrb_int to = have_len ? from + (len < 0 ? 0 : len) : full->len;
+  for (mrb_int i = from; i < to && i < full->len; i++) sp_StrArray_push(r, full->data[i]);
+  return r;
+}
+
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   if (sp_bt_enabled) sp_bt_n = backtrace(sp_bt_buf, 256);

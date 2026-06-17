@@ -2140,6 +2140,10 @@ void emit_with_prelude(Compiler *c, int id, Buf *b, int indent,
 }
 
 int g_line_map = 0;
+int g_debug = 0;  /* --debug build: emit user methods with external linkage so
+                     -rdynamic names backtrace/caller frames (instance/class
+                     methods only; toplevel sp_<name> stays static to avoid
+                     colliding with runtime helpers). */
 /* Last (line, file) pair emitted, to suppress consecutive duplicates. line 0
    is the sentinel for "none yet" since real source lines are 1-based. */
 static int g_lm_last_line = 0;

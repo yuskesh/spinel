@@ -281,6 +281,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
 
   /* loop { break val } as expression: emit pre-statement for-loop, result via break var */
+  /* Kernel#caller / caller(start) / caller(start, len) -> the current stack
+     (method-granularity, via sp_caller_now). Bare `caller` is `caller(1)`. */
+  if (recv < 0 && !strcmp(name, "caller") && argc <= 2) {
+    buf_puts(b, "sp_caller(");
+    if (argc >= 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "1");
+    if (argc == 2) { buf_puts(b, ", 1, "); emit_int_expr(c, argv[1], b); }
+    else buf_puts(b, ", 0, 0");
+    buf_puts(b, ")");
+    return;
+  }
   if (recv < 0 && !strcmp(name, "loop") && argc == 0) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {

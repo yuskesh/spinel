@@ -269,8 +269,13 @@ void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
 }
 
 void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
-  if (method_is_void(s)) buf_puts(b, "static void ");
-  else { buf_puts(b, "static "); emit_ctype(c, s->ret, b); buf_puts(b, " "); }
+  /* In a debug build, give instance/class methods external linkage so
+     -rdynamic exposes sp_<Class>_<method> to backtrace_symbols and the
+     frames demangle (Exception#backtrace / Kernel#caller). Toplevel methods
+     keep `static` -- a bare sp_<name> could collide with a runtime helper. */
+  const char *stor = (g_debug && s->class_id >= 0) ? "" : "static ";
+  if (method_is_void(s)) { buf_puts(b, stor); buf_puts(b, "void "); }
+  else { buf_puts(b, stor); emit_ctype(c, s->ret, b); buf_puts(b, " "); }
   emit_method_cname(c, s, b);
   buf_puts(b, "(");
   int wrote = 0;
@@ -2142,6 +2147,7 @@ char *codegen_program(const NodeTable *nt) {
      source lines (SPINEL_LINE_MAP / SPINEL_DEBUG); the same env gates both
      sides so codegen and the AST agree. */
   g_line_map = (getenv("SPINEL_LINE_MAP") || getenv("SPINEL_DEBUG")) ? 1 : 0;
+  g_debug = getenv("SPINEL_DEBUG") ? 1 : 0;
 
   /* Analyze-only emit modes (legacy --emit-*): write the requested artifact
      from the analysis result and skip codegen. Returns an empty translation
@@ -2716,6 +2722,17 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(&body, "    sp_re_init();\n");
   buf_puts(&body, "    { sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");
   buf_puts(&body, "    sp_program_name = argc > 0 ? argv[0] : \"\";\n");
+  /* Enable the backtrace substrate (Exception#backtrace, Kernel#caller) in
+     debug builds only: --debug compiles at -O0 with non-inlined methods, so
+     the captured frames demangle to Class#method. Optimized/release builds
+     leave sp_bt_enabled = 0 (frames inline away), keeping the empty-array
+     behavior. */
+  if (getenv("SPINEL_DEBUG")) {
+    buf_puts(&body, "    sp_bt_enabled = 1;\n");
+    buf_puts(&body, "    sp_bt_srcfile = ");
+    emit_str_literal(&body, c->nt->source_file ? c->nt->source_file : "source.rb");
+    buf_puts(&body, ";\n");
+  }
   /* Ruby auto-seeds its PRNG at startup, so rand/shuffle/sample vary per
      run. Seed once here; an explicit srand(seed) in user code runs later
      and overrides this for reproducible sequences. */

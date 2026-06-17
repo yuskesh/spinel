@@ -349,6 +349,9 @@ TyKind infer_call(Compiler *c, int id) {
   /* __dir__ -> the source directory (a string) */
   if (recv < 0 && !strcmp(name, "__dir__") && argc == 0) return TY_STRING;
 
+  /* Kernel#caller -> the call stack as strings (empty in release builds) */
+  if (recv < 0 && !strcmp(name, "caller") && argc <= 2) return TY_STR_ARRAY;
+
   /* bare `name` inside a class method body -> the class name string */
   if (recv < 0 && !strcmp(name, "name") && argc == 0) {
     Scope *self = comp_scope_of(c, id);
