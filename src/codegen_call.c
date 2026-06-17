@@ -8025,8 +8025,17 @@ else {
       else handled = 0;
     }
     else if (rt == TY_INT) {
-      if      (!strcmp(name, "to_s") && argc == 0) buf_printf(b, "((%s) == SP_INT_NIL ? SPL(\"\") : sp_int_to_s(%s))", r, r);
-      else if (!strcmp(name, "inspect")) buf_printf(b, "((%s) == SP_INT_NIL ? SPL(\"nil\") : sp_int_to_s(%s))", r, r);
+      /* a nullable int's to_s/inspect tests the value and converts it -- bind
+         the receiver to a temp first so a side-effecting `r` (e.g. ARGF.read,
+         a method call) is evaluated exactly once, not twice. */
+      if (!strcmp(name, "to_s") && argc == 0) {
+        int _tn = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
+      }
+      else if (!strcmp(name, "inspect")) {
+        int _tn = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"nil\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
+      }
       else if (!strcmp(name, "to_f"))   buf_printf(b, "((mrb_float)(%s))", r);
       else if ((!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "floor") ||
                 !strcmp(name, "ceil") || !strcmp(name, "round") || !strcmp(name, "truncate")) &&
