@@ -131,11 +131,12 @@ split across `lib/sp_gc.c`, `lib/sp_fiber.c`, and the header `lib/sp_runtime.h`.
    spawn arguments.
 2. **FIFO mailbox / outgoing queue** (mutex + condvar, grows on demand), so a
    Ractor may `receive` several messages and a sender need not block per slot.
-3. **`@@cvars` / `$globals` are `__thread`** → isolated per Ractor, rather than
-   CRuby's "shared, raise on cross-Ractor mutation". Simpler and safe, but a
-   real semantic difference: a class-body cvar initializer has not run in a
-   child Ractor unless re-executed there. Programs that rely on cross-Ractor
-   cvar/gvar sharing are out of scope for this milestone.
+3. **`@@cvars` / `$globals` accessed inside a Ractor are rejected at compile
+   time** with `Ractor::IsolationError`, mirroring CRuby (which raises on
+   cross-Ractor class-variable / global access). Special, thread-local or
+   read-only globals (`$~`, `$stdout`, regex/status specials — not user-declared)
+   are allowed. The globals themselves remain `__thread` in the runtime; the
+   compile-time check just prevents the silent-empty-value footgun.
 4. **`Ractor#send` with a bare String/Symbol *literal*** is parsed as a
    reflective send (`recv.send("m")` → `recv.m`, a whole-program parser
    behaviour), so send messages via `r << v` or a local (`r.send(v)`); literals

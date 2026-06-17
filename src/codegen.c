@@ -891,6 +891,32 @@ static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
    delivered (also a later milestone). The body wraps itself in a top-level
    rescue landing pad so an uncaught exception terminates just this Ractor
    instead of exit(1)-ing the whole process. */
+/* Recursively scan a Ractor body (including nested blocks) for cross-Ractor
+   shared state: a class variable (@@), or a user-declared global ($). CRuby
+   raises Ractor::IsolationError on such access from a non-main Ractor; we
+   reject at compile time. Special globals ($~, $stdout, regex/status, ...) are
+   thread-local or read-only and not user-declared, so they pass. Returns
+   1 = class variable, 2 = user global, 0 = none. */
+static int ractor_body_shared_state(Compiler *c, int id) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(c->nt, id);
+  if (ty) {
+    if (!strncmp(ty, "ClassVariable", 13)) return 1;
+    if (!strncmp(ty, "GlobalVariable", 14)) {
+      const char *nm = nt_str(c->nt, id, "name");
+      if (nm && nm[0] == '$') {
+        const char *rn = comp_resolve_gvar(c, nm + 1);
+        if (rn && comp_gvar(c, rn)) return 2;
+      }
+    }
+  }
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) { int v = ractor_body_shared_state(c, ch); if (v) return v; } }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) { int v = ractor_body_shared_state(c, ids[k]); if (v) return v; } }
+  return 0;
+}
+
 void emit_ractor_new(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
@@ -948,6 +974,15 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
   if (encl && encl->class_id >= 0 && !encl->is_cmethod && body >= 0 && fiber_body_uses_self(c, body))
     unsupported(c, id, "Ractor::IsolationError: block accesses self "
                        "(a Ractor block must be self-contained)");
+  if (body >= 0) {
+    int shared = ractor_body_shared_state(c, body);
+    if (shared == 1)
+      unsupported(c, id, "Ractor::IsolationError: block accesses a class variable (@@) "
+                         "(class variables are not shared across Ractors; pass data as an argument or message)");
+    else if (shared == 2)
+      unsupported(c, id, "Ractor::IsolationError: block accesses a global variable ($) "
+                         "(globals are not shared across Ractors; pass data as an argument or message)");
+  }
 
   buf_printf(&g_proc_protos, "static void %s(sp_Ractor *_rb);\n", fname);
 
