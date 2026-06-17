@@ -854,6 +854,31 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* ARGF pseudo-IO methods: read the ARGV files (or stdin) in sequence. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_ARGF) {
+    if (!strcmp(name, "read")) { buf_puts(b, "sp_argf_read()"); return; }
+    if (!strcmp(name, "gets") || !strcmp(name, "readline")) { buf_puts(b, "sp_argf_gets()"); return; }
+    if (!strcmp(name, "readlines") || !strcmp(name, "to_a")) { buf_puts(b, "sp_argf_readlines()"); return; }
+    if (!strcmp(name, "filename") || !strcmp(name, "path")) { buf_puts(b, "sp_argf_filename()"); return; }
+    if (!strcmp(name, "eof?") || !strcmp(name, "eof")) { buf_puts(b, "sp_argf_eof()"); return; }
+    if (!strcmp(name, "to_s")) { buf_puts(b, "SPL(\"ARGF\")"); return; }
+    if ((!strcmp(name, "each_line") || !strcmp(name, "each_string") || !strcmp(name, "each")) &&
+        nt_ref(nt, id, "block") >= 0) {
+      int blk = nt_ref(nt, id, "block");
+      const char *bp = block_param_name(c, blk, 0);
+      const char *bpn = bp ? rename_local(bp) : NULL;
+      int bdy = nt_ref(nt, blk, "body");
+      int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
+      int lt = ++g_tmp;
+      buf_puts(b, "({ ");
+      buf_printf(b, "const char *_t%d; while ((_t%d = sp_argf_gets()) != NULL) {", lt, lt);
+      if (bpn) buf_printf(b, " const char *lv_%s = _t%d;", bpn, lt);
+      for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
+      buf_puts(b, " } (&sp_argf_obj); })");
+      return;
+    }
+  }
+
   /* TY_IO (File/IO handle) instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
     const char *r = NULL;
@@ -1605,6 +1630,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_RANGE) cn = "Range";
     else if (rt == TY_TIME) cn = "Time";
     else if (rt == TY_IO) cn = "IO";
+    else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";
     else if (rt == TY_METHOD) cn = "Method";
     else if (rt == TY_PROC) cn = "Proc";

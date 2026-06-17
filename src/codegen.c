@@ -1764,6 +1764,7 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_RANDOM:                buf_puts(b, "Random"); break;
     case TY_METHOD:                buf_puts(b, "Method"); break;
     case TY_IO:                    buf_puts(b, "IO"); break;
+    case TY_ARGF:                  buf_puts(b, "ARGF"); break;
     case TY_CLASS:                 buf_puts(b, "Class"); break;
     default:                       buf_puts(b, "untyped"); break;
   }

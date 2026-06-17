@@ -518,7 +518,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (ty_is_object(rt)) return TY_CLASS;  /* user object: return sp_Class value */
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
-        rt == TY_METHOD || rt == TY_PROC || rt == TY_IO ||
+        rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
         ty_is_array(rt) || ty_is_hash(rt))
       return TY_STRING;
   }
@@ -903,6 +903,24 @@ else {
     if (!strcmp(name, "rand")) return argc >= 1 ? TY_INT : TY_FLOAT;
     if (!strcmp(name, "bytes")) return TY_STRING;
     if (!strcmp(name, "seed")) return TY_INT;
+  }
+
+  /* ARGF pseudo-IO methods */
+  if (recv >= 0 && rt == TY_ARGF) {
+    if (!strcmp(name, "read") || !strcmp(name, "gets") || !strcmp(name, "readline") ||
+        !strcmp(name, "filename") || !strcmp(name, "path") || !strcmp(name, "to_s")) return TY_STRING;
+    if (!strcmp(name, "readlines") || !strcmp(name, "to_a")) return TY_STR_ARRAY;
+    if (!strcmp(name, "eof?") || !strcmp(name, "eof")) return TY_BOOL;
+    if (!strcmp(name, "each_line") || !strcmp(name, "each_string") || !strcmp(name, "each")) {
+      int blk = nt_ref(nt, id, "block");
+      if (blk >= 0) {
+        const char *bp0 = block_param_name(c, blk, 0);
+        Scope *bs = bp0 ? comp_scope_of(c, blk) : NULL;
+        LocalVar *blv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
+        if (blv) blv->type = TY_STRING;
+      }
+      return TY_ARGF;
+    }
   }
 
   /* TY_IO (File/IO handle) instance methods */
@@ -2358,6 +2376,7 @@ TyKind infer_uncached(Compiler *c, int id) {
                !strcmp(nm, "RUBY_ENGINE_VERSION") || !strcmp(nm, "RUBY_RELEASE_DATE") ||
                !strcmp(nm, "RUBY_REVISION") || !strcmp(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
     if (nm && !strcmp(nm, "ARGV")) return TY_STR_ARRAY;
+    if (nm && !strcmp(nm, "ARGF")) return TY_ARGF;
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
     return TY_UNKNOWN;
@@ -2372,6 +2391,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
     if (lv) return lv->type;
     if (nm && !strcmp(nm, "ARGV")) return TY_STR_ARRAY;
+    if (nm && !strcmp(nm, "ARGF")) return TY_ARGF;
     /* well-known module constants */
     int par_id = nt_ref(nt, id, "parent");
     const char *par_ty = par_id >= 0 ? nt_type(nt, par_id) : NULL;

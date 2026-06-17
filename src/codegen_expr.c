@@ -772,6 +772,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && !strcmp(nm, "RUBY_REVISION"))    { buf_puts(b, "SPL(\"0\")"); return; }
     if (nm && !strcmp(nm, "RUBY_COPYRIGHT"))   { buf_puts(b, "SPL(\"ruby - Copyright (C) 1993-2023 Yukihiro Matsumoto\")"); return; }
     if (nm && !strcmp(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
+    if (nm && !strcmp(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return; }
     if (nm) {
       int _cidx = comp_class_index(c, nm);
       if (_cidx >= 0) {
@@ -794,6 +795,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
     if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", nm); return; }
     if (nm && !strcmp(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
+    if (nm && !strcmp(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return; }
     /* well-known module constants */
     int par_idc = nt_ref(nt, id, "parent");
     const char *par_tyc = par_idc >= 0 ? nt_type(nt, par_idc) : NULL;

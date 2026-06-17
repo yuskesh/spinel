@@ -2266,6 +2266,56 @@ static sp_StrArray *sp_get_ARGV(void) {
   return sp_argv_array_cache;
 }
 
+/* ARGF: a pseudo-IO that reads the files named in ARGV in sequence, or stdin
+   when ARGV is empty (a `-` filename also means stdin). The state is a single
+   global; the ARGF constant is a marker pointer to it. */
+typedef struct { mrb_int idx; FILE *cur; int started; const char *fname; } sp_Argf;
+static sp_Argf sp_argf_obj = {0, NULL, 0, NULL};
+/* Ensure a current readable stream, or return 0 at total end of input. */
+static int sp_argf_ensure(void) {
+  if (sp_argf_obj.cur) return 1;
+  if (sp_argv.len == 0) {
+    if (sp_argf_obj.started) return 0;
+    sp_argf_obj.started = 1; sp_argf_obj.cur = stdin; sp_argf_obj.fname = "-"; return 1;
+  }
+  while (sp_argf_obj.idx < sp_argv.len) {
+    const char *fn = sp_argv.data[sp_argf_obj.idx++];
+    sp_argf_obj.started = 1;
+    if (fn && fn[0] == '-' && fn[1] == 0) { sp_argf_obj.cur = stdin; sp_argf_obj.fname = "-"; return 1; }
+    FILE *f = fn ? fopen(fn, "r") : NULL;
+    if (f) { sp_argf_obj.cur = f; sp_argf_obj.fname = fn; return 1; }
+  }
+  return 0;
+}
+static const char *sp_argf_gets(void) {
+  for (;;) {
+    if (!sp_argf_ensure()) return NULL;
+    char buf[8192];
+    if (fgets(buf, sizeof buf, sp_argf_obj.cur)) {
+      size_t l = strlen(buf); char *r = sp_str_alloc_raw(l + 1); memcpy(r, buf, l + 1); return r;
+    }
+    if (sp_argf_obj.cur && sp_argf_obj.cur != stdin) fclose(sp_argf_obj.cur);
+    sp_argf_obj.cur = NULL;  /* EOF on this stream; advance on next ensure */
+  }
+}
+static const char *sp_argf_read(void) {
+  sp_String *s = sp_String_new(""); SP_GC_ROOT(s);
+  const char *line;
+  while ((line = sp_argf_gets())) sp_String_append(s, line);
+  return s->data;
+}
+static sp_StrArray *sp_argf_readlines(void) {
+  sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
+  const char *line;
+  while ((line = sp_argf_gets())) sp_StrArray_push(a, line);
+  return a;
+}
+static const char *sp_argf_filename(void) {
+  if (sp_argf_obj.fname) return sp_argf_obj.fname;
+  return sp_argv.len > 0 ? sp_argv.data[0] : "-";
+}
+static mrb_bool sp_argf_eof(void) { return !sp_argf_ensure(); }
+
 /* Mark active in-flight exception messages. Most raises pass string
    literals (rodata, marker byte ≠ 0xfe → no-op for sp_mark_string),
    but raises that build messages dynamically via sp_sprintf (e.g.
