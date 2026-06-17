@@ -275,21 +275,34 @@ const char *rename_local(const char *nm) {
 }
 void unsupported(Compiler *c, int id, const char *what) {
   const char *ty = nt_type(c->nt, id);
+  /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
+     line the parser stamped (the same position the #line machinery uses), so
+     the message is anchored to the .rb file instead of an opaque node id.
+     Falls back to the bare form when the position wasn't stamped. */
+  int ln = (int)nt_int(c->nt, id, "node_line", 0);
+  char pos[1200]; pos[0] = 0;
+  if (ln > 0) {
+    int fid = (int)nt_int(c->nt, id, "node_file", 0);
+    const char *file = nt_file_path(c->nt, fid);
+    if (!file || !*file) file = c->nt->source_file;
+    if (!file || !*file) file = "source.rb";
+    snprintf(pos, sizeof pos, "%s:%d: ", file, ln);
+  }
   const char *mname = ty && !strcmp(ty, "CallNode") ? nt_str(c->nt, id, "name") : NULL;
   if (mname) {
     int recv = nt_ref(c->nt, id, "receiver");
     int args = nt_ref(c->nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
-    fprintf(stderr, "spinel: unsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
-            what, id, ty, mname,
+    fprintf(stderr, "spinel: %sunsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
+            pos, what, id, ty, mname,
             recv >= 0 ? nt_type(c->nt, recv) : "-",
             recv >= 0 ? (int)comp_ntype(c, recv) : -1, ac);
     if (ac > 0 && av) fprintf(stderr, " arg0ty%d", (int)comp_ntype(c, av[0]));
     fprintf(stderr, "\n");
   }
   else
-    fprintf(stderr, "spinel: unsupported %s: node %d (%s)\n",
-            what, id, ty ? ty : "?");
+    fprintf(stderr, "spinel: %sunsupported %s: node %d (%s)\n",
+            pos, what, id, ty ? ty : "?");
   /* SP_COLLECT_ERRORS: don't abort on the first gap -- keep going so one
      run surfaces every unsupported construct (the emitted C is then
      malformed and only the stderr list is useful). */
