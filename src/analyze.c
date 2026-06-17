@@ -1552,9 +1552,26 @@ void analyze_program(Compiler *c) {
      over fixed inputs); dissolves the cleared transient-poly cycles. */
   {
     int any = 0;
+    /* Record the reset poly ivars so the re-run can re-clear them FRESH each
+       iteration (a narrowing recompute), not just once. infer_ivar_types is
+       monotonic (ty_unify only widens), so a one-shot reset still re-locks an
+       ivar to poly the first time the re-run observes a transient poly from a
+       not-yet-settled slot -- which is exactly what happens in a groundless
+       self-referential poly cycle (clk_irq <- next_interrupt_clock(clk) <- clk
+       <- clk_irq, whose real writes are all int). Re-clearing each iteration
+       makes the ivar = unify-of-its-writes-this-iteration, so once the cycle's
+       int anchors dominate it settles to int; a genuinely heterogeneous ivar
+       re-widens and stays poly. Bounded narrowing over the lattice. */
+    int rcap = 16, nrec = 0;
+    int *recCi = (int *)malloc(sizeof(int) * rcap), *recIv = (int *)malloc(sizeof(int) * rcap);
     for (int ci = 0; ci < c->nclasses; ci++)
       for (int iv = 0; iv < c->classes[ci].nivars; iv++)
-        if (c->classes[ci].ivar_types[iv] == TY_POLY) { const char *_n = c->classes[ci].ivars[iv]; sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "renarrow_reset", TY_POLY, TY_UNKNOWN); c->classes[ci].ivar_types[iv] = TY_UNKNOWN; any = 1; }
+        if (c->classes[ci].ivar_types[iv] == TY_POLY) {
+          const char *_n = c->classes[ci].ivars[iv]; sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "renarrow_reset", TY_POLY, TY_UNKNOWN);
+          c->classes[ci].ivar_types[iv] = TY_UNKNOWN; any = 1;
+          if (nrec >= rcap) { rcap *= 2; recCi = realloc(recCi, sizeof(int) * rcap); recIv = realloc(recIv, sizeof(int) * rcap); }
+          recCi[nrec] = ci; recIv[nrec] = iv; nrec++;
+        }
     for (int s = 0; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
       for (int i = 0; i < sc->nparams; i++) {
@@ -1564,9 +1581,14 @@ void analyze_program(Compiler *c) {
     }
     if (reset_locked_iter_block_params(c)) any = 1;
     if (any) {
+      TyKind *prev = (TyKind *)malloc(sizeof(TyKind) * (nrec > 0 ? nrec : 1));
       for (int iter = 0; iter < 128; iter++) {
-        int ch = 0;
+        /* stash last-settled values, then re-clear the reset ivars so they
+           recompute fresh (narrowing) this iteration. */
+        for (int k = 0; k < nrec; k++) prev[k] = c->classes[recCi[k]].ivar_types[recIv[k]];
+        for (int k = 0; k < nrec; k++) c->classes[recCi[k]].ivar_types[recIv[k]] = TY_UNKNOWN;
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
+        int ch = 0;
         ch |= infer_write_types(c);
         ch |= infer_param_types(c);
         ch |= infer_param_hash_value(c);
@@ -1581,9 +1603,20 @@ void analyze_program(Compiler *c) {
         ch |= infer_cvar_types(c);
         ch |= infer_inherited_ivars(c);
         ch |= infer_return_types(c);
-        if (!ch) break;
+        /* With reset ivars, the re-clear makes infer_ivar_types report change
+           every iteration, so converge on ivar value-stability instead. With
+           none (only poly params/returns reset), fall back to the normal
+           no-change fixpoint so the param/return passes fully settle. */
+        if (nrec > 0) {
+          int stable = 1;
+          for (int k = 0; k < nrec; k++)
+            if (c->classes[recCi[k]].ivar_types[recIv[k]] != prev[k]) { stable = 0; break; }
+          if (stable) break;
+        } else if (!ch) break;
       }
+      free(prev);
     }
+    free(recCi); free(recIv);
   }
 
   /* Backstop: a parameter still unknown but with a `= nil` default is a
