@@ -2202,16 +2202,16 @@ static inline const char*sp_SymArray_inspect(sp_IntArray*a){if(!a)return "[]";SP
    tag, so we render them as `#<Object>` rather than recursing. */
 static const char*sp_PtrArray_inspect(sp_PtrArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,"#<Object>");}sp_String_append(s,"]");return s->data;}
 /* Issue #851: Hash#inspect for typed-hash variants beyond
-   sym_int_hash. Renders Ruby's `{"k"=>v, ...}` (string keys),
-   `{42=>"v", ...}` (int keys), or `{:k=>v, ...}` (sym keys but
+   sym_int_hash. Renders Ruby's `{"k" => v, ...}` (string keys),
+   `{42 => "v", ...}` (int keys), or `{:k => v, ...}` (sym keys but
    non-int value, since the bare `k: v` shorthand only applies
    when values are inspectable as one-liners — match CRuby). */
-static const char*sp_StrIntHash_inspect(sp_StrIntHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_int_to_s(sp_StrIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_StrIntHash_inspect(sp_StrIntHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_int_to_s(sp_StrIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 /* Hash#to_proc lookup fn — cap is the hash, args[0] the string key. */
 static mrb_int sp_StrIntHash_proc_fn(void *cap, mrb_int argc, mrb_int *args) { if (argc < 1) return 0; return sp_StrIntHash_get((sp_StrIntHash *)cap, (const char *)(uintptr_t)args[0]); }
-static const char*sp_StrStrHash_inspect(sp_StrStrHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_str_inspect(sp_StrStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
-static const char*sp_IntStrHash_inspect(sp_IntStrHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_str_inspect(sp_IntStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
-static const char*sp_IntIntHash_inspect(sp_IntIntHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_int_to_s(sp_IntIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_StrStrHash_inspect(sp_StrStrHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_str_inspect(sp_StrStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_IntStrHash_inspect(sp_IntStrHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_str_inspect(sp_IntStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_IntIntHash_inspect(sp_IntIntHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_int_to_s(sp_IntIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 /* Nested-array inspect: when codegen knows the ptr_array's element
    type is one of the four built-in T_array shapes, recurse into the
    matching primitive inspect . */
@@ -4074,7 +4074,7 @@ static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){
 static void sp_StrPolyHash_clear(sp_StrPolyHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;}
 static mrb_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Issue #851: inspect for str_poly_hash. */
-static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s,"=>");sp_String_append(s,sp_poly_inspect(sp_StrPolyHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_poly_inspect(sp_StrPolyHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 /* Convert a narrower StrStrHash to a StrPolyHash. Needed when the
    analyzer widens an LV slot to sp_StrPolyHash* (e.g. later poly-value
    writes) but the initial RHS is a sibling narrower hash variant —
@@ -4111,7 +4111,7 @@ static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){
 static void sp_SymPolyHash_clear(sp_SymPolyHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;}
 static mrb_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Hash#inspect for sym_poly_hash. CRuby 4.0 renders symbol keys
-   in shorthand: `{a: 1, b: "x"}` rather than `{:a=>1, :b=>"x"}`. */
+   in shorthand: `{a: 1, b: "x"}` rather than `{:a => 1, :b => "x"}`. */
 static const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h){if(!h){char*r=sp_str_alloc_raw(3);r[0]='{';r[1]='}';r[2]=0;sp_str_set_len(r,2);return r;}SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_sym_to_s(h->order[i]));sp_String_append(s,": ");sp_String_append(s,sp_poly_inspect(sp_SymPolyHash_get(h,h->order[i])));}sp_String_append(s,"}");return s->data;}
 
 /* poly_val[sym_key]: runtime dispatch for poly receiver `[]` with symbol arg. */
@@ -4447,10 +4447,10 @@ static sp_PolyArray*sp_PolyPolyHash_keys(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_Pol
 static sp_PolyArray*sp_PolyPolyHash_values(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(mrb_int i=0;i<h->len;i++)sp_PolyArray_push(a,h->vals[h->order[i]]);return a;}
 static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();for(mrb_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
 /* Issue #738: poly_poly_hash inspect using sp_poly_inspect on each
-   k,v. Output mirrors Ruby's `{k=>v, ...}` for non-symbol keys and
+   k,v. Output mirrors Ruby's `{k => v, ...}` for non-symbol keys and
    `{k: v, ...}` shorthand for symbol keys. */
 static const char *sp_poly_inspect(sp_RbVal v);
-static const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(!h){sp_String_append(s,"}");return s->data;}for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_RbVal k=h->keys[h->order[i]];if(k.tag==SP_TAG_SYM){sp_String_append(s,sp_sym_to_s((sp_sym)k.v.i));sp_String_append(s,": ");}else{sp_String_append(s,sp_poly_inspect(k));sp_String_append(s,"=>");}sp_String_append(s,sp_poly_inspect(h->vals[h->order[i]]));}sp_String_append(s,"}");return s->data;}
+static const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(!h){sp_String_append(s,"}");return s->data;}for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_RbVal k=h->keys[h->order[i]];if(k.tag==SP_TAG_SYM){sp_String_append(s,sp_sym_to_s((sp_sym)k.v.i));sp_String_append(s,": ");}else{sp_String_append(s,sp_poly_inspect(k));sp_String_append(s," => ");}sp_String_append(s,sp_poly_inspect(h->vals[h->order[i]]));}sp_String_append(s,"}");return s->data;}
 /* Issue #738: Hash#invert -- swap keys and values. Returns a
    poly_poly_hash so any (key, value) pair shape is uniformly
    representable. str_str_hash_invert lives above (line ~1132)
