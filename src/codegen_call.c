@@ -5358,6 +5358,28 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (done) return;
   }
 
+  /* Array-reduction methods on a boxed array element of a poly array (e.g.
+     `runs.map { |r| r.sum }` over chunk_while runs). The runtime helper switches
+     on the element's cls_id. Skipped when a user class defines the same method
+     (it falls through to the general poly dispatch below). */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    const char *pm = NULL;
+    if (!strcmp(name, "sum")) pm = "sp_poly_sum";
+    else if (!strcmp(name, "min")) pm = "sp_poly_min";
+    else if (!strcmp(name, "max")) pm = "sp_poly_max";
+    else if (!strcmp(name, "first")) pm = "sp_poly_first";
+    else if (!strcmp(name, "last")) pm = "sp_poly_last";
+    if (pm) {
+      int ncand = 0;
+      for (int k = 0; k < c->nclasses; k++)
+        if (comp_method_in_chain(c, k, name, NULL) >= 0) ncand++;
+      if (ncand == 0) {
+        buf_printf(b, "%s(", pm); emit_expr(c, recv, b); buf_puts(b, ")");
+        return;
+      }
+    }
+  }
+
   /* poly method dispatch: switch on the boxed object's cls_id and call the
      matching class's method (walking the chain for inherited methods),
      unboxing the pointer. */

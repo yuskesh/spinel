@@ -1763,6 +1763,13 @@ else {
         }
       }
       if (found) return r;
+      /* Array-reduction methods on a boxed array element (a run from
+         chunk_while etc.): the concrete element type is erased to poly, so the
+         result is a boxed poly value resolved at runtime by cls_id. */
+      if (argc == 0 &&
+          (!strcmp(name, "sum") || !strcmp(name, "min") || !strcmp(name, "max") ||
+           !strcmp(name, "first") || !strcmp(name, "last")))
+        return TY_POLY;
       /* Fiber/Thread/IO/File instance methods: fallback when no user class defines `name`. */
       if (!strcmp(name, "resume") || !strcmp(name, "value") || !strcmp(name, "join"))
         return TY_POLY;
