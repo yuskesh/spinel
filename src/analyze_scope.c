@@ -611,7 +611,19 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
     s->body = nt_ref(c->nt, id, "body");
     s->class_id = class_id;   /* instance method of the enclosing class */
     /* `def self.foo` / `def Klass.foo`: a class (singleton) method. */
-    if (nt_ref(c->nt, id, "receiver") >= 0) s->is_cmethod = 1;
+    int defrecv = nt_ref(c->nt, id, "receiver");
+    if (defrecv >= 0) {
+      s->is_cmethod = 1;
+      /* `def Klass.foo` with an explicit constant receiver (typically defined
+         outside the class body, where the enclosing class_id is -1) attaches
+         to that class's singleton chain rather than becoming a top-level free
+         function. `def self.foo` keeps the enclosing class. */
+      const char *rty = nt_type(c->nt, defrecv);
+      if (rty && !strcmp(rty, "ConstantReadNode")) {
+        int rci = comp_class_index(c, nt_str(c->nt, defrecv, "name"));
+        if (rci >= 0) s->class_id = rci;
+      }
+    }
     collect_def_params(c, id, s);
     child = new_idx;
   }
