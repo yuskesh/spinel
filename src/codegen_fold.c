@@ -2064,6 +2064,123 @@ else if (p0) {
   return 1;
 }
 
+/* arr.map.with_index(off) { |x, i| } / arr.each.with_index(off) { |x, i| } /
+   arr.select.with_index(off) { |x, i| } (and collect/filter/reject): the
+   receiver is a blockless enumerator over an array, and with_index binds the
+   element plus a running index that starts at `off` (default 0). `map` collects
+   the block value; `select`/`reject` collect the element conditionally; `each`
+   runs the body for side effect and yields the receiver array. Arrays only --
+   a range enumerator is a later slice. Returns 1 if handled. */
+int emit_with_index_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || strcmp(name, "with_index")) return 0;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");  /* the blockless inner enumerator */
+  if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "CallNode")) return 0;
+  if (nt_ref(nt, recv, "block") >= 0) return 0;
+  const char *inner = nt_str(nt, recv, "name");
+  if (!inner) return 0;
+  int is_each = !strcmp(inner, "each");
+  TyIterShape shp = ty_iter_shape(inner);  /* map/select/reject; NONE for each */
+  if (!is_each && shp == TY_ITER_NONE) return 0;
+  int arr_recv = nt_ref(nt, recv, "receiver");
+  if (arr_recv < 0) return 0;
+  TyKind rt = comp_ntype(c, arr_recv);
+  if (!ty_is_array(rt)) return 0;
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) return 0;
+
+  int is_map = shp == TY_ITER_MAP;
+  int is_sel = shp == TY_ITER_SELECT;
+  int is_rej = shp == TY_ITER_REJECT;
+  int collecting = is_map || is_sel || is_rej;
+
+  int wi_args = nt_ref(nt, id, "arguments");
+  int wi_argc = 0; const int *wi_argv = wi_args >= 0 ? nt_arr(nt, wi_args, "arguments", &wi_argc) : NULL;
+
+  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1 && collecting) return 0;  /* map/select need a value */
+
+  TyKind restype = comp_ntype(c, id);
+  int res_poly = (restype == TY_POLY_ARRAY);
+  const char *rk = collecting ? (res_poly ? "Poly" : array_kind(restype)) : NULL;
+  if (collecting && !rk) rk = "Int";
+
+  int trecv = ++g_tmp, ti = ++g_tmp, tidx = ++g_tmp;
+  int tres = collecting ? ++g_tmp : 0;
+
+  /* evaluate the source array once (its preludes land in g_pre first) */
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arr_recv, &rb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+  buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  /* running index, seeded with the offset */
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = ", tidx);
+  if (wi_argc > 0 && wi_argv) emit_expr(c, wi_argv[0], g_pre); else buf_puts(g_pre, "0");
+  buf_puts(g_pre, ";\n");
+  if (collecting) {
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", rk, tres, rk);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres);
+  }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++) {\n",
+             ti, ti, k, trecv, ti, tidx);
+
+  int innerIndent = g_indent + 1;
+  TyKind elem_t = ty_array_elem(rt);
+  Scope *csc = comp_scope_of(c, block);
+  LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
+  LocalVar *clv1 = (csc && p1) ? scope_local(csc, p1) : NULL;
+  if (p0) {
+    emit_indent(g_pre, innerIndent);
+    if (clv0 && clv0->type == TY_POLY && elem_t != TY_POLY && elem_t != TY_UNKNOWN) {
+      char src[256]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+      buf_printf(g_pre, "lv_%s = ", p0); emit_boxed_text(c, elem_t, src, g_pre); buf_puts(g_pre, ";\n");
+    }
+    else buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
+  }
+  if (p1) {
+    emit_indent(g_pre, innerIndent);
+    if (clv1 && clv1->type == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", p1, tidx);
+    else buf_printf(g_pre, "lv_%s = _t%d;\n", p1, tidx);
+  }
+  if (is_each) {
+    for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, innerIndent);
+  }
+  else {
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, innerIndent);
+    int saveInd = g_indent; g_indent = innerIndent;
+    Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = saveInd;
+    if (is_map) {
+      TyKind body_ty = comp_ntype(c, bb[bn - 1]);
+      emit_indent(g_pre, innerIndent); buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
+      if (res_poly && body_ty != TY_POLY) {
+        Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, body_ty, vb.p ? vb.p : "", &bx);
+        buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
+      }
+      else buf_puts(g_pre, vb.p ? vb.p : "");
+      buf_puts(g_pre, ");\n");
+    }
+    else {  /* select / reject: push the element on the (negated) predicate */
+      emit_indent(g_pre, innerIndent);
+      buf_printf(g_pre, "if (%s(", is_rej ? "!" : "");
+      buf_puts(g_pre, vb.p ? vb.p : ""); buf_puts(g_pre, ")) ");
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
+    }
+    free(vb.p);
+  }
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+
+  if (collecting) buf_printf(b, "_t%d", tres);
+  else buf_printf(b, "_t%d", trecv);  /* each.with_index yields the receiver */
+  return 1;
+}
+
 /* all?/any?/none?/one? with a block: loop, count the truthy block results,
    and reduce to the predicate. Returns 1 if handled. */
 int emit_predicate_expr(Compiler *c, int id, Buf *b) {

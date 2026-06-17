@@ -1451,6 +1451,30 @@ else {
     }
   }
 
+  /* array.{map,each,select,...}.with_index(off) { |x, i| } result: map collects
+     the block value (array of body type); each yields the receiver; select/reject
+     filter, preserving the receiver's array type. */
+  if (recv >= 0 && !strcmp(name, "with_index") &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_ref(nt, recv, "block") < 0) {
+    const char *inner = nt_str(nt, recv, "name");
+    int arr_recv = nt_ref(nt, recv, "receiver");
+    TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
+    if (inner && ty_is_array(arr_t)) {
+      if (!strcmp(inner, "map") || !strcmp(inner, "collect")) {
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0) {
+          int body = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+          return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+        }
+      }
+      else if (!strcmp(inner, "each") || !strcmp(inner, "select") ||
+               !strcmp(inner, "filter") || !strcmp(inner, "reject"))
+        return arr_t;
+    }
+  }
+
   /* array receiver methods */
   if (recv >= 0 && ty_is_array(rt)) {
     int block = nt_ref(nt, id, "block");

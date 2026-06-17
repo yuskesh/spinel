@@ -359,6 +359,7 @@ void emit_block_param_assign(Compiler *c, int scope_id, const char *nm, int tidx
 int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b);
 int emit_partition_expr(Compiler *c, int id, Buf *b);
 int emit_collect_expr(Compiler *c, int id, Buf *b);
+int emit_with_index_expr(Compiler *c, int id, Buf *b);
 int emit_predicate_expr(Compiler *c, int id, Buf *b);
 int emit_grep_pred(Compiler *c, int pat, const char *ev, Buf *b);
 int emit_grep_expr(Compiler *c, int id, Buf *b);

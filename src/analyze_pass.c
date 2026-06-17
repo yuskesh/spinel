@@ -2813,6 +2813,35 @@ int infer_block_params(Compiler *c) {
       }
     }
 
+    /* array.{map,collect,each,select,filter,reject}.with_index(off) { |x, i| }:
+       a blockless enumerator over an array, indexed -- element + int index. */
+    if (!strcmp(name, "with_index") &&
+        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+        nt_ref(nt, recv, "block") < 0) {
+      const char *inner = nt_str(nt, recv, "name");
+      if (inner && (!strcmp(inner, "map") || !strcmp(inner, "collect") ||
+                    !strcmp(inner, "each") || !strcmp(inner, "select") ||
+                    !strcmp(inner, "filter") || !strcmp(inner, "reject"))) {
+        int arr_recv = nt_ref(nt, recv, "receiver");
+        TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
+        if (ty_is_array(arr_t)) {
+          Scope *wis = comp_scope_of(c, block);
+          if (p0) {
+            LocalVar *ep = scope_local_intern(wis, p0); ep->is_block_param = 1;
+            TyKind em = ty_unify(ep->type, ty_array_elem(arr_t));
+            if (em != ep->type) { ep->type = em; changed = 1; }
+          }
+          const char *idx_p = block_param_name(c, block, 1);
+          if (idx_p) {
+            LocalVar *ip = scope_local_intern(wis, idx_p); ip->is_block_param = 1;
+            TyKind im = ty_unify(ip->type, TY_INT);
+            if (im != ip->type) { ip->type = im; changed = 1; }
+          }
+          continue;
+        }
+      }
+    }
+
     /* array.combination(k) { |c| } binds the k-element sub-array (same kind) */
     if (!strcmp(name, "combination") && ty_is_array(rt)) {
       LocalVar *lp = scope_local_intern(comp_scope_of(c, block), p0); lp->is_block_param = 1;
