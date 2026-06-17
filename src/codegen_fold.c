@@ -2727,14 +2727,19 @@ else {
       int kv = (m && kwh_d >= 0) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
       int provided = kv >= 0 ? kv : (k < pos_argc_d ? argv[k] : -1);
       /* Default expressions (e.g. `@ivar * 10`) reference the callee's self and
-         callee's class, not the caller's. Temporarily redirect both. */
+         callee's class, not the caller's. Temporarily redirect both. A value-
+         type receiver is a by-value struct, so its ivars dereference with `.`,
+         not `->` (without this, `def m(r = @r)` emits `selfval->iv_r`). */
       int saved_emcls2 = g_emitting_class_id;
+      const char *saved_deref3 = g_self_deref;
       if (provided < 0) {
         g_self = selfptr;
+        g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
         if (m) g_emitting_class_id = m->class_id;
       }
       emit_arg_or_default(c, m, k, provided, &ab);
       g_self = saved_self;
+      g_self_deref = saved_deref3;
       g_emitting_class_id = saved_emcls2;
       TyKind att = p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1);
       emit_indent(g_pre, g_indent);

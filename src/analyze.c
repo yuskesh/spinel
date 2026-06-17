@@ -2015,6 +2015,16 @@ void analyze_program(Compiler *c) {
       if (blv->type == TY_NIL && !blv->rbs_seeded) blv->type = TY_POLY;
     }
 
+  /* Re-merge inherited ivar NAMES into subclasses now that the fixpoint has
+     registered every ivar -- including ones a parent only gained from an
+     included module's transplanted methods (`module M; def m; @x = ...; end`
+     included into a base, then subclassed). inherit_members ran once before
+     the fixpoint, when the parent had no such ivar yet, so the subclass struct
+     would otherwise lack the field (a default-arg read `def g(r = @x)` on the
+     subclass then references a non-existent member). Rebuilds parent-first, so
+     the [parent ivars..., own ivars...] cast-compatible layout is preserved. */
+  inherit_members(c);
+
   /* Re-run ivar inference now that purely-nil params/locals became poly: an
      ivar fed by such a param (`@x = idx` where every `set` call passed nil)
      was skipped during the fixpoint (its value read as TY_NIL) and may have
