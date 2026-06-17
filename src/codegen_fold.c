@@ -2774,7 +2774,15 @@ else {
      a template method defined only in subclasses cannot be called directly as
      sp_<base>_<name>, so even a single descendant impl must dispatch virtually. */
   int impl_n = dispatch_impl_count(c, cid, name);
-  int virtual = is_scalar_ret(ret) && (impl_n > 1 || (!m && impl_n >= 1));
+  /* A void/nil-returning method that subclasses override must still dispatch on
+     the runtime class -- an implicit-self call to it from a base method (e.g.
+     `def run; validate; end` where each subclass overrides `validate`) would
+     otherwise bind statically to the base impl and skip the override (#1443).
+     The GCC statement-expression wrapper can't declare a `void` result, so a
+     void dispatch uses a dummy int temp (its value is discarded). */
+  int ret_is_void = (ret == TY_VOID || ret == TY_NIL);
+  TyKind disp_ret = ret_is_void ? TY_INT : ret;
+  int virtual = (is_scalar_ret(ret) || ret_is_void) && (impl_n > 1 || (!m && impl_n >= 1));
 
   if (!virtual) {
     /* a value-type receiver is passed by value (no pointer cast) */
@@ -2795,7 +2803,7 @@ else {
   /* runtime dispatch on cls_id (GCC statement-expression) */
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
-  emit_ctype(c, ret, b);
+  emit_ctype(c, disp_ret, b);
   buf_printf(b, " _t%d; switch ((%s)->cls_id) {", rtmp, selfptr);
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
@@ -2809,7 +2817,7 @@ else {
       buf_printf(b, " case %d: sp_%s_%s((sp_%s *)%s", k,
                  c->classes[kd].name, kfn, c->classes[kd].name, selfptr);
       for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
-      buf_printf(b, "); _t%d = %s; break;", rtmp, default_value(ret));
+      buf_printf(b, "); _t%d = %s; break;", rtmp, default_value(disp_ret));
     }
     else if (arm_ret != ret && ret == TY_POLY) {
       /* arm returns a concrete type but switch expects sp_RbVal: box it */
@@ -2837,7 +2845,7 @@ else {
      call to a nonexistent sp_<base>_<name>. */
   if (!m) {
     buf_printf(b, " default: _t%d = %s; break; } _t%d; })", rtmp,
-               ret == TY_POLY ? "sp_box_nil()" : default_value(ret), rtmp);
+               ret == TY_POLY ? "sp_box_nil()" : default_value(disp_ret), rtmp);
     free(atmp);
     return;
   }
@@ -2847,7 +2855,7 @@ else {
     buf_printf(b, " default: sp_%s_%s((sp_%s *)%s",
                c->classes[defcls].name, mc(mname), c->classes[defcls].name, selfptr);
     for (int a = 0; a < np; a++) buf_printf(b, ", _t%d", atmp[a]);
-    buf_printf(b, "); _t%d = %s; break;", rtmp, default_value(ret));
+    buf_printf(b, "); _t%d = %s; break;", rtmp, default_value(disp_ret));
   }
   else if (def_ret != ret && ret == TY_POLY) {
     buf_printf(b, " default: { ");
