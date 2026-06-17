@@ -1478,6 +1478,7 @@ else {
           !strcmp(name, "find") || !strcmp(name, "detect"))
         return ty_array_elem(rt);  /* returns an element */
       if (!strcmp(name, "partition")) return TY_POLY_ARRAY;  /* [[truthy...],[falsy...]] */
+      if (!strcmp(name, "filter_map")) return TY_POLY_ARRAY;  /* map then drop falsy */
     }
     /* grep/grep_v without a block filter by `pattern === e`, preserving the
        receiver's array type. */

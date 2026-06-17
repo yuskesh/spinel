@@ -206,6 +206,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_grep_expr(c, id, b)) return;
   if (emit_minmax_by_expr(c, id, b)) return;
   if (emit_flat_map_expr(c, id, b)) return;
+  if (emit_filter_map_expr(c, id, b)) return;
   if (emit_poly_uniq_block(c, id, b)) return;
   if (emit_sort_cmp_expr(c, id, b)) return;
   if (emit_minmax_cmp_expr(c, id, b)) return;
@@ -220,6 +221,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_reduce_block_expr(c, id, b)) return;
   if (emit_sortby_expr(c, id, b)) return;
   if (emit_each_with_object_expr(c, id, b)) return;
+  if (emit_tap_then_expr(c, id, b)) return;
   if (emit_group_by_expr(c, id, b)) return;
   if (emit_inline_expr(c, id, b)) return;  /* value-returning yield method */
   const char *name = nt_str(nt, id, "name");
@@ -9636,6 +9638,82 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
+}
+
+/* `recv.tap { |x| body }` / `recv.then { |x| body }` (alias yield_self) in
+   expression position. tap runs the block for its side effect and yields the
+   (unchanged) receiver; then yields the block's value. The loop body emits into
+   the statement prelude (g_pre); the result temp is the expression value. */
+int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int is_tap = !strcmp(name, "tap");
+  int is_then = !strcmp(name, "then") || !strcmp(name, "yield_self");
+  if (!is_tap && !is_then) return 0;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0 || !nt_type(nt, block) || strcmp(nt_type(nt, block), "BlockNode")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind et = comp_ntype(c, recv);
+  if (et == TY_UNKNOWN) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (is_then && bn < 1) return 0;  /* then must yield a value */
+  const char *p0 = block_param_name(c, block, 0);
+  if (p0) p0 = rename_local(p0);
+
+  int tr = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
+  buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
+  if (needs_root(et)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr); }
+
+  /* a then result temp is declared outside the (optional) shadow block so the
+     block value escapes it. */
+  int tres = 0; TyKind rett = TY_VOID;
+  if (is_then) {
+    rett = comp_ntype(c, id);
+    tres = ++g_tmp;
+    emit_indent(g_pre, g_indent); emit_ctype(c, rett, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", tres, default_value(rett));
+    if (needs_root(rett)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres); }
+  }
+
+  /* pin the block param to the receiver type if inference widened it */
+  Scope *tsc = p0 ? comp_scope_of(c, block) : NULL;
+  LocalVar *tlv0 = (tsc && p0) ? scope_local(tsc, p0) : NULL;
+  TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
+  int use_shadow = tlv0 && tlv0->type != et && et != TY_UNKNOWN;
+  int din = g_indent;
+  if (use_shadow) {
+    tlv0->type = et;
+    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n");
+    din = g_indent + 1;
+    emit_indent(g_pre, din); emit_ctype(c, et, g_pre);
+    buf_printf(g_pre, " lv_%s = _t%d;\n", p0, tr);
+  }
+  else if (p0) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, tr); }
+
+  int sv = g_indent; g_indent = din;
+  int last = is_tap ? bn : bn - 1;
+  for (int j = 0; j < last; j++) emit_stmt(c, bb[j], g_pre, din);
+  if (is_then) {
+    Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb);
+    TyKind vt = comp_ntype(c, bb[bn - 1]);
+    emit_indent(g_pre, din); buf_printf(g_pre, "_t%d = ", tres);
+    if (rett == TY_POLY && vt != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, vt, vb.p ? vb.p : "", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+    else buf_puts(g_pre, vb.p ? vb.p : "");
+    buf_puts(g_pre, ";\n"); free(vb.p);
+  }
+  g_indent = sv;
+  if (use_shadow) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
+  if (tlv0) tlv0->type = tsaved0;
+
+  buf_printf(b, "_t%d", is_tap ? tr : tres);
+  return 1;
 }
 
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {

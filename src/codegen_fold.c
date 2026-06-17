@@ -572,6 +572,67 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* recv.filter_map { |x| body } -- map, then drop falsy results. The result is a
+   poly array (the body is often a nilable `expr if cond`); each truthy boxed
+   value is kept. Output matches CRuby for both nilable and concrete bodies. */
+int emit_filter_map_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || strcmp(name, "filter_map")) return 0;
+  int block = nt_ref(nt, id, "block");
+  int recv = nt_ref(nt, id, "receiver");
+  if (block < 0 || !nt_type(nt, block) || strcmp(nt_type(nt, block), "BlockNode") || recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (!ty_is_array(rt)) return 0;  /* range filter_map: a later slice */
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  const char *p0 = block_param_name(c, block, 0);
+  if (p0) p0 = rename_local(p0);
+
+  int ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  TyKind et = ty_array_elem(rt);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, ta, ti);
+
+  Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+  LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
+  TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
+  int use_shadow = clv0 && clv0->type != et && et != TY_UNKNOWN;
+  int din = g_indent + 1;
+  if (use_shadow) {
+    clv0->type = et;
+    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
+    emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti);
+  }
+  else if (p0) { emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti); }
+
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, din);
+  int save = g_indent; g_indent = din;
+  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  TyKind vt = comp_ntype(c, bb[bn - 1]);
+  int tv = ++g_tmp;
+  emit_indent(g_pre, din); buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
+  if (vt == TY_POLY) buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
+  else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, vt, vb.p ? vb.p : "", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+  buf_puts(g_pre, ";\n"); free(vb.p);
+  emit_indent(g_pre, din); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv);
+  emit_indent(g_pre, din); buf_printf(g_pre, "if (sp_poly_truthy(_t%d)) sp_PolyArray_push(_t%d, _t%d);\n", tv, tres, tv);
+  if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
+  if (clv0) clv0->type = csaved0;
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
