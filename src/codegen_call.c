@@ -2462,6 +2462,276 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+static int emit_object_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind res = comp_ntype(c, id);
+  /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
+     correctness with module includes; falls back to constant for builtins. */
+  if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
+      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
+    const char *cn = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")
+                     ? nt_str(nt, argv[0], "name") : NULL;
+    if (cn) {
+      int cid = ty_object_class(rt);
+      int target = comp_class_index(c, cn);
+      if (target >= 0) {
+        if (!strcmp(name, "instance_of?")) {
+          buf_puts(b, "((void)("); emit_expr(c, recv, b);
+          buf_printf(b, "), %d)", cid == target);
+        }
+        else {
+          /* use sp_class_le_mod (via macro) so includes chain is checked */
+          buf_puts(b, "((void)("); emit_expr(c, recv, b);
+          buf_printf(b, "), sp_class_le(((sp_Class){%d}),((sp_Class){%d})))", cid, target);
+        }
+        return 1;
+      }
+      else {
+        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+        return 1;
+      }
+    }
+    /* Dynamic klass argument typed as TY_CLASS: runtime sp_class_le check */
+    if (comp_ntype(c, argv[0]) == TY_CLASS) {
+      int cid = ty_object_class(rt);
+      int k = ++g_tmp;
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), ");
+      buf_printf(b, "({ sp_Class _t%d = ", k); emit_expr(c, argv[0], b); buf_printf(b, "; ");
+      if (!strcmp(name, "instance_of?"))
+        buf_printf(b, "((sp_Class){%d}).cls_id == _t%d.cls_id; }))", cid, k);
+      else
+        buf_printf(b, "sp_class_le(((sp_Class){%d}),_t%d); }))", cid, k);
+      return 1;
+    }
+  }
+
+  /* Struct instance methods (to_h / to_a / values / members / dig). */
+  if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
+    ClassInfo *sc = &c->classes[ty_object_class(rt)];
+    int is_to_a = (!strcmp(name, "to_a") || !strcmp(name, "values") || !strcmp(name, "deconstruct"));
+    if (is_to_a && argc == 0) {
+      int t = ++g_tmp; int rt2 = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      buf_printf(b, "({ sp_%s *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
+                 sc->name, t, rb.p ? rb.p : "", rt2, rt2);
+      for (int i = 0; i < sc->nivars; i++) {
+        buf_printf(b, " sp_PolyArray_push(_t%d, ", rt2);
+        Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+        emit_boxed_text(c, sc->ivar_types[i], fb.p, b); free(fb.p);
+        buf_puts(b, ");");
+      }
+      buf_printf(b, " _t%d; })", rt2);
+      free(rb.p);
+      return 1;
+    }
+    if (!strcmp(name, "to_h") && argc == 0) {
+      int block = nt_ref(nt, id, "block");
+      int t = ++g_tmp, rh = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      TyKind res = comp_ntype(c, id);
+      const char *hn = ty_hash_cname(res);
+      if (!hn) hn = "SymPoly";
+      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
+                 sc->name, t, rb.p ? rb.p : "", hn, rh, hn, rh);
+      free(rb.p);
+      if (block >= 0) {
+        /* to_h { |k, v| [nk, nv] }: per member, bind k/v then set hash[nk] = nv */
+        const char *kp = block_param_name(c, block, 0); if (kp) kp = rename_local(kp);
+        const char *vp = block_param_name(c, block, 1); if (vp) vp = rename_local(vp);
+        int bbody = nt_ref(nt, block, "body");
+        int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+        int last = bn > 0 ? bb[bn - 1] : -1;
+        int ke = -1, ve = -1;
+        if (last >= 0 && nt_type(nt, last) && !strcmp(nt_type(nt, last), "ArrayNode")) {
+          int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
+          if (en == 2) { ke = els[0]; ve = els[1]; }
+        }
+        TyKind kt = ty_hash_key(res), vt = ty_hash_val(res);
+        for (int i = 0; i < sc->nivars; i++) {
+          if (kp) buf_printf(b, " lv_%s = (sp_sym)%d;", kp, comp_sym_intern(c, sc->ivars[i] + 1));
+          if (vp) {
+            char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+            buf_printf(b, " lv_%s = ", vp); emit_boxed_text(c, sc->ivar_types[i], fb, b); buf_puts(b, ";");
+          }
+          buf_printf(b, " sp_%sHash_set(_t%d, ", hn, rh);
+          if (ke >= 0) emit_expr(c, ke, b); else buf_puts(b, "0");
+          buf_puts(b, ", ");
+          if (ve >= 0) { if (vt == TY_POLY && comp_ntype(c, ve) != TY_POLY) emit_boxed(c, ve, b); else emit_expr(c, ve, b); }
+          else buf_puts(b, "0");
+          buf_puts(b, ");");
+        }
+      }
+      else {
+        for (int i = 0; i < sc->nivars; i++) {
+          buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", rh, comp_sym_intern(c, sc->ivars[i] + 1));
+          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+          emit_boxed_text(c, sc->ivar_types[i], fb, b);
+          buf_puts(b, ");");
+        }
+      }
+      buf_printf(b, " _t%d; })", rh);
+      return 1;
+    }
+    if ((!strcmp(name, "members")) && argc == 0) {
+      int rm = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
+      for (int i = 0; i < sc->nivars; i++)
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", rm, comp_sym_intern(c, sc->ivars[i] + 1));
+      buf_printf(b, " _t%d; })", rm);
+      return 1;
+    }
+    if (!strcmp(name, "dig") && argc >= 1) {
+      /* literal key resolves a member at compile time */
+      int mi = -1;
+      const char *kty = nt_type(nt, argv[0]);
+      if (kty && !strcmp(kty, "SymbolNode")) {
+        char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
+        mi = comp_ivar_index(sc, ivn);
+      }
+      else if (kty && !strcmp(kty, "IntegerNode")) {
+        int v = (int)nt_int(nt, argv[0], "value", -1);
+        if (v >= 0 && v < sc->nivars) mi = v;
+      }
+      if (mi >= 0) {
+        int t = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        char fld[300]; snprintf(fld, sizeof fld, "_t%d->iv_%s", t, sc->ivars[mi] + 1);
+        TyKind mt = sc->ivar_types[mi];
+        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->name, t, rb.p ? rb.p : ""); free(rb.p);
+        if (argc == 1) buf_puts(b, fld);
+        else if (ty_is_hash(mt) && argc == 2) {
+          const char *hn = ty_hash_cname(mt);
+          buf_printf(b, "sp_%sHash_%s(%s, ", hn, ty_hash_val(mt) == TY_INT ? "get_opt" : "get", fld);
+          emit_expr(c, argv[1], b); buf_puts(b, ")");
+        }
+        else if (ty_is_array(mt) && argc == 2) {
+          buf_printf(b, "sp_%sArray_get(%s, ", array_kind(mt), fld); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        }
+        else buf_puts(b, fld);
+        buf_puts(b, "; })");
+        return 1;
+      }
+    }
+    if (!strcmp(name, "[]") && argc == 1) {
+      /* struct[:sym] or struct[int_literal]: return member value boxed to poly */
+      int mi = -1;
+      const char *kty = nt_type(nt, argv[0]);
+      if (kty && !strcmp(kty, "SymbolNode") && nt_str(nt, argv[0], "value")) {
+        char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
+        mi = comp_ivar_index(sc, ivn);
+      }
+      else if (kty && !strcmp(kty, "IntegerNode")) {
+        long long v = (long long)nt_int(nt, argv[0], "value", 0);
+        if (v < 0) v += (long long)sc->nivars;
+        if (v >= 0 && v < sc->nivars) mi = (int)v;
+      }
+      if (mi >= 0) {
+        int t = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->name, t, rb.p ? rb.p : ""); free(rb.p);
+        buf_printf(b, "_t%d->iv_%s; })", t, sc->ivars[mi] + 1);
+        return 1;
+      }
+      /* general: generate chain of comparisons */
+      if (sc->nivars > 0) {
+        int t = ++g_tmp, tk = ++g_tmp;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        buf_printf(b, "({ sp_%s *_t%d = %s; sp_RbVal _t%d = ", sc->name, t, rb.p ? rb.p : "", tk);
+        free(rb.p);
+        emit_boxed(c, argv[0], b);
+        buf_puts(b, ";");
+        for (int i = 0; i < sc->nivars; i++) {
+          buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%dLL))){",
+                     tk, comp_sym_intern(c, sc->ivars[i]+1), tk, (long long)i);
+          char fld2[300]; snprintf(fld2, sizeof fld2, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+          emit_boxed_text(c, sc->ivar_types[i], fld2, b);
+          buf_printf(b, ";} else");
+        }
+        buf_puts(b, " sp_box_nil(); })");
+        return 1;
+      }
+    }
+  }
+
+  /* object method call: sp_<DefClass>_<m>((sp_<DefClass>*)&recv, args) */
+  if (recv >= 0 && ty_is_object(rt)) {
+    int cid = ty_object_class(rt);
+    /* undef'd method: raise NoMethodError */
+    if (comp_is_undeffed_in_chain(c, cid, name)) {
+      TyKind ret_ty = comp_ntype(c, id);
+      buf_printf(b, "(sp_raise_cls(\"NoMethodError\",\"undefined method '%s' for an instance of %s\"),%s)",
+                 name, c->classes[cid].name,
+                 ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value(ret_ty));
+      return 1;
+    }
+    /* attr reader -> field access (recv).iv_x */
+    if (comp_reader_in_chain(c, cid, name, NULL)) {
+      const char *rn2 = comp_resolve_alias(c, cid, name);
+      buf_puts(b, "("); emit_expr(c, recv, b);
+      buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", rn2);
+      return 1;
+    }
+    int mi = comp_method_in_chain(c, cid, name, NULL);
+    if (mi >= 0) {
+      /* a value-type receiver is passed by value; an ordinary object by
+         pointer. For a value recv we hand emit_dispatch the value expression
+         (lvalue or hoisted temp); the method takes `self` by value. */
+      if (comp_ty_value_obj(c, rt)) {
+        char selfv[64];
+        const char *rty = nt_type(nt, recv);
+        if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          snprintf(selfv, sizeof selfv, "%s", rb.p ? rb.p : ""); free(rb.p);
+        }
+        else {
+          int t = ++g_tmp;
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+          buf_printf(g_pre, " _t%d = ", t); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+          snprintf(selfv, sizeof selfv, "_t%d", t);
+        }
+        emit_dispatch(c, cid, name, selfv, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+        return 1;
+      }
+      /* receiver is a pointer; reuse it directly if it's a simple lvalue,
+         else stash in a temp (the virtual-dispatch switch references it
+         multiple times) */
+      char selfptr[64];
+      const char *rty = nt_type(nt, recv);
+      if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
+        free(rb.p);
+      }
+      else {
+        int t = ++g_tmp;
+        /* emit the receiver first so any setup it pushes into g_pre is fully
+           flushed before we write this temp's declaration line */
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, rt, g_pre);
+        buf_printf(g_pre, " _t%d = ", t);
+        buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+        /* Root the hoisted receiver: a freshly constructed object (e.g.
+           Scene.new.render(...)) must survive any GC the call triggers. */
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+        snprintf(selfptr, sizeof selfptr, "_t%d", t);
+      }
+      emit_dispatch(c, cid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -7213,263 +7483,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     unsupported(c, id, "equality");
   }
 
-  /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
-     correctness with module includes; falls back to constant for builtins. */
-  if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
-      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
-    const char *cn = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")
-                     ? nt_str(nt, argv[0], "name") : NULL;
-    if (cn) {
-      int cid = ty_object_class(rt);
-      int target = comp_class_index(c, cn);
-      if (target >= 0) {
-        if (!strcmp(name, "instance_of?")) {
-          buf_puts(b, "((void)("); emit_expr(c, recv, b);
-          buf_printf(b, "), %d)", cid == target);
-        }
-        else {
-          /* use sp_class_le_mod (via macro) so includes chain is checked */
-          buf_puts(b, "((void)("); emit_expr(c, recv, b);
-          buf_printf(b, "), sp_class_le(((sp_Class){%d}),((sp_Class){%d})))", cid, target);
-        }
-        return;
-      }
-      else {
-        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
-        return;
-      }
-    }
-    /* Dynamic klass argument typed as TY_CLASS: runtime sp_class_le check */
-    if (comp_ntype(c, argv[0]) == TY_CLASS) {
-      int cid = ty_object_class(rt);
-      int k = ++g_tmp;
-      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), ");
-      buf_printf(b, "({ sp_Class _t%d = ", k); emit_expr(c, argv[0], b); buf_printf(b, "; ");
-      if (!strcmp(name, "instance_of?"))
-        buf_printf(b, "((sp_Class){%d}).cls_id == _t%d.cls_id; }))", cid, k);
-      else
-        buf_printf(b, "sp_class_le(((sp_Class){%d}),_t%d); }))", cid, k);
-      return;
-    }
-  }
-
-  /* Struct instance methods (to_h / to_a / values / members / dig). */
-  if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
-    ClassInfo *sc = &c->classes[ty_object_class(rt)];
-    int is_to_a = (!strcmp(name, "to_a") || !strcmp(name, "values") || !strcmp(name, "deconstruct"));
-    if (is_to_a && argc == 0) {
-      int t = ++g_tmp; int rt2 = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      buf_printf(b, "({ sp_%s *_t%d = %s; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
-                 sc->name, t, rb.p ? rb.p : "", rt2, rt2);
-      for (int i = 0; i < sc->nivars; i++) {
-        buf_printf(b, " sp_PolyArray_push(_t%d, ", rt2);
-        Buf fb; memset(&fb, 0, sizeof fb); buf_printf(&fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
-        emit_boxed_text(c, sc->ivar_types[i], fb.p, b); free(fb.p);
-        buf_puts(b, ");");
-      }
-      buf_printf(b, " _t%d; })", rt2);
-      free(rb.p);
-      return;
-    }
-    if (!strcmp(name, "to_h") && argc == 0) {
-      int block = nt_ref(nt, id, "block");
-      int t = ++g_tmp, rh = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      TyKind res = comp_ntype(c, id);
-      const char *hn = ty_hash_cname(res);
-      if (!hn) hn = "SymPoly";
-      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);",
-                 sc->name, t, rb.p ? rb.p : "", hn, rh, hn, rh);
-      free(rb.p);
-      if (block >= 0) {
-        /* to_h { |k, v| [nk, nv] }: per member, bind k/v then set hash[nk] = nv */
-        const char *kp = block_param_name(c, block, 0); if (kp) kp = rename_local(kp);
-        const char *vp = block_param_name(c, block, 1); if (vp) vp = rename_local(vp);
-        int bbody = nt_ref(nt, block, "body");
-        int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
-        int last = bn > 0 ? bb[bn - 1] : -1;
-        int ke = -1, ve = -1;
-        if (last >= 0 && nt_type(nt, last) && !strcmp(nt_type(nt, last), "ArrayNode")) {
-          int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
-          if (en == 2) { ke = els[0]; ve = els[1]; }
-        }
-        TyKind kt = ty_hash_key(res), vt = ty_hash_val(res);
-        for (int i = 0; i < sc->nivars; i++) {
-          if (kp) buf_printf(b, " lv_%s = (sp_sym)%d;", kp, comp_sym_intern(c, sc->ivars[i] + 1));
-          if (vp) {
-            char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
-            buf_printf(b, " lv_%s = ", vp); emit_boxed_text(c, sc->ivar_types[i], fb, b); buf_puts(b, ";");
-          }
-          buf_printf(b, " sp_%sHash_set(_t%d, ", hn, rh);
-          if (ke >= 0) emit_expr(c, ke, b); else buf_puts(b, "0");
-          buf_puts(b, ", ");
-          if (ve >= 0) { if (vt == TY_POLY && comp_ntype(c, ve) != TY_POLY) emit_boxed(c, ve, b); else emit_expr(c, ve, b); }
-          else buf_puts(b, "0");
-          buf_puts(b, ");");
-        }
-      }
-      else {
-        for (int i = 0; i < sc->nivars; i++) {
-          buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", rh, comp_sym_intern(c, sc->ivars[i] + 1));
-          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", t, sc->ivars[i] + 1);
-          emit_boxed_text(c, sc->ivar_types[i], fb, b);
-          buf_puts(b, ");");
-        }
-      }
-      buf_printf(b, " _t%d; })", rh);
-      return;
-    }
-    if ((!strcmp(name, "members")) && argc == 0) {
-      int rm = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
-      for (int i = 0; i < sc->nivars; i++)
-        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", rm, comp_sym_intern(c, sc->ivars[i] + 1));
-      buf_printf(b, " _t%d; })", rm);
-      return;
-    }
-    if (!strcmp(name, "dig") && argc >= 1) {
-      /* literal key resolves a member at compile time */
-      int mi = -1;
-      const char *kty = nt_type(nt, argv[0]);
-      if (kty && !strcmp(kty, "SymbolNode")) {
-        char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
-        mi = comp_ivar_index(sc, ivn);
-      }
-      else if (kty && !strcmp(kty, "IntegerNode")) {
-        int v = (int)nt_int(nt, argv[0], "value", -1);
-        if (v >= 0 && v < sc->nivars) mi = v;
-      }
-      if (mi >= 0) {
-        int t = ++g_tmp;
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-        char fld[300]; snprintf(fld, sizeof fld, "_t%d->iv_%s", t, sc->ivars[mi] + 1);
-        TyKind mt = sc->ivar_types[mi];
-        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->name, t, rb.p ? rb.p : ""); free(rb.p);
-        if (argc == 1) buf_puts(b, fld);
-        else if (ty_is_hash(mt) && argc == 2) {
-          const char *hn = ty_hash_cname(mt);
-          buf_printf(b, "sp_%sHash_%s(%s, ", hn, ty_hash_val(mt) == TY_INT ? "get_opt" : "get", fld);
-          emit_expr(c, argv[1], b); buf_puts(b, ")");
-        }
-        else if (ty_is_array(mt) && argc == 2) {
-          buf_printf(b, "sp_%sArray_get(%s, ", array_kind(mt), fld); emit_expr(c, argv[1], b); buf_puts(b, ")");
-        }
-        else buf_puts(b, fld);
-        buf_puts(b, "; })");
-        return;
-      }
-    }
-    if (!strcmp(name, "[]") && argc == 1) {
-      /* struct[:sym] or struct[int_literal]: return member value boxed to poly */
-      int mi = -1;
-      const char *kty = nt_type(nt, argv[0]);
-      if (kty && !strcmp(kty, "SymbolNode") && nt_str(nt, argv[0], "value")) {
-        char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
-        mi = comp_ivar_index(sc, ivn);
-      }
-      else if (kty && !strcmp(kty, "IntegerNode")) {
-        long long v = (long long)nt_int(nt, argv[0], "value", 0);
-        if (v < 0) v += (long long)sc->nivars;
-        if (v >= 0 && v < sc->nivars) mi = (int)v;
-      }
-      if (mi >= 0) {
-        int t = ++g_tmp;
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-        buf_printf(b, "({ sp_%s *_t%d = %s; ", sc->name, t, rb.p ? rb.p : ""); free(rb.p);
-        buf_printf(b, "_t%d->iv_%s; })", t, sc->ivars[mi] + 1);
-        return;
-      }
-      /* general: generate chain of comparisons */
-      if (sc->nivars > 0) {
-        int t = ++g_tmp, tk = ++g_tmp;
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-        buf_printf(b, "({ sp_%s *_t%d = %s; sp_RbVal _t%d = ", sc->name, t, rb.p ? rb.p : "", tk);
-        free(rb.p);
-        emit_boxed(c, argv[0], b);
-        buf_puts(b, ";");
-        for (int i = 0; i < sc->nivars; i++) {
-          buf_printf(b, " if(sp_rbval_eql_key(_t%d,sp_box_sym((sp_sym)%d))||sp_rbval_eql_key(_t%d,sp_box_int(%dLL))){",
-                     tk, comp_sym_intern(c, sc->ivars[i]+1), tk, (long long)i);
-          char fld2[300]; snprintf(fld2, sizeof fld2, "_t%d->iv_%s", t, sc->ivars[i] + 1);
-          emit_boxed_text(c, sc->ivar_types[i], fld2, b);
-          buf_printf(b, ";} else");
-        }
-        buf_puts(b, " sp_box_nil(); })");
-        return;
-      }
-    }
-  }
-
-  /* object method call: sp_<DefClass>_<m>((sp_<DefClass>*)&recv, args) */
-  if (recv >= 0 && ty_is_object(rt)) {
-    int cid = ty_object_class(rt);
-    /* undef'd method: raise NoMethodError */
-    if (comp_is_undeffed_in_chain(c, cid, name)) {
-      TyKind ret_ty = comp_ntype(c, id);
-      buf_printf(b, "(sp_raise_cls(\"NoMethodError\",\"undefined method '%s' for an instance of %s\"),%s)",
-                 name, c->classes[cid].name,
-                 ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value(ret_ty));
-      return;
-    }
-    /* attr reader -> field access (recv).iv_x */
-    if (comp_reader_in_chain(c, cid, name, NULL)) {
-      const char *rn2 = comp_resolve_alias(c, cid, name);
-      buf_puts(b, "("); emit_expr(c, recv, b);
-      buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", rn2);
-      return;
-    }
-    int mi = comp_method_in_chain(c, cid, name, NULL);
-    if (mi >= 0) {
-      /* a value-type receiver is passed by value; an ordinary object by
-         pointer. For a value recv we hand emit_dispatch the value expression
-         (lvalue or hoisted temp); the method takes `self` by value. */
-      if (comp_ty_value_obj(c, rt)) {
-        char selfv[64];
-        const char *rty = nt_type(nt, recv);
-        if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-          snprintf(selfv, sizeof selfv, "%s", rb.p ? rb.p : ""); free(rb.p);
-        }
-        else {
-          int t = ++g_tmp;
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-          emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-          buf_printf(g_pre, " _t%d = ", t); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-          snprintf(selfv, sizeof selfv, "_t%d", t);
-        }
-        emit_dispatch(c, cid, name, selfv, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
-        return;
-      }
-      /* receiver is a pointer; reuse it directly if it's a simple lvalue,
-         else stash in a temp (the virtual-dispatch switch references it
-         multiple times) */
-      char selfptr[64];
-      const char *rty = nt_type(nt, recv);
-      if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-        snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
-        free(rb.p);
-      }
-      else {
-        int t = ++g_tmp;
-        /* emit the receiver first so any setup it pushes into g_pre is fully
-           flushed before we write this temp's declaration line */
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-        emit_indent(g_pre, g_indent);
-        emit_ctype(c, rt, g_pre);
-        buf_printf(g_pre, " _t%d = ", t);
-        buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-        /* Root the hoisted receiver: a freshly constructed object (e.g.
-           Scene.new.render(...)) must survive any GC the call triggers. */
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
-        snprintf(selfptr, sizeof selfptr, "_t%d", t);
-      }
-      emit_dispatch(c, cid, name, selfptr, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
-      return;
-    }
-  }
+  if (emit_object_call(c, id, b)) return;
 
   /* Time instance methods: sp_Time is a value -- splice the receiver once. */
   if (recv >= 0 && rt == TY_TIME) {
