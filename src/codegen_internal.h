@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <setjmp.h>
 
 /* ---- output buffer ---- */
 
@@ -307,7 +308,15 @@ void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b);
 void emit_yblk_ref(Buf *b);
 void emit_tail_lead(Buf *b);
 const char *rename_local(const char *nm);
-void unsupported(Compiler *c, int id, const char *what);
+/* `unsupported` never returns: normal mode exits; SP_COLLECT_ERRORS mode
+   longjmps to the codegen driver's per-unit recovery (see g_unsup_recover)
+   when one is armed, else exits. Marked noreturn so every caller's
+   "this construct is unsupported" guard correctly treats the code after it as
+   unreachable. */
+int collect_mode(void);            /* 1 in SP_COLLECT_ERRORS mode (cached) */
+extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driver */
+extern int g_unsup_armed;          /* nonzero while a recovery point is live */
+__attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what);
 int builtin_class_id(const char *name);
 int is_builtin_class_name(const char *n);
 const char *c_type_name(TyKind t);

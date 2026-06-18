@@ -2059,6 +2059,32 @@ static int program_needs_class_machinery(Compiler *c) {
   return 0;
 }
 
+/* Emit one top-level output unit (a method, constructor, BEGIN/END block, or the
+   top-level body). Outside SP_COLLECT_ERRORS this is just the bare call. In
+   collect mode each unit runs under a setjmp: an `unsupported` gap longjmps back
+   here (instead of exiting), so one run surfaces every unsupported construct --
+   the gap is already printed, this unit's malformed output is discarded, and the
+   driver proceeds to the next unit. `unsupported` re-sets all per-method globals
+   on the next emit_method, so an abandoned unit cannot corrupt the next.
+   On recovery the buffer is rolled back to its length before this unit, so the
+   abandoned unit's partial output is dropped. `body` must be the heap pointer
+   (not an automatic) so a longjmp doesn't leave it indeterminate (C99 7.13.2.1);
+   _saved_len is set before setjmp and so stays determinate across the jump. */
+#define EMIT_COLLECT_UNIT(emit_call)                          \
+  do {                                                        \
+    if (!collect_mode()) { emit_call; }                       \
+    else {                                                    \
+      size_t _saved_len = body->len;                          \
+      if (setjmp(g_unsup_recover) == 0) {                     \
+        g_unsup_armed = 1; emit_call; g_unsup_armed = 0;      \
+      } else {                                                \
+        g_unsup_armed = 0;                                    \
+        body->len = _saved_len;                               \
+        if (body->p) body->p[_saved_len] = '\0';              \
+      }                                                       \
+    }                                                         \
+  } while (0)
+
 char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
@@ -2608,12 +2634,12 @@ char *codegen_program(const NodeTable *nt) {
      proc literals they contain accumulate static functions into g_procs /
      g_proc_protos; we splice those in ahead of these bodies, since a proc
      function must be declared before the body that references it. */
-  Buf body; memset(&body, 0, sizeof body);
+  Buf *body = (Buf *)calloc(1, sizeof *body);  /* heap: must survive a collect-mode longjmp (see EMIT_COLLECT_UNIT) */
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name))
-      emit_class_new(c, &c->classes[i], &body);
+      EMIT_COLLECT_UNIT(emit_class_new(c, &c->classes[i], body));
   for (int s = 1; s < c->nscopes; s++) {
-    if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; emit_method(c, &c->scopes[s], &body);
+    if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
   }
 
   /* Emit END block static functions for atexit registration */
@@ -2630,38 +2656,38 @@ char *codegen_program(const NodeTable *nt) {
         if (!sty || strcmp(sty, "PostExecutionNode")) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
         end_count++;
-        buf_printf(&body, "static void sp_end_fn_%d(void) { SP_GC_SAVE();\n", end_count);
-        emit_stmts(c, stmts, &body, 1);
-        buf_puts(&body, "}\n");
+        buf_printf(body, "static void sp_end_fn_%d(void) { SP_GC_SAVE();\n", end_count);
+        EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
+        buf_puts(body, "}\n");
       }
     }
   }
 
-  buf_puts(&body, "int main(int argc,char**argv){\n");
-  buf_puts(&body, "    SP_GC_SAVE();\n");
-  buf_puts(&body, "    sp_re_init();\n");
-  buf_puts(&body, "    { sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");
-  buf_puts(&body, "    sp_program_name = argc > 0 ? argv[0] : \"\";\n");
+  buf_puts(body, "int main(int argc,char**argv){\n");
+  buf_puts(body, "    SP_GC_SAVE();\n");
+  buf_puts(body, "    sp_re_init();\n");
+  buf_puts(body, "    { sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_dup_external(argv[_ai + 1]); }\n");
+  buf_puts(body, "    sp_program_name = argc > 0 ? argv[0] : \"\";\n");
   /* Enable the backtrace substrate (Exception#backtrace, Kernel#caller) in
      debug builds only: --debug compiles at -O0 with non-inlined methods, so
      the captured frames demangle to Class#method. Optimized/release builds
      leave sp_bt_enabled = 0 (frames inline away), keeping the empty-array
      behavior. */
   if (getenv("SPINEL_DEBUG")) {
-    buf_puts(&body, "    sp_bt_enabled = 1;\n");
-    buf_puts(&body, "    sp_bt_srcfile = ");
-    emit_str_literal(&body, c->nt->source_file ? c->nt->source_file : "source.rb");
-    buf_puts(&body, ";\n");
+    buf_puts(body, "    sp_bt_enabled = 1;\n");
+    buf_puts(body, "    sp_bt_srcfile = ");
+    emit_str_literal(body, c->nt->source_file ? c->nt->source_file : "source.rb");
+    buf_puts(body, ";\n");
   }
   /* Ruby auto-seeds its PRNG at startup, so rand/shuffle/sample vary per
      run. Seed once here; an explicit srand(seed) in user code runs later
      and overrides this for reproducible sequences. */
-  buf_puts(&body, "    srand((unsigned)time(NULL));\n");
+  buf_puts(body, "    srand((unsigned)time(NULL));\n");
   /* Register END blocks (atexit runs LIFO, so they execute in reverse registration order) */
   for (int e = 1; e <= end_count; e++)
-    buf_printf(&body, "    atexit(sp_end_fn_%d);\n", e);
-  emit_scope_decls(c, &c->scopes[0], &body);
-  buf_puts(&body, "\n");
+    buf_printf(body, "    atexit(sp_end_fn_%d);\n", e);
+  emit_scope_decls(c, &c->scopes[0], body);
+  buf_puts(body, "\n");
   /* Hoist BEGIN blocks to run first */
   {
     int top_body = c->scopes[0].body;
@@ -2674,20 +2700,21 @@ char *codegen_program(const NodeTable *nt) {
         const char *sty = nt_type(c->nt, tbody[k]);
         if (!sty || strcmp(sty, "PreExecutionNode")) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
-        emit_stmts(c, stmts, &body, 1);
+        EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
       }
     }
   }
-  emit_stmts(c, c->scopes[0].body, &body, 1);
+  EMIT_COLLECT_UNIT(emit_stmts(c, c->scopes[0].body, body, 1));
   if (g_needs_at_exit)
-    buf_puts(&body, "  { mrb_int _ax_args[16] = {0}; for (mrb_int _ax = sp_at_exit_count - 1; _ax >= 0; _ax--) sp_proc_call(sp_at_exit_hooks[_ax], 0, _ax_args); }\n");
-  buf_puts(&body, "  return 0;\n}\n");
+    buf_puts(body, "  { mrb_int _ax_args[16] = {0}; for (mrb_int _ax = sp_at_exit_count - 1; _ax >= 0; _ax--) sp_proc_call(sp_at_exit_hooks[_ax], 0, _ax_args); }\n");
+  buf_puts(body, "  return 0;\n}\n");
 
   emit_regex_section(&b);
   if (g_proc_protos.len) { buf_puts(&b, g_proc_protos.p); buf_puts(&b, "\n"); }
   if (g_procs.len) { buf_puts(&b, g_procs.p); buf_puts(&b, "\n"); }
-  buf_puts(&b, body.p ? body.p : "");
-  free(body.p);
+  buf_puts(&b, body->p ? body->p : "");
+  free(body->p);
+  free(body);
   free(g_procs.p); free(g_proc_protos.p);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
