@@ -47,11 +47,29 @@ void sp_re_set_error_handler(void (*fn)(const char *msg)) {
 static void
 compile_error(re_compiler *c, const char *msg)
 {
-  if (c->stripped) free(c->stripped);
-  c->stripped = NULL;
+  /* Build the message before freeing: in /x (extended) mode c->src aliases
+     c->stripped, so reading it after the free would be a use-after-free. */
   char buf[1024];
   snprintf(buf, sizeof(buf), "%s: /%.*s/",
            msg, (int)(c->src_end - c->src), c->src);
+  /* Free all half-built compiler state: a catchable RegexpError handler
+     longjmps out and `c` never returns to re_compile, so the bytecode,
+     char-class ranges, and named-capture names would otherwise leak. (On
+     success these transfer to the compiled pattern instead.) */
+  free(c->code);
+  c->code = NULL;
+  if (c->classes) {
+    for (uint16_t i = 0; i < c->num_classes; i++) free(c->classes[i].ranges);
+    free(c->classes);
+    c->classes = NULL;
+  }
+  if (c->named_captures) {
+    for (uint16_t i = 0; i < c->num_named; i++) free((void *)c->named_captures[i].name);
+    free(c->named_captures);
+    c->named_captures = NULL;
+  }
+  if (c->stripped) free(c->stripped);
+  c->stripped = NULL;
   if (sp_re_error_handler) {
     sp_re_error_handler(buf);
     /* shouldn't return; fall through to exit as a safety net */
