@@ -320,6 +320,15 @@ TyKind infer_call(Compiler *c, int id) {
     if (!strcmp(name, "respond_to?")) return TY_BOOL;
   }
 
+  /* int_array.chunk_while { |a, b| } .to_a -> a poly array of int-array runs */
+  if (recv >= 0 && !strcmp(name, "to_a") &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "chunk_while") &&
+      nt_ref(nt, recv, "block") >= 0) {
+    int pr = nt_ref(nt, recv, "receiver");
+    if (pr >= 0 && infer_type(c, pr) == TY_INT_ARRAY) return TY_POLY_ARRAY;
+  }
+
   /* an empty array literal used directly as a receiver (`[].flatten`) has no
      usage to fold an element type from; treat it as an empty poly array so
      array methods dispatch instead of falling through to unresolved. */
@@ -1424,6 +1433,30 @@ else {
     }
   }
 
+  /* array.{map,each,select,...}.with_index(off) { |x, i| } result: map collects
+     the block value (array of body type); each yields the receiver; select/reject
+     filter, preserving the receiver's array type. */
+  if (recv >= 0 && !strcmp(name, "with_index") &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_ref(nt, recv, "block") < 0) {
+    const char *inner = nt_str(nt, recv, "name");
+    int arr_recv = nt_ref(nt, recv, "receiver");
+    TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
+    if (inner && ty_is_array(arr_t)) {
+      if (!strcmp(inner, "map") || !strcmp(inner, "collect")) {
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0) {
+          int body = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+          return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+        }
+      }
+      else if (!strcmp(inner, "each") || !strcmp(inner, "select") ||
+               !strcmp(inner, "filter") || !strcmp(inner, "reject"))
+        return arr_t;
+    }
+  }
+
   /* array receiver methods */
   if (recv >= 0 && ty_is_array(rt)) {
     int block = nt_ref(nt, id, "block");
@@ -1451,6 +1484,7 @@ else {
           !strcmp(name, "find") || !strcmp(name, "detect"))
         return ty_array_elem(rt);  /* returns an element */
       if (!strcmp(name, "partition")) return TY_POLY_ARRAY;  /* [[truthy...],[falsy...]] */
+      if (!strcmp(name, "filter_map")) return TY_POLY_ARRAY;  /* map then drop falsy */
     }
     /* grep/grep_v without a block filter by `pattern === e`, preserving the
        receiver's array type. */
@@ -1702,6 +1736,13 @@ else {
         }
       }
       if (found) return r;
+      /* Array-reduction methods on a boxed array element (a run from
+         chunk_while etc.): the concrete element type is erased to poly, so the
+         result is a boxed poly value resolved at runtime by cls_id. */
+      if (argc == 0 &&
+          (!strcmp(name, "sum") || !strcmp(name, "min") || !strcmp(name, "max") ||
+           !strcmp(name, "first") || !strcmp(name, "last")))
+        return TY_POLY;
       /* Fiber/Thread/IO/File instance methods: fallback when no user class defines `name`. */
       if (!strcmp(name, "resume") || !strcmp(name, "value") || !strcmp(name, "join"))
         return TY_POLY;

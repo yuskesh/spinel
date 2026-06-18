@@ -2076,6 +2076,52 @@ int desugar_value_callable_forwards(Compiler *c) {
   return changed;
 }
 
+/* Desugar a blockless slicing enumerator materialized with `to_a` --
+   `recv.each_slice(n).to_a` / `recv.each_cons(n).to_a` -- into the equivalent
+   `recv.each_slice(n).map { |__s| __s }`, which the each_slice/each_cons map-fold
+   already lowers to a direct slice/window loop. Avoids a full Enumerator object
+   for the common materialize-the-slices idiom. */
+int desugar_enum_chain_to_a(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || strcmp(nm, "to_a")) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; if (args >= 0) nt_arr(nt, args, "arguments", &ac);
+    if (ac != 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || (strcmp(rn, "each_slice") && strcmp(rn, "each_cons"))) continue;
+    if (nt_ref(nt, recv, "block") >= 0) continue;  /* the blockless enumerator form */
+
+    int encl = c->nscope[id];
+    int base = nt->count;
+    char pn[32]; snprintf(pn, sizeof pn, "__es_%d", id);
+    int req = nt_new_node(nt, "RequiredParameterNode"); nt_node_set_str(nt, req, "name", pn);
+    int read = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, read, "name", pn);
+    int params = nt_new_node(nt, "ParametersNode"); nt_node_set_arr(nt, params, "requireds", &req, 1);
+    int bparams = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, bparams, "parameters", params);
+    int bodyst = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, bodyst, "body", &read, 1);
+    int blocknode = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, blocknode, "parameters", bparams);
+    nt_node_set_ref(nt, blocknode, "body", bodyst);
+
+    nt_node_set_str(nt, id, "name", "map");        /* to_a -> map { |__s| __s } */
+    nt_node_set_ref(nt, id, "block", blocknode);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    Scope *bs = comp_scope_of(c, blocknode);
+    LocalVar *lv = scope_local_intern(bs, pn); lv->is_block_param = 1;
+    changed = 1;
+  }
+  return changed;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2676,11 +2722,15 @@ int infer_block_params(Compiler *c) {
       TyKind arr_t2 = es_recv2 >= 0 ? infer_type(c, es_recv2) : TY_UNKNOWN;
       int is_cons2 = !strcmp(nt_str(nt, recv, "name"), "each_cons");
       if (ty_is_array(arr_t2)) {
-        TyKind bp_t2 = is_cons2 ? arr_t2 : ty_array_elem(arr_t2);
+        Scope *es2 = comp_scope_of(c, block);
+        int np2 = 0; while (block_param_name(c, block, np2)) np2++;
+        /* each_cons binds the n-window (array); each_slice binds the slice
+           (array) for a single param `|s|`, or destructures into elements when
+           there are several params `|a, b|`. A single destructured param
+           `|(a, b)|` over either splits the window/slice into its elements. */
+        TyKind bp_t2 = is_cons2 ? arr_t2 : (np2 == 1 ? arr_t2 : ty_array_elem(arr_t2));
         if (bp_t2 != TY_UNKNOWN) {
-          Scope *es2 = comp_scope_of(c, block);
-          int np2 = 0; while (block_param_name(c, block, np2)) np2++;
-          if (np2 == 0 && is_cons2 && block_param_is_multi(c, block, 0)) {
+          if (np2 == 0 && block_param_is_multi(c, block, 0)) {
             /* |(a, b)| destructuring: each leaf gets element type */
             TyKind elem2 = ty_array_elem(arr_t2);
             if (elem2 != TY_UNKNOWN) {
@@ -2754,6 +2804,35 @@ int infer_block_params(Compiler *c) {
       }
     }
 
+    /* array.{map,collect,each,select,filter,reject}.with_index(off) { |x, i| }:
+       a blockless enumerator over an array, indexed -- element + int index. */
+    if (!strcmp(name, "with_index") &&
+        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+        nt_ref(nt, recv, "block") < 0) {
+      const char *inner = nt_str(nt, recv, "name");
+      if (inner && (!strcmp(inner, "map") || !strcmp(inner, "collect") ||
+                    !strcmp(inner, "each") || !strcmp(inner, "select") ||
+                    !strcmp(inner, "filter") || !strcmp(inner, "reject"))) {
+        int arr_recv = nt_ref(nt, recv, "receiver");
+        TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
+        if (ty_is_array(arr_t)) {
+          Scope *wis = comp_scope_of(c, block);
+          if (p0) {
+            LocalVar *ep = scope_local_intern(wis, p0); ep->is_block_param = 1;
+            TyKind em = ty_unify(ep->type, ty_array_elem(arr_t));
+            if (em != ep->type) { ep->type = em; changed = 1; }
+          }
+          const char *idx_p = block_param_name(c, block, 1);
+          if (idx_p) {
+            LocalVar *ip = scope_local_intern(wis, idx_p); ip->is_block_param = 1;
+            TyKind im = ty_unify(ip->type, TY_INT);
+            if (im != ip->type) { ip->type = im; changed = 1; }
+          }
+          continue;
+        }
+      }
+    }
+
     /* array.combination(k) { |c| } binds the k-element sub-array (same kind) */
     if (!strcmp(name, "combination") && ty_is_array(rt)) {
       LocalVar *lp = scope_local_intern(comp_scope_of(c, block), p0); lp->is_block_param = 1;
@@ -2765,7 +2844,7 @@ int infer_block_params(Compiler *c) {
     /* array.sort/min/max/minmax/slice_when { |a, b| cmp } -- a comparator block
        binds both parameters to the element type */
     if ((!strcmp(name, "sort") || !strcmp(name, "sort!") || !strcmp(name, "min") || !strcmp(name, "max") ||
-         !strcmp(name, "minmax") || !strcmp(name, "slice_when")) && ty_is_array(rt)) {
+         !strcmp(name, "minmax") || !strcmp(name, "slice_when") || !strcmp(name, "chunk_while")) && ty_is_array(rt)) {
       Scope *cs = comp_scope_of(c, block);
       for (int pj = 0; pj < 2; pj++) {
         const char *pn = block_param_name(c, block, pj);

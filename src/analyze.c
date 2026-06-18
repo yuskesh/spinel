@@ -1534,6 +1534,7 @@ void analyze_program(Compiler *c) {
     ch |= propagate_prep_params(c);
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
+    ch |= desugar_enum_chain_to_a(c);          /* each_slice(n).to_a -> .map{|s|s} */
     ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
     ch |= infer_block_params(c);
     ch |= infer_for_index(c);

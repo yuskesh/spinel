@@ -150,6 +150,14 @@ static int ty_is_array_elem_iter(const char *n) {
          !strcmp(n, "reverse_each") || !strcmp(n, "each_entry") || !strcmp(n, "find_index");
 }
 
+TyIterShape ty_iter_shape(const char *name) {
+  if (!name) return TY_ITER_NONE;
+  if (!strcmp(name, "map") || !strcmp(name, "collect")) return TY_ITER_MAP;
+  if (!strcmp(name, "select") || !strcmp(name, "filter")) return TY_ITER_SELECT;
+  if (!strcmp(name, "reject")) return TY_ITER_REJECT;
+  return TY_ITER_NONE;
+}
+
 int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
   if (!name || max < 1) return 0;
 #define BY_PUT(i, t) do { if ((i) < max) out[i] = (t); } while (0)

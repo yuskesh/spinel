@@ -73,6 +73,12 @@ const char *ty_hash_cname(TyKind h);   /* "StrInt" etc, for sp_<X>Hash_* */
    protocols (forwarded-`&callable` desugar arity, builtin yield-stubs); keeps
    that knowledge from being re-encoded as scattered method-name lists. */
 int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max);
+
+/* Iterator collection shape -- what a value-producing iterator BUILDS, as
+   opposed to ty_block_yield's block-param types. One source of truth for the
+   map/collect, select/filter, reject classifications codegen dispatches on. */
+typedef enum { TY_ITER_NONE, TY_ITER_MAP, TY_ITER_SELECT, TY_ITER_REJECT } TyIterShape;
+TyIterShape ty_iter_shape(const char *name);
 /* Merge two observed types into the narrowest type covering both.
    Equal -> same; UNKNOWN acts as identity; otherwise widen to POLY
    (numeric int+float stays POLY for now -- mixed-numeric vars are rare

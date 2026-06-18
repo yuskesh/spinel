@@ -195,6 +195,7 @@ int first_block_call_args(Compiler *c, int si);
 int a_proc_params_node(Compiler *c, int create);
 int infer_block_params(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
+int desugar_enum_chain_to_a(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
 void cr_collect_calls(const NodeTable *nt, int id, char ***out, int *n, int *cap);

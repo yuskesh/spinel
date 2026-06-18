@@ -12,3 +12,8 @@ puts [[1, [2, [3, [4]]]]].flatten(2).inspect
 puts [[1, [2, [3, [4]]]]].flatten(3).inspect
 # Unbounded still works (no arg).
 puts [[1, [2, [3]]]].flatten.inspect
+
+# Depth-bounded flatten unboxes float and string sub-arrays one level too
+# (the bounded walker handles IntArray / StrArray / FloatArray / PolyArray).
+puts [[1.5, 2.5], [3.5]].flatten(1).inspect
+puts [["a", "b"], ["c"]].flatten(1).inspect
