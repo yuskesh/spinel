@@ -128,6 +128,16 @@ typedef struct {
   int ncs, ccs;
 } ClassInfo;
 
+/* One `ffi_func` declaration. ret: "ptr"/"int"/"float"/"double"/"str"/"void"/
+   "size_t"/"long"/"bool". args: malloc'd array of arg specs. */
+typedef struct {
+  char *mod;       /* module name */
+  char *name;      /* function name */
+  char *ret;       /* return spec */
+  char **args;     /* arg specs array (malloc'd) */
+  int nargs;
+} FfiFunc;
+
 typedef struct {
   const NodeTable *nt;
   TyKind *ntype;    /* [node_cap] node id -> inferred type */
@@ -158,11 +168,7 @@ typedef struct {
   int ntoplevel_includes;
 
   /* FFI registry: ffi_func declarations */
-  char **ffi_func_mods;     /* module name */
-  char **ffi_func_names;    /* function name */
-  char **ffi_func_ret;      /* return spec: "ptr","int","float","double","str","void","size_t","long","bool" */
-  char ***ffi_func_args;    /* arg specs array (malloc'd) */
-  int  *ffi_func_nargs;
+  FfiFunc *ffi_funcs;
   int n_ffi_funcs, c_ffi_funcs;
 
   /* FFI registry: ffi_const declarations */

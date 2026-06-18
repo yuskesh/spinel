@@ -2131,18 +2131,18 @@ char *codegen_program(const NodeTable *nt) {
     }
     int any_binstr = 0;
     for (int fi = 0; fi < cf->n_ffi_funcs; fi++) {
-      const char *ret = cf->ffi_func_ret[fi];
+      const char *ret = cf->ffi_funcs[fi].ret;
       if (!strcmp(ret, "binstr")) any_binstr = 1;
       buf_puts(&b, "extern ");
       buf_puts(&b, ffi_c_type(ret));
       buf_puts(&b, " ");
-      buf_puts(&b, cf->ffi_func_names[fi]);
+      buf_puts(&b, cf->ffi_funcs[fi].name);
       buf_puts(&b, "(");
-      for (int ai = 0; ai < cf->ffi_func_nargs[fi]; ai++) {
+      for (int ai = 0; ai < cf->ffi_funcs[fi].nargs; ai++) {
         if (ai) buf_puts(&b, ", ");
-        buf_puts(&b, ffi_c_type(cf->ffi_func_args[fi][ai]));
+        buf_puts(&b, ffi_c_type(cf->ffi_funcs[fi].args[ai]));
       }
-      if (cf->ffi_func_nargs[fi] == 0) buf_puts(&b, "void");
+      if (cf->ffi_funcs[fi].nargs == 0) buf_puts(&b, "void");
       buf_puts(&b, ");\n");
     }
     /* Byte count for the :binstr return mode (defined in sp_net.c). */

@@ -1275,18 +1275,14 @@ void register_ffi_decls(Compiler *c) {
         /* grow array */
         if (c->n_ffi_funcs >= c->c_ffi_funcs) {
           c->c_ffi_funcs = c->c_ffi_funcs ? c->c_ffi_funcs * 2 : 16;
-          c->ffi_func_mods   = realloc(c->ffi_func_mods,   sizeof(char*) * (size_t)c->c_ffi_funcs);
-          c->ffi_func_names  = realloc(c->ffi_func_names,  sizeof(char*) * (size_t)c->c_ffi_funcs);
-          c->ffi_func_ret    = realloc(c->ffi_func_ret,    sizeof(char*) * (size_t)c->c_ffi_funcs);
-          c->ffi_func_args   = realloc(c->ffi_func_args,   sizeof(char**) * (size_t)c->c_ffi_funcs);
-          c->ffi_func_nargs  = realloc(c->ffi_func_nargs,  sizeof(int) * (size_t)c->c_ffi_funcs);
+          c->ffi_funcs = realloc(c->ffi_funcs, sizeof(FfiFunc) * (size_t)c->c_ffi_funcs);
         }
         int fi = c->n_ffi_funcs++;
-        c->ffi_func_mods[fi]  = strdup(mname);
-        c->ffi_func_names[fi] = strdup(fname);
-        c->ffi_func_ret[fi]   = strdup(ret_spec);
-        c->ffi_func_args[fi]  = arg_specs;
-        c->ffi_func_nargs[fi] = en;
+        c->ffi_funcs[fi].mod  = strdup(mname);
+        c->ffi_funcs[fi].name = strdup(fname);
+        c->ffi_funcs[fi].ret   = strdup(ret_spec);
+        c->ffi_funcs[fi].args  = arg_specs;
+        c->ffi_funcs[fi].nargs = en;
         continue;
       }
 
@@ -1355,7 +1351,7 @@ void register_ffi_decls(Compiler *c) {
 /* Look up an FFI func by (module, name). Returns index or -1. */
 int ffi_find_func(Compiler *c, const char *mod, const char *name) {
   for (int i = 0; i < c->n_ffi_funcs; i++)
-    if (!strcmp(c->ffi_func_mods[i], mod) && !strcmp(c->ffi_func_names[i], name))
+    if (!strcmp(c->ffi_funcs[i].mod, mod) && !strcmp(c->ffi_funcs[i].name, name))
       return i;
   return -1;
 }

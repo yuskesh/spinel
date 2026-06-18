@@ -611,7 +611,7 @@ else {
       rcmod = nt_str(nt, recv, "name");
     if (rcmod) {
       int fi = ffi_find_func(c, rcmod, name);
-      if (fi >= 0) return ffi_spec_to_ty(c->ffi_func_ret[fi]);
+      if (fi >= 0) return ffi_spec_to_ty(c->ffi_funcs[fi].ret);
       /* ffi_buffer: Module.buf_name returns the static char* (ptr type -> TY_POLY) */
       if (ffi_find_buf(c, rcmod, name) >= 0) return TY_POLY;
       /* ffi_read_*: Module.reader_name(buf) returns int or ptr */

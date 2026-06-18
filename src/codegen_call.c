@@ -6158,23 +6158,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (rcmod) {
       int fi = -1;
       for (int ffi_i = 0; ffi_i < c->n_ffi_funcs; ffi_i++)
-        if (!strcmp(c->ffi_func_mods[ffi_i], rcmod) && !strcmp(c->ffi_func_names[ffi_i], name)) {
+        if (!strcmp(c->ffi_funcs[ffi_i].mod, rcmod) && !strcmp(c->ffi_funcs[ffi_i].name, name)) {
           fi = ffi_i; break;
         }
       if (fi >= 0) {
-        const char *ret_spec = c->ffi_func_ret[fi];
+        const char *ret_spec = c->ffi_funcs[fi].ret;
         int is_void_ret = !strcmp(ret_spec, "void");
         int is_ptr_ret  = !strcmp(ret_spec, "ptr");
         int is_str_ret  = !strcmp(ret_spec, "str");
         int is_binstr_ret = !strcmp(ret_spec, "binstr");
-        int call_argc = c->ffi_func_nargs[fi];
+        int call_argc = c->ffi_funcs[fi].nargs;
         /* Build the raw C call */
         Buf call_buf; memset(&call_buf, 0, sizeof call_buf);
-        buf_puts(&call_buf, c->ffi_func_names[fi]);
+        buf_puts(&call_buf, c->ffi_funcs[fi].name);
         buf_puts(&call_buf, "(");
         for (int ai = 0; ai < call_argc && ai < argc; ai++) {
           if (ai) buf_puts(&call_buf, ", ");
-          const char *spec = c->ffi_func_args[fi][ai];
+          const char *spec = c->ffi_funcs[fi].args[ai];
           TyKind at = comp_ntype(c, argv[ai]);
           if (!strcmp(spec, "str")) {
             if (at == TY_POLY) {
