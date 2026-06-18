@@ -3427,6 +3427,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, "_t%d = (", t); emit_ctype(c, bt, g_pre);
         buf_printf(g_pre, ")(uintptr_t)sp_catch_val[sp_catch_top];\n");
       }
+      else if (bt == TY_POLY) {
+        /* A poly-typed catch (e.g. its block's value is poly): the mrb_int
+           value channel can't carry a tagged value, so box the thrown int.
+           Common shape is a poly block return with no matching throw, where
+           this arm is dead; a thrown non-int to a poly catch is a separate
+           limitation of the int-only throw channel. */
+        buf_printf(g_pre, "_t%d = sp_box_int(sp_catch_val[sp_catch_top]);\n", t);
+      }
       else {
         buf_printf(g_pre, "_t%d = sp_catch_val[sp_catch_top];\n", t);
       }
