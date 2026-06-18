@@ -2036,6 +2036,432 @@ else {
   return 0;
 }
 
+static int emit_scalar_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  /* scalar receiver methods: evaluate the receiver once into rs, then
+     splice its text (so a literal/complex receiver isn't rebuilt). */
+  if (recv >= 0 && (rt == TY_STRING || rt == TY_INT || rt == TY_FLOAT)) {
+    Buf rs; memset(&rs, 0, sizeof rs);
+    emit_expr(c, recv, &rs);
+    const char *r = rs.p ? rs.p : "";
+    /* A String-typed receiver that resolved to a poly nil -- e.g. an
+       unresolvable chain like `Rails.application.class.to_s` in a method that
+       is compiled but never called -- emits sp_box_nil(); coerce it to a
+       const char* (yields "" at runtime) so the string ops below type-check. */
+    if (rt == TY_STRING && !strcmp(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
+    int handled = 1;
+
+    if (rt == TY_STRING) {
+      /* blockless "a".upto("c") materializes the succ-sequence as an array */
+      if (!strcmp(name, "upto") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+        buf_printf(b, "sp_StrArray_from_string_range(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 0)");
+      }
+      /* string methods taking a regex-literal argument route to the engine */
+      else if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+        const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
+        buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
+        emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2 &&
+               nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
+        Buf rp; memset(&rp, 0, sizeof rp);
+        emit_regex_pat_to_buf(c, argv[0], &rp);
+        buf_printf(b, "sp_re_%s(%s, %s, ", name, rp.p ? rp.p : "NULL", r);
+        emit_expr(c, argv[1], b); buf_puts(b, ")");
+        free(rp.p);
+      }
+      else if (!strcmp(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
+      else if (!strcmp(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+               !re_has_captures(re_lit_src(c, argv[0]))) {
+        buf_printf(b, "sp_re_scan(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
+      else if (!strcmp(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+               re_has_captures(re_lit_src(c, argv[0]))) {
+        buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
+      else if (!strcmp(name, "to_sym") || !strcmp(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
+      else if (!strcmp(name, "length") || !strcmp(name, "size")) {
+        if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
+            !strcmp(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
+            !strcmp(nt_str(nt, recv, "name"), g_hoist_len_recv))
+          buf_puts(b, g_hoist_len_var);
+        else buf_printf(b, "sp_str_length(%s)", r);
+      }
+      else if (!strcmp(name, "bytesize")) buf_printf(b, "(mrb_int)sp_str_byte_len(%s)", r);
+      else if (!strcmp(name, "upcase"))     buf_printf(b, "sp_str_upcase(%s)", r);
+      else if (!strcmp(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
+      else if (!strcmp(name, "capitalize")) buf_printf(b, "sp_str_capitalize(%s)", r);
+      else if (!strcmp(name, "reverse"))    buf_printf(b, "sp_str_reverse(%s)", r);
+      else if (!strcmp(name, "strip"))      buf_printf(b, "sp_str_strip(%s)", r);
+      else if (!strcmp(name, "lstrip"))     buf_printf(b, "sp_str_lstrip(%s)", r);
+      else if (!strcmp(name, "rstrip"))     buf_printf(b, "sp_str_rstrip(%s)", r);
+      else if (!strcmp(name, "chomp") && argc == 1) {
+        const char *a0ty = nt_type(nt, argv[0]);
+        if (a0ty && !strcmp(a0ty, "NilNode")) {
+          /* chomp(nil) returns the string unchanged */
+          buf_puts(b, r);
+        }
+        else {
+          buf_printf(b, "sp_str_chomp_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        }
+      }
+      else if (!strcmp(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
+      else if (!strcmp(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
+      else if (!strcmp(name, "to_s") || !strcmp(name, "to_str")) buf_puts(b, r);
+      else if ((!strcmp(name, "dup") || !strcmp(name, "clone")) && argc == 0) buf_printf(b, "sp_str_dup_external(%s)", r);
+      else if (!strcmp(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
+      else if (!strcmp(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
+      else if (!strcmp(name, "include?") && argc == 1) {
+        buf_printf(b, "sp_str_include(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "start_with?") && argc == 1) {
+        buf_printf(b, "sp_str_start_with(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "end_with?") && argc == 1) {
+        buf_printf(b, "sp_str_end_with(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "ascii_only?") && argc == 0) buf_printf(b, "sp_str_ascii_only(%s)", r);
+      else if (!strcmp(name, "valid_encoding?") && argc == 0) buf_printf(b, "sp_str_valid_encoding(%s)", r);
+      else if (!strcmp(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_index_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
+      else if (!strcmp(name, "index") && argc == 1) {
+        /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
+        buf_printf(b, "sp_str_index_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "index") && argc == 2) {
+        buf_printf(b, "sp_str_index_from_opt(%s, ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, ", ");
+        emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if ((!strcmp(name, "partition") || !strcmp(name, "rpartition")) && argc == 1 &&
+               re_lit_index(c, argv[0]) < 0) {
+        buf_printf(b, "sp_str_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "partition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        /* [before, match, after] from the first regex match, else [s, "", ""] */
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_new();"
+                      " if (sp_re_match(sp_re_pat_%d, %s) >= 0) {"
+                      " sp_StrArray_push(_t%d, sp_re_match_pre); sp_StrArray_push(_t%d, sp_re_match_str);"
+                      " sp_StrArray_push(_t%d, sp_re_match_post); } else {"
+                      " sp_StrArray_push(_t%d, %s); sp_StrArray_push(_t%d, SPL(\"\")); sp_StrArray_push(_t%d, SPL(\"\")); }"
+                      " _t%d; })",
+                   tr, re_lit_index(c, argv[0]), r, tr, tr, tr, tr, r, tr, tr, tr);
+      }
+      else if (!strcmp(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_rpartition(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
+      else if (!strcmp(name, "rindex") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_rindex_opt(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+      }
+      else if (!strcmp(name, "rindex") && argc == 1) { buf_printf(b, "sp_str_rindex_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "crypt") && argc == 1) { buf_printf(b, "sp_str_crypt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "scrub") && argc == 0) buf_printf(b, "sp_str_scrub(%s, 0)", r);
+      else if (!strcmp(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        /* s[/re/] -> the matched substring, or nil (NULL) on no match */
+        buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_match_str : NULL)", re_lit_index(c, argv[0]), r);
+      }
+      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
+               !strcmp(nt_type(c->nt, argv[0]), "RangeNode")) {
+        /* s[a..b] / s[a...b]; beginless/endless ranges use 0 / length */
+        int rn = argv[0];
+        int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+        int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
+        buf_printf(b, "sp_str_sub_range_r(%s, ", r);
+        if (lo >= 0) emit_expr(c, lo, b); else buf_puts(b, "0");
+        buf_puts(b, ", ");
+        if (hi >= 0) { emit_expr(c, hi, b); buf_printf(b, ", %d)", excl); }
+        else buf_printf(b, "(mrb_int)sp_str_length(%s), 0)", r);  /* endless: to the end */
+      }
+      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 2) {
+        /* s[start, len] */
+        buf_printf(b, "sp_str_sub_range(%s, ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1) {
+        buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "split") && argc == 0) buf_printf(b, "sp_str_split_ws(%s)", r);
+      else if (!strcmp(name, "split") && argc == 1) {
+        /* split(nil) and split(" ") are whitespace-mode; split(sep) drops trailing empties */
+        const char *aty = nt_type(c->nt, argv[0]);
+        int nil_arg = aty && !strcmp(aty, "NilNode");
+        int ws = nil_arg || (aty && !strcmp(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
+                 !strcmp(nt_str(c->nt, argv[0], "content"), " "));
+        if (ws) buf_printf(b, "sp_str_split_ws(%s)", r);
+        else { buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      }
+      else if (!strcmp(name, "split") && argc == 2) {
+        buf_printf(b, "sp_str_split_limit(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "clamp") && (argc == 2 ||
+               (argc == 1 && nt_type(c->nt, argv[0]) && !strcmp(nt_type(c->nt, argv[0]), "RangeNode")))) {
+        int lo_n, hi_n;
+        if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
+        else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
+        int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = %s; const char *_t%d = ", tc, r, tlo); emit_expr(c, lo_n, b);
+        buf_printf(b, "; const char *_t%d = ", thi); emit_expr(c, hi_n, b);
+        buf_printf(b, "; strcmp(_t%d, _t%d) < 0 ? _t%d : (strcmp(_t%d, _t%d) > 0 ? _t%d : _t%d); })",
+                   tc, tlo, tlo, tc, thi, thi, tc);
+      }
+      else if (!strcmp(name, "oct") && argc == 0) buf_printf(b, "sp_str_oct(%s)", r);
+      else if (!strcmp(name, "hex") && argc == 0) buf_printf(b, "sp_str_to_i_base(%s, 16)", r);
+      else if (!strcmp(name, "ord") && argc == 0) buf_printf(b, "sp_str_ord(%s)", r);
+      else if ((!strcmp(name, "force_encoding") || !strcmp(name, "b") || !strcmp(name, "encode")) && argc <= 1) buf_printf(b, "(%s)", r);
+      else if (!strcmp(name, "encoding") && argc == 0) buf_printf(b, "((void)(%s), sp_box_encoding(sp_encoding_utf8()))", r);
+      else if (!strcmp(name, "dump") && argc == 0) buf_printf(b, "sp_str_dump(%s)", r);
+      else if (!strcmp(name, "undump") && argc == 0) buf_printf(b, "sp_str_undump(%s)", r);
+      else if (!strcmp(name, "casecmp") && argc == 1) { buf_printf(b, "sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
+      else if (!strcmp(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+      else if (!strcmp(name, "setbyte") && argc == 2) { buf_printf(b, "sp_str_setbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "getbyte") && argc == 1) {
+        /* inline to a direct byte load (matches the legacy generator): the
+           per-byte sp_str_getbyte call recomputes the string length and bounds
+           every iteration, which the C compiler can't hoist across an aliasing
+           setbyte. An out-of-range index reads adjacent bytes (as in legacy). */
+        buf_printf(b, "((mrb_int)(unsigned char)(%s)[", r); emit_int_expr(c, argv[0], b); buf_puts(b, "])");
+      }
+      else if (!strcmp(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
+      else if (!strcmp(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "squeeze") && argc >= 2) {
+        buf_printf(b, "sp_str_squeeze_n(%s, (const char *[]){", r);
+        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
+        buf_printf(b, "}, %d)", argc);
+      }
+      else if ((!strcmp(name, "tr") || !strcmp(name, "tr_s")) && argc == 2) {
+        buf_printf(b, "sp_str_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); return 1; }
+      else if (!strcmp(name, "delete") && argc == 1) { buf_printf(b, "sp_str_delete(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "delete") && argc >= 2) {
+        buf_printf(b, "sp_str_delete_n(%s, (const char *[]){", r);
+        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
+        buf_printf(b, "}, %d)", argc);
+      }
+      else if (!strcmp(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return 1; }
+      else if (!strcmp(name, "count") && argc == 1) { buf_printf(b, "sp_str_count(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "count") && argc >= 2) {
+        buf_printf(b, "sp_str_count_n(%s, (const char *[]){", r);
+        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
+        buf_printf(b, "}, %d)", argc);
+      }
+      else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
+      else if (!strcmp(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&
+               !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) {
+        int chomp_v = struct_kwarg_value(c, argv[0], "chomp");
+        int is_chomp = (chomp_v >= 0 && nt_type(nt, chomp_v) &&
+                        !strcmp(nt_type(nt, chomp_v), "TrueNode"));
+        buf_printf(b, "%s(%s)", is_chomp ? "sp_str_lines_chomp" : "sp_str_lines", r);
+      }
+      else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
+      else if (!strcmp(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
+      else if (!strcmp(name, "unpack") && argc == 1)  { buf_printf(b, "sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
+      else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);
+      else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
+      else if (!strcmp(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
+      else if (!strcmp(name, "gsub") && argc == 2) {
+        buf_printf(b, "sp_str_gsub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "sub") && argc == 2 && comp_ntype(c, argv[1]) == TY_STR_STR_HASH) {
+        buf_printf(b, "sp_str_sub_str_str_hash(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "sub") && argc == 2) {
+        buf_printf(b, "sp_str_sub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "tr") && argc == 2) {
+        buf_printf(b, "sp_str_tr(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "center") && argc == 1) {
+        buf_printf(b, "sp_str_center(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "center") && argc == 2) {
+        buf_printf(b, "sp_str_center2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "ljust") && argc == 1) {
+        buf_printf(b, "sp_str_ljust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "ljust") && argc == 2) {
+        buf_printf(b, "sp_str_ljust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "rjust") && argc == 1) {
+        buf_printf(b, "sp_str_rjust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "rjust") && argc == 2) {
+        buf_printf(b, "sp_str_rjust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else handled = 0;
+    }
+    else if (rt == TY_INT) {
+      /* a nullable int's to_s/inspect tests the value and converts it -- bind
+         the receiver to a temp first so a side-effecting `r` (e.g. ARGF.read,
+         a method call) is evaluated exactly once, not twice. */
+      if (!strcmp(name, "to_s") && argc == 0) {
+        int _tn = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
+      }
+      else if (!strcmp(name, "inspect")) {
+        int _tn = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"nil\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
+      }
+      else if (!strcmp(name, "to_f"))   buf_printf(b, "((mrb_float)(%s))", r);
+      else if ((!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "floor") ||
+                !strcmp(name, "ceil") || !strcmp(name, "round") || !strcmp(name, "truncate")) &&
+               argc == 0) buf_printf(b, "(%s)", r);
+      else if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
+                !strcmp(name, "round") || !strcmp(name, "truncate")) && argc == 1) {
+        buf_printf(b, "sp_int_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "abs"))    buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (!strcmp(name, "chr"))    buf_printf(b, "sp_int_chr(%s)", r);
+      else if (!strcmp(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
+      else if (!strcmp(name, "even?"))  buf_printf(b, "((%s) %% 2 == 0)", r);
+      else if (!strcmp(name, "odd?"))   buf_printf(b, "((%s) %% 2 != 0)", r);
+      else if (!strcmp(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
+      else if (!strcmp(name, "nonzero?")) buf_printf(b, "((%s) == 0 ? SP_INT_NIL : (%s))", r, r);
+      else if (!strcmp(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
+      else if (!strcmp(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
+      else if (!strcmp(name, "divmod") && argc == 1) {
+        int tb = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", tb); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
+                      " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
+      }
+      else if (!strcmp(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (!strcmp(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "remainder") && argc == 1) { buf_printf(b, "((%s) %% (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+      else if (!strcmp(name, "size") && argc == 0) buf_puts(b, "((mrb_int)sizeof(mrb_int))");
+      else if (!strcmp(name, "gcdlcm") && argc == 1) {
+        int ta = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", ta); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
+                      " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
+      }
+      else if (!strcmp(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "clamp") && argc == 1 && nt_type(c->nt, argv[0]) && !strcmp(nt_type(c->nt, argv[0]), "RangeNode")) {
+        int rn = argv[0]; int tcr = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", tcr); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_int_clamp(%s, _t%d.first, _t%d.last - _t%d.excl); })", r, tcr, tcr, tcr);
+        (void)rn;
+      }
+      else if (!strcmp(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
+      else if (!strcmp(name, "allbits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_expr(c, argv[0], b); buf_printf(b, ")) == ("); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+      else if (!strcmp(name, "anybits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) != 0)"); }
+      else if (!strcmp(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
+      else if (!strcmp(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
+      else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);
+      else if (!strcmp(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "coerce") && argc == 1) {
+        TyKind a0 = comp_ntype(c, argv[0]);
+        if (a0 == TY_FLOAT) {
+          int ta = ++g_tmp, o = ++g_tmp;
+          buf_printf(b, "({ mrb_float _t%d = ", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
+                        " sp_FloatArray_push(_t%d, _t%d);"
+                        " sp_FloatArray_push(_t%d, (mrb_float)(%s)); _t%d; })", o, o, ta, o, r, o);
+        }
+        else {
+          int ta = ++g_tmp, o = ++g_tmp;
+          buf_printf(b, "({ mrb_int _t%d = ", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new();"
+                        " sp_IntArray_push(_t%d, _t%d);"
+                        " sp_IntArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
+        }
+      }
+      else handled = 0;
+    }
+    else { /* TY_FLOAT */
+      /* round/ceil/floor/truncate(n>0) -> Float to n decimals; else Integer */
+      int ndig = 0;
+      if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
+           !strcmp(name, "round") || !strcmp(name, "truncate")) && argc == 1) {
+        const char *aty = nt_type(c->nt, argv[0]);
+        if (aty && !strcmp(aty, "IntegerNode")) ndig = (int)nt_int(c->nt, argv[0], "value", 0);
+      }
+      const char *cfn = !strcmp(name, "floor") ? "floor" : !strcmp(name, "ceil") ? "ceil"
+                      : !strcmp(name, "truncate") ? "trunc" : "round";
+      if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
+           !strcmp(name, "round") || !strcmp(name, "truncate"))) {
+        if (ndig > 0)
+          buf_printf(b, "({ double _f = pow(10, %d); %s((%s) * _f) / _f; })", ndig, cfn, r);
+        else if (ndig < 0)  /* round to a power of ten left of the decimal -> Integer */
+          buf_printf(b, "({ double _f = pow(10, %d); (mrb_int)(%s((%s) / _f) * _f); })", -ndig, cfn, r);
+        else
+          buf_printf(b, "((mrb_int)%s(%s))", cfn, r);
+      }
+      else if (!strcmp(name, "to_i"))  buf_printf(b, "((mrb_int)(%s))", r);
+      else if (!strcmp(name, "to_f"))  buf_printf(b, "(%s)", r);
+      else if (!strcmp(name, "divmod") && argc == 1) {
+        /* Float#divmod(n) -> [floor(x/n) (Integer), x - q*n (Float)] */
+        int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ mrb_float _t%d = (%s); mrb_float _t%d = ", tx, r, tn); emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (isnan(_t%d) || isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                      " if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                      " mrb_int _t%d = (mrb_int)floor(_t%d / _t%d); sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); _t%d; })",
+                   tx, tn, tn, tq, tx, tn, o, o, tq, o, tx, tq, tn, o);
+      }
+      else if (!strcmp(name, "to_s"))    buf_printf(b, "sp_float_opt_to_s(%s)", r);
+      else if (!strcmp(name, "inspect")) buf_printf(b, "sp_float_opt_inspect(%s)", r);
+      else if (!strcmp(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (!strcmp(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
+      else if (!strcmp(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
+      else if (!strcmp(name, "finite?")) buf_printf(b, "(isfinite(%s) != 0)", r);
+      else if (!strcmp(name, "infinite?")) buf_printf(b, "(isinf(%s) ? ((%s) > 0 ? 1LL : -1LL) : SP_INT_NIL)", r, r);
+      else if (!strcmp(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
+      else if (!strcmp(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
+      else if (!strcmp(name, "next_float")) buf_printf(b, "nextafter(%s, INFINITY)", r);
+      else if (!strcmp(name, "prev_float")) buf_printf(b, "nextafter(%s, -INFINITY)", r);
+      else if (!strcmp(name, "magnitude")) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (!strcmp(name, "modulo") && argc == 1) { buf_printf(b, "fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "coerce") && argc == 1) {
+        TyKind a0 = comp_ntype(c, argv[0]);
+        int ta = ++g_tmp, o = ++g_tmp;
+        if (a0 == TY_INT) {
+          buf_printf(b, "({ mrb_int _t%d = ", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
+                        " sp_FloatArray_push(_t%d, (mrb_float)_t%d);"
+                        " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
+        }
+        else {
+          buf_printf(b, "({ mrb_float _t%d = ", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
+                        " sp_FloatArray_push(_t%d, _t%d);"
+                        " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
+        }
+      }
+      else handled = 0;
+    }
+    free(rs.p);
+    if (handled) return 1;
+  }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -7916,419 +8342,7 @@ else {
     return;
   }
 
-  /* scalar receiver methods: evaluate the receiver once into rs, then
-     splice its text (so a literal/complex receiver isn't rebuilt). */
-  if (recv >= 0 && (rt == TY_STRING || rt == TY_INT || rt == TY_FLOAT)) {
-    Buf rs; memset(&rs, 0, sizeof rs);
-    emit_expr(c, recv, &rs);
-    const char *r = rs.p ? rs.p : "";
-    /* A String-typed receiver that resolved to a poly nil -- e.g. an
-       unresolvable chain like `Rails.application.class.to_s` in a method that
-       is compiled but never called -- emits sp_box_nil(); coerce it to a
-       const char* (yields "" at runtime) so the string ops below type-check. */
-    if (rt == TY_STRING && !strcmp(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
-    int handled = 1;
-
-    if (rt == TY_STRING) {
-      /* blockless "a".upto("c") materializes the succ-sequence as an array */
-      if (!strcmp(name, "upto") && argc == 1 && nt_ref(nt, id, "block") < 0) {
-        buf_printf(b, "sp_StrArray_from_string_range(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 0)");
-      }
-      /* string methods taking a regex-literal argument route to the engine */
-      else if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-        const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
-        buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
-        emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2 &&
-               nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
-        Buf rp; memset(&rp, 0, sizeof rp);
-        emit_regex_pat_to_buf(c, argv[0], &rp);
-        buf_printf(b, "sp_re_%s(%s, %s, ", name, rp.p ? rp.p : "NULL", r);
-        emit_expr(c, argv[1], b); buf_puts(b, ")");
-        free(rp.p);
-      }
-      else if (!strcmp(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-        buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-      }
-      else if (!strcmp(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
-               !re_has_captures(re_lit_src(c, argv[0]))) {
-        buf_printf(b, "sp_re_scan(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-      }
-      else if (!strcmp(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
-               re_has_captures(re_lit_src(c, argv[0]))) {
-        buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-      }
-      else if (!strcmp(name, "to_sym") || !strcmp(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
-      else if (!strcmp(name, "length") || !strcmp(name, "size")) {
-        if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
-            !strcmp(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
-            !strcmp(nt_str(nt, recv, "name"), g_hoist_len_recv))
-          buf_puts(b, g_hoist_len_var);
-        else buf_printf(b, "sp_str_length(%s)", r);
-      }
-      else if (!strcmp(name, "bytesize")) buf_printf(b, "(mrb_int)sp_str_byte_len(%s)", r);
-      else if (!strcmp(name, "upcase"))     buf_printf(b, "sp_str_upcase(%s)", r);
-      else if (!strcmp(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
-      else if (!strcmp(name, "capitalize")) buf_printf(b, "sp_str_capitalize(%s)", r);
-      else if (!strcmp(name, "reverse"))    buf_printf(b, "sp_str_reverse(%s)", r);
-      else if (!strcmp(name, "strip"))      buf_printf(b, "sp_str_strip(%s)", r);
-      else if (!strcmp(name, "lstrip"))     buf_printf(b, "sp_str_lstrip(%s)", r);
-      else if (!strcmp(name, "rstrip"))     buf_printf(b, "sp_str_rstrip(%s)", r);
-      else if (!strcmp(name, "chomp") && argc == 1) {
-        const char *a0ty = nt_type(nt, argv[0]);
-        if (a0ty && !strcmp(a0ty, "NilNode")) {
-          /* chomp(nil) returns the string unchanged */
-          buf_puts(b, r);
-        }
-        else {
-          buf_printf(b, "sp_str_chomp_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-        }
-      }
-      else if (!strcmp(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
-      else if (!strcmp(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
-      else if (!strcmp(name, "to_s") || !strcmp(name, "to_str")) buf_puts(b, r);
-      else if ((!strcmp(name, "dup") || !strcmp(name, "clone")) && argc == 0) buf_printf(b, "sp_str_dup_external(%s)", r);
-      else if (!strcmp(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
-      else if (!strcmp(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
-      else if (!strcmp(name, "include?") && argc == 1) {
-        buf_printf(b, "sp_str_include(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "start_with?") && argc == 1) {
-        buf_printf(b, "sp_str_start_with(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "end_with?") && argc == 1) {
-        buf_printf(b, "sp_str_end_with(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "ascii_only?") && argc == 0) buf_printf(b, "sp_str_ascii_only(%s)", r);
-      else if (!strcmp(name, "valid_encoding?") && argc == 0) buf_printf(b, "sp_str_valid_encoding(%s)", r);
-      else if (!strcmp(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-        buf_printf(b, "sp_re_index_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-      }
-      else if (!strcmp(name, "index") && argc == 1) {
-        /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
-        buf_printf(b, "sp_str_index_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "index") && argc == 2) {
-        buf_printf(b, "sp_str_index_from_opt(%s, ", r);
-        emit_expr(c, argv[0], b); buf_puts(b, ", ");
-        emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if ((!strcmp(name, "partition") || !strcmp(name, "rpartition")) && argc == 1 &&
-               re_lit_index(c, argv[0]) < 0) {
-        buf_printf(b, "sp_str_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "partition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-        /* [before, match, after] from the first regex match, else [s, "", ""] */
-        int tr = ++g_tmp;
-        buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_new();"
-                      " if (sp_re_match(sp_re_pat_%d, %s) >= 0) {"
-                      " sp_StrArray_push(_t%d, sp_re_match_pre); sp_StrArray_push(_t%d, sp_re_match_str);"
-                      " sp_StrArray_push(_t%d, sp_re_match_post); } else {"
-                      " sp_StrArray_push(_t%d, %s); sp_StrArray_push(_t%d, SPL(\"\")); sp_StrArray_push(_t%d, SPL(\"\")); }"
-                      " _t%d; })",
-                   tr, re_lit_index(c, argv[0]), r, tr, tr, tr, tr, r, tr, tr, tr);
-      }
-      else if (!strcmp(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-        buf_printf(b, "sp_re_rpartition(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-      }
-      else if (!strcmp(name, "rindex") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-        buf_printf(b, "sp_re_rindex_opt(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
-      }
-      else if (!strcmp(name, "rindex") && argc == 1) { buf_printf(b, "sp_str_rindex_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "crypt") && argc == 1) { buf_printf(b, "sp_str_crypt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "scrub") && argc == 0) buf_printf(b, "sp_str_scrub(%s, 0)", r);
-      else if (!strcmp(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-        /* s[/re/] -> the matched substring, or nil (NULL) on no match */
-        buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_match_str : NULL)", re_lit_index(c, argv[0]), r);
-      }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
-               !strcmp(nt_type(c->nt, argv[0]), "RangeNode")) {
-        /* s[a..b] / s[a...b]; beginless/endless ranges use 0 / length */
-        int rn = argv[0];
-        int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
-        int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
-        buf_printf(b, "sp_str_sub_range_r(%s, ", r);
-        if (lo >= 0) emit_expr(c, lo, b); else buf_puts(b, "0");
-        buf_puts(b, ", ");
-        if (hi >= 0) { emit_expr(c, hi, b); buf_printf(b, ", %d)", excl); }
-        else buf_printf(b, "(mrb_int)sp_str_length(%s), 0)", r);  /* endless: to the end */
-      }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 2) {
-        /* s[start, len] */
-        buf_printf(b, "sp_str_sub_range(%s, ", r);
-        emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1) {
-        buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "split") && argc == 0) buf_printf(b, "sp_str_split_ws(%s)", r);
-      else if (!strcmp(name, "split") && argc == 1) {
-        /* split(nil) and split(" ") are whitespace-mode; split(sep) drops trailing empties */
-        const char *aty = nt_type(c->nt, argv[0]);
-        int nil_arg = aty && !strcmp(aty, "NilNode");
-        int ws = nil_arg || (aty && !strcmp(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
-                 !strcmp(nt_str(c->nt, argv[0], "content"), " "));
-        if (ws) buf_printf(b, "sp_str_split_ws(%s)", r);
-        else { buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      }
-      else if (!strcmp(name, "split") && argc == 2) {
-        buf_printf(b, "sp_str_split_limit(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "clamp") && (argc == 2 ||
-               (argc == 1 && nt_type(c->nt, argv[0]) && !strcmp(nt_type(c->nt, argv[0]), "RangeNode")))) {
-        int lo_n, hi_n;
-        if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
-        else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
-        int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = %s; const char *_t%d = ", tc, r, tlo); emit_expr(c, lo_n, b);
-        buf_printf(b, "; const char *_t%d = ", thi); emit_expr(c, hi_n, b);
-        buf_printf(b, "; strcmp(_t%d, _t%d) < 0 ? _t%d : (strcmp(_t%d, _t%d) > 0 ? _t%d : _t%d); })",
-                   tc, tlo, tlo, tc, thi, thi, tc);
-      }
-      else if (!strcmp(name, "oct") && argc == 0) buf_printf(b, "sp_str_oct(%s)", r);
-      else if (!strcmp(name, "hex") && argc == 0) buf_printf(b, "sp_str_to_i_base(%s, 16)", r);
-      else if (!strcmp(name, "ord") && argc == 0) buf_printf(b, "sp_str_ord(%s)", r);
-      else if ((!strcmp(name, "force_encoding") || !strcmp(name, "b") || !strcmp(name, "encode")) && argc <= 1) buf_printf(b, "(%s)", r);
-      else if (!strcmp(name, "encoding") && argc == 0) buf_printf(b, "((void)(%s), sp_box_encoding(sp_encoding_utf8()))", r);
-      else if (!strcmp(name, "dump") && argc == 0) buf_printf(b, "sp_str_dump(%s)", r);
-      else if (!strcmp(name, "undump") && argc == 0) buf_printf(b, "sp_str_undump(%s)", r);
-      else if (!strcmp(name, "casecmp") && argc == 1) { buf_printf(b, "sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
-      else if (!strcmp(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
-      else if (!strcmp(name, "setbyte") && argc == 2) { buf_printf(b, "sp_str_setbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "getbyte") && argc == 1) {
-        /* inline to a direct byte load (matches the legacy generator): the
-           per-byte sp_str_getbyte call recomputes the string length and bounds
-           every iteration, which the C compiler can't hoist across an aliasing
-           setbyte. An out-of-range index reads adjacent bytes (as in legacy). */
-        buf_printf(b, "((mrb_int)(unsigned char)(%s)[", r); emit_int_expr(c, argv[0], b); buf_puts(b, "])");
-      }
-      else if (!strcmp(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
-      else if (!strcmp(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "squeeze") && argc >= 2) {
-        buf_printf(b, "sp_str_squeeze_n(%s, (const char *[]){", r);
-        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
-        buf_printf(b, "}, %d)", argc);
-      }
-      else if ((!strcmp(name, "tr") || !strcmp(name, "tr_s")) && argc == 2) {
-        buf_printf(b, "sp_str_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); return; }
-      else if (!strcmp(name, "delete") && argc == 1) { buf_printf(b, "sp_str_delete(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "delete") && argc >= 2) {
-        buf_printf(b, "sp_str_delete_n(%s, (const char *[]){", r);
-        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
-        buf_printf(b, "}, %d)", argc);
-      }
-      else if (!strcmp(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return; }
-      else if (!strcmp(name, "count") && argc == 1) { buf_printf(b, "sp_str_count(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "count") && argc >= 2) {
-        buf_printf(b, "sp_str_count_n(%s, (const char *[]){", r);
-        for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
-        buf_printf(b, "}, %d)", argc);
-      }
-      else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
-      else if (!strcmp(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&
-               !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) {
-        int chomp_v = struct_kwarg_value(c, argv[0], "chomp");
-        int is_chomp = (chomp_v >= 0 && nt_type(nt, chomp_v) &&
-                        !strcmp(nt_type(nt, chomp_v), "TrueNode"));
-        buf_printf(b, "%s(%s)", is_chomp ? "sp_str_lines_chomp" : "sp_str_lines", r);
-      }
-      else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
-      else if (!strcmp(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
-      else if (!strcmp(name, "unpack") && argc == 1)  { buf_printf(b, "sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
-      else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);
-      else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
-      else if (!strcmp(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
-      else if (!strcmp(name, "gsub") && argc == 2) {
-        buf_printf(b, "sp_str_gsub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "sub") && argc == 2 && comp_ntype(c, argv[1]) == TY_STR_STR_HASH) {
-        buf_printf(b, "sp_str_sub_str_str_hash(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "sub") && argc == 2) {
-        buf_printf(b, "sp_str_sub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "tr") && argc == 2) {
-        buf_printf(b, "sp_str_tr(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "center") && argc == 1) {
-        buf_printf(b, "sp_str_center(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "center") && argc == 2) {
-        buf_printf(b, "sp_str_center2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "ljust") && argc == 1) {
-        buf_printf(b, "sp_str_ljust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "ljust") && argc == 2) {
-        buf_printf(b, "sp_str_ljust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "rjust") && argc == 1) {
-        buf_printf(b, "sp_str_rjust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "rjust") && argc == 2) {
-        buf_printf(b, "sp_str_rjust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else handled = 0;
-    }
-    else if (rt == TY_INT) {
-      /* a nullable int's to_s/inspect tests the value and converts it -- bind
-         the receiver to a temp first so a side-effecting `r` (e.g. ARGF.read,
-         a method call) is evaluated exactly once, not twice. */
-      if (!strcmp(name, "to_s") && argc == 0) {
-        int _tn = ++g_tmp;
-        buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
-      }
-      else if (!strcmp(name, "inspect")) {
-        int _tn = ++g_tmp;
-        buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"nil\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
-      }
-      else if (!strcmp(name, "to_f"))   buf_printf(b, "((mrb_float)(%s))", r);
-      else if ((!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "floor") ||
-                !strcmp(name, "ceil") || !strcmp(name, "round") || !strcmp(name, "truncate")) &&
-               argc == 0) buf_printf(b, "(%s)", r);
-      else if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-                !strcmp(name, "round") || !strcmp(name, "truncate")) && argc == 1) {
-        buf_printf(b, "sp_int_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "abs"))    buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "chr"))    buf_printf(b, "sp_int_chr(%s)", r);
-      else if (!strcmp(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
-      else if (!strcmp(name, "even?"))  buf_printf(b, "((%s) %% 2 == 0)", r);
-      else if (!strcmp(name, "odd?"))   buf_printf(b, "((%s) %% 2 != 0)", r);
-      else if (!strcmp(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
-      else if (!strcmp(name, "nonzero?")) buf_printf(b, "((%s) == 0 ? SP_INT_NIL : (%s))", r, r);
-      else if (!strcmp(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
-      else if (!strcmp(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
-      else if (!strcmp(name, "divmod") && argc == 1) {
-        int tb = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ mrb_int _t%d = ", tb); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
-                      " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
-      }
-      else if (!strcmp(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "remainder") && argc == 1) { buf_printf(b, "((%s) %% (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
-      else if (!strcmp(name, "size") && argc == 0) buf_puts(b, "((mrb_int)sizeof(mrb_int))");
-      else if (!strcmp(name, "gcdlcm") && argc == 1) {
-        int ta = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ mrb_int _t%d = ", ta); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
-                      " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
-      }
-      else if (!strcmp(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "clamp") && argc == 1 && nt_type(c->nt, argv[0]) && !strcmp(nt_type(c->nt, argv[0]), "RangeNode")) {
-        int rn = argv[0]; int tcr = ++g_tmp;
-        buf_printf(b, "({ sp_Range _t%d = ", tcr); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_int_clamp(%s, _t%d.first, _t%d.last - _t%d.excl); })", r, tcr, tcr, tcr);
-        (void)rn;
-      }
-      else if (!strcmp(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
-      else if (!strcmp(name, "allbits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_expr(c, argv[0], b); buf_printf(b, ")) == ("); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
-      else if (!strcmp(name, "anybits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) != 0)"); }
-      else if (!strcmp(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
-      else if (!strcmp(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
-      else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);
-      else if (!strcmp(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "coerce") && argc == 1) {
-        TyKind a0 = comp_ntype(c, argv[0]);
-        if (a0 == TY_FLOAT) {
-          int ta = ++g_tmp, o = ++g_tmp;
-          buf_printf(b, "({ mrb_float _t%d = ", ta); emit_expr(c, argv[0], b);
-          buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
-                        " sp_FloatArray_push(_t%d, _t%d);"
-                        " sp_FloatArray_push(_t%d, (mrb_float)(%s)); _t%d; })", o, o, ta, o, r, o);
-        }
-        else {
-          int ta = ++g_tmp, o = ++g_tmp;
-          buf_printf(b, "({ mrb_int _t%d = ", ta); emit_expr(c, argv[0], b);
-          buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new();"
-                        " sp_IntArray_push(_t%d, _t%d);"
-                        " sp_IntArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
-        }
-      }
-      else handled = 0;
-    }
-    else { /* TY_FLOAT */
-      /* round/ceil/floor/truncate(n>0) -> Float to n decimals; else Integer */
-      int ndig = 0;
-      if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-           !strcmp(name, "round") || !strcmp(name, "truncate")) && argc == 1) {
-        const char *aty = nt_type(c->nt, argv[0]);
-        if (aty && !strcmp(aty, "IntegerNode")) ndig = (int)nt_int(c->nt, argv[0], "value", 0);
-      }
-      const char *cfn = !strcmp(name, "floor") ? "floor" : !strcmp(name, "ceil") ? "ceil"
-                      : !strcmp(name, "truncate") ? "trunc" : "round";
-      if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-           !strcmp(name, "round") || !strcmp(name, "truncate"))) {
-        if (ndig > 0)
-          buf_printf(b, "({ double _f = pow(10, %d); %s((%s) * _f) / _f; })", ndig, cfn, r);
-        else if (ndig < 0)  /* round to a power of ten left of the decimal -> Integer */
-          buf_printf(b, "({ double _f = pow(10, %d); (mrb_int)(%s((%s) / _f) * _f); })", -ndig, cfn, r);
-        else
-          buf_printf(b, "((mrb_int)%s(%s))", cfn, r);
-      }
-      else if (!strcmp(name, "to_i"))  buf_printf(b, "((mrb_int)(%s))", r);
-      else if (!strcmp(name, "to_f"))  buf_printf(b, "(%s)", r);
-      else if (!strcmp(name, "divmod") && argc == 1) {
-        /* Float#divmod(n) -> [floor(x/n) (Integer), x - q*n (Float)] */
-        int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
-        buf_printf(b, "({ mrb_float _t%d = (%s); mrb_float _t%d = ", tx, r, tn); emit_expr(c, argv[0], b);
-        buf_printf(b, "; if (isnan(_t%d) || isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
-                      " if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                      " mrb_int _t%d = (mrb_int)floor(_t%d / _t%d); sp_PolyArray *_t%d = sp_PolyArray_new();"
-                      " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                      " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); _t%d; })",
-                   tx, tn, tn, tq, tx, tn, o, o, tq, o, tx, tq, tn, o);
-      }
-      else if (!strcmp(name, "to_s"))    buf_printf(b, "sp_float_opt_to_s(%s)", r);
-      else if (!strcmp(name, "inspect")) buf_printf(b, "sp_float_opt_inspect(%s)", r);
-      else if (!strcmp(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
-      else if (!strcmp(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
-      else if (!strcmp(name, "finite?")) buf_printf(b, "(isfinite(%s) != 0)", r);
-      else if (!strcmp(name, "infinite?")) buf_printf(b, "(isinf(%s) ? ((%s) > 0 ? 1LL : -1LL) : SP_INT_NIL)", r, r);
-      else if (!strcmp(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
-      else if (!strcmp(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
-      else if (!strcmp(name, "next_float")) buf_printf(b, "nextafter(%s, INFINITY)", r);
-      else if (!strcmp(name, "prev_float")) buf_printf(b, "nextafter(%s, -INFINITY)", r);
-      else if (!strcmp(name, "magnitude")) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "modulo") && argc == 1) { buf_printf(b, "fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "coerce") && argc == 1) {
-        TyKind a0 = comp_ntype(c, argv[0]);
-        int ta = ++g_tmp, o = ++g_tmp;
-        if (a0 == TY_INT) {
-          buf_printf(b, "({ mrb_int _t%d = ", ta); emit_expr(c, argv[0], b);
-          buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
-                        " sp_FloatArray_push(_t%d, (mrb_float)_t%d);"
-                        " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
-        }
-        else {
-          buf_printf(b, "({ mrb_float _t%d = ", ta); emit_expr(c, argv[0], b);
-          buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
-                        " sp_FloatArray_push(_t%d, _t%d);"
-                        " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
-        }
-      }
-      else handled = 0;
-    }
-    free(rs.p);
-    if (handled) return;
-  }
+  if (emit_scalar_call(c, id, b)) return;
 
   /* bigint methods */
   if (recv >= 0 && rt == TY_BIGINT) {
