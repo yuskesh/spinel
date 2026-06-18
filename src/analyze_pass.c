@@ -210,6 +210,53 @@ static int lw_index_first(const LWIndex *ix, const char *name, int scope) {
   return ix->head[lw_hash(name, scope) & (unsigned)(ix->cap - 1)];
 }
 
+/* Per-pass index of instance-variable write nodes keyed by ivar name -- the
+   ivar analogue of LWIndex. The usage-driven promotion scans below ask "does
+   @x have a non-empty-hash / typed write"; without this each query re-scanned
+   the whole node table, the dominant cost on ivar-heavy model graphs (the
+   #1302 from_hash/to_hash shape). Indexes both plain and `||=` ivar writes;
+   callers filter by node kind and class. Reuses LWIndex's layout (scope-less,
+   so the bucket key is name only). */
+static int ivw_is_write_kind(NodeKind k) {
+  return k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode;
+}
+
+static unsigned ivw_hash(const char *name) {
+  unsigned h = 2166136261u;
+  for (const char *p = name; p && *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+  return h;
+}
+
+static void ivw_index_build(Compiler *c, LWIndex *ix) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  for (int id = 0; id < nt->count; id++)
+    if (ivw_is_write_kind(nt_kind(nt, id))) n++;
+  int cap = 16;
+  while (cap < n * 2) cap <<= 1;
+  ix->cap = cap;
+  ix->node = (int *)malloc(sizeof(int) * (n > 0 ? n : 1));
+  ix->next = (int *)malloc(sizeof(int) * (n > 0 ? n : 1));
+  ix->head = (int *)malloc(sizeof(int) * cap);
+  for (int i = 0; i < cap; i++) ix->head[i] = -1;
+  int k = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (!ivw_is_write_kind(nt_kind(nt, id))) continue;
+    const char *nm = nt_str(nt, id, "name");
+    unsigned h = ivw_hash(nm) & (unsigned)(cap - 1);
+    ix->node[k] = id;
+    ix->next[k] = ix->head[h];
+    ix->head[h] = k;
+    k++;
+  }
+}
+
+/* First record index in the bucket for ivar `name`; iterate via ix->next.
+   Callers must still confirm name (hash collisions), node kind, and class. */
+static int ivw_index_first(const LWIndex *ix, const char *name) {
+  return ix->head[ivw_hash(name) & (unsigned)(ix->cap - 1)];
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -233,6 +280,10 @@ int infer_write_types(Compiler *c) {
      scans further down (see the per-scope write-site lookups below). */
   LWIndex lw_ix;
   lw_index_build(c, &lw_ix);
+  /* Index ivar-write nodes by name for the empty-hash / typed-write promotion
+     guards on the InstanceVariableReadNode branches below. */
+  LWIndex ivw_ix;
+  ivw_index_build(c, &ivw_ix);
 
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -824,11 +875,8 @@ int infer_write_types(Compiler *c) {
           if (rslot == TY_UNKNOWN) {
             const char *pin = nt_str(nt, recv, "name");
             int blocked = 0;
-            for (int wi = 0; wi < nt->count && !blocked; wi++) {
-              const char *wty = nt_type(nt, wi);
-              if (!wty) continue;
-              if (strcmp(wty, "InstanceVariableWriteNode") &&
-                  strcmp(wty, "InstanceVariableOrWriteNode")) continue;
+            for (int _r = ivw_index_first(&ivw_ix, pin); _r >= 0 && !blocked; _r = ivw_ix.next[_r]) {
+              int wi = ivw_ix.node[_r];
               const char *wnm = nt_str(nt, wi, "name");
               if (!wnm || !pin || strcmp(wnm, pin)) continue;
               int wv = nt_ref(nt, wi, "value");
@@ -948,8 +996,9 @@ int infer_write_types(Compiler *c) {
          its empty literal and is unaffected. */
       if (!is_push && *slot == TY_UNKNOWN && inm) {
         int has_typed_write = 0;
-        for (int _wi = 0; _wi < nt->count && !has_typed_write; _wi++) {
-          if (!nt_type(nt, _wi) || strcmp(nt_type(nt, _wi), "InstanceVariableWriteNode")) continue;
+        for (int _r = ivw_index_first(&ivw_ix, inm); _r >= 0 && !has_typed_write; _r = ivw_ix.next[_r]) {
+          int _wi = ivw_ix.node[_r];
+          if (nt_kind(nt, _wi) != NK_InstanceVariableWriteNode) continue;
           const char *_wnm = nt_str(nt, _wi, "name");
           if (!_wnm || strcmp(_wnm, inm)) continue;
           Scope *_ws = comp_scope_of(c, _wi);
@@ -1082,6 +1131,7 @@ int infer_write_types(Compiler *c) {
       if (!lv->is_param && !lv->is_block_param && (TyKind)lv->gc_root != lv->type) changed = 1;
     }
   lw_index_free(&lw_ix);
+  lw_index_free(&ivw_ix);
   return changed;
 }
 
