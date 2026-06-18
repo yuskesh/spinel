@@ -39,18 +39,12 @@ typedef struct { int tag; int cls_id; union { mrb_int i; const char *s; mrb_floa
  * body are extern; the rest stay static on whichever side owns them. */
 #define SP_GC_STACK_MAX 65536
 #define SP_GC_FULL_INTERVAL 8
-/* Ractor isolation: every per-execution-unit mutable collector global is
-   thread-local, so each Ractor pthread owns a private young/old heap, root
-   stack, and byte counters and collects independently with no global GC
-   lock. The mark/sweep hooks below are write-once shared state (installed
-   on the main thread at startup, read by every Ractor), so they stay
-   process-global. See lib/sp_ractor.c. */
-extern __thread void **sp_gc_roots[SP_GC_STACK_MAX];
-extern __thread int sp_gc_nroots;
-extern __thread sp_gc_hdr *sp_gc_heap;
-extern __thread size_t sp_gc_bytes;
-extern __thread size_t sp_gc_old_bytes;
-extern __thread int sp_gc_cycle;
+extern void **sp_gc_roots[SP_GC_STACK_MAX];
+extern int sp_gc_nroots;
+extern sp_gc_hdr *sp_gc_heap;
+extern size_t sp_gc_bytes;
+extern size_t sp_gc_old_bytes;
+extern int sp_gc_cycle;
 extern void (*sp_gc_mark_suspended_fibers_hook)(void);
 
 /* ---- Collector entry points (defined in lib/sp_gc.c) ---- */
@@ -59,11 +53,6 @@ void sp_gc_mark_all(void);
 void sp_gc_collect(void);
 void sp_gc_enforce_mem_limit(void);
 void sp_oom_die(void);
-/* Free this thread's private GC heaps on Ractor exit (see lib/sp_gc.c). */
-void sp_gc_thread_teardown(void);
-/* Installed by the generated TU: frees this thread's string heap on Ractor
-   exit (sp_str_heap is static to the TU, so the collector reaches it by hook). */
-extern void (*sp_gc_str_teardown_hook)(void);
 
 /* ---- Embedder callbacks supplied by the generated TU ----
  * The collector cannot own the program's roots or string heap (they are

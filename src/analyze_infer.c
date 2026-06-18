@@ -665,7 +665,6 @@ else {
       if (cn && !strcmp(cn, "Hash")) return TY_UNKNOWN;
       if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
       if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
-      if (cn && !strcmp(cn, "Ractor")) return TY_RACTOR;
       if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") || !strcmp(cn, "Monitor") ||
                  !strcmp(cn, "Random") || !strcmp(cn, "IO") || !strcmp(cn, "File") ||
                  !strcmp(cn, "GzipReader") || !strcmp(cn, "GzipWriter"))) return TY_POLY;
@@ -706,7 +705,6 @@ else {
       if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */
       if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
-      if (cn && !strcmp(cn, "Ractor")) return TY_RACTOR;
       /* Thread.new { block }: modeled as a Fiber run to completion on #value. */
       if (cn && !strcmp(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_FIBER;
       if (cn && !strcmp(cn, "Random")) return TY_RANDOM;
@@ -889,11 +887,6 @@ else {
         return TY_POLY;
       if (cn2 && !strcmp(cn2, "Fiber") && !strcmp(name, "current")) return TY_FIBER;
       if (cn2 && !strcmp(cn2, "Fiber") && !strcmp(name, "yield")) return TY_POLY;
-      /* Ractor class methods: Ractor.new -> ractor, Ractor.receive -> poly
-         (a message of statically-unknown type), Ractor.yield -> nil. */
-      if (cn2 && !strcmp(cn2, "Ractor") && !strcmp(name, "new")) return TY_RACTOR;
-      if (cn2 && !strcmp(cn2, "Ractor") && !strcmp(name, "receive")) return TY_POLY;
-      if (cn2 && !strcmp(cn2, "Ractor") && !strcmp(name, "yield")) return TY_NIL;
       /* Random class methods: Random.rand(n)->int / Random.rand->float */
       if (cn2 && !strcmp(cn2, "Random") && !strcmp(name, "rand"))
         return argc >= 1 ? TY_INT : TY_FLOAT;
@@ -906,13 +899,6 @@ else {
     if (!strcmp(name, "resume") || !strcmp(name, "transfer")) return TY_POLY;
     if (!strcmp(name, "alive?")) return TY_BOOL;
     if (!strcmp(name, "value")) return TY_POLY;
-  }
-
-  /* TY_RACTOR instance methods: r.send(v) / r << v return the Ractor (like
-     Ruby's #send), r.take returns a message of statically-unknown type. */
-  if (recv >= 0 && rt == TY_RACTOR) {
-    if (!strcmp(name, "send") || !strcmp(name, "<<")) return TY_RACTOR;
-    if (!strcmp(name, "take")) return TY_POLY;
   }
 
   /* TY_RANDOM instance methods */

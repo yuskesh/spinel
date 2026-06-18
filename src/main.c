@@ -407,9 +407,6 @@ int main(int argc, char **argv) {
   s_add(&cmd, " ");
   snprintf(tmp, sizeof tmp, "-O%s ", opt_level); s_add(&cmd, tmp);
   s_add(&cmd, "-Wno-all -ffunction-sections -fdata-sections ");
-  /* libspinel_rt.a uses pthreads for Ractor; -pthread sets the right defines
-     and links the threading library for the generated binary. */
-  s_add(&cmd, "-pthread ");
   snprintf(tmp, sizeof tmp, "-I\"%s\" -I\"%s%cregexp\" ", lib_dir, lib_dir, PATH_SEP); s_add(&cmd, tmp);
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   s_add_arg(&cmd, c_path);

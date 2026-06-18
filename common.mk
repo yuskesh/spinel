@@ -55,12 +55,6 @@ else
   GC_FLAGS = -Wl,--gc-sections
 endif
 
-# libspinel_rt.a uses pthreads for the Ractor runtime (lib/sp_ractor.c), so
-# every program linked against it -- the spinel binary and every generated
-# user program built via the Makefile link rules -- needs -pthread. The
-# in-process cc driver (src/main.c) adds it to its own link command.
-LDFLAGS += -pthread
-
 # MinGW gcc appends .exe; reflect that so dependency tracking matches
 # reality. Windows' default 1MB stack is too small for the deeply
 # recursive bootstrap compile (~75k frames), so bump it at link time.

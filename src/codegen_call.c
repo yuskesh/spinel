@@ -811,23 +811,6 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
 
-  /* Ractor instance methods: r.send(v) / r << v (enqueue to the Ractor's
-     mailbox, returning the Ractor like Ruby's #send) and r.take (block on the
-     Ractor's outgoing queue). */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_RACTOR) {
-    if ((!strcmp(name, "send") || !strcmp(name, "<<")) && argc == 1) {
-      int tr = ++g_tmp;
-      buf_puts(b, "({ sp_Ractor *_rt"); buf_printf(b, "%d = ", tr); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Ractor_send(_rt%d, ", tr); emit_boxed(c, argv[0], b);
-      buf_printf(b, "); _rt%d; })", tr);
-      return;
-    }
-    if (!strcmp(name, "take") && argc == 0) {
-      buf_puts(b, "sp_Ractor_take("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return;
-    }
-  }
-
   /* Fiber instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
     if (!strcmp(name, "resume")) {
@@ -2458,10 +2441,6 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_fiber_new(c, id, b);
         return;
       }
-      if (cn && !strcmp(cn, "Ractor") && nt_ref(nt, id, "block") >= 0) {
-        emit_ractor_new(c, id, b);
-        return;
-      }
       if (cn && !strcmp(cn, "Random")) {
         buf_puts(b, "sp_Random_new(");
         if (argc >= 1) emit_expr(c, argv[0], b);
@@ -2766,20 +2745,6 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (!strcmp(name, "current") && argc == 0) {
       buf_puts(b, "sp_fiber_current");
-      return;
-    }
-  }
-
-  /* Ractor class methods: Ractor.receive (drain own mailbox) and
-     Ractor.yield(val) (push to own outgoing queue). */
-  if (recv_is_const(nt, recv, "Ractor")) {
-    if (!strcmp(name, "receive") && argc == 0) {
-      buf_puts(b, "sp_Ractor_receive()");
-      return;
-    }
-    if (!strcmp(name, "yield")) {
-      if (argc == 0) buf_puts(b, "sp_Ractor_yield(sp_box_nil())");
-      else { buf_puts(b, "sp_Ractor_yield("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
       return;
     }
   }

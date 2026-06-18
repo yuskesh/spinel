@@ -881,110 +881,6 @@ static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
   return 0;
 }
 
-/* Lower `Ractor.new { body }` into a `static void _ractor_body_N(sp_Ractor *)`
-   and sp_Ractor_new. Unlike a Fiber, a Ractor runs on its own pthread with a
-   private heap, so it cannot share capture cells with the creator: Milestone 1
-   enforces the isolation rule by rejecting any captured outer local or `self`
-   (a later milestone copies shareable captures by value). The body talks to
-   the outside world only through Ractor.receive / Ractor.yield, so there is no
-   resume/yield slot to thread; the block's implicit return value is not
-   delivered (also a later milestone). The body wraps itself in a top-level
-   rescue landing pad so an uncaught exception terminates just this Ractor
-   instead of exit(1)-ing the whole process. */
-void emit_ractor_new(Compiler *c, int id, Buf *b) {
-  const NodeTable *nt = c->nt;
-  int blk = nt_ref(nt, id, "block");
-  if (blk < 0) { buf_puts(b, "sp_Ractor_new(NULL)"); return; }
-
-  int rid = ++g_ractor_counter;
-  char fname[48];
-  snprintf(fname, sizeof fname, "_ractor_body_%d", rid);
-
-  int body = nt_ref(nt, blk, "body");
-  Scope *encl = comp_scope_of(c, id);
-
-  /* Isolation rule: reject captured outer locals and self. */
-  NameSet rac_locals = {0};
-  if (body >= 0) proc_collect_locals(c, body, &rac_locals);
-  NameSet rac_used = {0};
-  if (body >= 0) proc_collect_used(c, body, &rac_used);
-  if (encl) {
-    for (int u = 0; u < rac_used.n; u++) {
-      const char *nm = rac_used.v[u];
-      if (nameset_has(&rac_locals, nm)) continue;
-      LocalVar *lv = scope_local(encl, nm);
-      if (!lv || lv->type == TY_UNKNOWN) continue;
-      unsupported(c, id, "Ractor::IsolationError: block captures outer variable "
-                         "(Milestone 1 Ractors must be self-contained)");
-    }
-  }
-  free(rac_used.v);
-  if (encl && encl->class_id >= 0 && !encl->is_cmethod && body >= 0 && fiber_body_uses_self(c, body))
-    unsupported(c, id, "Ractor::IsolationError: block accesses self "
-                       "(Milestone 1 Ractors must be self-contained)");
-
-  /* Block parameters would carry Ractor.new arguments, which Milestone 1 does
-     not pass; reject so we never silently drop them. */
-  {
-    int bp_node = nt_ref(nt, blk, "parameters");
-    if (bp_node >= 0) {
-      int inner = nt_ref(nt, bp_node, "parameters");
-      int pn = inner >= 0 ? inner : bp_node;
-      int rn = 0; (void)nt_arr(nt, pn, "requireds", &rn);
-      if (rn > 0) unsupported(c, id, "Ractor.new block parameters (Milestone 1 takes no args)");
-    }
-  }
-
-  buf_printf(&g_proc_protos, "static void %s(sp_Ractor *_rb);\n", fname);
-
-  Buf *pb = &g_procs;
-  buf_printf(pb, "static void %s(sp_Ractor *_rb) {\n", fname);
-  buf_puts(pb, "    (void)_rb;\n");
-  buf_puts(pb, "    SP_GC_SAVE();\n");
-
-  /* Save global emission state (mirror emit_fiber_new). */
-  Buf *sv_pre = g_pre; int sv_indent = g_indent, sv_nren = g_nren, sv_block = g_block_id;
-  const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
-  TyKind sv_rt = g_ret_type; int sv_rp = g_result_poly;
-  g_pre = NULL; g_indent = 1; g_nren = 0; g_block_id = blk;
-  g_block_param_name = NULL; g_self = sv_self;
-  g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
-
-  /* Declare body locals. */
-  if (encl) {
-    for (int i = 0; i < encl->nlocals; i++) {
-      LocalVar *lv = &encl->locals[i];
-      if (lv->is_param || lv->is_cell) continue;
-      if (!lv->name) continue;
-      if (!nameset_has(&rac_locals, lv->name)) continue;
-      if (lv->type == TY_UNKNOWN) continue;
-      declare_local(c, pb, lv, 0);
-    }
-  }
-  free(rac_locals.v);
-
-  /* Top-level rescue landing pad: an uncaught raise longjmps here and the
-     Ractor simply terminates (its taker then sees the closed outbox). */
-  buf_puts(pb, "    sp_exc_top++;\n");
-  buf_puts(pb, "    if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
-  if (body >= 0) {
-    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
-    for (int k = 0; k < bn; k++) emit_stmt(c, bb[k], pb, 1);
-  }
-  buf_puts(pb, "        sp_exc_top--;\n");
-  buf_puts(pb, "    } else {\n");
-  buf_puts(pb, "        sp_exc_top--;\n");
-  buf_puts(pb, "    }\n");
-  buf_puts(pb, "}\n");
-
-  /* Restore emission state. */
-  g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
-  g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
-  g_result_poly = sv_rp; g_result_var = sv_rv;
-
-  buf_printf(b, "sp_Ractor_new(%s)", fname);
-}
-
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
    standalone `static mrb_int _proc_N(void *cap, mrb_int argc, mrb_int *args)`
    (sp_proc_call's ABI) into g_procs, and emit the boxing `sp_proc_new_meta(...)`
@@ -1722,9 +1618,6 @@ void emit_regex_section(Buf *b) {
      program's heap-typed globals/constants/class-ivars (it chains to
      sp_re_mark_globals itself). */
   buf_puts(b, "  sp_gc_mark_globals_hook = sp_mark_user_globals;\n");
-  /* Install the Ractor message codec (defined in sp_runtime.h, where the heap
-     allocators it rebuilds into are visible). */
-  buf_puts(b, "  sp_ractor_codec_install();\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -1897,7 +1790,6 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_STRINGSCANNER:         buf_puts(b, "StringScanner"); break;
     case TY_PROC: case TY_CURRY:   buf_puts(b, "Proc"); break;
     case TY_FIBER:                 buf_puts(b, "Fiber"); break;
-    case TY_RACTOR:                buf_puts(b, "Ractor"); break;
     case TY_RANDOM:                buf_puts(b, "Random"); break;
     case TY_METHOD:                buf_puts(b, "Method"); break;
     case TY_IO:                    buf_puts(b, "IO"); break;

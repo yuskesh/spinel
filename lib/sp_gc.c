@@ -15,30 +15,25 @@
 #include <unistd.h>
 #include "sp_gc.h"
 
-/* ---- Globals shared with the generated TU (declared extern in sp_gc.h) ----
-   The per-heap mutable state is __thread so each Ractor pthread collects its
-   own heap with no lock; the hook pointers are write-once shared. */
-__thread void **sp_gc_roots[SP_GC_STACK_MAX];
-__thread int sp_gc_nroots = 0;
-__thread sp_gc_hdr *sp_gc_heap = NULL;
-__thread size_t sp_gc_bytes = 0;
-__thread size_t sp_gc_old_bytes = 0;
-__thread int sp_gc_cycle = 0;
+/* ---- Globals shared with the generated TU (declared extern in sp_gc.h) ---- */
+void **sp_gc_roots[SP_GC_STACK_MAX];
+int sp_gc_nroots = 0;
+sp_gc_hdr *sp_gc_heap = NULL;
+size_t sp_gc_bytes = 0;
+size_t sp_gc_old_bytes = 0;
+int sp_gc_cycle = 0;
 void (*sp_gc_mark_suspended_fibers_hook)(void) = NULL;
 void (*sp_gc_mark_globals_hook)(void) = NULL;
 void (*sp_gc_str_sweep_hook)(void) = NULL;
-void (*sp_gc_str_teardown_hook)(void) = NULL;
 
-/* ---- Collector-private globals ----
-   The heap/mark-stack/verify-snapshot state is per-thread; sp_gc_verify and
-   the RSS governor are process-wide read-mostly config. */
+/* ---- Collector-private globals ---- */
 static int sp_gc_verify = 0;
-static __thread sp_gc_hdr *sp_gc_old_heap = NULL;
+static sp_gc_hdr *sp_gc_old_heap = NULL;
 #define SP_GC_MARK_STACK_MAX (1024*64)
-static __thread void **sp_gc_mark_stack = NULL;
-static __thread int sp_gc_mark_top = 0;
-static __thread sp_gc_hdr **sp_gc_vsnap = NULL;
-static __thread size_t sp_gc_vsnap_n = 0, sp_gc_vsnap_cap = 0;
+static void **sp_gc_mark_stack = NULL;
+static int sp_gc_mark_top = 0;
+static sp_gc_hdr **sp_gc_vsnap = NULL;
+static size_t sp_gc_vsnap_n = 0, sp_gc_vsnap_cap = 0;
 static size_t sp_gc_max_bytes = 0;
 static int sp_gc_max_bytes_init = 0;
 #define SP_GC_FULL_INTERVAL 8
@@ -82,29 +77,6 @@ void sp_gc_mark(void*obj){if(!obj)return;unsigned char pm=((unsigned char*)obj)[
 void sp_gc_mark_all(void){if(!sp_gc_mark_stack)sp_gc_mark_stack=(void**)malloc(sizeof(void*)*SP_GC_MARK_STACK_MAX);sp_gc_mark_top=0;if(sp_gc_verify)sp_gc_verify_snapshot();int vd=sp_gc_verify;for(int i=0;i<sp_gc_nroots;i++){void**e=sp_gc_roots[i];if(vd){sp_gc_dbg_phase="root";sp_gc_dbg_ctx=(void*)e;}if((uintptr_t)e&(uintptr_t)1){sp_gc_mark_root_entry(e);}else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(vd)sp_gc_dbg_phase="fibers";if(sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook();if(vd)sp_gc_dbg_phase="globals";if(sp_gc_mark_globals_hook)sp_gc_mark_globals_hook();while(sp_gc_mark_top>0){void*obj=sp_gc_mark_stack[--sp_gc_mark_top];if(vd){sp_gc_dbg_phase="scan";sp_gc_dbg_ctx=obj;}sp_gc_hdr*h=(sp_gc_hdr*)((char*)obj-sizeof(sp_gc_hdr));if(h->scan)h->scan(obj);}if(vd){sp_gc_dbg_phase="?";sp_gc_dbg_ctx=NULL;}}
 
 void sp_gc_collect(void){int full=(sp_gc_cycle%SP_GC_FULL_INTERVAL==0);sp_gc_cycle++;sp_gc_hdr*hh=sp_gc_old_heap;while(hh){hh->marked=0;hh=hh->next;}sp_gc_mark_all();if(full){sp_gc_hdr**pp=&sp_gc_old_heap;sp_gc_old_bytes=0;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;sp_gc_old_bytes+=h->size;pp=&h->next;}}}else{hh=sp_gc_old_heap;while(hh){hh->marked=1;hh=hh->next;}}sp_gc_hdr**pp=&sp_gc_heap;sp_gc_bytes=sp_gc_old_bytes;while(*pp){sp_gc_hdr*h=*pp;if(!h->marked){*pp=h->next;if(h->recycle){h->recycle(h);}else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);}}else{h->marked=1;*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;}}if(sp_gc_str_sweep_hook)sp_gc_str_sweep_hook();if(full)malloc_trim(0);}
-
-/* Ractor teardown: free this thread's private young+old heaps (running
-   finalizers, e.g. to munmap fiber stacks) and the collector-private mark
-   stack / verify snapshot. Called from a Ractor pthread's entry trampoline
-   after its body returns, so the heap memory is reclaimed on Ractor exit
-   rather than leaking until process end. The main thread never calls this
-   (its heap lives for the whole process). Pooled chunks are off the heap
-   list on a separate __thread free-list; an empty-pool Ractor (the common
-   case) has nothing there, and the pool free-list memory is reclaimed by
-   the OS at process exit. */
-void sp_gc_thread_teardown(void){
-  sp_gc_hdr*h=sp_gc_heap;
-  while(h){sp_gc_hdr*n=h->next;if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);h=n;}
-  sp_gc_heap=NULL;
-  h=sp_gc_old_heap;
-  while(h){sp_gc_hdr*n=h->next;if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));free(h);h=n;}
-  sp_gc_old_heap=NULL;
-  sp_gc_bytes=0;sp_gc_old_bytes=0;
-  if(sp_gc_mark_stack){free(sp_gc_mark_stack);sp_gc_mark_stack=NULL;sp_gc_mark_top=0;}
-  if(sp_gc_vsnap){free(sp_gc_vsnap);sp_gc_vsnap=NULL;sp_gc_vsnap_n=0;sp_gc_vsnap_cap=0;}
-  /* Also free this thread's string heap (static to the generated TU). */
-  if(sp_gc_str_teardown_hook)sp_gc_str_teardown_hook();
-}
 
 /* Issue #1302: optional RSS ceiling via SPINEL_MAX_HEAP_MB; checked only
  * at GC-trigger points against real /proc/self/statm RSS. Default off. */

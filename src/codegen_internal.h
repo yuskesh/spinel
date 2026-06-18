@@ -145,8 +145,6 @@ extern int g_proc_counter;
 extern int g_needs_proc_poly_retslot; /* any proc returns TY_POLY via _sp_proc_poly_ret */
 /* Fiber body functions accumulate here (similar to g_procs but void(*)(sp_Fiber*)). */
 extern int g_fiber_counter;
-/* Ractor body functions accumulate likewise (void(*)(sp_Ractor*)). */
-extern int g_ractor_counter;
 
 /* Static regex-literal table: each distinct (source, flags) pair compiles once
    to an sp_re_pat_<i> global initialized in sp_re_init(). */
@@ -252,7 +250,6 @@ int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 int  emit_inline_expr(Compiler *c, int id, Buf *b);
 void emit_cond(Compiler *c, int id, Buf *b);
 void emit_fiber_new(Compiler *c, int id, Buf *b);
-void emit_ractor_new(Compiler *c, int id, Buf *b);
 int  needs_root(TyKind t);
 int  method_is_void(Scope *s);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
@@ -449,7 +446,6 @@ int proc_body_has_yield(Compiler *c, int id);
 int fiber_cap_needs_root(TyKind t);
 int fiber_body_uses_self(Compiler *c, int id);
 void emit_fiber_new(Compiler *c, int id, Buf *b);
-void emit_ractor_new(Compiler *c, int id, Buf *b);
 void emit_proc_literal(Compiler *c, int create, Buf *b);
 int is_builtin_reopen(const char *name);
 int is_exc_name(const char *n);

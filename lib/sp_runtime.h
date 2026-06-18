@@ -66,12 +66,7 @@ static int sp_bt_n = 0;
 #include "sp_gc.h"
 /* sp_Fiber + the Fiber API; the bodies live in libspinel_rt.a (lib/sp_fiber.c). */
 #include "sp_fiber.h"
-/* sp_Ractor + the Ractor API; the bodies live in libspinel_rt.a (lib/sp_ractor.c). */
-#include "sp_ractor.h"
 static const char *sp_sym_to_s(sp_sym id);
-/* Emitted later in the generated TU (emit_sym_runtime); forward-declared here
-   so the Ractor message codec can re-intern symbols by name on receive. */
-static sp_sym sp_sym_intern(const char *s);
 
 /* sp_raise_cls forward decl — defined later in this header (line ~1017).
    Used by the integer-division helpers below to match CRuby semantics:
@@ -351,8 +346,7 @@ static const char *sp_rational_inspect(sp_Rational r) {
    hook is responsible for deciding whether to keep the storage
    (pool push) or free it. Used by class-instance free-list pools. */
 /* sp_gc_heap / sp_gc_bytes are defined in lib/sp_gc.c (extern via sp_gc.h). */
-/* __thread: per-Ractor GC trigger threshold (see lib/sp_gc.h). */
-static __thread size_t sp_gc_threshold = 256*1024;
+static size_t sp_gc_threshold = 256*1024;
 
 /* ---- GC verify: opt-in mark-path validation (release-neutral) ------------
  * SPINEL_GC_VERIFY=1  before the collector invokes an object's scan hook,
@@ -365,8 +359,7 @@ static __thread size_t sp_gc_threshold = 256*1024;
 /* GC verify state + helpers live in lib/sp_gc.c. */
 
 /* ---- String GC ---- */
-/* __thread: each Ractor owns a private string heap. */
-static __thread sp_str_hdr *sp_str_heap = NULL;
+static sp_str_hdr *sp_str_heap = NULL;
 /* String-heap collection trigger (matz/spinel#1450). Strings live on a separate
    malloc'd heap and are reaped only by sp_str_sweep, which runs from
    sp_gc_collect -- which only fires on OBJECT-heap pressure (sp_gc_bytes). A
@@ -376,10 +369,10 @@ static __thread sp_str_hdr *sp_str_heap = NULL;
    SEPARATE threshold so string bytes are NOT refolded into sp_gc_bytes (doing
    so over-fired the object heuristic -- the reason they were excluded; see the
    comment in sp_str_alloc). */
-static __thread size_t sp_str_heap_bytes = 0;       /* live string-heap bytes */
-static __thread size_t sp_str_threshold = 256*1024; /* mirrors sp_gc_threshold init */
-static __thread size_t sp_str_threshold_init = 256*1024; /* recompute floor; lowered to 2048 under SPINEL_GC_STRESS so stress mode survives a collection (mirrors sp_gc_threshold_init) */
-static __thread int sp_str_stress_checked = 0;
+static size_t sp_str_heap_bytes = 0;       /* live string-heap bytes */
+static size_t sp_str_threshold = 256*1024; /* mirrors sp_gc_threshold init */
+static size_t sp_str_threshold_init = 256*1024; /* recompute floor; lowered to 2048 under SPINEL_GC_STRESS so stress mode survives a collection (mirrors sp_gc_threshold_init) */
+static int sp_str_stress_checked = 0;
 #define SPL(s) (&("\xff" s)[1])
 static const char sp_str_empty_data[] = "\xff";
 #define sp_str_empty (sp_str_empty_data + 1)
@@ -550,7 +543,7 @@ static const char *sp_int_codepoint_to_str(mrb_int n) {
    0xfd) whose buffers can move on realloc. */
 #define SP_STR_LCACHE_BITS 5
 #define SP_STR_LCACHE_SIZE (1u << SP_STR_LCACHE_BITS)
-static __thread struct sp_str_lcache_entry {
+static struct sp_str_lcache_entry {
   const char *s;
   size_t byte_len;
   mrb_int char_len;
@@ -710,17 +703,6 @@ else {
   sp_str_lcache_clear();
 }
 
-/* Ractor exit: free this thread's entire string heap unconditionally (unlike
-   sp_str_sweep, which keeps marked strings). Installed into
-   sp_gc_str_teardown_hook so sp_gc_thread_teardown reaches it. */
-static void sp_str_heap_free_all(void) {
-  sp_str_hdr *h = sp_str_heap;
-  while (h) { sp_str_hdr *n = h->next; free(h); h = n; }
-  sp_str_heap = NULL;
-  sp_str_heap_bytes = 0;
-  sp_str_lcache_clear();
-}
-
 /* GC-aware Time trampolines. The libspinel_rt format helpers write
    into a local buffer; we sp_str_dup_external the result so the GC
    tracks the lifetime. strftime returns 0 -- never overruns the buffer
@@ -838,13 +820,13 @@ static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
    collector body can reach it. */
 static void sp_gc_cleanup(int*p){sp_gc_nroots=*p;}
 #define SP_GC_NBUCKETS 32
-static __thread sp_gc_hdr*sp_gc_buckets[SP_GC_NBUCKETS];
+static sp_gc_hdr*sp_gc_buckets[SP_GC_NBUCKETS];
 static inline int sp_gc_bucket(size_t sz){int b=(int)(sz/16);return b<SP_GC_NBUCKETS?b:SP_GC_NBUCKETS-1;}
 /* sp_gc_cycle / sp_gc_old_bytes are in lib/sp_gc.c (extern via sp_gc.h);
    sp_gc_old_heap is collector-private to lib/sp_gc.c. */
 
 /* GC verify support + sp_gc_collect live in lib/sp_gc.c. */
-static __thread size_t sp_gc_threshold_init=256*1024;
+static size_t sp_gc_threshold_init=256*1024;
 /* sp_oom_die + the SPINEL_MAX_HEAP_MB governor (sp_gc_enforce_mem_limit)
    live in lib/sp_gc.c. */
 /* SPINEL_GC_STRESS=1: shrink the collection threshold to a few KB so a
@@ -890,18 +872,14 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
    (uniform across classes). SP_POOL_REPORT=1 dumps per-class stats
    at exit. */
 #define SP_POOL_DEFAULT_MAX 1048576L
-/* Pool free-lists are __thread: each Ractor recycles into its own private
-   pool out of its own heap, so cross-thread recycling can never alias.
-   The constructor (main thread only) reads SP_POOL_MAX; Ractor threads
-   keep the SP_POOL_DEFAULT_MAX TLS initializer. */
 #define SP_POOL_DEFINE(CLS) \
-  static __thread sp_gc_hdr *sp_##CLS##_pool_head = NULL; \
-  static __thread long sp_##CLS##_pool_count = 0; \
-  static __thread long sp_##CLS##_pool_max = SP_POOL_DEFAULT_MAX; \
-  static __thread long sp_##CLS##_pool_pushes = 0; \
-  static __thread long sp_##CLS##_pool_pops = 0; \
-  static __thread long sp_##CLS##_pool_freed = 0; \
-  static __thread long sp_##CLS##_pool_hwm = 0; \
+  static sp_gc_hdr *sp_##CLS##_pool_head = NULL; \
+  static long sp_##CLS##_pool_count = 0; \
+  static long sp_##CLS##_pool_max = SP_POOL_DEFAULT_MAX; \
+  static long sp_##CLS##_pool_pushes = 0; \
+  static long sp_##CLS##_pool_pops = 0; \
+  static long sp_##CLS##_pool_freed = 0; \
+  static long sp_##CLS##_pool_hwm = 0; \
   __attribute__((constructor)) static void sp_##CLS##_pool_init(void) { \
     const char *m = getenv("SP_POOL_MAX"); \
     if (m && *m) { long v = atol(m); if (v >= 0) sp_##CLS##_pool_max = v; } \
@@ -2316,16 +2294,16 @@ mrb_regexp_pattern* re_compile(const char *pattern, int64_t len, uint32_t flags)
 void re_free(mrb_regexp_pattern *pat);
 int re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size);
 
-/* Regexp globals: $1-$9 captures (__thread: per-Ractor match state) */
-static __thread const char *sp_re_captures[10] = {0};
-static __thread int sp_re_caps[64];
+/* Regexp globals: $1-$9 captures */
+static const char *sp_re_captures[10] = {0};
+static int sp_re_caps[64];
 /* NULL (not "") so sp_mark_string's null-guard handles the unset case
    without reaching the `s[-1]` access. The rodata `""` literal would
    trigger -Wstringop-overflow under -O3 + sp_mark_string inlining at
    the call site in sp_re_mark_globals — gcc proves the `s[-1] = 0xfc`
    write would be out-of-bounds even though the runtime guard
    `s[-1] == 0xfe` (always false for rodata) prevents it from firing. */
-static __thread const char *sp_re_last_str = NULL;
+static const char *sp_re_last_str = NULL;
 
 /* Symbolic back-references populated alongside the numbered captures.
    Read by codegen's BackReferenceReadNode arm:
@@ -2333,9 +2311,9 @@ static __thread const char *sp_re_last_str = NULL;
      $`  -> sp_re_match_pre  (substring before the match)
      $'  -> sp_re_match_post (substring after the match)
    $~ falls back to $& since Spinel has no MatchData wrapper. */
-static __thread const char *sp_re_match_str = NULL;
-static __thread const char *sp_re_match_pre = NULL;
-static __thread const char *sp_re_match_post = NULL;
+static const char *sp_re_match_str = NULL;
+static const char *sp_re_match_pre = NULL;
+static const char *sp_re_match_post = NULL;
 
 /* ARGV runtime: argv[i] strings are dup'd via sp_str_dup_external on
    main() entry, which allocates from the str-heap with mark byte
@@ -4571,20 +4549,18 @@ static const char *sp_json_val(sp_RbVal v) {
 
 #include <setjmp.h>
 #define SP_EXC_STACK_MAX 64
-/* __thread: each Ractor pthread has its own rescue landing-pad stack and
-   in-flight exception state, so an exception in one Ractor is isolated. */
-static __thread jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
-static __thread const char *sp_exc_msg[SP_EXC_STACK_MAX];
-static __thread volatile int sp_exc_top = 0;
-static __thread const char *sp_exc_cls[SP_EXC_STACK_MAX];
-static __thread volatile const char *sp_last_exc_cls = sp_str_empty;
+static jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
+static const char *sp_exc_msg[SP_EXC_STACK_MAX];
+static volatile int sp_exc_top = 0;
+static const char *sp_exc_cls[SP_EXC_STACK_MAX];
+static volatile const char *sp_last_exc_cls = sp_str_empty;
 /* The raised exception OBJECT, carried alongside (cls,msg) so a user
    exception subclass keeps its ivars across raise -> rescue (#1415).
    NULL for a bare string/builtin raise, which reconstructs on catch.
    sp_pending_exc_obj is set by sp_raise_exc just before the longjmp and
    consumed into the per-frame slot by sp_raise_cls. */
-static __thread void *sp_exc_obj[SP_EXC_STACK_MAX];
-static __thread void *sp_pending_exc_obj = NULL;
+static void *sp_exc_obj[SP_EXC_STACK_MAX];
+static void *sp_pending_exc_obj = NULL;
 /* ---- Native backtrace formatting (spinel --debug) ---------------------- */
 /* True for sp_<name> symbols that are runtime helpers, not user Ruby methods.
    A denylist of the lowercase runtime prefixes; user methods are sp_<rubyname>
@@ -4985,11 +4961,10 @@ void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError"
 /* sp_exc_is_a: see earlier definition (takes volatile sp_Exception *) */
 
 #define SP_CATCH_STACK_MAX 64
-/* __thread: per-Ractor catch/throw landing pads (see exception stack). */
-static __thread jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];
-static __thread const char *sp_catch_tag[SP_CATCH_STACK_MAX];
-static __thread mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
-static __thread volatile int sp_catch_top = 0;
+static jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];
+static const char *sp_catch_tag[SP_CATCH_STACK_MAX];
+static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
+static volatile int sp_catch_top = 0;
 static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; while (i >= 0) { if (strcmp(sp_catch_tag[i], tag) == 0) { sp_catch_val[i] = val; sp_catch_top = i + 1; longjmp(sp_catch_stack[i], 1); } i--; } fprintf(stderr, "uncaught throw: %s\n", tag); exit(1); }
 
 /* Kernel#sleep with sub-second precision. Argument is seconds as a
@@ -5378,9 +5353,8 @@ static sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int
    order before returning. */
 #define SP_AT_EXIT_MAX 256
 struct sp_Proc;
-/* __thread: at_exit hooks registered inside a Ractor stay local to it. */
-static __thread struct sp_Proc *sp_at_exit_hooks[SP_AT_EXIT_MAX];
-static __thread mrb_int sp_at_exit_count = 0;
+static struct sp_Proc *sp_at_exit_hooks[SP_AT_EXIT_MAX];
+static mrb_int sp_at_exit_count = 0;
 static sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int n) {
   if (!a) return sp_PtrArray_new_scan(NULL);
   if (a->frozen) { sp_raise_frozen_array(); return sp_PtrArray_new_scan(a->scan_elem); }
@@ -5559,8 +5533,7 @@ typedef struct sp_Val sp_Val;
 typedef sp_Val *(*sp_fn_t)(sp_Val *self, sp_Val *arg);
 struct sp_Val { enum { SP_PROC2, SP_INT2, SP_BOOL2, SP_NIL2 } tag; union { struct { sp_fn_t fn; int ncaptures; } proc; mrb_int ival; mrb_bool bval; } u; sp_Val *captures[]; };
 #define SP_ARENA_SIZE ((size_t)16ULL * 1024 * 1024 * 1024)
-/* __thread: lambda arena is mmap'd lazily per-Ractor on first use. */
-static __thread char *sp_arena = NULL; static __thread size_t sp_arena_pos = 0;
+static char *sp_arena = NULL; static size_t sp_arena_pos = 0;
 static void *sp_lam_alloc(size_t sz) { sz = (sz + 7) & ~(size_t)7; if (!sp_arena) { sp_arena = (char *)mmap(NULL, SP_ARENA_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0); if (sp_arena == MAP_FAILED) { perror("mmap"); exit(1); } sp_arena_pos = 0; } if (sp_arena_pos + sz > SP_ARENA_SIZE) { fprintf(stderr, "arena exhausted\n"); exit(1); } void *p = sp_arena + sp_arena_pos; sp_arena_pos += sz; return p; }
 static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + sizeof(sp_Val *) * ncap); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }
 static sp_Val *sp_lam_int(mrb_int n) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_INT2; v->u.ival = n; return v; }
@@ -5723,139 +5696,6 @@ const char *sp_ext_str_empty(void) { return sp_str_empty; }
 size_t sp_ext_str_byte_len(const char *s) { return sp_str_byte_len(s); }
 void *sp_ext_gc_alloc(size_t sz, void (*fin)(void *), void (*scan)(void *)) { return sp_gc_alloc(sz, fin, scan); }
 void sp_ext_mark_string(const char *s) { sp_mark_string(s); }
-
-/* ====================================================================
- * Ractor message codec (Milestone 2)
- *
- * Deep-copy values across the Ractor heap boundary through a malloc'd,
- * pointer-free blob: the sender serializes from its private heap, the blob
- * travels the queue, the receiver rebuilds into its own heap. Lives here (not
- * in lib/sp_ractor.c) because rebuilding needs the heap allocators that are
- * static to the generated TU. Installed into the runtime hooks by sp_re_init.
- *
- * Wire format: a tag byte, then payload. Scalars use the SP_TAG_* values;
- * containers use the SPR_* codes below. Shareable: Integer/Float/true/false/
- * nil/Symbol(by name)/String/Array(poly,int,float,str, recursively). Anything
- * else raises Ractor::Error. ==================================================*/
-#define SPR_POLY_ARRAY  100
-#define SPR_INT_ARRAY   101
-#define SPR_FLT_ARRAY   102
-#define SPR_STR_ARRAY   103
-
-typedef struct { char *p; size_t len, cap; } sp_RacBuf;
-static void sp_racbuf_put(sp_RacBuf *b, const void *src, size_t n) {
-  if (b->len + n > b->cap) { b->cap = (b->len + n) * 2 + 64; b->p = (char *)realloc(b->p, b->cap); if (!b->p) sp_oom_die(); }
-  memcpy(b->p + b->len, src, n); b->len += n;
-}
-static void sp_racbuf_u8(sp_RacBuf *b, uint8_t v) { sp_racbuf_put(b, &v, 1); }
-static void sp_racbuf_i64(sp_RacBuf *b, int64_t v) { sp_racbuf_put(b, &v, sizeof v); }
-static void sp_racbuf_f64(sp_RacBuf *b, double v) { sp_racbuf_put(b, &v, sizeof v); }
-static void sp_racbuf_sz(sp_RacBuf *b, size_t v) { sp_racbuf_put(b, &v, sizeof v); }
-static void sp_racbuf_bytes(sp_RacBuf *b, const char *s, size_t n) { sp_racbuf_sz(b, n); sp_racbuf_put(b, s, n); }
-
-static void sp_ractor_unshareable(int tag) {
-  char m[160];
-  snprintf(m, sizeof m, "Ractor: unshareable value crossed the boundary (tag %d); "
-                        "only immediates, Symbol, String and Arrays are supported", tag);
-  sp_raise_cls("Ractor::Error", m);
-}
-
-static void sp_ractor_ser_val(sp_RacBuf *b, sp_RbVal v) {
-  switch (v.tag) {
-    case SP_TAG_INT:  sp_racbuf_u8(b, SP_TAG_INT);  sp_racbuf_i64(b, (int64_t)v.v.i); return;
-    case SP_TAG_FLT:  sp_racbuf_u8(b, SP_TAG_FLT);  sp_racbuf_f64(b, (double)v.v.f); return;
-    case SP_TAG_BOOL: sp_racbuf_u8(b, SP_TAG_BOOL); sp_racbuf_u8(b, v.v.b ? 1 : 0); return;
-    case SP_TAG_NIL:  sp_racbuf_u8(b, SP_TAG_NIL); return;
-    case SP_TAG_SYM:  { const char *s = sp_sym_to_s((sp_sym)v.v.i); sp_racbuf_u8(b, SP_TAG_SYM); sp_racbuf_bytes(b, s, strlen(s)); return; }
-    case SP_TAG_STR:  { const char *s = v.v.s ? v.v.s : sp_str_empty; sp_racbuf_u8(b, SP_TAG_STR); sp_racbuf_bytes(b, s, sp_str_byte_len(s)); return; }
-    case SP_TAG_OBJ:
-      if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
-        sp_PolyArray *a = (sp_PolyArray *)v.v.p; sp_racbuf_u8(b, SPR_POLY_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
-        for (mrb_int i = 0; i < a->len; i++) sp_ractor_ser_val(b, a->data[i]); return;
-      }
-      if (v.cls_id == SP_BUILTIN_INT_ARRAY) {
-        sp_IntArray *a = (sp_IntArray *)v.v.p; sp_racbuf_u8(b, SPR_INT_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
-        for (mrb_int i = 0; i < a->len; i++) sp_racbuf_i64(b, (int64_t)a->data[a->start + i]); return;
-      }
-      if (v.cls_id == SP_BUILTIN_FLT_ARRAY) {
-        sp_FloatArray *a = (sp_FloatArray *)v.v.p; sp_racbuf_u8(b, SPR_FLT_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
-        for (mrb_int i = 0; i < a->len; i++) sp_racbuf_f64(b, (double)a->data[i]); return;
-      }
-      if (v.cls_id == SP_BUILTIN_STR_ARRAY) {
-        sp_StrArray *a = (sp_StrArray *)v.v.p; sp_racbuf_u8(b, SPR_STR_ARRAY); sp_racbuf_sz(b, (size_t)a->len);
-        for (mrb_int i = 0; i < a->len; i++) { const char *s = a->data[i] ? a->data[i] : sp_str_empty; sp_racbuf_bytes(b, s, sp_str_byte_len(s)); }
-        return;
-      }
-      sp_ractor_unshareable(v.tag); return;
-    default: sp_ractor_unshareable(v.tag); return;
-  }
-}
-
-static sp_RactorBlob sp_ractor_serialize(sp_RbVal v) {
-  sp_RacBuf b = {0}; sp_ractor_ser_val(&b, v);
-  sp_RactorBlob out; out.data = b.p; out.len = b.len; return out;
-}
-
-typedef struct { const char *p; size_t len, pos; } sp_RacRd;
-static void sp_racrd_read(sp_RacRd *r, void *dst, size_t n) {
-  if (r->pos + n > r->len) { sp_raise_cls("Ractor::Error", "truncated Ractor message"); return; }
-  memcpy(dst, r->p + r->pos, n); r->pos += n;
-}
-static uint8_t sp_racrd_u8(sp_RacRd *r) { uint8_t v = 0; sp_racrd_read(r, &v, 1); return v; }
-static int64_t sp_racrd_i64(sp_RacRd *r) { int64_t v = 0; sp_racrd_read(r, &v, sizeof v); return v; }
-static double sp_racrd_f64(sp_RacRd *r) { double v = 0; sp_racrd_read(r, &v, sizeof v); return v; }
-static size_t sp_racrd_sz(sp_RacRd *r) { size_t v = 0; sp_racrd_read(r, &v, sizeof v); return v; }
-
-static sp_RbVal sp_ractor_deser_val(sp_RacRd *r) {
-  uint8_t tag = sp_racrd_u8(r);
-  switch (tag) {
-    case SP_TAG_INT:  return sp_box_int((mrb_int)sp_racrd_i64(r));
-    case SP_TAG_FLT:  return sp_box_float((mrb_float)sp_racrd_f64(r));
-    case SP_TAG_BOOL: return sp_box_bool(sp_racrd_u8(r) ? true : false);
-    case SP_TAG_NIL:  return sp_box_nil();
-    case SP_TAG_SYM:  {
-      size_t n = sp_racrd_sz(r);
-      char *tmp = (char *)malloc(n + 1); if (!tmp) sp_oom_die();
-      sp_racrd_read(r, tmp, n); tmp[n] = 0;
-      sp_sym id = sp_sym_intern(tmp); free(tmp);
-      return sp_box_sym(id);
-    }
-    case SP_TAG_STR:  { size_t n = sp_racrd_sz(r); const char *s = sp_str_from_bytes(r->p + r->pos, n); r->pos += n; return sp_box_str(s); }
-    case SPR_POLY_ARRAY: {
-      size_t n = sp_racrd_sz(r); sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
-      for (size_t i = 0; i < n; i++) { sp_RbVal e = sp_ractor_deser_val(r); SP_GC_ROOT_RBVAL(e); sp_PolyArray_push(a, e); }
-      return sp_box_poly_array(a);
-    }
-    case SPR_INT_ARRAY: {
-      size_t n = sp_racrd_sz(r); sp_IntArray *a = sp_IntArray_new(); SP_GC_ROOT(a);
-      for (size_t i = 0; i < n; i++) sp_IntArray_push(a, (mrb_int)sp_racrd_i64(r));
-      return sp_box_int_array(a);
-    }
-    case SPR_FLT_ARRAY: {
-      size_t n = sp_racrd_sz(r); sp_FloatArray *a = sp_FloatArray_new(); SP_GC_ROOT(a);
-      for (size_t i = 0; i < n; i++) sp_FloatArray_push(a, (mrb_float)sp_racrd_f64(r));
-      return sp_box_float_array(a);
-    }
-    case SPR_STR_ARRAY: {
-      size_t n = sp_racrd_sz(r); sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
-      for (size_t i = 0; i < n; i++) { size_t m = sp_racrd_sz(r); const char *s = sp_str_from_bytes(r->p + r->pos, m); r->pos += m; sp_StrArray_push(a, s); }
-      return sp_box_str_array(a);
-    }
-    default: sp_ractor_unshareable(tag); return sp_box_nil();
-  }
-}
-
-static sp_RbVal sp_ractor_deserialize(sp_RactorBlob b) {
-  sp_RacRd r; r.p = (const char *)b.data; r.len = b.len; r.pos = 0;
-  return sp_ractor_deser_val(&r);
-}
-
-/* Install the codec into the library's hooks. Called from sp_re_init. */
-static void sp_ractor_codec_install(void) {
-  sp_ractor_serialize_hook = sp_ractor_serialize;
-  sp_ractor_deserialize_hook = sp_ractor_deserialize;
-  sp_gc_str_teardown_hook = sp_str_heap_free_all;
-}
 
 #ifdef __APPLE__
 #pragma clang diagnostic pop

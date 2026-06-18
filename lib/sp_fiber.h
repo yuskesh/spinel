@@ -16,15 +16,8 @@
 typedef struct sp_Fiber{ucontext_t ctx;ucontext_t caller_ctx;char*stack;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;}sp_Fiber;
 
 /* The currently-running fiber; the generated TU reads it directly for
-   `Fiber.current` and as the implicit receiver of Fiber operations.
-   __thread: each Ractor pthread has its own fiber world (root fiber,
-   current pointer, suspended-fiber list), so fibers never migrate across
-   Ractors and the root save/restore stays intra-thread. Initialised per
-   thread by sp_fiber_thread_init() (main thread via a constructor, Ractor
-   threads from their entry trampoline). */
-extern __thread sp_Fiber *sp_fiber_current;
-/* Point sp_fiber_current at this thread's root fiber. Idempotent. */
-void sp_fiber_thread_init(void);
+   `Fiber.current` and as the implicit receiver of Fiber operations. */
+extern sp_Fiber *sp_fiber_current;
 
 /* Public Fiber API (called from the generated TU). */
 sp_Fiber *sp_Fiber_new(void (*body)(sp_Fiber *));

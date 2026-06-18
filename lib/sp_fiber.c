@@ -53,19 +53,11 @@ static sp_FiberStore *sp_FiberStore_dup(sp_FiberStore *o) {
    protocol bails out instead of treating .bss as a GC header. The guard
    array is exactly one alignment unit, so its last byte always directly
    precedes `root` (no compiler padding can slip in between). */
-static __thread struct { char guard[_Alignof(sp_Fiber)]; sp_Fiber root; } sp_fiber_root_box
+static struct { char guard[_Alignof(sp_Fiber)]; sp_Fiber root; } sp_fiber_root_box
     = { .guard = { [_Alignof(sp_Fiber) - 1] = (char)0xfd }, .root = {0} };
 #define sp_fiber_root (sp_fiber_root_box.root)
-/* __thread, initialised at thread entry: &sp_fiber_root is the address of a
-   thread-local, which is not a constant initialiser, so it cannot be set
-   statically here. sp_fiber_thread_init() wires it up per thread. */
-__thread sp_Fiber *sp_fiber_current = NULL;   /* extern: read by the generated TU */
-static __thread sp_Fiber *sp_fiber_list_head = NULL;
-
-void sp_fiber_thread_init(void) { sp_fiber_current = &sp_fiber_root; }
-/* Main thread: run the init before main() so the generated TU sees a valid
-   sp_fiber_current immediately. Ractor pthreads call it from their entry. */
-__attribute__((constructor)) static void sp_fiber_main_thread_init(void) { sp_fiber_thread_init(); }
+sp_Fiber *sp_fiber_current = &sp_fiber_root;   /* extern: read by the generated TU */
+static sp_Fiber *sp_fiber_list_head = NULL;
 
 static void sp_fiber_save_roots(sp_Fiber*f){if(f->saved_roots_cap<sp_gc_nroots){int nc=sp_gc_nroots>64?sp_gc_nroots*2:64;void***nx=(void***)realloc(f->saved_roots,sizeof(void**)*nc);if(!nx)return;f->saved_roots=nx;f->saved_roots_cap=nc;}if(sp_gc_nroots>0)memcpy(f->saved_roots,sp_gc_roots,sizeof(void**)*sp_gc_nroots);f->saved_nroots=sp_gc_nroots;}
 static void sp_fiber_restore_roots(sp_Fiber*f){if(f->saved_nroots>0)memcpy(sp_gc_roots,f->saved_roots,sizeof(void**)*f->saved_nroots);sp_gc_nroots=f->saved_nroots;}
