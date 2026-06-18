@@ -1568,6 +1568,18 @@ void resolve_parents(Compiler *c) {
   }
 }
 
+/* True if the method scope's body contains a `super` (an explicit-arg SuperNode
+   or a bare ForwardingSuperNode). */
+static int scope_body_has_super(Compiler *c, int scope_idx) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (c->nscope[id] != scope_idx) continue;
+    const char *ty = nt_type(nt, id);
+    if (ty && (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode"))) return 1;
+  }
+  return 0;
+}
+
 /* Process include calls in a single class body, creating scope copies for each
    included module method. We copy (not mutate) so multiple classes can include
    the same module independently. */
@@ -1598,17 +1610,52 @@ void process_include_body(Compiler *c, int ci, int body_node) {
       for (int ms = 0; ms < snap; ms++) {
         Scope *src = &c->scopes[ms];
         if (src->class_id != mod_id || src->is_cmethod || !src->name) continue;
-        if (comp_method_in_class(c, ci, src->name) >= 0) continue;
+        const char *dst_name = src->name;
+        char inc_shadow[256];
+        int own = comp_method_in_class(c, ci, src->name);
+        if (own >= 0) {
+          /* The class overrides the module method. If the override calls super,
+             the module method is the super target: copy it under a shadow name
+             and chain to it so emit_super reaches it via the prepend-super path.
+             Otherwise the module method is simply shadowed -- nothing to emit. */
+          if (!scope_body_has_super(c, own)) continue;
+          const char *existing = comp_prep_chain_target(c, ci, src->name);
+          snprintf(inc_shadow, sizeof inc_shadow, "__inc_%d_%s",
+                   c->classes[ci].prep_shadow_count++, src->name);
+          if (existing) {
+            /* Another included module already supplies the super target for this
+               method. A later include takes precedence (Ruby MRO: C -> Mlast ->
+               ... -> Mfirst), so retarget the class's super to this module's copy
+               and chain this copy to the previously included one:
+               name -> new_shadow -> earlier_shadow. */
+            char *prev = strdup(existing);  /* stable copy: the slot is freed below */
+            ClassInfo *cif = &c->classes[ci];
+            for (int kk = 0; kk < cif->nprep_chain; kk++)
+              if (!strcmp(cif->prep_from[kk], src->name)) {
+                free(cif->prep_to[kk]);
+                cif->prep_to[kk] = strdup(inc_shadow);
+                break;
+              }
+            comp_prep_chain_add(cif, inc_shadow, prev);
+            free(prev);
+          } else {
+            comp_prep_chain_add(&c->classes[ci], src->name, inc_shadow);
+          }
+          dst_name = inc_shadow;
+        }
         /* Create a new scope sharing the same AST nodes but owned by ci. */
-        Scope *dst = comp_scope_new(c, src->name, src->def_node);
+        Scope *dst = comp_scope_new(c, dst_name, src->def_node);
         int dst_idx = c->nscopes - 1;
         /* comp_scope_new may realloc c->scopes; re-derive src pointer. */
         src = &c->scopes[ms];
-        /* When the target is a built-in class, `self` has a different (scalar)
-           type than the module's object self, so clone the body and re-attribute
-           it to the target -- otherwise the shared SelfNode resolves to the
-           module and e.g. `self.to_s` mis-dispatches. */
-        if (is_builtin_class_name(c->classes[ci].name) && src->body >= 0) {
+        /* Clone the body and re-attribute it to the target when either:
+           (a) the target is a built-in class, where `self` has a different
+           (scalar) type than the module's object self -- otherwise the shared
+           SelfNode resolves to the module and e.g. `self.to_s` mis-dispatches; or
+           (b) the copied method itself calls `super` (a multi-module chain), so
+           its super node resolves to this shadow scope (and thus the class's prep
+           chain) rather than to the source module, where the chain isn't set. */
+        if ((is_builtin_class_name(c->classes[ci].name) || scope_body_has_super(c, ms)) && src->body >= 0) {
           int nb = nt_clone_subtree((NodeTable *)nt, src->body);
           if (nb >= 0) {
             comp_grow_node_arrays(c);

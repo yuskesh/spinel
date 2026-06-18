@@ -1724,7 +1724,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_puts(b, "((void)0)");
       return;
     }
-    unsupported(c, id, "super (no parent method)");
+    /* No superclass method anywhere (parent chain, included-module shadow, and
+       the exception-initialize special case all missed). CRuby raises
+       NoMethodError at runtime, so emit that rather than rejecting at compile
+       time -- the call may sit in a branch that never runs. */
+    const char *scn = class_ruby_name(c, s->class_id);
+    if (!scn) scn = c->classes[s->class_id].name;
+    buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"), %s)",
+               uname, scn, default_value(comp_ntype(c, id)));
     return;
   }
   buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(uname), c->classes[defcls].name, g_self);
