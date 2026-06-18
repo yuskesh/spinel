@@ -537,13 +537,22 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *en = rename_local(nm);
   emit_indent(b, indent);
 
-  /* A captured/cell var: x op= v is x = x op v through the cell deref. Only
-     int cells exist today (capture is int-restricted). */
+  /* A captured/cell var: x op= v is x = x op v through the cell deref. Int and
+     float cells exist (a float capture rides a native mrb_float cell, so its deref
+     is a real mrb_float lvalue); pointer/proc cells take the int_arith path below. */
   int celled = (lv && lv->is_cell) || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm));
   if (celled) {
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
     if (t == TY_INT && (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*"))) {
       emit_local_ref(c, id, nm, b); buf_printf(b, " %s ", op); emit_expr(c, v, b); buf_puts(b, ";\n");
+      return;
+    }
+    if (t == TY_FLOAT && (!strcmp(op, "+") || !strcmp(op, "-") || !strcmp(op, "*") || !strcmp(op, "/"))) {
+      TyKind vt = comp_ntype(c, v);
+      emit_local_ref(c, id, nm, b); buf_printf(b, " %s ", op);
+      if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, v, b); buf_puts(b, ")"); }
+      else emit_expr(c, v, b);
+      buf_puts(b, ";\n");
       return;
     }
     const char *fn = int_arith_fn(op);

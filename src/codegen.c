@@ -287,11 +287,23 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
         else buf_printf(b, "    *_cell_%s = 0;\n", lv->name);
         continue;
       }
+      /* A float capture gets a native mrb_float cell rather than laundering the
+         bits through the int slot: *_cell_x is then a real mrb_float lvalue, so
+         the ordinary read / write / compound-assign paths work unchanged. The
+         cell holds no GC pointer, so no cell scan is needed. */
+      if (lv->type == TY_FLOAT) {
+        buf_printf(b, "    mrb_float *_cell_%s = (mrb_float *)sp_gc_alloc(sizeof(mrb_float), NULL, NULL);\n", lv->name);
+        buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
+        if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
+        else buf_printf(b, "    *_cell_%s = 0.0;\n", lv->name);
+        continue;
+      }
       /* A pointer (string / array / hash / heap object) capture is laundered
          through the int cell as (uintptr_t)<ptr>, with a cell scan that marks
          the referent. Int / bool stay direct. Float / poly / by-value structs
          don't fit a single int cell -- still deferred. */
       int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
+      /* TY_FLOAT is handled by the native mrb_float-cell branch above. */
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN && !ptr_cell)
         unsupported(c, s->def_node, "closure capturing a non-integer variable (later slice)");
       const char *cell_scan = !ptr_cell ? "NULL"
@@ -981,14 +993,24 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   for (int k = 0; k < arity; k++) nameset_add(&params, proc_param_name(c, create, k));
   proc_collect_used(c, body, &used);
   proc_collect_locals(c, body, &locals);
+  /* A float proc parameter still rides the truncating mrb_int arg slot, so a
+     proc that takes one can't safely also enable float captures: keep the clean
+     reject rather than emit a silently-wrong double. (Float args through the
+     proc slot are a separate, pre-existing gap.) */
+  int has_float_param = 0;
+  for (int k = 0; k < arity; k++) {
+    LocalVar *plv = scope_local(bs, proc_param_name(c, create, k));
+    if (plv && plv->type == TY_FLOAT) { has_float_param = 1; break; }
+  }
   for (int u = 0; u < used.n; u++) {
     const char *nm = used.v[u];
     if (nameset_has(&params, nm)) continue;
     LocalVar *lv = scope_local(bs, nm);
     if (lv && lv->is_cell) {
       int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
+      int float_cell = lv->type == TY_FLOAT && !has_float_param;
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN &&
-          lv->type != TY_PROC && !ptr_cell) {
+          lv->type != TY_PROC && !float_cell && !ptr_cell) {
         free(params.v); free(used.v); free(locals.v); free(caps.v);
         unsupported(c, create, "proc capturing a non-integer variable (later slice)");
         return;
@@ -1105,7 +1127,12 @@ else if (orecv >= 0 && onm) {
      the cap struct unreachable and free it out from under the proc. */
   if (ncap > 0 || cap_self) {
     buf_printf(&g_procs, "typedef struct {");
-    for (int i = 0; i < ncap; i++) buf_printf(&g_procs, " mrb_int *%s;", caps.v[i]);
+    for (int i = 0; i < ncap; i++) {
+      LocalVar *clv = scope_local(bs, caps.v[i]);
+      /* a float capture rides a native mrb_float cell (see emit_scope_decls). */
+      const char *cty = (clv && clv->type == TY_FLOAT) ? "mrb_float" : "mrb_int";
+      buf_printf(&g_procs, " %s *%s;", cty, caps.v[i]);
+    }
     if (cap_self) buf_puts(&g_procs, " void *__self;");
     buf_printf(&g_procs, " } _proc_cap_%d;\n", pid);
     buf_printf(&g_procs, "static void _proc_cap_scan_%d(void *p) {\n", pid);
