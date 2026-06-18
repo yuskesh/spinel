@@ -2,6 +2,17 @@
 
 Buf *g_pre = NULL;
 
+/* SP_COLLECT_ERRORS recovery: in collect mode a codegen gap longjmps back to a
+   per-unit recovery point armed by the output driver (codegen.c), so one run
+   surfaces every unsupported construct instead of aborting on the first. */
+jmp_buf g_unsup_recover;
+int g_unsup_armed = 0;
+int collect_mode(void) {
+  static int collect = -1;
+  if (collect < 0) collect = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
+  return collect;
+}
+
 void buf_putn(Buf *b, const char *s, size_t n) {
   if (b->len + n + 1 > b->cap) {
     size_t nc = b->cap ? b->cap * 2 : 256;
@@ -273,7 +284,7 @@ const char *rename_local(const char *nm) {
     if (strcmp(g_ren_from[i], nm) == 0) return g_ren_to[i];
   return nm;
 }
-void unsupported(Compiler *c, int id, const char *what) {
+__attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
   const char *ty = nt_type(c->nt, id);
   /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
      line the parser stamped (the same position the #line machinery uses), so
@@ -303,12 +314,12 @@ void unsupported(Compiler *c, int id, const char *what) {
   else
     fprintf(stderr, "spinel: %sunsupported %s: node %d (%s)\n",
             pos, what, id, ty ? ty : "?");
-  /* SP_COLLECT_ERRORS: don't abort on the first gap -- keep going so one
-     run surfaces every unsupported construct (the emitted C is then
-     malformed and only the stderr list is useful). */
-  static int collect = -1;
-  if (collect < 0) collect = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
-  if (!collect) exit(1);
+  /* SP_COLLECT_ERRORS: don't abort on the first gap -- longjmp back to the
+     driver's per-unit recovery point (when armed) so one run surfaces every
+     unsupported construct, abandoning just this unit's (discarded) output.
+     `unsupported` thus never returns: it exits, or longjmps. */
+  if (collect_mode() && g_unsup_armed) longjmp(g_unsup_recover, 1);
+  exit(1);
 }
 int builtin_class_id(const char *name) {
   if (!name) return 0;
