@@ -2265,9 +2265,8 @@ int infer_block_params(Compiler *c) {
     }
   }
 
-  /* Fiber.new { |first| ... }: the block param receives the resume value;
-     Ractor.new(args) { |x| ... }: the block param receives a deep-copied spawn
-     argument. Both arrive as poly (boxed) values at the runtime ABI boundary. */
+  /* Fiber.new { |first| ... }: the block param receives the resume value,
+     which is always a poly (boxed) value at the runtime ABI boundary. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || strcmp(ty, "CallNode")) continue;
@@ -2280,7 +2279,7 @@ int infer_block_params(Compiler *c) {
                    (!strcmp(rrty, "ConstantPathNode") && nt_ref(nt, recv, "parent") < 0);
     if (!is_const) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || (strcmp(rn, "Fiber") && strcmp(rn, "Ractor"))) continue;
+    if (!rn || strcmp(rn, "Fiber")) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0) continue;
     int pn = nt_ref(nt, blk, "parameters");
@@ -2289,19 +2288,11 @@ int infer_block_params(Compiler *c) {
     int pnode = inner >= 0 ? inner : pn;
     int rnp = 0; const int *reqs = nt_arr(nt, pnode, "requireds", &rnp);
     Scope *bs = comp_scope_of(c, blk);
-    /* For Ractor.new(args){|p|}, a Ractor::Port arg crosses BY REFERENCE, so
-       the matching block param stays a port (not poly) -- otherwise port
-       methods wouldn't dispatch. Other (deep-copied) args arrive as poly. */
-    int is_ractor = !strcmp(rn, "Ractor");
-    int an = 0; const int *args = NULL;
-    if (is_ractor) { int anode = nt_ref(nt, id, "arguments"); if (anode >= 0) args = nt_arr(nt, anode, "arguments", &an); }
     for (int k = 0; k < rnp; k++) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
-      TyKind want = TY_POLY;
-      if (is_ractor && args && k < an && infer_type(c, args[k]) == TY_RACTOR_PORT) want = TY_RACTOR_PORT;
-      if (lv->type == TY_UNKNOWN || (want == TY_RACTOR_PORT && lv->type == TY_POLY)) { lv->type = want; changed = 1; }
+      if (lv->type == TY_UNKNOWN) { lv->type = TY_POLY; changed = 1; }
     }
   }
 

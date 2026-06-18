@@ -1,9 +1,7 @@
 # RFC: A Minimal Ractor for Spinel
 
-Status: **experimental / Milestone 6** (working; ported to the C compiler in
-`src/`). Deep-copy message codec spans immediates / Symbol / String / Array /
-Hash / user-objects; `Ractor.new` spawn arguments; compile-time `@@cvar`/`$gvar`
-isolation; and a shared `Ractor::Port` channel. This document is both the design
+Status: **experimental / Milestone 2** (working; ported to the C compiler in
+`src/`). This document is both the design
 rationale and the record of what currently ships. It proposes whether to
 graduate to a full implementation (see *Path forward*).
 
@@ -121,23 +119,20 @@ split across `lib/sp_gc.c`, `lib/sp_fiber.c`, and the header `lib/sp_runtime.h`.
 
 ## Deliberate divergences (where "minimal" buys simplicity)
 
-1. **Value codec covers immediates, Symbol, String, Arrays, and Hashes** (poly
-   + typed variants), deep-copied recursively through a heap-neutral malloc'd
-   blob (`sp_ractor_serialize`/`_deserialize`, installed via a hook because the
-   rebuild allocators are static to the generated TU). Plain objects, Procs,
-   Fibers, and IO raise `Ractor::Error` at the boundary — extending the codec to
-   user objects is the main follow-up. Symbols travel by name and are
-   re-interned in the receiver's per-Ractor table; hashes are normalised to a
-   poly hash on rebuild. The same codec seeds `Ractor.new(args) { |params| }`
-   spawn arguments.
+1. **Value codec covers immediates, Symbol, String, and Arrays** (poly + typed
+   int/float/string), deep-copied through a heap-neutral malloc'd blob
+   (`sp_ractor_serialize`/`_deserialize`, installed via a hook because the
+   rebuild allocators are static to the generated TU). Hashes, plain objects,
+   Procs, Fibers, and IO raise `Ractor::Error` at the boundary — extending the
+   codec to those (and to nested objects) is the main follow-up. Symbols travel
+   by name and are re-interned in the receiver's per-Ractor table.
 2. **FIFO mailbox / outgoing queue** (mutex + condvar, grows on demand), so a
    Ractor may `receive` several messages and a sender need not block per slot.
-3. **`@@cvars` / `$globals` accessed inside a Ractor are rejected at compile
-   time** with `Ractor::IsolationError`, mirroring CRuby (which raises on
-   cross-Ractor class-variable / global access). Special, thread-local or
-   read-only globals (`$~`, `$stdout`, regex/status specials — not user-declared)
-   are allowed. The globals themselves remain `__thread` in the runtime; the
-   compile-time check just prevents the silent-empty-value footgun.
+3. **`@@cvars` / `$globals` are `__thread`** → isolated per Ractor, rather than
+   CRuby's "shared, raise on cross-Ractor mutation". Simpler and safe, but a
+   real semantic difference: a class-body cvar initializer has not run in a
+   child Ractor unless re-executed there. Programs that rely on cross-Ractor
+   cvar/gvar sharing are out of scope for this milestone.
 4. **`Ractor#send` with a bare String/Symbol *literal*** is parsed as a
    reflective send (`recv.send("m")` → `recv.m`, a whole-program parser
    behaviour), so send messages via `r << v` or a local (`r.send(v)`); literals
@@ -167,21 +162,9 @@ split across `lib/sp_gc.c`, `lib/sp_fiber.c`, and the header `lib/sp_runtime.h`.
 
 ## Path forward (if this graduates)
 
-Done since the original RFC: the deep-copy codec now spans strings → symbols →
-arrays → hashes → **user objects/structs** (M2/M3b/M4, recursively); the mailbox
-is an unbounded FIFO; `Ractor.new(args){|p|}` spawn arguments are deep-copied in
-(M3a); `@@cvar`/`$gvar` access inside a Ractor is rejected at compile time (M5);
-and **`Ractor::Port`** provides a process-shared channel (`new`/`send`/`receive`/
-`close`), passed across the boundary *by reference* so producers and consumers
-on different Ractors rendezvous through it (M6). Remaining: shareable-by-value
-frozen captures, object-graph cycles in the codec (acyclic assumed today), and
-the Ruby-3.5 Ractor-as-Port API reshaping. None change the core partition.
-
-### API sharp edges (operator/method overload collisions)
-
-- **`Ractor#send` / `Ractor::Port#send` with a bare String/Symbol *literal*** is
-  parsed as a reflective send (`x.send("m")` → `x.m`, a whole-program parser
-  behaviour). Send via `x.send(var)` or an Integer literal; `x.send("lit")` is
-  reflective.
-- **`port << v`** can be mis-inferred as an Array push (the `<<` push-promotion
-  heuristic types the receiver as an array). Use `port.send(v)` for ports.
+In rough dependency order: extend `sp_deep_copy` to strings → arrays → hashes →
+objects (symbols travel by name, re-interned on receive); make the mailbox
+unbounded; thread-local-ize `@@cvars`/`$globals` with a class-body initializer
+replay on the child; add spawn args and shareable-by-value capture; and a
+`Ractor::Port`-style multi-consumer surface. None of these change the core
+partition above — they extend it.

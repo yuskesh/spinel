@@ -38,7 +38,6 @@ const char *ty_name(TyKind t) {
     case TY_CURRY:   return "curry";
     case TY_FIBER:   return "fiber";
     case TY_RACTOR:  return "ractor";
-    case TY_RACTOR_PORT:  return "ractor_port";
     case TY_RANDOM:  return "random";
     case TY_METHOD:  return "method";
     case TY_IO:      return "io";

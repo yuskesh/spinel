@@ -35,38 +35,12 @@ typedef struct { void *data; size_t len; } sp_RactorBlob;
 extern sp_RactorBlob (*sp_ractor_serialize_hook)(sp_RbVal v);
 extern sp_RbVal      (*sp_ractor_deserialize_hook)(sp_RactorBlob b);
 
-/* User-object (deep-copy) codec hooks, installed by the generated TU. The
-   value codec stays in sp_runtime.h and drives the buffer/recursion; these
-   expose a class's ivars as poly values + allocate/populate an instance, so
-   the per-class layout knowledge lives where the class structs are emitted.
-   nivars returns -1 for a class that cannot be deep-copied (e.g. an exception
-   subclass), which the codec turns into Ractor::Error. */
-extern int      (*sp_ractor_obj_nivars_hook)(int cls_id);
-extern sp_RbVal (*sp_ractor_obj_getivar_hook)(void *obj, int cls_id, int i);
-extern void *   (*sp_ractor_obj_alloc_hook)(int cls_id);
-extern void     (*sp_ractor_obj_setivar_hook)(void *obj, int cls_id, int i, sp_RbVal v);
-
 /* The Ractor running on the calling pthread; NULL on the main thread.
    Read by Ractor.receive / Ractor.yield as the implicit receiver. */
 extern __thread sp_Ractor *sp_ractor_current;
 
 /* Public API, reached by name from the generated translation unit. */
 sp_Ractor *sp_Ractor_new(void (*body)(sp_Ractor *)); /* Ractor.new { ... } */
-/* Ractor.new(args...) { |params...| }: `args` is a malloc'd array of `argc`
-   serialized blobs whose ownership transfers to the new Ractor. */
-sp_Ractor *sp_Ractor_new_args(void (*body)(sp_Ractor *), sp_RactorBlob *args, int argc);
-sp_RbVal   sp_ractor_spawn_arg(int i);               /* i-th block arg, deep-copied */
-
-/* Ractor::Port -- a standalone, process-shared message channel (mutex+condvar
-   FIFO), not bound to any one Ractor. Unlike a message value, a Port crosses
-   the boundary BY REFERENCE (the same channel is shared), so producers and
-   consumers on different Ractors rendezvous through it. Registry-owned for the
-   process lifetime, so the shared pointer never dangles. */
-typedef struct sp_RactorPort sp_RactorPort;
-sp_RactorPort *sp_RactorPort_new(void);              /* Ractor::Port.new   */
-void           sp_RactorPort_send(sp_RactorPort *p, sp_RbVal v); /* p.send / p << v */
-sp_RbVal       sp_RactorPort_receive(sp_RactorPort *p);          /* p.receive       */
-void           sp_RactorPort_close(sp_RactorPort *p);            /* p.close         */
 void       sp_Ractor_send(sp_Ractor *r, sp_RbVal v); /* r.send(v) / r << v */
 sp_RbVal   sp_Ractor_receive(void);                  /* Ractor.receive     */
 void       sp_Ractor_yield(sp_RbVal v);              /* Ractor.yield(v)    */

@@ -380,7 +380,6 @@ const char *c_type_name(TyKind t) {
     case TY_CURRY:        return "sp_Curry *";
     case TY_FIBER:        return "sp_Fiber *";
     case TY_RACTOR:       return "sp_Ractor *";
-    case TY_RACTOR_PORT:  return "sp_RactorPort *";
     case TY_RANDOM:       return "sp_Random *";
     case TY_METHOD:       return "sp_BoundMethod *";
     case TY_IO:           return "sp_File *";
@@ -394,7 +393,7 @@ int is_scalar_ret(TyKind t) {
          t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_STRINGIO || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_STRBUF ||
-         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_RACTOR || t == TY_RACTOR_PORT || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_CLASS ||
+         t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_RACTOR || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_CLASS ||
          ty_is_hash(t) || ty_is_object(t);
 }
 const char *ffi_c_type(const char *spec) {
@@ -444,7 +443,6 @@ const char *default_value(TyKind t) {
     case TY_CURRY:   return "NULL";
     case TY_FIBER:   return "NULL";
     case TY_RACTOR:  return "NULL";
-    case TY_RACTOR_PORT:  return "NULL";
     case TY_RANDOM:  return "NULL";
     case TY_METHOD:  return "NULL";
     case TY_IO:      return "NULL";

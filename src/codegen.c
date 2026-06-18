@@ -5,7 +5,6 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
   if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
   if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
-  if (t == TY_RACTOR_PORT) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_RACTOR_PORT)", expr); return; }
   if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
   if (ty_is_hash(t) && hash_box_cls(t)) { buf_printf(b, "sp_box_obj(%s, %s)", expr, hash_box_cls(t)); return; }
   const char *fn = NULL;
@@ -73,10 +72,6 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   if (t == TY_IO) {
     buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_IO)");
-    return;
-  }
-  if (t == TY_RACTOR_PORT) {
-    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_RACTOR_PORT)");
     return;
   }
   if (t == TY_EXCEPTION) {
@@ -896,32 +891,6 @@ static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
    delivered (also a later milestone). The body wraps itself in a top-level
    rescue landing pad so an uncaught exception terminates just this Ractor
    instead of exit(1)-ing the whole process. */
-/* Recursively scan a Ractor body (including nested blocks) for cross-Ractor
-   shared state: a class variable (@@), or a user-declared global ($). CRuby
-   raises Ractor::IsolationError on such access from a non-main Ractor; we
-   reject at compile time. Special globals ($~, $stdout, regex/status, ...) are
-   thread-local or read-only and not user-declared, so they pass. Returns
-   1 = class variable, 2 = user global, 0 = none. */
-static int ractor_body_shared_state(Compiler *c, int id) {
-  if (id < 0) return 0;
-  const char *ty = nt_type(c->nt, id);
-  if (ty) {
-    if (!strncmp(ty, "ClassVariable", 13)) return 1;
-    if (!strncmp(ty, "GlobalVariable", 14)) {
-      const char *nm = nt_str(c->nt, id, "name");
-      if (nm && nm[0] == '$') {
-        const char *rn = comp_resolve_gvar(c, nm + 1);
-        if (rn && comp_gvar(c, rn)) return 2;
-      }
-    }
-  }
-  int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) { int v = ractor_body_shared_state(c, ch); if (v) return v; } }
-  int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) { int v = ractor_body_shared_state(c, ids[k]); if (v) return v; } }
-  return 0;
-}
-
 void emit_ractor_new(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
@@ -934,30 +903,7 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
   int body = nt_ref(nt, blk, "body");
   Scope *encl = comp_scope_of(c, id);
 
-  /* Block parameters bind the Ractor.new spawn arguments positionally:
-     Ractor.new(a, b) { |x, y| ... } deep-copies a->x, b->y into the new
-     Ractor's heap. Collect the param names and the call args. */
-  #define SP_RACTOR_MAX_BP 16
-  const char *bparams[SP_RACTOR_MAX_BP]; int nbp = 0;
-  {
-    int bp_node = nt_ref(nt, blk, "parameters");
-    if (bp_node >= 0) {
-      int inner = nt_ref(nt, bp_node, "parameters");
-      int pn = inner >= 0 ? inner : bp_node;
-      int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
-      if (rn > SP_RACTOR_MAX_BP)
-        unsupported(c, id, "Ractor.new with more than 16 block parameters");
-      for (int i = 0; i < rn && nbp < SP_RACTOR_MAX_BP; i++) {
-        const char *p = nt_str(nt, reqs[i], "name");
-        if (p) bparams[nbp++] = p;
-      }
-    }
-  }
-  int args_node = nt_ref(nt, id, "arguments");
-  int argc = 0; const int *argv = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &argc) : NULL;
-
-  /* Isolation rule: reject captured outer locals and self. Block params are
-     not captures (they receive the deep-copied spawn args), so skip them. */
+  /* Isolation rule: reject captured outer locals and self. */
   NameSet rac_locals = {0};
   if (body >= 0) proc_collect_locals(c, body, &rac_locals);
   NameSet rac_used = {0};
@@ -966,27 +912,27 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
     for (int u = 0; u < rac_used.n; u++) {
       const char *nm = rac_used.v[u];
       if (nameset_has(&rac_locals, nm)) continue;
-      int is_bp = 0; for (int i = 0; i < nbp; i++) if (!strcmp(nm, bparams[i])) { is_bp = 1; break; }
-      if (is_bp) continue;
       LocalVar *lv = scope_local(encl, nm);
       if (!lv || lv->type == TY_UNKNOWN) continue;
       unsupported(c, id, "Ractor::IsolationError: block captures outer variable "
-                         "(a Ractor block must be self-contained; pass data as a "
-                         "Ractor.new argument or via send instead)");
+                         "(Milestone 1 Ractors must be self-contained)");
     }
   }
   free(rac_used.v);
   if (encl && encl->class_id >= 0 && !encl->is_cmethod && body >= 0 && fiber_body_uses_self(c, body))
     unsupported(c, id, "Ractor::IsolationError: block accesses self "
-                       "(a Ractor block must be self-contained)");
-  if (body >= 0) {
-    int shared = ractor_body_shared_state(c, body);
-    if (shared == 1)
-      unsupported(c, id, "Ractor::IsolationError: block accesses a class variable (@@) "
-                         "(class variables are not shared across Ractors; pass data as an argument or message)");
-    else if (shared == 2)
-      unsupported(c, id, "Ractor::IsolationError: block accesses a global variable ($) "
-                         "(globals are not shared across Ractors; pass data as an argument or message)");
+                       "(Milestone 1 Ractors must be self-contained)");
+
+  /* Block parameters would carry Ractor.new arguments, which Milestone 1 does
+     not pass; reject so we never silently drop them. */
+  {
+    int bp_node = nt_ref(nt, blk, "parameters");
+    if (bp_node >= 0) {
+      int inner = nt_ref(nt, bp_node, "parameters");
+      int pn = inner >= 0 ? inner : bp_node;
+      int rn = 0; (void)nt_arr(nt, pn, "requireds", &rn);
+      if (rn > 0) unsupported(c, id, "Ractor.new block parameters (Milestone 1 takes no args)");
+    }
   }
 
   buf_printf(&g_proc_protos, "static void %s(sp_Ractor *_rb);\n", fname);
@@ -1012,29 +958,10 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
       if (!lv->name) continue;
       if (!nameset_has(&rac_locals, lv->name)) continue;
       if (lv->type == TY_UNKNOWN) continue;
-      int is_bp = 0; for (int i = 0; i < nbp; i++) if (!strcmp(lv->name, bparams[i])) { is_bp = 1; break; }
-      if (is_bp) continue;   /* block params are declared from spawn args below */
       declare_local(c, pb, lv, 0);
     }
   }
   free(rac_locals.v);
-
-  /* Block params: bind each to its spawn argument. A Ractor::Port arg crossed
-     by reference (typed TY_RACTOR_PORT by the analyzer), so unbox it to the
-     port pointer; everything else is a deep-copied poly value. */
-  {
-    Scope *bs = comp_scope_of(c, blk);
-    for (int i = 0; i < nbp; i++) {
-      const char *bpn = rename_local(bparams[i]);
-      LocalVar *lvp = bs ? scope_local(bs, bparams[i]) : NULL;
-      if (lvp && lvp->type == TY_RACTOR_PORT) {
-        buf_printf(pb, "    sp_RactorPort *lv_%s = (sp_RactorPort *)sp_ractor_spawn_arg(%d).v.p;\n", bpn, i);
-      } else {
-        buf_printf(pb, "    sp_RbVal lv_%s = sp_ractor_spawn_arg(%d);\n", bpn, i);
-        buf_printf(pb, "    SP_GC_ROOT_RBVAL(lv_%s);\n", bpn);
-      }
-    }
-  }
 
   /* Top-level rescue landing pad: an uncaught raise longjmps here and the
      Ractor simply terminates (its taker then sees the closed outbox). */
@@ -1055,27 +982,7 @@ void emit_ractor_new(Compiler *c, int id, Buf *b) {
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
   g_result_poly = sv_rp; g_result_var = sv_rv;
 
-  /* Creation: with spawn args, serialize each (on this creator thread, reading
-     this heap) into a malloc'd blob array, then hand ownership to the Ractor.
-     Hoist the array build into g_pre so arg expressions can pre-emit cleanly. */
-  if (argc > 0 && g_pre) {
-    int ta = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_RactorBlob *_t%d = (sp_RactorBlob *)malloc(sizeof(sp_RactorBlob) * %d);\n", ta, argc);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "if (!_t%d) sp_oom_die();\n", ta);
-    for (int i = 0; i < argc; i++) {
-      Buf vb = {0};
-      if (comp_ntype(c, argv[i]) == TY_POLY) emit_expr(c, argv[i], &vb);
-      else emit_boxed(c, argv[i], &vb);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "_t%d[%d] = sp_ractor_serialize_hook(%s);\n", ta, i, vb.p ? vb.p : "sp_box_nil()");
-      free(vb.p);
-    }
-    buf_printf(b, "sp_Ractor_new_args(%s, _t%d, %d)", fname, ta, argc);
-  } else {
-    buf_printf(b, "sp_Ractor_new(%s)", fname);
-  }
+  buf_printf(b, "sp_Ractor_new(%s)", fname);
 }
 
 /* Lower a `proc {}` / `lambda {}` / `Proc.new {}` / `->(){}` literal: emit a
@@ -1507,106 +1414,6 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_puts(b, "}\n");
 }
 
-/* Per-class user-object message codec (Ractor deep copy). Emits the four hooks
-   the runtime codec (sp_runtime.h) drives: nivars / getivar (box) / alloc /
-   setivar (unbox), as switches over the class table. cls_id is a stable index
-   shared by every Ractor, so it travels on the wire directly. Skips reopened
-   builtins (no sp_ struct) and exception subclasses (special layout) -- those
-   report nivars -1 and raise Ractor::Error if sent. Must be emitted after the
-   class structs + scan fns and before sp_re_init (which installs the hooks). */
-/* An ivar is codec-safe iff it is one of the deep-copyable types the value
-   codec handles end-to-end AND emit_boxed_text/emit_unbox_text round-trip:
-   scalars, nested objects, arrays, and hashes. Everything else -- by-value
-   structs (Class/Range/Time/...), and non-copyable references (Proc/Fiber/IO/
-   Method/StringIO/Regexp/...) -- makes the whole class non-deep-copyable, so
-   it reports nivars -1 and raises Ractor::Error if sent. (A POLY ivar is safe
-   to attempt; if it holds an unshareable value at runtime the value codec
-   raises then.) */
-static int ractor_ivar_safe(Compiler *c, TyKind t) {
-  (void)c;
-  if (t == TY_UNKNOWN) t = TY_INT;
-  switch (t) {
-    case TY_INT: case TY_FLOAT: case TY_BOOL: case TY_STRING:
-    case TY_SYMBOL: case TY_POLY:
-    case TY_INT_ARRAY: case TY_FLOAT_ARRAY: case TY_STR_ARRAY: case TY_POLY_ARRAY:
-      return 1;
-    default: break;
-  }
-  return ty_is_object(t) || ty_is_hash(t);
-}
-static int ractor_obj_serializable(Compiler *c, int i) {
-  if (is_builtin_reopen(c->classes[i].name) || class_is_exc_subclass(c, i)) return 0;
-  ClassInfo *ci = &c->classes[i];
-  for (int j = 0; j < ci->nivars; j++)
-    if (!ractor_ivar_safe(c, ci->ivar_types[j])) return 0;
-  return 1;
-}
-
-void emit_ractor_obj_codec(Compiler *c, Buf *b) {
-  #define SP_RACTOR_OBJ_SUPPORTED(i) ractor_obj_serializable(c, i)
-  char expr[320];
-
-  buf_puts(b, "static int sp_ractor_obj_nivars(int cls_id) {\n  switch (cls_id) {\n");
-  for (int i = 0; i < c->nclasses; i++)
-    if (SP_RACTOR_OBJ_SUPPORTED(i))
-      buf_printf(b, "    case %d: return %d;\n", i, c->classes[i].nivars);
-  buf_puts(b, "    default: return -1;\n  }\n}\n");
-
-  buf_puts(b, "static sp_RbVal sp_ractor_obj_getivar(void *p, int cls_id, int i) {\n  (void)p; switch (cls_id) {\n");
-  for (int i = 0; i < c->nclasses; i++) {
-    if (!SP_RACTOR_OBJ_SUPPORTED(i)) continue;
-    ClassInfo *ci = &c->classes[i];
-    if (ci->nivars == 0) continue;
-    buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; switch (i) {\n", i, ci->name, ci->name);
-    for (int j = 0; j < ci->nivars; j++) {
-      TyKind t = ci->ivar_types[j] == TY_UNKNOWN ? TY_INT : ci->ivar_types[j];
-      snprintf(expr, sizeof expr, "o->iv_%s", ci->ivars[j] + 1);
-      buf_printf(b, "      case %d: return ", j);
-      emit_boxed_text(c, t, expr, b);
-      buf_puts(b, ";\n");
-    }
-    buf_puts(b, "      default: break;\n    } break; }\n");
-  }
-  buf_puts(b, "  }\n  return sp_box_nil();\n}\n");
-
-  buf_puts(b, "static void *sp_ractor_obj_alloc(int cls_id) {\n  switch (cls_id) {\n");
-  for (int i = 0; i < c->nclasses; i++) {
-    if (!SP_RACTOR_OBJ_SUPPORTED(i)) continue;
-    ClassInfo *ci = &c->classes[i];
-    if (class_needs_scan(ci))
-      buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s_scan); memset(o, 0, sizeof(*o)); o->cls_id = %d; return o; }\n",
-                 i, ci->name, ci->name, ci->name, ci->name, i);
-    else
-      buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, NULL); memset(o, 0, sizeof(*o)); o->cls_id = %d; return o; }\n",
-                 i, ci->name, ci->name, ci->name, i);
-  }
-  buf_puts(b, "    default: return NULL;\n  }\n}\n");
-
-  buf_puts(b, "static void sp_ractor_obj_setivar(void *p, int cls_id, int i, sp_RbVal v) {\n  (void)p; (void)v; switch (cls_id) {\n");
-  for (int i = 0; i < c->nclasses; i++) {
-    if (!SP_RACTOR_OBJ_SUPPORTED(i)) continue;
-    ClassInfo *ci = &c->classes[i];
-    if (ci->nivars == 0) continue;
-    buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; switch (i) {\n", i, ci->name, ci->name);
-    for (int j = 0; j < ci->nivars; j++) {
-      TyKind t = ci->ivar_types[j] == TY_UNKNOWN ? TY_INT : ci->ivar_types[j];
-      buf_printf(b, "      case %d: o->iv_%s = ", j, ci->ivars[j] + 1);
-      emit_unbox_text(c, t, "v", b);
-      buf_puts(b, "; break;\n");
-    }
-    buf_puts(b, "      default: break;\n    } break; }\n");
-  }
-  buf_puts(b, "  }\n}\n");
-
-  buf_puts(b, "static void sp_ractor_obj_codec_install(void) {\n");
-  buf_puts(b, "  sp_ractor_obj_nivars_hook = sp_ractor_obj_nivars;\n");
-  buf_puts(b, "  sp_ractor_obj_getivar_hook = sp_ractor_obj_getivar;\n");
-  buf_puts(b, "  sp_ractor_obj_alloc_hook = sp_ractor_obj_alloc;\n");
-  buf_puts(b, "  sp_ractor_obj_setivar_hook = sp_ractor_obj_setivar;\n");
-  buf_puts(b, "}\n\n");
-  #undef SP_RACTOR_OBJ_SUPPORTED
-}
-
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
@@ -1918,7 +1725,6 @@ void emit_regex_section(Buf *b) {
   /* Install the Ractor message codec (defined in sp_runtime.h, where the heap
      allocators it rebuilds into are visible). */
   buf_puts(b, "  sp_ractor_codec_install();\n");
-  buf_puts(b, "  sp_ractor_obj_codec_install();\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -2886,10 +2692,6 @@ char *codegen_program(const NodeTable *nt) {
     }
     buf_puts(&b, "}\n\n");
   }
-
-  /* Per-class Ractor object codec — emitted after the class structs/scans and
-     before sp_re_init installs the hooks. */
-  emit_ractor_obj_codec(c, &b);
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
      proc literals they contain accumulate static functions into g_procs /

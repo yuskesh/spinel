@@ -15,10 +15,6 @@ void sp_gc_thread_teardown(void);
 /* Codec hooks, installed by the generated TU at startup. */
 sp_RactorBlob (*sp_ractor_serialize_hook)(sp_RbVal v) = NULL;
 sp_RbVal      (*sp_ractor_deserialize_hook)(sp_RactorBlob b) = NULL;
-int      (*sp_ractor_obj_nivars_hook)(int cls_id) = NULL;
-sp_RbVal (*sp_ractor_obj_getivar_hook)(void *obj, int cls_id, int i) = NULL;
-void *   (*sp_ractor_obj_alloc_hook)(int cls_id) = NULL;
-void     (*sp_ractor_obj_setivar_hook)(void *obj, int cls_id, int i, sp_RbVal v) = NULL;
 
 /* A blocking single-ended FIFO of serialized message blobs guarded by a
    mutex+condvar. Each Ractor has two: `inbox` (messages sent to it; drained by
@@ -37,8 +33,6 @@ struct sp_Ractor {
   void          (*body)(sp_Ractor *);
   sp_RactorQueue  inbox;
   sp_RactorQueue  outbox;
-  sp_RactorBlob  *spawn_args;  /* Ractor.new(args){...}: deep-copied block args */
-  int             spawn_argc;
   sp_Ractor      *reg_next;   /* process-lifetime registry link */
 };
 
@@ -134,29 +128,14 @@ static void *sp_ractor_trampoline(void *arg) {
   sp_fiber_thread_init();
   r->body(r);                 /* body installs its own top-level rescue pad */
   sp_rq_close(&r->outbox);
-  /* Free any spawn-arg blobs the body did not consume, plus the array. */
-  if (r->spawn_args) {
-    for (int i = 0; i < r->spawn_argc; i++) free(r->spawn_args[i].data);
-    free(r->spawn_args); r->spawn_args = NULL;
-  }
   sp_gc_thread_teardown();
   return NULL;
 }
 
-/* Ractor.new(args...) { |params...| }: the args are serialized on the creator
-   side (reading the creator's heap) into the malloc'd `args` array, ownership
-   of which transfers here; the body deserializes each into its own heap via
-   sp_ractor_spawn_arg(). Pass args=NULL, argc=0 for a plain Ractor.new {}. */
-sp_Ractor *sp_Ractor_new_args(void (*body)(sp_Ractor *), sp_RactorBlob *args, int argc) {
+sp_Ractor *sp_Ractor_new(void (*body)(sp_Ractor *)) {
   sp_Ractor *r = (sp_Ractor *)calloc(1, sizeof(sp_Ractor));
-  if (!r) {
-    /* Ownership of args transferred to us; free it before unwinding. */
-    if (args) { for (int i = 0; i < argc; i++) free(args[i].data); free(args); }
-    sp_raise_cls("Ractor::Error", "failed to allocate Ractor");
-  }
+  if (!r) sp_raise_cls("Ractor::Error", "failed to allocate Ractor");
   r->body = body;
-  r->spawn_args = args;
-  r->spawn_argc = argc;
   sp_rq_init(&r->inbox);
   sp_rq_init(&r->outbox);
   sp_ractor_register(r);   /* retained for the process lifetime */
@@ -164,51 +143,6 @@ sp_Ractor *sp_Ractor_new_args(void (*body)(sp_Ractor *), sp_RactorBlob *args, in
     sp_raise_cls("Ractor::Error", "failed to spawn Ractor thread");
   pthread_detach(r->thread);
   return r;
-}
-
-sp_Ractor *sp_Ractor_new(void (*body)(sp_Ractor *)) {
-  return sp_Ractor_new_args(body, NULL, 0);
-}
-
-/* ---- Ractor::Port: a process-shared message channel ---- */
-struct sp_RactorPort {
-  sp_RactorQueue q;
-  sp_RactorPort *reg_next;   /* process-lifetime registry */
-};
-static pthread_mutex_t sp_port_reg_mtx = PTHREAD_MUTEX_INITIALIZER;
-static sp_RactorPort  *sp_port_reg_head = NULL;
-
-sp_RactorPort *sp_RactorPort_new(void) {
-  sp_RactorPort *p = (sp_RactorPort *)calloc(1, sizeof(sp_RactorPort));
-  if (!p) sp_raise_cls("Ractor::Error", "failed to allocate Ractor::Port");
-  sp_rq_init(&p->q);
-  pthread_mutex_lock(&sp_port_reg_mtx);
-  p->reg_next = sp_port_reg_head; sp_port_reg_head = p;
-  pthread_mutex_unlock(&sp_port_reg_mtx);
-  return p;
-}
-void sp_RactorPort_send(sp_RactorPort *p, sp_RbVal v) {
-  if (!p) sp_raise_cls("Ractor::Error", "send on a null Ractor::Port");
-  sp_rq_push(&p->q, sp_ractor_to_blob(v));   /* serialize on the sender side */
-}
-sp_RbVal sp_RactorPort_receive(sp_RactorPort *p) {
-  if (!p) sp_raise_cls("Ractor::Error", "receive on a null Ractor::Port");
-  sp_RactorBlob b;
-  if (!sp_rq_pop(&p->q, &b)) sp_raise_cls("Ractor::Error", "Ractor::Port is closed");
-  return sp_ractor_from_blob(b);             /* rebuild into the receiver's heap */
-}
-void sp_RactorPort_close(sp_RactorPort *p) { if (p) sp_rq_close(&p->q); }
-
-/* Deserialize the i-th spawn argument into this Ractor's heap (read once, per
-   block parameter). Out-of-range yields nil, matching a block param with no
-   corresponding argument. */
-sp_RbVal sp_ractor_spawn_arg(int i) {
-  sp_Ractor *r = sp_ractor_current;
-  if (!r || i < 0 || i >= r->spawn_argc || !r->spawn_args[i].data)
-    return (sp_RbVal){ .tag = SP_TAG_NIL, .cls_id = 0, .v = { .i = 0 } };
-  sp_RactorBlob b = r->spawn_args[i];
-  r->spawn_args[i].data = NULL;   /* taken; trampoline won't double-free */
-  return sp_ractor_from_blob(b);
 }
 
 void sp_Ractor_send(sp_Ractor *r, sp_RbVal v) {

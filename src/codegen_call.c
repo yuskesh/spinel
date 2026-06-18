@@ -828,41 +828,6 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* Ractor::Port.new -> a shared channel. The receiver is the namespaced
-     constant Ractor::Port (ConstantPathNode name=Port, parent ConstantRead
-     Ractor), so it isn't caught by the bare-constant `.new` dispatch below. */
-  if (!strcmp(name, "new") && recv >= 0 && nt_type(nt, recv) &&
-      !strcmp(nt_type(nt, recv), "ConstantPathNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Port")) {
-    int par = nt_ref(nt, recv, "parent");
-    const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
-    if (par >= 0 && nt_type(nt, par) && !strcmp(nt_type(nt, par), "ConstantReadNode") &&
-        pn && !strcmp(pn, "Ractor")) {
-      buf_puts(b, "sp_RactorPort_new()");
-      return;
-    }
-  }
-
-  /* Ractor::Port instance methods: p.send(v) / p << v (enqueue, returns the
-     port), p.receive (block until a message), p.close. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_RACTOR_PORT) {
-    if ((!strcmp(name, "send") || !strcmp(name, "<<")) && argc == 1) {
-      int tp = ++g_tmp;
-      buf_printf(b, "({ sp_RactorPort *_pt%d = ", tp); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_RactorPort_send(_pt%d, ", tp); emit_boxed(c, argv[0], b);
-      buf_printf(b, "); _pt%d; })", tp);
-      return;
-    }
-    if (!strcmp(name, "receive") && argc == 0) {
-      buf_puts(b, "sp_RactorPort_receive("); emit_expr(c, recv, b); buf_puts(b, ")");
-      return;
-    }
-    if (!strcmp(name, "close") && argc == 0) {
-      buf_puts(b, "({ sp_RactorPort_close("); emit_expr(c, recv, b); buf_puts(b, "); sp_box_nil(); })");
-      return;
-    }
-  }
-
   /* Fiber instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
     if (!strcmp(name, "resume")) {

@@ -31,10 +31,6 @@
    the other SP_BUILTIN_* in sp_runtime.h) so the inline mark helper can see it.
    Value is the next free slot below SP_BUILTIN_METHOD (-24). */
 #define SP_BUILTIN_FOREIGN_PTR (-25)
-/* A Ractor::Port boxed into a poly slot. Like FOREIGN_PTR it is a malloc'd,
-   process-shared, registry-owned channel -- NOT a sp_gc_alloc object -- so the
-   collector must not trace it. Defined here so the inline mark helper sees it. */
-#define SP_BUILTIN_RACTOR_PORT (-26)
 typedef struct { int tag; int cls_id; union { mrb_int i; const char *s; mrb_float f; mrb_bool b; void *p; } v; } sp_RbVal;
 
 /* ---- Collector globals shared with the generated TU ----
@@ -89,7 +85,7 @@ static inline void sp_mark_string(const char *s) {
 }
 static inline void sp_mark_rbval(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) sp_mark_string(v.v.s);
-  else if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR && v.cls_id != SP_BUILTIN_RACTOR_PORT) sp_gc_mark(v.v.p);
+  else if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR) sp_gc_mark(v.v.p);
 }
 /* Closure-cell content markers. A captured non-int local is laundered into the
    pointer-sized mrb_int cell as (uintptr_t)<ptr>; the cell's GC scan marks the

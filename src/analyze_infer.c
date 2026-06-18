@@ -647,11 +647,6 @@ else {
     /* a namespaced class (M::Sub) or root-qualified builtin (::Array etc) */
     if (rty && !strcmp(rty, "ConstantPathNode")) {
       const char *cn = nt_str(nt, recv, "name");
-      if (cn && !strcmp(cn, "Port")) {   /* Ractor::Port.new -> shared channel */
-        int par = nt_ref(nt, recv, "parent");
-        const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
-        if (pn && !strcmp(pn, "Ractor")) return TY_RACTOR_PORT;
-      }
       int ci = cn ? comp_class_index(c, cn) : -1;
       if (ci >= 0) {
         if (class_inherits_builtin_exception(c, ci)) return TY_EXCEPTION;
@@ -918,14 +913,6 @@ else {
   if (recv >= 0 && rt == TY_RACTOR) {
     if (!strcmp(name, "send") || !strcmp(name, "<<")) return TY_RACTOR;
     if (!strcmp(name, "take")) return TY_POLY;
-  }
-
-  /* TY_RACTOR_PORT instance methods: send/<< return the port, receive a
-     message of unknown type, close nil. */
-  if (recv >= 0 && rt == TY_RACTOR_PORT) {
-    if (!strcmp(name, "send") || !strcmp(name, "<<")) return TY_RACTOR_PORT;
-    if (!strcmp(name, "receive")) return TY_POLY;
-    if (!strcmp(name, "close")) return TY_POLY;
   }
 
   /* TY_RANDOM instance methods */
