@@ -377,7 +377,7 @@ void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   if (!nd) return;
   size_t klen = strlen(key), vlen = strlen(val);
   for (int j = 0; j < nd->ns; j++)
-    if (strcmp(nd->s[j].key, key) == 0) {
+    if (sp_streq(nd->s[j].key, key)) {
       free(nd->s[j].val); nd->s[j].val = dup_n(val, vlen); nd->s[j].val_len = vlen; return;
     }
   node_add_str(nd, key, klen, dup_n(val, vlen), vlen);
@@ -481,7 +481,7 @@ const char *nt_str(const NodeTable *nt, int id, const char *key) {
   const SpNode *nd = node_at(nt, id);
   if (!nd) return NULL;
   for (int j = 0; j < nd->ns; j++)
-    if (strcmp(nd->s[j].key, key) == 0) return nd->s[j].val;
+    if (sp_streq(nd->s[j].key, key)) return nd->s[j].val;
   return NULL;
 }
 
@@ -490,7 +490,7 @@ int nt_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   if (!nd) return 0;
   size_t vlen = strlen(val);
   for (int j = 0; j < nd->ns; j++) {
-    if (strcmp(nd->s[j].key, key) == 0) {
+    if (sp_streq(nd->s[j].key, key)) {
       free(nd->s[j].val);
       nd->s[j].val = malloc(vlen + 1);
       memcpy(nd->s[j].val, val, vlen + 1);
@@ -505,7 +505,7 @@ size_t nt_str_len(const NodeTable *nt, int id, const char *key) {
   const SpNode *nd = node_at(nt, id);
   if (!nd) return 0;
   for (int j = 0; j < nd->ns; j++)
-    if (strcmp(nd->s[j].key, key) == 0) return nd->s[j].val_len;
+    if (sp_streq(nd->s[j].key, key)) return nd->s[j].val_len;
   return 0;
 }
 
@@ -513,7 +513,7 @@ long long nt_int(const NodeTable *nt, int id, const char *key, long long dflt) {
   const SpNode *nd = node_at(nt, id);
   if (!nd) return dflt;
   for (int j = 0; j < nd->ni; j++)
-    if (strcmp(nd->i[j].key, key) == 0) return nd->i[j].val;
+    if (sp_streq(nd->i[j].key, key)) return nd->i[j].val;
   return dflt;
 }
 
@@ -521,7 +521,7 @@ int nt_ref(const NodeTable *nt, int id, const char *key) {
   const SpNode *nd = node_at(nt, id);
   if (!nd) return -1;
   for (int j = 0; j < nd->nr; j++)
-    if (strcmp(nd->r[j].key, key) == 0) return nd->r[j].ref;
+    if (sp_streq(nd->r[j].key, key)) return nd->r[j].ref;
   return -1;
 }
 
@@ -530,7 +530,7 @@ const int *nt_arr(const NodeTable *nt, int id, const char *key, int *out_n) {
   const SpNode *nd = node_at(nt, id);
   if (!nd) return NULL;
   for (int j = 0; j < nd->na; j++)
-    if (strcmp(nd->a[j].key, key) == 0) { *out_n = nd->a[j].n; return nd->a[j].ids; }
+    if (sp_streq(nd->a[j].key, key)) { *out_n = nd->a[j].n; return nd->a[j].ids; }
   return NULL;
 }
 
