@@ -1123,6 +1123,21 @@ else {
     if (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?") ||
         !strcmp(name, "respond_to?") || !strcmp(name, "==") || !strcmp(name, "!=") ||
         !strcmp(name, "nil?") || !strcmp(name, "equal?") || !strcmp(name, "frozen?")) return TY_BOOL;
+    /* instance_variable_get(:@x) yields @x's declared type; instance_variable_set
+       yields the field type too (C `lvalue = v` evaluates to the lvalue). The
+       codegen lowers both to a direct iv_ field access on the known layout. */
+    if ((!strcmp(name, "instance_variable_get") || !strcmp(name, "instance_variable_set")) && argc >= 1) {
+      const char *a0ty = nt_type(nt, argv[0]);
+      if (a0ty && (!strcmp(a0ty, "SymbolNode") || !strcmp(a0ty, "StringNode"))) {
+        const char *sym = !strcmp(a0ty, "SymbolNode")
+                            ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+        /* A name in the layout yields its declared type; an undefined-but-valid
+           `@`-name reads as nil and a bad name (no `@`) raises NameError -- both poly. */
+        int iv = (sym && sym[0] == '@') ? comp_ivar_index(cls, sym) : -1;
+        if (iv >= 0) return cls->ivar_types[iv];
+        return TY_POLY;
+      }
+    }
     /* attr reader (resolve alias so `alias v access_token` returns @access_token type) */
     { int rdcls = -1;
       if (comp_reader_in_chain(c, cid, name, &rdcls)) {
