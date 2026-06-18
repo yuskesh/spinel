@@ -77,7 +77,7 @@ void sp_ctx_swap(sp_fiber_ctx *from, sp_fiber_ctx *to) { swapcontext(&from->uc, 
 
 /* ---- Reached by name in the generated TU ---- */
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
-void sp_raise_cls(const char *cls, const char *msg);
+SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);
 
 static inline sp_RbVal sp_box_nil(void) { sp_RbVal r; r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.i = 0; return r; }
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }

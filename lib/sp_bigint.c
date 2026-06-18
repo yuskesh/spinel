@@ -16,7 +16,7 @@
 
 /* Defined in sp_runtime.h (linked into the final program); forward-declared
    here so the bigint object can raise without pulling in the whole header. */
-extern void sp_raise_cls(const char *cls, const char *msg);
+extern __attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);
 
 #define DIG_SIZE (MPZ_DIG_SIZE)
 #define DIG_BASE (1ULL << DIG_SIZE)

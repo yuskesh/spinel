@@ -35,7 +35,7 @@ extern const char *sp_ext_str_empty(void);
 extern size_t sp_ext_str_byte_len(const char *s);
 extern void *sp_ext_gc_alloc(size_t sz, void (*fin)(void *), void (*scan)(void *));
 extern void  sp_ext_mark_string(const char *s);
-extern void  sp_raise_cls(const char *cls, const char *msg);
+extern __attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);
 
 /* The scanner struct lives in spinel's GC heap. `source` /
    `matched` are GC-tracked strings; the scan function below
