@@ -7,6 +7,7 @@
 #   build       compile to a binary; report compile / codegen / C-build failure
 #   unsupported codegen gaps that degrade to a stub (stderr "unsupported ...")
 #   unresolved  calls that silently degrade to nil/0 (SPINEL_WARN_UNRESOLVED)
+#   inference   methods spinel widened to untyped (the boxed poly slow path)
 #   requires    non-relative `require`s spinel treats as native / no-op
 #   behavior    (opt) compiled output vs CRuby; needs `ruby` on PATH
 
@@ -63,7 +64,7 @@ def main
       quiet = true
     elsif a == "-h" || a == "--help"
       puts "usage: spinel-doctor [--only a,b] [--skip a,b] [--behavior] [--quiet] app.rb"
-      puts "  legs: build unsupported unresolved requires behavior"
+      puts "  legs: build unsupported unresolved inference requires behavior"
       exit(0)
     else
       src = a
@@ -89,6 +90,24 @@ def main
   end
   if leg_on("unresolved", only, skip)
     errs = errs + report("unresolved", "warn", grep_kind(diag, "warning: unresolved"), quiet)
+  end
+
+  if leg_on("inference", only, skip)
+    # Methods whose signature spinel widened to `untyped` -- the boxed poly
+    # slow path. Each such site is a "# spinel: widened to untyped (slow path)"
+    # comment in --emit-rbs. Not a defect (the program is correct), so it is
+    # info severity and does not affect the exit code; it surfaces where
+    # inference could not pin a concrete type (a perf cost, and sometimes the
+    # first sign of a latent type gap worth a closer look).
+    rbs = tmp_path("doctor", src, ".rbs")
+    sh(sp + " " + src + " --emit-rbs -o " + rbs)
+    widened = []
+    if File.exist?(rbs)
+      File.read(rbs).split("\n").each { |l|
+        widened.push(l.strip) if l.include?("# spinel: widened")
+      }
+    end
+    report("inference", "info", widened, quiet)
   end
 
   if leg_on("requires", only, skip)
