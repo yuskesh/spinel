@@ -19,7 +19,7 @@ typedef double  mrb_float;
 
 /* Defined in the generated translation unit (sp_runtime.h); referenced
    here and resolved at link time. */
-void sp_raise_cls(const char *cls, const char *msg);
+__attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);
 const char *sp_sprintf(const char *fmt, ...);
 
 /* CRuby's `String#to_i` accepts a leading sign, then digits with

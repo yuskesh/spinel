@@ -44,7 +44,7 @@ void sp_re_set_error_handler(void (*fn)(const char *msg)) {
   sp_re_error_handler = fn;
 }
 
-static void
+static __attribute__((noreturn)) void
 compile_error(re_compiler *c, const char *msg)
 {
   /* Build the message before freeing: in /x (extended) mode c->src aliases
