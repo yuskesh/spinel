@@ -1,16 +1,19 @@
 # Spinel AOT Compiler - Makefile
 #
 # Usage:
-#   make              Build the C compiler (parser + runtime + spinel)
-#   make parse        Build the C parser only
+#   make              Build the C compiler (runtime + spinel + tools)
 #   make test         Run the feature tests (always a fresh run)
 #   make bench        Run benchmarks vs CRuby
 #   make optcarrot    End-to-end optcarrot integration test
 #   make legacy       Build the legacy Ruby compiler (delegates to legacy/)
 #   make bootstrap    Legacy self-host fixpoint check (delegates to legacy/)
 #   make check        Fast pre-commit: rebuild + tests
-#   make gate         Full pre-push: test || bench || optcarrot, then bootstrap
+#   make gate         Full pre-push: test || bench || optcarrot
 #   make clean        Remove built binaries
+#
+# The legacy Ruby compiler (legacy/) is built ONLY by the explicit `make legacy`
+# / `make bootstrap` delegators or by `cd legacy && make`; the C compiler is
+# master and a plain `make` / `make gate` never compiles it.
 
 # Shared toolchain configuration (CC wrapping, CFLAGS, LTO, stamps, …).
 include common.mk
@@ -57,7 +60,7 @@ endif
 # beside lib/ so the binary resolves its runtime lib via ../lib, same as before.
 SPINEL = bin/spinel$(EXE)
 
-all: parse regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools
+all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools
 
 # ---- Dependencies ----
 deps: vendor/prism/include/prism/diagnostic.h vendor/rbs/include/rbs/parser.h
@@ -295,7 +298,8 @@ test:
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417). analyze-fail (legacy-analyzer diagnostics) lives in legacy/
-# now and runs as part of `make gate`, not the hot `make test` loop.
+# and runs only via an explicit `make analyze-fail-test` / `cd legacy && make`,
+# not as part of `make gate` or the hot `make test` loop.
 test-run: rbs-test rbs-seed-test $(TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
@@ -528,26 +532,25 @@ optcarrot: $(SPINEL) $(SP_RT_LIB)
 #
 # `test`, `bench` and `optcarrot` only READ the compiler binaries and
 # write to disjoint build/ dirs, so they run concurrently as parallel
-# prerequisites; `bootstrap` rewrites spinel_{analyze,codegen} and runs
-# alone afterward. Every recursive $(MAKE) is `+`-prefixed so the
-# jobserver fd is inherited; none pass an explicit -j (which would force
-# a sub-make to spawn its own pool → oversubscription).
+# prerequisites. Every recursive $(MAKE) is `+`-prefixed so the jobserver
+# fd is inherited; none pass an explicit -j (which would force a sub-make
+# to spawn its own pool → oversubscription).
 
 # Fast pre-commit: rebuild the compiler and run the suite. OPT=-O1 compiles
 # the sp_runtime.h-heavy per-test C ~3x faster than -O0 (the optimizer prunes
-# the 800+ unreferenced static fns before codegen). Skips bench/optcarrot/
-# bootstrap — run `make gate` before pushing for those.
+# the 800+ unreferenced static fns before codegen). Skips bench/optcarrot —
+# run `make gate` before pushing for those.
 check:
 	+@$(MAKE) --no-print-directory LTO=0 all
 	+@$(MAKE) --no-print-directory test OPT=-O1
 
-# Full pre-push gate: test || bench || optcarrot in parallel, then the
-# legacy self-host bootstrap.
+# Full pre-push gate: test || bench || optcarrot in parallel. The C compiler is
+# master; the legacy Ruby self-host bootstrap and its analyze-fail diagnostics
+# are NOT part of the gate (run `make bootstrap` / `cd legacy && make` explicitly
+# for those).
 gate:
 	+@$(MAKE) --no-print-directory LTO=0 all
 	+@$(MAKE) --no-print-directory gate-legs
-	+@$(MAKE) --no-print-directory LTO=0 bootstrap
-	+@$(MAKE) --no-print-directory analyze-fail-test
 	@echo "gate: ALL GREEN"
 
 gate-legs: gate-test gate-bench gate-optcarrot
