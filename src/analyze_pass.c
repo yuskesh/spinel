@@ -1442,7 +1442,37 @@ int infer_hash_params(Compiler *c) {
   };
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty) continue;
+    /* Index-or-write on an unknown param hash (h[k] ||= v / &&= / op=): infer the
+       variant from the key + value types, mirroring the []= case below. These are
+       not CallNodes, so the CallNode path never reaches them; without this a hash
+       passed in empty (`{}` infers TY_UNKNOWN) stays unresolved and the method's
+       return type degrades to poly, which the caller then rejects. */
+    if (!strcmp(ty, "IndexOrWriteNode") || !strcmp(ty, "IndexAndWriteNode") ||
+        !strcmp(ty, "IndexOperatorWriteNode")) {
+      int wrecv = nt_ref(nt, id, "receiver");
+      if (wrecv < 0) continue;
+      const char *wrty = nt_type(nt, wrecv);
+      if (!wrty || strcmp(wrty, "LocalVariableReadNode")) continue;
+      const char *wrnm = nt_str(nt, wrecv, "name");
+      if (!wrnm) continue;
+      Scope *ws = comp_scope_of(c, id);
+      LocalVar *wlv = scope_local(ws, wrnm);
+      if (!wlv || !wlv->is_param || wlv->type != TY_UNKNOWN) continue;
+      int wargs = nt_ref(nt, id, "arguments");
+      int wan = 0; const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wan) : NULL;
+      if (wan < 1) continue;
+      TyKind wkt = infer_type(c, wargv[0]);
+      TyKind wvt = infer_type(c, nt_ref(nt, id, "value"));
+      TyKind wwant = TY_UNKNOWN;
+      if (wkt == TY_STRING) wwant = (wvt == TY_STRING) ? TY_STR_STR_HASH : TY_STR_POLY_HASH;
+      else if (wkt == TY_SYMBOL) wwant = TY_SYM_POLY_HASH;
+      else if (wkt == TY_INT) wwant = TY_POLY_POLY_HASH;
+      if (wwant == TY_UNKNOWN) continue;
+      wlv->type = wwant; changed = 1;
+      continue;
+    }
+    if (strcmp(ty, "CallNode")) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
     int recv = nt_ref(nt, id, "receiver");
