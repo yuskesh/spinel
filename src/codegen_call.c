@@ -2891,6 +2891,136 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+static int emit_range_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  /* range value methods (evaluate the range once into a temp) */
+  if (recv >= 0 && rt == TY_RANGE) {
+    int block = nt_ref(nt, id, "block");
+    if (!strcmp(name, "step") && argc == 1) {
+      int t = ++g_tmp, ar = ++g_tmp, ii = ++g_tmp, st = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, argv[0], &sb);
+      buf_printf(b, "({ sp_Range _t%d = %s; mrb_int _t%d = %s; sp_IntArray *_t%d = sp_IntArray_new();"
+                    " for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d += _t%d)"
+                    " sp_IntArray_push(_t%d, _t%d); _t%d; })",
+                 t, rb.p ? rb.p : "", st, sb.p ? sb.p : "", ar,
+                 ii, t, ii, t, t, ii, st, ar, ii, ar);
+      free(rb.p); free(sb.p);
+      return 1;
+    }
+    if (!strcmp(name, "each") && block < 0) {  /* enumerator: materialize to_a */
+      int t = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })",
+                 t, rb.p ? rb.p : "", t, t, t);
+      free(rb.p);
+      return 1;
+    }
+    static const char *const rmeths[] = {
+      "to_a", "include?", "member?", "cover?", "===", "sum", "min", "max",
+      "first", "last", "size", "count", "begin", "end",
+      "exclude_end?", "eql?", "minmax", "overlap?", NULL };
+    int known = 0;
+    for (int i = 0; rmeths[i]; i++) if (!strcmp(name, rmeths[i])) known = 1;
+    if (known) {
+      /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
+      if ((!strcmp(name, "size") || !strcmp(name, "count")) && argc == 0) {
+        int rn = unwrap_parens(c, recv);
+        if (rn >= 0 && nt_type(nt, rn) && !strcmp(nt_type(nt, rn), "RangeNode")) {
+          int lo = nt_ref(nt, rn, "left");
+          if (lo >= 0 && comp_ntype(c, lo) == TY_STRING) {
+            buf_puts(b, "SP_INT_NIL"); return 1;
+          }
+        }
+      }
+      int t = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Range _t%d = ", t);
+      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      if (!strcmp(name, "to_a"))
+        buf_printf(b, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", t, t, t);
+      else if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
+               !strcmp(name, "cover?") || !strcmp(name, "===")) {
+        /* cover?(range) checks that both endpoints of the arg fit inside self */
+        if (!strcmp(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+          int t2 = ++g_tmp;
+          buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
+          buf_printf(b, "; _t%d.first >= _t%d.first && (_t%d.last - _t%d.excl) <= (_t%d.last - _t%d.excl); })",
+                     t2, t, t2, t2, t, t);
+        }
+        else {
+          /* sp_range_include takes mrb_int; a float arg (`(1..).include?(2.4)`)
+             needs an explicit cast, else clang -Werror flags the implicit
+             float-literal->int conversion (gcc truncates silently). */
+          int arg_is_float = comp_ntype(c, argv[0]) == TY_FLOAT;
+          buf_printf(b, "sp_range_include(&_t%d, ", t);
+          if (arg_is_float) buf_puts(b, "(mrb_int)(");
+          emit_expr(c, argv[0], b);
+          if (arg_is_float) buf_puts(b, ")");
+          buf_puts(b, ")");
+        }
+      }
+      else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin")) {
+        if (argc == 1) {
+          /* first(n): collect up to n elements starting at first */
+          int tf = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+          buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); mrb_int _t%d = ", tf, tn);
+          emit_expr(c, argv[0], b);
+          buf_printf(b, "; for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl && _t%d - _t%d.first < _t%d; _t%d++)"
+                        " sp_IntArray_push(_t%d, _t%d); _t%d; })",
+                     ti, t, ti, t, t, ti, t, tn, ti, tf, ti, tf);
+        }
+        else buf_printf(b, "(_t%d.first)", t);
+      }
+      else if (!strcmp(name, "max"))  /* max element: end minus the exclusive bound */
+        buf_printf(b, "(_t%d.last - _t%d.excl)", t, t);
+      else if (!strcmp(name, "last") || !strcmp(name, "end")) {
+        if (argc == 1 && !strcmp(name, "last")) {
+          /* last(n): collect up to n elements ending at last */
+          int tf = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
+          buf_printf(b, "({ mrb_int _t%d = ", tn); emit_expr(c, argv[0], b);
+          buf_printf(b, "; mrb_int _t%d = _t%d.last - _t%d.excl;", te, t, t);
+          buf_printf(b, " mrb_int _t%d = _t%d - _t%d + 1; if (_t%d < _t%d.first) _t%d = _t%d.first;", ts, te, tn, ts, t, ts, t);
+          buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); for (mrb_int _i%d = _t%d; _i%d <= _t%d; _i%d++)"
+                        " sp_IntArray_push(_t%d, _i%d); _t%d; })",
+                     tf, tf, ts, tf, te, tf, tf, tf, tf);
+        }
+        else buf_printf(b, "(_t%d.last)", t);
+      }
+      else if (!strcmp(name, "size") || !strcmp(name, "count"))
+        buf_printf(b, "(_t%d.last - _t%d.excl - _t%d.first + 1)", t, t, t);
+      else if (!strcmp(name, "sum"))
+        buf_printf(b, "sp_IntArray_sum(sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl), 0)", t, t, t);
+      else if (!strcmp(name, "exclude_end?"))
+        buf_printf(b, "(_t%d.excl != 0)", t);
+      else if (!strcmp(name, "eql?")) {
+        buf_printf(b, "sp_range_eq(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (!strcmp(name, "overlap?")) {
+        int t2 = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; (_t%d.first <= _t%d.last - _t%d.excl && _t%d.first <= _t%d.last - _t%d.excl); })",
+                   t, t2, t2, t2, t, t, t);
+      }
+      else if (!strcmp(name, "minmax")) {
+        int ma = ++g_tmp;
+        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, _t%d.first);"
+                      " sp_IntArray_push(_t%d, _t%d.last - _t%d.excl); _t%d; })", ma, ma, t, ma, t, t, ma);
+      }
+      return 1;
+    }
+  }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -7990,124 +8120,7 @@ else {
     }
   }
 
-  /* range value methods (evaluate the range once into a temp) */
-  if (recv >= 0 && rt == TY_RANGE) {
-    int block = nt_ref(nt, id, "block");
-    if (!strcmp(name, "step") && argc == 1) {
-      int t = ++g_tmp, ar = ++g_tmp, ii = ++g_tmp, st = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, argv[0], &sb);
-      buf_printf(b, "({ sp_Range _t%d = %s; mrb_int _t%d = %s; sp_IntArray *_t%d = sp_IntArray_new();"
-                    " for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d += _t%d)"
-                    " sp_IntArray_push(_t%d, _t%d); _t%d; })",
-                 t, rb.p ? rb.p : "", st, sb.p ? sb.p : "", ar,
-                 ii, t, ii, t, t, ii, st, ar, ii, ar);
-      free(rb.p); free(sb.p);
-      return;
-    }
-    if (!strcmp(name, "each") && block < 0) {  /* enumerator: materialize to_a */
-      int t = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })",
-                 t, rb.p ? rb.p : "", t, t, t);
-      free(rb.p);
-      return;
-    }
-    static const char *const rmeths[] = {
-      "to_a", "include?", "member?", "cover?", "===", "sum", "min", "max",
-      "first", "last", "size", "count", "begin", "end",
-      "exclude_end?", "eql?", "minmax", "overlap?", NULL };
-    int known = 0;
-    for (int i = 0; rmeths[i]; i++) if (!strcmp(name, rmeths[i])) known = 1;
-    if (known) {
-      /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
-      if ((!strcmp(name, "size") || !strcmp(name, "count")) && argc == 0) {
-        int rn = unwrap_parens(c, recv);
-        if (rn >= 0 && nt_type(nt, rn) && !strcmp(nt_type(nt, rn), "RangeNode")) {
-          int lo = nt_ref(nt, rn, "left");
-          if (lo >= 0 && comp_ntype(c, lo) == TY_STRING) {
-            buf_puts(b, "SP_INT_NIL"); return;
-          }
-        }
-      }
-      int t = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Range _t%d = ", t);
-      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      if (!strcmp(name, "to_a"))
-        buf_printf(b, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", t, t, t);
-      else if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
-               !strcmp(name, "cover?") || !strcmp(name, "===")) {
-        /* cover?(range) checks that both endpoints of the arg fit inside self */
-        if (!strcmp(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
-          int t2 = ++g_tmp;
-          buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
-          buf_printf(b, "; _t%d.first >= _t%d.first && (_t%d.last - _t%d.excl) <= (_t%d.last - _t%d.excl); })",
-                     t2, t, t2, t2, t, t);
-        }
-        else {
-          /* sp_range_include takes mrb_int; a float arg (`(1..).include?(2.4)`)
-             needs an explicit cast, else clang -Werror flags the implicit
-             float-literal->int conversion (gcc truncates silently). */
-          int arg_is_float = comp_ntype(c, argv[0]) == TY_FLOAT;
-          buf_printf(b, "sp_range_include(&_t%d, ", t);
-          if (arg_is_float) buf_puts(b, "(mrb_int)(");
-          emit_expr(c, argv[0], b);
-          if (arg_is_float) buf_puts(b, ")");
-          buf_puts(b, ")");
-        }
-      }
-      else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin")) {
-        if (argc == 1) {
-          /* first(n): collect up to n elements starting at first */
-          int tf = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
-          buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); mrb_int _t%d = ", tf, tn);
-          emit_expr(c, argv[0], b);
-          buf_printf(b, "; for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl && _t%d - _t%d.first < _t%d; _t%d++)"
-                        " sp_IntArray_push(_t%d, _t%d); _t%d; })",
-                     ti, t, ti, t, t, ti, t, tn, ti, tf, ti, tf);
-        }
-        else buf_printf(b, "(_t%d.first)", t);
-      }
-      else if (!strcmp(name, "max"))  /* max element: end minus the exclusive bound */
-        buf_printf(b, "(_t%d.last - _t%d.excl)", t, t);
-      else if (!strcmp(name, "last") || !strcmp(name, "end")) {
-        if (argc == 1 && !strcmp(name, "last")) {
-          /* last(n): collect up to n elements ending at last */
-          int tf = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
-          buf_printf(b, "({ mrb_int _t%d = ", tn); emit_expr(c, argv[0], b);
-          buf_printf(b, "; mrb_int _t%d = _t%d.last - _t%d.excl;", te, t, t);
-          buf_printf(b, " mrb_int _t%d = _t%d - _t%d + 1; if (_t%d < _t%d.first) _t%d = _t%d.first;", ts, te, tn, ts, t, ts, t);
-          buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); for (mrb_int _i%d = _t%d; _i%d <= _t%d; _i%d++)"
-                        " sp_IntArray_push(_t%d, _i%d); _t%d; })",
-                     tf, tf, ts, tf, te, tf, tf, tf, tf);
-        }
-        else buf_printf(b, "(_t%d.last)", t);
-      }
-      else if (!strcmp(name, "size") || !strcmp(name, "count"))
-        buf_printf(b, "(_t%d.last - _t%d.excl - _t%d.first + 1)", t, t, t);
-      else if (!strcmp(name, "sum"))
-        buf_printf(b, "sp_IntArray_sum(sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl), 0)", t, t, t);
-      else if (!strcmp(name, "exclude_end?"))
-        buf_printf(b, "(_t%d.excl != 0)", t);
-      else if (!strcmp(name, "eql?")) {
-        buf_printf(b, "sp_range_eq(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
-      }
-      else if (!strcmp(name, "overlap?")) {
-        int t2 = ++g_tmp;
-        buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
-        buf_printf(b, "; (_t%d.first <= _t%d.last - _t%d.excl && _t%d.first <= _t%d.last - _t%d.excl); })",
-                   t, t2, t2, t2, t, t, t);
-      }
-      else if (!strcmp(name, "minmax")) {
-        int ma = ++g_tmp;
-        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, _t%d.first);"
-                      " sp_IntArray_push(_t%d, _t%d.last - _t%d.excl); _t%d; })", ma, ma, t, ma, t, t, ma);
-      }
-      return;
-    }
-  }
+  if (emit_range_call(c, id, b)) return;
 
   /* hash value methods */
   /* {}.default (empty hash literal with unknown type) always returns nil */
