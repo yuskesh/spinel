@@ -847,9 +847,9 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     /* FFI const: Module::NAME -> integer literal */
     if (par_nmc && nm) {
       for (int fci = 0; fci < c->n_ffi_consts; fci++) {
-        if (!strcmp(c->ffi_const_mods[fci], par_nmc) &&
-            !strcmp(c->ffi_const_names[fci], nm)) {
-          buf_printf(b, "((mrb_int)%d)", c->ffi_const_vals[fci]);
+        if (!strcmp(c->ffi_consts[fci].mod, par_nmc) &&
+            !strcmp(c->ffi_consts[fci].name, nm)) {
+          buf_printf(b, "((mrb_int)%d)", c->ffi_consts[fci].val);
           return;
         }
       }

@@ -617,7 +617,7 @@ else {
       /* ffi_read_*: Module.reader_name(buf) returns int or ptr */
       int ri = ffi_find_reader(c, rcmod, name);
       if (ri >= 0) {
-        const char *kind = c->ffi_reader_kinds[ri];
+        const char *kind = c->ffi_readers[ri].kind;
         if (kind && !strcmp(kind, "ptr")) return TY_POLY;
         return TY_INT;
       }
@@ -2471,8 +2471,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* FFI const: Module::NAME -> int */
     if (par_nm && nm) {
       for (int fci = 0; fci < c->n_ffi_consts; fci++) {
-        if (!strcmp(c->ffi_const_mods[fci], par_nm) &&
-            !strcmp(c->ffi_const_names[fci], nm))
+        if (!strcmp(c->ffi_consts[fci].mod, par_nm) &&
+            !strcmp(c->ffi_consts[fci].name, nm))
           return TY_INT;
       }
     }

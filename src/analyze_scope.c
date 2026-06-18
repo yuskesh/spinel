@@ -1203,25 +1203,24 @@ void register_ffi_decls(Compiler *c) {
         /* find or create lib entry */
         int mi = -1;
         for (int li = 0; li < c->n_ffi_libs; li++)
-          if (!strcmp(c->ffi_lib_mods[li], mname)) { mi = li; break; }
+          if (!strcmp(c->ffi_libs[li].mod, mname)) { mi = li; break; }
         if (mi < 0) {
           if (c->n_ffi_libs >= c->c_ffi_libs) {
             c->c_ffi_libs = c->c_ffi_libs ? c->c_ffi_libs * 2 : 8;
-            c->ffi_lib_mods  = realloc(c->ffi_lib_mods,  sizeof(char*) * (size_t)c->c_ffi_libs);
-            c->ffi_lib_names = realloc(c->ffi_lib_names, sizeof(char*) * (size_t)c->c_ffi_libs);
+            c->ffi_libs = realloc(c->ffi_libs, sizeof(FfiLib) * (size_t)c->c_ffi_libs);
           }
-          c->ffi_lib_mods[c->n_ffi_libs]  = strdup(mname);
-          c->ffi_lib_names[c->n_ffi_libs] = strdup(libname);
+          c->ffi_libs[c->n_ffi_libs].mod  = strdup(mname);
+          c->ffi_libs[c->n_ffi_libs].names = strdup(libname);
           mi = c->n_ffi_libs++;
         }
         else {
           /* append with semicolon */
-          size_t old_len = strlen(c->ffi_lib_names[mi]);
+          size_t old_len = strlen(c->ffi_libs[mi].names);
           size_t new_len = old_len + 1 + strlen(libname) + 1;
           char *merged = malloc(new_len);
-          snprintf(merged, new_len, "%s;%s", c->ffi_lib_names[mi], libname);
-          free(c->ffi_lib_names[mi]);
-          c->ffi_lib_names[mi] = merged;
+          snprintf(merged, new_len, "%s;%s", c->ffi_libs[mi].names, libname);
+          free(c->ffi_libs[mi].names);
+          c->ffi_libs[mi].names = merged;
         }
         continue;
       }
@@ -1233,24 +1232,23 @@ void register_ffi_decls(Compiler *c) {
         /* find or create cflag entry, semicolon-merged per module */
         int mi = -1;
         for (int ci = 0; ci < c->n_ffi_cflags; ci++)
-          if (!strcmp(c->ffi_cflag_mods[ci], mname)) { mi = ci; break; }
+          if (!strcmp(c->ffi_cflags[ci].mod, mname)) { mi = ci; break; }
         if (mi < 0) {
           if (c->n_ffi_cflags >= c->c_ffi_cflags) {
             c->c_ffi_cflags = c->c_ffi_cflags ? c->c_ffi_cflags * 2 : 8;
-            c->ffi_cflag_mods = realloc(c->ffi_cflag_mods, sizeof(char*) * (size_t)c->c_ffi_cflags);
-            c->ffi_cflag_vals = realloc(c->ffi_cflag_vals, sizeof(char*) * (size_t)c->c_ffi_cflags);
+            c->ffi_cflags = realloc(c->ffi_cflags, sizeof(FfiCflag) * (size_t)c->c_ffi_cflags);
           }
-          c->ffi_cflag_mods[c->n_ffi_cflags] = strdup(mname);
-          c->ffi_cflag_vals[c->n_ffi_cflags] = strdup(cflag);
+          c->ffi_cflags[c->n_ffi_cflags].mod = strdup(mname);
+          c->ffi_cflags[c->n_ffi_cflags].val = strdup(cflag);
           mi = c->n_ffi_cflags++;
         }
         else {
-          size_t old_len = strlen(c->ffi_cflag_vals[mi]);
+          size_t old_len = strlen(c->ffi_cflags[mi].val);
           size_t new_len = old_len + 1 + strlen(cflag) + 1;
           char *merged = malloc(new_len);
-          snprintf(merged, new_len, "%s;%s", c->ffi_cflag_vals[mi], cflag);
-          free(c->ffi_cflag_vals[mi]);
-          c->ffi_cflag_vals[mi] = merged;
+          snprintf(merged, new_len, "%s;%s", c->ffi_cflags[mi].val, cflag);
+          free(c->ffi_cflags[mi].val);
+          c->ffi_cflags[mi].val = merged;
         }
         continue;
       }
@@ -1293,14 +1291,12 @@ void register_ffi_decls(Compiler *c) {
         int val = ffi_arg_int(nt, args[1]);
         if (c->n_ffi_consts >= c->c_ffi_consts) {
           c->c_ffi_consts = c->c_ffi_consts ? c->c_ffi_consts * 2 : 16;
-          c->ffi_const_mods  = realloc(c->ffi_const_mods,  sizeof(char*) * (size_t)c->c_ffi_consts);
-          c->ffi_const_names = realloc(c->ffi_const_names, sizeof(char*) * (size_t)c->c_ffi_consts);
-          c->ffi_const_vals  = realloc(c->ffi_const_vals,  sizeof(int) * (size_t)c->c_ffi_consts);
+          c->ffi_consts = realloc(c->ffi_consts, sizeof(FfiConst) * (size_t)c->c_ffi_consts);
         }
         int ci2 = c->n_ffi_consts++;
-        c->ffi_const_mods[ci2]  = strdup(mname);
-        c->ffi_const_names[ci2] = strdup(kname);
-        c->ffi_const_vals[ci2]  = val;
+        c->ffi_consts[ci2].mod  = strdup(mname);
+        c->ffi_consts[ci2].name = strdup(kname);
+        c->ffi_consts[ci2].val  = val;
         continue;
       }
 
@@ -1312,14 +1308,12 @@ void register_ffi_decls(Compiler *c) {
         if (bsize <= 0) continue;
         if (c->n_ffi_bufs >= c->c_ffi_bufs) {
           c->c_ffi_bufs = c->c_ffi_bufs ? c->c_ffi_bufs * 2 : 8;
-          c->ffi_buf_mods  = realloc(c->ffi_buf_mods,  sizeof(char*) * (size_t)c->c_ffi_bufs);
-          c->ffi_buf_names = realloc(c->ffi_buf_names, sizeof(char*) * (size_t)c->c_ffi_bufs);
-          c->ffi_buf_sizes = realloc(c->ffi_buf_sizes, sizeof(int) * (size_t)c->c_ffi_bufs);
+          c->ffi_bufs = realloc(c->ffi_bufs, sizeof(FfiBuf) * (size_t)c->c_ffi_bufs);
         }
         int bi = c->n_ffi_bufs++;
-        c->ffi_buf_mods[bi]  = strdup(mname);
-        c->ffi_buf_names[bi] = strdup(bname);
-        c->ffi_buf_sizes[bi] = bsize;
+        c->ffi_bufs[bi].mod  = strdup(mname);
+        c->ffi_bufs[bi].name = strdup(bname);
+        c->ffi_bufs[bi].size = bsize;
         continue;
       }
 
@@ -1332,16 +1326,13 @@ void register_ffi_decls(Compiler *c) {
         const char *kind = dname + 9;  /* "u32", "i32", "ptr" */
         if (c->n_ffi_readers >= c->c_ffi_readers) {
           c->c_ffi_readers = c->c_ffi_readers ? c->c_ffi_readers * 2 : 8;
-          c->ffi_reader_mods    = realloc(c->ffi_reader_mods,    sizeof(char*) * (size_t)c->c_ffi_readers);
-          c->ffi_reader_names   = realloc(c->ffi_reader_names,   sizeof(char*) * (size_t)c->c_ffi_readers);
-          c->ffi_reader_offsets = realloc(c->ffi_reader_offsets, sizeof(int) * (size_t)c->c_ffi_readers);
-          c->ffi_reader_kinds   = realloc(c->ffi_reader_kinds,   sizeof(char*) * (size_t)c->c_ffi_readers);
+          c->ffi_readers = realloc(c->ffi_readers, sizeof(FfiReader) * (size_t)c->c_ffi_readers);
         }
         int ri = c->n_ffi_readers++;
-        c->ffi_reader_mods[ri]    = strdup(mname);
-        c->ffi_reader_names[ri]   = strdup(rname);
-        c->ffi_reader_offsets[ri] = roff;
-        c->ffi_reader_kinds[ri]   = strdup(kind);
+        c->ffi_readers[ri].mod    = strdup(mname);
+        c->ffi_readers[ri].name   = strdup(rname);
+        c->ffi_readers[ri].offset = roff;
+        c->ffi_readers[ri].kind   = strdup(kind);
         continue;
       }
     }
@@ -1359,7 +1350,7 @@ int ffi_find_func(Compiler *c, const char *mod, const char *name) {
 /* Look up an FFI buffer by (module, name). Returns index or -1. */
 int ffi_find_buf(Compiler *c, const char *mod, const char *name) {
   for (int i = 0; i < c->n_ffi_bufs; i++)
-    if (!strcmp(c->ffi_buf_mods[i], mod) && !strcmp(c->ffi_buf_names[i], name))
+    if (!strcmp(c->ffi_bufs[i].mod, mod) && !strcmp(c->ffi_bufs[i].name, name))
       return i;
   return -1;
 }
@@ -1367,7 +1358,7 @@ int ffi_find_buf(Compiler *c, const char *mod, const char *name) {
 /* Look up an FFI reader by (module, name). Returns index or -1. */
 int ffi_find_reader(Compiler *c, const char *mod, const char *name) {
   for (int i = 0; i < c->n_ffi_readers; i++)
-    if (!strcmp(c->ffi_reader_mods[i], mod) && !strcmp(c->ffi_reader_names[i], name))
+    if (!strcmp(c->ffi_readers[i].mod, mod) && !strcmp(c->ffi_readers[i].name, name))
       return i;
   return -1;
 }

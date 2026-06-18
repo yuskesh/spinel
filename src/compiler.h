@@ -138,6 +138,12 @@ typedef struct {
   int nargs;
 } FfiFunc;
 
+typedef struct { char *mod; char *name; int val; } FfiConst;     /* ffi_const */
+typedef struct { char *mod; char *name; int size; } FfiBuf;      /* ffi_buffer */
+typedef struct { char *mod; char *name; int offset; char *kind; } FfiReader; /* ffi_read_* ("u32"/"i32"/"ptr") */
+typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
+typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
+
 typedef struct {
   const NodeTable *nt;
   TyKind *ntype;    /* [node_cap] node id -> inferred type */
@@ -172,32 +178,23 @@ typedef struct {
   int n_ffi_funcs, c_ffi_funcs;
 
   /* FFI registry: ffi_const declarations */
-  char **ffi_const_mods;    /* module name */
-  char **ffi_const_names;   /* constant name */
-  int  *ffi_const_vals;     /* integer value */
+  FfiConst *ffi_consts;
   int n_ffi_consts, c_ffi_consts;
 
   /* FFI registry: ffi_buffer declarations */
-  char **ffi_buf_mods;
-  char **ffi_buf_names;
-  int  *ffi_buf_sizes;
+  FfiBuf *ffi_bufs;
   int n_ffi_bufs, c_ffi_bufs;
 
   /* FFI registry: ffi_read_* declarations */
-  char **ffi_reader_mods;
-  char **ffi_reader_names;
-  int  *ffi_reader_offsets;
-  char **ffi_reader_kinds;  /* "u32", "i32", "ptr" */
+  FfiReader *ffi_readers;
   int n_ffi_readers, c_ffi_readers;
 
   /* FFI library names per module (semicolon-separated) */
-  char **ffi_lib_mods;
-  char **ffi_lib_names;     /* semicolon-separated library names, or "" */
+  FfiLib *ffi_libs;
   int n_ffi_libs, c_ffi_libs;
 
   /* FFI cflags per module (semicolon-separated) */
-  char **ffi_cflag_mods;
-  char **ffi_cflag_vals;    /* semicolon-separated cflag strings, or "" */
+  FfiCflag *ffi_cflags;
   int n_ffi_cflags, c_ffi_cflags;
 } Compiler;
 

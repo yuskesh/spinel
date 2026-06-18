@@ -6269,12 +6269,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       {
         int bi = -1;
         for (int fbi = 0; fbi < c->n_ffi_bufs; fbi++)
-          if (!strcmp(c->ffi_buf_mods[fbi], rcmod) && !strcmp(c->ffi_buf_names[fbi], name)) {
+          if (!strcmp(c->ffi_bufs[fbi].mod, rcmod) && !strcmp(c->ffi_bufs[fbi].name, name)) {
             bi = fbi; break;
           }
         if (bi >= 0) {
           buf_printf(b, "sp_box_foreign_ptr((void *)sp_ffi_buf_%s_%s)",
-                     c->ffi_buf_mods[bi], c->ffi_buf_names[bi]);
+                     c->ffi_bufs[bi].mod, c->ffi_bufs[bi].name);
           return;
         }
       }
@@ -6282,12 +6282,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       {
         int ri = -1;
         for (int fri = 0; fri < c->n_ffi_readers; fri++)
-          if (!strcmp(c->ffi_reader_mods[fri], rcmod) && !strcmp(c->ffi_reader_names[fri], name)) {
+          if (!strcmp(c->ffi_readers[fri].mod, rcmod) && !strcmp(c->ffi_readers[fri].name, name)) {
             ri = fri; break;
           }
         if (ri >= 0 && argc >= 1) {
-          const char *kind = c->ffi_reader_kinds[ri];
-          int off = c->ffi_reader_offsets[ri];
+          const char *kind = c->ffi_readers[ri].kind;
+          int off = c->ffi_readers[ri].offset;
           const char *ctype = "uint32_t";
           if (kind && !strcmp(kind, "i32")) ctype = "int32_t";
           if (argc >= 1) {

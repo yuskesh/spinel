@@ -2112,7 +2112,7 @@ char *codegen_program(const NodeTable *nt) {
        generated C and appends them to the cc command line. One marker
        per ';'-separated token, matching the legacy emitter's format. */
     for (int li = 0; li < cf->n_ffi_libs; li++) {
-      for (const char *s = cf->ffi_lib_names[li]; ; ) {
+      for (const char *s = cf->ffi_libs[li].names; ; ) {
         const char *semi = strchr(s, ';');
         int len = semi ? (int)(semi - s) : (int)strlen(s);
         if (len > 0) buf_printf(&b, "/* SPINEL_LINK: -l%.*s */\n", len, s);
@@ -2121,7 +2121,7 @@ char *codegen_program(const NodeTable *nt) {
       }
     }
     for (int ci = 0; ci < cf->n_ffi_cflags; ci++) {
-      for (const char *s = cf->ffi_cflag_vals[ci]; ; ) {
+      for (const char *s = cf->ffi_cflags[ci].val; ; ) {
         const char *semi = strchr(s, ';');
         int len = semi ? (int)(semi - s) : (int)strlen(s);
         if (len > 0) buf_printf(&b, "/* SPINEL_CFLAGS: %.*s */\n", len, s);
@@ -2149,7 +2149,7 @@ char *codegen_program(const NodeTable *nt) {
     if (any_binstr) buf_puts(&b, "extern int sp_net_bin_len;\n");
     for (int bi = 0; bi < cf->n_ffi_bufs; bi++) {
       buf_printf(&b, "static char sp_ffi_buf_%s_%s[%d];\n",
-                 cf->ffi_buf_mods[bi], cf->ffi_buf_names[bi], cf->ffi_buf_sizes[bi]);
+                 cf->ffi_bufs[bi].mod, cf->ffi_bufs[bi].name, cf->ffi_bufs[bi].size);
     }
   }
   {
