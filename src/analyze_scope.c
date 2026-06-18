@@ -999,11 +999,26 @@ void register_attrs(Compiler *c) {
    literals and false / nil fold; anything else (a call, constant, variable) is
    runtime. */
 static int alias_pred_const(const NodeTable *nt, int pred) {
-  const char *t = pred >= 0 ? nt_type(nt, pred) : NULL;
+  if (pred < 0) return -1;
+  const char *t = nt_type(nt, pred);
   if (!t) return -1;
+  /* unwrap parentheses: `if (cond)`. An empty `()` is nil (falsy); multiple
+     statements are not folded (conservative). */
+  while (!strcmp(t, "ParenthesesNode")) {
+    int stmts = nt_ref(nt, pred, "body");  /* ParenthesesNode -> StatementsNode */
+    int n = 0;
+    const int *body = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
+    if (n == 0 || !body) return 0;
+    if (n != 1) return -1;
+    pred = body[0];
+    if (pred < 0) return -1;
+    t = nt_type(nt, pred);
+    if (!t) return -1;
+  }
   if (!strcmp(t, "FalseNode") || !strcmp(t, "NilNode")) return 0;
   if (!strcmp(t, "TrueNode") || !strcmp(t, "IntegerNode") || !strcmp(t, "FloatNode") ||
-      !strcmp(t, "StringNode") || !strcmp(t, "SymbolNode"))
+      !strcmp(t, "StringNode") || !strcmp(t, "SymbolNode") || !strcmp(t, "ArrayNode") ||
+      !strcmp(t, "HashNode") || !strcmp(t, "RegularExpressionNode"))
     return 1;
   return -1;
 }
@@ -1036,19 +1051,29 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
         comp_add_alias(cls, nt_str(nt, argv[0], "value"), nt_str(nt, argv[1], "value"));
     }
     else if (!strcmp(sty, "IfNode") || !strcmp(sty, "UnlessNode")) {
-      /* A statement modifier (`alias a b if cond`) wraps the alias in an IfNode.
-         An alias resolves at compile time, so only register the branch the
-         condition statically selects. A non-constant guard registers nothing:
-         the alias cannot be created conditionally with static method tables, so
-         the name is left unresolved and codegen rejects it loudly if reached. */
-      int is_unless = !strcmp(sty, "UnlessNode");
-      int pc = alias_pred_const(nt, nt_ref(nt, s, "predicate"));
-      int then_runs = is_unless ? (pc == 0) : (pc == 1);
-      int else_runs = is_unless ? (pc == 1) : (pc == 0);
-      if (then_runs) register_aliases_body(c, cls, nt_ref(nt, s, "statements"));
-      int els = nt_ref(nt, s, is_unless ? "else_clause" : "subsequent");
-      if (else_runs && els >= 0 && nt_type(nt, els) && !strcmp(nt_type(nt, els), "ElseNode"))
-        register_aliases_body(c, cls, nt_ref(nt, els, "statements"));
+      /* A statement modifier (`alias a b if cond`) wraps the alias in an IfNode;
+         a full if/elsif/else chains through `subsequent`. An alias resolves at
+         compile time, so register only the branch the conditions statically
+         select, following the chain. A non-constant guard selects nothing: the
+         alias cannot be created conditionally with static method tables, so the
+         name is left unresolved and rejects loudly if used. */
+      int curr = s;
+      while (curr >= 0) {
+        const char *cty = nt_type(nt, curr);
+        if (!cty) break;
+        if (!strcmp(cty, "ElseNode")) {
+          register_aliases_body(c, cls, nt_ref(nt, curr, "statements"));
+          break;
+        }
+        if (strcmp(cty, "IfNode") && strcmp(cty, "UnlessNode")) break;
+        int is_unless = !strcmp(cty, "UnlessNode");
+        int pc = alias_pred_const(nt, nt_ref(nt, curr, "predicate"));
+        int then_runs = is_unless ? (pc == 0) : (pc == 1);
+        int else_runs = is_unless ? (pc == 1) : (pc == 0);
+        if (then_runs) { register_aliases_body(c, cls, nt_ref(nt, curr, "statements")); break; }
+        if (else_runs) curr = nt_ref(nt, curr, is_unless ? "else_clause" : "subsequent");
+        else break;  /* non-constant: select nothing */
+      }
     }
   }
 }
