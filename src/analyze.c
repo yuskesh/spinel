@@ -588,7 +588,10 @@ void build_ie_map(Compiler *c) {
 /* The receiver class for a node inside an instance_eval/exec block, or -1. */
 int ie_class_of(Compiler *c, int node) {
   (void)c;
-  return (g_ie_node_class && node >= 0) ? g_ie_node_class[node] : -1;
+  /* g_ie_node_class is sized to nt->count per fixpoint iteration; a node
+     synthesized mid-iteration (id >= cap) has no instance_eval receiver yet. */
+  return (g_ie_node_class && node >= 0 && node < g_ie_node_class_cap)
+           ? g_ie_node_class[node] : -1;
 }
 
 /* Register an ivar first assigned inside an instance_exec/instance_eval block on
@@ -1446,6 +1449,59 @@ static void synth_enum_to_a(Compiler *c) {
   free(cls); free(eachdef);
 }
 
+/* Enumerable methods that work on an array receiver in Spinel; a bare call to
+   one of these on a user `#each` class (that does not define it) is redirected
+   through the materialized array. Kept to methods the array path supports. */
+static int is_array_enum_method(const char *nm) {
+  static const char *const names[] = {
+    "map", "collect", "select", "filter", "reject", "to_a", "entries",
+    "find", "detect", "find_index", "count", "sum", "min", "max",
+    "include?", "first", "sort", "sort_by", "min_by", "max_by",
+    "reduce", "inject", "each_with_index", "flat_map", "collect_concat",
+    "any?", "all?", "none?", "one?", "take", "drop", "take_while", "drop_while",
+    "filter_map", "partition", "group_by", "each_with_object", "tally",
+    "find_all", "zip", "grep", "grep_v", NULL };
+  for (int k = 0; names[k]; k++) if (!strcmp(nm, names[k])) return 1;
+  return 0;
+}
+
+/* Redirect a bare Enumerable call -- `obj.map { }`, `obj.to_a`, ... -- on a
+   user class that defines `#each` but not that method, through the synthesized
+   `__enum_to_a` helper: `obj.<m>{blk}` becomes `obj.__enum_to_a.<m>{blk}`, so
+   the array path handles it without an explicit `enum_for(:each)`. Runs in the
+   inference fixpoint (needs the receiver's type, and the inserted node is typed
+   on a later iteration). Returns 1 if anything changed. */
+int desugar_enum_method_recv(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !is_array_enum_method(nm)) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    /* already redirected through __enum_to_a -> leave it (idempotent) */
+    if (nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode")) {
+      const char *rn = nt_str(nt, recv, "name");
+      if (rn && !strcmp(rn, "__enum_to_a")) continue;
+    }
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_object(rt)) continue;
+    int cid = ty_object_class(rt);
+    if (comp_method_in_chain(c, cid, "__enum_to_a", NULL) < 0) continue;  /* not an #each class */
+    if (comp_method_in_chain(c, cid, nm, NULL) >= 0) continue;            /* class defines it */
+    int wrap = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, wrap, "name", "__enum_to_a");
+    nt_node_set_ref(nt, wrap, "receiver", recv);
+    nt_node_set_ref(nt, id, "receiver", wrap);
+    comp_grow_node_arrays(c);
+    c->nscope[wrap] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 void analyze_program(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
@@ -1671,6 +1727,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
     ch |= desugar_enum_chain_to_a(c);          /* each_slice(n).to_a -> .map{|s|s} */
+    ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
     ch |= infer_block_params(c);
