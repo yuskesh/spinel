@@ -1520,6 +1520,39 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_puts(b, "  return self;\n}\n");
 }
 
+/* Emit a statement-expression that allocates an instance of class `cid` with
+   its ivars zero/nil-initialized and cls_id stamped, but WITHOUT running
+   initialize -- the Class#allocate primitive. Handles both value-type objects
+   (returned by value) and pointer objects. The allocation mirrors the body of
+   emit_class_new above, minus the initialize call. */
+void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
+  ClassInfo *ci = &c->classes[cid];
+  int is_val = comp_ty_value_obj(c, ty_object(cid));
+  int t = ++g_tmp;
+  if (is_val) {
+    buf_printf(b, "({ sp_%s _t%d = {0}; _t%d.cls_id = %d;", ci->name, t, t, cid);
+    for (int i = 0; i < ci->nivars; i++)
+      if (ci->ivar_types[i] == TY_POLY)
+        buf_printf(b, " _t%d.iv_%s = sp_box_nil();", t, ci->ivars[i] + 1);
+    buf_printf(b, " _t%d; })", t);
+  }
+  else {
+    /* No SP_GC_ROOT needed: allocate runs no initialize, so nothing after the
+       SP_POOL_NEW allocates (memset and sp_box_nil are non-allocating), and the
+       fresh pointer is consumed by the enclosing expression with no intervening
+       allocation. (.new roots self because initialize runs allocating code.) */
+    buf_printf(b, "({ sp_%s *_t%d = SP_POOL_NEW(%s, %s%s%s); memset(_t%d, 0, sizeof(*_t%d));"
+                  " _t%d->cls_id = %d;",
+               ci->name, t, ci->name,
+               class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+               class_needs_scan(ci) ? "_scan" : "", t, t, t, cid);
+    for (int i = 0; i < ci->nivars; i++)
+      if (ci->ivar_types[i] == TY_POLY)
+        buf_printf(b, " _t%d->iv_%s = sp_box_nil();", t, ci->ivars[i] + 1);
+    buf_printf(b, " _t%d; })", t);
+  }
+}
+
 /* Inline super { block } when the parent method uses yield.
    Returns 1 if the expansion was emitted, 0 if it should fall through to a
    regular function call (parent doesn't yield, has early return, etc.). */

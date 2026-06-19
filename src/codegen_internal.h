@@ -371,6 +371,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b);
 int emit_chunk_while_expr(Compiler *c, int id, Buf *b);
 int emit_predicate_expr(Compiler *c, int id, Buf *b);
 int emit_grep_pred(Compiler *c, int pat, const char *ev, TyKind et, Buf *b);
+void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 int emit_grep_expr(Compiler *c, int id, Buf *b);
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out);
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);

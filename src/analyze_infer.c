@@ -657,6 +657,17 @@ else {
     if (self && self->class_id >= 0) return ty_object(self->class_id);
   }
 
+  /* Class#allocate -> a bare instance of that class (no initialize run). */
+  if (recv >= 0 && !strcmp(name, "allocate") && argc == 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      /* Use the same exception-subclass predicate as codegen (class_is_exc_subclass)
+         so inference and emission agree on which classes take the allocate path. */
+      if (ci >= 0 && !class_is_exc_subclass(c, ci)) return ty_object(ci);
+    }
+  }
+
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
   if (recv >= 0 && !strcmp(name, "new")) {
     const char *rty = nt_type(nt, recv);

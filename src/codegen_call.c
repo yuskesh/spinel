@@ -5378,6 +5378,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* self.class.new(args) in a leaf-class instance method -> construct the
      enclosing class statically (no subclass can shadow it at runtime). */
+  /* Class#allocate: a bare instance with default/nil ivars and no initialize.
+     Exception subclasses carry raise/message state set up by their dedicated
+     constructor, so they are excluded (fall through to the generic reject). */
+  if (recv >= 0 && !strcmp(name, "allocate") && argc == 0 && comp_ntype(c, recv) == TY_CLASS &&
+      nt_type(nt, recv) &&
+      (!strcmp(nt_type(nt, recv), "ConstantReadNode") || !strcmp(nt_type(nt, recv), "ConstantPathNode"))) {
+    int acid = comp_class_index(c, nt_str(nt, recv, "name"));
+    if (acid >= 0 && !class_is_exc_subclass(c, acid)) {
+      emit_obj_alloc_expr(c, acid, b);
+      return;
+    }
+  }
+
   if (recv >= 0 && !strcmp(name, "new") && nt_type(nt, recv) &&
       !strcmp(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
       !strcmp(nt_str(nt, recv, "name"), "class")) {
