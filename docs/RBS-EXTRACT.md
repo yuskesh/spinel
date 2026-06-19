@@ -1,10 +1,13 @@
 # spinel_rbs_extract — supported RBS subset
 
-`spinel_rbs_extract` reads `*.rbs` files and emits a line-oriented seed
-file that `spinel_analyze` consumes when invoked with `spinel --rbs DIR`.
-The seeded types are **advisory**: inference still runs on top, and the
-analyzer widens on observed contradiction, so the seed file is never
-load-bearing — a wrong or unrepresentable seed is at worst a no-op.
+`spinel_rbs_extract` (`tools/spinel_rbs_extract.c`) reads `*.rbs` files
+and emits a line-oriented seed file. When `spinel --rbs DIR` is given,
+the driver runs the extractor over `DIR`, hands the seed file to the
+compiler through the `SPINEL_RBS_SEED` environment variable, and the
+analyzer applies it before the inference fixpoint. The seeded types are
+**advisory**: inference still runs on top, and the analyzer widens on
+observed contradiction, so the seed file is never load-bearing — a wrong
+or unrepresentable seed is at worst a no-op.
 
 Anything outside the subset below is silently dropped: the seed line
 isn't emitted, and the analyzer falls back to its normal inference for
@@ -103,8 +106,9 @@ than emitted partially.
 
 ## Seed file format
 
-Consumed by `load_rbs_seeds` / `apply_rbs_seeds` in
-`spinel_analyze.rb`:
+Read and applied by `apply_rbs_seeds` in `src/analyze.c` (it both parses
+the seed file and pins the named params / returns / ivars before the
+inference fixpoint):
 
 ```
 class <QualifiedName>           # enter class scope; nested names use `_`
