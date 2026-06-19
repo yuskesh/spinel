@@ -43,7 +43,17 @@ legacy の「全 int → bigint widen」ではなく、**poly 値(`sp_RbVal`)に
 - **Increment 2a (48863f34)**: `sp_poly_add/sub/mul` が bigint operand を bigint 演算へ(全モード、`bigint+int`→0 bug 修正)+ **promote で int+int overflow→bigint 昇格**(`SP_INT_OVERFLOW_MODE_PROMOTE` #ifdef gate、default/wrap は wrap 維持)。→ **既に poly 型の値**は promote で runtime 昇格する。
 
 ### 残: Increment 2b(本丸 big-bang)= int→poly widen under promote
-**既に poly な値**は 2a で昇格するが、関数引数など**静的に int な slot** は poly でないので overflow しても昇格できない。最後の山は promote モードで該当 int slot を **poly に widen**する analyze 変更。これが all-or-nothing(部分 widen は promote suite の現 972 を割る)。widen 先が bigint(legacy)でなく **poly** な点が違い: 小さい値は unbox のまま、overflow 時だけ 2a の機構で box。
+**既に poly な値**は 2a で昇格するが、関数引数など**静的に int な slot** は poly でないので overflow しても昇格できない。最後の山は promote モードで該当 int slot を **poly に widen**する analyze 変更。widen 先が bigint(legacy)でなく **poly** な点が違い: 小さい値は unbox のまま、overflow 時だけ 2a の機構で box。
+
+**2026-06-19 試行の知見(revert 済、master は 2a の promote 972 のまま):**
+- `promote_widen_arith_params`(analyze.c の re-narrow 後 hook): `def` メソッド param のうち `+`/`-`/`*`/`**` の直接 operand を poly 化(block param・非 DefNode scope は除外)→ **c2 = `def mul(x,y)=x*y; mul(10^12,10^12)` が 1e24 で動いた**(MRI 一致)。
+- しかし promote suite が **972→947(25 err/3 fail)**に退行。退行の本質: codegen は型一致を前提に coercion を挿入しないので、widen した poly param が int slot に出会う所が全部境界化:
+  - `mrb_int = sp_RbVal`(poly param → int local / cvar 代入、両方向)
+  - `yield x` で poly を int block param へ(`n = poly`)
+  - `sp_double(poly)`(別メソッド呼びの int param へ coercion 無し)
+  - `mrb_int == sp_RbVal`(比較)/ cvar init が非定数
+- 伝播 pass を増やす(infer_block_params/ivar/cvar/param/return を post-widen で回す)と境界が**ずれるだけ**(whack-a-mole)。
+- **結論**: 2b は「全 poly↔int 境界 site で coercion を挿入する codegen sweep」(代入両方向 / yield / call-arg / 比較 / cvar)を要する真の big-bang。専用セッションで境界バケツを 1 つずつ。あるいは sound な uniform widen(全 int→poly + 境界 coercion 完備)。c2 が動く事は確認済みなので方式自体は正しい、残りは境界網羅。
 
 ### (参考)legacy 方式
 legacy backend(`legacy/spinel_codegen.rb` L55, L3037-3203)は promote で全 int slot を `sp_Bigint*` に widen(method ABI = `(void*, sp_Bigint*...) -> sp_Bigint*`)。採用せず(上記理由)。
