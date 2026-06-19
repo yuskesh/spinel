@@ -1,0 +1,4 @@
+frame bytes (binstr)  = 135
+truncated (str)       = 2
+unmasked length       = 127
+unmasked == subscribe = true

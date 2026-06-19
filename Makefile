@@ -280,7 +280,7 @@ endif
 # sp_net is POSIX-only; on Windows the TU compiles to stubs and the smoke
 # test's output diverges. Skip it there.
 ifeq ($(OS),Windows_NT)
-TESTS := $(filter-out test/sp_net_basic.rb,$(TESTS))
+TESTS := $(filter-out test/sp_net_basic.rb test/ffi_binstr_ws_frame.rb,$(TESTS))
 endif
 TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
 
