@@ -3311,6 +3311,81 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Route an otherwise-unresolved call on a concrete (non-value) object to
+   <Class>#method_missing(name, *args): the symbol of the called method becomes
+   the first argument and the call's own arguments are packed into the rest
+   array. Returns 1 if emitted, 0 if the method_missing shape isn't one we can
+   lower (caller then falls through to the unsupported diagnostic). Only the
+   canonical (name) and (name, *args) shapes with a usable scalar return are
+   handled; a descendant override of method_missing would mis-dispatch under a
+   direct call, so those bail too. */
+static int emit_method_missing(Compiler *c, int id, int recv, TyKind grt,
+                               int mm, int defcls, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mm];
+  if (m->nparams < 1) return 0;
+  /* (name) or (name, *args): the rest, if present, must be the second param. */
+  int has_rest = m->rest_idx >= 0;
+  if (has_rest ? (m->nparams != 2 || m->rest_idx != 1) : (m->nparams != 1)) return 0;
+  TyKind ret = (TyKind)m->ret;
+  if (!is_scalar_ret(ret) || ret == TY_UNKNOWN) return 0;
+
+  /* A descendant class with its own method_missing can't be reached by a
+     direct call to the chain-resolved one; refuse rather than mis-dispatch. */
+  int cid = ty_object_class(grt);
+  for (int k = 0; k < c->nclasses; k++) {
+    int is_desc = 0;
+    for (int p = c->classes[k].parent; p >= 0; p = c->classes[p].parent)
+      if (p == cid) { is_desc = 1; break; }
+    if (is_desc && comp_method_in_class(c, k, "method_missing") >= 0) return 0;
+  }
+
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (!has_rest && argc != 0) return 0;   /* no slot for the extra args */
+  /* a splat/kwargs call shape isn't packed here */
+  for (int k = 0; k < argc; k++) {
+    const char *aty = nt_type(nt, argv[k]);
+    if (aty && (!strcmp(aty, "SplatNode") || !strcmp(aty, "KeywordHashNode"))) return 0;
+  }
+
+  /* method name -> symbol, boxed to match method_missing's first param type. */
+  const char *mname = nt_str(nt, id, "name");
+  int sid = comp_sym_intern(c, mname);
+  LocalVar *p0 = scope_local(m, m->pnames[0]);
+  TyKind p0ty = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
+  if (p0ty != TY_SYMBOL && p0ty != TY_POLY) return 0;
+
+  if (has_rest) {
+    /* Build the rest array first and keep it GC-rooted for the WHOLE call: a
+       statement expression that only spanned the array would pop the root at its
+       `})`, before the call runs, leaving _mm collectable while the receiver/args
+       evaluate (and possibly allocate) -- a use-after-free. */
+    buf_puts(b, "({ sp_PolyArray *_mm = sp_PolyArray_new(); SP_GC_ROOT(_mm); ");
+    for (int k = 0; k < argc; k++) {
+      buf_puts(b, "sp_PolyArray_push(_mm, "); emit_boxed(c, argv[k], b); buf_puts(b, "); ");
+    }
+    emit_method_cname(c, m, b);
+    buf_printf(b, "((sp_%s *)(", c->classes[defcls].name);
+    emit_expr(c, recv, b);
+    buf_puts(b, "), ");
+    if (p0ty == TY_SYMBOL) buf_printf(b, "(sp_sym)%d", sid);
+    else buf_printf(b, "sp_box_sym((sp_sym)%d)", sid);
+    buf_puts(b, ", _mm); })");
+  } else {
+    buf_puts(b, "(");
+    emit_method_cname(c, m, b);
+    buf_printf(b, "((sp_%s *)(", c->classes[defcls].name);
+    emit_expr(c, recv, b);
+    buf_puts(b, "), ");
+    if (p0ty == TY_SYMBOL) buf_printf(b, "(sp_sym)%d", sid);
+    else buf_printf(b, "sp_box_sym((sp_sym)%d)", sid);
+    buf_puts(b, "))");
+  }
+  return 1;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -9103,6 +9178,13 @@ else {
       }
       buf_puts(b, (is_scalar_ret(ret) && ret != TY_UNKNOWN) ? default_value(ret) : "sp_box_nil()");
       return;
+    }
+    /* method_missing fallback for a concrete (non-value) object whose class
+       chain defines it -- the genuine NoMethodError-routing case. */
+    if (ty_is_object(grt) && !comp_ty_value_obj(c, grt)) {
+      int defcls = -1;
+      int mm = comp_method_in_chain(c, ty_object_class(grt), "method_missing", &defcls);
+      if (mm >= 0 && emit_method_missing(c, id, recv, grt, mm, defcls, b)) return;
     }
   }
   unsupported(c, id, "call");

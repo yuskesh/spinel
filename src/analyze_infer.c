@@ -2398,6 +2398,23 @@ else {
     }
   }
 
+  /* method_missing fallback: an otherwise-unresolved call on a concrete object
+     whose class chain defines method_missing routes there at codegen time, so
+     the call's static type is method_missing's return type. Placed last so all
+     builtin / reopened-class resolution wins first (CRuby only reaches
+     method_missing when nothing else handles the call). Skip value objects to
+     match codegen, which only routes pointer-backed receivers here. */
+  if (recv >= 0 && ty_is_object(rt) && !comp_ty_value_obj(c, rt)) {
+    int mm = comp_method_in_chain(c, ty_object_class(rt), "method_missing", NULL);
+    if (mm >= 0) {
+      /* Register the called name as a symbol now (analyze runs before the symbol
+         table is emitted) so codegen can pass it to method_missing; interning it
+         during codegen would land after the table is finalized. */
+      if (name) comp_sym_intern(c, name);
+      return (TyKind)c->scopes[mm].ret;
+    }
+  }
+
   return TY_UNKNOWN;
 }
 
