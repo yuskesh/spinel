@@ -182,6 +182,11 @@ extern int g_needs_at_exit;
    sp_class_* / sp_poly_is_a / sp_user_exc_parent helper bank is not emitted --
    a minimal program like `p 42` carries none of it. */
 extern int g_needs_class_machinery;
+/* Set when sp_mark_user_globals marks at least one heap-typed user
+   global/constant/class-ivar. When 0 the generated marker is identical to the
+   runtime default (sp_re_mark_globals, installed by a constructor before main),
+   so it -- and the sp_re_init hook override -- are skipped. */
+extern int g_has_user_global_marks;
 
 const char *rename_local(const char *nm);
 

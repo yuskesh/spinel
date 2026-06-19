@@ -1737,8 +1737,10 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "  sp_user_exc_parent_fn = sp_user_exc_parent;\n");
   /* Replace the runtime's hook with the superset that also marks this
      program's heap-typed globals/constants/class-ivars (it chains to
-     sp_re_mark_globals itself). */
-  buf_puts(b, "  sp_gc_mark_globals_hook = sp_mark_user_globals;\n");
+     sp_re_mark_globals itself). Skipped when there are none -- the marker would
+     equal the constructor-installed default, so it isn't emitted either. */
+  if (g_has_user_global_marks)
+    buf_puts(b, "  sp_gc_mark_globals_hook = sp_mark_user_globals;\n");
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -2705,35 +2707,46 @@ char *codegen_program(const NodeTable *nt) {
      swept (RAND = Rand.new lost its PRNG mid-render). Chained ahead of
      the runtime's own sp_re_mark_globals via the hook in sp_re_init. */
   {
-    buf_puts(&b, "static void sp_mark_user_globals(void) {\n");
-    buf_puts(&b, "  sp_re_mark_globals();\n");
+    /* Collect the user-global mark lines into a temp buffer first. If none are
+       emitted, the marker would be identical to the runtime default
+       (sp_re_mark_globals, installed by a constructor before main), so skip it
+       and the sp_re_init hook override entirely -- a trivial program carries
+       neither. g_has_user_global_marks gates the override (see emit_regex_section). */
+    Buf mk; memset(&mk, 0, sizeof mk);
     for (int i = 0; i < c->ngvars; i++) {
       LocalVar *lv = &c->gvars[i];
       if (!is_scalar_ret(lv->type)) continue;
-      if (lv->type == TY_STRING) buf_printf(&b, "  sp_mark_string(gv_%s);\n", lv->name);
-      else if (lv->type == TY_POLY) buf_printf(&b, "  sp_mark_rbval(gv_%s);\n", lv->name);
-      else if (needs_root(lv->type)) buf_printf(&b, "  if (gv_%s) sp_gc_mark((void *)gv_%s);\n", lv->name, lv->name);
+      if (lv->type == TY_STRING) buf_printf(&mk, "  sp_mark_string(gv_%s);\n", lv->name);
+      else if (lv->type == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(gv_%s);\n", lv->name);
+      else if (needs_root(lv->type)) buf_printf(&mk, "  if (gv_%s) sp_gc_mark((void *)gv_%s);\n", lv->name, lv->name);
     }
     for (int i = 0; i < c->nconsts; i++) {
       LocalVar *lv = &c->consts[i];
       if (!is_scalar_ret(lv->type)) continue;
-      if (lv->type == TY_STRING) buf_printf(&b, "  sp_mark_string(cst_%s);\n", lv->name);
-      else if (lv->type == TY_POLY) buf_printf(&b, "  sp_mark_rbval(cst_%s);\n", lv->name);
-      else if (needs_root(lv->type)) buf_printf(&b, "  if (cst_%s) sp_gc_mark((void *)cst_%s);\n", lv->name, lv->name);
+      if (lv->type == TY_STRING) buf_printf(&mk, "  sp_mark_string(cst_%s);\n", lv->name);
+      else if (lv->type == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(cst_%s);\n", lv->name);
+      else if (needs_root(lv->type)) buf_printf(&mk, "  if (cst_%s) sp_gc_mark((void *)cst_%s);\n", lv->name, lv->name);
     }
     for (int i = 0; i < c->nclasses; i++) {
       ClassInfo *ci = &c->classes[i];
       for (int j = 0; j < ci->nivars; j++) {
         TyKind t = ci->ivar_types[j] == TY_UNKNOWN ? TY_INT : ci->ivar_types[j];
         const char *iv = ci->ivars[j] + 1;
-        if (t == TY_STRING) buf_printf(&b, "  sp_mark_string(civ_%s_%s);\n", ci->name, iv);
-        else if (t == TY_POLY) buf_printf(&b, "  sp_mark_rbval(civ_%s_%s);\n", ci->name, iv);
-        else if (needs_root(t)) buf_printf(&b, "  if (civ_%s_%s) sp_gc_mark((void *)civ_%s_%s);\n", ci->name, iv, ci->name, iv);
+        if (t == TY_STRING) buf_printf(&mk, "  sp_mark_string(civ_%s_%s);\n", ci->name, iv);
+        else if (t == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(civ_%s_%s);\n", ci->name, iv);
+        else if (needs_root(t)) buf_printf(&mk, "  if (civ_%s_%s) sp_gc_mark((void *)civ_%s_%s);\n", ci->name, iv, ci->name, iv);
       }
       for (int j = 0; j < ci->nsg_readers; j++)
-        buf_printf(&b, "  sp_mark_rbval(sg_%s_%s);\n", ci->name, ci->sg_readers[j]);
+        buf_printf(&mk, "  sp_mark_rbval(sg_%s_%s);\n", ci->name, ci->sg_readers[j]);
     }
-    buf_puts(&b, "}\n\n");
+    g_has_user_global_marks = (mk.p && mk.len > 0);
+    if (g_has_user_global_marks) {
+      buf_puts(&b, "static void sp_mark_user_globals(void) {\n");
+      buf_puts(&b, "  sp_re_mark_globals();\n");
+      buf_puts(&b, mk.p);
+      buf_puts(&b, "}\n\n");
+    }
+    free(mk.p);
   }
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
