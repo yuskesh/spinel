@@ -1,0 +1,10 @@
+42
+42
+99
+7
+7
+box
+nil
+NameError: 'x' is not allowed as an instance variable name
+NameError: 'y' is not allowed as an instance variable name
+NameError: 'z' is not allowed as an instance variable name

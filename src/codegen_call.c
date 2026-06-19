@@ -2679,6 +2679,74 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
                  ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value(ret_ty));
       return 1;
     }
+    /* instance_variable_get(:@x) / instance_variable_set(:@x, v) with a literal
+       symbol or string name. A name present in the known layout lowers to a
+       direct field read/write. An undefined-but-valid `@`-name reads as nil
+       (get), matching CRuby; a name without a leading `@` raises NameError at
+       runtime, also matching CRuby. A dynamic name -- or instance_variable_set
+       to a valid name absent from the fixed object layout (no field to write) --
+       cannot be represented and is diagnosed. */
+    if ((!strcmp(name, "instance_variable_get") || !strcmp(name, "instance_variable_set")) &&
+        argc >= 1 && nt_type(nt, argv[0]) &&
+        (!strcmp(nt_type(nt, argv[0]), "SymbolNode") || !strcmp(nt_type(nt, argv[0]), "StringNode"))) {
+      const char *a0ty = nt_type(nt, argv[0]);
+      const char *sym = !strcmp(a0ty, "SymbolNode")
+                          ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+      int is_set = !strcmp(name, "instance_variable_set");
+      /* Arity is statically known: get takes just the name, set the name and a
+         value. A wrong count is a clear diagnostic rather than falling through to
+         the misleading by-value-receiver message below. */
+      if (is_set && argc != 2) { unsupported(c, id, "instance_variable_set takes exactly 2 arguments"); return 1; }
+      if (!is_set && argc != 1) { unsupported(c, id, "instance_variable_get takes exactly 1 argument"); return 1; }
+      int is_val = comp_ty_value_obj(c, rt);
+      const char *rty = nt_type(nt, recv);
+      int recv_lvalue = rty && (!strcmp(rty, "LocalVariableReadNode") ||
+                                !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"));
+      /* A name without a leading `@` is never a valid ivar name: raise NameError
+         at runtime (evaluating the receiver first for its side effects). */
+      if (!sym || sym[0] != '@') {
+        if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), "); }
+        else buf_puts(b, "(");
+        buf_printf(b, "sp_raise_cls(\"NameError\", \"'%s' is not allowed as an instance variable name\"), sp_box_nil())",
+                   sym ? sym : "");
+        return 1;
+      }
+      int mi = -1;
+      for (int i = 0; i < c->classes[cid].nivars; i++)
+        if (!strcmp(c->classes[cid].ivars[i], sym)) { mi = i; break; }
+      if (mi >= 0) {
+        /* A value object is passed by value, so a field write only sticks when
+           the receiver is an lvalue (a local / ivar / self); a pointer object
+           can be mutated through any reference. */
+        if (is_set && is_val && !recv_lvalue) {
+          unsupported(c, id, "instance_variable_set on a by-value object requires an lvalue receiver");
+          return 1;
+        }
+        TyKind mt = c->classes[cid].ivar_types[mi];
+        const char *acc = is_val ? "." : "->";
+        if (is_set) {
+          buf_puts(b, "(("); emit_expr(c, recv, b);
+          buf_printf(b, ")%siv_%s = ", acc, sym + 1);
+          if (mt == TY_POLY) emit_boxed(c, argv[1], b); else emit_expr(c, argv[1], b);
+          buf_puts(b, ")");
+        }
+        else {
+          buf_puts(b, "("); emit_expr(c, recv, b);
+          buf_printf(b, ")%siv_%s", acc, sym + 1);
+        }
+        return 1;
+      }
+      /* A valid `@`-name not in the layout: get reads as nil (CRuby returns nil
+         for an unset ivar); set has no field to write under the fixed layout. */
+      if (is_set) {
+        unsupported(c, id, "instance_variable_set to an ivar absent from the fixed object layout");
+        return 1;
+      }
+      if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())"); }
+      else buf_puts(b, "sp_box_nil()");
+      return 1;
+    }
+
     /* attr reader -> field access (recv).iv_x */
     if (comp_reader_in_chain(c, cid, name, NULL)) {
       const char *rn2 = comp_resolve_alias(c, cid, name);
