@@ -5372,7 +5372,7 @@ sp_Bigint *sp_bigint_mod(sp_Bigint *a, sp_Bigint *b) {
 
 sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp) {
   /* No Rational: a negative integer exponent raises RangeError rather than
-     truncating to 0 (mirrors sp_int_pow). See docs/INCOMPATIBILITIES.md. */
+     truncating to 0 (mirrors sp_int_pow). See docs/limitations.md. */
   if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
   sp_Bigint *r = sp_bigint_alloc();
   mpz_init(sp_mpz_ctx, &r->mpz);

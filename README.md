@@ -509,8 +509,8 @@ toolchain.
 
 A few cases deliberately diverge from CRuby because the CRuby behavior needs a
 feature Spinel does not implement (e.g. `Integer#**` with a negative exponent
-raises instead of returning a `Rational`). These are listed in
-[docs/INCOMPATIBILITIES.md](docs/INCOMPATIBILITIES.md).
+raises instead of returning a `Rational`). These are catalogued under "By
+design" in [docs/limitations.md](docs/limitations.md).
 
 ## Dependencies
 

@@ -1,6 +1,6 @@
 # Integer ** with a negative exponent has no Rational result in Spinel, so it
 # raises RangeError instead of returning (1/2). Non-negative integer ** and
-# Float ** are unchanged. See docs/INCOMPATIBILITIES.md.
+# Float ** are unchanged. See docs/limitations.md.
 puts 2 ** 10
 puts 0 ** 0
 puts 3 ** 4

@@ -11,9 +11,9 @@ This document is the honest catalogue. It is organized by *kind* of limit:
 - **Fundamental** — incompatible with whole-program AOT; will not change without
   abandoning the model (e.g. bundling an interpreter).
 - **Partial / relaxable** — genuinely limited today, but additively fixable.
-- **By design** — a deliberate, documented choice (see also
-  [`INCOMPATIBILITIES.md`](INCOMPATIBILITIES.md), the canonical list of
-  intentional CRuby deviations).
+- **By design** — a deliberate, documented choice; the intentional CRuby
+  deviations are catalogued under [By design](#by-design-deliberate-choices)
+  below.
 - **Now supported** — things that are *not* limits (corrects older write-ups
   that described an earlier version of the compiler).
 
@@ -72,7 +72,62 @@ Limited today, but additively fixable; listed roughly easiest-first.
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. (String literals are *not* implicitly frozen — see below.)
 
-See [`INCOMPATIBILITIES.md`](INCOMPATIBILITIES.md) for the full intentional list.
+### Intentional incompatibilities with CRuby
+
+Spinel aims to be a subset of Ruby: programs it accepts should behave the same
+as on CRuby. In a few cases CRuby's behavior depends on a feature Spinel does
+not implement, and silently returning a wrong value would be worse than a
+visible error. Those deliberate divergences are listed here.
+
+#### `Integer#**` with a negative exponent
+
+CRuby evaluates a negative integer exponent to a `Rational` (`2 ** -1 # => (1/2)`).
+Spinel has no `Rational` type. Rather than silently truncating the result to `0`
+(the previous behavior), a negative integer exponent raises:
+
+```ruby
+2 ** -1   # RangeError: negative exponent
+```
+
+This applies to `Integer#**` / `Integer#pow` across the int, bigint, and
+poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
+`Float#**` is unaffected and stays CRuby-compatible, because a float result is
+representable (`2.0 ** -1 # => 0.5`).
+
+#### `String#grapheme_clusters`
+
+Correct Unicode extended-grapheme segmentation (`"á".grapheme_clusters # => ["á"]`)
+requires shipping and maintaining the Unicode grapheme-break property tables,
+which Spinel deliberately does not carry. `String#grapheme_clusters` and
+`String#each_grapheme_cluster` are therefore not supported. For codepoint- or
+byte-level iteration, use the supported `String#chars`, `#each_char`,
+`#codepoints`, or `#bytes`.
+
+#### Aliasing the regexp match globals
+
+CRuby's `English` library aliases the punctuation match globals to readable
+names (`alias $MATCH $&`, etc.). In Spinel the match globals (`$&`, `` $` ``,
+`$'`, `$+`, `$~`) are not ordinary global-variable storage: a direct read lowers
+to a special regexp runtime accessor. Supporting `alias $name $&` would require a
+separate special-global alias mechanism plus broader `MatchData` compatibility,
+outside the intended AOT subset. Aliasing one of these globals is rejected at
+compile time rather than falling through to an undefined generated symbol:
+
+```
+$ spinel uses_english.rb
+Error: global aliasing of regexp special globals is not supported (alias $MATCH $&)
+```
+
+Direct reads of the match globals work as usual; only aliasing them is
+unsupported, so `require "English"` does not compile.
+
+#### Flip-flop operator
+
+CRuby supports the flip-flop operator (a `Range` used as a condition, toggled
+between its two endpoints): `puts i if (i == 3)..(i == 5)`. This is a rarely used
+feature with surprising hidden per-site state, and Spinel does not support it; a
+program using it fails to compile rather than running with wrong behavior. Use an
+explicit boolean state variable instead.
 
 ---
 

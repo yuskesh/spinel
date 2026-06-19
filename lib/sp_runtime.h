@@ -3292,7 +3292,7 @@ static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT ||
 /* Integer #** : Spinel has no Rational, so a negative integer exponent --
    which CRuby evaluates to a Rational like (1/2) -- raises RangeError rather
    than silently truncating toward 0. Float ** negative stays a float
-   (CRuby-compatible: 2.0 ** -1 == 0.5). See docs/INCOMPATIBILITIES.md. */
+   (CRuby-compatible: 2.0 ** -1 == 0.5). See docs/limitations.md. */
 static mrb_int sp_int_pow(mrb_int base, mrb_int exp) __attribute__((unused));
 static mrb_int sp_int_pow(mrb_int base, mrb_int exp) { if (exp < 0) sp_raise_cls("RangeError", "negative exponent"); return (mrb_int)pow((double)base, (double)exp); }
 static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i < 0) sp_raise_cls("RangeError", "negative exponent"); double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b)); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i >= 0) return sp_box_int((mrb_int)r); return sp_box_float((mrb_float)r); }
