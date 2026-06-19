@@ -5523,6 +5523,12 @@ else {
     p = q;
   }
   out[olen] = 0;
+  /* The result was sized to the pre-normalized rawlen+1 (a safe capacity
+     bound), but normalization can shrink it, so the actual content is olen
+     bytes. Record olen as the length; otherwise the string carries trailing
+     NUL/garbage bytes past the path (e.g. File.expand_path("x") returns a
+     string whose byte length includes a stray "\0"). */
+  sp_str_set_len(out, olen);
   return out;
 }
 
