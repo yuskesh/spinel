@@ -2318,6 +2318,16 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     }
   }
 
+  /* `alias new old` is resolved into the class alias table at analyze time
+     (register_aliases) and generates no runtime code. A bare alias in a class
+     body is skipped by the class-body loop; a statement modifier (`alias a b
+     if cond`) wraps it in an IfNode whose then-branch routes the alias here.
+     register_aliases only records an alias whose modifier condition is statically
+     satisfied, so a constant-false guard creates nothing here and a non-constant
+     guard leaves the name unresolved (it rejects loudly at the use site). The
+     node itself emits no runtime code. */
+  if (!strcmp(ty, "AliasMethodNode")) return;
+
   if (!strcmp(ty, "YieldNode")) {
     if (g_current_scope_is_lowered) {
       int yargs = nt_ref(nt, id, "arguments");

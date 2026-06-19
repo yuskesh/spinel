@@ -994,6 +994,20 @@ void register_attrs(Compiler *c) {
   }
 }
 
+/* Classify a modifier/if predicate as a compile-time constant: 1 = always
+   truthy, 0 = always falsy, -1 = a runtime value. Only literal true / non-nil
+   literals and false / nil fold; anything else (a call, constant, variable) is
+   runtime. */
+static int alias_pred_const(const NodeTable *nt, int pred) {
+  const char *t = pred >= 0 ? nt_type(nt, pred) : NULL;
+  if (!t) return -1;
+  if (!strcmp(t, "FalseNode") || !strcmp(t, "NilNode")) return 0;
+  if (!strcmp(t, "TrueNode") || !strcmp(t, "IntegerNode") || !strcmp(t, "FloatNode") ||
+      !strcmp(t, "StringNode") || !strcmp(t, "SymbolNode"))
+    return 1;
+  return -1;
+}
+
 /* Collect `alias new old` (AliasMethodNode) and `alias_method :new, :old`
    (CallNode) statements in class bodies into the class alias table. */
 void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
@@ -1020,6 +1034,21 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
       if (an >= 2 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "SymbolNode") &&
           nt_type(nt, argv[1]) && !strcmp(nt_type(nt, argv[1]), "SymbolNode"))
         comp_add_alias(cls, nt_str(nt, argv[0], "value"), nt_str(nt, argv[1], "value"));
+    }
+    else if (!strcmp(sty, "IfNode") || !strcmp(sty, "UnlessNode")) {
+      /* A statement modifier (`alias a b if cond`) wraps the alias in an IfNode.
+         An alias resolves at compile time, so only register the branch the
+         condition statically selects. A non-constant guard registers nothing:
+         the alias cannot be created conditionally with static method tables, so
+         the name is left unresolved and codegen rejects it loudly if reached. */
+      int is_unless = !strcmp(sty, "UnlessNode");
+      int pc = alias_pred_const(nt, nt_ref(nt, s, "predicate"));
+      int then_runs = is_unless ? (pc == 0) : (pc == 1);
+      int else_runs = is_unless ? (pc == 1) : (pc == 0);
+      if (then_runs) register_aliases_body(c, cls, nt_ref(nt, s, "statements"));
+      int els = nt_ref(nt, s, is_unless ? "else_clause" : "subsequent");
+      if (else_runs && els >= 0 && nt_type(nt, els) && !strcmp(nt_type(nt, els), "ElseNode"))
+        register_aliases_body(c, cls, nt_ref(nt, els, "statements"));
     }
   }
 }
