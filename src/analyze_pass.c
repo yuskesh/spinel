@@ -3166,6 +3166,56 @@ int infer_block_params(Compiler *c) {
       }
     }
 
+    /* arr.each.with_index(off).inject(init) { |acc, (v,i)| } / { |acc, pair| }
+       and arr.each_with_index.inject{...}: type the fold's params over the
+       [elem, index] pair enumerator. (matz/spinel#1481) */
+    if ((!strcmp(name, "inject") || !strcmp(name, "reduce")) &&
+        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+        nt_ref(nt, recv, "block") < 0) {
+      const char *rn = nt_str(nt, recv, "name");
+      int chain_arr = -1;
+      if (rn && !strcmp(rn, "each_with_index")) chain_arr = nt_ref(nt, recv, "receiver");
+      else if (rn && !strcmp(rn, "with_index")) {
+        int wir = nt_ref(nt, recv, "receiver");
+        if (wir >= 0 && nt_type(nt, wir) && !strcmp(nt_type(nt, wir), "CallNode") &&
+            nt_str(nt, wir, "name") && !strcmp(nt_str(nt, wir, "name"), "each") &&
+            nt_ref(nt, wir, "block") < 0)
+          chain_arr = nt_ref(nt, wir, "receiver");
+      }
+      TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
+      if (ty_is_array(chain_at) && block >= 0) {
+        TyKind elem = ty_array_elem(chain_at);
+        Scope *bs = comp_scope_of(c, block);
+        int rargs = nt_ref(nt, id, "arguments"); int rargc = 0;
+        const int *rargv = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &rargc) : NULL;
+        TyKind acc_t = (rargc > 0 && rargv) ? infer_type(c, rargv[0]) : elem;
+        if (acc_t == TY_UNKNOWN) acc_t = elem;
+        if (p0) {
+          LocalVar *ap = scope_local_intern(bs, p0); ap->is_block_param = 1;
+          TyKind m = ty_unify(ap->type, acc_t); if (m != ap->type) { ap->type = m; changed = 1; }
+        }
+        if (block_param_is_multi(c, block, 1)) {
+          int lc = block_param_multi_count(c, block, 1);
+          for (int li = 0; li < lc; li++) {
+            const char *ln = block_param_multi_leaf(c, block, 1, li);
+            if (!ln) continue;
+            LocalVar *lp = scope_local_intern(bs, ln); lp->is_block_param = 1;
+            TyKind want = (li == 0) ? elem : TY_INT;
+            TyKind m = ty_unify(lp->type, want); if (m != lp->type) { lp->type = m; changed = 1; }
+          }
+        }
+        else {
+          const char *pp = block_param_name(c, block, 1);
+          if (pp) {
+            LocalVar *lp = scope_local_intern(bs, pp); lp->is_block_param = 1;
+            TyKind pairt = (elem == TY_INT) ? TY_INT_ARRAY : TY_POLY_ARRAY;
+            TyKind m = ty_unify(lp->type, pairt); if (m != lp->type) { lp->type = m; changed = 1; }
+          }
+        }
+        continue;
+      }
+    }
+
     /* array.{map,collect,each,select,filter,reject}.with_index(off) { |x, i| }:
        a blockless enumerator over an array, indexed -- element + int index. */
     if (!strcmp(name, "with_index") &&

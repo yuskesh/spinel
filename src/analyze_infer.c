@@ -1465,6 +1465,43 @@ else {
     }
   }
 
+  /* arr.each.with_index(off).<terminal> / arr.each_with_index.<terminal>:
+     a blockless [elem, index]-pair enumerator consumed by the terminal.
+     (matz/spinel#1481 inject/reduce result; #1483 others.) */
+  if (recv >= 0 && rt == TY_UNKNOWN &&
+      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_ref(nt, recv, "block") < 0) {
+    const char *rn = nt_str(nt, recv, "name");
+    int chain_arr = -1;
+    if (rn && !strcmp(rn, "each_with_index")) {
+      chain_arr = nt_ref(nt, recv, "receiver");
+    }
+    else if (rn && !strcmp(rn, "with_index")) {
+      int wir = nt_ref(nt, recv, "receiver");
+      if (wir >= 0 && nt_type(nt, wir) && !strcmp(nt_type(nt, wir), "CallNode") &&
+          nt_str(nt, wir, "name") && !strcmp(nt_str(nt, wir, "name"), "each") &&
+          nt_ref(nt, wir, "block") < 0)
+        chain_arr = nt_ref(nt, wir, "receiver");
+    }
+    TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
+    if (ty_is_array(chain_at)) {
+      TyKind elem = ty_array_elem(chain_at);
+      if (!strcmp(name, "inject") || !strcmp(name, "reduce")) {
+        int args = nt_ref(nt, id, "arguments");
+        int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+        TyKind acc = (argc > 0 && argv) ? infer_type(c, argv[0]) : elem;
+        if (acc == TY_UNKNOWN) acc = elem;
+        int blk = nt_ref(nt, id, "block");
+        if (blk >= 0) {
+          int body = nt_ref(nt, blk, "body");
+          int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+          if (bn > 0) { TyKind bt = infer_type(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc = ty_promote_numeric(acc, bt); }
+        }
+        return acc;
+      }
+    }
+  }
+
   /* array receiver methods */
   if (recv >= 0 && ty_is_array(rt)) {
     int block = nt_ref(nt, id, "block");

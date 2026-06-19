@@ -1341,6 +1341,147 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* arr.each.with_index(off).<terminal> { ... } : `each.with_index` is a blockless
+   enumerator yielding [element, index] pairs, and the chained terminal folds or
+   consumes them. The block binds the pair either as two params |v, i| (auto-split),
+   a destructured |(v, i)|, or a single |pair| (a 2-element array). inject also
+   takes the accumulator as its first param: |acc, (v, i)| / |acc, pair|.
+   (matz/spinel#1481 inject/reduce; #1483 map/to_a/select/count/any?/...)
+
+   Returns 0 unless the exact each.with_index chain shape matches, so no other
+   call path is affected. */
+
+/* Recognise the chain; fill *out_arr (the source array node) and *out_off (the
+   with_index offset arg node, or -1). Returns 1 on match. */
+static int ewi_chain(Compiler *c, int id, int *out_arr, int *out_off) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "CallNode")) return 0;
+  if (nt_ref(nt, recv, "block") >= 0) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  if (!rn) return 0;
+  /* `arr.each_with_index` is the same [elem, index] pair enumerator (offset 0). */
+  if (!strcmp(rn, "each_with_index")) {
+    int arr = nt_ref(nt, recv, "receiver");
+    if (arr < 0) return 0;
+    *out_arr = arr; *out_off = -1;
+    return 1;
+  }
+  /* `arr.each.with_index(off)` */
+  if (strcmp(rn, "with_index")) return 0;
+  int wir = nt_ref(nt, recv, "receiver");
+  if (wir < 0 || !nt_type(nt, wir) || strcmp(nt_type(nt, wir), "CallNode")) return 0;
+  const char *en = nt_str(nt, wir, "name");
+  if (!en || strcmp(en, "each") || nt_ref(nt, wir, "block") >= 0) return 0;
+  int arr = nt_ref(nt, wir, "receiver");
+  if (arr < 0) return 0;
+  int wargs = nt_ref(nt, recv, "arguments");
+  int wargc = 0; const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
+  *out_arr = arr;
+  *out_off = (wargc > 0 && wargv) ? wargv[0] : -1;
+  return 1;
+}
+
+int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int is_inject = !strcmp(name, "inject") || !strcmp(name, "reduce");
+  if (!is_inject) return 0;  /* other terminals handled in a later pass */
+
+  int arr = -1, off = -1;
+  if (!ewi_chain(c, id, &arr, &off)) return 0;
+  TyKind rt = comp_ntype(c, arr);
+  if (!ty_is_array(rt)) return 0;
+  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  if (!k) return 0;
+  TyKind elem_t = ty_array_elem(rt);
+
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *p0o = block_param_name(c, block, 0);   /* accumulator */
+  if (!p0o) return 0;
+  /* pair binding lives in param 1: either a |(v,i)| multi-target or a |pair| name */
+  int multi = block_param_is_multi(c, block, 1);
+  const char *vo = NULL, *io = NULL, *pairo = NULL;
+  if (multi) {
+    if (block_param_multi_count(c, block, 1) < 2) return 0;
+    vo = block_param_multi_leaf(c, block, 1, 0);
+    io = block_param_multi_leaf(c, block, 1, 1);
+    if (!vo || !io) return 0;
+  } else {
+    pairo = block_param_name(c, block, 1);
+    if (!pairo) return 0;
+  }
+  int bbody = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+  if (bn == 0) return 0;
+
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int init = (argc > 0 && argv) ? argv[0] : -1;
+  TyKind acc_ty = elem_t;
+  if (init >= 0) { TyKind it = comp_ntype(c, init); if (it != TY_UNKNOWN) acc_ty = it; }
+  { TyKind bt = comp_ntype(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt); }
+
+  const char *p0 = rename_local(p0o);
+  TyKind pair_ty = (elem_t == TY_INT) ? TY_INT_ARRAY : TY_POLY_ARRAY;
+  const char *pk = (elem_t == TY_INT) ? "Int" : "Poly";
+
+  int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tidx = ++g_tmp;
+  buf_puts(b, "({ ");
+  emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, arr, b); buf_puts(b, "; ");
+  emit_ctype(c, acc_ty, b); buf_printf(b, " _t%d = ", tacc);
+  if (init >= 0) emit_expr(c, init, b); else buf_puts(b, "0");
+  buf_puts(b, "; ");
+  buf_printf(b, "mrb_int _t%d = ", tidx);
+  if (off >= 0) emit_expr(c, off, b); else buf_puts(b, "0");
+  buf_puts(b, "; ");
+
+  /* Override block-param types so the body expression types correctly, then
+     re-infer (same pattern as emit_reduce_block_expr). */
+  Scope *rsc = comp_scope_of(c, block);
+  LocalVar *lacc = rsc ? scope_local(rsc, p0o) : NULL;
+  TyKind sacc = lacc ? lacc->type : TY_UNKNOWN; if (lacc) lacc->type = acc_ty;
+  LocalVar *lv = NULL, *li = NULL, *lp = NULL; TyKind sv = TY_UNKNOWN, si = TY_UNKNOWN, sp = TY_UNKNOWN;
+  if (multi) {
+    lv = rsc ? scope_local(rsc, vo) : NULL; li = rsc ? scope_local(rsc, io) : NULL;
+    sv = lv ? lv->type : TY_UNKNOWN; si = li ? li->type : TY_UNKNOWN;
+    if (lv) lv->type = elem_t; if (li) li->type = TY_INT;
+  } else {
+    lp = rsc ? scope_local(rsc, pairo) : NULL; sp = lp ? lp->type : TY_UNKNOWN;
+    if (lp) lp->type = pair_ty;
+  }
+  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+
+  buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++) { ",
+             ti, ti, k, ta, ti, tidx);
+  buf_puts(b, "{ ");
+  emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc);
+  if (multi) {
+    emit_ctype(c, elem_t, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", rename_local(vo), k, ta, ti);
+    buf_printf(b, "mrb_int lv_%s = _t%d; ", rename_local(io), tidx);
+  } else {
+    buf_printf(b, "sp_%sArray *lv_%s = sp_%sArray_new(); ", pk, rename_local(pairo), pk);
+    if (elem_t == TY_INT) {
+      buf_printf(b, "sp_IntArray_push(lv_%s, sp_%sArray_get(_t%d, _t%d)); sp_IntArray_push(lv_%s, _t%d); ",
+                 rename_local(pairo), k, ta, ti, rename_local(pairo), tidx);
+    } else {
+      buf_printf(b, "sp_PolyArray_push(lv_%s, ", rename_local(pairo));
+      char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem_t, src, &bx); buf_puts(b, bx.p ? bx.p : ""); free(bx.p);
+      buf_printf(b, "); sp_PolyArray_push(lv_%s, sp_box_int(_t%d)); ", rename_local(pairo), tidx);
+    }
+  }
+  for (int j = 0; j < bn - 1; j++) { emit_stmt(c, bb[j], b, 0); buf_puts(b, " "); }
+  buf_printf(b, "_t%d = ", tacc); emit_expr(c, bb[bn - 1], b); buf_puts(b, "; } } ");
+  buf_printf(b, "_t%d; })", tacc);
+
+  if (lacc) lacc->type = sacc;
+  if (lv) lv->type = sv; if (li) li->type = si; if (lp) lp->type = sp;
+  return 1;
+}
+
 /* sort_by { |x| key } as an expression: a stable bubble sort of a copy of
    the receiver, ordering by the block's computed (scalar) key. Returns 1 if
    handled. */

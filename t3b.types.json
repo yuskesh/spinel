@@ -1,0 +1,29 @@
+{
+  "types": [
+    {"file":"/tmp/t3b.rb","line":1,"col":0,"type":"poly_array","rbs":"Array[untyped]"},
+    {"file":"/tmp/t3b.rb","line":1,"col":5,"type":"poly_array","rbs":"Array[untyped]"},
+    {"file":"/tmp/t3b.rb","line":1,"col":5,"type":"range","rbs":"Range[Integer]"},
+    {"file":"/tmp/t3b.rb","line":1,"col":6,"type":"range","rbs":"Range[Integer]"},
+    {"file":"/tmp/t3b.rb","line":1,"col":6,"type":"range","rbs":"Range[Integer]"},
+    {"file":"/tmp/t3b.rb","line":1,"col":6,"type":"int","rbs":"Integer"},
+    {"file":"/tmp/t3b.rb","line":1,"col":9,"type":"int","rbs":"Integer"},
+    {"file":"/tmp/t3b.rb","line":1,"col":22,"type":"fiber","rbs":"Fiber"},
+    {"file":"/tmp/t3b.rb","line":1,"col":22,"type":"fiber","rbs":"Fiber"},
+    {"file":"/tmp/t3b.rb","line":1,"col":22,"type":"class","rbs":"Class"},
+    {"file":"/tmp/t3b.rb","line":1,"col":35,"type":"int","rbs":"Integer"},
+    {"file":"/tmp/t3b.rb","line":1,"col":35,"type":"int","rbs":"Integer"},
+    {"file":"/tmp/t3b.rb","line":1,"col":35,"type":"int","rbs":"Integer"},
+    {"file":"/tmp/t3b.rb","line":1,"col":39,"type":"int","rbs":"Integer"},
+    {"file":"/tmp/t3b.rb","line":2,"col":2,"type":"string","rbs":"String"},
+    {"file":"/tmp/t3b.rb","line":2,"col":2,"type":"poly_array","rbs":"Array[untyped]"},
+    {"file":"/tmp/t3b.rb","line":3,"col":0,"type":"poly","rbs":"untyped"},
+    {"file":"/tmp/t3b.rb","line":3,"col":4,"type":"poly","rbs":"untyped"},
+    {"file":"/tmp/t3b.rb","line":3,"col":4,"type":"poly_array","rbs":"Array[untyped]"},
+    {"file":"/tmp/t3b.rb","line":3,"col":7,"type":"int","rbs":"Integer"},
+    {"file":"/tmp/t3b.rb","line":4,"col":2,"type":"poly","rbs":"untyped"},
+    {"file":"/tmp/t3b.rb","line":4,"col":2,"type":"poly","rbs":"untyped"}
+  ],
+  "diagnostics": [
+
+  ]
+}

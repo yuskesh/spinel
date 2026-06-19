@@ -3248,6 +3248,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;
+  if (emit_each_with_index_chain(c, id, b)) return;
   if (emit_collect_expr(c, id, b)) return;
   if (emit_predicate_expr(c, id, b)) return;
   if (emit_grep_expr(c, id, b)) return;
