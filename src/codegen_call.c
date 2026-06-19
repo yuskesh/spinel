@@ -8964,7 +8964,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         int arg = chain[j];
         TyKind at = comp_ntype(c, arg);
         emit_indent(b, indent);
-        buf_printf(b, "sp_String_append(lv_%s, ", bn2);
+        buf_printf(b, "sp_String_append_bin(lv_%s, ", bn2);
         if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
         else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
         else emit_expr(c, arg, b);

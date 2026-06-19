@@ -485,7 +485,7 @@ static inline char *sp_str_alloc_raw(size_t total_with_null) {
 static inline size_t sp_str_byte_len(const char *s) {
   if (!s) return 0;
   unsigned char marker = ((const unsigned char *)s)[-1];
-  if (marker == 0xfe || marker == 0xfc) {
+  if (marker == 0xfe || marker == 0xfc || marker == 0xfd) {
     return (((const sp_str_hdr *)(s - 1)) - 1)->len;
   }
   return strlen(s);
@@ -494,7 +494,7 @@ static inline size_t sp_str_byte_len(const char *s) {
 static inline void sp_str_set_len(char *s, size_t len) {
   if (!s) return;
   unsigned char marker = ((unsigned char *)s)[-1];
-  if (marker == 0xfe || marker == 0xfc) {
+  if (marker == 0xfe || marker == 0xfc || marker == 0xfd) {
     sp_str_hdr *hd = ((sp_str_hdr *)(s - 1)) - 1;
     hd->len = (uint32_t)len;
     hd->hash = 0;  /* length change implies content change: invalidate cached hash */
@@ -2024,7 +2024,49 @@ typedef struct{char*data;int64_t len;int64_t cap;}sp_String;
    strings stay frozen via the 0xff marker byte (see sp_str_setbyte). */
 static inline mrb_bool sp_String_is_frozen(sp_String*s){if(!s)return TRUE;sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));return h->frozen;}
 static inline sp_String*sp_String_freeze(sp_String*s){if(s){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));h->frozen=1;}return s;}
-static void sp_String_fin(void*p){free(((sp_String*)p)->data-1);}
+/* A mutable String's payload buffer carries the same length-bearing sp_str_hdr
+   that 0xfe/0xfc heap strings use, so an escaped const char* (sp_String_cstr,
+   inspect) is binary-safe: sp_str_byte_len reads the header rather than strlen,
+   which truncates at an embedded NUL (matz/spinel#1479). Raw block layout:
+   [sp_str_hdr][0xfd marker][data ...][NUL]. s->data points at `data`, so
+   s->data[-1] == 0xfd (the GC-skip + mutable-provenance marker) and the header
+   sits just below it. The ctor and in-place mutators are also reached from the
+   runtime's own inspect helpers with *bare C string literals* (no marker byte),
+   so they must size their source/operand with strlen, NOT a [-1]-marker-reading
+   function. Binary `String#<<` uses sp_String_append_bin, emitted only at the
+   generated call site where the operand is a known marked spinel string. */
+#define SP_FD_HDR (sizeof(sp_str_hdr)+1)   /* header + marker byte */
+#define SP_FD_OVH (sizeof(sp_str_hdr)+2)   /* header + marker + NUL terminator */
+static inline char *sp_fd_base(const char *data){return (char*)data-SP_FD_HDR;}
+/* Lay out header + 0xfd marker in a fresh (re)allocated raw block; return data.
+   Leaves the data bytes untouched (realloc preserves them); len is published
+   separately by sp_fd_publish once s->len is settled. */
+static inline char *sp_fd_setup(char *raw){
+  sp_str_hdr *h = (sp_str_hdr *)raw;
+  h->next = NULL; h->size = 0; h->len = 0; h->hash = 0;
+  char *body = (char *)(h + 1);
+  body[0] = (char)0xfd;
+  return body + 1;
+}
+/* Publish s->len into the buffer header for readers of the escaped pointer. */
+static inline void sp_fd_publish(sp_String *s){
+  sp_str_hdr *h = (sp_str_hdr *)sp_fd_base(s->data);
+  h->len = (uint32_t)s->len; h->hash = 0;
+}
+/* Ensure the buffer can hold `need` data bytes (+NUL); realloc preserving the
+   header layout. Returns 0 only on realloc failure (string left unchanged). */
+static inline int sp_fd_grow(sp_String *s, int64_t need){
+  if (need < s->cap) return 1;
+  sp_gc_hdr *h = (sp_gc_hdr *)((char *)s - sizeof(sp_gc_hdr));
+  int64_t new_cap = need * 2 + 16;
+  char *raw = (char *)realloc(sp_fd_base(s->data), SP_FD_OVH + new_cap);
+  if (!raw) return 0;
+  sp_gc_bytes -= s->cap + SP_FD_OVH; h->size -= s->cap + SP_FD_OVH;
+  s->cap = new_cap; s->data = sp_fd_setup(raw);
+  h->size += s->cap + SP_FD_OVH; sp_gc_bytes += s->cap + SP_FD_OVH;
+  return 1;
+}
+static void sp_String_fin(void*p){free(sp_fd_base(((sp_String*)p)->data));}
 static sp_String*sp_String_new(const char*s){
   /* Copy s's payload into a raw-malloc'd buffer BEFORE sp_gc_alloc.
      If s is a heap string (sp_str_alloc) whose only liveness anchor
@@ -2037,25 +2079,32 @@ static sp_String*sp_String_new(const char*s){
      any GC inside sp_gc_alloc. */
   int64_t len=(int64_t)strlen(s);
   int64_t cap=len*2+16;
-  char*raw=(char*)malloc(cap+2);
-  raw[0]=(char)0xfd;
-  char*data=raw+1;
-  memcpy(data,s,len+1);
+  char*raw=(char*)malloc(SP_FD_OVH+cap);
+  char*data=sp_fd_setup(raw);
+  memcpy(data,s,len);data[len]=0;
   sp_String*r=(sp_String*)sp_gc_alloc(sizeof(sp_String),sp_String_fin,NULL);
   r->len=len;r->cap=cap;r->data=data;
-  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+2;sp_gc_bytes+=r->cap+2;}
+  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+SP_FD_OVH;sp_gc_bytes+=r->cap+SP_FD_OVH;}
+  sp_fd_publish(r);
   return r;
 }
 /* Issue #757: realloc on growth used to overwrite s->data unconditionally,
    leaking the old buffer + null-dereferencing if realloc fails. Now we
    check the result and bail without mutating on failure. */
-static inline void sp_String_append(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}int64_t tl=(int64_t)strlen(t);if(s->len+tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));int64_t new_cap=(s->len+tl)*2+16;char*raw=(char*)realloc(s->data-1,new_cap+2);if(!raw)return;sp_gc_bytes-=s->cap+2;h->size-=s->cap+2;s->cap=new_cap;raw[0]=(char)0xfd;s->data=raw+1;h->size+=s->cap+2;sp_gc_bytes+=s->cap+2;}memcpy(s->data+s->len,t,tl+1);s->len+=tl;}
-static inline void sp_String_prepend(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}int64_t tl=(int64_t)strlen(t);if(s->len+tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));int64_t new_cap=(s->len+tl)*2+16;char*raw=(char*)realloc(s->data-1,new_cap+2);if(!raw)return;sp_gc_bytes-=s->cap+2;h->size-=s->cap+2;s->cap=new_cap;raw[0]=(char)0xfd;s->data=raw+1;h->size+=s->cap+2;sp_gc_bytes+=s->cap+2;}memmove(s->data+tl,s->data,s->len+1);memcpy(s->data,t,tl);s->len+=tl;}
+/* Shared append core: `tl` is the operand byte length, computed by the caller
+   (strlen for the bare-literal-safe entry, sp_str_byte_len for the binary one). */
+static inline void sp_fd_append_len(sp_String*s,const char*t,int64_t tl){if(!sp_fd_grow(s,s->len+tl))return;memcpy(s->data+s->len,t,tl);s->len+=tl;s->data[s->len]=0;sp_fd_publish(s);}
+static inline void sp_String_append(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}sp_fd_append_len(s,t,(int64_t)strlen(t));}
+/* Binary-safe append: sizes the operand with the header length so an embedded
+   NUL is preserved. Only emitted by codegen for Ruby `String#<<` / `concat`,
+   where the operand is a marked spinel string (never a bare C literal). */
+static inline void sp_String_append_bin(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}sp_fd_append_len(s,t,(int64_t)sp_str_byte_len(t));}
+static inline void sp_String_prepend(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}int64_t tl=(int64_t)strlen(t);if(!sp_fd_grow(s,s->len+tl))return;memmove(s->data+tl,s->data,s->len+1);memcpy(s->data,t,tl);s->len+=tl;sp_fd_publish(s);}
 /* Issue #741: String#insert(idx, str) -- insert str at idx. Negative
    idx is relative to len+1 (insert before tail). */
-static inline void sp_String_insert(sp_String*s,int64_t idx,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}int64_t tl=(int64_t)strlen(t);if(tl==0)return;if(idx<0)idx+=s->len+1;if(idx<0)idx=0;if(idx>s->len)idx=s->len;if(s->len+tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));int64_t new_cap=(s->len+tl)*2+16;char*raw=(char*)realloc(s->data-1,new_cap+2);if(!raw)return;sp_gc_bytes-=s->cap+2;h->size-=s->cap+2;s->cap=new_cap;raw[0]=(char)0xfd;s->data=raw+1;h->size+=s->cap+2;sp_gc_bytes+=s->cap+2;}memmove(s->data+idx+tl,s->data+idx,s->len-idx+1);memcpy(s->data+idx,t,tl);s->len+=tl;}
+static inline void sp_String_insert(sp_String*s,int64_t idx,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}int64_t tl=(int64_t)strlen(t);if(tl==0)return;if(idx<0)idx+=s->len+1;if(idx<0)idx=0;if(idx>s->len)idx=s->len;if(!sp_fd_grow(s,s->len+tl))return;memmove(s->data+idx+tl,s->data+idx,s->len-idx+1);memcpy(s->data+idx,t,tl);s->len+=tl;sp_fd_publish(s);}
 /* Issue #740/#741 sibling: String#replace(s) -- replace entire content. */
-static inline void sp_String_replace(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}int64_t tl=(int64_t)strlen(t);if(tl>=s->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));int64_t new_cap=tl*2+16;char*raw=(char*)realloc(s->data-1,new_cap+2);if(!raw)return;sp_gc_bytes-=s->cap+2;h->size-=s->cap+2;s->cap=new_cap;raw[0]=(char)0xfd;s->data=raw+1;h->size+=s->cap+2;sp_gc_bytes+=s->cap+2;}memcpy(s->data,t,tl);s->data[tl]='\0';s->len=tl;}
+static inline void sp_String_replace(sp_String*s,const char*t){if(!s||!t)return;if(sp_String_is_frozen(s)){sp_raise_cls("FrozenError","can't modify frozen String");return;}int64_t tl=(int64_t)strlen(t);if(!sp_fd_grow(s,tl))return;memcpy(s->data,t,tl);s->data[tl]='\0';s->len=tl;sp_fd_publish(s);}
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 static sp_String*sp_String_dup(sp_String*s){return sp_String_new(s->data);}
