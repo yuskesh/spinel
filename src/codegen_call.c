@@ -7813,6 +7813,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, " %s NULL)", eq ? "==" : "!=");
       return;
     }
+    /* object == object with no user-defined == or <=>: Object#== identity.
+       Pointer-backed objects compare by address -- faithful to CRuby, where two
+       distinct instances are never == and an instance is == only to itself. A
+       value-type object has no stable identity (it is copied by value), so
+       identity is unrepresentable; rather than silently diverge (structural
+       equality would say true where CRuby says false) we refuse and ask for an
+       explicit ==. */
+    if (recv >= 0 && ty_is_object(rt) && ty_is_object(a0)) {
+      if (comp_ty_value_obj(c, rt) || comp_ty_value_obj(c, a0))
+        unsupported(c, id, "equality on a value-type object without a user-defined == (define == for comparison)");
+      buf_puts(b, "((void *)(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ") %s (void *)(", eq ? "==" : "!=");
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "))");
+      return;
+    }
     unsupported(c, id, "equality");
   }
 
