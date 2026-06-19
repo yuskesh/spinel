@@ -207,6 +207,27 @@ int sp_net_set_nonblock(int fd) {
 
 /* ---------- TCP I/O ---------- */
 
+/* Wait until `fd` is ready for `events` (POLLIN for a read, POLLOUT for a
+   write) before retrying a syscall that returned EAGAIN/EWOULDBLOCK. The
+   accepted client fds are non-blocking, so a recv/send can would-block even
+   after the scheduler's poll reported the fd ready (a transient kernel state,
+   a partial drain, etc.); treating that as EOF/error wrongly tears down a live
+   connection (#1500). Block on the single fd rather than busy-spinning, and
+   recheck the term flag on the 1s timeout so a shutdown still breaks the wait.
+   Returns 1 to retry the syscall, 0 to give up (term requested or poll error). */
+static int sp_net_wait_io(int fd, short events) {
+    for (;;) {
+        if (sp_net_term_flag) return 0;
+        struct pollfd pf;
+        pf.fd = fd; pf.events = events; pf.revents = 0;
+        int pr = poll(&pf, 1, 1000);
+        if (pr > 0) return 1;
+        if (pr == 0) continue;            /* timeout: recheck term, keep waiting */
+        if (errno == EINTR) continue;
+        return 0;
+    }
+}
+
 int sp_net_write_str(int fd, const char *s) {
     size_t len = strlen(s);
     size_t off = 0;
@@ -214,6 +235,7 @@ int sp_net_write_str(int fd, const char *s) {
         ssize_t n = send(fd, s + off, len - off, 0);
         if (n <= 0) {
             if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && sp_net_wait_io(fd, POLLOUT)) continue;
             return -1;
         }
         off += (size_t)n;
@@ -228,6 +250,7 @@ int sp_net_write_bytes(int fd, const char *data, int n) {
         ssize_t w = send(fd, data + off, total - off, 0);
         if (w <= 0) {
             if (w < 0 && errno == EINTR) continue;
+            if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && sp_net_wait_io(fd, POLLOUT)) continue;
             return -1;
         }
         off += (size_t)w;
@@ -249,6 +272,9 @@ const char *sp_net_recv_some(int fd, int maxlen) {
         n = recv(fd, sp_net_recv_buf, (size_t)maxlen, 0);
         if (n >= 0) break;
         if (errno == EINTR) continue;   /* e.g. SIGCHLD in a prefork server */
+        /* Non-blocking fd would-block: wait for readability and retry rather
+           than reporting an empty result the caller can't tell from EOF. */
+        if ((errno == EAGAIN || errno == EWOULDBLOCK) && sp_net_wait_io(fd, POLLIN)) continue;
         sp_net_bin_len = 0;
         sp_net_recv_buf[0] = '\0';
         return sp_net_recv_buf;
@@ -267,6 +293,7 @@ const char *sp_net_recv_all(int fd, int max_bytes) {
         ssize_t n = recv(fd, sp_net_recv_all_buf + total, (size_t)(max_bytes - total), 0);
         if (n < 0) {
             if (errno == EINTR) continue;   /* retry rather than truncate */
+            if ((errno == EAGAIN || errno == EWOULDBLOCK) && sp_net_wait_io(fd, POLLIN)) continue;
             break;
         }
         if (n == 0) break;                   /* clean EOF */
