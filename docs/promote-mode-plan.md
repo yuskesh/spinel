@@ -11,23 +11,28 @@
 
 | Target | promote 結果 |
 |---|---|
-| `make test` 相当 (全 .rb を `-DSP_INT_OVERFLOW_MODE_PROMOTE` でコンパイル+実行) | **965/965 pass** |
+| `make test SPINEL_INT_OVERFLOW=promote`(front-end も cc も promote driven) | **966/966 pass** |
 | `make bench` 相当 | **57/57 pass** |
-| optcarrot (`-DSP_INT_OVERFLOW_MODE_PROMOTE`) | **コンパイル成功 + checksum 59662** (fps 635) |
+| optcarrot (`-DSP_INT_OVERFLOW_MODE_PROMOTE`) | **コンパイル成功 + checksum 59662** |
 
-→ 5月の error バケット(bit-ops/index/FFI 等、optcarrot 72 errors)は **既に全て解消済み**。境界変換は実装済み。
+→ 5月の error バケット(bit-ops/index/FFI 等、optcarrot 72 errors)は **既に全て解消済み**。境界変換は実装済み。default gate(966 + optcarrot 59662 + bench 57)は `g_promote_mode` gate により不変。
 
-## 残る本質的 gap (2026-06-19)
+## 進捗 (2026-06-19)
 
-promote は **runtime macro に promote arm が無く**(`sp_int_add` は overflow で raise)、唯一の昇格機構は **`detect_bigint_loop_vars`**(analyze.c)。これは:
-- **`WhileNode`/`UntilNode` の `x = x*y` / `x *= y`(`*`/`**` のみ)だけ**を検出し当該 local を `TY_BIGINT` 化。
-- `while`形の階乗は promote で正しく動く(検証済 `fact(25)` = MRI 一致)。
+- **bigint `**`/`<<`/`>>` のコード生成バグ修正**(92e8d6dc): `**` は codegen 未配線で int path に落ち、shift は `TY_BIGINT` 推論されず "unsupported call"。runtime の `sp_bigint_shl/shr` も `to_int` で 64bit に truncate していた。3 演算とも任意精度に。
+- **ブロックループ蓄積の bigint 昇格**(9295160d): `infer_bigint_loop_locals` を `times`/`each`/`upto`/`downto`/`step`/`loop`/`each_with_index` ブロックに拡張(`g_promote_mode` gate)。`f=1; 25.times{|i| f=f*(i+1)}` が promote で MRI 一致。付随して emit_op_assign の **captured-cell path が int 専用**だったバグ(bigint cell に `sp_int_mul` で truncate)を修正。
+- **Makefile promote テスト配線**: `make test SPINEL_INT_OVERFLOW=promote` が front-end に `--int-overflow=promote`、cc に `-D...PROMOTE` を渡すように(以前は test list を filter するだけ=promote codegen path 未検証)。promote-only テストは `test/promote_*.rb` 命名で raise/wrap から除外。**promote 全 suite 966/0/0**。
 
-検出されない = raise になるパターン:
-- **`.times`/`.each`/`upto`/`step`/`(range).each` ブロックループ蓄積**(`f=1; (1..25).each{|i| f=f*i}`)
-- **関数引数経由**(`def mul(x,y)=x*y; mul(10**15,10**15)`)= **静的検出は原理的に不可能**
-- **リテラル累乗**(`10**30` → overflow → nil/空白。compile-time 計算可能だが未対応)
-- `+`/`<<` 蓄積(`*`/`**` のみ対象)
+## 残る本質的 gap (2026-06-19 更新)
+
+昇格機構は **`g_promote_mode` 下の `infer_bigint_loop_locals`**(while + block loop の self-ref multiply 検出)。runtime macro には promote arm が無い(`sp_int_add` は overflow で raise)ので、**静的に "無限増殖" と判定できる local だけ**が bigint 化される。
+
+残り raise になるパターン:
+- **関数引数経由**(`def mul(x,y)=x*y; mul(10**15,10**15)`)= **静的検出は原理的に不可能**。runtime promote が要る=legacy の全 int→bigint widen(下記「完成路」)。これが最後の本丸。
+- **リテラル累乗 / bigint リテラル**(`10**30`, `100000000000000000000`)→ INT_MAX に飽和。**AST が int64 値しか保持しない**(IntegerNode "value" が int)ので parser 段で decimal 文字列を保持する別 feature が要る。promote 機構とは独立。
+- `+`/`<<` の単純蓄積(`*`/`**` のみ self-ref 検出対象)。
+
+既知の周辺バグ(promote 無関係・default でも再現): **`1.upto(N){ ... }` の no-block-param ブロックが body を drop**(`h=0; 1.upto(5){h+=1}; puts h` → 0)。upto codegen の別件。
 
 ## 完成路: legacy 方式(全 int → bigint widen)
 
