@@ -83,6 +83,12 @@ matz 洞察「poly は int(inline)と bigint(heap)両方を 1 値で保持する
 - **次の一手**: バケツ 1(op_assign/ivar/cvar write の poly-box)→ 2(比較)→ 3(increment)の順で、各バケツ後に promote suite を再計測(`rm -rf build/test-results && make test SPINEL_INT_OVERFLOW=promote OPT=-O1`)。emit_assign の poly arm パターンを各 write/compare/return site に横展開する作業。branch から cherry-pick して再開。
 - **判断**: これは計画通り複数セッションの big-bang。master は clean(2a の 993)維持、完遂後にまとめて昇格。approach は確定(本丸動作・効率優位)。
 
+**2026-06-21 バケツ1(for-range loop counter)実装の決定的知見:**
+`emit_for` の TY_RANGE arm に修正(端点を独立に `sp_poly_to_i` coerce + poly counter は fresh `mrb_int` temp 駆動&毎 iter `lv_<vn>=sp_box_int(_tc)` で box、early return で `else` 回避)。branch `promote-full-widen-experiment` の commit **bda23978** に保全。
+- **修正は correct**: `for i in 1..10`(=55)+ poly 端点版 `for i in 1..f`(=55)とも MRI 一致、BUILD_OK。端点 coerce は counter の poly 性と独立に必要(concrete int counter + poly 端点 `n` でも `mrb_int _t=lv_n` が壊れる)。
+- **だが promote pass は 831 横ばい**(error→fail 1件のみ移動)。**∵各 failing テストに複数の poly↔int 境界が重なる→1バケツ単独では緑にならない**(for-range を直しても同テスト内の次の境界=代入/比較/builtin-arg 等でコンパイル続行不能)。
+- **戦略的結論**: **バケツ逐次 commit は中間で pass を増やさない**。緑にするには (1) 1テストを縦に全境界完遂(pass+1、境界カタログ確証)か (2) 全境界(代入両方向/比較/increment/builtin-arg/const-init/return/float)を**一括**で潰す真の big-bang。次セッションは for-range fix(bda23978)を土台に、まず 1 テスト縦完遂で全境界の実装パターンを確立してから横展開が安全。
+
 ### (参考)legacy 方式
 legacy backend(`legacy/spinel_codegen.rb` L55, L3037-3203)は promote で全 int slot を `sp_Bigint*` に widen(method ABI = `(void*, sp_Bigint*...) -> sp_Bigint*`)。採用せず(上記理由)。
 
