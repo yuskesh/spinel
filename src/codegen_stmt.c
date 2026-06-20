@@ -507,6 +507,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   else if (lv && lv->type == TY_BIGINT) {
     TyKind vt = comp_ntype(c, v);
     if (vt == TY_BIGINT) emit_expr(c, v, b);
+    else if (vt == TY_POLY) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, v, b); buf_puts(b, ")"); }
     else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, v, b); buf_puts(b, ")"); }
   }
   else if (lv && lv->type == TY_POLY) {
@@ -560,7 +561,8 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
       if (bfn) {
         TyKind vt = comp_ntype(c, v);
         buf_printf(b, "%s(", bfn); emit_local_ref(c, id, nm, b); buf_puts(b, ", ");
-        if (vt != TY_BIGINT) { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, v, b); buf_puts(b, ")"); }
+        if (vt == TY_POLY) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, v, b); buf_puts(b, ")"); }
+        else if (vt != TY_BIGINT) { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, v, b); buf_puts(b, ")"); }
         else emit_expr(c, v, b);
         buf_puts(b, ");\n");
         return;
