@@ -1704,13 +1704,47 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
   TyKind ct = comp_ntype(c, coll);
 
   if (ct == TY_RANGE && nt_type(nt, coll) && !strcmp(nt_type(nt, coll), "RangeNode")) {
-    /* for v in lo..hi -- a plain counted loop */
+    /* for v in lo..hi -- a plain counted loop. Under --int-overflow=promote the
+       counter and/or endpoints may be widened to poly, so coerce each endpoint
+       with sp_poly_to_i when its static type is poly/bigint, and when the
+       counter slot is poly drive the loop with a fresh mrb_int temp and re-box
+       the counter local each iteration so the body sees a poly value. */
     int excl = (int)(nt_int(nt, coll, "flags", 0) & 4) ? 1 : 0;
+    int lref = nt_ref(nt, coll, "left");
+    int rref = nt_ref(nt, coll, "right");
+    TyKind lty = comp_ntype(c, lref);
+    TyKind rty = comp_ntype(c, rref);
+    int lpoly = (lty == TY_POLY || lty == TY_BIGINT);
+    int rpoly = (rty == TY_POLY || rty == TY_BIGINT);
+    LocalVar *clv = scope_local(comp_scope_of(c, idx), vn);
+    int cpoly = clv && clv->type == TY_POLY;
     int thi = ++g_tmp;
     emit_indent(b, indent); buf_puts(b, "{ mrb_int ");
-    buf_printf(b, "_t%d = ", thi); emit_expr(c, nt_ref(nt, coll, "right"), b); buf_puts(b, ";\n");
+    buf_printf(b, "_t%d = ", thi);
+    if (rpoly) buf_puts(b, "sp_poly_to_i(");
+    emit_expr(c, rref, b);
+    if (rpoly) buf_puts(b, ")");
+    buf_puts(b, ";\n");
+    if (cpoly) {
+      int tc = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "for (mrb_int _t%d = ", tc);
+      if (lpoly) buf_puts(b, "sp_poly_to_i(");
+      emit_expr(c, lref, b);
+      if (lpoly) buf_puts(b, ")");
+      buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
+      emit_indent(b, indent + 2);
+      buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", vn, tc);
+      emit_loop_body(c, body, b, indent + 2);
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return;
+    }
     emit_indent(b, indent + 1);
-    buf_printf(b, "for (lv_%s = ", vn); emit_expr(c, nt_ref(nt, coll, "left"), b);
+    buf_printf(b, "for (lv_%s = ", vn);
+    if (lpoly) buf_puts(b, "sp_poly_to_i(");
+    emit_expr(c, lref, b);
+    if (lpoly) buf_puts(b, ")");
     buf_printf(b, "; lv_%s %s _t%d; lv_%s++) {\n", vn, excl ? "<" : "<=", thi, vn);
     emit_loop_body(c, body, b, indent + 2);
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
