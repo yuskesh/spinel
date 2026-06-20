@@ -778,6 +778,37 @@ int infer_write_types(Compiler *c) {
         /* in [first, *rest] or in Array(head, *tail) */
         array_pat = pat; array_scrutinee = scrutinee_t;
       }
+      else if (!strcmp(pty, "FindPatternNode")) {
+        /* in [*head, a, b, *tail] -- the two splats bind to arrays of the
+           scrutinee's element type; required LV targets bind to an element. */
+        TyKind arr_t = ty_is_array(scrutinee_t) ? scrutinee_t : TY_POLY_ARRAY;
+        TyKind elem_t = ty_is_array(scrutinee_t) ? ty_array_elem(scrutinee_t) : TY_POLY;
+        int sides[2] = { nt_ref(nt, pat, "left"), nt_ref(nt, pat, "right") };
+        for (int sidx = 0; sidx < 2; sidx++) {
+          int sp = sides[sidx];
+          if (sp < 0 || !nt_type(nt, sp) || strcmp(nt_type(nt, sp), "SplatNode")) continue;
+          int inner = nt_ref(nt, sp, "expression");
+          if (inner < 0 || !nt_type(nt, inner) ||
+              strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) continue;
+          const char *snm = nt_str(nt, inner, "name");
+          LocalVar *lv = snm ? scope_local(ms, snm) : NULL;
+          if (!lv || lv->is_param || lv->is_block_param) continue;
+          TyKind mg = ty_unify(lv->type, arr_t);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+        int rn = 0;
+        const int *reqs = nt_arr(nt, pat, "requireds", &rn);
+        for (int k = 0; k < rn; k++) {
+          const char *lty2 = nt_type(nt, reqs[k]);
+          if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, reqs[k], "name");
+          LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+          if (!lv || lv->is_param || lv->is_block_param) continue;
+          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_POLY;
+          TyKind mg = ty_unify(lv->type, et);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+      }
       /* Bind simple LV target to scrutinee type */
       if (bind_lv_node >= 0 && scrutinee_t != TY_UNKNOWN) {
         const char *lnm = nt_str(nt, bind_lv_node, "name");

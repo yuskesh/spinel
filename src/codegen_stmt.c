@@ -1101,7 +1101,47 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail) {
 
     /* --- compute match condition --- */
     Buf cond_buf = {NULL, 0, 0};
-    int has_cond = emit_pm_cond(c, pat, t, pt, &cond_buf);
+    int has_cond;
+    /* find pattern `in [*head, m1..mk, *tail]`: scan for the first window of
+       k consecutive elements matching the requireds; record its start in a
+       position temp (-1 if none). The arm matches when that position >= 0. */
+    int find_pat = -1, find_pos = -1;
+    const char *find_k = NULL;
+    if (!strcmp(pty, "FindPatternNode") && ty_is_array(pt)) {
+      find_pat = pat;
+      find_k = (pt == TY_POLY_ARRAY) ? "Poly" : array_kind(pt);
+      if (!find_k) find_k = "Int";
+      TyKind elem_t = ty_array_elem(pt);
+      if (elem_t == TY_UNKNOWN) elem_t = TY_POLY;
+      int rn = 0;
+      const int *reqs = nt_arr(nt, pat, "requireds", &rn);
+      find_pos = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "mrb_int _t%d = -1;\n", find_pos);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "for (mrb_int _fi = 0; _t%d && _fi + %dLL <= _t%d->len; _fi++) {\n",
+                 t, rn, t);
+      Buf wb = {NULL, 0, 0};
+      for (int j = 0; j < rn; j++) {
+        int e = ++g_tmp;
+        emit_indent(b, indent + 2);
+        emit_ctype(c, elem_t, b);
+        buf_printf(b, " _t%d = sp_%sArray_get(_t%d, _fi + %dLL);\n", e, find_k, t, j);
+        Buf rcb = {NULL, 0, 0};
+        if (emit_pm_cond(c, reqs[j], e, elem_t, &rcb)) {
+          buf_puts(&wb, " && "); buf_puts(&wb, rcb.p ? rcb.p : "1");
+        }
+        free(rcb.p);
+      }
+      emit_indent(b, indent + 2);
+      buf_printf(b, "if (1%s) { _t%d = _fi; break; }\n", wb.p ? wb.p : "", find_pos);
+      free(wb.p);
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      buf_printf(&cond_buf, "_t%d >= 0", find_pos);
+      has_cond = 1;
+    } else {
+      has_cond = emit_pm_cond(c, pat, t, pt, &cond_buf);
+    }
     /* For IfNode the pattern is always a binding (LV), guard is separate */
     if (!strcmp(pty, "IfNode")) has_cond = 0;
 
@@ -1178,6 +1218,50 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail) {
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL);\n",
                        rnm, k, t, (long long)apn, t, (long long)apn);
+          }
+        }
+      }
+    }
+
+    /* --- FindPatternNode destructuring (uses the found position temp) --- */
+    if (find_pat >= 0 && find_pos >= 0) {
+      int rn = 0;
+      const int *reqs = nt_arr(nt, find_pat, "requireds", &rn);
+      /* leading `*head` = elements before the matched window */
+      int left = nt_ref(nt, find_pat, "left");
+      if (left >= 0 && nt_type(nt, left) && !strcmp(nt_type(nt, left), "SplatNode")) {
+        int inner = nt_ref(nt, left, "expression");
+        if (inner >= 0 && nt_type(nt, inner) &&
+            !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
+          const char *lnm = nt_str(nt, inner, "name");
+          if (lnm) {
+            emit_indent(b, body_indent);
+            buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, 0LL, _t%d);\n",
+                       lnm, find_k, t, find_pos);
+          }
+        }
+      }
+      /* required LV targets = the matched window elements */
+      for (int j = 0; j < rn; j++) {
+        const char *lty2 = nt_type(nt, reqs[j]);
+        if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+        const char *lnm = nt_str(nt, reqs[j], "name");
+        if (!lnm) continue;
+        emit_indent(b, body_indent);
+        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d + %dLL);\n",
+                   lnm, find_k, t, find_pos, j);
+      }
+      /* trailing `*tail` = elements after the matched window */
+      int right = nt_ref(nt, find_pat, "right");
+      if (right >= 0 && nt_type(nt, right) && !strcmp(nt_type(nt, right), "SplatNode")) {
+        int inner = nt_ref(nt, right, "expression");
+        if (inner >= 0 && nt_type(nt, inner) &&
+            !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
+          const char *rnm = nt_str(nt, inner, "name");
+          if (rnm) {
+            emit_indent(b, body_indent);
+            buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d + %dLL, _t%d->len - (_t%d + %dLL));\n",
+                       rnm, find_k, t, find_pos, rn, t, find_pos, rn);
           }
         }
       }
