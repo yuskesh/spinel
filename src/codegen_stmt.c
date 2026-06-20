@@ -1870,15 +1870,7 @@ static void emit_ret_nil(Compiler *c, TyKind t, Buf *b) {
    any other emission (e.g. a poly-dispatch `({...})`) is passed through
    unchanged. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
-  if (g_ret_type == TY_POLY) {
-    /* a poly-returning tail must yield an sp_RbVal: box a concrete scalar value
-       (e.g. an implicit `return 1` from a method widened under promote). The
-       explicit-return caller already boxes, so this only adds coverage for the
-       implicit-return path; a node that is already poly boxes to itself. */
-    if (comp_ntype(c, node) != TY_POLY) emit_boxed(c, node, b);
-    else emit_expr(c, node, b);
-    return;
-  }
+  if (g_ret_type == TY_POLY) { emit_expr(c, node, b); return; }
   /* An empty `{}` literal defaults to StrPolyHash, but in a hash-returning tail
      it must take the return type (e.g. a SymPolyHash-returning method whose
      other branch is `{ a: 1 }`); otherwise the StrPolyHash* return is an
