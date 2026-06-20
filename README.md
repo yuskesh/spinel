@@ -422,13 +422,10 @@ sources (`lib/sp_*.c`, `lib/regexp/`) archived into `libspinel_rt.a`.
 Generated C includes the header and links the archive; `--gc-sections`
 drops every unused runtime function from the final binary.
 
-The parser has two implementations:
-- **src/spinel_parse.c** links libprism directly (no CRuby needed)
-- **spinel_parse.rb** uses the Prism gem (CRuby fallback)
-
-Both produce identical AST output; the C path is the default.
-`require_relative` is resolved at parse time by inlining the
-referenced file.
+The parser is **src/spinel_parse.c**, which links libprism directly (no
+CRuby needed) and emits the text AST that both the C compiler and the
+legacy backend consume. `require_relative` is resolved at parse time by
+inlining the referenced file.
 
 ## Building
 

@@ -80,7 +80,8 @@ Recognized type specs:
 | `:float` | `float` | `float` |
 | `:double` | `double` | `float` |
 | `:bool` | `int` | `bool` |
-| `:str` | `const char *` | `string` |
+| `:str` | `const char *` | `string` (NUL-terminated) |
+| `:binstr` | `const char *` | `string` (binary-safe, return only) |
 | `:ptr` | `void *` | `ptr` |
 | `:float_array` | `const double *` | `Array<Float>` (`.data` pointer) |
 | `:int_array` | `const int64_t *` | `Array<Int>` (`.data` pointer) |
@@ -89,6 +90,13 @@ Recognized type specs:
 All integer types collapse to `mrb_int` (int64) inside Spinel and are
 cast to the declared C type at the call boundary. Floats collapse to
 `double` the same way.
+
+`:str` builds the result String by `strlen`, so it stops at the first
+embedded NUL. `:binstr` is a return-only variant that builds a
+binary-safe String of an exact byte count instead (it reads
+`sp_net_bin_len`, the byte length recorded by the `sp_net` recv
+functions), so embedded NUL bytes are preserved — use it for binary
+socket reads where `:str` would truncate.
 
 `:float_array` / `:int_array` hand the C side a pointer to the Spinel
 Array's contiguous storage (`.data`). Length is **not** part of the
@@ -176,9 +184,10 @@ The codegen emits marker comments into the generated C:
 /* SPINEL_CFLAGS: -I/usr/local/include */
 ```
 
-The `spinel` wrapper script scrapes these with `sed` and appends them
-to the `cc` invocation. If you want to override (e.g. static linking or
-a custom lib path), use `-c` to stop at C and drive the linker yourself.
+The `spinel` compiler scrapes these from the generated C in-process and
+appends them to the `cc` invocation. If you want to override (e.g. static
+linking or a custom lib path), use `-c` to stop at C and drive the linker
+yourself.
 
 ## Limitations
 
