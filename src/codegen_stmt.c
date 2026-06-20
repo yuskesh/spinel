@@ -2338,10 +2338,9 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_puts(b, "sp_proc_call(");
       emit_yblk_ref(b);
-      buf_printf(b, ", %d, (mrb_int[16]){", yargc);
-      for (int k = 0; k < yargc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, yargv[k], b); }
-      if (yargc == 0) buf_puts(b, "0");
-      buf_puts(b, "});\n");
+      buf_puts(b, ", ");
+      emit_proc_call_args(c, yargc, yargv, b);
+      buf_puts(b, ";\n");
       return;
     }
     if (g_block_id < 0) return;  /* inlined without block: yield is dead code */

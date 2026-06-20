@@ -3347,6 +3347,55 @@ int diagnose_eval_call(Compiler *c, int id) {
   return 1;
 }
 
+/* Emit the `<argc>, (mrb_int[16]){...}` argument tail of an sp_proc_call.
+   A TY_POLY argument does not fit the mrb_int slot, so it is published to the
+   _sp_proc_poly_args side-channel (with a 0 placeholder in the slot) and a
+   heap-pointer argument is laundered through (mrb_int)(uintptr_t). Shared by
+   the <proc>.call path and the lowered-yield emission. */
+void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b) {
+  int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at mrb_int[16] */
+  int any_poly = 0;
+  for (int k = 0; k < nargs; k++) if (comp_ntype(c, argv[k]) == TY_POLY) { any_poly = 1; break; }
+  buf_printf(b, "%d, ", argc);
+  if (any_poly) {
+    if (!g_needs_proc_poly_argslot) {
+      g_needs_proc_poly_argslot = 1;
+      buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_args[16];\n");
+    }
+    int atmp[16];
+    for (int k = 0; k < nargs; k++) {
+      TyKind at = comp_ntype(c, argv[k]);
+      atmp[k] = ++g_tmp;
+      Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, argv[k], &vb);
+      emit_indent(g_pre, g_indent);
+      if (at == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
+      else if (proc_slot_is_ptr(at)) buf_printf(g_pre, "mrb_int _t%d = (mrb_int)(uintptr_t)(%s);\n", atmp[k], vb.p ? vb.p : "");
+      else buf_printf(g_pre, "mrb_int _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
+      free(vb.p);
+    }
+    for (int k = 0; k < nargs; k++) if (comp_ntype(c, argv[k]) == TY_POLY) {
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "_sp_proc_poly_args[%d] = _t%d;\n", k, atmp[k]);
+    }
+    buf_puts(b, "(mrb_int[16]){");
+    for (int k = 0; k < nargs; k++) {
+      if (k) buf_puts(b, ", ");
+      if (comp_ntype(c, argv[k]) == TY_POLY) buf_puts(b, "0");
+      else buf_printf(b, "_t%d", atmp[k]);
+    }
+    buf_puts(b, "})");
+  }
+  else {
+    buf_puts(b, "(mrb_int[16]){");
+    for (int k = 0; k < nargs; k++) {
+      if (k) buf_puts(b, ", ");
+      if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[k], b);
+    }
+    if (nargs == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
+    buf_puts(b, "})");
+  }
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -3957,52 +4006,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (unbox_poly || unbox_float) buf_puts(b, "((void)");
     buf_puts(b, "sp_proc_call(");
     emit_expr(c, recv, b);
-    buf_printf(b, ", %d, ", argc);
-    /* A TY_POLY (sp_RbVal) argument doesn't fit the mrb_int slot. When any arg
-       is poly, evaluate every argument into a temp first (so a nested poly-proc
-       call in an arg expression finishes), then publish the poly ones to the
-       _sp_proc_poly_args side-channel and pass a 0 placeholder in the slot --
-       re-entrancy-safe, mirroring the _sp_proc_poly_ret return path. */
-    int any_poly_arg = 0;
-    for (int k = 0; k < argc; k++) if (comp_ntype(c, argv[k]) == TY_POLY) { any_poly_arg = 1; break; }
-    if (any_poly_arg) {
-      if (!g_needs_proc_poly_argslot) {
-        g_needs_proc_poly_argslot = 1;
-        buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_args[16];\n");
-      }
-      int atmp[16]; int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at the mrb_int[16] slot */
-      for (int k = 0; k < nargs; k++) {
-        TyKind at = comp_ntype(c, argv[k]);
-        atmp[k] = ++g_tmp;
-        Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, argv[k], &vb);
-        emit_indent(g_pre, g_indent);
-        if (at == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
-        else if (proc_slot_is_ptr(at)) buf_printf(g_pre, "mrb_int _t%d = (mrb_int)(uintptr_t)(%s);\n", atmp[k], vb.p ? vb.p : "");
-        else buf_printf(g_pre, "mrb_int _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
-        free(vb.p);
-      }
-      for (int k = 0; k < nargs; k++) if (comp_ntype(c, argv[k]) == TY_POLY) {
-        emit_indent(g_pre, g_indent); buf_printf(g_pre, "_sp_proc_poly_args[%d] = _t%d;\n", k, atmp[k]);
-      }
-      buf_puts(b, "(mrb_int[16]){");
-      for (int k = 0; k < nargs; k++) {
-        if (k) buf_puts(b, ", ");
-        if (comp_ntype(c, argv[k]) == TY_POLY) buf_puts(b, "0");
-        else buf_printf(b, "_t%d", atmp[k]);
-      }
-      buf_puts(b, "})");
-    }
-    else {
-      buf_puts(b, "(mrb_int[16]){");
-      for (int k = 0; k < argc; k++) {
-        if (k) buf_puts(b, ", ");
-        /* a heap-pointer argument is laundered into the mrb_int slot */
-        if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[k], b);
-      }
-      if (argc == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
-      buf_puts(b, "})");
-    }
+    buf_puts(b, ", ");
+    emit_proc_call_args(c, argc, argv, b);
     if (unbox_ptr) buf_puts(b, ")");
     if (unbox_poly) buf_puts(b, ", _sp_proc_poly_ret)");
     if (unbox_float) buf_puts(b, ", sp_poly_to_f(_sp_proc_poly_ret))");

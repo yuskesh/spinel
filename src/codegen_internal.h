@@ -285,6 +285,7 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 void emit_proc_literal(Compiler *c, int create, Buf *b);
 int proc_slot_is_direct(TyKind t);
 int proc_slot_is_ptr(TyKind t);
+void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b);
 void emit_case_expr(Compiler *c, int id, Buf *b);
 
 /* Strip ParenthesesNode wrappers to reach the inner expression. */

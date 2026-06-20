@@ -256,7 +256,9 @@ else {
   }
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
-  if (!m->blk_param || !m->blk_param[0] || m->yields || m->is_lowered_yield) return 0;
+  /* A lowered yielding method also receives its block as a real proc, so a
+     block passed to it is lifted and captures enclosing locals like any other. */
+  if (!m->blk_param || !m->blk_param[0] || m->yields) return 0;
   /* instance_eval/exec trampolines splice their block at the call site rather
      than lifting it to a proc, so they are not lifted-block captures. */
   if (m->class_id >= 0 && !m->is_cmethod && m->name &&
@@ -1320,6 +1322,130 @@ static int reset_locked_iter_block_params(Compiler *c) {
   return n;
 }
 
+/* Is `id` a `recv.enum_for` / `recv.to_enum` call that materializes the
+   receiver's `#each` (no args, or a single literal `:each`), with no block?
+   These are the forms we lower to an eager `#each`-into-array helper. */
+static int is_enum_for_each(const Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || (strcmp(nm, "enum_for") && strcmp(nm, "to_enum"))) return 0;
+  if (nt_ref(nt, id, "receiver") < 0) return 0;       /* need a receiver to drive */
+  if (nt_ref(nt, id, "block") >= 0) return 0;         /* a size block is unsupported */
+  int args = nt_ref(nt, id, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (ac == 0) return 1;                               /* enum_for defaults to :each */
+  if (ac != 1 || !av) return 0;
+  if (!nt_type(nt, av[0]) || strcmp(nt_type(nt, av[0]), "SymbolNode")) return 0;
+  const char *s = nt_str(nt, av[0], "value");
+  return s && !strcmp(s, "each");
+}
+
+/* Rewrite every `recv.enum_for(:each)` / `recv.to_enum` into a call to the
+   synthesized `recv.__enum_to_a`, which materializes `#each` into an array.
+   Purely syntactic (no receiver type needed); the per-class helper is
+   synthesized separately and pruned by reachability when unused. */
+static void rewrite_enum_for_each(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  /* snapshot the count: synthesis below appends nodes, which must not be rescanned */
+  int count = nt->count;
+  for (int id = 0; id < count; id++) {
+    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    if (!is_enum_for_each(c, id)) continue;
+    int empty = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, empty, "arguments", NULL, 0);
+    nt_node_set_str(nt, id, "name", "__enum_to_a");
+    nt_node_set_ref(nt, id, "arguments", empty);
+    comp_grow_node_arrays(c);
+    c->nscope[empty] = c->nscope[id];
+  }
+}
+
+/* Synthesize, on every class that defines an instance `#each` that yields, a
+   helper method
+
+       def __enum_to_a
+         __enum_acc = []
+         each { |__enum_e| __enum_acc << __enum_e }
+         __enum_acc
+       end
+
+   so an `enum_for(:each)` rewritten to `__enum_to_a` materializes the receiver
+   eagerly into an array (then map/select/to_a/... use the array path). The
+   helper is a normal method whose body is inferred and emitted by the usual
+   machinery; when `#each` is force-lowered the inlined `each { }` becomes a
+   real call passing the block as a proc. Unused helpers are pruned by
+   reachability, so this is inert for programs that never call enum_for/to_enum
+   (the self-host compiler included). */
+static void synth_enum_to_a(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (c->nscopes == 0) return;
+  /* collect target classes first (synthesis below grows c->scopes). At most one
+     entry per scope, so pre-size both arrays to nscopes and avoid per-item growth. */
+  int *cls = malloc(sizeof(int) * (size_t)c->nscopes);
+  int *eachdef = malloc(sizeof(int) * (size_t)c->nscopes);
+  if (!cls || !eachdef) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int ncls = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *m = &c->scopes[s];
+    if (!m->name || m->is_cmethod || m->class_id < 0) continue;
+    if (strcmp(m->name, "each") || !m->yields) continue;
+    if (comp_method_in_class(c, m->class_id, "__enum_to_a") >= 0) continue;
+    int dup = 0;
+    for (int k = 0; k < ncls; k++) if (cls[k] == m->class_id) { dup = 1; break; }
+    if (dup) continue;
+    cls[ncls] = m->class_id; eachdef[ncls] = m->def_node; ncls++;
+  }
+  for (int k = 0; k < ncls; k++) {
+    int arr = nt_new_node(nt, "ArrayNode");
+    nt_node_set_arr(nt, arr, "elements", NULL, 0);
+    int accw = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, accw, "name", "__enum_acc");
+    nt_node_set_ref(nt, accw, "value", arr);
+    int ep = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, ep, "name", "__enum_e");
+    int params = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, params, "requireds", &ep, 1);
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, bparams, "parameters", params);
+    int accr1 = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, accr1, "name", "__enum_acc");
+    int eread = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, eread, "name", "__enum_e");
+    int pushargs = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, pushargs, "arguments", &eread, 1);
+    int push = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, push, "name", "<<");
+    nt_node_set_ref(nt, push, "receiver", accr1);
+    nt_node_set_ref(nt, push, "arguments", pushargs);
+    int blkbody = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, blkbody, "body", &push, 1);
+    int blk = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, blk, "parameters", bparams);
+    nt_node_set_ref(nt, blk, "body", blkbody);
+    int eachcall = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, eachcall, "name", "each");
+    nt_node_set_ref(nt, eachcall, "block", blk);
+    int accr2 = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, accr2, "name", "__enum_acc");
+    int body = nt_new_node(nt, "StatementsNode");
+    int stmts[3] = { accw, eachcall, accr2 };
+    nt_node_set_arr(nt, body, "body", stmts, 3);
+
+    Scope *ms = comp_scope_new(c, "__enum_to_a", eachdef[k]);
+    ms->class_id = cls[k];
+    ms->body = body;
+    int ms_idx = c->nscopes - 1;
+    /* register_locals already ran (before synthesis), so intern this scope's
+       locals here; types are filled in by the inference fixpoint that follows. */
+    scope_local_intern(ms, "__enum_acc");
+    LocalVar *ev = scope_local_intern(ms, "__enum_e");
+    if (ev) ev->is_block_param = 1;
+    comp_grow_node_arrays(c);
+    walk_scope(c, body, ms_idx, cls[k]);
+  }
+  free(cls); free(eachdef);
+}
+
 void analyze_program(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
@@ -1424,6 +1550,13 @@ void analyze_program(Compiler *c) {
       if (self_or_none && nm && !strcmp(nm, "block_given?")) comp_scope_of(c, id)->yields = 1;
     }
   }
+
+  /* Eager Enumerable-via-#each: rewrite `enum_for(:each)`/`to_enum` to a
+     synthesized per-class `__enum_to_a` helper that materializes #each into an
+     array. Done before the inference fixpoint so the helper's body is typed,
+     and before reachability so the helper is kept only when actually called. */
+  rewrite_enum_for_each(c);
+  synth_enum_to_a(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
@@ -1837,6 +1970,32 @@ void analyze_program(Compiler *c) {
   /* Promote loop-multiplication variables to bigint */
   detect_bigint_loop_vars(c);
   propagate_bigint_cascade(c);
+
+  /* Force-lower `#each` for any class whose synthesized `__enum_to_a` helper is
+     actually called (an `enum_for`/`to_enum` survived the rewrite). The helper
+     drives `#each` with a collector block; the real (lowered) function form
+     passes that block as a proc. Done BEFORE mark_proc_captures so the
+     collector block lifts and its `__enum_acc` accumulator gets a heap cell. */
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    if (!nm || strcmp(nm, "__enum_to_a")) continue;
+    int recv = nt_ref(c->nt, id, "receiver");
+    if (recv < 0) continue;
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_object(rt)) continue;
+    int ec = comp_method_in_chain(c, ty_object_class(rt), "each", NULL);
+    if (ec < 0) continue;
+    Scope *m = &c->scopes[ec];
+    if (m->blk_param || !m->yields) continue;   /* already lowered, or no yielding each */
+    m->is_lowered_yield = 1;
+    m->yields = 0;
+    m->ret = TY_INT;
+    m->blk_param = strdup("__yblk__");
+    LocalVar *yblk = scope_local_intern(m, "__yblk__");
+    if (yblk) { yblk->type = TY_PROC; yblk->is_param = 1; yblk->is_cell = 1; }
+  }
 
   /* mark locals captured by escaping procs (they need heap cells) */
   mark_proc_captures(c);
