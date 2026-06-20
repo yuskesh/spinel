@@ -3215,8 +3215,20 @@ else {
           const char *lty = nt_type(nt, lefts[i]);
           if (!lty || strcmp(lty, "LocalVariableTargetNode")) continue;
           emit_indent(b, indent);
-          buf_printf(b, "lv_%s = ", nt_str(nt, lefts[i], "name"));
-          if (i == 0) emit_expr(c, value, b);
+          const char *lvn = nt_str(nt, lefts[i], "name");
+          buf_printf(b, "lv_%s = ", lvn);
+          LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
+          int lpoly = llv && llv->type == TY_POLY;
+          if (i == 0) { if (lpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
+          else if (lpoly) {
+            /* rest target's typed-zero default, boxed into the widened slot.
+               comp_ntype on the target node still reports its pre-widen scalar
+               type, so default_value lands the same 0 default mode emits. */
+            TyKind tt = comp_ntype(c, lefts[i]);
+            Buf bx; memset(&bx, 0, sizeof bx);
+            emit_boxed_text(c, tt, default_value(tt), &bx);
+            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+          }
           else buf_puts(b, default_value(comp_ntype(c, lefts[i])));
           buf_puts(b, ";\n");
         }
@@ -3239,8 +3251,18 @@ else {
           if (!lty) continue;
           if (!strcmp(lty, "LocalVariableTargetNode")) {
             emit_indent(b, indent);
-            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, %dLL);\n",
-                       nt_str(nt, lefts[i], "name"), k, tarr, i);
+            const char *lvn = nt_str(nt, lefts[i], "name");
+            buf_printf(b, "lv_%s = ", lvn);
+            LocalVar *llv = lvn ? scope_local(rt_scope, lvn) : NULL;
+            TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
+            char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+            if (ltt == TY_POLY && strcmp(k, "Poly")) {
+              Buf bx; memset(&bx, 0, sizeof bx);
+              emit_boxed_text(c, elem, gx, &bx);
+              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+            }
+            else buf_puts(b, gx);
+            buf_puts(b, ";\n");
           }
           else if (!strcmp(lty, "InstanceVariableTargetNode") &&
                    rt_scope && rt_scope->class_id >= 0) {
@@ -3323,8 +3345,17 @@ else {
           if (!lty) continue;
           if (!strcmp(lty, "LocalVariableTargetNode")) {
             emit_indent(b, indent);
-            buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d->len - %dLL + %dLL);\n",
-                       nt_str(nt, rights[j], "name"), k, tarr, tarr, rn, j);
+            const char *rlvn = nt_str(nt, rights[j], "name");
+            buf_printf(b, "lv_%s = ", rlvn);
+            LocalVar *rllv = rlvn ? scope_local(rt_scope, rlvn) : NULL;
+            char rgx[80]; snprintf(rgx, sizeof rgx, "sp_%sArray_get(_t%d, _t%d->len - %dLL + %dLL)", k, tarr, tarr, rn, j);
+            if (rllv && rllv->type == TY_POLY && strcmp(k, "Poly")) {
+              Buf bx; memset(&bx, 0, sizeof bx);
+              emit_boxed_text(c, elem, rgx, &bx);
+              buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+            }
+            else buf_puts(b, rgx);
+            buf_puts(b, ";\n");
           }
           else if (!strcmp(lty, "InstanceVariableTargetNode") &&
                    rt_scope && rt_scope->class_id >= 0) {
@@ -3419,7 +3450,19 @@ else {
       }
       if (lty && !strcmp(lty, "LocalVariableTargetNode")) {
         emit_indent(b, indent);
-        buf_printf(b, "lv_%s = _t%d;\n", nt_str(nt, lefts[i], "name"), tmps[i]);
+        const char *lvn = nt_str(nt, lefts[i], "name");
+        buf_printf(b, "lv_%s = ", lvn);
+        LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
+        TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
+        TyKind valt = comp_ntype(c, els[i]);
+        if (ltt == TY_POLY && valt != TY_POLY) {
+          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, valt, expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
       }
       else if (lty && (!strcmp(lty, "ConstantPathTargetNode") || !strcmp(lty, "ConstantTargetNode")) &&
                nt_str(nt, lefts[i], "name") && comp_const(c, nt_str(nt, lefts[i], "name"))) {
@@ -3552,9 +3595,20 @@ else {
         Scope *cv_sc = comp_scope_of(c, id);
         int cv_cid = (cv_sc && cv_sc->class_id >= 0) ? cv_sc->class_id : g_class_body_id;
         if (cv_cid < 0) { unsupported(c, id, "multiple assignment class variable target no class"); continue; }
-        if (comp_cvar_index(&c->classes[cv_cid], cnm) < 0) { unsupported(c, id, "multiple assignment class variable target unregistered"); continue; }
+        int cv_idx = comp_cvar_index(&c->classes[cv_cid], cnm);
+        if (cv_idx < 0) { unsupported(c, id, "multiple assignment class variable target unregistered"); continue; }
         emit_indent(b, indent);
-        buf_printf(b, "cvar_%s_%s = _t%d;\n", c->classes[cv_cid].name, cnm + 2, tmps[i]);
+        buf_printf(b, "cvar_%s_%s = ", c->classes[cv_cid].name, cnm + 2);
+        TyKind cvt = c->classes[cv_cid].cvar_types[cv_idx];
+        TyKind valt = comp_ntype(c, els[i]);
+        if (cvt == TY_POLY && valt != TY_POLY) {
+          char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, valt, expr, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_printf(b, "_t%d", tmps[i]);
+        buf_puts(b, ";\n");
       }
       else unsupported(c, id, "multiple assignment target");
     }
