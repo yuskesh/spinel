@@ -10742,8 +10742,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* n.upto(m) / n.downto(m) { |i| ... } */
-  if ((!strcmp(name, "upto") || !strcmp(name, "downto")) && rt == TY_INT && p0) {
+  /* n.upto(m) / n.downto(m) { [|i|] ... } -- a fresh temp drives the loop and
+     the block param (if any) is rebound from it each iteration, like n.times.
+     A blockless-param form (`1.upto(5) { body }`) must still run the body. */
+  if ((!strcmp(name, "upto") || !strcmp(name, "downto")) && rt == TY_INT) {
     int up = !strcmp(name, "upto");
     int args = nt_ref(nt, id, "arguments");
     int argc = 0;
@@ -10752,10 +10754,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (argc != 1) return 0;
     Buf lo; memset(&lo, 0, sizeof lo); emit_expr(c, recv, &lo);
     Buf hi; memset(&hi, 0, sizeof hi); emit_expr(c, argv[0], &hi);
+    int ti = ++g_tmp;
     emit_indent(b, indent);
-    buf_printf(b, "for (lv_%s = ", p0); buf_puts(b, lo.p);
-    buf_printf(b, "; lv_%s %s ", p0, up ? "<=" : ">="); buf_puts(b, hi.p);
-    buf_printf(b, "; lv_%s%s) {\n", p0, up ? "++" : "--");
+    buf_printf(b, "for (mrb_int _t%d = ", ti); buf_puts(b, lo.p);
+    buf_printf(b, "; _t%d %s ", ti, up ? "<=" : ">="); buf_puts(b, hi.p);
+    buf_printf(b, "; _t%d%s) {\n", ti, up ? "++" : "--");
+    if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", ti); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(lo.p); free(hi.p);
