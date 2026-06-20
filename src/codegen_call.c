@@ -8217,11 +8217,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       int *atmp = malloc(sizeof(int) * argc);
+      TyKind *atmp_ty = malloc(sizeof(TyKind) * argc);
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
       for (int a = 0; a < argc; a++) {
         atmp[a] = ++g_tmp;
-        emit_ctype(c, infer_type(c, argv[a]), b);
-        buf_printf(b, " _t%d = ", atmp[a]); emit_expr(c, argv[a], b); buf_puts(b, "; ");
+        TyKind at = infer_type(c, argv[a]);
+        /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
+           print `void`); hold it as a boxed poly so it can flow into a poly
+           param slot. */
+        if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
+          atmp_ty[a] = TY_POLY;
+          buf_printf(b, "sp_RbVal _t%d = ", atmp[a]); emit_boxed(c, argv[a], b); buf_puts(b, "; ");
+        }
+        else {
+          atmp_ty[a] = at;
+          emit_ctype(c, at, b);
+          buf_printf(b, " _t%d = ", atmp[a]); emit_expr(c, argv[a], b); buf_puts(b, "; ");
+        }
       }
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
       buf_printf(b, " _t%d = %s; ", tr, is_scalar_ret(ret) ? default_value(ret) : "0");
@@ -8256,7 +8268,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           if (pv) pt = pv->type;
           buf_puts(&cb, ", ");
           if (a < argc) {
-            TyKind at = infer_type(c, argv[a]);
+            TyKind at = atmp_ty[a];   /* the temp's actual type (poly for a nil/void arg) */
             char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
             if (pt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, &cb);
             else buf_puts(&cb, tn);
@@ -8377,6 +8389,7 @@ else {
       }
       buf_printf(b, " } _t%d; })", tr);
       free(atmp);
+      free(atmp_ty);
       return;
     }
   }

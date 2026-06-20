@@ -2740,6 +2740,11 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
+  /* An unused/unresolved param is declared poly (sp_RbVal) in the method
+     signature (codegen.c maps TY_UNKNOWN params to TY_POLY); box the argument
+     to match, so a virtually-dispatched call into such a slot passes a valid
+     sp_RbVal rather than a raw value (or `void` temp). */
+  if (p && pt == TY_UNKNOWN) pt = TY_POLY;
   if (provided >= 0) {
     if (pt == TY_POLY) emit_boxed(c, provided, out);   /* box into a poly param */
     else {
@@ -3354,9 +3359,9 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[k]);
       TyKind et = ep ? ep->type : TY_POLY;
       char txt[80]; snprintf(txt, sizeof txt, "lv_%s", fwd_encl->pnames[k]);
-      if (p && p->type == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, &ab);
+      if (p && (p->type == TY_POLY || p->type == TY_UNKNOWN) && et != TY_POLY) emit_boxed_text(c, et, txt, &ab);
       else buf_puts(&ab, txt);
-      TyKind att = p ? p->type : et;
+      TyKind att = p ? (p->type == TY_UNKNOWN ? TY_POLY : p->type) : et;
       emit_indent(g_pre, g_indent);
       emit_ctype(c, att, g_pre);
       buf_printf(g_pre, " _t%d = ", atmp[k]);
@@ -3384,6 +3389,7 @@ else {
       g_self_deref = saved_deref3;
       g_emitting_class_id = saved_emcls2;
       TyKind att = p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1);
+      if (p && att == TY_UNKNOWN) att = TY_POLY;  /* poly in the callee signature */
       emit_indent(g_pre, g_indent);
       emit_ctype(c, att, g_pre);
       buf_printf(g_pre, " _t%d = ", atmp[k]);
