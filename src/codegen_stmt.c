@@ -3671,11 +3671,30 @@ else {
       const char *rnm_j = nt_str(nt, rights[j], "name");
       if (!strcmp(lty, "LocalVariableTargetNode")) {
         emit_indent(b, indent);
+        LocalVar *rjlv = rnm_j ? scope_local(comp_scope_of(c, id), rnm_j) : NULL;
+        int rjpoly = rjlv && rjlv->type == TY_POLY;
         if (ridx >= 0 && ridx < en) {
-          buf_printf(b, "lv_%s = _t%d;\n", rnm_j, tmps[ridx]);
+          buf_printf(b, "lv_%s = ", rnm_j);
+          TyKind valt = comp_ntype(c, els[ridx]);
+          if (rjpoly && valt != TY_POLY) {
+            char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[ridx]);
+            Buf bx; memset(&bx, 0, sizeof bx);
+            emit_boxed_text(c, valt, expr, &bx);
+            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+          }
+          else buf_printf(b, "_t%d", tmps[ridx]);
+          buf_puts(b, ";\n");
         }
         else {
-          buf_printf(b, "lv_%s = %s;\n", rnm_j, default_value(comp_ntype(c, rights[j])));
+          buf_printf(b, "lv_%s = ", rnm_j);
+          TyKind tt = comp_ntype(c, rights[j]);
+          if (rjpoly) {
+            Buf bx; memset(&bx, 0, sizeof bx);
+            emit_boxed_text(c, tt, default_value(tt), &bx);
+            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+          }
+          else buf_puts(b, default_value(tt));
+          buf_puts(b, ";\n");
         }
       }
       else if ((!strcmp(lty, "ConstantPathTargetNode") || !strcmp(lty, "ConstantTargetNode")) &&
