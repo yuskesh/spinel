@@ -250,6 +250,25 @@ static int poly_index_int_array(Compiler *c, int id) {
   return ivar_array_elems_all_int_array(c, cid, ivname);
 }
 
+/* A plain int literal value (not an out-of-int64 bigint literal). */
+static int infer_const_int_node(const NodeTable *nt, int id, long long *out) {
+  const char *ty = nt_type(nt, id);
+  if (!ty || strcmp(ty, "IntegerNode")) return 0;
+  if (nt_str(nt, id, "bigval")) return 0;
+  *out = (long long)nt_int(nt, id, "value", 0);
+  return 1;
+}
+
+/* Whether base**exp does not fit in signed 64 bits (so it must be a Bignum). */
+static int infer_int_pow_overflows(long long base, long long exp) {
+  if (exp <= 0) return 0;
+  if (base >= -1 && base <= 1) return 0;
+  long long r = 1;
+  for (long long i = 0; i < exp; i++)
+    if (__builtin_mul_overflow(r, base, &r)) return 1;
+  return 0;
+}
+
 TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -262,6 +281,16 @@ TyKind infer_call(Compiler *c, int id) {
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
+
+  /* A literal integer power whose result exceeds int64 (`10 ** 30`, `2 ** 70`)
+     is a Bignum in every overflow mode (CRuby). Type it bigint so codegen emits
+     sp_bigint_pow rather than the saturating float sp_int_pow. */
+  if (!strcmp(name, "**") && recv >= 0 && argc == 1) {
+    long long base, exp;
+    if (infer_const_int_node(nt, recv, &base) && infer_const_int_node(nt, argv[0], &exp) &&
+        infer_int_pow_overflows(base, exp))
+      return TY_BIGINT;
+  }
 
   /* `@table[i][j]` on a poly-array dispatch table of int-returning entries
      yields an int (a method/peek table). Resolves the optcarrot CPU's
