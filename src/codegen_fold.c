@@ -3010,6 +3010,25 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, Buf *o
   TyKind pt = p ? p->type : TY_UNKNOWN;
   int poly = (pt == TY_POLY);
   if (!poly && !needs_root(pt)) { emit_arg_or_default(c, m, idx, provided, out); return; }
+  /* A bare read (local/ivar/const/self/nil/string literal) is already reachable
+     from a root where it lives, so it needs no hoisted temp. Hoisting it into
+     g_pre is also WRONG when the call sits in a sequence-expression that assigns
+     the read variable before the call: the g_pre line is flushed at the
+     statement boundary, capturing the value ABOVE that in-sequence assignment
+     (`a = {...}; foo(a)` as an operand passed a stale `a`). Emit inline, matching
+     the g_argov skip in emit_args_filled. A param default like `{}` (provided<0)
+     is a fresh allocation and still hoisted -- the #1445 root case. */
+  if (provided >= 0) {
+    const char *aty = nt_type(c->nt, provided);
+    if (aty && (!strcmp(aty, "LocalVariableReadNode") ||
+                !strcmp(aty, "InstanceVariableReadNode") ||
+                !strcmp(aty, "ConstantReadNode") ||
+                !strcmp(aty, "SelfNode") || !strcmp(aty, "NilNode") ||
+                !strcmp(aty, "StringNode"))) {
+      emit_arg_or_default(c, m, idx, provided, out);
+      return;
+    }
+  }
   Buf ab; memset(&ab, 0, sizeof ab);
   emit_arg_or_default(c, m, idx, provided, &ab);
   int t = ++g_tmp;
