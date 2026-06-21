@@ -2279,7 +2279,13 @@ void analyze_program(Compiler *c) {
          widening its return to poly would force every caller's comparison onto
          the poly path while the result never overflows. Keep it int. */
       int is_spaceship = sc->name && !strcmp(sc->name, "<=>");
-      if (sc->ret == TY_INT && !is_spaceship) sc->ret = TY_POLY;
+      /* A lowered self-recursive yield method returns its block's value through
+         a raw mrb_int carrier (a string is laundered through the slot, an int
+         rides it directly), and every call site casts that carrier back to its
+         own block's concrete type. Widening the return to poly would emit a
+         `sp_box_str(mrb_int)` over that raw carrier and mismatch the per-call
+         casts; keep it as the carrier, exactly as default/wrap mode does. */
+      if (sc->ret == TY_INT && !is_spaceship && !sc->is_lowered_yield) sc->ret = TY_POLY;
       for (int i = 0; i < sc->nlocals; i++) {
         /* Skip block params: they are typed by the iterated collection's
            element type (an IntArray yields int elements), and the block
