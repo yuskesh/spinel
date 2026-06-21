@@ -8293,7 +8293,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %ssp_str_length(_t%d.v.s) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
         buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %sstrlen(sp_sym_to_s((sp_sym)_t%d.v.i)) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
       }
-      buf_printf(b, "switch (_t%d.cls_id) {", tv);
+      /* Only an SP_TAG_OBJ value carries a real cls_id; a boxed scalar's cls_id
+         is 0, which would otherwise alias the first user class (class id 0) and
+         mis-dispatch (e.g. a poly int's `to_s` calling that class's to_s --
+         infinite recursion). Map non-object tags to a value matching no case so
+         they fall to the default (sp_poly_to_s / 0). */
+      buf_printf(b, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
@@ -8446,7 +8451,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else
           buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = (_t%d.v.i >> %s) & 1; } else ", tv, tr, tv, idxref);
       }
-      buf_printf(b, "switch (_t%d.cls_id) {", tv);
+      /* Only an SP_TAG_OBJ value carries a real cls_id; a boxed scalar's cls_id
+         is 0, which would otherwise alias the first user class (class id 0) and
+         mis-dispatch (e.g. a poly int's `to_s` calling that class's to_s --
+         infinite recursion). Map non-object tags to a value matching no case so
+         they fall to the default (sp_poly_to_s / 0). */
+      buf_printf(b, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
