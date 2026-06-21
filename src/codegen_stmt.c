@@ -580,6 +580,32 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, ";\n");
       return;
     }
+    /* A poly cell (an int local widened to poly in promote mode, then captured):
+       route the arithmetic through the tag-dispatching sp_poly_<op>, boxing the
+       rhs. Bitwise/shift coerce to int and re-box, mirroring the non-celled
+       poly op-assign path. */
+    if (t == TY_POLY) {
+      const char *pfn = !strcmp(op, "+") ? "sp_poly_add"
+                      : !strcmp(op, "-") ? "sp_poly_sub"
+                      : !strcmp(op, "*") ? "sp_poly_mul"
+                      : !strcmp(op, "/") ? "sp_poly_div"
+                      : !strcmp(op, "%") ? "sp_poly_mod" : NULL;
+      if (pfn) {
+        buf_printf(b, "%s(", pfn); emit_local_ref(c, id, nm, b); buf_puts(b, ", ");
+        emit_boxed(c, v, b); buf_puts(b, ");\n");
+        return;
+      }
+      if (!strcmp(op, "<<") || !strcmp(op, ">>") ||
+          !strcmp(op, "|") || !strcmp(op, "&") || !strcmp(op, "^")) {
+        TyKind vt = comp_ntype(c, v);
+        buf_puts(b, "sp_box_int((sp_poly_to_i("); emit_local_ref(c, id, nm, b);
+        buf_printf(b, ") %s (", op);
+        if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, v, b); buf_puts(b, ")"); }
+        else emit_expr(c, v, b);
+        buf_puts(b, ")));\n");
+        return;
+      }
+    }
     const char *fn = int_arith_fn(op);
     if (fn) {
       int isdivmod = !strcmp(op, "/") || !strcmp(op, "%");
