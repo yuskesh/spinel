@@ -3311,6 +3311,14 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
+/* Raise TypeError "no implicit conversion of <class> into String" for a poly
+   value, naming its actual runtime class (the statically-typed path bakes the
+   class name into a literal; the poly path resolves it here). */
+SP_NORETURN SP_COLD static void sp_raise_no_str_conversion(sp_RbVal v) {
+  static char buf[128];
+  snprintf(buf, sizeof buf, "no implicit conversion of %s into String", sp_poly_class_name(v));
+  sp_raise_cls("TypeError", buf);
+}
 typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;
 static mrb_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
 static mrb_float sp_poly_to_f(sp_RbVal v);  /* defined below; used by the bigint+float arms */

@@ -6997,7 +6997,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
               emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "if (_t%d.tag != SP_TAG_STR) sp_raise_cls(\"TypeError\", \"no implicit conversion into String\");\n", tv);
+              buf_printf(g_pre, "if (_t%d.tag != SP_TAG_STR) sp_raise_no_str_conversion(_t%d);\n", tv, tv);
               buf_printf(b, "sp_re_match_poly(%s, _t%d.v.s)", rp.p, tv);
             }
             else {
