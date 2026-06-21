@@ -130,11 +130,19 @@ full int→poly widen pass(79709207)を土台に、ERR(=C compile fail の境界
     - **value-form hash `[]=` の poly key を unbox**: `h[k]=v`(式)の key が emit_expr 生 → typed-key hash setter に poly。emit_hash_key 経由化。bundle_class_06(-Werror 検出、make test は lenient で見逃す)。
     - **Float#round/ceil/floor/truncate の poly ndigits unbox**: `(double)(poly)` aggregate error → emit_int_expr。float_round_nonliteral。
   - **★ make-test promote count は -Werror 無しで lenient + 並列 compile timeout で flaky**(同一 binary 再実行で ±1 揺れる)。各 fix の確証は `/tmp/ptest.sh`(-Werror, deterministic)。**default 992/0/0 + optcarrot 59662 が hard gate、両者は全 commit で緑維持**。
-  - **残 ERR ~9(965+ 時点、deterministic)= 深い構造/front-end/linker**:
-    - 深い構造(5): **block2**(no-block yield の raw mrb_int carrier を poly value-if で box、inline 経路)/ **bound_method_single_eval**(object-bound `.call` の ABI: args も poly param に box 要、return cast だけでは ERR→FAIL 悪化で revert 済)/ **class_method_open_class_call**(poly dispatch が reopened-primitive Integer を `(sp_Integer*)` cast、`__oc_Integer_*` value-ABI 要)/ **instance_exec_trampoline_result**(forward-block `&b` param 束縛が is_exec 経路を通らず別 path、unbox 未適用)/ **recursive_implicit_yield_value**(lowered-yield の raw mrb_int carrier を string/int 両用 block で sp_box_str 誤選択)。
-    - front-end(2): clamp_bounds(`unsupported p argument`)/ integer_div_by_zero(`unsupported operator assignment`)。promote 以前の未対応構文。
-    - linker(2): fiber_capture_no_leak_to_sibling / i1007(ld error)。
+  - **965→971 続行(さらに 6 commit、ERR 9→3、default 992/0/0+optcarrot 59662 維持)**:
+    - **instance_exec block param を自 block scope で解決**: forward-block(`&b` が別 site の literal に解決)の param が call site scope の無関係な `a` を読み slot 型誤認 → `comp_scope_of(reqs[p])`(param node の scope)で解決。is_exec/tramp の poly→int unbox が発火。instance_exec_trampoline_result。
+    - **reopened-primitive の poly dispatch receiver unbox**: `(sp_Integer*)_t.v.p` は非 struct → `.v.i`/`.v.f`/`.v.s`/`(sp_sym)` で union field 読み。class_method_open_class_call。
+    - **poly local `%=` → sp_poly_mod**: op-assign arm が +,-,*,/ のみ → `%` 追加。integer_div_by_zero。
+    - **poly clamp**: `sp_poly_clamp`(runtime, tag-dispatch int/float + NaN/order check 既存 helper 再利用)+ infer poly.clamp→poly + codegen の 2-arg/range form。clamp_bounds。
+    - **`sp_gc_mark_rbval` typo → `sp_mark_rbval`**: fiber poly-capture scan が未定義シンボル参照 = ld error。promote の poly fiber capture で初露見。i1007 / fiber_capture_no_leak_to_sibling。
+  - **★残 ERR=3(971 時点、deterministic、全て raw mrb_int carrier ABI family = 構造的ブロッカー)**:
+    - **block2**: no-block の inline yield が poly value-if の then 分岐で `_t2 = 0`(int)を poly slot へ。yield emit を `sp_box_nil()` 化しても value-if/inline 経路が `0` を出す（emit と value-if の二段。yield emit 単独修正では不可、inline+value-if の branch-default を追う要）。
+    - **bound_method_single_eval**: object-bound `.call` の ABI が `mrb_int(*)(void*, mrb_int...)` 固定。promote で target method は poly param/ret に widen → args を param 型に box + ret cast を target 型にする協調修正要(return cast 単独は ERR→FAIL 悪化、revert 済)。
+    - **recursive_implicit_yield_value**: lowered-yield の raw mrb_int carrier が string/int 両用 block で型判別不能 → `sp_box_str(mrb_int)` 誤選択。carrier に型 tag を持たせる ABI 変更要。
     - **FAIL=19** はコンパイル通るが出力差(attr=promote-mode crash 等、別途)。
+
+  **★セッション総括(940→971、ERR 33→3)**: emission-site の box/unbox coercion + post-widen fixpoint の cascade(array-local step4 / 定数 step5)+ instance_exec/eval の rebound-scope 解決(ivar-write/call-node 再 infer/forward-block param scope)+ poly dispatch の双方向 coerce + runtime helper 追加(sp_poly_clamp)で系統的に潰した。残 3 は全て「lowered-yield / bound-method の raw mrb_int carrier」由来で、ABI に型情報を載せる構造変更が前提。**hard gate(default 992/0/0 + optcarrot 59662)は全 commit で緑**。make-test promote count は -Werror 無し + 並列 timeout で flaky、確証は `/tmp/ptest.sh`。
 
 ### (参考)legacy 方式
 legacy backend(`legacy/spinel_codegen.rb` L55, L3037-3203)は promote で全 int slot を `sp_Bigint*` に widen(method ABI = `(void*, sp_Bigint*...) -> sp_Bigint*`)。採用せず(上記理由)。
