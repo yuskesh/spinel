@@ -3597,14 +3597,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
       if (bt != TY_UNKNOWN && bt != TY_NIL) {
         int t = ++g_tmp;
         emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
-        buf_printf(g_pre, " _t%d = %s;\n", t, (bt == TY_INT) ? "0" : "NULL");
+        buf_printf(g_pre, " _t%d = %s;\n", t,
+                   bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "for (;;) {\n");
         const char *sv_lb = g_loop_break_var;
+        int sv_iep = g_ie_res_poly;
+        g_ie_res_poly = (bt == TY_POLY);   /* box a scalar `break <v>` into the poly slot */
         char lb_buf[32]; snprintf(lb_buf, sizeof lb_buf, "_t%d", t);
         g_loop_break_var = lb_buf;
         int lbody = nt_ref(nt, blk, "body");
         emit_stmts(c, lbody, g_pre, g_indent + 1);
         g_loop_break_var = sv_lb;
+        g_ie_res_poly = sv_iep;
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         buf_printf(b, "_t%d", t);
         return;
