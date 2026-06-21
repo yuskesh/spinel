@@ -110,7 +110,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   const char *fn = NULL;
   switch (t) {
-    case TY_INT:    fn = "sp_box_int";   break;
+    case TY_INT:    fn = "sp_box_int_or_nil"; break;
     case TY_FLOAT:  fn = "sp_box_float"; break;
     case TY_BIGINT: fn = "sp_box_bigint"; break;
     case TY_STRING: fn = "sp_box_str";   break;
