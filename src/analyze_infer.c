@@ -528,7 +528,10 @@ TyKind infer_call(Compiler *c, int id) {
     int mn = method_recv_node(c, recv);
     int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     if (mi >= 0) return c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret;
-    return TY_INT;  /* bound-method ABI returns mrb_int */
+    /* Unresolved target: the bound-method ABI returns mrb_int -- except under
+       promote, where every method is poly-signatured and bound methods are
+       invoked through the poly ABI (sp_RbVal), so the call yields poly. */
+    return g_promote_mode ? TY_POLY : TY_INT;
   }
   /* <method>.name -> the method name string; .arity -> int */
   if (recv >= 0 && rt == TY_METHOD && argc == 0) {

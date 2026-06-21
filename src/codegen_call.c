@@ -3890,16 +3890,22 @@ void emit_call(Compiler *c, int id, Buf *b) {
       int t = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_RbVal _t%d = ", t); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-      /* the poly callable may be a Proc or a bound Method (different ABIs) */
-      buf_printf(b, "(_t%d.cls_id == SP_BUILTIN_METHOD ? ((mrb_int (*)(void *", t);
-      for (int k = 0; k < argc; k++) buf_puts(b, ", mrb_int");
+      /* the poly callable may be a Proc or a bound Method (different ABIs).
+         Under promote the bound method is poly-signatured, so call it through
+         the poly ABI and unbox the result back to the mrb_int the Proc arm
+         yields, keeping the ternary's two branches a single type. */
+      int mabi_poly = g_promote_mode;
+      const char *aty = mabi_poly ? "sp_RbVal" : "mrb_int";
+      buf_printf(b, "(_t%d.cls_id == SP_BUILTIN_METHOD ? %s((%s (*)(void *", t, mabi_poly ? "sp_poly_to_i(" : "", aty);
+      for (int k = 0; k < argc; k++) buf_printf(b, ", %s", aty);
       buf_printf(b, "))(uintptr_t)((sp_BoundMethod *)_t%d.v.p)->fn)((void *)((sp_BoundMethod *)_t%d.v.p)->self", t, t);
       for (int k = 0; k < argc; k++) {
         buf_puts(b, ", ");
-        if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+        if (mabi_poly) emit_boxed(c, argv[k], b);
+        else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[k], b);
       }
-      buf_printf(b, ") : sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", t, argc);
+      buf_printf(b, ")%s : sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", mabi_poly ? ")" : "", t, argc);
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
         if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
@@ -4059,7 +4065,12 @@ void emit_call(Compiler *c, int id, Buf *b) {
        Falls back to the raw mrb_int ABI when the target is unresolved. */
     int tr = ++g_tmp;
     Scope *tm = target >= 0 ? &c->scopes[target] : NULL;
-    TyKind tret = tm ? (TyKind)tm->ret : TY_INT;
+    /* When the target is unresolved under promote, fall back to the poly ABI
+       (sp_RbVal self/args/return) rather than the legacy mrb_int ABI: every
+       method is poly-signatured in promote, so a `(void*, mrb_int)->mrb_int`
+       cast would truncate the boxed args and return to garbage. */
+    int poly_abi = !tm && g_promote_mode;
+    TyKind tret = tm ? (TyKind)tm->ret : (poly_abi ? TY_POLY : TY_INT);
     if (!is_scalar_ret(tret)) tret = TY_INT;  /* aggregate ret: raw carrier */
     buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
     buf_puts(b, "(("); emit_ctype(c, tret, b); buf_puts(b, " (*)(void *");
@@ -4069,12 +4080,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
         LocalVar *pp = scope_local(tm, tm->pnames[k]);
         emit_ctype(c, pp ? pp->type : TY_INT, b);
       }
+      else if (poly_abi) buf_puts(b, "sp_RbVal");
       else buf_puts(b, "mrb_int");
     }
     buf_printf(b, "))(uintptr_t)_t%d->fn)((void *)_t%d->self", tr, tr);
     for (int k = 0; k < argc; k++) {
       buf_puts(b, ", ");
       if (tm && k < tm->nparams) emit_arg_or_default(c, tm, k, argv[k], b);
+      else if (poly_abi) emit_boxed(c, argv[k], b);
       else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
       else emit_expr(c, argv[k], b);
     }

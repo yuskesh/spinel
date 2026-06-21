@@ -4483,7 +4483,13 @@ static inline mrb_int sp_poly_index_int(sp_RbVal a, mrb_int i) {
   if (a.tag == SP_TAG_OBJ) {
     if (a.cls_id == SP_BUILTIN_METHOD) {
       sp_BoundMethod *m = (sp_BoundMethod *)a.v.p;
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+      /* promote: methods are poly-signatured, so invoke through the poly ABI
+         and unbox the result rather than the legacy mrb_int ABI. */
+      return sp_poly_to_i(((sp_RbVal (*)(void *, sp_RbVal))(uintptr_t)m->fn)((void *)m->self, sp_box_int(i)));
+#else
       return ((mrb_int (*)(void *, mrb_int))(uintptr_t)m->fn)((void *)m->self, i);
+#endif
     }
     if (a.cls_id == SP_BUILTIN_INT_ARRAY) return sp_IntArray_get((sp_IntArray *)a.v.p, i);
   }
