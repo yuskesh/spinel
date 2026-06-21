@@ -28,6 +28,40 @@ static void narrow_memo_put(long key, int val) {
   g_nmemo[slot].gen = g_narrow_gen; g_nmemo[slot].key = key; g_nmemo[slot].val = (signed char)val;
 }
 
+/* Unify the value type of every splice-bound break/next in `node` (break/next
+   inside a nested loop or block bind there, not to the splice). TY_UNKNOWN if
+   none carry a value. Mirrors codegen's ie_splice_value_ty so the inferred
+   instance_exec result type matches the slot codegen sizes. */
+static TyKind ie_block_break_next_ty(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return TY_UNKNOWN;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return TY_UNKNOWN;
+  if (!strcmp(ty, "BreakNode") || !strcmp(ty, "NextNode")) {
+    int a = nt_ref(nt, node, "arguments"); int an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    return an > 0 ? infer_type(c, av[0]) : TY_UNKNOWN;
+  }
+  if (!strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
+      !strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode") || !strcmp(ty, "DefNode") ||
+      !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return TY_UNKNOWN;
+  TyKind r = TY_UNKNOWN;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    TyKind s = ie_block_break_next_ty(c, nt_ref_at(nt, node, i));
+    if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int k = 0; k < n; k++) {
+      TyKind s = ie_block_break_next_ty(c, ids[k]);
+      if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
+    }
+  }
+  return r;
+}
+
 /* Whether every element written into the poly-array ivar `@<ivname>` of class
    `cid` is an int-returning kind: a bound method (a dispatch-table entry, called
    with an int arg returns int), an int array, an int, or nil filler. Mirrors
@@ -471,7 +505,16 @@ TyKind infer_call(Compiler *c, int id) {
       }
       int body = nt_ref(nt, blk, "body");
       int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      if (bn > 0) { TyKind bt = infer_type(c, bb[bn - 1]); return bt == TY_VOID ? TY_NIL : bt; }
+      if (bn > 0) {
+        TyKind bt = infer_type(c, bb[bn - 1]);
+        if (bt == TY_VOID) bt = TY_NIL;
+        /* A value-carrying break/next can widen the result past the last
+           expression (e.g. `next val + 1` poly vs trailing `999` int). */
+        TyKind bnt = ie_block_break_next_ty(c, body);
+        if (bnt != TY_UNKNOWN)
+          bt = (bt == TY_NIL || bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
+        return bt;
+      }
       return TY_NIL;
     }
   }

@@ -67,6 +67,9 @@ extern const char *g_block_param_name;
 /* Result temp for a do{}while(0)-wrapped instance_exec splice; a top-level
    `next <v>` captures into it before continuing out. NULL otherwise. */
 extern const char *g_ie_next_var;
+/* Set while the wrapped splice's result temp is poly, so a value-carrying
+   break/next boxes a scalar value to match. */
+extern int g_ie_res_poly;
 /* The C expression for `self` (a pointer). Overridden while inlining an
    instance method at a call site (where there is no real `self` param). */
 extern const char *g_self;

@@ -92,6 +92,9 @@ const char *g_loop_break_var = NULL;
    holds the C result temp so a top-level `next <v>` captures its value before
    continuing out of the splice (mirrors g_loop_break_var for `break`). */
 const char *g_ie_next_var = NULL;
+/* Set while emitting an instance_exec/eval splice whose result temp is poly:
+   a `break <v>` / `next <v>` carrying a scalar value must box it to match. */
+int g_ie_res_poly = 0;
 const char *g_result_var = NULL;
 int g_result_poly = 0;
 /* Loop-invariant string-length hoisting: while a loop whose receiver string is

@@ -161,6 +161,40 @@ static int ie_body_has_break_next(Compiler *c, int node) {
   return 0;
 }
 
+/* Unify the value type of every splice-bound break/next in `node` (same
+   binding rules as ie_body_has_break_next). TY_UNKNOWN if none carry a value.
+   Sizes the splice result temp so a `next <poly>` (e.g. an int ivar widened in
+   promote mode) is not dropped into a narrower mrb_int slot. */
+static TyKind ie_splice_value_ty(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return TY_UNKNOWN;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return TY_UNKNOWN;
+  if (!strcmp(ty, "BreakNode") || !strcmp(ty, "NextNode")) {
+    int a = nt_ref(nt, node, "arguments"); int an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    return an > 0 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
+  }
+  if (!strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
+      !strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode") || !strcmp(ty, "DefNode") ||
+      !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return TY_UNKNOWN;
+  TyKind r = TY_UNKNOWN;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    TyKind s = ie_splice_value_ty(c, nt_ref_at(nt, node, i));
+    if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, node, i, &n);
+    for (int k = 0; k < n; k++) {
+      TyKind s = ie_splice_value_ty(c, ids[k]);
+      if (s != TY_UNKNOWN) r = (r == TY_UNKNOWN) ? s : ty_unify(r, s);
+    }
+  }
+  return r;
+}
+
 /* Emit a valid assignment rvalue for an instance_exec block param the caller
    omitted, given its slot type. default_value() is rvalue-safe for scalars,
    pointers, and the compound-literal value types (Range/Time/Complex/Rational),
@@ -5243,6 +5277,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int ie_bn = 0; const int *ie_bb = blk_body >= 0 ? nt_arr(nt, blk_body, "body", &ie_bn) : NULL;
       int cls_id = ty_object_class(rtype);
       TyKind body_ty = ie_bn > 0 ? comp_ntype(c, ie_bb[ie_bn - 1]) : TY_NIL;
+      /* A value-carrying `next`/`break` bound to the splice can widen the
+         result past the last expression's type (e.g. `next val + 1` is poly
+         while the trailing `999` is int); size the temp to their union. */
+      TyKind bn_ty = ie_splice_value_ty(c, blk_body);
+      if (bn_ty != TY_UNKNOWN)
+        body_ty = (body_ty == TY_NIL || body_ty == TY_UNKNOWN) ? bn_ty : ty_unify(body_ty, bn_ty);
       int scalar_res = is_scalar_ret(body_ty) && body_ty != TY_VOID && body_ty != TY_NIL && body_ty != TY_UNKNOWN;
       int tr = ++g_tmp, tres = ++g_tmp;
       int self_is_val = c->classes[cls_id].is_value_type;
@@ -5400,6 +5440,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            g_ie_next_var. A `return` still returns from the enclosing function. */
         int ie_bn_wrap = ie_body_has_break_next(c, blk_body);
         const char *sv_lb = g_loop_break_var, *sv_nx = g_ie_next_var;
+        int sv_iep = g_ie_res_poly;
+        g_ie_res_poly = (scalar_res && body_ty == TY_POLY);
         char bvbuf[32];
         if (ie_bn_wrap) {
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n"); g_indent++;
@@ -5409,9 +5451,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         for (int j = 0; j < upto; j++) emit_stmt(c, ie_bb[j], g_pre, g_indent);
         if (!last_as_stmt) {
           Buf vb; memset(&vb, 0, sizeof vb);
-          int si2 = g_indent; g_indent = si2;
-          emit_expr(c, ie_bb[ie_bn - 1], &vb);
-          g_indent = si2;
+          /* The last expression feeds the (possibly poly-widened) result slot;
+             box it when the slot is poly but this expression is scalar. */
+          if (scalar_res && body_ty == TY_POLY) emit_boxed(c, ie_bb[ie_bn - 1], &vb);
+          else emit_expr(c, ie_bb[ie_bn - 1], &vb);
           emit_indent(g_pre, g_indent);
           if (!scalar_res) {
             if (vb.p) buf_printf(g_pre, "%s;\n", vb.p);
@@ -5425,6 +5468,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           g_loop_break_var = sv_lb; g_ie_next_var = sv_nx;
           g_indent--; emit_indent(g_pre, g_indent); buf_puts(g_pre, "} while (0);\n");
         }
+        g_ie_res_poly = sv_iep;
         g_ie_discard_value = saved_discard;
       }
       g_ie_class_id = saved_ie;
