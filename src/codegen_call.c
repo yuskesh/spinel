@@ -7315,7 +7315,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      sp_str_concat/sp_str_repeat with the poly operand coerced), not poly
      arithmetic, so let them fall through. */
   if (recv >= 0 && argc == 1 && (rt == TY_POLY || a0 == TY_POLY) &&
-      !(rt == TY_STRING && (!strcmp(name, "+") || !strcmp(name, "*")))) {
+      !(rt == TY_STRING && (!strcmp(name, "+") || !strcmp(name, "*"))) &&
+      !((ty_is_array(rt) || rt == TY_POLY_ARRAY) && !strcmp(name, "*"))) {
     const char *pfn = NULL;
     if (!strcmp(name, "+")) pfn = "sp_poly_add";
     else if (!strcmp(name, "-")) pfn = "sp_poly_sub";
@@ -7348,9 +7349,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
-  /* Array#* (repeat): arr * n  ->  new array with elements repeated n times. */
+  /* Array#* (repeat): arr * n  ->  new array with elements repeated n times.
+     The count is emitted via emit_int_expr, which unboxes a promote-widened
+     poly count, so accept TY_POLY as well as TY_INT -- otherwise `arr * n`
+     with a poly `n` falls through to sp_poly_mul (arithmetic) and yields 0. */
   if (recv >= 0 && argc == 1 && !strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
-      comp_ntype(c, argv[0]) == TY_INT) {
+      (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
     int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
     if (rt == TY_POLY_ARRAY) {
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);

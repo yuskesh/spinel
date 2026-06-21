@@ -1862,6 +1862,10 @@ else {
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */
   if (recv >= 0 && (rt == TY_POLY || a0 == TY_POLY)) {
+    /* array * n is repetition (yielding the same array type), not poly
+       arithmetic, even when the count `n` widened to poly under promote. */
+    if ((ty_is_array(rt) || rt == TY_POLY_ARRAY) && !strcmp(name, "*") && argc == 1)
+      return rt;
     /* String operators with a poly operand are NOT poly arithmetic: `str % x`
        is printf formatting, `str + x` is concatenation, `str * n` is repeat --
        all yield a string. Defer them to the rt==TY_STRING path below. */
