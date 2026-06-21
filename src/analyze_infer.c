@@ -303,6 +303,16 @@ static int infer_int_pow_overflows(long long base, long long exp) {
   return 0;
 }
 
+/* Whether base << amount does not fit in signed 64 bits (a Bignum in CRuby --
+   `1 << 64` is 2**64, not a wrapped/UB C shift). */
+static int infer_int_shl_overflows(long long base, long long amount) {
+  if (base == 0 || amount <= 0) return 0;
+  long long r = base;
+  for (long long i = 0; i < amount; i++)
+    if (__builtin_mul_overflow(r, 2, &r)) return 1;
+  return 0;
+}
+
 TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -323,6 +333,15 @@ TyKind infer_call(Compiler *c, int id) {
     long long base, exp;
     if (infer_const_int_node(nt, recv, &base) && infer_const_int_node(nt, argv[0], &exp) &&
         infer_int_pow_overflows(base, exp))
+      return TY_BIGINT;
+  }
+  /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
+     is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
+     `1LL << 64LL`. */
+  if (!strcmp(name, "<<") && recv >= 0 && argc == 1) {
+    long long base, amount;
+    if (infer_const_int_node(nt, recv, &base) && infer_const_int_node(nt, argv[0], &amount) &&
+        infer_int_shl_overflows(base, amount))
       return TY_BIGINT;
   }
 
@@ -2381,10 +2400,12 @@ else {
       (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
        !strcmp(name, "<<") || !strcmp(name, ">>")))
     return TY_INT;
-  /* bigint shifts keep arbitrary precision (a `<<` widening that overflows int
-     is exactly why the receiver was promoted to bigint in the first place). */
+  /* bigint bitwise ops keep arbitrary precision (a `<<` widening that overflows
+     int is exactly why the receiver was promoted to bigint; and `bignum & MASK`
+     can still exceed int64, e.g. 0x9e37…c16 & ((1<<64)-1)). */
   if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
-      (!strcmp(name, "<<") || !strcmp(name, ">>")))
+      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
+       !strcmp(name, "<<") || !strcmp(name, ">>")))
     return TY_BIGINT;
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&

@@ -5401,27 +5401,35 @@ int64_t sp_bigint_to_int(sp_Bigint *b) {
   return z->sn < 0 ? -v : v;
 }
 
-/* Bitwise ops on bigint (Phase 1 of --int-overflow=promote
-   coverage). Implemented via int64 round-trip: every bigint
-   produced by promotion in spinel is derived from a small int
-   that fits in int64, so the round-trip preserves Ruby semantics
-   for any value in [INT64_MIN, INT64_MAX]. Values exceeding that
-   range lose precision; that's acceptable as a starting point
-   (extremely rare in practice -- bitops on integers > 2^63
-   aren't a real workload yet). A future commit can swap in the
-   custom mpz_and / mpz_ior / mpz_xor / mpz_com implementations
-   if the int64 path proves insufficient. */
-sp_Bigint *sp_bigint_and(sp_Bigint *a, sp_Bigint *b) {
-  return sp_bigint_new_int(sp_bigint_to_int(a) & sp_bigint_to_int(b));
+/* Bitwise AND/OR/XOR on bigints. For two non-negative operands -- the
+   64-bit-mask idiom `bignum & MASK64` (PRNGs/hashing) -- operate limb-wise on
+   the true magnitude, so a value/result exceeding int64 stays exact (the old
+   int64 round-trip truncated `0x9e37…c16 & MASK64` to its signed value). A
+   negative operand follows Ruby's infinite two's-complement, which is uncommon
+   for bit masking, so it still routes through the int64 path. */
+static sp_Bigint *sp_bigint_bitwise(sp_Bigint *a, sp_Bigint *b, char op) {
+  if (!a || !b || a->mpz.sn < 0 || b->mpz.sn < 0) {
+    int64_t x = sp_bigint_to_int(a), y = sp_bigint_to_int(b);
+    int64_t r = (op == '&') ? (x & y) : (op == '|') ? (x | y) : (x ^ y);
+    return sp_bigint_new_int(r);
+  }
+  size_t na = a->mpz.sz, nb = b->mpz.sz;
+  size_t n = (op == '&') ? (na < nb ? na : nb) : (na > nb ? na : nb);
+  sp_Bigint *r = sp_bigint_alloc();
+  mpz_t z;
+  mpz_init_heap(sp_mpz_ctx, &z, n);
+  for (size_t i = 0; i < n; i++) {
+    mp_limb la = dg(&a->mpz, i), lb = dg(&b->mpz, i);
+    z.p[i] = (op == '&') ? (la & lb) : (op == '|') ? (la | lb) : (la ^ lb);
+  }
+  z.sn = (n > 0) ? 1 : 0;
+  trim(&z);
+  r->mpz = z;
+  return r;
 }
-
-sp_Bigint *sp_bigint_or(sp_Bigint *a, sp_Bigint *b) {
-  return sp_bigint_new_int(sp_bigint_to_int(a) | sp_bigint_to_int(b));
-}
-
-sp_Bigint *sp_bigint_xor(sp_Bigint *a, sp_Bigint *b) {
-  return sp_bigint_new_int(sp_bigint_to_int(a) ^ sp_bigint_to_int(b));
-}
+sp_Bigint *sp_bigint_and(sp_Bigint *a, sp_Bigint *b) { return sp_bigint_bitwise(a, b, '&'); }
+sp_Bigint *sp_bigint_or(sp_Bigint *a, sp_Bigint *b)  { return sp_bigint_bitwise(a, b, '|'); }
+sp_Bigint *sp_bigint_xor(sp_Bigint *a, sp_Bigint *b) { return sp_bigint_bitwise(a, b, '^'); }
 
 sp_Bigint *sp_bigint_shr(sp_Bigint *a, int64_t n);  /* forward decl for mutual recursion */
 

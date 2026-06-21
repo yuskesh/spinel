@@ -7571,6 +7571,46 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     unsupported(c, id, "arithmetic");
   }
 
+  /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
+     bigint, but the int receiver would otherwise emit a UB C `1LL << 64LL`.
+     Promote to a bigint shift. */
+  if (recv >= 0 && argc == 1 && !strcmp(name, "<<") && rt == TY_INT &&
+      comp_ntype(c, id) == TY_BIGINT) {
+    buf_puts(b, "sp_bigint_shl(sp_bigint_new_int(");
+    emit_expr(c, recv, b);
+    buf_puts(b, "), ");
+    emit_int_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    return;
+  }
+
+  /* bitwise ops on a bignum receiver: arbitrary precision via sp_bigint_*.
+     &/|/^ take a bigint second operand (an int/poly mask is promoted);
+     <</>> take an int64 shift amount. The result stays a bignum -- a masked
+     value can still exceed int64 (`bignum & MASK64`). */
+  if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
+      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
+       !strcmp(name, "<<") || !strcmp(name, ">>"))) {
+    TyKind at0 = comp_ntype(c, argv[0]);
+    if (!strcmp(name, "<<") || !strcmp(name, ">>")) {
+      buf_printf(b, "sp_bigint_%s(", !strcmp(name, "<<") ? "shl" : "shr");
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_int_expr(c, argv[0], b);
+      buf_puts(b, ")");
+    }
+    else {
+      const char *fn = !strcmp(name, "&") ? "and" : !strcmp(name, "|") ? "or" : "xor";
+      buf_printf(b, "sp_bigint_%s(", fn);
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (at0 == TY_BIGINT) emit_expr(c, argv[0], b);
+      else if (at0 == TY_POLY) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, ")");
+    }
+    return;
+  }
+
   /* integer bitwise operators. A poly receiver is coerced to int (the matching
      inference types these TY_INT); `<<` on a poly is handled earlier as the
      ambiguous shift/append via sp_poly_shl, so only &,|,^,>> reach here. */
