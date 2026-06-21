@@ -777,7 +777,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
       TyKind ct = lv ? lv->type : TY_POLY;
       if (fiber_cap_needs_root(ct)) {
-        if (ct == TY_POLY) buf_printf(&g_proc_protos, "  sp_gc_mark_rbval(_c->%s);\n", caps.v[i]);
+        if (ct == TY_POLY) buf_printf(&g_proc_protos, "  sp_mark_rbval(_c->%s);\n", caps.v[i]);
         else buf_printf(&g_proc_protos, "  if (_c->%s) sp_gc_mark((void *)_c->%s);\n", caps.v[i], caps.v[i]);
       }
     }
