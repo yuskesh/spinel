@@ -2440,6 +2440,10 @@ void analyze_program(Compiler *c) {
     int saved2 = an_ie_class_id;
     an_ie_class_id = ty_object_class(rt2);
     for (int k2 = 0; k2 < bn2; k2++) infer_type(c, bb2[k2]);
+    /* refresh the splice call's own type from the now-rebound body so a
+       consumer (e.g. truthiness) sees the poly result, not the stale type
+       computed before an_ie_class_id was bound. */
+    infer_type(c, id);
     an_ie_class_id = saved2;
   }
 
