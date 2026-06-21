@@ -2353,6 +2353,25 @@ void analyze_program(Compiler *c) {
         TyKind pr = vnode >= 0 ? proc_ret_of(c, vnode) : TY_UNKNOWN;
         if (pr != TY_UNKNOWN && (TyKind)lv->proc_ret != pr) { lv->proc_ret = (int)pr; changed = 1; }
       }
+      /* (3) a typed-array-returning method whose elements widened now yields a
+         poly array in its body (e.g. `[a/b, a%b]` with poly a,b builds a
+         PolyArray), so its return type must follow to TY_POLY_ARRAY. */
+      for (int s = 0; s < c->nscopes; s++) {
+        Scope *sc = &c->scopes[s];
+        TyKind r = (TyKind)sc->ret;
+        if (r != TY_INT_ARRAY && r != TY_STR_ARRAY && r != TY_FLOAT_ARRAY) continue;
+        TyKind br = TY_UNKNOWN;
+        if (sc->body >= 0) { int bn = 0; const int *bb = nt_arr(nt, sc->body, "body", &bn); if (bn > 0) br = comp_ntype(c, bb[bn - 1]); }
+        for (int id = 0; id < nt->count && br != TY_POLY_ARRAY; id++) {
+          const char *ty = nt_type(nt, id);
+          if (ty && !strcmp(ty, "ReturnNode") && comp_scope_of(c, id) == sc) {
+            int a = nt_ref(nt, id, "arguments"); int an = 0;
+            const int *av = a >= 0 ? nt_arr(nt, id, "arguments", &an) : NULL;
+            if (an == 1 && comp_ntype(c, av[0]) == TY_POLY_ARRAY) br = TY_POLY_ARRAY;
+          }
+        }
+        if (br == TY_POLY_ARRAY) { sc->ret = TY_POLY_ARRAY; changed = 1; }
+      }
     }
     /* refresh the node-type cache so a `proc.call` node picks up the updated
        proc_ret (codegen reads comp_ntype, not lv->proc_ret directly). Re-infer
