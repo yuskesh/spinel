@@ -2826,7 +2826,12 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
   int dv = m->pdefault[idx];
   const char *dty = dv >= 0 ? nt_type(c->nt, dv) : NULL;
   if (dv < 0) {
-    buf_puts(out, pt == TY_RANGE ? "(sp_Range){0}" : default_value(pt));
+    /* A missing required arg pads the slot with a zero-ish compat value so
+       codegen completes (a compile-time warning already flagged the call).
+       A poly-widened slot must mirror the scalar `0` an int slot emits, not
+       sp_box_nil() -- otherwise the padded value renders as blank. */
+    if (pt == TY_POLY) buf_puts(out, "sp_box_int(0)");
+    else buf_puts(out, pt == TY_RANGE ? "(sp_Range){0}" : default_value(pt));
   }
 else if (dty && !strcmp(dty, "NilNode")) {
     /* nil default: emit the nil sentinel for the type */
