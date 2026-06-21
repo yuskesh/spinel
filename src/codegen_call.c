@@ -7686,17 +7686,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (mi_b >= 0) {
         int ts = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
         const char *cname = c->classes[defcls_b].name;
+        /* Compute each RHS into a local buffer first: emit_expr may itself
+           hoist temps into g_pre (e.g. an arg `Temp.new(5)` roots its boxed
+           int there). Doing that before writing our own `T _tN = ` prefix
+           keeps the nested hoist from splitting our declaration line. */
+        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ts);
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
         buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+        Buf lb; memset(&lb, 0, sizeof lb); emit_expr(c, argv[0], &lb);
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", tlo);
-        Buf lb; memset(&lb, 0, sizeof lb); emit_expr(c, argv[0], &lb);
         buf_puts(g_pre, lb.p ? lb.p : ""); buf_puts(g_pre, ";\n"); free(lb.p);
+        Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, argv[1], &hb);
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", thi);
-        Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, argv[1], &hb);
         buf_puts(g_pre, hb.p ? hb.p : ""); buf_puts(g_pre, ";\n"); free(hb.p);
         buf_printf(b, "(sp_%s_%s((sp_%s *)_t%d, _t%d) >= 0 && sp_%s_%s((sp_%s *)_t%d, _t%d) <= 0)",
                    cname, mc("<=>"), cname, ts, tlo,
