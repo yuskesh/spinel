@@ -3204,7 +3204,15 @@ else if (m->rest_idx >= 0 && m->npost_rest > 0 && i > m->rest_idx) {
     }
 else if (splat_tmp >= 0 && i >= splat_idx) {
       /* this param comes from the splatted array at offset (i - splat_idx) */
-      emit_array_elem_at(splat_at, splat_tmp, i - splat_idx, out);
+      LocalVar *sp = m ? scope_local(m, m->pnames[i]) : NULL;
+      TyKind set = ty_array_elem(splat_at);
+      if (sp && sp->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
+        /* a scalar splat element into a poly-widened param: box it */
+        Buf eb; memset(&eb, 0, sizeof eb);
+        emit_array_elem_at(splat_at, splat_tmp, i - splat_idx, &eb);
+        emit_boxed_text(c, set, eb.p ? eb.p : "0", out); free(eb.p);
+      }
+      else emit_array_elem_at(splat_at, splat_tmp, i - splat_idx, out);
     }
 else {
       /* Check if this param has a keyword match (lookup by param name in kwh). */
