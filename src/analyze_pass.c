@@ -3555,6 +3555,8 @@ int infer_block_params(Compiler *c) {
          !strcmp(name, "filter") || !strcmp(name, "reject") || !strcmp(name, "find") ||
          !strcmp(name, "detect") || !strcmp(name, "sort_by") || !strcmp(name, "min_by") ||
          !strcmp(name, "max_by") || !strcmp(name, "count") || !strcmp(name, "sum") ||
+         !strcmp(name, "filter_map") || !strcmp(name, "partition") || !strcmp(name, "group_by") ||
+         !strcmp(name, "collect_concat") ||
          !strcmp(name, "any?") || !strcmp(name, "all?") || !strcmp(name, "none?") ||
          !strcmp(name, "delete_if") || !strcmp(name, "select!") || !strcmp(name, "reject!") ||
          !strcmp(name, "filter!") || !strcmp(name, "keep_if") ||

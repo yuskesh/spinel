@@ -465,6 +465,156 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* hash.flat_map / filter_map / partition { |k, v| ... } -> a poly array.
+   flat_map concatenates the per-entry block arrays; filter_map keeps truthy
+   block values; partition returns [matching_pairs, remaining_pairs]. */
+int emit_hash_transform_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int is_flat = !strcmp(name, "flat_map") || !strcmp(name, "collect_concat");
+  int is_fmap = !strcmp(name, "filter_map");
+  int is_part = !strcmp(name, "partition");
+  if (!is_flat && !is_fmap && !is_part) return 0;
+  int argc = 0; { int ar = nt_ref(nt, id, "arguments"); if (ar >= 0) nt_arr(nt, ar, "arguments", &argc); }
+  if (argc != 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = comp_ntype(c, recv);
+  const char *hn = ty_hash_cname(rt);
+  if (!hn) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
+  if (bn < 1) return 0;
+
+  int trecv = ++g_tmp, ti = ++g_tmp;
+  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+
+  /* Per-entry temporaries are declared and GC-rooted once, before the loop, and
+     reassigned each iteration (the root tracks the stack slot, not the value).
+     _tp is the [k, v] pair (partition); _tbv is the boxed block value
+     (filter_map / flat_map). */
+  int tm = is_part ? ++g_tmp : 0, tr = is_part ? ++g_tmp : 0, tres = ++g_tmp;
+  int tp = is_part ? ++g_tmp : 0;
+  int tbv = is_part ? 0 : ++g_tmp;
+  if (is_part) {
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tm, tm);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tp, tp);
+  }
+  else {
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tbv, tbv);
+  }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+  TyKind bret;
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  if (is_part) {
+    char cond[256];
+    if (bret == TY_BOOL) snprintf(cond, sizeof cond, "(%s)", vb ? vb : "0");
+    else if (bret == TY_POLY) snprintf(cond, sizeof cond, "sp_poly_truthy(%s)", vb ? vb : "sp_box_nil()");
+    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
+           snprintf(cond, sizeof cond, "sp_poly_truthy(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    emit_hash_pair_at(rt, hn, trecv, ti, tp, g_indent + 1);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (%s) sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); else sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n",
+               cond, tm, tp, tr, tp);
+  }
+  else {  /* filter_map / flat_map: snapshot the block value into _tbv first */
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "_t%d = ", tbv);
+    if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
+    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
+           buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    buf_puts(g_pre, ";\n");
+    if (is_fmap) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (sp_poly_truthy(_t%d)) sp_PolyArray_push(_t%d, _t%d);\n", tbv, tres, tbv);
+    }
+    else if (ty_is_array(bret) || bret == TY_POLY_ARRAY) {  /* flat_map, array value */
+      int tj = ++g_tmp;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_poly_arr_len(_t%d); _t%d++) sp_PolyArray_push(_t%d, sp_poly_arr_get(_t%d, _t%d));\n",
+                 tj, tj, tbv, tj, tres, tbv, tj);
+    }
+    else {  /* flat_map, scalar value */
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tbv);
+    }
+  }
+  free(vb);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  if (is_part) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n",
+               tres, tm, tres, tr);
+  }
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
+/* hash.group_by { |k, v| ... } -> a hash from each block value to the array of
+   [k, v] pairs that produced it (poly keys, poly-array values). */
+int emit_hash_group_by_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  if (strcmp(name, "group_by")) return 0;
+  int argc = 0; { int ar = nt_ref(nt, id, "arguments"); if (ar >= 0) nt_arr(nt, ar, "arguments", &argc); }
+  if (argc != 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = comp_ntype(c, recv);
+  const char *hn = ty_hash_cname(rt);
+  if (!hn) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
+  if (bn < 1) return 0;
+
+  int trecv = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp, tp = ++g_tmp, tg = ++g_tmp, tex = ++g_tmp;
+  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+  TyKind bret;
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_RbVal _t%d = ", tk);
+  if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
+  else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
+         buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+  buf_puts(g_pre, ";\n");
+  free(vb);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tk);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tp, tp);
+  emit_hash_pair_at(rt, hn, trecv, ti, tp, g_indent + 1);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tg, tg);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyPolyHash_get(_t%d, _t%d);\n", tex, tres, tk);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "if (_t%d.tag == SP_TAG_NIL) { _t%d = sp_PolyArray_new(); sp_PolyPolyHash_set(_t%d, _t%d, sp_box_poly_array(_t%d)); }\n",
+             tex, tg, tres, tk, tg);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "else { _t%d = (sp_PolyArray *)_t%d.v.p; }\n", tg, tex);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tg, tp);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 /* Recursively patch c->ntype[id]=ty for every LocalVariableReadNode named nm
    within the subtree at id. Saved old values in ids_out/ty_out (max cap).
    Returns count of patched nodes. */
@@ -2593,6 +2743,8 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (emit_hash_reduce_search_expr(c, id, b)) return 1;
     if (emit_hash_sort_by_expr(c, id, b)) return 1;
     if (emit_hash_reduce_scalar_expr(c, id, b)) return 1;
+    if (emit_hash_transform_expr(c, id, b)) return 1;
+    if (emit_hash_group_by_expr(c, id, b)) return 1;
     return 0;
   }
   int range_recv = (rt == TY_RANGE);
