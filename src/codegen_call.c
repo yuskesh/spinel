@@ -7094,7 +7094,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "%d", opt); return;
     }
   }
-  if (recv >= 0 && argc >= 1 && (!strcmp(name, "match?") || !strcmp(name, "!~") || !strcmp(name, "=~") || !strcmp(name, "match"))) {
+  if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL &&
+      (!strcmp(name, "match?") || !strcmp(name, "!~") || !strcmp(name, "=~") || !strcmp(name, "match"))) {
     int are = re_lit_index(c, argv[0]);
     if (are >= 0 && !strcmp(name, "=~") && rt == TY_STRING) {
       buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")");
@@ -7165,7 +7166,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         if (rp_ok && rp.p) {
           if (!strcmp(name, "match?") && argc == 1) {
-            buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")");
+            /* A symbol receiver matches over its name, so feed the runtime
+               pattern the symbol's string rather than the raw sp_sym. */
+            if (rt == TY_SYMBOL) { buf_printf(b, "sp_re_match_p(%s, sp_sym_to_s(", rp.p); emit_expr(c, recv, b); buf_puts(b, "))"); }
+            else { buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")"); }
             free(rp.p); return;
           }
           if (!strcmp(name, "=~") && rt == TY_STRING) {
@@ -9100,6 +9104,35 @@ else {
       emit_expr(c, recv, b); buf_puts(b, " == "); emit_expr(c, argv[0], b);
       buf_puts(b, name[0] == '=' ? ")" : "))");
       return;
+    }
+    /* string-surface methods over the symbol's name; succ re-interns a symbol,
+       index/slice yield a substring (or nil), the predicates yield a bool. */
+    if (!strcmp(name, "succ") || !strcmp(name, "next")) {
+      buf_puts(b, "sp_sym_intern(sp_str_succ(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))");
+      return;
+    }
+    if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1) {
+      buf_puts(b, "sp_str_char_at_or_nil(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 2) {
+      buf_puts(b, "sp_str_sub_range(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      return;
+    }
+    if ((!strcmp(name, "start_with?") || !strcmp(name, "end_with?")) && argc == 1) {
+      buf_printf(b, "sp_str_%s(sp_sym_to_s(", !strcmp(name, "start_with?") ? "start_with" : "end_with");
+      emit_expr(c, recv, b); buf_puts(b, "), "); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if (!strcmp(name, "match?") && argc == 1) {
+      int rre = re_lit_index(c, argv[0]);
+      if (rre >= 0) {
+        buf_printf(b, "(sp_re_match(sp_re_pat_%d, sp_sym_to_s(", rre); emit_expr(c, recv, b);
+        buf_puts(b, ")) >= 0)");
+        return;
+      }
     }
   }
 

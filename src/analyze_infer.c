@@ -2025,6 +2025,10 @@ else {
         !strcmp(name, "to_sym") || !strcmp(name, "itself")) return TY_SYMBOL;
     if (!strcmp(name, "length") || !strcmp(name, "size")) return TY_INT;
     if (!strcmp(name, "empty?") || !strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
+    if (!strcmp(name, "succ") || !strcmp(name, "next")) return TY_SYMBOL;
+    if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && (argc == 1 || argc == 2)) return TY_STRING;
+    if ((!strcmp(name, "start_with?") || !strcmp(name, "end_with?") || !strcmp(name, "match?")) && argc == 1)
+      return TY_BOOL;
   }
 
   /* range receiver methods */
