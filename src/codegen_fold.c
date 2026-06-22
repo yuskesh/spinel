@@ -386,6 +386,85 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* hash.sum(init) / count / all? / any? { |k, v| ... } -> a scalar reduction.
+   sum accumulates the block value (boxed, via sp_poly_add); count tallies truthy
+   results; all?/any? short-circuit to a boolean. */
+int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int is_sum = !strcmp(name, "sum"), is_count = !strcmp(name, "count");
+  int is_all = !strcmp(name, "all?"), is_any = !strcmp(name, "any?");
+  if (!is_sum && !is_count && !is_all && !is_any) return 0;
+  int argc = 0; { int ar = nt_ref(nt, id, "arguments"); if (ar >= 0) nt_arr(nt, ar, "arguments", &argc); }
+  if (is_sum ? argc > 1 : argc != 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = comp_ntype(c, recv);
+  const char *hn = ty_hash_cname(rt);
+  if (!hn) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
+  if (bn < 1) return 0;
+
+  int sum_init = -1;
+  if (is_sum && argc == 1) {
+    int ar = nt_ref(nt, id, "arguments"); int an = 0;
+    const int *aa = ar >= 0 ? nt_arr(nt, ar, "arguments", &an) : NULL;
+    if (aa && an >= 1) sum_init = aa[0];
+  }
+
+  int trecv = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
+  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  emit_indent(g_pre, g_indent);
+  if (is_sum) {
+    buf_printf(g_pre, "sp_RbVal _t%d = ", tacc);
+    if (sum_init >= 0) emit_boxed(c, sum_init, g_pre);
+    else buf_puts(g_pre, "sp_box_int(0)");
+    buf_puts(g_pre, ";\n");
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tacc);
+  }
+  else if (is_count)
+    buf_printf(g_pre, "mrb_int _t%d = 0;\n", tacc);
+  else
+    buf_printf(g_pre, "mrb_bool _t%d = %s;\n", tacc, is_all ? "TRUE" : "FALSE");
+
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+  TyKind bret;
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  if (is_sum) {
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "_t%d = sp_poly_add(_t%d, ", tacc, tacc);
+    if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
+    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
+           buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    buf_puts(g_pre, ");\n");
+  }
+  else {
+    /* truthiness of the block result, formatted into a dynamic Buf so a long
+       boxed expression can never be silently truncated */
+    Buf cond; memset(&cond, 0, sizeof cond);
+    if (bret == TY_BOOL) buf_printf(&cond, "(%s)", vb ? vb : "0");
+    else if (bret == TY_POLY) buf_printf(&cond, "sp_poly_truthy(%s)", vb ? vb : "sp_box_nil()");
+    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
+           buf_printf(&cond, "sp_poly_truthy(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    const char *cs = cond.p ? cond.p : "0";
+    emit_indent(g_pre, g_indent + 1);
+    if (is_count) buf_printf(g_pre, "if (%s) _t%d++;\n", cs, tacc);
+    else if (is_all) buf_printf(g_pre, "if (!(%s)) { _t%d = FALSE; break; }\n", cs, tacc);
+    else buf_printf(g_pre, "if (%s) { _t%d = TRUE; break; }\n", cs, tacc);
+    free(cond.p);
+  }
+  free(vb);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tacc);
+  return 1;
+}
+
 /* Recursively patch c->ntype[id]=ty for every LocalVariableReadNode named nm
    within the subtree at id. Saved old values in ids_out/ty_out (max cap).
    Returns count of patched nodes. */
@@ -2513,6 +2592,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (emit_hash_collect_expr(c, id, b)) return 1;
     if (emit_hash_reduce_search_expr(c, id, b)) return 1;
     if (emit_hash_sort_by_expr(c, id, b)) return 1;
+    if (emit_hash_reduce_scalar_expr(c, id, b)) return 1;
     return 0;
   }
   int range_recv = (rt == TY_RANGE);
