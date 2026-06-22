@@ -1902,6 +1902,65 @@ void analyze_program(Compiler *c) {
        is definitively an array, not a hash. */
     if (lv && !lv->rbs_seeded && (lv->type == TY_UNKNOWN || ty_is_hash(lv->type))) lv->type = TY_POLY_ARRAY;
   }
+  /* Re-narrow a POLY_ARRAY ivar to IntArray when every element source is now
+     (post-fixpoint) int. The monotonic usage pass locks the slot to POLY_ARRAY
+     the first time it sees a push whose element type is still unknown -- e.g.
+     `@output_pixels << @output_color[i]` evaluated before @output_color settled
+     to IntArray. Once the element types settle, a slot whose only writes are int
+     pushes / int `[]=` / empty-or-int-array assignments can drop the per-element
+     boxing (optcarrot's per-frame pixel buffer is the motivating case). Strictly
+     conservative: any non-int source, or a write shape we don't model, keeps it
+     poly. */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cl = &c->classes[ci];
+    for (int iv = 0; iv < cl->nivars; iv++) {
+      if (cl->ivar_types[iv] != TY_POLY_ARRAY) continue;
+      const char *ivn = cl->ivars[iv];
+      int saw = 0, ok = 1;
+      for (int id = 0; id < c->nt->count && ok; id++) {
+        const char *ty = nt_type(c->nt, id);
+        if (!ty) continue;
+        if (!strcmp(ty, "CallNode")) {
+          int recv = nt_ref(c->nt, id, "receiver");
+          if (recv < 0) continue;
+          const char *rty = nt_type(c->nt, recv);
+          if (!rty || strcmp(rty, "InstanceVariableReadNode")) continue;
+          const char *rivn = nt_str(c->nt, recv, "name");
+          if (!rivn || strcmp(rivn, ivn)) continue;
+          Scope *sc = comp_scope_of(c, id);
+          if (!sc || sc->class_id != ci) { ok = 0; break; }
+          const char *nm = nt_str(c->nt, id, "name");
+          int args = nt_ref(c->nt, id, "arguments"); int an = 0;
+          const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
+          if (nm && (!strcmp(nm, "<<") || !strcmp(nm, "push") || !strcmp(nm, "append"))) {
+            for (int a = 0; a < an; a++) { saw = 1; if (infer_type(c, argv[a]) != TY_INT) { ok = 0; break; } }
+          }
+          else if (nm && !strcmp(nm, "[]=") && an == 2) {
+            saw = 1; if (infer_type(c, argv[1]) != TY_INT) ok = 0;
+          }
+        }
+        else if (!strcmp(ty, "InstanceVariableWriteNode")) {
+          const char *wivn = nt_str(c->nt, id, "name");
+          if (!wivn || strcmp(wivn, ivn)) continue;
+          Scope *sc = comp_scope_of(c, id);
+          if (!sc || sc->class_id != ci) { ok = 0; break; }
+          int v = nt_ref(c->nt, id, "value");
+          TyKind vt = v >= 0 ? infer_type(c, v) : TY_UNKNOWN;
+          if (vt == TY_INT_ARRAY) { /* int array source */ }
+          else if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "ArrayNode")) {
+            int en = 0; const int *el = nt_arr(c->nt, v, "elements", &en);
+            for (int e = 0; e < en; e++) if (infer_type(c, el[e]) != TY_INT) { ok = 0; break; }
+          }
+          else { ok = 0; }
+        }
+      }
+      if (saw && ok) {
+        sp_ivwatch(ivn && ivn[0] == '@' ? ivn + 1 : ivn, "renarrow_int_array", TY_POLY_ARRAY, TY_INT_ARRAY);
+        cl->ivar_types[iv] = TY_INT_ARRAY;
+      }
+    }
+  }
+
   /* A read-only ivar (referenced but never assigned a typed value) stays
      TY_UNKNOWN -> it has no C type. Such a slot always reads nil at runtime;
      give it a boxed-nil poly field so `.nil?`/`.inspect` behave (#712). */
