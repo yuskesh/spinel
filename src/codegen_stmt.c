@@ -29,7 +29,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "), stdout); putchar('\\n');\n");
   }
   else if (t == TY_COMPLEX) {
-    buf_puts(b, "fputs(sp_complex_inspect("); emit_expr(c, arg, b);
+    buf_puts(b, "fputs(sp_complex_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
   }
   else if (t == TY_CURRY) {

@@ -281,6 +281,22 @@ static inline sp_Complex sp_complex_polar(mrb_float m,mrb_float a){sp_Complex c;
 static inline sp_Complex sp_complex_add(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re+b.re;c.im=a.im+b.im;return c;}
 static inline sp_Complex sp_complex_mul(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re*b.re-a.im*b.im;c.im=a.re*b.im+a.im*b.re;return c;}
 static inline sp_Complex sp_complex_conjugate(sp_Complex a){sp_Complex c;c.re=a.re;c.im=-a.im;return c;}
+static inline sp_Complex sp_complex_sub(sp_Complex a,sp_Complex b){sp_Complex c;c.re=a.re-b.re;c.im=a.im-b.im;return c;}
+static inline sp_Complex sp_complex_div(sp_Complex a,sp_Complex b){
+  mrb_float d=b.re*b.re+b.im*b.im;sp_Complex c;
+  c.re=(a.re*b.re+a.im*b.im)/d;c.im=(a.im*b.re-a.re*b.im)/d;return c;
+}
+static inline sp_Complex sp_complex_neg(sp_Complex a){sp_Complex c;c.re=-a.re;c.im=-a.im;return c;}
+static inline mrb_float sp_complex_abs2(sp_Complex a){return a.re*a.re+a.im*a.im;}
+static inline mrb_float sp_complex_abs(sp_Complex a){return sqrt(a.re*a.re+a.im*a.im);}
+static inline mrb_bool sp_complex_eq(sp_Complex a,sp_Complex b){return a.re==b.re&&a.im==b.im;}
+static sp_Complex sp_complex_pow(sp_Complex a,mrb_int e){
+  sp_Complex r;r.re=1;r.im=0;
+  mrb_int k=e<0?-e:e;
+  for(mrb_int i=0;i<k;i++)r=sp_complex_mul(r,a);
+  if(e<0){sp_Complex one;one.re=1;one.im=0;r=sp_complex_div(one,r);}
+  return r;
+}
 /* Inspect renders Complex per Ruby: `(re+imi)` or `(re-imi)` for
    negative imaginary. Integer-valued components render without
    decimals; fractional render via %g. Issue #840. */
@@ -298,6 +314,26 @@ static const char *sp_complex_inspect(sp_Complex c) {
 else {
     if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "+%lldi)", (long long)c.im);
     else n += snprintf(buf + n, sizeof(buf) - n, "+%gi)", c.im);
+  }
+  if (n < 0) n = 0;
+  char *r = sp_str_alloc_raw(n + 1);
+  memcpy(r, buf, n);
+  r[n] = 0;
+  return r;
+}
+/* Complex#to_s: bare `re+imi` (no surrounding parens, unlike #inspect). */
+static const char *sp_complex_to_s(sp_Complex c) {
+  char buf[128];
+  int n = 0;
+  if (c.re == (mrb_int)c.re) n += snprintf(buf + n, sizeof(buf) - n, "%lld", (long long)c.re);
+  else n += snprintf(buf + n, sizeof(buf) - n, "%g", c.re);
+  if (c.im < 0) {
+    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "-%lldi", -(long long)c.im);
+    else n += snprintf(buf + n, sizeof(buf) - n, "%gi", c.im);
+  }
+  else {
+    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "+%lldi", (long long)c.im);
+    else n += snprintf(buf + n, sizeof(buf) - n, "+%gi", c.im);
   }
   if (n < 0) n = 0;
   char *r = sp_str_alloc_raw(n + 1);

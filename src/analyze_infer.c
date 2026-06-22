@@ -365,11 +365,22 @@ TyKind infer_call(Compiler *c, int id) {
         !strcmp(nt_str(nt, recv, "name"), "Complex") && !strcmp(name, "polar"))
       return TY_COMPLEX;
   }
+  if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
+    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_COMPLEX;
+    if (!strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
+  }
+  if (rt == TY_FLOAT && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
+    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_COMPLEX;
+    if (!strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
+  }
   if (rt == TY_COMPLEX) {
     if (!strcmp(name, "real") || !strcmp(name, "imaginary") || !strcmp(name, "imag") ||
-        !strcmp(name, "abs") || !strcmp(name, "magnitude")) return TY_FLOAT;
-    if (!strcmp(name, "conjugate") || !strcmp(name, "conj") ||
-        !strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*")) return TY_COMPLEX;
+        !strcmp(name, "abs") || !strcmp(name, "magnitude") || !strcmp(name, "abs2")) return TY_FLOAT;
+    if (!strcmp(name, "conjugate") || !strcmp(name, "conj") || !strcmp(name, "to_c") ||
+        !strcmp(name, "-@") || !strcmp(name, "+@") ||
+        !strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_COMPLEX;
+    if (!strcmp(name, "**")) return TY_COMPLEX;
+    if (!strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
     if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
   }
   /* Proc#curry and curry application via []. A curried call stays TY_CURRY until

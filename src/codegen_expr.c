@@ -121,7 +121,7 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_COMPLEX) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_complex_inspect(");
+        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_complex_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_POLY_ARRAY) {

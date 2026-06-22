@@ -3543,6 +3543,12 @@ static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_RATIONAL) { emit_expr(c, node, b); return; }
   buf_puts(b, "sp_rational_new((mrb_int)("); emit_expr(c, node, b); buf_puts(b, "), 1)");
 }
+/* Emit a node as an sp_Complex: a Complex stays as-is, an Integer/Float
+   becomes re+0i. Used to coerce the other operand of a Complex op. */
+static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
+  if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
+  buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b); buf_puts(b, "), 0})");
+}
 
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -3643,12 +3649,43 @@ void emit_call(Compiler *c, int id, Buf *b) {
       if (!strcmp(name, "real"))      { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").re"); return; }
       if (!strcmp(name, "imaginary") || !strcmp(name, "imag")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").im"); return; }
       if (!strcmp(name, "conjugate") || !strcmp(name, "conj")) { buf_puts(b, "sp_complex_conjugate("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if ((!strcmp(name, "+") || !strcmp(name, "*")) && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
-        buf_printf(b, "sp_complex_%s(", name[0] == '+' ? "add" : "mul");
-        emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      if ((!strcmp(name, "abs") || !strcmp(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (!strcmp(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (!strcmp(name, "-@") && argc == 0) { buf_puts(b, "sp_complex_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (!strcmp(name, "+@") && argc == 0) { emit_expr(c, recv, b); return; }
+      if ((!strcmp(name, "to_c")) && argc == 0) { emit_expr(c, recv, b); return; }
+      if (!strcmp(name, "to_s")) { buf_puts(b, "sp_complex_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (!strcmp(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      TyKind cxa = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      int cx_ok = cxa == TY_COMPLEX || cxa == TY_INT || cxa == TY_FLOAT;
+      if (cx_ok && argc == 1 && (!strcmp(name, "+") || !strcmp(name, "-") ||
+                                 !strcmp(name, "*") || !strcmp(name, "/"))) {
+        const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
+        buf_printf(b, "sp_complex_%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (argc == 1 && !strcmp(name, "**") && cxa == TY_INT) {
+        buf_puts(b, "sp_complex_pow("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        return;
+      }
+      if (cx_ok && argc == 1 && (!strcmp(name, "==") || !strcmp(name, "!="))) {
+        buf_printf(b, "(%ssp_complex_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, "))");
+        return;
+      }
+    }
+    /* Integer/Float <op> Complex: lift the scalar to re+0i. */
+    if ((crt == TY_INT || crt == TY_FLOAT) && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
+      if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) {
+        const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
+        buf_printf(b, "sp_complex_%s(((sp_Complex){(mrb_float)(", fn); emit_expr(c, recv, b);
+        buf_puts(b, "), 0}), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (!strcmp(name, "==") || !strcmp(name, "!=")) {
+        buf_printf(b, "(%ssp_complex_eq(((sp_Complex){(mrb_float)(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b);
+        buf_puts(b, "), 0}), "); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        return;
+      }
     }
     /* Proc#curry and curry application. */
     if (crt == TY_PROC && !strcmp(name, "curry") && argc == 0) {

@@ -82,8 +82,11 @@ visible error. Those deliberate divergences are listed here.
 #### `Integer#**` with a negative exponent
 
 CRuby evaluates a negative integer exponent to a `Rational` (`2 ** -1 # => (1/2)`).
-Spinel has no `Rational` type. Rather than silently truncating the result to `0`
-(the previous behavior), a negative integer exponent raises:
+Spinel now has a `Rational` type, but `Integer#**` keeps a static `Integer`
+result type: the exponent's sign is generally not known at compile time, so
+typing `x ** y` as a sometimes-`Rational` would force the result poly and
+cascade through inference. A negative integer exponent therefore raises rather
+than silently truncating to `0`:
 
 ```ruby
 2 ** -1   # RangeError: negative exponent
@@ -92,7 +95,33 @@ Spinel has no `Rational` type. Rather than silently truncating the result to `0`
 This applies to `Integer#**` / `Integer#pow` across the int, bigint, and
 poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
 `Float#**` is unaffected and stays CRuby-compatible, because a float result is
-representable (`2.0 ** -1 # => 0.5`).
+representable (`2.0 ** -1 # => 0.5`). A `Rational` base is also fine
+(`Rational(1,2) ** -1 # => (2/1)`).
+
+#### `Rational` precision and `Complex` components
+
+`Rational` is stored as a pair of fixed `mrb_int` numerator/denominator. The
+arithmetic is exact while the reduced terms fit in `mrb_int`; an operation whose
+result would overflow raises `RangeError` rather than promoting to a Bigint as
+CRuby does:
+
+```ruby
+Rational(10**18, 1) * Rational(10**18, 1)   # RangeError (CRuby: a Bigint Rational)
+```
+
+`Complex` is stored as a pair of `mrb_float` components, so unlike CRuby it does
+not preserve `Integer`/`Rational` component types. Operators and display match
+CRuby for the common cases, but `#real` / `#imaginary` / `#abs2` return `Float`,
+and exact division yields `Float` components instead of `Rational`:
+
+```ruby
+Complex(1, 2).real          # => 1.0   (CRuby: 1)
+Complex(1, 2) / Complex(3, -1)   # => (0.1+0.7i)   (CRuby: ((1/10)+(7/10)*i))
+```
+
+Storing a `Rational` or `Complex` in a heterogeneous (poly) array is not yet
+supported -- the 16-byte value does not fit the boxed-value union, so such an
+element reads back as `nil`.
 
 #### `String#grapheme_clusters`
 
