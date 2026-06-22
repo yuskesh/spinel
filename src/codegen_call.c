@@ -267,6 +267,50 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
+  /* Homogeneous object array (sp_PtrArray of unboxed sp_X*), produced by the
+     post-fixpoint narrow_object_arrays pass. Indexing yields a typed `sp_X *`
+     directly -- no sp_RbVal box, no cls-id dispatch. Only the op set the pass
+     admits reaches here; the pass and this block stay in lockstep. */
+  if (recv >= 0 && ty_is_obj_array(rt)) {
+    int ecls = ty_obj_array_class(rt);
+    const char *ecn = c->classes[ecls].name;
+    if ((!strcmp(name, "[]") || !strcmp(name, "at")) && argc == 1) {
+      buf_printf(b, "((sp_%s *)sp_PtrArray_get(", ecn);
+      emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
+    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 0) {
+      buf_printf(b, "((sp_%s *)sp_PtrArray_get(", ecn);
+      emit_expr(c, recv, b);
+      buf_puts(b, !strcmp(name, "first") ? ", 0))" : ", -1))");
+      return 1;
+    }
+    if (!strcmp(name, "[]=") && argc == 2) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_%s *_t%d = ", ecn, tv); emit_expr(c, argv[1], b);
+      buf_puts(b, "; sp_PtrArray_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+      return 1;
+    }
+    if ((!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) && argc >= 1) {
+      int tr = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
+      for (int a = 0; a < argc; a++) {
+        buf_printf(b, " sp_PtrArray_push(_t%d, ", tr); emit_expr(c, argv[a], b); buf_puts(b, ");");
+      }
+      buf_printf(b, " _t%d; })", tr);
+      return 1;
+    }
+    if ((!strcmp(name, "length") || !strcmp(name, "size")) && argc == 0) {
+      buf_puts(b, "sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
+    if (!strcmp(name, "empty?") && argc == 0) {
+      buf_puts(b, "sp_PtrArray_empty("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return 1;
+    }
+    return 0;  /* unsupported obj-array op: pass should have prevented this. */
+  }
   if (recv >= 0 && ty_is_array(rt)) {
     if (!strcmp(name, "pack") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY)) {
       buf_printf(b, "sp_%sArray_pack(", rt == TY_POLY_ARRAY ? "Poly" : "Int");

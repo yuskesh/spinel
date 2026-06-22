@@ -371,6 +371,7 @@ int builtin_class_id(const char *name) {
   return 0;
 }
 const char *c_type_name(TyKind t) {
+  if (ty_is_obj_array(t)) return "sp_PtrArray *";
   switch (t) {
     case TY_INT:         return "mrb_int";
     case TY_BIGINT:      return "sp_Bigint *";
@@ -417,7 +418,7 @@ int is_scalar_ret(TyKind t) {
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_STRBUF ||
          t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_CLASS ||
-         ty_is_hash(t) || ty_is_object(t);
+         ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t);
 }
 const char *ffi_c_type(const char *spec) {
   if (!spec) return "void";
@@ -472,7 +473,7 @@ const char *default_value(TyKind t) {
     case TY_ARGF:    return "NULL";
     case TY_POLY:    return "sp_box_nil()";
     case TY_CLASS:   return "((sp_Class){-1})";
-    default:        return (ty_is_hash(t) || ty_is_object(t)) ? "NULL" : "0";
+    default:        return (ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t)) ? "NULL" : "0";
   }
 }
 void emit_ctype(Compiler *c, TyKind t, Buf *b) {

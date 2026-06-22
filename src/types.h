@@ -89,8 +89,19 @@ TyKind ty_unify(TyKind a, TyKind b);
    flat TyKind node-type array still works: a class with index i has type
    TY_OBJECT_BASE + i. The class table (names, ivars) lives in Compiler. */
 #define TY_OBJECT_BASE 1000
-static inline int    ty_is_object(TyKind t)   { return (int)t >= TY_OBJECT_BASE; }
+/* A homogeneous array of object class i (every element an instance of one
+   user class) is encoded as TY_OBJ_ARRAY_BASE + i, above the object range.
+   It maps to the runtime sp_PtrArray (unboxed void* elements), so indexing
+   yields a typed `sp_X *` directly with no per-element boxing/dispatch --
+   the typed counterpart of TY_POLY_ARRAY for monomorphic object arrays.
+   Produced ONLY by the conservative post-fixpoint narrow_object_arrays pass,
+   never by forward inference, so it cannot cascade through the fixpoint. */
+#define TY_OBJ_ARRAY_BASE 1000000
+static inline int    ty_is_object(TyKind t)   { return (int)t >= TY_OBJECT_BASE && (int)t < TY_OBJ_ARRAY_BASE; }
 static inline TyKind ty_object(int class_id)  { return (TyKind)(TY_OBJECT_BASE + class_id); }
 static inline int    ty_object_class(TyKind t){ return (int)t - TY_OBJECT_BASE; }
+static inline int    ty_is_obj_array(TyKind t)   { return (int)t >= TY_OBJ_ARRAY_BASE; }
+static inline TyKind ty_obj_array(int class_id)  { return (TyKind)(TY_OBJ_ARRAY_BASE + class_id); }
+static inline int    ty_obj_array_class(TyKind t){ return (int)t - TY_OBJ_ARRAY_BASE; }
 
 #endif

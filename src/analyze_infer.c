@@ -1648,6 +1648,19 @@ else {
     }
   }
 
+  /* homogeneous object array (sp_PtrArray of unboxed sp_X*): the typed
+     counterpart of the poly-array block below, for the narrowed TY_OBJ_ARRAY
+     type. Only the ops narrow_object_arrays admits appear here. */
+  if (recv >= 0 && ty_is_obj_array(rt)) {
+    int ecls = ty_obj_array_class(rt);
+    if ((!strcmp(name, "[]") || !strcmp(name, "at")) && argc == 1) return ty_object(ecls);
+    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 0) return ty_object(ecls);
+    if (!strcmp(name, "[]=") && argc == 2) return ty_object(ecls);
+    if (!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) return rt;
+    if ((!strcmp(name, "length") || !strcmp(name, "size")) && argc == 0) return TY_INT;
+    if (!strcmp(name, "empty?") && argc == 0) return TY_BOOL;
+  }
+
   /* array receiver methods */
   if (recv >= 0 && ty_is_array(rt)) {
     int block = nt_ref(nt, id, "block");

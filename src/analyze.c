@@ -1502,6 +1502,221 @@ int desugar_enum_method_recv(Compiler *c) {
   return changed;
 }
 
+/* ===== Post-fixpoint: narrow monomorphic object arrays to TY_OBJ_ARRAY =====
+   A POLY_ARRAY local/param whose every element is an instance of one user
+   class X, and whose every use is in a small supported op set (index, push,
+   length, ...), is narrowed to ty_obj_array(X) -- the runtime sp_PtrArray of
+   unboxed sp_X*, dropping the per-element boxing and cls-id dispatch that a
+   poly array pays on every `arr[i]` / `arr[i].field`. Interprocedural soundness
+   is by an optimistic-then-revoke union-find: a slot flowing (as a positional
+   arg, or an alias `b = a`) into another slot shares one C container type, so
+   the two are unioned and the whole component narrows together or not at all.
+   Strictly conservative: any unmodeled use, class conflict, unresolved flow, or
+   absent object evidence kills the component, leaving it TY_POLY_ARRAY. Runs
+   ONCE, after the fixpoint, so the new type never feeds forward inference. */
+typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; } OAS;
+
+static int oa_find(OAS *sl, int n, int sidx, LocalVar *lv) {
+  for (int i = 0; i < n; i++) if (sl[i].sidx == sidx && sl[i].lv == lv) return i;
+  return -1;
+}
+static int oa_uf_find(OAS *sl, int i) {
+  while (sl[i].uf != i) { sl[i].uf = sl[sl[i].uf].uf; i = sl[i].uf; }
+  return i;
+}
+static void oa_uf_union(OAS *sl, int a, int b) {
+  int ra = oa_uf_find(sl, a), rb = oa_uf_find(sl, b);
+  if (ra != rb) sl[ra].uf = rb;
+}
+/* the single user-object class of a node's value, or -1 if not a lone object. */
+static int oa_obj_class_of(Compiler *c, int node) {
+  TyKind t = infer_type(c, node);
+  return ty_is_object(t) ? ty_object_class(t) : -1;
+}
+/* class evidence join: -1 = none seen, -2 = conflicting classes. */
+static int oa_cls_join(int a, int b) {
+  if (b == -1) return a;
+  if (a == -1) return b;
+  if (a == b) return a;
+  return -2;
+}
+static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
+  if (!nm || has_block) return 0;
+  if ((!strcmp(nm, "[]") || !strcmp(nm, "at")) && argc == 1) return 1;
+  if (!strcmp(nm, "[]=") && argc == 2) return 1;
+  if ((!strcmp(nm, "push") || !strcmp(nm, "<<") || !strcmp(nm, "append")) && argc >= 1) return 1;
+  if ((!strcmp(nm, "length") || !strcmp(nm, "size")) && argc == 0) return 1;
+  if (!strcmp(nm, "empty?") && argc == 0) return 1;
+  if ((!strcmp(nm, "first") || !strcmp(nm, "last")) && argc == 0) return 1;
+  return 0;
+}
+
+static void narrow_object_arrays(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  /* 1. candidate slots: POLY_ARRAY locals/params (skip block params + rbs). */
+  int cap = 16, n = 0;
+  OAS *sl = (OAS *)malloc(sizeof(OAS) * cap);
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int li = 0; li < sc->nlocals; li++) {
+      LocalVar *lv = &sc->locals[li];
+      if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded) continue;
+      if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); }
+      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; n++;
+    }
+  }
+  if (n == 0) { free(sl); return; }
+  int nc = nt->count ? nt->count : 1;
+  int *read_slot = (int *)malloc(sizeof(int) * nc);
+  char *claimed = (char *)calloc(nc, 1);
+
+  /* 2. map each LocalVariableReadNode of a slot to its slot index. */
+  for (int id = 0; id < nt->count; id++) {
+    read_slot[id] = -1;
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "LocalVariableReadNode")) continue;
+    int sidx = c->nscope[id];
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? scope_local(&c->scopes[sidx], nm) : NULL;
+    if (lv) read_slot[id] = oa_find(sl, n, sidx, lv);
+  }
+
+  /* 3. op-assign / multi-target write forms on a slot are unmodeled -> kill. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty) continue;
+    if (strcmp(ty, "LocalVariableOperatorWriteNode") &&
+        strcmp(ty, "LocalVariableTargetNode") &&
+        strcmp(ty, "LocalVariableAndWriteNode") &&
+        strcmp(ty, "LocalVariableOrWriteNode")) continue;
+    int sidx = c->nscope[id];
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? scope_local(&c->scopes[sidx], nm) : NULL;
+    int si = lv ? oa_find(sl, n, sidx, lv) : -1;
+    if (si >= 0) sl[si].alive = 0;
+  }
+
+  /* 4. CallNodes: classify slot-as-receiver (supported op + element evidence)
+        and slot-as-arg (positional into a resolvable free method -> edge). */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "CallNode")) continue;
+    const char *name = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int has_block = nt_ref(nt, id, "block") >= 0;
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (recv >= 0 && read_slot[recv] >= 0) {
+      int S = read_slot[recv];
+      if (oa_recv_op_ok(name, argc, has_block)) {
+        claimed[recv] = 1;
+        if (name && (!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")))
+          for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_obj_class_of(c, argv[a]));
+        else if (name && !strcmp(name, "[]=") && argc == 2)
+          sl[S].cls = oa_cls_join(sl[S].cls, oa_obj_class_of(c, argv[1]));
+      }
+      else sl[S].alive = 0;
+    }
+    for (int k = 0; argv && k < argc; k++) {
+      int a = argv[k];
+      if (read_slot[a] < 0) continue;
+      int S = read_slot[a];
+      int mi = (recv < 0 && name) ? comp_method_index(c, name) : -1;
+      if (mi < 0) { sl[S].alive = 0; continue; }
+      Scope *M = &c->scopes[mi];
+      if (k >= M->nparams || (M->rest_idx >= 0 && k >= M->rest_idx)) { sl[S].alive = 0; continue; }
+      LocalVar *plv = M->pnames[k] ? scope_local(M, M->pnames[k]) : NULL;
+      int T = plv ? oa_find(sl, n, mi, plv) : -1;
+      if (T < 0) { sl[S].alive = 0; continue; }
+      claimed[a] = 1;
+      oa_uf_union(sl, S, T);
+    }
+  }
+
+  /* 5. LocalVariableWriteNode sources: object literal -> evidence; alias to
+        another slot -> edge; empty/nil -> neutral; anything else -> kill. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || strcmp(ty, "LocalVariableWriteNode")) continue;
+    int sidx = c->nscope[id];
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? scope_local(&c->scopes[sidx], nm) : NULL;
+    int S = lv ? oa_find(sl, n, sidx, lv) : -1;
+    if (S < 0) continue;
+    int v = nt_ref(nt, id, "value");
+    const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+    if (!vty) { sl[S].alive = 0; continue; }
+    if (!strcmp(vty, "ArrayNode")) {
+      int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
+      for (int e = 0; e < en; e++) {
+        const char *ety = nt_type(nt, el[e]);
+        int ec = (ety && !strcmp(ety, "SplatNode")) ? -2 : oa_obj_class_of(c, el[e]);
+        if (ec < 0) { sl[S].alive = 0; break; }
+        sl[S].cls = oa_cls_join(sl[S].cls, ec);
+      }
+    }
+    else if (!strcmp(vty, "LocalVariableReadNode") && read_slot[v] >= 0) {
+      claimed[v] = 1; oa_uf_union(sl, S, read_slot[v]);
+    }
+    else if (!strcmp(vty, "NilNode")) { /* nullable, neutral */ }
+    else sl[S].alive = 0;
+  }
+
+  /* 6. a slot read left unclaimed escaped into an unmodeled context -> kill. */
+  for (int id = 0; id < nt->count; id++)
+    if (read_slot[id] >= 0 && !claimed[id]) sl[read_slot[id]].alive = 0;
+
+  /* 7. resolve components: roll member alive/cls up to the root, then a
+        component narrows only if every member is alive and one class is known. */
+  for (int i = 0; i < n; i++) {
+    int r = oa_uf_find(sl, i);
+    if (r == i) continue;
+    sl[r].cls = oa_cls_join(sl[r].cls, sl[i].cls);
+    if (!sl[i].alive) sl[r].alive = 0;
+  }
+  for (int i = 0; i < n; i++) {
+    int r = oa_uf_find(sl, i);
+    if (sl[r].alive && sl[r].cls >= 0)
+      sl[i].lv->type = ty_obj_array(sl[r].cls);
+  }
+
+  /* 8. dependent locals: `b = arr[i]` (arr now a narrowed obj array) makes `b`
+        the element object type, so its field accesses unbox. Every write of the
+        local must be such an index read of one class (nil writes excepted). */
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int li = 0; li < sc->nlocals; li++) {
+      LocalVar *lv = &sc->locals[li];
+      if (lv->type != TY_POLY || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+      int cls = -1, ok = 1, saw = 0;
+      for (int id = 0; id < nt->count && ok; id++) {
+        const char *ty = nt_type(nt, id);
+        if (!ty || strcmp(ty, "LocalVariableWriteNode") || c->nscope[id] != s) continue;
+        const char *nm = nt_str(nt, id, "name");
+        if (!nm || strcmp(nm, lv->name)) continue;
+        int v = nt_ref(nt, id, "value");
+        const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+        if (vty && !strcmp(vty, "NilNode")) continue;
+        if (!vty || strcmp(vty, "CallNode")) { ok = 0; break; }
+        const char *cn = nt_str(nt, v, "name");
+        int crecv = nt_ref(nt, v, "receiver");
+        int can = 0; { int ca = nt_ref(nt, v, "arguments"); if (ca >= 0) nt_arr(nt, ca, "arguments", &can); }
+        int idx_op = cn && (!strcmp(cn, "[]") || !strcmp(cn, "at")) && can == 1;
+        int end_op = cn && (!strcmp(cn, "first") || !strcmp(cn, "last")) && can == 0;
+        if ((!idx_op && !end_op) || crecv < 0) { ok = 0; break; }
+        TyKind rt = infer_type(c, crecv);
+        if (!ty_is_obj_array(rt)) { ok = 0; break; }
+        int ec = ty_obj_array_class(rt);
+        if (cls < 0) cls = ec; else if (cls != ec) { ok = 0; break; }
+        saw = 1;
+      }
+      if (ok && saw && cls >= 0) lv->type = ty_object(cls);
+    }
+  }
+
+  free(sl); free(read_slot); free(claimed);
+}
+
 void analyze_program(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
@@ -2421,6 +2636,11 @@ void analyze_program(Compiler *c) {
         if (cl->cvar_types[i] == TY_INT) cl->cvar_types[i] = TY_POLY;
     }
   }
+
+  /* narrow monomorphic object arrays (POLY_ARRAY -> obj-pointer array) before
+     the node cache is finalized so the rebuild below propagates the new element
+     types to every `arr[i]` / `arr[i].field` site. */
+  narrow_object_arrays(c);
 
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)

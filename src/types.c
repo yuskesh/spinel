@@ -43,6 +43,7 @@ const char *ty_name(TyKind t) {
     case TY_CLASS:   return "class";
     case TY_POLY:    return "poly";
   }
+  if (ty_is_obj_array(t)) return "obj_array";
   return "?";
 }
 
