@@ -2037,6 +2037,55 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Emit a block body so its Ruby value lands in the already-declared C lvalue
+   `dest`. Interior or tail `next <v>` assign `dest` (boxing when want_poly)
+   then `continue`; a plain tail expression assigns `dest`. The caller declares
+   `dest`, owns the surrounding loop, and consumes `dest` afterwards (push it for
+   map, test its truthiness for select). Emits into g_pre at `indent`. This is
+   the shared substrate that makes `next <value>` work inside a collecting
+   block instead of dropping the value. */
+static void emit_block_value_into(Compiler *c, int block, const char *dest,
+                                  int want_poly, int indent) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly;
+  g_ie_next_var = dest; g_ie_res_poly = want_poly;
+  int sd = g_indent;
+  /* Wrap the body in do{}while(0): an interior or tail `next <v>` assigns
+     `dest` (via g_ie_next_var) then emits `continue`, which against while(0)
+     exits this wrapper and falls through to the caller's collection rather
+     than skipping it (a bare `continue` of the host loop would drop the
+     value). Bodies without a next still run once -- the wrapper is free. */
+  emit_indent(g_pre, indent); buf_puts(g_pre, "do {\n");
+  int bi = indent + 1; g_indent = bi;
+  for (int j = 0; j + 1 < bn; j++) emit_stmt(c, bb[j], g_pre, bi);
+  if (bn > 0) {
+    int tail = bb[bn - 1];
+    const char *tty = nt_type(nt, tail);
+    /* a control-flow tail (next/break/return/redo) is emitted as a statement;
+       its own lowering writes `dest` where it carries a value. */
+    int is_cf = tty && (!strcmp(tty, "NextNode") || !strcmp(tty, "BreakNode") ||
+                        !strcmp(tty, "ReturnNode") || !strcmp(tty, "RedoNode"));
+    if (is_cf) emit_stmt(c, tail, g_pre, bi);
+    else {
+      /* Emit the value into its own buffer so the tail's own preludes (e.g. a
+         nested map's loop) flow to g_pre ahead of the assignment line rather
+         than splicing into it. */
+      TyKind tt = comp_ntype(c, tail);
+      Buf vb; memset(&vb, 0, sizeof vb);
+      if (want_poly && tt != TY_POLY) emit_boxed(c, tail, &vb);
+      else emit_expr(c, tail, &vb);
+      emit_indent(g_pre, bi);
+      buf_printf(g_pre, "%s = %s;\n", dest, vb.p ? vb.p : "");
+      free(vb.p);
+    }
+  }
+  g_indent = sd;
+  emit_indent(g_pre, indent); buf_puts(g_pre, "} while (0);\n");
+  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly;
+}
+
 /* map/select/reject/filter as an expression: build a result array via a
    loop emitted into the statement prelude; the expression value is the
    temp array. Returns 1 if handled. */
@@ -2493,34 +2542,35 @@ else if (p0) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
-  /* body statements except the last */
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, innerIndent);
-
-  int saveIndent = g_indent;
-  g_indent = innerIndent;
-  Buf vb; memset(&vb, 0, sizeof vb);
-  emit_expr(c, bb[bn - 1], &vb);  /* value preludes flow to g_pre at innerIndent */
-  g_indent = saveIndent;
-
-  TyKind body_ty = comp_ntype(c, bb[bn - 1]);
   if (is_map) {
+    /* map: collect the block's value (next-aware) into a result temp, then
+       push it -- so `next <v>` inside the block contributes <v> rather than
+       dropping the element. */
+    TyKind elem = ty_array_elem(restype);
+    int tv = ++g_tmp;
+    char tvbuf[24]; snprintf(tvbuf, sizeof tvbuf, "_t%d", tv);
     emit_indent(g_pre, innerIndent);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
-    /* a poly result array stores boxed values */
-    if (res_poly && body_ty != TY_POLY) {
-      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, body_ty, vb.p ? vb.p : "", &bx);
-      buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
-    }
-    else buf_puts(g_pre, vb.p ? vb.p : "");
-    buf_puts(g_pre, ");\n");
+    if (res_poly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
+    else { emit_ctype(c, elem, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value(elem)); }
+    emit_block_value_into(c, block, tvbuf, res_poly, innerIndent);
+    emit_indent(g_pre, innerIndent);
+    buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk, tres, tv);
   }
   else {
+    /* select/reject: run the body, push the element when the block's value
+       (negated for reject) is truthy. */
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, innerIndent);
+    int saveIndent = g_indent;
+    g_indent = innerIndent;
+    Buf vb; memset(&vb, 0, sizeof vb);
+    emit_expr(c, bb[bn - 1], &vb);  /* value preludes flow to g_pre at innerIndent */
+    g_indent = saveIndent;
     emit_indent(g_pre, innerIndent);
     buf_printf(g_pre, "if (%s(", is_rej ? "!" : "");
     buf_puts(g_pre, vb.p ? vb.p : ""); buf_puts(g_pre, ")) ");
     buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
+    free(vb.p);
   }
-  free(vb.p);
   if (use_shadow) { emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "}\n"); }
   if (use_shadow && clv0) clv0->type = csaved0;
   emit_indent(g_pre, g_indent);

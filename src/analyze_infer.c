@@ -1711,7 +1711,13 @@ else {
         int body = nt_ref(nt, block, "body");
         int bn = 0;
         const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+        TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        /* A value-carrying next widens the element type past the tail
+           (e.g. `next "s"` string vs trailing `x` int -> poly array), so the
+           collected value is boxed rather than assigned to a typed temp. */
+        TyKind bnt = ie_block_break_next_ty(c, body);
+        if (bnt != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
+        return ty_array_of(bt);
       }
       if (!strcmp(name, "flat_map") || !strcmp(name, "collect_concat")) {
         int body = nt_ref(nt, block, "body");
