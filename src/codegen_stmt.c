@@ -77,6 +77,12 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; const char *_ts = sp_time_inspect_v(_t%d); fputs(_ts, stdout); putchar('\\n'); }\n", tv);
   }
+  else if (t == TY_RANGE) {
+    /* puts of a Range renders its to_s ("first..last"), then a newline. */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); putchar('\\n'); }\n", tv);
+  }
   else if (t == TY_CLASS) {
     int _tc = ++g_tmp;
     buf_printf(b, "{ sp_Class _cl%d = ", _tc); emit_expr(c, arg, b);
@@ -190,6 +196,12 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_RbVal _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; const char *_ps%d = sp_poly_to_s(_t%d); if (_ps%d) fputs(_ps%d, stdout); }\n", tv, tv, tv, tv);
   }
+  else if (t == TY_RANGE) {
+    /* print of a Range renders its to_s ("first..last"), no newline. */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); }\n", tv);
+  }
   else {
     if (!diagnose_eval_call(c, arg))
       unsupported(c, arg, "print argument");
@@ -260,6 +272,11 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_time_inspect_v(_t%d), stdout); putchar('\\n'); }\n", tv);
+  }
+  else if (t == TY_RANGE) {   /* a Range inspects as "first..last" / "first...last" */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); putchar('\\n'); }\n", tv);
   }
   else if (t == TY_CLASS) {   /* a Class/Module inspects as its name */
     int cv = ++g_tmp;
