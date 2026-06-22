@@ -647,12 +647,13 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
       buf_puts(g_pre, cv.p ? cv.p : src); free(cv.p); buf_puts(g_pre, ";\n");
     }
   }
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
   int tbv = ++g_tmp, tj = ++g_tmp;
-  int save = g_indent; g_indent++;
-  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  /* collect the block's value (next-aware) into the per-iteration array temp,
+     then splat its elements -- so `next [..]` flattens its array like the tail. */
+  char tbvb[24]; snprintf(tbvb, sizeof tbvb, "_t%d", tbv);
   emit_indent(g_pre, g_indent + 1); emit_ctype(c, bret, g_pre);
-  buf_printf(g_pre, " _t%d = %s;\n", tbv, vb.p ? vb.p : "NULL"); free(vb.p);
+  buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret));
+  emit_block_value_into(c, block, tbvb, bret == TY_POLY, g_indent + 1);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
              tj, tj, bk, tbv, tj, bk, tres, bk, tbv, tj);
