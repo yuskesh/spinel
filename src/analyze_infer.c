@@ -1818,6 +1818,14 @@ else {
       return TY_POLY_POLY_HASH;
     if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 1) return rt;  /* first(n)/last(n) -> subarray */
     if ((!strcmp(name, "drop") || !strcmp(name, "take")) && argc == 1) return rt;  /* subarray */
+    /* min(n)/max(n) (no comparator block) take the n extreme elements -> a
+       subarray; sample(n) likewise. With a comparator block the n-arg form is
+       not lowered, so don't type it as an array (that would mis-drive codegen
+       into returning a scalar through an array type) -- leave it to reject. */
+    if (((!strcmp(name, "min") || !strcmp(name, "max")) && block < 0 && argc == 1) ||
+        (!strcmp(name, "sample") && argc == 1))
+      return rt;  /* n-arg form -> subarray */
+    if (!strcmp(name, "slice") && argc == 2) return rt;
     if (!strcmp(name, "first") || !strcmp(name, "last") ||
         !strcmp(name, "min") || !strcmp(name, "max") ||
         !strcmp(name, "sample") ||
@@ -1868,7 +1876,7 @@ else {
         (!strcmp(name, "union") && argc == 0) ||
         !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
         !strcmp(name, "uniq!") ||
-        !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "unshift") || !strcmp(name, "freeze") ||
+        !strcmp(name, "rotate!") || !strcmp(name, "rotate") || !strcmp(name, "insert") || !strcmp(name, "unshift") || !strcmp(name, "freeze") ||
         (!strcmp(name, "fill") && argc >= 1 && argc <= 3) ||
         !strcmp(name, "replace") ||
         !strcmp(name, "values_at")) return rt;

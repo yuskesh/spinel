@@ -1227,6 +1227,35 @@ else {
         buf_printf(b, "sp_%sArray_sample(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      if (!strcmp(name, "rotate") && argc <= 1) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_dup(", k, t, k); emit_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%sArray_rotate_bang(_t%d, ", t, k, t);
+        if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "1");
+        buf_printf(b, "); _t%d; })", t);
+        return 1;
+      }
+      if ((!strcmp(name, "slice") || !strcmp(name, "[]")) && argc == 2) {
+        buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+        return 1;
+      }
+      if (!strcmp(name, "sample") && argc == 1) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_shuffle(", k, t, k); emit_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%sArray_slice(_t%d, 0, ", t, k, t); emit_int_expr(c, argv[0], b);
+        buf_puts(b, "); })");
+        return 1;
+      }
+      if ((!strcmp(name, "min") || !strcmp(name, "max")) && argc == 1 && block < 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_sort(", k, t, k); emit_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d);", t);
+        if (!strcmp(name, "max")) buf_printf(b, " sp_%sArray_reverse_bang(_t%d);", k, t);
+        buf_printf(b, " sp_%sArray_slice(_t%d, 0, ", k, t); emit_int_expr(c, argv[0], b);
+        buf_puts(b, "); })");
+        return 1;
+      }
     }
     /* poly (mixed-element) array methods: elements are boxed sp_RbVal */
     if (rt == TY_POLY_ARRAY) {
@@ -1262,6 +1291,35 @@ else {
       }
       if (!strcmp(name, "sample") && argc == 0) {
         buf_puts(b, "sp_PolyArray_sample("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+      if (!strcmp(name, "rotate") && argc <= 1) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_dup(", t); emit_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_PolyArray_rotate_bang(_t%d, ", t, t);
+        if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "1");
+        buf_printf(b, "); _t%d; })", t);
+        return 1;
+      }
+      if ((!strcmp(name, "slice") || !strcmp(name, "[]")) && argc == 2) {
+        buf_puts(b, "sp_PolyArray_slice("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+        return 1;
+      }
+      if (!strcmp(name, "sample") && argc == 1) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_shuffle(", t); emit_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_PolyArray_slice(_t%d, 0, ", t, t); emit_int_expr(c, argv[0], b);
+        buf_puts(b, "); })");
+        return 1;
+      }
+      if ((!strcmp(name, "min") || !strcmp(name, "max")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_sort(", t); emit_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d);", t);
+        if (!strcmp(name, "max")) buf_printf(b, " sp_PolyArray_reverse_bang(_t%d);", t);
+        buf_printf(b, " sp_PolyArray_slice(_t%d, 0, ", t); emit_int_expr(c, argv[0], b);
+        buf_puts(b, "); })");
         return 1;
       }
       if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||

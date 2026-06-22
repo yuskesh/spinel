@@ -1800,6 +1800,12 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   int is_min = !strcmp(name, "min"), is_max = !strcmp(name, "max"), is_mm = !strcmp(name, "minmax");
   if (!is_min && !is_max && !is_mm) return 0;
+  /* This lowers only the no-argument comparator form (one extreme element).
+     `min(n)`/`max(n)` with a block takes the n extremes by the comparator and
+     is not lowered; let it fall through to a clean reject rather than emitting
+     a single-element scalar that silently ignores n. */
+  int mm_args = nt_ref(nt, id, "arguments");
+  if (mm_args >= 0) { int mm_argc = 0; nt_arr(nt, mm_args, "arguments", &mm_argc); if (mm_argc > 0) return 0; }
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = infer_type(c, recv);
