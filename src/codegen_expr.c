@@ -84,9 +84,10 @@ void emit_interp(Compiler *c, int id, Buf *b) {
       int is_str_arg = 1;
       #define EMIT_IV() do { if (vexpr[0]) buf_puts(&conv, vexpr); else emit_expr(c, expr, &conv); } while (0)
       if (t == TY_INT) {
-        is_str_arg = 0;  /* a plain long long value: nothing to root */
-        buf_puts(&fmt, "%lld"); buf_puts(&conv, "(long long)");
-        EMIT_IV();
+        /* nil-aware: an int slot holding the nil sentinel interpolates as ""
+           (the helper returns a rooted decimal string otherwise). */
+        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_int_interp(");
+        EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_STRING) {
         /* a nullable string (NULL) interpolates as the empty string */

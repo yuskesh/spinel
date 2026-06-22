@@ -1221,6 +1221,9 @@ else if (orecv >= 0 && onm) {
     /* a heap-pointer param is laundered back from the mrb_int slot; a TY_POLY
        (sp_RbVal) param doesn't fit the slot, so it rides the _sp_proc_poly_args
        side-channel the call site published before the call. */
+    /* A param past the supplied argument count binds nil, not the typed zero
+       (CRuby fills missing block/proc params with nil). The body is already
+       nil-aware for these slots; supply the matching nil sentinel. */
     if (pt == TY_POLY) {
       /* the side-channel array holds 16 slots (the proc-call ABI cap) */
       if (k < 16) {
@@ -1228,12 +1231,21 @@ else if (orecv >= 0 && onm) {
           g_needs_proc_poly_argslot = 1;
           buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_args[16];\n");
         }
-        buf_printf(pb, "_sp_proc_poly_args[%d];\n", k);
+        buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
       }
       else buf_puts(pb, "0;\n");
     }
-    else if (proc_slot_is_ptr(pt)) { buf_puts(pb, "("); emit_ctype(c, pt, pb); buf_printf(pb, ")(uintptr_t)args[%d];\n", k); }
-    else buf_printf(pb, "args[%d];\n", k);
+    else if (proc_slot_is_ptr(pt)) {
+      buf_printf(pb, "(argc > %d) ? (", k); emit_ctype(c, pt, pb);
+      buf_printf(pb, ")(uintptr_t)args[%d] : NULL;\n", k);
+    }
+    else {
+      const char *nilv = (pt == TY_INT || pt == TY_BOOL) ? "SP_INT_NIL"
+                       : (pt == TY_FLOAT) ? "sp_float_nil()"
+                       : (pt == TY_SYMBOL) ? "((sp_sym)-1)" : NULL;
+      if (nilv) buf_printf(pb, "(argc > %d) ? args[%d] : %s;\n", k, k, nilv);
+      else buf_printf(pb, "args[%d];\n", k);
+    }
   }
   for (int i = 0; i < locals.n; i++) {
     LocalVar *lv = scope_local(bs, locals.v[i]);
