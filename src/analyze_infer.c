@@ -975,6 +975,10 @@ else {
          !strcmp(name, "gamma")))
       return TY_FLOAT;
     if (rty && !strcmp(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Math") &&
+        !strcmp(name, "lgamma") && argc == 1)
+      return TY_POLY_ARRAY;  /* [log(|gamma|), sign] */
+    if (rty && !strcmp(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "JSON") &&
         (!strcmp(name, "generate") || !strcmp(name, "dump")))
       return TY_STRING;
@@ -2324,6 +2328,7 @@ else {
     if (!strcmp(name, "[]") && argc == 1) return TY_INT;  /* bit access */
     if (!strcmp(name, "bit_length") && argc == 0) return TY_INT;
     if (!strcmp(name, "fdiv") && argc == 1) return TY_FLOAT;
+    if (!strcmp(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;  /* bit access / bit-range field */
     if (!strcmp(name, "div") && argc == 1) return TY_INT;  /* floor division */
     if (!strcmp(name, "gcd") || !strcmp(name, "lcm") || !strcmp(name, "clamp")) return TY_INT;
     if (!strcmp(name, "magnitude") && argc == 0) return TY_INT;  /* alias for abs */

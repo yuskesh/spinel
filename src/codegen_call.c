@@ -2561,6 +2561,13 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
       else if (!strcmp(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
       else if (!strcmp(name, "fdiv") && argc == 1) { buf_printf(b, "((mrb_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
+      else if (!strcmp(name, "[]") && argc == 2) {
+        /* n[start, len]: the len-bit field starting at bit `start`. Routed
+           through a runtime helper that clamps an out-of-range start/len so
+           the shift never goes undefined. */
+        buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (!strcmp(name, "even?"))  buf_printf(b, "((%s) %% 2 == 0)", r);
       else if (!strcmp(name, "odd?"))   buf_printf(b, "((%s) %% 2 != 0)", r);
       else if (!strcmp(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
@@ -6575,6 +6582,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (a0t == TY_INT) buf_puts(b, "(double)");
       emit_expr(c, argv[0], b);
       buf_puts(b, ")");
+      return;
+    }
+    if (!strcmp(name, "lgamma") && argc == 1) {
+      /* Math.lgamma(x) -> [log(|gamma(x)|), sign] as a poly array */
+      buf_puts(b, "sp_math_lgamma((double)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
       return;
     }
     /* Math.log(x) or Math.log(x, base) */

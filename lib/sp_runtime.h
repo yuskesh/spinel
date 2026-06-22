@@ -1144,6 +1144,19 @@ static sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){sp_IntArray*a=sp_IntArr
 /* Integer#bit_length: bits in the two's-complement representation excluding
    the sign bit (a negative n counts the bits of ~n). */
 static mrb_int sp_int_bit_length(mrb_int n){unsigned long long x=(n<0)?(unsigned long long)(~n):(unsigned long long)n;mrb_int b=0;if(x>=1ULL<<32){b+=32;x>>=32;}if(x>=1ULL<<16){b+=16;x>>=16;}if(x>=1ULL<<8){b+=8;x>>=8;}if(x>=1ULL<<4){b+=4;x>>=4;}if(x>=1ULL<<2){b+=2;x>>=2;}if(x>=1ULL<<1){b+=1;x>>=1;}return b+(mrb_int)x;}
+/* Integer#[start, len]: the len-bit field starting at bit `start`, i.e.
+   (n >> start) & ((1 << len) - 1) with Ruby's shift semantics (a negative
+   count shifts the other way), clamped to the 64-bit word so an out-of-range
+   start/len can't trigger an undefined shift. The receiver shift is arithmetic
+   so a negative `n`'s high bits read as 1. */
+static mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
+  mrb_int shifted;
+  if (start >= 0) shifted = (start >= 64) ? (n < 0 ? -1 : 0) : (n >> start);
+  else { mrb_int s = -start; shifted = (s >= 64) ? 0 : (mrb_int)((uint64_t)n << s); }
+  uint64_t mask = (len <= 0) ? (len == 0 ? (uint64_t)0 : ~(uint64_t)0)
+                             : (len >= 64 ? ~(uint64_t)0 : (((uint64_t)1 << len) - 1));
+  return (mrb_int)((uint64_t)shifted & mask);
+}
 static sp_IntArray*sp_IntArray_uniq(sp_IntArray*a){sp_IntArray*b=sp_IntArray_new();for(mrb_int i=0;i<a->len;i++){int found=0;for(mrb_int j=0;j<b->len;j++){if(b->data[b->start+j]==a->data[a->start+i]){found=1;break;}}if(!found)sp_IntArray_push(b,a->data[a->start+i]);}return b;}
 static sp_IntArray*sp_IntArray_intersect(sp_IntArray*a,sp_IntArray*b){sp_IntArray*r=sp_IntArray_new();if(!a||!b)return r;for(mrb_int i=0;i<a->len;i++){mrb_int v=a->data[a->start+i];if(sp_IntArray_include(b,v)&&!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}return r;}
 static sp_IntArray*sp_IntArray_union(sp_IntArray*a,sp_IntArray*b){sp_IntArray*r=sp_IntArray_new();if(a)for(mrb_int i=0;i<a->len;i++){mrb_int v=a->data[a->start+i];if(!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}if(b){for(mrb_int i=0;i<b->len;i++){mrb_int v=b->data[b->start+i];if(!sp_IntArray_include(r,v))sp_IntArray_push(r,v);}}return r;}
@@ -3531,6 +3544,38 @@ static void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_
 static sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } return a; }
 static void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; a->cap = a->cap * 2 + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } a->data[a->len++] = v; }
 static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } return a->data[--a->len]; }
+/* log(|Gamma(x)|) for x > 0, via the Stirling asymptotic series pushed into
+   its accurate region (x >= 12) by the recurrence Gamma(x) = Gamma(x+1)/x. We
+   compute it ourselves rather than calling the platform `lgamma_r`, whose
+   last-ULP result varies between libm implementations (macOS vs glibc) and
+   would make the golden test output machine-specific. The Bernoulli series
+   below carries it to ~1e-15. Gamma(1) and Gamma(2) are exactly 1, so their
+   logs are returned as an exact 0 rather than a rounding-noise residual. */
+static double sp_lgamma_pos(double x) {  /* x > 0 */
+  if (x == 1.0 || x == 2.0) return 0.0;
+  double corr = 0.0;
+  while (x < 12.0) { corr -= log(x); x += 1.0; }
+  double inv = 1.0 / x, inv2 = inv * inv;
+  /* sum_{k>=1} B_2k / (2k(2k-1) x^(2k-1)) up to the 1/x^11 term */
+  double series = (1.0/12.0) + inv2 * (-(1.0/360.0) + inv2 * ((1.0/1260.0)
+                  + inv2 * (-(1.0/1680.0) + inv2 * (1.0/1188.0))));
+  return corr + (x - 0.5) * log(x) - x + 0.5 * log(2.0 * M_PI) + series * inv;
+}
+/* Math.lgamma(x) -> [log(|gamma(x)|), sign of gamma(x)]. */
+static sp_PolyArray *sp_math_lgamma(double x) {
+  int sign = 1; double v;
+  if (x > 0.0) {
+    v = sp_lgamma_pos(x);
+  } else {
+    double s = sin(M_PI * x);
+    if (s == 0.0) v = INFINITY;            /* pole at a non-positive integer */
+    else { if (s < 0.0) sign = -1; v = log(M_PI / fabs(s)) - sp_lgamma_pos(1.0 - x); }
+  }
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  sp_PolyArray_push(r, sp_box_float(v));
+  sp_PolyArray_push(r, sp_box_int(sign));
+  return r;
+}
 static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
 static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (mrb_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
 
