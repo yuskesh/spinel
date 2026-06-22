@@ -2252,6 +2252,8 @@ else {
         !strcmp(name, "casecmp") ||
         !strcmp(name, "bytesize") || !strcmp(name, "setbyte") || !strcmp(name, "getbyte")) return TY_INT;
     if (!strcmp(name, "scrub") || !strcmp(name, "crypt")) return TY_STRING;
+    if (!strcmp(name, "sum") && argc == 0) return TY_INT;
+    if (!strcmp(name, "unpack1") && argc == 1) return TY_POLY;
     if (!strcmp(name, "rindex")) return TY_INT;
     if (!strcmp(name, "partition") || !strcmp(name, "rpartition")) return TY_STR_ARRAY;
     if (!strcmp(name, "casecmp?") || !strcmp(name, "ascii_only?") || !strcmp(name, "valid_encoding?")) return TY_BOOL;
