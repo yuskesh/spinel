@@ -2166,6 +2166,35 @@ else {
         buf_printf(b, " } _t%d; })", tr);
         return 1;
       }
+      if ((!strcmp(name, "to_a") || !strcmp(name, "entries")) && argc == 0) {
+        /* materialize entries as a PolyArray of [k, v] poly pairs */
+        int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
+        TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+        buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d);", th);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tp, tp);
+        if (kt == TY_SYMBOL)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", tp, th, ti);
+        else if (kt == TY_STRING)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", tp, th, ti);
+        else if (kt == TY_INT)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", tp, th, ti);
+        else
+          buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", tp, th, th, ti);
+        if (rt == TY_POLY_POLY_HASH)
+          buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]);", tp, th, th, ti);
+        else if (vt == TY_POLY)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tp, hn, th, th, ti);
+        else if (vt == TY_INT)
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tp, hn, th, th, ti);
+        else
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tp, hn, th, th, ti);
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tp);
+        buf_printf(b, " } _t%d; })", tr);
+        return 1;
+      }
       if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && argc == 1) {
         /* find first pair where key==arg (assoc) or value==arg (rassoc); returns [k,v] or nil */
         int is_rassoc = !strcmp(name, "rassoc");

@@ -2168,6 +2168,8 @@ else {
     if (!strcmp(name, "keys"))   return ty_array_of(ty_hash_key(rt));
     if (!strcmp(name, "values")) return ty_array_of(ty_hash_val(rt));
     if (!strcmp(name, "values_at") || !strcmp(name, "fetch_values")) return TY_POLY_ARRAY;
+    if ((!strcmp(name, "to_a") || !strcmp(name, "entries")) && nt_ref(nt, id, "block") < 0)
+      return TY_POLY_ARRAY;
     {
       int block = nt_ref(nt, id, "block");
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
