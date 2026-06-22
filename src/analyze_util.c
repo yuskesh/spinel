@@ -340,7 +340,14 @@ TyKind proc_node_ret(Compiler *c, int create) {
   if (body < 0) return TY_NIL;
   int bn = 0;
   const int *bb = nt_arr(nt, body, "body", &bn);
-  return bn > 0 ? infer_type(c, bb[bn - 1]) : TY_NIL;
+  if (bn <= 0) return TY_NIL;
+  /* An explicit `return <expr>` tail is a ReturnNode, which infer_type does not
+     value-type -- type the proc by the returned expression so the call site and
+     the body's return channel agree (otherwise the value is silently lost). */
+  int tail = bb[bn - 1];
+  const char *tty = nt_type(nt, tail);
+  if (tty && !strcmp(tty, "ReturnNode")) return return_node_type(c, tail);
+  return infer_type(c, tail);
 }
 TyKind proc_ret_of(Compiler *c, int node) {
   const NodeTable *nt = c->nt;

@@ -1066,10 +1066,24 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   const char *cn = nt_str(nt, create, "name");
   int is_lambda = is_lambda_node || (cn && !strcmp(cn, "lambda"));
 
-  /* body return type = last statement's type */
+  /* An explicit `return <expr>` tail is a ReturnNode; its value node is the
+     argument. Treating it as the effective tail keeps the body's return ABI
+     (pointer launder / poly slot) consistent with an implicit tail expression,
+     so the value is not lost. (tail_ret_arg stays -1 when the tail is not a
+     single-value return.) The body return type is that effective tail's type. */
+  int tail_ret_arg = -1;
   TyKind ret = TY_NIL;
   { int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    if (bn > 0) ret = comp_ntype(c, bb[bn - 1]); }
+    if (bn > 0) {
+      const char *tty = nt_type(nt, bb[bn - 1]);
+      if (tty && !strcmp(tty, "ReturnNode")) {
+        int rargs = nt_ref(nt, bb[bn - 1], "arguments");
+        int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
+        if (ran == 1) tail_ret_arg = rav[0];
+      }
+      ret = comp_ntype(c, tail_ret_arg >= 0 ? tail_ret_arg : bb[bn - 1]);
+    }
+  }
   /* A block passed as a method's &block argument must return the value type the
      method expects across all its call sites (its blk_ret): if that unified type
      is poly, return poly here so the sp_proc_call ABI is consistent. */
@@ -1235,10 +1249,11 @@ else if (orecv >= 0 && onm) {
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
     if (bn > 0) {
+      int tnode = tail_ret_arg >= 0 ? tail_ret_arg : bb[bn - 1];
       Buf rpre = {0}, rval = {0};
       Buf *sv_rpre = g_pre; int sv_rind = g_indent;
       g_pre = &rpre; g_indent = 1;
-      emit_expr(c, bb[bn - 1], &rval);
+      emit_expr(c, tnode, &rval);
       g_pre = sv_rpre; g_indent = sv_rind;
       if (rpre.p) buf_puts(pb, rpre.p);
       buf_puts(pb, "  return (mrb_int)(uintptr_t)(");
@@ -1257,7 +1272,24 @@ else if (orecv >= 0 && onm) {
       buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_ret;\n");
     }
     g_result_var = "_sp_proc_poly_ret"; g_result_poly = 1;
-    emit_stmts_tail(c, body, pb, 1);
+    if (tail_ret_arg >= 0) {
+      /* explicit `return <expr>` tail: emit the leading statements, then box the
+         returned value into the poly slot (emit_stmts_tail would route the
+         ReturnNode to a raw `return`, bypassing the slot). */
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
+      Buf rpre = {0}, rval = {0};
+      Buf *sv_rpre = g_pre; int sv_rind = g_indent;
+      g_pre = &rpre; g_indent = 1;
+      emit_boxed(c, tail_ret_arg, &rval);
+      g_pre = sv_rpre; g_indent = sv_rind;
+      if (rpre.p) buf_puts(pb, rpre.p);
+      buf_puts(pb, "  _sp_proc_poly_ret = ");
+      if (rval.p) buf_puts(pb, rval.p);
+      buf_puts(pb, ";\n");
+      free(rpre.p); free(rval.p);
+    }
+    else emit_stmts_tail(c, body, pb, 1);
     g_result_var = NULL; g_result_poly = 0;
     buf_puts(pb, "  return 0;\n");
   }
