@@ -1485,6 +1485,36 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_puts(b, "}\n");
 }
 
+/* An int ivar's nil default differs from its zero bit-pattern: its nil is
+   SP_INT_NIL, not 0. The compiler already reads an unwritten int ivar as that
+   sentinel (truthiness, `@x ||= v`, `.nil?`), so the constructor must seed it
+   explicitly -- a memset/{0} slot reads back as a real 0 and makes `@x ||= 5`
+   keep 0. Returns NULL for types whose zero-init already reads as nil
+   (string->NULL) or which are nil-initialized separately (poly). */
+static const char *ivar_scalar_nil_init(TyKind t) {
+  if (t == TY_INT) return "SP_INT_NIL";
+  return NULL;
+}
+
+/* Seed every ivar whose zero bit-pattern is not nil. A poly ivar's zero
+   pattern has tag 0, not SP_TAG_NIL, so it must be set to sp_box_nil(); an int
+   ivar's nil is SP_INT_NIL, not 0. `lv` is the receiver-and-accessor prefix
+   ("self.", "self->", "_t3.", "_t3->"); each assignment is bracketed by `lead`
+   (indentation) and `term` (`;\n` for a statement, `;` inside a compound expr).
+   A string ivar's NULL zero-pattern already reads as nil, so it is skipped. */
+static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
+                                const char *lead, const char *term) {
+  for (int i = 0; i < ci->nivars; i++) {
+    const char *name = ci->ivars[i] + 1;  /* skip leading '@' */
+    if (ci->ivar_types[i] == TY_POLY)
+      buf_printf(b, "%s%siv_%s = sp_box_nil()%s", lead, lv, name, term);
+    else {
+      const char *nv = ivar_scalar_nil_init(ci->ivar_types[i]);
+      if (nv) buf_printf(b, "%s%siv_%s = %s%s", lead, lv, name, nv, term);
+    }
+  }
+}
+
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
@@ -1526,6 +1556,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     }
     else buf_puts(b, "void");
     buf_printf(b, ") {\n  sp_%s self = {0};\n  self.cls_id = %d;\n", ci->name, cid);
+    emit_ivar_nil_inits(b, ci, "self.", "  ", ";\n");
     if (init >= 0 && c->scopes[init].reachable && !c->scopes[init].yields) {
       buf_printf(b, "  sp_%s_initialize(&self", c->classes[initcls].name);
       Scope *s = &c->scopes[init];
@@ -1576,9 +1607,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, "  self->parent_cls_name = \"%s\";\n", par);
       buf_puts(b, "  self->msg = (&(\"\\xff\")[1]);\n");
       buf_printf(b, "  SP_GC_ROOT(self);\n");
-      for (int i = 0; i < ci->nivars; i++)
-        if (ci->ivar_types[i] == TY_POLY)
-          buf_printf(b, "  self->iv_%s = sp_box_nil();\n", ci->ivars[i] + 1);
+      emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
     }
   }
   else {
@@ -1589,12 +1618,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_puts(b, "  memset(self, 0, sizeof(*self));\n");  /* recycled slots are not zeroed */
   buf_printf(b, "  SP_GC_ROOT(self);\n");
   buf_printf(b, "  self->cls_id = %d;\n", cid);
-  /* calloc zero-inits fields; a poly (boxed) ivar's zero pattern is not nil,
-     so set poly ivars to boxed-nil before initialize runs (read-only ivars
-     stay nil; written ones are overwritten). */
-  for (int i = 0; i < ci->nivars; i++)
-    if (ci->ivar_types[i] == TY_POLY)
-      buf_printf(b, "  self->iv_%s = sp_box_nil();\n", ci->ivars[i] + 1);
+  /* memset zero-inits fields, but a poly ivar's zero pattern is not nil and an
+     int ivar's nil is SP_INT_NIL, so seed them before initialize runs
+     (read-only ivars stay nil; written ones are overwritten). */
+  emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
   } /* close else (non-exception subclass allocation) */
   if (init >= 0 && c->scopes[init].reachable && !c->scopes[init].yields) {
     buf_printf(b, "  sp_%s_initialize(", c->classes[initcls].name);
@@ -1618,9 +1645,8 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
   int t = ++g_tmp;
   if (is_val) {
     buf_printf(b, "({ sp_%s _t%d = {0}; _t%d.cls_id = %d;", ci->name, t, t, cid);
-    for (int i = 0; i < ci->nivars; i++)
-      if (ci->ivar_types[i] == TY_POLY)
-        buf_printf(b, " _t%d.iv_%s = sp_box_nil();", t, ci->ivars[i] + 1);
+    char lv[32]; snprintf(lv, sizeof lv, "_t%d.", t);
+    emit_ivar_nil_inits(b, ci, lv, " ", ";");
     buf_printf(b, " _t%d; })", t);
   }
   else {
@@ -1633,9 +1659,8 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
                ci->name, t, ci->name,
                class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
                class_needs_scan(ci) ? "_scan" : "", t, t, t, cid);
-    for (int i = 0; i < ci->nivars; i++)
-      if (ci->ivar_types[i] == TY_POLY)
-        buf_printf(b, " _t%d->iv_%s = sp_box_nil();", t, ci->ivars[i] + 1);
+    char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
+    emit_ivar_nil_inits(b, ci, lv, " ", ";");
     buf_printf(b, " _t%d; })", t);
   }
 }
