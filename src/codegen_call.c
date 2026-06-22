@@ -1554,22 +1554,25 @@ else {
         TyKind kty = ty_hash_key(res), vty = ty_hash_val(res);
         int tr = ++g_tmp, th = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", tr); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);", hn, th, hn, th);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);", tr, hn, th, hn, th);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, tr, ti);
-        buf_printf(b, " sp_PolyArray *_t%d = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;", tp, tr, ti);
-        /* key extraction */
+        /* Each pair is a boxed array whose own kind varies (IntArray for [1,2],
+           StrArray for ["a","b"], PolyArray for mixed); sp_poly_arr_get boxes an
+           element from any of them, so key/value extraction works regardless. */
+        buf_printf(b, " sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);", tp, tr, ti);
         buf_printf(b, " sp_%sHash_set(_t%d, ", hn, th);
         char kexpr[128];
-        if (kty == TY_SYMBOL)      snprintf(kexpr, sizeof kexpr, "(sp_sym)sp_PolyArray_get(_t%d, 0).v.i", tp);
-        else if (kty == TY_STRING) snprintf(kexpr, sizeof kexpr, "sp_PolyArray_get(_t%d, 0).v.s", tp);
-        else                       snprintf(kexpr, sizeof kexpr, "sp_PolyArray_get(_t%d, 0).v.i", tp);
+        if (kty == TY_SYMBOL)      snprintf(kexpr, sizeof kexpr, "(sp_sym)sp_poly_arr_get(_t%d, 0).v.i", tp);
+        else if (kty == TY_STRING) snprintf(kexpr, sizeof kexpr, "sp_poly_arr_get(_t%d, 0).v.s", tp);
+        else if (kty == TY_POLY)   snprintf(kexpr, sizeof kexpr, "sp_poly_arr_get(_t%d, 0)", tp);
+        else                       snprintf(kexpr, sizeof kexpr, "sp_poly_arr_get(_t%d, 0).v.i", tp);
         buf_puts(b, kexpr); buf_puts(b, ", ");
         /* value extraction */
-        if (vty == TY_POLY)        buf_printf(b, "sp_PolyArray_get(_t%d, 1)", tp);
-        else if (vty == TY_INT)    buf_printf(b, "sp_PolyArray_get(_t%d, 1).v.i", tp);
-        else if (vty == TY_STRING) buf_printf(b, "sp_PolyArray_get(_t%d, 1).v.s", tp);
-        else if (vty == TY_FLOAT)  buf_printf(b, "sp_PolyArray_get(_t%d, 1).v.f", tp);
-        else                       buf_printf(b, "sp_PolyArray_get(_t%d, 1)", tp);
+        if (vty == TY_POLY)        buf_printf(b, "sp_poly_arr_get(_t%d, 1)", tp);
+        else if (vty == TY_INT)    buf_printf(b, "sp_poly_arr_get(_t%d, 1).v.i", tp);
+        else if (vty == TY_STRING) buf_printf(b, "sp_poly_arr_get(_t%d, 1).v.s", tp);
+        else if (vty == TY_FLOAT)  buf_printf(b, "sp_poly_arr_get(_t%d, 1).v.f", tp);
+        else                       buf_printf(b, "sp_poly_arr_get(_t%d, 1)", tp);
         buf_printf(b, "); } _t%d; })", th);
         return 1;
       }

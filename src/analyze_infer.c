@@ -1903,7 +1903,10 @@ else {
           }
         }
       }
-      return TY_SYM_POLY_HASH;
+      /* Non-literal receiver: the pair element types are not statically known
+         (e.g. `a.to_h` for a method param), so a fully boxed hash preserves
+         whatever keys/values the pairs hold instead of mis-typing them. */
+      return TY_POLY_POLY_HASH;
     }
   }
 
