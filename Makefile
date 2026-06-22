@@ -46,10 +46,13 @@ RBS_LIB      = build/librbs.a
         regen-expected bench optcarrot gate check gate-legs gate-test gate-bench \
         gate-optcarrot clean install uninstall deps tools
 
-# `make all` includes spinel_rbs_extract when vendor/rbs has been fetched
-# (via `make deps`); without it the extractor is silently omitted.
+# `make all` includes the RBS extractor when vendor/rbs has been fetched
+# (via `make deps`); without it the extractor is silently omitted. Built under
+# build/ like other intermediates; rbs-seed-test copies it beside $(SPINEL),
+# where main.c looks for it as a sibling at runtime.
+RBS_EXTRACT_BIN = build/spinel_rbs_extract
 ifneq ($(wildcard $(RBS_INC)/rbs/parser.h),)
-  RBS_EXTRACT_TARGET = spinel_rbs_extract
+  RBS_EXTRACT_TARGET = $(RBS_EXTRACT_BIN)
 else
   RBS_EXTRACT_TARGET =
 endif
@@ -179,9 +182,10 @@ rbs-missing:
 	 echo "  Run 'make deps' to fetch it from rubygems.org into vendor/rbs."; \
 	 exit 1
 else
-rbs_extract: spinel_rbs_extract
+rbs_extract: $(RBS_EXTRACT_BIN)
 
-spinel_rbs_extract: tools/spinel_rbs_extract.c $(RBS_LIB)
+$(RBS_EXTRACT_BIN): tools/spinel_rbs_extract.c $(RBS_LIB)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -I$(RBS_INC) tools/spinel_rbs_extract.c $(RBS_LIB) -o $@
 endif
 
@@ -327,13 +331,13 @@ rbs-test:
 regen-rbs-expected:
 	@echo "regen-rbs-expected: skipped (vendor/rbs not fetched; run 'make deps')"
 else
-rbs-test: spinel_rbs_extract
+rbs-test: $(RBS_EXTRACT_BIN)
 	@fail=0; n=0; \
 	for f in $(RBS_TEST_SRCS); do \
 	  n=$$((n+1)); \
 	  exp="$${f%.rbs}.seed.expected"; \
 	  if [ ! -f "$$exp" ]; then echo "rbs-test: MISSING golden $$exp"; fail=1; continue; fi; \
-	  d=$$(./spinel_rbs_extract "$$f" 2>/dev/null | diff -u "$$exp" - 2>&1); \
+	  d=$$($(RBS_EXTRACT_BIN) "$$f" 2>/dev/null | diff -u "$$exp" - 2>&1); \
 	  if [ -z "$$d" ]; then \
 	    if [ -t 1 ]; then printf .; fi; \
 	  else \
@@ -344,9 +348,9 @@ rbs-test: spinel_rbs_extract
 	if [ $$fail -ne 0 ]; then echo "RBS extractor tests: FAIL"; exit 1; fi; \
 	echo "RBS extractor tests: $$n pass"
 
-regen-rbs-expected: spinel_rbs_extract
+regen-rbs-expected: $(RBS_EXTRACT_BIN)
 	@for f in $(RBS_TEST_SRCS); do \
-	  ./spinel_rbs_extract "$$f" > "$${f%.rbs}.seed.expected"; \
+	  $(RBS_EXTRACT_BIN) "$$f" > "$${f%.rbs}.seed.expected"; \
 	  echo "regen: $${f%.rbs}.seed.expected"; \
 	done
 endif
@@ -362,8 +366,8 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 rbs-seed-test:
 	@echo "rbs-seed-test: skipped (vendor/rbs not fetched; run 'make deps')"
 else
-rbs-seed-test: $(SPINEL) spinel_rbs_extract $(SP_RT_LIB)
-	@cp -f spinel_rbs_extract $(dir $(SPINEL))spinel_rbs_extract
+rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
+	@cp -f $(RBS_EXTRACT_BIN) $(dir $(SPINEL))spinel_rbs_extract
 	@tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); ok=1; \
 	$(SPINEL) test/rbs-seed/nested_ivar.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/out.c" 2>/dev/null; \
@@ -600,4 +604,4 @@ uninstall:
 # intermediates). Only the root-level C artifacts need an explicit rm.
 clean:
 	rm -rf build/ bin/ legacy/build/
-	rm -f legacy/spinel_parse spinel_rbs_extract spinel
+	rm -f legacy/spinel_parse spinel
