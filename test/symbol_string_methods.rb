@@ -7,6 +7,10 @@ def wrap(x); x; end
 p wrap(:hello)[1]
 p wrap(:hello)[1, 3]
 p wrap(:hello)[10]
+# a Range index yields a substring (inclusive, exclusive, and endless forms)
+p wrap(:hello)[1..3]
+p wrap(:hello)[1...3]
+p wrap(:hello)[2..]
 p wrap(:abc).succ
 p wrap(:az).succ
 p wrap(:hello).start_with?("he")
