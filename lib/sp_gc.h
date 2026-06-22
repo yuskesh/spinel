@@ -78,12 +78,12 @@ extern void (*sp_gc_str_sweep_hook)(void);
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */
 static inline void sp_mark_string(const char *s) {
   if (!s) return;
-  unsigned char m = (unsigned char)s[-1];
-  if (m == 0xfe) ((char *)s)[-1] = (char)0xfc;
-  /* A heap string frozen by .freeze (0xf1) lives on the sweepable string heap
-     too; give it a reachable-this-cycle state (0xf0) so sp_str_sweep keeps it
-     while rooted instead of freeing a live frozen global (#1449). */
-  else if (m == 0xf1) ((char *)s)[-1] = (char)0xf0;
+  if ((unsigned char)s[-1] == 0xfe) {
+    ((char *)s)[-1] = (char)0xfc;
+  }
+  /* No frozen (0xf1) branch here: this is inlined into optcarrot's GC mark and
+     is layout-sensitive. A live frozen heap string is kept immortal by
+     sp_str_sweep instead (#1449). */
 }
 static inline void sp_mark_rbval(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) sp_mark_string(v.v.s);

@@ -701,10 +701,12 @@ static void sp_str_sweep(void) {
       body[0] = (char)0xfe;
       pp = &h->next;
     }
-    /* a reachable frozen heap string (marked 0xf1 -> 0xf0 this cycle): keep it
-       and restore the frozen marker, so a live frozen global survives (#1449). */
-    else if ((unsigned char)body[0] == 0xf0) {
-      body[0] = (char)0xf1;
+    /* a frozen heap string (.freeze, 0xf1) is kept across sweeps: a live frozen
+       global must survive, and frozen literal constants are immortal anyway.
+       This keeps the hot, layout-sensitive sp_mark_string free of a frozen
+       branch (it inlines into optcarrot's GC mark); the cost is that a rare
+       dynamically-frozen-then-dropped string is not reclaimed. (#1449) */
+    else if ((unsigned char)body[0] == 0xf1) {
       pp = &h->next;
     }
 else {
