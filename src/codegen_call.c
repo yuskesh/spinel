@@ -1678,6 +1678,38 @@ else {
   return 0;
 }
 
+/* Emit a statement-expression materializing a hash's entries as a PolyArray of
+   [key, value] poly pairs in insertion order. The source hash is GC-rooted
+   because each pair allocates inside the walk. Shared by Hash#to_a/#entries and
+   Hash#sort. */
+static void emit_hash_pairs_expr(Compiler *c, int recv, TyKind rt, const char *hn, Buf *b) {
+  int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
+  TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+  buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d);", th);
+  buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+  buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
+  buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tp, tp);
+  if (kt == TY_SYMBOL)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", tp, th, ti);
+  else if (kt == TY_STRING)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", tp, th, ti);
+  else if (kt == TY_INT)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", tp, th, ti);
+  else
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", tp, th, th, ti);
+  if (rt == TY_POLY_POLY_HASH)
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]);", tp, th, th, ti);
+  else if (vt == TY_POLY)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tp, hn, th, th, ti);
+  else if (vt == TY_INT)
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tp, hn, th, th, ti);
+  else
+    buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tp, hn, th, th, ti);
+  buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tp);
+  buf_printf(b, " } _t%d; })", tr);
+}
+
 static int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -2167,32 +2199,14 @@ else {
         return 1;
       }
       if ((!strcmp(name, "to_a") || !strcmp(name, "entries")) && argc == 0) {
-        /* materialize entries as a PolyArray of [k, v] poly pairs */
-        int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
-        TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
-        buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d);", th);
-        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
-        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
-        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tp, tp);
-        if (kt == TY_SYMBOL)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", tp, th, ti);
-        else if (kt == TY_STRING)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", tp, th, ti);
-        else if (kt == TY_INT)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", tp, th, ti);
-        else
-          buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", tp, th, th, ti);
-        if (rt == TY_POLY_POLY_HASH)
-          buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]);", tp, th, th, ti);
-        else if (vt == TY_POLY)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", tp, hn, th, th, ti);
-        else if (vt == TY_INT)
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tp, hn, th, th, ti);
-        else
-          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", tp, hn, th, th, ti);
-        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));", tr, tp);
-        buf_printf(b, " } _t%d; })", tr);
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        return 1;
+      }
+      if (!strcmp(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        /* sort entries by Array#<=> over each [key, value] pair */
+        buf_puts(b, "sp_PolyArray_sort_pairs(");
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        buf_puts(b, ")");
         return 1;
       }
       if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && argc == 1) {
