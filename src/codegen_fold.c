@@ -656,7 +656,8 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   if (block < 0) return 0;
   const char *name = nt_str(nt, id, "name");
   int is_max = !strcmp(name, "max_by"), is_min = !strcmp(name, "min_by");
-  if (!is_max && !is_min) return 0;
+  int is_minmax = !strcmp(name, "minmax_by");
+  if (!is_max && !is_min && !is_minmax) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
@@ -670,6 +671,60 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   if (bn < 1) return 0;
   TyKind bvt = infer_type(c, bb[bn - 1]);
   if (bvt != TY_INT && bvt != TY_FLOAT && bvt != TY_POLY) return 0;
+  if (is_minmax) {
+    /* track the min-keyed and max-keyed elements in one pass; yield a fresh
+       same-kind [min, max] array. Strict comparisons keep the first occurrence
+       of a tied key, matching Ruby. */
+    int trecv = ++g_tmp, tmin = ++g_tmp, tmax = ++g_tmp, tbvmin = ++g_tmp, tbvmax = ++g_tmp,
+        tf = ++g_tmp, ti = ++g_tmp, tcur = ++g_tmp, tout = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+    const char *edflt = et == TY_RANGE ? "(sp_Range){0}" : default_value(et);
+    emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tmin, edflt);
+    emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tmax, edflt);
+    emit_indent(g_pre, g_indent); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbvmin, default_value(bvt));
+    emit_indent(g_pre, g_indent); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbvmax, default_value(bvt));
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = 1;\n", tf);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
+    if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    Scope *mmsc = p0 ? comp_scope_of(c, block) : NULL;
+    LocalVar *mmlv = (mmsc && p0) ? scope_local(mmsc, p0) : NULL;
+    TyKind mmpt = mmlv ? mmlv->type : TY_UNKNOWN;
+    if (mmlv) mmlv->type = et;
+    int save = g_indent; g_indent++;
+    Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+    if (mmlv) mmlv->type = mmpt;
+    emit_indent(g_pre, g_indent + 1); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tcur, vb.p ? vb.p : default_value(bvt)); free(vb.p);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d) { _t%d = lv_%s; _t%d = lv_%s; _t%d = _t%d; _t%d = _t%d; _t%d = 0; }\n",
+               tf, tmin, p0 ? p0 : "", tmax, p0 ? p0 : "", tbvmin, tcur, tbvmax, tcur, tf);
+    emit_indent(g_pre, g_indent + 1);
+    if (bvt == TY_POLY) {
+      buf_printf(g_pre, "else { if (sp_poly_lt(_t%d, _t%d)) { _t%d = lv_%s; _t%d = _t%d; } if (sp_poly_gt(_t%d, _t%d)) { _t%d = lv_%s; _t%d = _t%d; } }\n",
+                 tcur, tbvmin, tmin, p0 ? p0 : "", tbvmin, tcur, tcur, tbvmax, tmax, p0 ? p0 : "", tbvmax, tcur);
+    } else {
+      buf_printf(g_pre, "else { if (_t%d < _t%d) { _t%d = lv_%s; _t%d = _t%d; } if (_t%d > _t%d) { _t%d = lv_%s; _t%d = _t%d; } }\n",
+                 tcur, tbvmin, tmin, p0 ? p0 : "", tbvmin, tcur, tcur, tbvmax, tmax, p0 ? p0 : "", tbvmax, tcur);
+    }
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    /* Yield a poly [min, max] (CRuby returns a generic Array). An empty receiver
+       yields [nil, nil] -- which a typed array cannot represent -- so the result
+       is always a poly array regardless of the receiver kind. */
+    char minref[24], maxref[24];
+    snprintf(minref, sizeof minref, "_t%d", tmin);
+    snprintf(maxref, sizeof maxref, "_t%d", tmax);
+    Buf bmin; memset(&bmin, 0, sizeof bmin); emit_boxed_text(c, et, minref, &bmin);
+    Buf bmax; memset(&bmax, 0, sizeof bmax); emit_boxed_text(c, et, maxref, &bmax);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (_t%d) { sp_PolyArray_push(_t%d, sp_box_nil()); sp_PolyArray_push(_t%d, sp_box_nil()); }\n", tf, tout, tout);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "else { sp_PolyArray_push(_t%d, %s); sp_PolyArray_push(_t%d, %s); }\n",
+               tout, bmin.p ? bmin.p : "sp_box_nil()", tout, bmax.p ? bmax.p : "sp_box_nil()");
+    free(bmin.p); free(bmax.p);
+    buf_printf(b, "_t%d", tout);
+    return 1;
+  }
   int trecv = ++g_tmp, tbest = ++g_tmp, tbv = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tcur = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);  /* recv value; its own preludes flow to g_pre */
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
