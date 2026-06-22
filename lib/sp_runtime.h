@@ -3794,6 +3794,28 @@ static sp_RbVal sp_poly_arr_get(sp_RbVal a, mrb_int i) {
     default: return sp_box_nil();
   }
 }
+/* Kernel#Array(x): nil -> []; an array -> its elements; anything else -> [x].
+   Array-typed arguments are passed through directly in codegen, so this runs
+   for nil/scalars and for a poly value that may hold an array at run time. */
+static sp_PolyArray *sp_kernel_array(sp_RbVal x) {
+  if (x.tag == SP_TAG_NIL) return sp_PolyArray_new();
+  if (x.tag == SP_TAG_OBJ) {
+    /* An existing poly array is returned as-is, preserving object identity as
+       CRuby's Array(arr) does. A typed array cannot be returned directly (the
+       result is a poly array), so its elements are copied. */
+    if (x.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)x.v.p;
+    if (x.cls_id == SP_BUILTIN_INT_ARRAY || x.cls_id == SP_BUILTIN_STR_ARRAY ||
+        x.cls_id == SP_BUILTIN_FLT_ARRAY) {
+      sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+      mrb_int n = sp_poly_arr_len(x);
+      for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(x, i));
+      return r;
+    }
+  }
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  sp_PolyArray_push(r, x);
+  return r;
+}
 /* Issues #770, #789: NULL + bounds guard. Out-of-range set no-ops. */
 static void sp_PolyArray_set(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } mrb_int orig=i; if (i < 0) i += a->len; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len)); if (i >= a->len) return; a->data[i] = v; }
 static sp_PolyArray *sp_PolyArray_slice(sp_PolyArray *a, mrb_int start, mrb_int len) { if (start < 0) start += a->len; if (start < 0) start = 0; sp_PolyArray *b = sp_PolyArray_new(); if (start >= a->len || len <= 0) return b; if (start + len > a->len) len = a->len - start; for (mrb_int i = 0; i < len; i++) sp_PolyArray_push(b, a->data[start + i]); return b; }

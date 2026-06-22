@@ -1486,6 +1486,14 @@ else {
     if (!strcmp(name, "Integer") && (argc == 1 || argc == 2)) return TY_INT;
     if (!strcmp(name, "Float") && argc == 1) return TY_FLOAT;
     if (!strcmp(name, "String") && argc == 1) return TY_STRING;
+    if (!strcmp(name, "Array") && argc == 1) {
+      TyKind at = infer_type(c, argv[0]);
+      if (ty_is_array(at)) return at;
+      if (at == TY_INT)    return TY_INT_ARRAY;    /* Array(int)   -> [int]   */
+      if (at == TY_FLOAT)  return TY_FLOAT_ARRAY;  /* Array(float) -> [float] */
+      if (at == TY_STRING) return TY_STR_ARRAY;    /* Array(str)   -> [str]   */
+      return TY_POLY_ARRAY;
+    }
     if ((!strcmp(name, "format") || !strcmp(name, "sprintf")) && argc >= 1) return TY_STRING;
     if (!strcmp(name, "system") && argc >= 1) return TY_BOOL;
     if (!strcmp(name, "trap") && argc >= 1) return TY_STRING;

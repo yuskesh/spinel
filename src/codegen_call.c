@@ -4723,6 +4723,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "sp_poly_to_s(sp_box_nil())"); }  /* nil or unknown */
       return;
     }
+    if (!strcmp(name, "Array") && ac == 1) {
+      /* an argument already typed as an array is returned as-is (identity and
+         element type preserved); a statically scalar argument wraps into a typed
+         one-element array (matching the precise inference); everything else
+         routes through the runtime coercion, which yields a poly array. */
+      TyKind at = comp_ntype(c, av[0]);
+      if (ty_is_array(at)) emit_expr(c, av[0], b);
+      else if (at == TY_INT || at == TY_FLOAT || at == TY_STRING) {
+        const char *ak = at == TY_INT ? "Int" : at == TY_FLOAT ? "Float" : "Str";
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d); sp_%sArray_push(_t%d, ", ak, t, ak, t, ak, t);
+        if (at == TY_INT) emit_int_expr(c, av[0], b);
+        else if (at == TY_FLOAT) emit_float_expr(c, av[0], b);
+        else emit_expr(c, av[0], b);
+        buf_printf(b, "); _t%d; })", t);
+      }
+      else { buf_puts(b, "sp_kernel_array("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
+      return;
+    }
     if ((!strcmp(name, "format") || !strcmp(name, "sprintf")) && ac >= 1) {
       /* format(fmt, *args) -> sp_str_format_polyarr(fmt, poly_arr) */
       int tf = ++g_tmp, ta = ++g_tmp;
