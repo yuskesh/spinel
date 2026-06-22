@@ -1868,7 +1868,7 @@ else {
         (!strcmp(name, "union") && argc == 0) ||
         !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
         !strcmp(name, "uniq!") ||
-        !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "freeze") ||
+        !strcmp(name, "rotate!") || !strcmp(name, "insert") || !strcmp(name, "unshift") || !strcmp(name, "freeze") ||
         (!strcmp(name, "fill") && argc >= 1 && argc <= 3) ||
         !strcmp(name, "replace") ||
         !strcmp(name, "values_at")) return rt;

@@ -682,10 +682,17 @@ else {
           }
         }
         else {
-          /* PolyArray/FloatArray: use insert-at-0 (PolyArray has no insert; push + rotate) */
-          buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b); buf_puts(b, ";");
-          /* fallthrough: just evaluate args for side effects */
-          for (int a = 0; a < argc; a++) { buf_puts(b, " (void)("); emit_expr(c, argv[a], b); buf_puts(b, ");"); }
+          /* FloatArray (the only other element kind that reaches this typed
+             dispatch; poly arrays route elsewhere). Evaluate the arguments
+             left to right into temporaries (Ruby's argument-evaluation order),
+             then prepend them in reverse so a multi-arg unshift keeps order. */
+          buf_printf(b, "({ sp_FloatArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
+          for (int a = 0; a < argc; a++) {
+            buf_printf(b, " mrb_float _u%d_%d = ", t, a); emit_float_expr(c, argv[a], b); buf_puts(b, ";");
+          }
+          for (int a = argc - 1; a >= 0; a--) {
+            buf_printf(b, " sp_FloatArray_unshift(_t%d, _u%d_%d);", t, t, a);
+          }
         }
         buf_printf(b, " _t%d; })", t);
         return 1;
