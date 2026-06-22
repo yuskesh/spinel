@@ -336,6 +336,83 @@ static const char *sp_rational_inspect(sp_Rational r) {
   o[n] = 0;
   return o;
 }
+/* Rational#to_s: bare `num/den` (no parens, unlike #inspect). */
+static const char *sp_rational_to_s(sp_Rational r) {
+  char buf[64];
+  int n = snprintf(buf, sizeof(buf), "%lld/%lld", (long long)r.num, (long long)r.den);
+  if (n < 0) n = 0;
+  char *o = sp_str_alloc_raw(n + 1);
+  memcpy(o, buf, n);
+  o[n] = 0;
+  return o;
+}
+/* Phase-1 Rational arithmetic over fixed mrb_int num/den. Intermediate
+   products are computed in a wider type and any result that does not fit back
+   into mrb_int raises RangeError (mruby promotes to Bigint here -- a later
+   phase can do the same; see docs). __int128 covers the 64-bit build; the
+   32-bit build's int64 intermediate covers two int32 operands losslessly. */
+#if INTPTR_MAX > 0x7fffffff
+typedef __int128 sp_rat_wide;
+#else
+typedef long long sp_rat_wide;
+#endif
+static inline mrb_int sp_rat_fit(sp_rat_wide v) {
+  if (v > (sp_rat_wide)INTPTR_MAX || v < (sp_rat_wide)(-INTPTR_MAX))
+    sp_raise_cls("RangeError", "Rational out of mrb_int range");
+  return (mrb_int)v;
+}
+static sp_Rational sp_rational_new_wide(sp_rat_wide n, sp_rat_wide d) {
+  if (d == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  if (d < 0) { n = -n; d = -d; }
+  sp_rat_wide a = n < 0 ? -n : n, b = d;
+  while (b) { sp_rat_wide t = b; b = a % b; a = t; }
+  if (a <= 0) a = 1;
+  sp_Rational r;
+  r.num = sp_rat_fit(n / a);
+  r.den = sp_rat_fit(d / a);
+  return r;
+}
+static inline sp_Rational sp_rational_add(sp_Rational a, sp_Rational b) {
+  return sp_rational_new_wide((sp_rat_wide)a.num * b.den + (sp_rat_wide)b.num * a.den,
+                              (sp_rat_wide)a.den * b.den);
+}
+static inline sp_Rational sp_rational_sub(sp_Rational a, sp_Rational b) {
+  return sp_rational_new_wide((sp_rat_wide)a.num * b.den - (sp_rat_wide)b.num * a.den,
+                              (sp_rat_wide)a.den * b.den);
+}
+static inline sp_Rational sp_rational_mul(sp_Rational a, sp_Rational b) {
+  return sp_rational_new_wide((sp_rat_wide)a.num * b.num, (sp_rat_wide)a.den * b.den);
+}
+static inline sp_Rational sp_rational_div(sp_Rational a, sp_Rational b) {
+  if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  return sp_rational_new_wide((sp_rat_wide)a.num * b.den, (sp_rat_wide)a.den * b.num);
+}
+static inline sp_Rational sp_rational_neg(sp_Rational a) { a.num = -a.num; return a; }
+static inline sp_Rational sp_rational_abs(sp_Rational a) { if (a.num < 0) a.num = -a.num; return a; }
+static inline mrb_int sp_rational_cmp(sp_Rational a, sp_Rational b) {
+  sp_rat_wide l = (sp_rat_wide)a.num * b.den, r = (sp_rat_wide)b.num * a.den;
+  return l < r ? -1 : (l > r ? 1 : 0);
+}
+static inline mrb_bool sp_rational_eq(sp_Rational a, sp_Rational b) {
+  return a.num == b.num && a.den == b.den;
+}
+static inline mrb_float sp_rational_to_f(sp_Rational a) {
+  return (mrb_float)a.num / (mrb_float)a.den;
+}
+static sp_rat_wide sp_rat_ipow(sp_rat_wide base, mrb_int e) {
+  sp_rat_wide r = 1;
+  for (mrb_int i = 0; i < e; i++) {
+    r *= base;
+    if (r > (sp_rat_wide)INTPTR_MAX || r < (sp_rat_wide)(-INTPTR_MAX))
+      sp_raise_cls("RangeError", "Rational out of mrb_int range");
+  }
+  return r;
+}
+static sp_Rational sp_rational_pow(sp_Rational a, mrb_int e) {
+  if (e >= 0) return sp_rational_new_wide(sp_rat_ipow(a.num, e), sp_rat_ipow(a.den, e));
+  if (a.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  return sp_rational_new_wide(sp_rat_ipow(a.den, -e), sp_rat_ipow(a.num, -e));
+}
 
 /* ---- Time runtime ---- */
 /* sp_Time and the libc-backed accessors / formatters live in

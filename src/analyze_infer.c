@@ -358,6 +358,7 @@ TyKind infer_call(Compiler *c, int id) {
 
   /* Complex / Rational value types. */
   if (recv < 0 && !strcmp(name, "Complex")) return TY_COMPLEX;
+  if (recv < 0 && !strcmp(name, "Rational") && (argc == 1 || argc == 2)) return TY_RATIONAL;
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
     if (rrty && !strcmp(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
@@ -384,11 +385,28 @@ TyKind infer_call(Compiler *c, int id) {
   }
 
   if (rt == TY_INT && !strcmp(name, "quo")) return TY_RATIONAL;
+  /* Integer <op> Rational coerces the Integer to Rational (result Rational for
+     arithmetic, Bool/Int for comparisons). */
+  if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_RATIONAL;
+    if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") || !strcmp(name, ">=") ||
+        !strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
+    if (!strcmp(name, "<=>")) return TY_INT;
+  }
   if (rt == TY_RATIONAL) {
     if (!strcmp(name, "numerator") || !strcmp(name, "denominator")) return TY_INT;
     if (!strcmp(name, "to_f")) return TY_FLOAT;
-    if (!strcmp(name, "to_i")) return TY_INT;
+    if (!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "truncate")) return TY_INT;
     if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
+    if (!strcmp(name, "to_r") || !strcmp(name, "rationalize") ||
+        !strcmp(name, "-@") || !strcmp(name, "+@") || !strcmp(name, "abs")) return TY_RATIONAL;
+    TyKind a0r = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+    if (argc == 1 && (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")))
+      return a0r == TY_FLOAT ? TY_FLOAT : TY_RATIONAL;
+    if (argc == 1 && !strcmp(name, "**")) return a0r == TY_INT ? TY_RATIONAL : TY_FLOAT;
+    if (argc == 1 && (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
+                      !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!="))) return TY_BOOL;
+    if (argc == 1 && !strcmp(name, "<=>")) return TY_INT;
   }
 
   /* Safe navigation &. : nil receiver always short-circuits to nil */

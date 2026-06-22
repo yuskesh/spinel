@@ -24,6 +24,14 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ const char *_bs = sp_bigint_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "); if (_bs) fputs(_bs, stdout); putchar('\\n'); }\n");
   }
+  else if (t == TY_RATIONAL) {
+    buf_puts(b, "fputs(sp_rational_to_s("); emit_expr(c, arg, b);
+    buf_puts(b, "), stdout); putchar('\\n');\n");
+  }
+  else if (t == TY_COMPLEX) {
+    buf_puts(b, "fputs(sp_complex_inspect("); emit_expr(c, arg, b);
+    buf_puts(b, "), stdout); putchar('\\n');\n");
+  }
   else if (t == TY_CURRY) {
     /* a fully-applied curry realizes to its (int) result */
     buf_puts(b, "printf(\"%lld\\n\", (long long)sp_curry_to_int("); emit_expr(c, arg, b);

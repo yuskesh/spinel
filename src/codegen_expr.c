@@ -116,6 +116,14 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         buf_puts(&fmt, "%s"); buf_puts(&conv, "((void)(");
         EMIT_IV(); buf_puts(&conv, "), \"\")");
       }
+      else if (t == TY_RATIONAL) {
+        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_rational_to_s(");
+        EMIT_IV(); buf_puts(&conv, ")");
+      }
+      else if (t == TY_COMPLEX) {
+        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_complex_inspect(");
+        EMIT_IV(); buf_puts(&conv, ")");
+      }
       else if (t == TY_POLY_ARRAY) {
         buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_PolyArray_inspect(");
         EMIT_IV(); buf_puts(&conv, ")");

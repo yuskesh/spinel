@@ -3536,6 +3536,14 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b) {
   }
 }
 
+/* Emit a node as an sp_Rational value: a Rational stays as-is, an Integer is
+   lifted to n/1. Used to coerce the other operand of a Rational arithmetic /
+   comparison op. */
+static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
+  if (comp_ntype(c, node) == TY_RATIONAL) { emit_expr(c, node, b); return; }
+  buf_puts(b, "sp_rational_new((mrb_int)("); emit_expr(c, node, b); buf_puts(b, "), 1)");
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -3608,6 +3616,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")})");
     return;
   }
+  if (recv < 0 && !strcmp(name, "Rational") && (argc == 1 || argc == 2)) {
+    buf_puts(b, "sp_rational_new((mrb_int)(");
+    emit_expr(c, argv[0], b);
+    buf_puts(b, "), (mrb_int)(");
+    if (argc == 2) emit_expr(c, argv[1], b);
+    else buf_puts(b, "1");
+    buf_puts(b, "))");
+    return;
+  }
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
     /* Complex.polar(magnitude, angle) */
@@ -3658,7 +3675,76 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (crt == TY_RATIONAL) {
       if (!strcmp(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return; }
       if (!strcmp(name, "denominator")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").den"); return; }
-      if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) { buf_puts(b, "sp_rational_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (!strcmp(name, "to_s")) { buf_puts(b, "sp_rational_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (!strcmp(name, "inspect")) { buf_puts(b, "sp_rational_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if ((!strcmp(name, "to_f")) && argc == 0) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if ((!strcmp(name, "to_r") || !strcmp(name, "rationalize")) && argc == 0) { emit_expr(c, recv, b); return; }
+      if (!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "truncate")) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return; }
+      if (!strcmp(name, "-@") && argc == 0) { buf_puts(b, "sp_rational_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (!strcmp(name, "+@") && argc == 0) { emit_expr(c, recv, b); return; }
+      if (!strcmp(name, "abs") && argc == 0) { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      TyKind rat = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      /* Only Integer/Rational/Float operands are modeled (a poly operand --
+         e.g. a Rational read out of a poly array, which has no box form yet --
+         falls through to the generic path rather than miscompiling). */
+      int rat_ok = rat == TY_RATIONAL || rat == TY_INT || rat == TY_FLOAT;
+      /* arithmetic against another Rational or an Integer yields a Rational;
+         against a Float, coerce self to float (CRuby semantics). */
+      if (rat_ok && argc == 1 && (!strcmp(name, "+") || !strcmp(name, "-") ||
+                        !strcmp(name, "*") || !strcmp(name, "/"))) {
+        const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
+        if (rat == TY_FLOAT) {
+          const char *op = name;
+          buf_puts(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_printf(b, ") %s ", op); emit_expr(c, argv[0], b); buf_puts(b, ")");
+          return;
+        }
+        buf_printf(b, "sp_rational_%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (rat_ok && argc == 1 && !strcmp(name, "**")) {
+        if (rat == TY_INT) { buf_puts(b, "sp_rational_pow("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return; }
+        buf_puts(b, "pow(sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, "), "); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (rat_ok && argc == 1 && (!strcmp(name, "<") || !strcmp(name, ">") ||
+                        !strcmp(name, "<=") || !strcmp(name, ">="))) {
+        buf_puts(b, "(sp_rational_cmp("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_printf(b, ") %s 0)", name);
+        return;
+      }
+      if (rat_ok && argc == 1 && !strcmp(name, "<=>")) {
+        buf_puts(b, "sp_rational_cmp("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (argc == 1 && (!strcmp(name, "==") || !strcmp(name, "!="))) {
+        if (rat == TY_RATIONAL || rat == TY_INT) {
+          buf_printf(b, "(%ssp_rational_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, "))");
+          return;
+        }
+      }
+    }
+    /* Integer <op> Rational: lift the Integer to n/1 (covers `2/3r`, `1 + r`). */
+    if (crt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) {
+        const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
+        buf_printf(b, "sp_rational_%s(sp_rational_new((mrb_int)(", fn); emit_expr(c, recv, b);
+        buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") || !strcmp(name, ">=")) {
+        buf_puts(b, "(sp_rational_cmp(sp_rational_new((mrb_int)("); emit_expr(c, recv, b);
+        buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_printf(b, ") %s 0)", name);
+        return;
+      }
+      if (!strcmp(name, "<=>")) {
+        buf_puts(b, "sp_rational_cmp(sp_rational_new((mrb_int)("); emit_expr(c, recv, b);
+        buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return;
+      }
+      if (!strcmp(name, "==") || !strcmp(name, "!=")) {
+        buf_printf(b, "(%ssp_rational_eq(sp_rational_new((mrb_int)(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b);
+        buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        return;
+      }
     }
   }
 
