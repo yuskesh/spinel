@@ -3783,6 +3783,7 @@ static sp_RbVal sp_poly_arr_get(sp_RbVal a, mrb_int i) {
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
   switch (a.cls_id) {
     case SP_BUILTIN_INT_ARRAY: { sp_IntArray *ar=(sp_IntArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return sp_box_int(ar->data[ar->start+i]); }
+    case SP_BUILTIN_SYM_ARRAY: { sp_IntArray *ar=(sp_IntArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return sp_box_sym((sp_sym)ar->data[ar->start+i]); }
     case SP_BUILTIN_FLT_ARRAY: { sp_FloatArray *ar=(sp_FloatArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return sp_box_float(ar->data[i]); }
     case SP_BUILTIN_STR_ARRAY: { sp_StrArray *ar=(sp_StrArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return sp_box_str(ar->data[i]); }
     case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *ar=(sp_PolyArray*)a.v.p; if(!ar||i<0||i>=ar->len) return sp_box_nil(); return ar->data[i]; }
@@ -4018,31 +4019,57 @@ else {
   char *r = sp_str_alloc(out); memcpy(r, buf, out); free(buf); return r;
 }
 
-/* Array#assoc — return the first sub-array (poly_array element)
-   whose first element equals `key`. Returns NULL when no match
-   so the caller's `.inspect` round-trips to "nil". */
+/* Element count of an array-kind value, or -1 if `el` is not an array (a
+   non-object, a user object, a hash, etc.). Lets assoc/rassoc skip non-array
+   and too-short pairs without indexing them, so a `nil` search key cannot
+   spuriously match an out-of-bounds (nil) read. */
+static mrb_int sp_array_kind_len(sp_RbVal el) {
+  if (el.tag != SP_TAG_OBJ || !el.v.p) return -1;
+  switch (el.cls_id) {
+    case SP_BUILTIN_INT_ARRAY:
+    case SP_BUILTIN_SYM_ARRAY:  return ((sp_IntArray *)el.v.p)->len;
+    case SP_BUILTIN_FLT_ARRAY:  return ((sp_FloatArray *)el.v.p)->len;
+    case SP_BUILTIN_STR_ARRAY:  return ((sp_StrArray *)el.v.p)->len;
+    case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)el.v.p)->len;
+    default: return -1;
+  }
+}
+
+/* Box any array-kind element into a PolyArray so assoc/rassoc can return it
+   through their PolyArray* type regardless of the matched pair's own kind
+   (a like-typed pair such as [1, 2] is an IntArray, not a PolyArray). */
+static sp_PolyArray *sp_pair_to_poly(sp_RbVal el) {
+  if (el.tag == SP_TAG_OBJ && el.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)el.v.p;
+  mrb_int n = sp_array_kind_len(el);
+  if (n < 0) n = 0;
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  for (mrb_int j = 0; j < n; j++) sp_PolyArray_push(r, sp_poly_arr_get(el, j));
+  return r;
+}
+
+/* Array#assoc — return the first sub-array whose first element equals `key`.
+   Returns NULL when no match so the caller's `.inspect` round-trips to "nil".
+   Each pair may be any array kind, so compare element 0 via sp_poly_arr_get;
+   a pair with no element 0 (a non-array or empty array) is skipped. */
 static sp_PolyArray *sp_PolyArray_assoc(sp_PolyArray *a, sp_RbVal key) {
   if (!a) return NULL;
   for (mrb_int i = 0; i < a->len; i++) {
     sp_RbVal el = a->data[i];
-    if (el.tag != SP_TAG_OBJ) continue;
-    if (el.cls_id != SP_BUILTIN_POLY_ARRAY) continue;
-    sp_PolyArray *sub = (sp_PolyArray *)el.v.p;
-    if (sub && sub->len >= 1 && sp_poly_eq(sub->data[0], key)) return sub;
+    if (sp_array_kind_len(el) >= 1 && sp_poly_eq(sp_poly_arr_get(el, 0), key))
+      return sp_pair_to_poly(el);
   }
   return NULL;
 }
 
 /* Array#rassoc — same as assoc but matches against the second
-   element of each sub-array. */
+   element of each sub-array (a pair with fewer than 2 elements is skipped). */
 static sp_PolyArray *sp_PolyArray_rassoc(sp_PolyArray *a, sp_RbVal val) {
   if (!a) return NULL;
   for (mrb_int i = 0; i < a->len; i++) {
     sp_RbVal el = a->data[i];
-    if (el.tag != SP_TAG_OBJ) continue;
-    if (el.cls_id != SP_BUILTIN_POLY_ARRAY) continue;
-    sp_PolyArray *sub = (sp_PolyArray *)el.v.p;
-    if (sub && sub->len >= 2 && sp_poly_eq(sub->data[1], val)) return sub;
+    if (sp_array_kind_len(el) >= 2 && sp_poly_eq(sp_poly_arr_get(el, 1), val))
+      return sp_pair_to_poly(el);
   }
   return NULL;
 }
