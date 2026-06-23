@@ -1717,6 +1717,7 @@ else {
       if (!strcmp(name, "max_by") || !strcmp(name, "min_by") ||
           !strcmp(name, "find") || !strcmp(name, "detect"))
         return ty_array_elem(rt);  /* returns an element */
+      if (!strcmp(name, "minmax_by")) return TY_POLY_ARRAY;  /* [min, max], or [nil, nil] when empty */
       if (!strcmp(name, "partition")) return TY_POLY_ARRAY;  /* [[truthy...],[falsy...]] */
       if (!strcmp(name, "filter_map")) return TY_POLY_ARRAY;  /* map then drop falsy */
     }
@@ -1840,6 +1841,7 @@ else {
          !strcmp(name, "none?") || !strcmp(name, "one?")) && argc == 0) return TY_BOOL;
     if ((!strcmp(name, "bsearch") || !strcmp(name, "find") || !strcmp(name, "detect")) && block >= 0)
       return ty_array_elem(rt);  /* element or nil */
+    if (!strcmp(name, "bsearch_index") && block >= 0) return TY_INT;  /* index, or nil */
     if ((!strcmp(name, "map!") || !strcmp(name, "collect!")) && block >= 0) {
       /* Typed arrays (int/str/float): in-place mutation preserves element type.
          The block param may be widened to TY_POLY when shared with other blocks,

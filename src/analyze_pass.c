@@ -3088,6 +3088,7 @@ int infer_block_params(Compiler *c) {
               !strcmp(name, "tally_by") || !strcmp(name, "min_by_all") ||
               !strcmp(name, "filter_map") || !strcmp(name, "count_by") ||
               !strcmp(name, "partition") || !strcmp(name, "each_slice") ||
+              !strcmp(name, "minmax_by") || !strcmp(name, "bsearch_index") ||
               !strcmp(name, "each_cons") || !strcmp(name, "cycle")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
