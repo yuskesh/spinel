@@ -123,6 +123,43 @@ Storing a `Rational` or `Complex` in a heterogeneous (poly) array is not yet
 supported -- the 16-byte value does not fit the boxed-value union, so such an
 element reads back as `nil`.
 
+#### `defined?`
+
+`defined?` is resolved **statically at compile time** from the operand's
+syntactic form and whole-program symbol presence, not from the runtime state of
+the actual receiver or binding. It returns a fixed label string (or `nil`),
+which matches CRuby for the common forms but differs in several cases. A full
+runtime-accurate `defined?` would require carrying per-object/per-binding
+definedness into the generated code; that cost is deliberately not paid.
+
+Forms that match CRuby: a local variable (`"local-variable"`), a set/unset
+instance variable, a set/unset global variable, a user or built-in constant
+name (`"constant"`), a no-receiver call to a **user-defined** method
+(`"method"`), `self`, `nil`/`true`/`false`, and the int/float/string/symbol/array
+literals that report `"expression"`.
+
+Where Spinel returns `nil` but CRuby returns a label:
+
+| Operand | CRuby | Spinel |
+| --- | --- | --- |
+| `Foo::Bar` (constant path) | `"constant"` | `nil` |
+| `puts` (built-in / Kernel method) | `"method"` | `nil` |
+| `obj.meth` (call with a receiver) | `"method"` | `nil` |
+| `1 + 1` (operator = method call) | `"method"` | `nil` |
+| `{a: 1}`, `1..3` (hash/range and other general expressions) | `"expression"` | `nil` |
+| `x = 1` (assignment) | `"assignment"` | `nil` |
+| `yield`, `super` | `"yield"` / `"super"` | `nil` |
+
+Two forms report a label where CRuby would report `nil`, because the check is
+syntactic rather than runtime:
+
+- An instance variable reports `"instance-variable"` when **any** code in the
+  program assigns that ivar name -- not whether it is set on the specific
+  receiver at that point.
+- A class variable read always reports `"class variable"`, with no
+  definedness check, so `defined?(@@undefined)` is `"class variable"` in Spinel
+  versus `nil` in CRuby.
+
 #### `String#grapheme_clusters`
 
 Correct Unicode extended-grapheme segmentation (`"á".grapheme_clusters # => ["á"]`)
