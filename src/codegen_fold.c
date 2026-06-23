@@ -661,10 +661,11 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
-  if (!ty_is_array(rt)) return 0;
-  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  int is_range = (rt == TY_RANGE);  /* a finite int range materializes to an int array */
+  if (!is_range && !ty_is_array(rt)) return 0;
+  const char *k = is_range ? "Int" : (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
-  TyKind et = ty_array_elem(rt);
+  TyKind et = is_range ? TY_INT : ty_array_elem(rt);
   const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -727,7 +728,18 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   }
   int trecv = ++g_tmp, tbest = ++g_tmp, tbv = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tcur = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);  /* recv value; its own preludes flow to g_pre */
-  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+  if (is_range) {
+    int trng = ++g_tmp;
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = %s;\n", trng, rb.p ? rb.p : "");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl);\n",
+               trecv, trng, trng, trng);
+    /* freshly allocated and held only here; root it before the block walk,
+       whose body may allocate and trigger a collection */
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  }
+  else { emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); }
+  free(rb.p);
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbest, et == TY_RANGE ? "(sp_Range){0}" : default_value(et));
   emit_indent(g_pre, g_indent); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s; int _t%d = 1;\n", tbv, default_value(bvt), tf);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);

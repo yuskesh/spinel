@@ -2082,6 +2082,11 @@ else {
         !strcmp(name, "begin") || !strcmp(name, "end"))  return TY_INT;
     if (!strcmp(name, "bsearch")) return TY_INT;  /* a member, or nil (nullable int) */
     int block = nt_ref(nt, id, "block");
+    /* finite-range Enumerable methods that materialize to an int array in
+       codegen: select/reject/filter (fused loop) and min_by/max_by. */
+    if ((!strcmp(name, "min_by") || !strcmp(name, "max_by")) && block >= 0) return TY_INT;
+    if ((ty_iter_shape(name) == TY_ITER_SELECT || ty_iter_shape(name) == TY_ITER_REJECT) &&
+        block >= 0) return TY_INT_ARRAY;
     if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
       int body = nt_ref(nt, block, "body");
       int bn = 0;
