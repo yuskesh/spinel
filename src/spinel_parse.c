@@ -2126,7 +2126,8 @@ static char *rewrite_syntax_sugar(char *source) {
       { size_t _k; for (_k = 0; _k < _name_len; _k++) OUT_CHAR(source[_ns + _k]); } \
       if (i < len && source[i] == ')') {                                  \
         i++; /* no args */                                                \
-      } else if (i < len && source[i] == ',') {                           \
+      } \
+      else if (i < len && source[i] == ',') {                           \
         i++;                                                              \
         while (i < len && source[i] == ' ') i++;                          \
         OUT_CHAR('(');                                                    \

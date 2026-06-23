@@ -1044,7 +1044,8 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
     sp_gc_pool_relink(_h); \
     _h->recycle = sp_##CLS##_pool_recycle; \
     _p = (sp_##CLS *)((char *)_h + sizeof(sp_gc_hdr)); \
-  } else { \
+  } \
+  else { \
     _p = (sp_##CLS *)sp_gc_alloc_pool(sizeof(sp_##CLS), SCAN, sp_##CLS##_pool_recycle); \
   } \
   _p; \
@@ -3566,7 +3567,8 @@ static sp_PolyArray *sp_math_lgamma(double x) {
   int sign = 1; double v;
   if (x > 0.0) {
     v = sp_lgamma_pos(x);
-  } else {
+  }
+  else {
     double s = sin(M_PI * x);
     if (s == 0.0) v = INFINITY;            /* pole at a non-positive integer */
     else { if (s < 0.0) sign = -1; v = log(M_PI / fabs(s)) - sp_lgamma_pos(1.0 - x); }

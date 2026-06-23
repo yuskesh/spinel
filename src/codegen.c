@@ -2357,7 +2357,8 @@ static void scan_prologue_features(Compiler *c) {
       size_t _saved_len = body->len;                          \
       if (setjmp(g_unsup_recover) == 0) {                     \
         g_unsup_armed = 1; emit_call; g_unsup_armed = 0;      \
-      } else {                                                \
+      } \
+      else {                                                \
         g_unsup_armed = 0;                                    \
         body->len = _saved_len;                               \
         if (body->p) body->p[_saved_len] = '\0';              \

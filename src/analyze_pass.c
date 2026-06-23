@@ -2389,7 +2389,8 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 2;
       pty[0] = ty_array_elem(rt);
       pty[1] = TY_UNKNOWN;
-    } else {
+    }
+    else {
       arity = ty_block_yield(rt, name, pty, 4);
       if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
     }
@@ -2407,7 +2408,8 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (ty_is_hash(rt)) {
       if (ct == TY_METHOD) {
         wrap_pair = (arity == 2);  /* each: pair as array; each_key/value: bare value */
-      } else {
+      }
+      else {
         /* a proc/lambda (value or inline): the call-site inference types its
            params from the forwarded call. `each` to a 1-param callable gets the
            [k,v] pair as one array; to a 2-param one, k and v positionally

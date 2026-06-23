@@ -1222,7 +1222,8 @@ else {
           int _bn = 0; nt_arr(nt, nd, "elements", &_bn); const char *_hc = ty_hash_cname(res);
           if (_bn == 0 && _hc) buf_printf(b, "sp_%sHash_new()", _hc);
           else emit_expr(c, nd, b);
-        } else emit_expr(c, nd, b); }
+        }
+        else emit_expr(c, nd, b); }
       buf_puts(b, " : ");
       { int nd = eb[0]; const char *_bty = nt_type(nt, nd);
         if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) emit_boxed(c, nd, b);
@@ -1236,7 +1237,8 @@ else {
           int _bn = 0; nt_arr(nt, nd, "elements", &_bn); const char *_hc = ty_hash_cname(res);
           if (_bn == 0 && _hc) buf_printf(b, "sp_%sHash_new()", _hc);
           else emit_expr(c, nd, b);
-        } else emit_expr(c, nd, b); }
+        }
+        else emit_expr(c, nd, b); }
       buf_puts(b, ")");
       return;
     }

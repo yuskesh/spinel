@@ -4804,9 +4804,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        runtime __yblk__ parameter. */
     if (g_block_id >= 0) {
       buf_puts(b, "1");
-    } else if (g_current_scope_is_lowered) {
+    }
+    else if (g_current_scope_is_lowered) {
       buf_puts(b, "("); emit_yblk_ref(b); buf_puts(b, " != NULL)");
-    } else {
+    }
+    else {
       buf_puts(b, "0");
     }
     return;
@@ -7613,10 +7615,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (rcid >= 0) {
           const char *qn = class_ruby_name(c, rcid); if (!qn) qn = c->classes[rcid].name;
           buf_printf(b, "\"uninitialized constant %s::%s\"", qn, cg_qm);
-        } else {
+        }
+        else {
           buf_printf(b, "\"uninitialized constant %s\"", cg_qm);
         }
-      } else {
+      }
+      else {
         buf_printf(b, "\"wrong constant name %s\"", cg_qm);
       }
       buf_puts(b, "), sp_box_nil())");

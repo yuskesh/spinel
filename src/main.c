@@ -240,7 +240,8 @@ int main(int argc, char **argv) {
         source = a;
         i++;
         if (run_mode) { run_args = &argv[i]; n_run_args = argc - i; break; }
-      } else {
+      }
+      else {
         i++;  /* extra positionals are ignored in compile mode */
       }
     }
@@ -283,7 +284,8 @@ int main(int argc, char **argv) {
   char basename[1024];
   if (eval_used) {
     strcpy(basename, "a");
-  } else {
+  }
+  else {
     const char *b = source;
     const char *sl = strrchr(source, '/');
     if (sl) b = sl + 1;
@@ -312,7 +314,8 @@ int main(int argc, char **argv) {
       free(cmd.p);
       if (rc == 0 && file_exists(seed_path)) {
         set_env("SPINEL_RBS_SEED", seed_path);
-      } else {
+      }
+      else {
         remove(seed_path);
         seed_path[0] = '\0';
       }
@@ -333,12 +336,14 @@ int main(int argc, char **argv) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".rbs", sizeof emit_out - strlen(emit_out) - 1); }
     set_env("SPINEL_EMIT_RBS", emit_out);
-  } else if (emit_types) {
+  }
+  else if (emit_types) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".types.json", sizeof emit_out - strlen(emit_out) - 1); }
     set_env("SPINEL_DEBUG", "1");
     set_env("SPINEL_EMIT_TYPES", emit_out);
-  } else if (emit_symbol_map) {
+  }
+  else if (emit_symbol_map) {
     snprintf(emit_out, sizeof emit_out, "%s", output ? output : basename);
     if (!output) { strncat(emit_out, ".symbols.json", sizeof emit_out - strlen(emit_out) - 1); }
     set_env("SPINEL_DEBUG", "1");
@@ -376,7 +381,8 @@ int main(int argc, char **argv) {
   if (c_only) {
     snprintf(c_path, sizeof c_path, "%s", output ? output : basename);
     if (!output) strncat(c_path, ".c", sizeof c_path - strlen(c_path) - 1);
-  } else {
+  }
+  else {
     make_temp_path(c_path, sizeof c_path, "out", 0, ".c");
     c_is_temp = 1;
   }
@@ -401,7 +407,8 @@ int main(int argc, char **argv) {
     snprintf(rdir, sizeof rdir, "run_%s", basename);
     make_temp_path(bin_path, sizeof bin_path, rdir, 0, EXE_SUFFIX);
     bin_is_temp = 1;
-  } else {
+  }
+  else {
     snprintf(bin_path, sizeof bin_path, "%s%s", output ? output : basename, output ? "" : EXE_SUFFIX);
   }
 

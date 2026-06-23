@@ -2142,7 +2142,8 @@ void analyze_program(Compiler *c) {
           for (int k = 0; k < nrec; k++)
             if (c->classes[recCi[k]].ivar_types[recIv[k]] != prev[k]) { stable = 0; break; }
           if (stable) break;
-        } else if (!ch) break;
+        }
+        else if (!ch) break;
       }
       free(prev);
     }
@@ -3149,7 +3150,8 @@ void analyze_program(Compiler *c) {
       Scope *s = comp_scope_of(c, id);
       LocalVar *lv = s ? scope_local(s, nm) : NULL;
       if (lv) dstt = lv->type;
-    } else {
+    }
+    else {
       Scope *s = comp_scope_of(c, id);
       if (s && s->class_id >= 0 && s->class_id < c->nclasses) {
         int iv = comp_ivar_index(&c->classes[s->class_id], nm);

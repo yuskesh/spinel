@@ -703,7 +703,8 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
     if (bvt == TY_POLY) {
       buf_printf(g_pre, "else { if (sp_poly_lt(_t%d, _t%d)) { _t%d = lv_%s; _t%d = _t%d; } if (sp_poly_gt(_t%d, _t%d)) { _t%d = lv_%s; _t%d = _t%d; } }\n",
                  tcur, tbvmin, tmin, p0 ? p0 : "", tbvmin, tcur, tcur, tbvmax, tmax, p0 ? p0 : "", tbvmax, tcur);
-    } else {
+    }
+    else {
       buf_printf(g_pre, "else { if (_t%d < _t%d) { _t%d = lv_%s; _t%d = _t%d; } if (_t%d > _t%d) { _t%d = lv_%s; _t%d = _t%d; } }\n",
                  tcur, tbvmin, tmin, p0 ? p0 : "", tbvmin, tcur, tcur, tbvmax, tmax, p0 ? p0 : "", tbvmax, tcur);
     }
@@ -1476,7 +1477,8 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
     vo = block_param_multi_leaf(c, block, 1, 0);
     io = block_param_multi_leaf(c, block, 1, 1);
     if (!vo || !io) return 0;
-  } else {
+  }
+  else {
     pairo = block_param_name(c, block, 1);
     if (!pairo) return 0;
   }
@@ -1515,7 +1517,8 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
     lv = rsc ? scope_local(rsc, vo) : NULL; li = rsc ? scope_local(rsc, io) : NULL;
     sv = lv ? lv->type : TY_UNKNOWN; si = li ? li->type : TY_UNKNOWN;
     if (lv) lv->type = elem_t; if (li) li->type = TY_INT;
-  } else {
+  }
+  else {
     lp = rsc ? scope_local(rsc, pairo) : NULL; sp = lp ? lp->type : TY_UNKNOWN;
     if (lp) lp->type = pair_ty;
   }
@@ -1528,12 +1531,14 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   if (multi) {
     emit_ctype(c, elem_t, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", rename_local(vo), k, ta, ti);
     buf_printf(b, "mrb_int lv_%s = _t%d; ", rename_local(io), tidx);
-  } else {
+  }
+  else {
     buf_printf(b, "sp_%sArray *lv_%s = sp_%sArray_new(); ", pk, rename_local(pairo), pk);
     if (elem_t == TY_INT) {
       buf_printf(b, "sp_IntArray_push(lv_%s, sp_%sArray_get(_t%d, _t%d)); sp_IntArray_push(lv_%s, _t%d); ",
                  rename_local(pairo), k, ta, ti, rename_local(pairo), tidx);
-    } else {
+    }
+    else {
       buf_printf(b, "sp_PolyArray_push(lv_%s, ", rename_local(pairo));
       char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
       Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem_t, src, &bx); buf_puts(b, bx.p ? bx.p : ""); free(bx.p);
@@ -1648,7 +1653,8 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     if (elem_t == TY_INT) {
       emit_indent(g_pre, din);
       buf_printf(g_pre, "sp_IntArray_push(_t%d, sp_%sArray_get(_t%d, _t%d)); sp_IntArray_push(_t%d, _t%d);\n", tpair, k, ta, ti, tpair, tidx);
-    } else {
+    }
+    else {
       emit_indent(g_pre, din); buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tpair);
       char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
       Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, elem_t, src, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
@@ -3857,7 +3863,8 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     const char *ak = (accT == TY_POLY_ARRAY) ? "Poly" : array_kind(accT);
     emit_indent(g_pre, g_indent); emit_ctype(c, accT, g_pre);
     buf_printf(g_pre, " _t%d = sp_%sArray_new();\n", tacc, ak ? ak : "Int");
-  } else {
+  }
+  else {
     /* a non-empty seed's emit_expr writes its construction to the prelude first,
        so the ctype/assign must follow it. */
     Buf accb; memset(&accb, 0, sizeof accb); emit_expr(c, argv[0], &accb);

@@ -1236,7 +1236,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
          leave has_cond=0, i.e. match unconditionally). */
       buf_puts(&cond_buf, "0");
       has_cond = 1;
-    } else if (!strcmp(pty, "FindPatternNode")) {
+    }
+    else if (!strcmp(pty, "FindPatternNode")) {
       find_pat = pat;
       find_k = (pt == TY_POLY_ARRAY) ? "Poly" : array_kind(pt);
       if (!find_k) find_k = "Int";
@@ -1268,7 +1269,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
       buf_printf(&cond_buf, "_t%d >= 0", find_pos);
       has_cond = 1;
-    } else {
+    }
+    else {
       has_cond = emit_pm_cond(c, pat, t, pt, &cond_buf);
     }
     /* For IfNode the pattern is always a binding (LV), guard is separate */
@@ -1908,7 +1910,8 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     buf_puts(b, ") break;\n");
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
-  } else {
+  }
+  else {
     emit_indent(b, indent);
     buf_puts(b, "while (");
     if (is_until) buf_puts(b, "!(");

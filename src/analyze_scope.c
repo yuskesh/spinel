@@ -521,13 +521,15 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
        class-body level, where `self` is the class object. */
     if (enclosing_class < 0) return -1;
     ci = enclosing_class;
-  } else if (recv_ty && (!strcmp(recv_ty, "ConstantReadNode") ||
+  }
+  else if (recv_ty && (!strcmp(recv_ty, "ConstantReadNode") ||
                          !strcmp(recv_ty, "ConstantPathNode"))) {
     const char *recv_name = nt_str(nt, recv, "name");
     if (!recv_name) return -1;
     ci = comp_class_index(c, recv_name);
     if (ci < 0) return -1;
-  } else {
+  }
+  else {
     return -1;
   }
   int body = nt_ref(nt, blk, "body");
@@ -1692,7 +1694,8 @@ void process_include_body(Compiler *c, int ci, int body_node) {
               }
             comp_prep_chain_add(cif, inc_shadow, prev);
             free(prev);
-          } else {
+          }
+          else {
             comp_prep_chain_add(&c->classes[ci], src->name, inc_shadow);
           }
           dst_name = inc_shadow;
@@ -1717,7 +1720,8 @@ void process_include_body(Compiler *c, int ci, int body_node) {
             dst->body = nb;
             walk_scope(c, nb, dst_idx, ci);
             g_inc_did_clone = 1;
-          } else dst->body = src->body;
+          }
+          else dst->body = src->body;
         }
 else {
           dst->body = src->body;
