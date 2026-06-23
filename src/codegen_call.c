@@ -7961,6 +7961,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; (mrb_int)sp_time_cmp(_t%d, _t%d); })", ta, tb);
       return;
     }
+    /* Array <=> Array: lexicographic element-wise compare, or nil when an
+       element pair is incomparable. Covers every builtin array kind via the
+       boxed accessor. */
+    if (ty_is_array(lrt) && ty_is_array(lat)) {
+      int ta = ++g_tmp, tb = ++g_tmp, tk = ++g_tmp, tr = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
+      buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; mrb_bool _t%d; mrb_int _t%d = sp_poly_arr_cmp(_t%d, _t%d, &_t%d);"
+                    " _t%d ? _t%d : SP_INT_NIL; })", tk, tr, ta, tb, tk, tk, tr);
+      return;
+    }
     /* Poly operands (e.g. `@n <=> other.n` with int ivars widened to poly in
        promote mode): tag-dispatch via sp_poly_cmp rather than falling through
        to the object-receiver path, which would misread a boxed int's payload
