@@ -32,7 +32,7 @@ static void narrow_memo_put(long key, int val) {
    inside a nested loop or block bind there, not to the splice). TY_UNKNOWN if
    none carry a value. Mirrors codegen's ie_splice_value_ty so the inferred
    instance_exec result type matches the slot codegen sizes. */
-static TyKind ie_block_break_next_ty(Compiler *c, int node) {
+TyKind ie_block_break_next_ty(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return TY_UNKNOWN;
   const char *ty = nt_type(nt, node);
@@ -2186,7 +2186,11 @@ else {
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+        TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        /* a value-carrying next widens the element type past the tail */
+        TyKind bnt = ie_block_break_next_ty(c, body);
+        if (bnt != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
+        return ty_array_of(bt);
       }
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_SELECT || !strcmp(name, "reject"))) return rt;
       if (block >= 0 && !strcmp(name, "transform_keys")) {

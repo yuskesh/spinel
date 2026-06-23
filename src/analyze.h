@@ -25,6 +25,12 @@ void analyze_program(Compiler *c);
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
 
+/* Unified type of every value-carrying `break`/`next` in a block body (not
+   descending into nested blocks/loops), or TY_UNKNOWN if none. Lets a
+   collecting emitter widen its element type past the tail expression so a
+   `next <other-type>` is boxed rather than assigned to a mismatched temp. */
+TyKind ie_block_break_next_ty(Compiler *c, int node);
+
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 
