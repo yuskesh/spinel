@@ -2351,6 +2351,10 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "include?") && argc == 1) {
         buf_printf(b, "sp_str_include(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      else if (!strcmp(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+        /* s.start_with?(/re/): true when the pattern matches at index 0 */
+        buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, argv[0]), r);
+      }
       else if (!strcmp(name, "start_with?") && argc == 1) {
         buf_printf(b, "sp_str_start_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -2417,6 +2421,12 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
         /* s[start, len] */
         buf_printf(b, "sp_str_sub_range(%s, ", r);
         emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+        /* s["sub"] -> the substring if present, else nil */
+        int tsub = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", tsub); emit_str_expr(c, argv[0], b);
+        buf_printf(b, "; (strstr(%s, _t%d) ? _t%d : NULL); })", r, tsub, tsub);
       }
       else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1) {
         buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
@@ -2499,6 +2509,13 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
       else if (!strcmp(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
       else if (!strcmp(name, "unpack") && argc == 1)  { buf_printf(b, "sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (!strcmp(name, "unpack1") && argc == 1) { buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      else if (!strcmp(name, "sum") && argc == 0) {
+        /* default 16-bit byte checksum: sum of byte values modulo 2**16 */
+        int ts = ++g_tmp, tp = ++g_tmp, tacc = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = %s; mrb_int _t%d = 0; for (const char *_t%d = _t%d; *_t%d; _t%d++)"
+                      " _t%d += (unsigned char)*_t%d; _t%d & 0xffff; })", ts, r, tacc, tp, ts, tp, tp, tacc, tp, tacc);
+      }
       else if (!strcmp(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
       else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);
       else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
