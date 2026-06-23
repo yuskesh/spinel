@@ -1717,6 +1717,117 @@ static void narrow_object_arrays(Compiler *c) {
   free(sl); free(read_slot); free(claimed);
 }
 
+/* ===== Post-fixpoint: narrow a poly local that is only ever used as an int =====
+   A method-local typed TY_POLY whose every read feeds an int context (an
+   arithmetic/comparison operator, or an array/hash index) and whose every write
+   is an int or a poly value is narrowed to TY_INT. The poly writes are then
+   coerced by emit_assign's existing int-slot-poly-rhs path (sp_poly_to_i), and
+   the arithmetic emits natively instead of through the boxed sp_poly_* helpers.
+   This removes per-iteration boxing from hot loops where a value picks up the
+   poly type from a single poly source (e.g. optcarrot's render_pixel `pixel`,
+   which is `sprite[2]` -- a poly-array element -- on one branch but is only ever
+   used `% 4`, `==`, and as `@output_color[pixel]`). Requiring at least one index
+   use proves the value is genuinely an integer, so coercing a poly source is
+   sound. Strictly conservative: any non-int use, op-assign, or non-int/poly
+   write source leaves it TY_POLY. */
+/* Arithmetic/bitwise operators only -- NOT comparisons (`==`/`<`/`<=>`...),
+   which are polymorphic (a string compares with `==` too), so a comparison
+   operand is not evidence the value is an int. These arithmetic ops are also
+   overloaded on strings/arrays, but the required array-index use proves the
+   value is genuinely an integer, so an int reading of these is then sound. */
+static int npi_is_int_op(const char *nm) {
+  if (!nm) return 0;
+  static const char *const ops[] = {
+    "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", "**", NULL };
+  for (int i = 0; ops[i]; i++) if (!strcmp(nm, ops[i])) return 1;
+  return 0;
+}
+static void narrow_poly_int_locals(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int nc = nt->count ? nt->count : 1;
+  char *is_read = (char *)malloc(nc);
+  char *claimed = (char *)malloc(nc);
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int li = 0; li < sc->nlocals; li++) {
+      LocalVar *lv = &sc->locals[li];
+      if (lv->type != TY_POLY) continue;
+      if (lv->is_param || lv->is_block_param || lv->is_cell || lv->rbs_seeded) continue;
+      const char *nm = lv->name;
+      int ok = 1, saw_write = 0;
+
+      /* 1. writes: plain LocalVariableWriteNode with an int/poly value; any
+            op/and/or-write or multi-target leaves it poly. */
+      for (int id = 0; id < nt->count && ok; id++) {
+        const char *ty = nt_type(nt, id);
+        if (!ty || c->nscope[id] != s) continue;
+        if (!strcmp(ty, "LocalVariableOperatorWriteNode") ||
+            !strcmp(ty, "LocalVariableAndWriteNode") ||
+            !strcmp(ty, "LocalVariableOrWriteNode") ||
+            !strcmp(ty, "LocalVariableTargetNode")) {
+          const char *wn = nt_str(nt, id, "name");
+          if (wn && !strcmp(wn, nm)) ok = 0;
+        }
+        else if (!strcmp(ty, "LocalVariableWriteNode")) {
+          const char *wn = nt_str(nt, id, "name");
+          if (!wn || strcmp(wn, nm)) continue;
+          saw_write = 1;
+          int v = nt_ref(nt, id, "value");
+          TyKind vt = v >= 0 ? infer_type(c, v) : TY_UNKNOWN;
+          if (vt != TY_INT && vt != TY_POLY) ok = 0;
+        }
+      }
+      if (!ok || !saw_write) continue;
+
+      /* 2. map this local's reads, then claim those in an int context. */
+      for (int id = 0; id < nt->count; id++) {
+        is_read[id] = 0; claimed[id] = 0;
+        const char *ty = nt_type(nt, id);
+        if (!ty || strcmp(ty, "LocalVariableReadNode") || c->nscope[id] != s) continue;
+        const char *rn = nt_str(nt, id, "name");
+        if (rn && !strcmp(rn, nm)) is_read[id] = 1;
+      }
+      int has_index = 0;
+      for (int id = 0; id < nt->count; id++) {
+        const char *ty = nt_type(nt, id);
+        if (!ty) continue;
+        if (!strcmp(ty, "CallNode")) {
+          const char *cn = nt_str(nt, id, "name");
+          int recv = nt_ref(nt, id, "receiver");
+          int args = nt_ref(nt, id, "arguments"); int an = 0;
+          const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+          int is_idx = cn && (!strcmp(cn, "[]") || !strcmp(cn, "at") || !strcmp(cn, "[]="));
+          if (npi_is_int_op(cn)) {
+            if (recv >= 0 && is_read[recv]) claimed[recv] = 1;
+            for (int k = 0; k < an; k++) if (is_read[av[k]]) claimed[av[k]] = 1;
+          }
+          else if (is_idx && an >= 1 && is_read[av[0]]) {
+            /* the index is arg 0, and only an ARRAY index proves an int (a hash
+               key can be any type). A `[]=` value (arg 1) is not an index. */
+            TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+            if (ty_is_array(rt) || ty_is_obj_array(rt)) { claimed[av[0]] = 1; has_index = 1; }
+          }
+        }
+        else if (!strcmp(ty, "IndexNode")) {
+          int recv = nt_ref(nt, id, "receiver");
+          TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+          if (ty_is_array(rt) || ty_is_obj_array(rt)) {
+            int args = nt_ref(nt, id, "arguments"); int an = 0;
+            const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+            for (int k = 0; k < an; k++) if (is_read[av[k]]) { claimed[av[k]] = 1; has_index = 1; }
+          }
+        }
+      }
+      /* every read must be claimed, and at least one must be an index (which
+         proves the value is an integer, making a poly-source coercion sound). */
+      for (int id = 0; id < nt->count && ok; id++)
+        if (is_read[id] && !claimed[id]) ok = 0;
+      if (ok && has_index) lv->type = TY_INT;
+    }
+  }
+  free(is_read); free(claimed);
+}
+
 void analyze_program(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
@@ -2641,6 +2752,10 @@ void analyze_program(Compiler *c) {
      the node cache is finalized so the rebuild below propagates the new element
      types to every `arr[i]` / `arr[i].field` site. */
   narrow_object_arrays(c);
+
+  /* narrow poly locals that are only ever used as ints (drop per-use boxing);
+     the rebuild below re-infers their reads/ops at the narrowed int type. */
+  narrow_poly_int_locals(c);
 
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)
