@@ -27,3 +27,23 @@ puts h["b"]
 g = rt({x: [1, 2], y: "z"})
 puts g[:x].inspect
 puts g[:y]
+# Bignum.
+p rt(123456789012345678901234567890)
+p rt(-99999999999999999999999999999999)
+p rt(2 ** 200)
+p rt([1, 100000000000000000000, "z"])
+# Shared references and cycles (CRuby's object-link table).
+shared = [1, 2]
+sg = rt([shared, shared])
+sg[0] << 99
+p sg[1]
+cyc = [10]
+cyc << cyc
+dc = rt(cyc)
+p dc[0]
+p dc.length
+p dc[1][1][0]
+sh = {n: 1}
+eh = rt([sh, sh])
+eh[0][:m] = 5
+p eh[1][:m]

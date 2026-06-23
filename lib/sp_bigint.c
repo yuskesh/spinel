@@ -5322,6 +5322,35 @@ sp_Bigint *sp_bigint_new_str(const char *s, int base) {
   return b;
 }
 
+/* Serialization helpers for Marshal's `l` (Bignum) form. The magnitude is a
+   little-endian limb array; these expose it as little-endian bytes without
+   leaking the mpz layout into the main translation unit. */
+int sp_bigint_sign(sp_Bigint *b) { return b->mpz.sn; }
+size_t sp_bigint_byte_len(sp_Bigint *b) { return b->mpz.sz * sizeof(mp_limb); }
+size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap) {
+  mpz_t *x = &b->mpz;
+  size_t k = 0;
+  for (size_t i = 0; i < x->sz; i++) {
+    mp_limb limb = x->p ? x->p[i] : 0;
+    for (size_t j = 0; j < sizeof(mp_limb); j++) { if (k < cap) out[k] = (unsigned char)(limb >> (8 * j)); k++; }
+  }
+  while (k > 0 && k <= cap && out[k - 1] == 0) k--;  /* minimal length */
+  return k;
+}
+sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, size_t n) {
+  sp_Bigint *b = sp_bigint_alloc();
+  mpz_init(sp_mpz_ctx, &b->mpz);
+  size_t lb = sizeof(mp_limb);
+  size_t nlimbs = (n + lb - 1) / lb; if (nlimbs == 0) nlimbs = 1;
+  mpz_realloc(sp_mpz_ctx, &b->mpz, nlimbs);
+  for (size_t i = 0; i < nlimbs; i++) b->mpz.p[i] = 0;
+  for (size_t i = 0; i < n; i++) b->mpz.p[i / lb] |= (mp_limb)((mp_limb)bytes[i] << (8 * (i % lb)));
+  b->mpz.sz = nlimbs;
+  while (b->mpz.sz > 0 && b->mpz.p[b->mpz.sz - 1] == 0) b->mpz.sz--;
+  b->mpz.sn = (short)(b->mpz.sz == 0 ? 0 : (negative ? -1 : 1));
+  return b;
+}
+
 void sp_bigint_free(sp_Bigint *b) {
   if (b) {
     mpz_clear(sp_mpz_ctx, &b->mpz);

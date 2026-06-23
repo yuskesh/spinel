@@ -3130,6 +3130,10 @@ sp_Bigint *sp_bigint_new_int(int64_t v);
 sp_Bigint *sp_bigint_add(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_sub(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_mul(sp_Bigint *a, sp_Bigint *b);
+int sp_bigint_sign(sp_Bigint *b);
+size_t sp_bigint_byte_len(sp_Bigint *b);
+size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);
+sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, size_t n);
 static sp_RbVal sp_box_int(mrb_int v) { sp_RbVal r; r.tag = SP_TAG_INT; r.cls_id = 0; r.v.i = v; return r; }
 static sp_RbVal sp_box_str(const char *v) { sp_RbVal r; r.tag = SP_TAG_STR; r.cls_id = 0; r.v.s = v; return r; }
 static sp_RbVal sp_box_float(mrb_float v) { sp_RbVal r; r.tag = SP_TAG_FLT; r.cls_id = 0; r.v.f = v; return r; }
