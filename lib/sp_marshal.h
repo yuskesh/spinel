@@ -58,6 +58,13 @@ static int sp_mar_seen(sp_mar_buf *b, void *ptr) {
   return 0;
 }
 static void sp_mar_w(sp_mar_buf *b, sp_RbVal v);
+/* User-object dump/load dispatchers generated per-program by codegen (one arm
+   per marshalable class). Defined later in the same TU; here just declared so
+   the generic dumper/loader can call them. When the program has no marshalable
+   class these are still emitted (empty), and DCE drops the whole marshal chain
+   if Marshal is never used. */
+static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p);
+static sp_RbVal sp_marshal_obj_load(const char *name, sp_PolyArray *iv, int *ok);
 static void sp_mar_w_hash(sp_mar_buf *b, sp_RbVal v) {
   sp_mar_b(b, '{');
   sp_mar_long(b, sp_poly_length(v));
@@ -136,7 +143,12 @@ static void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
           break;
         }
         default:
-          sp_raise_cls("TypeError", "no marshal_dump is defined for this object");
+          /* a user object (non-negative cls_id) dumps via the generated
+             per-class dispatcher as CRuby's `o`<:Class><ivars> form. */
+          if (v.cls_id < 0) sp_raise_cls("TypeError", "no marshal_dump is defined for this object");
+          if (sp_mar_seen(b, v.v.p)) break;
+          if (!sp_marshal_obj_dump(b, v.cls_id, v.v.p))
+            sp_raise_cls("TypeError", "no marshal_dump is defined for this object");
       }
       break;
     case SP_TAG_BIGINT: {
@@ -274,6 +286,26 @@ static sp_RbVal sp_mar_r(sp_mar_rd *r) {
         sp_raise_cls("ArgumentError", "unsupported user class in Marshal.load");
         v = sp_box_nil();
       }
+      r->objs[id] = v; return v;
+    }
+    case 'o': {
+      /* plain user object: <:ClassName> <nivar> (:@ivar value)*. The ivar
+         name/value pairs are gathered into a rooted PolyArray, then the
+         generated dispatcher allocates the instance and fills its fields. A
+         self-reference inside an ivar resolves to the nil placeholder (the
+         instance is built after its ivars are read). */
+      int id = sp_mar_reg(r);
+      sp_RbVal clssym = sp_mar_r(r);
+      const char *cn = (clssym.tag == SP_TAG_SYM) ? sp_sym_to_s((sp_sym)clssym.v.i) : "";
+      long n = sp_mar_rlong(r);
+      sp_PolyArray *iv = sp_PolyArray_new(); SP_GC_ROOT(iv);
+      for (long i = 0; i < n; i++) {
+        sp_PolyArray_push(iv, sp_mar_r(r));   /* ivar symbol */
+        sp_PolyArray_push(iv, sp_mar_r(r));   /* ivar value  */
+      }
+      int ok = 0;
+      sp_RbVal v = sp_marshal_obj_load(cn, iv, &ok);
+      if (!ok) sp_raise_cls("ArgumentError", "undefined class/module in Marshal.load");
       r->objs[id] = v; return v;
     }
     case 'l': {

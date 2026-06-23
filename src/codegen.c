@@ -1680,6 +1680,117 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
   }
 }
 
+/* ---- Marshal of user objects (CRuby `o` form) ----
+   For each marshalable class, codegen emits an arm in two dispatchers that
+   sp_marshal.h calls: sp_marshal_obj_dump (by cls_id) writes `o`<:Class><nivar>
+   (:@iv val)*, and sp_marshal_obj_load (by class name) allocates a blank
+   instance and fills its ivars from the loaded name/value pairs. Only scalar,
+   poly, and nested-user-object ivar types round-trip cleanly (a typed array or
+   hash ivar would mismatch the loader's always-poly containers), so a class
+   carrying any other ivar type is left out and raises at runtime. */
+static int marshal_ivar_type_ok(TyKind t) {
+  switch (t) {
+    case TY_INT: case TY_FLOAT: case TY_STRING: case TY_BOOL:
+    case TY_SYMBOL: case TY_BIGINT: case TY_POLY: case TY_NIL:
+      return 1;
+    default:
+      return ty_is_object(t);  /* a nested user object reloads with its real cls_id */
+  }
+}
+static int class_marshalable(Compiler *c, int i) {
+  ClassInfo *ci = &c->classes[i];
+  if (is_builtin_reopen(ci->name)) return 0;
+  if (class_is_exc_subclass(c, i)) return 0;
+  if (comp_ty_value_obj(c, ty_object(i))) return 0;  /* value types: out of scope for v1 */
+  for (int j = 0; j < ci->nivars; j++)
+    if (!marshal_ivar_type_ok(ci->ivar_types[j])) return 0;
+  return 1;
+}
+/* Box ivar expression `expr` (typed t) into an sp_RbVal, mapping an unset ivar
+   (SP_INT_NIL / NULL pointer) to nil. */
+static void emit_marshal_box_ivar(TyKind t, const char *expr, Buf *b) {
+  if (t == TY_POLY) { buf_puts(b, expr); return; }
+  if (t == TY_NIL)  { buf_puts(b, "sp_box_nil()"); return; }
+  if (ty_is_object(t)) {
+    buf_printf(b, "(%s ? sp_box_obj(%s, %d) : sp_box_nil())", expr, expr, ty_object_class(t));
+    return;
+  }
+  switch (t) {
+    case TY_INT:    buf_printf(b, "(%s == SP_INT_NIL ? sp_box_nil() : sp_box_int(%s))", expr, expr); break;
+    case TY_FLOAT:  buf_printf(b, "sp_box_float(%s)", expr); break;
+    case TY_STRING: buf_printf(b, "(%s ? sp_box_str(%s) : sp_box_nil())", expr, expr); break;
+    case TY_BOOL:   buf_printf(b, "sp_box_bool(%s)", expr); break;
+    case TY_SYMBOL: buf_printf(b, "sp_box_sym(%s)", expr); break;
+    case TY_BIGINT: buf_printf(b, "(%s ? sp_box_bigint(%s) : sp_box_nil())", expr, expr); break;
+    default:        buf_puts(b, "sp_box_nil()"); break;
+  }
+}
+/* Unbox the loaded value `val` into ivar type t, mapping a nil back to the
+   type's unset representation. */
+static void emit_marshal_unbox_ivar(Compiler *c, TyKind t, Buf *b) {
+  if (t == TY_POLY) { buf_puts(b, "val"); return; }
+  if (ty_is_object(t)) {
+    buf_printf(b, "(val.tag == SP_TAG_OBJ ? (sp_%s *)val.v.p : NULL)", c->classes[ty_object_class(t)].name);
+    return;
+  }
+  switch (t) {
+    case TY_INT:    buf_puts(b, "(val.tag == SP_TAG_NIL ? SP_INT_NIL : (mrb_int)sp_poly_to_i(val))"); break;
+    case TY_FLOAT:  buf_puts(b, "(mrb_float)sp_poly_to_f(val)"); break;
+    case TY_STRING: buf_puts(b, "(val.tag == SP_TAG_STR ? val.v.s : NULL)"); break;
+    case TY_BOOL:   buf_puts(b, "(val.tag == SP_TAG_BOOL ? val.v.b : 0)"); break;
+    case TY_SYMBOL: buf_puts(b, "(val.tag == SP_TAG_SYM ? (sp_sym)val.v.i : 0)"); break;
+    case TY_BIGINT: buf_puts(b, "(val.tag == SP_TAG_BIGINT ? (sp_Bigint *)val.v.p : NULL)"); break;
+    default:        buf_puts(b, "0"); break;
+  }
+}
+static void emit_marshal_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
+  buf_puts(b, "  switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!class_marshalable(c, i)) continue;
+    ClassInfo *ci = &c->classes[i];
+    buf_printf(b, "    case %d: {\n", i);
+    buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->name, ci->name);
+    buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
+    buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
+    for (int j = 0; j < ci->nivars; j++) {
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", ci->ivars[j] + 1);
+      buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
+      emit_marshal_box_ivar(ci->ivar_types[j], expr, b);
+      buf_puts(b, ");\n");
+    }
+    buf_puts(b, "      return 1;\n    }\n");
+  }
+  buf_puts(b, "    default: return 0;\n  }\n}\n");
+
+  buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_PolyArray *iv, int *ok) {\n");
+  buf_puts(b, "  *ok = 1; (void)iv;\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!class_marshalable(c, i)) continue;
+    ClassInfo *ci = &c->classes[i];
+    buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", ci->name);
+    buf_printf(b, "    sp_%s *o = ", ci->name);
+    emit_obj_alloc_expr(c, i, b);
+    buf_puts(b, ";\n");
+    buf_puts(b, "    SP_GC_ROOT(o);\n");
+    if (ci->nivars > 0) {
+      buf_puts(b, "    for (mrb_int k = 0; k + 1 < iv->len; k += 2) {\n");
+      buf_puts(b, "      const char *nm = sp_sym_to_s((sp_sym)sp_PolyArray_get(iv, k).v.i);\n");
+      buf_puts(b, "      sp_RbVal val = sp_PolyArray_get(iv, k + 1); (void)val; (void)nm;\n");
+      for (int j = 0; j < ci->nivars; j++) {
+        buf_printf(b, "      %sif (!strcmp(nm, \"%s\")) o->iv_%s = ",
+                   j ? "else " : "", ci->ivars[j], ci->ivars[j] + 1);
+        emit_marshal_unbox_ivar(c, ci->ivar_types[j], b);
+        buf_puts(b, ";\n");
+      }
+      buf_puts(b, "    }\n");
+    }
+    buf_printf(b, "    return sp_box_obj(o, %d);\n", i);
+    buf_puts(b, "  }\n");
+  }
+  buf_puts(b, "  *ok = 0; return sp_box_nil();\n}\n");
+}
+
 /* Inline super { block } when the parent method uses yield.
    Returns 1 if the expansion was emitted, 0 if it should fall through to a
    regular function call (parent doesn't yield, has early return, etc.). */
@@ -2995,6 +3106,8 @@ char *codegen_program(const NodeTable *nt) {
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name))
       EMIT_COLLECT_UNIT(emit_class_new(c, &c->classes[i], body));
+  /* user-object Marshal dispatchers (after every class struct + pool define) */
+  emit_marshal_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
   }

@@ -37,7 +37,6 @@ registry, or stack reification — none of which exist in a flat compiled binary
 | General reflection (`instance_variable_get(var)`, `methods`, `instance_variables`) | unsupported | ivars are C struct offsets with no name→offset table; DCE strips method names |
 | User-defined `#hash` / `#eql?` for hash *keys* | not dispatched (identity probe) | the hash machinery can't call back into a user method per key |
 | `require` of stdlib `.rb` (e.g. `time`, `set`, `json/pure`) | unsupported | stdlib leans on metaprogramming / C extensions off the AOT path |
-| `Marshal` of arbitrary user objects | unsupported | `load` reconstructs by class name; that dispatch can be generated at compile time from the known class table (a later phase), but is not done yet. Bignum, Complex, Rational, and cyclic/shared refs *are* supported (see below) |
 | Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |
 
@@ -55,7 +54,7 @@ Limited today, but additively fixable; listed roughly easiest-first.
 |---|---|---|
 | `Exception#backtrace` / `Kernel#caller` | return `[]` (class + message work) | populate frames from a compile-time call-site→source side-table (the `--line-map` map already exists) |
 | `Thread` real parallelism | `Thread`/`Mutex` are modelled as single-threaded Fibers (`Thread.new{}.value` works, `synchronize` runs inline) | true parallelism needs a concurrent GC and scheduler — large |
-| `Marshal` of arbitrary user objects | primitives + Array + Hash + Bignum + Complex + Rational work, including cyclic and shared references (`Marshal.dump`/`load`, CRuby 4.8 wire format, round-trip oriented); arbitrary user objects remain unsupported | user objects need a compile-time-generated per-class dump/load. Complex's components are float-only, so they round-trip as Floats |
+| `Marshal` of user objects with container-typed ivars | primitives + Array + Hash + Bignum + Complex + Rational + plain user objects work, including cyclic and shared references (`Marshal.dump`/`load`, CRuby 4.8 wire format, byte-compatible for the supported subset); an object whose ivar is a *statically typed* Array/Hash (not a poly ivar) is not yet dumpable | a user object dumps/loads through a compile-time-generated per-class dispatcher. Supported ivar types: scalars (Integer/Float/String/true/false/Symbol/Bignum), `poly` (mixed) ivars, and nested user objects. A typed-container ivar would mismatch the loader's always-poly containers, so such a class raises `TypeError` on dump; value-type and Exception-subclass objects are also out of scope. Complex's components are float-only, so they round-trip as Floats |
 | Mixin/inheritance lifecycle hooks (`included` / `inherited` / `extended`) | defined but not fired | emit a startup call with the literal class arg (the include/inherit graph is known at compile time) |
 | External `Enumerator` (`.each`/`.map` with no block → `.next`/`.peek`/lazy) | unsupported | needs Fiber-style suspension — large. Chained block→`.to_a` forms (`each_slice(n).to_a`, `filter_map`, `map{}.to_a`) already work. |
 | `Array#hash` (and arrays as hash keys) | unsupported | a builtin is additive, but array *keys* need the fundamental key-dispatch above |

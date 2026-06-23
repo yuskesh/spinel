@@ -57,3 +57,45 @@ p rt([Rational(1, 3), Rational(2, 5)])
 rc = rt({r: Rational(7, 8), c: Complex(1.5, -2.5)})
 puts rc[:r]
 puts rc[:c]
+# Plain user objects (CRuby `o` form). Verified via attribute access, since an
+# object's #inspect carries a non-deterministic address.
+class MPoint
+  def initialize(x, y, label)
+    @x = x
+    @y = y
+    @label = label
+  end
+  attr_reader :x, :y, :label
+end
+mp = rt(MPoint.new(3, 4, "pt"))
+puts mp.x
+puts mp.y
+puts mp.label
+# nil ivar round-trips as nil
+class MNil
+  def initialize(a); @a = a; end
+  attr_reader :a, :b
+end
+mn = rt(MNil.new(10))
+p mn.a
+p mn.b
+# nested user object + poly ivar holding mixed values
+class MInner
+  def initialize(v); @v = v; end
+  attr_reader :v
+end
+class MOuter
+  def initialize(inner, item); @inner = inner; @item = item; end
+  attr_reader :inner, :item
+end
+mo = rt(MOuter.new(MInner.new(42), "tag"))
+puts mo.inner.v
+puts mo.item
+mo2 = rt(MOuter.new(MInner.new(7), [1, 2]))
+puts mo2.inner.v
+p mo2.item
+# shared object reference round-trips as a shared object
+mshared = MInner.new(99)
+mpair = rt([mshared, mshared])
+p mpair[0].v
+p mpair[1].v
