@@ -29,49 +29,18 @@
 #include <string.h>
 #include <stdint.h>
 
-/* mruby_shim has the canonical mrb_int / mrb_bool / mrb_float
-   typedefs the rest of the runtime uses. Pulling it in (rather
-   than redeclaring) keeps this file in sync with sp_runtime.h. */
-#include "mruby_shim.h"
-typedef mrb_int sp_sym;
+/* The shared runtime types (sp_RbVal, sp_IntArray, sp_sym, mrb_*, SP_TAG_*) and
+   the string allocator (sp_str_alloc / _set_len / _byte_len / sp_str_empty) come
+   straight from the shared headers: this separate TU can now allocate GC strings
+   directly onto the one shared heap, so no sp_ext_str_* shim is needed. */
+#include "sp_alloc.h"
 
-/* sp_RbVal mirrors the layout in sp_runtime.h. */
-#define SP_TAG_INT  0
-#define SP_TAG_STR  1
-#define SP_TAG_FLT  2
-#define SP_TAG_BOOL 3
-#define SP_TAG_NIL  4
-#define SP_TAG_OBJ  5
-#define SP_TAG_SYM  6
-
-typedef struct {
-  int     tag;
-  int     cls_id;
-  union {
-    mrb_int      i;
-    const char  *s;
-    mrb_float    f;
-    mrb_bool     b;
-    void        *p;
-  } v;
-} sp_RbVal;
-
+/* sp_PolyArray construction (box + push) is not yet in the shared headers, so
+   those few operations still go through extern shims defined by the main TU. */
 typedef struct sp_PolyArray sp_PolyArray;
-typedef struct {
-  mrb_int *data;
-  mrb_int  start;
-  mrb_int  len;
-  mrb_int  cap;
-} sp_IntArray;
-
-/* Extern shims supplied by the main file (sp_runtime.h). */
 extern sp_PolyArray *sp_ext_poly_array_new(void);
 extern void          sp_ext_poly_array_push_int(sp_PolyArray *a, int64_t v);
 extern void          sp_ext_poly_array_push_str(sp_PolyArray *a, const char *s);
-extern char         *sp_ext_str_alloc(size_t n);   /* GC-tracked, NUL-terminated */
-extern void          sp_ext_str_set_len(char *s, size_t n);
-extern const char   *sp_ext_str_empty(void);
-extern size_t        sp_ext_str_byte_len(const char *s);
 
 /* ---------- Helpers ---------- */
 
@@ -177,7 +146,7 @@ struct sp_PolyArray {
 /* ---------- Pack entry points ---------- */
 
 const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
-  if (!arr || !fmt) return sp_ext_str_empty();
+  if (!arr || !fmt) return sp_str_empty;
   size_t cap = 64;
   char *buf = (char *)malloc(cap);
   if (!buf) { perror("malloc"); exit(1); }
@@ -247,15 +216,15 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
   }
   /* Hand back via GC-tracked sp_str_alloc so the main file's GC
      can free the buffer. */
-  char *r = sp_ext_str_alloc(len);
+  char *r = sp_str_alloc(len);
   memcpy(r, buf, len);
-  sp_ext_str_set_len(r, len);
+  sp_str_set_len(r, len);
   free(buf);
   return r;
 }
 
 const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
-  if (!arr || !fmt) return sp_ext_str_empty();
+  if (!arr || !fmt) return sp_str_empty;
   size_t cap = 64;
   char *buf = (char *)malloc(cap);
   if (!buf) { perror("malloc"); exit(1); }
@@ -337,9 +306,9 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
       }
     }
   }
-  char *r = sp_ext_str_alloc(len);
+  char *r = sp_str_alloc(len);
   memcpy(r, buf, len);
-  sp_ext_str_set_len(r, len);
+  sp_str_set_len(r, len);
   free(buf);
   return r;
 }
@@ -351,7 +320,7 @@ sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
   if (!str || !fmt) return out;
   /* sp_ext_str_byte_len honors the heap-string header so embedded
      NULs (binary data) don't truncate the source. */
-  size_t slen = sp_ext_str_byte_len(str);
+  size_t slen = sp_str_byte_len(str);
   size_t off = 0;
   const char *p = fmt;
   while (*p) {
@@ -379,14 +348,14 @@ else {
       if (spec == 'Z' && count < 0) {
         size_t z = 0;
         while (off + z < slen && src[z]) z++;
-        char *s = sp_ext_str_alloc(z);
-        memcpy(s, src, z); s[z] = 0; sp_ext_str_set_len(s, z);
+        char *s = sp_str_alloc(z);
+        memcpy(s, src, z); s[z] = 0; sp_str_set_len(s, z);
         sp_ext_poly_array_push_str(out, s);
         off += z;
         if (off < slen && str[off] == 0) off++;
       }
 else {
-        char *s = sp_ext_str_alloc(take);
+        char *s = sp_str_alloc(take);
         memcpy(s, src, take); s[take] = 0;
         size_t real = take;
         if (spec == 'A') {
@@ -399,7 +368,7 @@ else if (spec == 'Z') {
           s[z] = 0;
           real = z;
         }
-        sp_ext_str_set_len(s, real);
+        sp_str_set_len(s, real);
         sp_ext_poly_array_push_str(out, s);
         off += take;
       }

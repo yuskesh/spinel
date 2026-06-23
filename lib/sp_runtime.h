@@ -8,6 +8,7 @@
    sp_fiber.c that reach <ucontext.h> via sp_fiber.h -> sp_gc.h -> sp_types.h --
    define them before the first system header. Must precede <stdio.h>. */
 #include "sp_types.h"
+#include "sp_alloc.h"   /* shared string-heap state + allocators (extern; see sp_alloc.c) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -483,23 +484,12 @@ static size_t sp_gc_threshold = 256*1024;
 /* GC verify state + helpers live in lib/sp_gc.c. */
 
 /* ---- String GC ---- */
-static sp_str_hdr *sp_str_heap = NULL;
-/* String-heap collection trigger (matz/spinel#1450). Strings live on a separate
-   malloc'd heap and are reaped only by sp_str_sweep, which runs from
-   sp_gc_collect -- which only fires on OBJECT-heap pressure (sp_gc_bytes). A
-   string-only workload (e.g. an HTTP server building responses, or a tight
-   `s = s + x` loop) thus never triggers a collection and RSS grows without
-   bound. Drive collection off the string heap's own live-byte count, with a
-   SEPARATE threshold so string bytes are NOT refolded into sp_gc_bytes (doing
-   so over-fired the object heuristic -- the reason they were excluded; see the
-   comment in sp_str_alloc). */
-static size_t sp_str_heap_bytes = 0;       /* live string-heap bytes */
-static size_t sp_str_threshold = 256*1024; /* mirrors sp_gc_threshold init */
-static size_t sp_str_threshold_init = 256*1024; /* recompute floor; lowered to 2048 under SPINEL_GC_STRESS so stress mode survives a collection (mirrors sp_gc_threshold_init) */
-static int sp_str_stress_checked = 0;
+/* The string heap state (sp_str_heap, sp_str_heap_bytes, sp_str_threshold...),
+   the allocators (sp_str_alloc / _raw / byte_len / set_len / from_bytes /
+   dup_external), sp_str_empty, and the UTF-8 length cache now live in
+   sp_alloc.h / sp_alloc.c, shared (extern) so standalone lib C files can
+   allocate onto the same heap. sp_str_sweep moved to sp_alloc.c. */
 #define SPL(s) (&("\xff" s)[1])
-static const char sp_str_empty_data[] = "\xff";
-#define sp_str_empty (sp_str_empty_data + 1)
 
 /* RUBY_PLATFORM string -- host arch + OS. Detected at C compile time
    so cross-builds report the target platform. Issue #890. */
@@ -556,88 +546,8 @@ static inline const char*sp_encoding_name(sp_Encoding e){return e.name?e.name:sp
 static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_sprintf("#<Encoding:%s>",sp_encoding_name(e));}
 static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=sp_encoding_name(a);const char*bn=sp_encoding_name(b);return strcmp(an,bn)==0;}
 
-static char *sp_str_alloc(size_t len) {
-  size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
-  /* String-heap pressure drives its own collection (see sp_str_heap_bytes).
-     Collect BEFORE the new allocation, like sp_gc_alloc, so the string being
-     built isn't yet live during the sweep. Operands of the calling op (e.g. the
-     arguments to sp_str_concat) must be reachable across this point -- they are
-     for rooted locals; the codegen's SP_GC_ROOT discipline is what keeps them
-     so. Threshold recompute mirrors sp_gc_alloc's. */
-  if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_str_threshold = 2048; sp_str_threshold_init = 2048; } }
-  if (sp_str_heap_bytes > sp_str_threshold) {
-    size_t before = sp_str_heap_bytes;
-    sp_gc_collect();                 /* runs sp_str_sweep, which decrements sp_str_heap_bytes */
-    size_t freed = before - sp_str_heap_bytes;
-    if (freed < before/4) sp_str_threshold = before*2;
-    else if (sp_str_heap_bytes > 0) { sp_str_threshold = sp_str_heap_bytes*4; if (sp_str_threshold < sp_str_threshold_init) sp_str_threshold = sp_str_threshold_init; }
-    else sp_str_threshold = sp_str_threshold_init;
-  }
-  sp_str_hdr *h = (sp_str_hdr *)malloc(total);
-  if (!h) sp_oom_die();
-  h->next = sp_str_heap;
-  h->size = (uint32_t)total;
-  h->len = (uint32_t)len;
-  h->hash = 0;
-  sp_str_heap = h;
-  sp_str_heap_bytes += total;
-  /* Don't fold string-heap pressure into sp_gc_bytes : the
-     threshold heuristic in sp_gc_alloc is keyed on heap survivors, and
-     the str-heap mark-sweep that runs alongside (sp_str_sweep,
-     called from sp_gc_collect) doesn't add surviving strings back into
-     sp_gc_bytes. Each string alloc increments sp_gc_bytes by its full
-     size, but a sweep that reaps a string subtracts its size — and a
-     surviving string's size isn't re-added on the way out of
-     sp_gc_collect. Net effect on a workload that mixes heap allocs
-     with frequent small string allocs (e.g. `puts <float>` in a tight
-     loop): sp_gc_bytes drifts low after each collect, freed/before
-     looks artificially large, the threshold-recompute branch in
-     sp_gc_alloc takes the `sp_gc_bytes*4` path with a too-small base,
-     and the GC starts firing on every allocation. Strings are still
-     reaped via sp_str_sweep on every gc cycle, so dropping the
-     accounting only removes the threshold noise. */
-  char *body = (char *)(h + 1);
-  body[0] = (char)0xfe;
-  body[1 + len] = 0;
-  return body + 1;
-}
-
-static inline char *sp_str_alloc_raw(size_t total_with_null) {
-  return sp_str_alloc(total_with_null > 0 ? total_with_null - 1 : 0);
-}
-
-static inline size_t sp_str_byte_len(const char *s) {
-  if (!s) return 0;
-  unsigned char marker = ((const unsigned char *)s)[-1];
-  if (marker == 0xfe || marker == 0xfc || marker == 0xfd) {
-    return (((const sp_str_hdr *)(s - 1)) - 1)->len;
-  }
-  return strlen(s);
-}
-
-static inline void sp_str_set_len(char *s, size_t len) {
-  if (!s) return;
-  unsigned char marker = ((unsigned char *)s)[-1];
-  if (marker == 0xfe || marker == 0xfc || marker == 0xfd) {
-    sp_str_hdr *hd = ((sp_str_hdr *)(s - 1)) - 1;
-    hd->len = (uint32_t)len;
-    hd->hash = 0;  /* length change implies content change: invalidate cached hash */
-  }
-}
-
-static const char *sp_str_from_bytes(const char *data, size_t len) {
-  char *s = sp_str_alloc(len);
-  if (data) memcpy(s, data, len);
-  s[len] = 0;
-  return s;
-}
-static const char *sp_str_dup_external(const char *s) {
-  if (!s) return NULL;
-  size_t n = strlen(s);
-  char *r = sp_str_alloc(n);
-  memcpy(r, s, n);
-  return r;
-}
+/* sp_str_alloc / _raw / byte_len / set_len / from_bytes / dup_external moved to
+   sp_alloc.h (shared inline over extern heap state). */
 
 /* ---- UTF-8 helpers (used throughout the string runtime below) ---- */
 static inline int sp_utf8_char_len(unsigned char c){if(c<0x80)return 1;if(c<0xC0)return 1;if(c<0xE0)return 2;if(c<0xF0)return 3;return 4;}
@@ -665,21 +575,11 @@ static const char *sp_int_codepoint_to_str(mrb_int n) {
    byte_offset fast path. Cleared by sp_str_sweep so freed-and-reused heap
    addresses can't leak stale entries. Skipped for sp_String wrappers (marker
    0xfd) whose buffers can move on realloc. */
-#define SP_STR_LCACHE_BITS 5
-#define SP_STR_LCACHE_SIZE (1u << SP_STR_LCACHE_BITS)
-static struct sp_str_lcache_entry {
-  const char *s;
-  size_t byte_len;
-  mrb_int char_len;
-} sp_str_lcache[SP_STR_LCACHE_SIZE];
-
+/* SP_STR_LCACHE_*, sp_str_lcache, and sp_str_lcache_clear live in sp_alloc.h /
+   sp_alloc.c (shared so the archive-side sweep flushes this TU's cache). */
 static inline unsigned sp_str_lcache_hash(const char *s) {
   uintptr_t k = (uintptr_t)s;
   return (unsigned)((k ^ (k >> 4) ^ (k >> 12)) & (SP_STR_LCACHE_SIZE - 1));
-}
-
-static inline void sp_str_lcache_clear(void) {
-  for (unsigned i = 0; i < SP_STR_LCACHE_SIZE; i++) sp_str_lcache[i].s = NULL;
 }
 
 /* Count UTF-8 code points in s[0..bl). The 8-byte ASCII-detect prologue skips
@@ -808,32 +708,8 @@ static uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n){
 }
 static int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp){for(size_t i=0;i<n;i++)if(cps[i]==cp)return 1;return 0;}
 
-/* sp_mark_string is an inline helper in sp_gc.h. */
-static void sp_str_sweep(void) {
-  sp_str_hdr **pp = &sp_str_heap;
-  while (*pp) {
-    sp_str_hdr *h = *pp;
-    char *body = (char *)(h + 1);
-    if ((unsigned char)body[0] == 0xfc) {
-      body[0] = (char)0xfe;
-      pp = &h->next;
-    }
-    /* a frozen heap string (.freeze, 0xf1) is kept across sweeps: a live frozen
-       global must survive, and frozen literal constants are immortal anyway.
-       This keeps the hot, layout-sensitive sp_mark_string free of a frozen
-       branch (it inlines into optcarrot's GC mark); the cost is that a rare
-       dynamically-frozen-then-dropped string is not reclaimed. (#1449) */
-    else if ((unsigned char)body[0] == 0xf1) {
-      pp = &h->next;
-    }
-else {
-      *pp = h->next;
-      sp_str_heap_bytes -= h->size;   /* keep the string-heap live-byte count in step */
-      free(h);
-    }
-  }
-  sp_str_lcache_clear();
-}
+/* sp_mark_string is an inline helper in sp_gc.h. sp_str_sweep moved to
+   sp_alloc.c (single definition, registered with the GC there). */
 
 /* GC-aware Time trampolines. The libspinel_rt format helpers write
    into a local buffer; we sp_str_dup_external the result so the GC
@@ -2646,7 +2522,7 @@ static void sp_re_mark_globals(void) {
    allocation can trigger a collection. */
 __attribute__((constructor)) static void sp_gc_install_tu_hooks(void) {
   sp_gc_mark_globals_hook = sp_re_mark_globals;
-  sp_gc_str_sweep_hook = sp_str_sweep;
+  /* sp_gc_str_sweep_hook is installed by sp_alloc.c's constructor. */
 }
 
 /* `$+` / `$LAST_PAREN_MATCH` — contents of the highest-indexed group
