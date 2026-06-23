@@ -37,7 +37,7 @@ registry, or stack reification — none of which exist in a flat compiled binary
 | General reflection (`instance_variable_get(var)`, `methods`, `instance_variables`) | unsupported | ivars are C struct offsets with no name→offset table; DCE strips method names |
 | User-defined `#hash` / `#eql?` for hash *keys* | not dispatched (identity probe) | the hash machinery can't call back into a user method per key |
 | `require` of stdlib `.rb` (e.g. `time`, `set`, `json/pure`) | unsupported | stdlib leans on metaprogramming / C extensions off the AOT path |
-| `Marshal` of arbitrary objects | unsupported | load needs a runtime class registry keyed by name |
+| `Marshal` of user objects, Bignum, cycles/shared refs | unsupported | `load` reconstructs by class name; that dispatch can be generated at compile time from the known class table (a later phase), but is not done yet |
 | Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |
 
@@ -55,7 +55,7 @@ Limited today, but additively fixable; listed roughly easiest-first.
 |---|---|---|
 | `Exception#backtrace` / `Kernel#caller` | return `[]` (class + message work) | populate frames from a compile-time call-site→source side-table (the `--line-map` map already exists) |
 | `Thread` real parallelism | `Thread`/`Mutex` are modelled as single-threaded Fibers (`Thread.new{}.value` works, `synchronize` runs inline) | true parallelism needs a concurrent GC and scheduler — large |
-| `Marshal` of primitives (Int/Float/String/Array/Hash) | unsupported | a fixed wire format — medium; arbitrary objects stay fundamental |
+| `Marshal` of user objects / Bignum / cycles | the primitive + Array + Hash subset works (`Marshal.dump`/`load`, CRuby 4.8 wire format, round-trip oriented); these remain unsupported | user objects need a compile-time-generated per-class dump/load; cycles need a link table |
 | Mixin/inheritance lifecycle hooks (`included` / `inherited` / `extended`) | defined but not fired | emit a startup call with the literal class arg (the include/inherit graph is known at compile time) |
 | External `Enumerator` (`.each`/`.map` with no block → `.next`/`.peek`/lazy) | unsupported | needs Fiber-style suspension — large. Chained block→`.to_a` forms (`each_slice(n).to_a`, `filter_map`, `map{}.to_a`) already work. |
 | `Array#hash` (and arrays as hash keys) | unsupported | a builtin is additive, but array *keys* need the fundamental key-dispatch above |

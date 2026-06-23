@@ -6598,6 +6598,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* Marshal (Phase 1): dump a value to a binary String, load one back as poly */
+  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Marshal")) {
+    if (!strcmp(name, "dump") && argc == 1) {
+      buf_puts(b, "sp_marshal_dump("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    if (!strcmp(name, "load") && argc == 1) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", t); emit_str_expr(c, argv[0], b);
+      buf_printf(b, "; sp_marshal_load(_t%d, (mrb_int)sp_str_byte_len(_t%d)); })", t, t);
+      return;
+    }
+  }
+
   /* Math module functions -> C math.h equivalents */
   if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Math")) {

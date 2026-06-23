@@ -963,6 +963,11 @@ else {
         !strcmp(name, "sqrt"))
       return TY_INT;
     if (rty && !strcmp(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Marshal")) {
+      if (!strcmp(name, "dump") && argc == 1) return TY_STRING;
+      if (!strcmp(name, "load") && argc == 1) return TY_POLY;
+    }
+    if (rty && !strcmp(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Math") &&
         (!strcmp(name, "sin") || !strcmp(name, "cos") || !strcmp(name, "tan") ||
          !strcmp(name, "asin") || !strcmp(name, "acos") || !strcmp(name, "atan") ||
