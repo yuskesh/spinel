@@ -791,6 +791,9 @@ static inline mrb_float sp_float_clamp_ck(mrb_float v,mrb_float lo,mrb_float hi)
 }
 /* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
    plus any non-printable byte as \xNN. Output is always ASCII-safe. */
+/* `:name`, or `:"name"` when the name needs quoting -- shares the
+   name-string predicates in lib/sp_str.c with the hash-key short form. */
+static const char *sp_sym_inspect(sp_sym id) { return sp_sym_inspect_name(sp_sym_to_s(id)); }
 /* Issue #791: loop to `i < l` and write the NUL terminator explicitly.
    The original `<= l` form worked because sp_str_alloc_raw(l+1) makes
    index l valid, but it's brittle if allocation changes. Issue #797
@@ -2535,7 +2538,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
     case SP_TAG_NIL:  return SPL("nil");
-    case SP_TAG_SYM:  return sp_str_concat(SPL(":"), sp_sym_to_s((sp_sym)v.v.i));
+    case SP_TAG_SYM:  return sp_sym_inspect((sp_sym)v.v.i);
     case SP_TAG_ENCODING: return sp_sprintf("#<Encoding:%s>", v.v.s ? v.v.s : "");
     case SP_TAG_CLASS: { sp_Class c = {v.v.i}; return sp_class_to_s(c); }
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
