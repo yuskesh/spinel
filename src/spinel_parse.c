@@ -100,7 +100,7 @@ static void out_add(const char *fmt, ...) {
       fprintf(stderr, "spinel_parse: out of memory\n");
       exit(1);
     }
-    size_t new_cap = line_cap * 2 + 256;
+    size_t new_cap = (line_cap * 2) + 256;
     char **new_lines = realloc(lines, sizeof(char *) * new_cap);
     if (!new_lines) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
     lines = new_lines;
@@ -137,7 +137,7 @@ static char *cstr(pm_constant_id_t id) {
 /* ---- String escaping ---- */
 static char *escape_str(const uint8_t *src, size_t len) {
   /* Worst case: every char becomes %XX = 3x */
-  char *out = malloc(len * 3 + 1);
+  char *out = malloc((len * 3) + 1);
   size_t j = 0;
   for (size_t i = 0; i < len; i++) {
     uint8_t c = src[i];
@@ -232,7 +232,7 @@ static void emit_node_array(int id, const char *field, pm_node_list_t *list) {
   for (size_t i = 0; i < list->size; i++) {
     /* worst case per iter: ", -2147483648\0" -> 14 bytes; reserve 16 to be safe */
     if (pos + 16 >= cap) {
-      size_t new_cap = cap * 2 + 16;
+      size_t new_cap = (cap * 2) + 16;
       char *nb = realloc(buf, new_cap);
       if (!nb) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
       buf = nb;
@@ -2092,7 +2092,7 @@ static char *rewrite_syntax_sugar(char *source) {
   /* Rewrite .send(:foo, args) / .send("foo", args) → .foo(args) */
   /* Rewrite &:symbol → { |_spx| _spx.symbol } */
   size_t len = strlen(source);
-  size_t cap = len * 2 + 256;
+  size_t cap = (len * 2) + 256;
   char *out = malloc(cap);
   size_t oi = 0;
   size_t i = 0;

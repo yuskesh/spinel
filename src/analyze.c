@@ -321,7 +321,7 @@ void bigint_scan_body(const NodeTable *nt, int id, char ***names, int *n, int *c
       const char *nm = nt_str(nt, id, "name");
       if (nm) {
         for (int k = 0; k < *n; k++) if (!strcmp((*names)[k], nm)) goto skip_mul;
-        if (*n >= *cap) { *cap = *cap * 2 + 4; *names = (char **)realloc(*names, (size_t)*cap * sizeof(char *)); }
+        if (*n >= *cap) { *cap = (*cap * 2) + 4; *names = (char **)realloc(*names, (size_t)*cap * sizeof(char *)); }
         (*names)[(*n)++] = (char *)nm;
         skip_mul:;
       }
@@ -338,7 +338,7 @@ void bigint_scan_body(const NodeTable *nt, int id, char ***names, int *n, int *c
           !strcmp(nt_type(nt, recv2) ? nt_type(nt, recv2) : "", "LocalVariableReadNode") &&
           !strcmp(nt_str(nt, recv2, "name") ? nt_str(nt, recv2, "name") : "", nm)) {
         for (int k = 0; k < *n; k++) if (!strcmp((*names)[k], nm)) goto skip_lv;
-        if (*n >= *cap) { *cap = *cap * 2 + 4; *names = (char **)realloc(*names, (size_t)*cap * sizeof(char *)); }
+        if (*n >= *cap) { *cap = (*cap * 2) + 4; *names = (char **)realloc(*names, (size_t)*cap * sizeof(char *)); }
         (*names)[(*n)++] = (char *)nm;
         skip_lv:;
       }

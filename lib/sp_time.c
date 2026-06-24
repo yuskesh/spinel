@@ -238,7 +238,7 @@ int sp_time_cmp(sp_Time a, sp_Time b) {
 }
 sp_Time sp_time_add_f(sp_Time t, double secs) {
   long long ns = (long long)(secs * 1000000000.0);
-  long long total_ns = (long long)t.tv_sec * 1000000000LL + t.tv_nsec + ns;
+  long long total_ns = ((long long)t.tv_sec * 1000000000LL) + t.tv_nsec + ns;
   sp_Time r;
   r.tv_sec = (time_t)(total_ns / 1000000000LL);
   r.tv_nsec = (int32_t)(total_ns % 1000000000LL);
@@ -261,5 +261,5 @@ sp_Time sp_time_sub_i(sp_Time t, int64_t secs) {
   return r;
 }
 double sp_time_sub_t(sp_Time a, sp_Time b) {
-  return (double)(a.tv_sec - b.tv_sec) + (double)(a.tv_nsec - b.tv_nsec) / 1e9;
+  return (double)(a.tv_sec - b.tv_sec) + ((double)(a.tv_nsec - b.tv_nsec) / 1e9);
 }

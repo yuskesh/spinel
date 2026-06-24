@@ -40,7 +40,7 @@ static inline void sp_fd_publish(sp_String *s){
 static inline int sp_fd_grow(sp_String *s, int64_t need){
   if (need < s->cap) return 1;
   sp_gc_hdr *h = (sp_gc_hdr *)((char *)s - sizeof(sp_gc_hdr));
-  int64_t new_cap = need * 2 + 16;
+  int64_t new_cap = (need * 2) + 16;
   char *raw = (char *)realloc(sp_fd_base(s->data), SP_FD_OVH + new_cap);
   if (!raw) return 0;
   sp_gc_bytes -= s->cap + SP_FD_OVH; h->size -= s->cap + SP_FD_OVH;
@@ -54,7 +54,7 @@ static inline sp_String*sp_String_new(const char*s){
      heap string anchored only by this stack frame, sp_gc_alloc can trigger a
      collection that frees it mid-call. The malloc'd buffer is off both heaps. */
   int64_t len=(int64_t)strlen(s);
-  int64_t cap=len*2+16;
+  int64_t cap=(len*2)+16;
   char*raw=(char*)malloc(SP_FD_OVH+cap);
   char*data=sp_fd_setup(raw);
   memcpy(data,s,len);data[len]=0;

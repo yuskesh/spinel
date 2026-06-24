@@ -133,7 +133,7 @@ static long long parse_ll(const char *s, size_t len) {
   if (i < len && (s[i] == '-' || s[i] == '+')) { if (s[i] == '-') sign = -1; i++; }
   for (; i < len; i++) {
     if (s[i] < '0' || s[i] > '9') break;
-    v = v * 10 + (s[i] - '0');
+    v = (v * 10) + (s[i] - '0');
   }
   return v * sign;
 }

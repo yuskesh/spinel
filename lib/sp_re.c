@@ -34,8 +34,8 @@ void sp_re_set_captures(const char *str, int *caps, int ncaps) {
   sp_re_last_str = str;
   for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
   for (int i = 1; i < ncaps && i < 10; i++) {
-    if (caps[i*2] >= 0 && caps[i*2+1] >= 0) {
-      int len = caps[i*2+1] - caps[i*2];
+    if (caps[i*2] >= 0 && caps[(i*2)+1] >= 0) {
+      int len = caps[(i*2)+1] - caps[i*2];
       char *buf = sp_str_alloc_raw(len+1);
       memcpy(buf, str+caps[i*2], len); buf[len] = 0;
       sp_re_captures[i] = buf;
@@ -151,9 +151,9 @@ void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io,
       char d = rep[i+1];
       if ((d >= '0' && d <= '9') || d == '&') {
         int gi = (d == '&') ? 0 : (d - '0');
-        if (gi*2 + 1 < ncaps && caps[gi*2] >= 0 && caps[gi*2+1] >= 0) {
-          int g_len = caps[gi*2+1] - caps[gi*2];
-          if (olen + g_len + 1 >= cap) { cap = (olen + g_len) * 2 + 64; out = (char*)realloc(out, cap); }
+        if ((gi*2) + 1 < ncaps && caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
+          int g_len = caps[(gi*2)+1] - caps[gi*2];
+          if (olen + g_len + 1 >= cap) { cap = ((olen + g_len) * 2) + 64; out = (char*)realloc(out, cap); }
           memcpy(out+olen, src + caps[gi*2], g_len);
           olen += g_len;
         }
@@ -161,13 +161,13 @@ void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io,
         continue;
       }
 else if (d == '\\') {
-        if (olen + 1 >= cap) { cap = cap * 2 + 64; out = (char*)realloc(out, cap); }
+        if (olen + 1 >= cap) { cap = (cap * 2) + 64; out = (char*)realloc(out, cap); }
         out[olen++] = '\\';
         i += 2;
         continue;
       }
     }
-    if (olen + 1 >= cap) { cap = cap * 2 + 64; out = (char*)realloc(out, cap); }
+    if (olen + 1 >= cap) { cap = (cap * 2) + 64; out = (char*)realloc(out, cap); }
     out[olen++] = c;
     i++;
   }
@@ -175,7 +175,7 @@ else if (d == '\\') {
 }
 const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep) {
   int64_t slen = (int64_t)strlen(str); size_t rlen = strlen(rep);
-  size_t cap = slen * 2 + rlen * 4 + 64;
+  size_t cap = (slen * 2) + (rlen * 4) + 64;
  /* Build into a plain malloc scratch: the buffer is grown with realloc
     here and inside sp_re_expand_rep, which is only valid on a real
     malloc base (a sp_str body pointer is offset past its header). The
@@ -186,7 +186,7 @@ const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep
     int n = re_exec(pat, str, slen, pos, caps, 64);
     if (n <= 0 || caps[0] < 0) break;
     size_t before = caps[0] - pos;
-    if (olen+before+rlen >= cap) { cap = (olen+before+rlen)*2+64; out = (char*)realloc(out, cap); }
+    if (olen+before+rlen >= cap) { cap = ((olen+before+rlen)*2)+64; out = (char*)realloc(out, cap); }
     memcpy(out+olen, str+pos, before); olen += before;
     sp_re_expand_rep(&out, &olen, &cap, rep, rlen, str, caps, n);
     if (caps[0] == caps[1]) {
@@ -195,7 +195,7 @@ const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep
     and advances past it. Copy the char and step by one so the scan
     makes progress without dropping it or spinning on the same spot. */
       if (caps[1] < slen) {
-        if (olen+1 >= cap) { cap = olen*2+64; out = (char*)realloc(out, cap); }
+        if (olen+1 >= cap) { cap = (olen*2)+64; out = (char*)realloc(out, cap); }
         out[olen++] = str[caps[1]];
       }
       pos = caps[1] + 1;
@@ -224,7 +224,7 @@ const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep)
   int n = re_exec(pat, str, slen, 0, caps, 64);
   if (n <= 0 || caps[0] < 0) return str;
   /* Issue #855: expand `\1`..`\9` / `\&` from rep against caps. */
-  size_t cap = caps[0] + rlen * 4 + (slen - caps[1]) + 64;
+  size_t cap = caps[0] + (rlen * 4) + (slen - caps[1]) + 64;
  /* malloc scratch: sp_re_expand_rep and the tail grow it with realloc,
     which needs a real malloc base. Exact-sized string emitted below. */
   char *out = (char *)malloc(cap);
@@ -267,9 +267,9 @@ sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str) {
        Ruby splices each captured substring into the result
        between the surrounding segments (caps[2..n-1] hold groups
        1..(n/2-1); group 0 is the whole match). */
-    for (int gi = 1; gi * 2 + 1 < n; gi++) {
-      if (caps[gi*2] >= 0 && caps[gi*2+1] >= 0) {
-        int glen = caps[gi*2+1] - caps[gi*2];
+    for (int gi = 1; (gi * 2) + 1 < n; gi++) {
+      if (caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
+        int glen = caps[(gi*2)+1] - caps[gi*2];
         char *gm = sp_str_alloc_raw(glen+1);
         memcpy(gm, str + caps[gi*2], glen); gm[glen] = 0;
         sp_StrArray_push(arr, gm);
@@ -345,8 +345,8 @@ sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str) {
 else {
       sp_PolyArray *row = sp_PolyArray_new();
       for (int gi = 1; gi < pairs; gi++) {
-        if (caps[gi * 2] >= 0 && caps[gi * 2 + 1] >= 0) {
-          int glen = caps[gi * 2 + 1] - caps[gi * 2];
+        if (caps[gi * 2] >= 0 && caps[(gi * 2) + 1] >= 0) {
+          int glen = caps[(gi * 2) + 1] - caps[gi * 2];
           char *gm = sp_str_alloc_raw(glen + 1);
           memcpy(gm, str + caps[gi * 2], glen);
           gm[glen] = 0;
@@ -380,7 +380,7 @@ sp_PolyArray *sp_re_match_data(mrb_regexp_pattern *pat, const char *str) {
   sp_PolyArray *arr = sp_PolyArray_new();
   for (int i = 0; i < pairs; i++) {
     int start = sp_re_caps[i * 2];
-    int end = sp_re_caps[i * 2 + 1];
+    int end = sp_re_caps[(i * 2) + 1];
     if (start >= 0 && end >= start) {
       int len = end - start;
       char *buf = sp_str_alloc_raw(len + 1);
@@ -439,7 +439,7 @@ sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, mrb_i
 /* group i substring, or NULL for a non-participating / out-of-range group */
 const char *sp_MatchData_aref(sp_MatchData *m, mrb_int i) {
   if (!m || i < 0 || i >= m->ncap) return NULL;
-  int s = m->caps[i * 2], e = m->caps[i * 2 + 1];
+  int s = m->caps[i * 2], e = m->caps[(i * 2) + 1];
   if (s < 0 || e < s) return NULL;
   int len = e - s;
   char *b = sp_str_alloc((size_t)len);
@@ -460,13 +460,13 @@ mrb_int sp_MatchData_begin(sp_MatchData *m, mrb_int i) {
 }
 mrb_int sp_MatchData_end(sp_MatchData *m, mrb_int i) {
   if (!m || i < 0 || i >= m->ncap) return SP_INT_NIL;
-  return sp_md_char_off(m, m->caps[i * 2 + 1]);
+  return sp_md_char_off(m, m->caps[(i * 2) + 1]);
 }
 sp_IntArray *sp_MatchData_offset(sp_MatchData *m, mrb_int i) {
   sp_IntArray *a = sp_IntArray_new();
   if (!m || i < 0 || i >= m->ncap) { sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
   sp_IntArray_push(a, sp_md_char_off(m, m->caps[i * 2]));
-  sp_IntArray_push(a, sp_md_char_off(m, m->caps[i * 2 + 1]));
+  sp_IntArray_push(a, sp_md_char_off(m, m->caps[(i * 2) + 1]));
   return a;
 }
 /* whole-match string (group 0) — also MatchData#to_s */

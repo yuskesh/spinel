@@ -378,7 +378,7 @@ static inline double sp_process_clock_gettime(void) {
 #if defined(CLOCK_MONOTONIC)
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+  return (double)ts.tv_sec + ((double)ts.tv_nsec * 1e-9);
 #else
   return 0.0;
 #endif
@@ -1400,7 +1400,7 @@ static mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, m
 static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
   int64_t slen = (int64_t)strlen(str);
  /* malloc scratch (realloc-safe); exact-sized string emitted below. */
-  size_t cap = slen * 2 + 64; char *out = (char *)malloc(cap); size_t olen = 0;
+  size_t cap = (slen * 2) + 64; char *out = (char *)malloc(cap); size_t olen = 0;
   int64_t pos = 0; int caps[64];
   while (pos <= slen) {
     int n = re_exec(pat, str, slen, pos, caps, 64);
@@ -1418,7 +1418,7 @@ static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *
     key[mlen] = 0;
     const char *rep = sp_StrStrHash_has_key(h, key) ? sp_StrStrHash_get(h, key) : "";
     size_t rlen = strlen(rep);
-    if (olen + before + rlen >= cap) { cap = (olen + before + rlen) * 2 + 64; out = (char *)realloc(out, cap); }
+    if (olen + before + rlen >= cap) { cap = ((olen + before + rlen) * 2) + 64; out = (char *)realloc(out, cap); }
     memcpy(out + olen, str + pos, before); olen += before;
     memcpy(out + olen, rep, rlen); olen += rlen;
     if (kbuf != keybuf) free(kbuf);
@@ -1426,7 +1426,7 @@ static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *
  /* Zero-width match: keep the source char at this position and step
     past it (see sp_re_gsub for the rationale). */
       if (caps[1] < slen) {
-        if (olen + 1 >= cap) { cap = olen * 2 + 64; out = (char *)realloc(out, cap); }
+        if (olen + 1 >= cap) { cap = (olen * 2) + 64; out = (char *)realloc(out, cap); }
         out[olen++] = str[caps[1]];
       }
       pos = caps[1] + 1;
@@ -1909,9 +1909,9 @@ static double sp_lgamma_pos(double x) {  /* x > 0 */
   while (x < 12.0) { corr -= log(x); x += 1.0; }
   double inv = 1.0 / x, inv2 = inv * inv;
   /* sum_{k>=1} B_2k / (2k(2k-1) x^(2k-1)) up to the 1/x^11 term */
-  double series = (1.0/12.0) + inv2 * (-(1.0/360.0) + inv2 * ((1.0/1260.0)
-                  + inv2 * (-(1.0/1680.0) + inv2 * (1.0/1188.0))));
-  return corr + (x - 0.5) * log(x) - x + 0.5 * log(2.0 * M_PI) + series * inv;
+  double series = (1.0/12.0) + (inv2 * (-(1.0/360.0) + (inv2 * ((1.0/1260.0)
+                  + (inv2 * (-(1.0/1680.0) + (inv2 * (1.0/1188.0))))))));
+  return corr + ((x - 0.5) * log(x)) - x + (0.5 * log(2.0 * M_PI)) + (series * inv);
 }
 /* Math.lgamma(x) -> [log(|gamma(x)|), sign of gamma(x)]. */
 static sp_PolyArray *sp_math_lgamma(double x) {
@@ -2255,7 +2255,7 @@ else {
       memcpy(tmp, spec, sl); tmp[sl] = 0; wn = (int)sl; idx--;
     }
     if (wn < 0) continue;
-    if (out + (size_t)wn + 1 >= cap) { cap = (out + wn) * 2 + 64; buf = (char *)realloc(buf, cap); }
+    if (out + (size_t)wn + 1 >= cap) { cap = ((out + wn) * 2) + 64; buf = (char *)realloc(buf, cap); }
     memcpy(buf + out, tmp, wn); out += wn;
   }
   buf[out] = 0;
@@ -2740,7 +2740,7 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
     case SP_TAG_OBJ:
       if (v.cls_id == SP_BUILTIN_INT_ARRAY) {
         sp_IntArray *ia = (sp_IntArray *)v.v.p;
-        mrb_int h = 0; if (ia) for (mrb_int i = 0; i < ia->len; i++) h = h * 31 + ia->data[ia->start+i];
+        mrb_int h = 0; if (ia) for (mrb_int i = 0; i < ia->len; i++) h = (h * 31) + ia->data[ia->start+i];
         return h;
       }
       if (v.cls_id == SP_BUILTIN_METHOD) {
@@ -2750,7 +2750,7 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
            fn slot is 0 (no resolvable callable address). */
         sp_BoundMethod *m = (sp_BoundMethod *)v.v.p;
         if (!m) return 0;
-        return (mrb_int)((uintptr_t)m->self * 31 + m->fn) +
+        return (mrb_int)(((uintptr_t)m->self * 31) + m->fn) +
                (m->name ? (mrb_int)sp_str_hash(m->name) : 0);
       }
       if (sp_obj_hash_hook) return sp_obj_hash_hook(v.cls_id, v.v.p);
@@ -4153,7 +4153,7 @@ struct sp_Val { enum { SP_PROC2, SP_INT2, SP_BOOL2, SP_NIL2 } tag; union { struc
 #define SP_ARENA_SIZE ((size_t)16ULL * 1024 * 1024 * 1024)
 static char *sp_arena = NULL; static size_t sp_arena_pos = 0;
 static void *sp_lam_alloc(size_t sz) { sz = (sz + 7) & ~(size_t)7; if (!sp_arena) { sp_arena = (char *)mmap(NULL, SP_ARENA_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0); if (sp_arena == MAP_FAILED) { perror("mmap"); exit(1); } sp_arena_pos = 0; } if (sp_arena_pos + sz > SP_ARENA_SIZE) { fprintf(stderr, "arena exhausted\n"); exit(1); } void *p = sp_arena + sp_arena_pos; sp_arena_pos += sz; return p; }
-static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + sizeof(sp_Val *) * ncap); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }
+static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + (sizeof(sp_Val *) * ncap)); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }
 static sp_Val *sp_lam_int(mrb_int n) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_INT2; v->u.ival = n; return v; }
 static sp_Val *sp_lam_bool(mrb_bool b) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_BOOL2; v->u.bval = b; return v; }
 static sp_Val sp_lam_nil_val = { .tag = SP_NIL2 };

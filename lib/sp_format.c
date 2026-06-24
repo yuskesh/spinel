@@ -94,16 +94,16 @@ const char *sp_Time_inspect(sp_Time *t) {
 /* ---- Complex arithmetic ---- */
 sp_Complex sp_complex_polar(mrb_float m, mrb_float a) { sp_Complex c; c.re = m * cos(a); c.im = m * sin(a); return c; }
 sp_Complex sp_complex_add(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re + b.re; c.im = a.im + b.im; return c; }
-sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re * b.re - a.im * b.im; c.im = a.re * b.im + a.im * b.re; return c; }
+sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = (a.re * b.re) - (a.im * b.im); c.im = (a.re * b.im) + (a.im * b.re); return c; }
 sp_Complex sp_complex_conjugate(sp_Complex a) { sp_Complex c; c.re = a.re; c.im = -a.im; return c; }
 sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re - b.re; c.im = a.im - b.im; return c; }
 sp_Complex sp_complex_div(sp_Complex a, sp_Complex b) {
-  mrb_float d = b.re * b.re + b.im * b.im; sp_Complex c;
-  c.re = (a.re * b.re + a.im * b.im) / d; c.im = (a.im * b.re - a.re * b.im) / d; return c;
+  mrb_float d = (b.re * b.re) + (b.im * b.im); sp_Complex c;
+  c.re = ((a.re * b.re) + (a.im * b.im)) / d; c.im = ((a.im * b.re) - (a.re * b.im)) / d; return c;
 }
 sp_Complex sp_complex_neg(sp_Complex a) { sp_Complex c; c.re = -a.re; c.im = -a.im; return c; }
-mrb_float sp_complex_abs2(sp_Complex a) { return a.re * a.re + a.im * a.im; }
-mrb_float sp_complex_abs(sp_Complex a) { return sqrt(a.re * a.re + a.im * a.im); }
+mrb_float sp_complex_abs2(sp_Complex a) { return (a.re * a.re) + (a.im * a.im); }
+mrb_float sp_complex_abs(sp_Complex a) { return sqrt((a.re * a.re) + (a.im * a.im)); }
 mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b) { return a.re == b.re && a.im == b.im; }
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e) {
   sp_Complex r; r.re = 1; r.im = 0;
@@ -155,11 +155,11 @@ static sp_Rational sp_rational_new_wide(sp_rat_wide n, sp_rat_wide d) {
   return r;
 }
 sp_Rational sp_rational_add(sp_Rational a, sp_Rational b) {
-  return sp_rational_new_wide((sp_rat_wide)a.num * b.den + (sp_rat_wide)b.num * a.den,
+  return sp_rational_new_wide(((sp_rat_wide)a.num * b.den) + ((sp_rat_wide)b.num * a.den),
                               (sp_rat_wide)a.den * b.den);
 }
 sp_Rational sp_rational_sub(sp_Rational a, sp_Rational b) {
-  return sp_rational_new_wide((sp_rat_wide)a.num * b.den - (sp_rat_wide)b.num * a.den,
+  return sp_rational_new_wide(((sp_rat_wide)a.num * b.den) - ((sp_rat_wide)b.num * a.den),
                               (sp_rat_wide)a.den * b.den);
 }
 sp_Rational sp_rational_mul(sp_Rational a, sp_Rational b) {
