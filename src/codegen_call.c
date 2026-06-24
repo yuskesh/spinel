@@ -3967,6 +3967,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
   /* eval(string) / Kernel.eval(string): a hard AOT boundary (see helper). */
   if (diagnose_eval_call(c, id)) return;
+  /* caller_locations: no runtime frame stack in AOT builds (as with `caller`),
+     so this is an empty array of locations -- an Array, never nil. The (start,
+     length) arguments are still evaluated for their side effects, as CRuby
+     evaluates them before the call; the `(void)` casts keep a literal arg from
+     tripping -Wunused-value. */
+  if (recv < 0 && !strcmp(name, "caller_locations") && argc <= 2) {
+    buf_puts(b, "(");
+    for (int ai = 0; ai < argc; ai++) { buf_puts(b, "(void)("); emit_expr(c, argv[ai], b); buf_puts(b, "), "); }
+    buf_puts(b, "sp_PolyArray_new())");
+    return;
+  }
   if (recv < 0 && !strcmp(name, "loop") && argc == 0) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {

@@ -478,6 +478,11 @@ TyKind infer_call(Compiler *c, int id) {
 
   /* Kernel#caller -> the call stack as strings (empty in release builds) */
   if (recv < 0 && !strcmp(name, "caller") && argc <= 2) return TY_STR_ARRAY;
+  /* caller_locations -> an array of Backtrace::Location objects. AOT builds keep
+     no runtime frame stack (like `caller`, which is empty in release), so this is
+     an empty array. Returning a poly array (not nil) keeps `&.first&.label`,
+     `.each`, `.map`, and `.is_a?(Array)` well-typed and nil-safe. */
+  if (recv < 0 && !strcmp(name, "caller_locations") && argc <= 2) return TY_POLY_ARRAY;
 
   /* bare `name` inside a class method body -> the class name string */
   if (recv < 0 && !strcmp(name, "name") && argc == 0) {
