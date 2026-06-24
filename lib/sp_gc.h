@@ -32,6 +32,10 @@
    the other SP_BUILTIN_* in sp_runtime.h) so the inline mark helper can see it.
    Value is the next free slot below SP_BUILTIN_METHOD (-24). */
 #define SP_BUILTIN_FOREIGN_PTR (-25)
+/* Wide value types (heap-copied crossing into a poly slot). Shared here so
+   lib/sp_marshal.c can recognize them by cls_id. */
+#define SP_BUILTIN_COMPLEX  (-26)
+#define SP_BUILTIN_RATIONAL (-27)
 typedef struct { int tag; int cls_id; union { mrb_int i; const char *s; mrb_float f; mrb_bool b; void *p; } v; } sp_RbVal;
 
 /* ---- Collector globals shared with the generated TU ----
@@ -51,6 +55,28 @@ typedef struct { int tag; int cls_id; union { mrb_int i; const char *s; mrb_floa
 #define SP_GC_FULL_INTERVAL 8
 extern void **sp_gc_roots[SP_GC_STACK_MAX];
 extern int sp_gc_nroots;
+
+/* GC root tracking. SP_GC_ROOT registers a stack-resident root with a
+   cleanup-attribute sentinel so it auto-pops when its declaring scope ends.
+   Shared here (was in sp_runtime.h) so standalone lib C files -- e.g. the
+   Marshal loader, which builds GC arrays/hashes across a recursive parse --
+   can root their in-flight objects too. Helpers touch only the extern root
+   stack above, so relocating them is layout-neutral. */
+static inline int _sp_gc_root_push(void **p) {
+  if (sp_gc_nroots < SP_GC_STACK_MAX) { sp_gc_roots[sp_gc_nroots++] = p; return 1; }
+  return 0;
+}
+static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
+static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
+#define _SP_GC_CONCAT2(a,b) a##b
+#define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
+#define SP_GC_SAVE() int __attribute__((cleanup(sp_gc_cleanup))) _gc_saved = sp_gc_nroots
+#define SP_GC_ROOT(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)&(v))
+/* Root a poly (sp_RbVal) local: tag the stored slot's low bit so the mark
+   walker routes it through sp_mark_rbval (the object pointer sits in a union at
+   a nonzero offset, only for STR/OBJ tags). */
+#define SP_GC_ROOT_RBVAL(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)1))
+#define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
 extern sp_gc_hdr *sp_gc_heap;
 extern size_t sp_gc_bytes;
 extern size_t sp_gc_old_bytes;

@@ -793,41 +793,11 @@ static inline double sp_time_sub_t(sp_Time a, sp_Time b) {
    every fiber. sp_gc_mark_all calls the hook below (installed once
    the Fiber section's setup runs) to walk every live fiber's
    saved_roots in addition to the current view. */
-/* GC root tracking. SP_GC_ROOT registers a stack-resident root with a
-   cleanup-attribute sentinel so it's auto-popped when its declaring
-   scope ends — matches the variable's actual lifetime, including for
-   temporaries declared inside nested if/while/for blocks. The previous
-   form (push to global array, paired with SP_GC_SAVE/RESTORE at
-   function entry) leaked roots whose stack memory was reclaimed when
-   inner blocks returned, which clang's stricter stack layout exposed
-   as use-after-scope on inputs that nest scan_locals deeply (issue
-   surfaced on test/block2.rb under clang-built spinel_codegen). */
-static inline int _sp_gc_root_push(void **p) {
-  if (sp_gc_nroots < SP_GC_STACK_MAX) { sp_gc_roots[sp_gc_nroots++] = p; return 1; }
-  return 0;
-}
-static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
-#define _SP_GC_CONCAT2(a,b) a##b
-#define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
-#define SP_GC_SAVE() int __attribute__((cleanup(sp_gc_cleanup))) _gc_saved = sp_gc_nroots
-#define SP_GC_ROOT(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)&(v))
-/* Root a poly (sp_RbVal) local/global. The root stack stores void**
-   and marks *slot as a single GC pointer, but an sp_RbVal carries its
-   object pointer inside a union (offset != 0) and only when its tag is
-   STR/OBJ -- a blind *slot deref would read the tag word as a pointer.
-   So we tag the stored slot with the low bit (sp_RbVal addresses are
-   >=4-byte aligned, so the bit is free) and the mark walker, seeing the
-   tag, routes the entry through sp_mark_rbval instead. Same auto-pop
-   cleanup as SP_GC_ROOT, so SP_GC_SAVE/RESTORE and the fiber root
-   save/restore (which treat entries as opaque) need no changes. */
-#define SP_GC_ROOT_RBVAL(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)1))
-#define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
+/* SP_GC_ROOT / SP_GC_SAVE / SP_GC_RESTORE and the _sp_gc_root_push/pop helpers
+   moved to sp_gc.h (shared so lib/sp_marshal.c can root its in-flight objects).
+   sp_re_mark_globals is defined below (with the regex globals it marks) and
+   carries external linkage so the collector body can reach it. */
 #define SP_GC_MARK_STACK_MAX (1024*64)
-/* sp_gc_mark / sp_gc_mark_all + the suspended-fiber hook live in
-   lib/sp_gc.c (declared in sp_gc.h). sp_re_mark_globals is defined below
-   (with the regex globals it marks) and carries external linkage so the
-   collector body can reach it. */
-static void sp_gc_cleanup(int*p){sp_gc_nroots=*p;}
 #define SP_GC_NBUCKETS 32
 static sp_gc_hdr*sp_gc_buckets[SP_GC_NBUCKETS];
 static inline int sp_gc_bucket(size_t sz){int b=(int)(sz/16);return b<SP_GC_NBUCKETS?b:SP_GC_NBUCKETS-1;}
@@ -2964,10 +2934,8 @@ static const char *sp_exc_message(volatile struct sp_Exception_s *ve);
 #define SP_BUILTIN_FIBER         (-22) /* sp_Fiber * boxed into poly slot */
 #define SP_BUILTIN_IO            (-23) /* sp_File * (File/IO handle) boxed into poly slot */
 #define SP_BUILTIN_METHOD        (-24) /* sp_BoundMethod * boxed into poly slot */
-/* SP_BUILTIN_FOREIGN_PTR (-25) is defined in sp_gc.h (the inline mark helper
-   must see it to skip tracing opaque FFI pointers). */
-#define SP_BUILTIN_COMPLEX       (-26) /* sp_Complex *, heap copy crossing into poly */
-#define SP_BUILTIN_RATIONAL      (-27) /* sp_Rational *, heap copy crossing into poly */
+/* SP_BUILTIN_FOREIGN_PTR (-25), SP_BUILTIN_COMPLEX (-26) and
+   SP_BUILTIN_RATIONAL (-27) are defined in sp_gc.h (shared with lib readers). */
 /* sp_RbVal is defined in sp_gc.h (the mark helpers dispatch on its tag). */
 /* Forward declarations for the bigint API the poly helpers below call; the
    full prototypes live further down (near the bigint runtime block). */
