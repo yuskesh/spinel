@@ -2484,6 +2484,22 @@ static sp_PolyArray *sp_PolyArray_sort_pairs(sp_PolyArray *a) {
   }
   return b;
 }
+/* Schwartzian helper for Hash#sort_by: `a` is an array of [sort_key, value]
+   tuples; sort it by the comparable sort_key and return the values in order. */
+static int _sp_poly_first_cmp_qsort(const void *pa, const void *pb) {
+  mrb_bool ok = FALSE;
+  mrb_int r = sp_poly_cmp(sp_poly_arr_get(*(const sp_RbVal *)pa, 0),
+                          sp_poly_arr_get(*(const sp_RbVal *)pb, 0), &ok);
+  return ok ? (r < 0 ? -1 : (r > 0 ? 1 : 0)) : 0;
+}
+static sp_PolyArray *sp_PolyArray_sort_by_first(sp_PolyArray *a) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *b = sp_PolyArray_dup(a); SP_GC_ROOT(b);
+  if (b && b->len > 1) qsort(b->data, (size_t)b->len, sizeof(sp_RbVal), _sp_poly_first_cmp_qsort);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  for (mrb_int i = 0; b && i < b->len; i++) sp_PolyArray_push(r, sp_poly_arr_get(b->data[i], 1));
+  return r;
+}
 static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eq(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[(mrb_int)(rand()%a->len)]; }
 
