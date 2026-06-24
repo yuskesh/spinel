@@ -1,0 +1,9 @@
+raised (sort)
+raised (sort!)
+[1, 3, 5]
+[1.5, 2, 3]
+done
+raised (min)
+raised (max)
+1
+5
