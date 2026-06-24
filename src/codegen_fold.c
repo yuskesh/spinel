@@ -222,6 +222,106 @@ int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Emit, into g_pre at `indent`, `_t<dest> = sp_PolyArray_new();` then push entry
+   `ti`'s boxed key and value. `dest` must already be a rooted sp_PolyArray*. */
+static void emit_hash_pair_at(TyKind rt, const char *hn,
+                              int trecv, int ti, int dest, int indent) {
+  TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+  emit_indent(g_pre, indent);
+  buf_printf(g_pre, "_t%d = sp_PolyArray_new();", dest);
+  if (kt == TY_SYMBOL)
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, sp_box_sym(_t%d->order[_t%d]));", dest, trecv, ti);
+  else if (kt == TY_STRING)
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, sp_box_str(_t%d->order[_t%d]));", dest, trecv, ti);
+  else if (kt == TY_INT)
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, sp_box_int(_t%d->order[_t%d]));", dest, trecv, ti);
+  else
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]);", dest, trecv, trecv, ti);
+  if (rt == TY_POLY_POLY_HASH)
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]);", dest, trecv, trecv, ti);
+  else if (vt == TY_POLY)
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, sp_%sHash_get(_t%d, _t%d->order[_t%d]));", dest, hn, trecv, trecv, ti);
+  else if (vt == TY_INT)
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", dest, hn, trecv, trecv, ti);
+  else
+    buf_printf(g_pre, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d->order[_t%d])));", dest, hn, trecv, trecv, ti);
+  buf_puts(g_pre, "\n");
+}
+
+/* hash.min_by / max_by / find / detect { |k, v| ... } -> the winning [k, v]
+   pair, or nil when no entry qualifies. Emitted as prelude statements that
+   produce a result temp, like the collect walk. */
+int emit_hash_reduce_search_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int argc = 0; { int ar = nt_ref(nt, id, "arguments"); if (ar >= 0) nt_arr(nt, ar, "arguments", &argc); }
+  int is_min = !strcmp(name, "min_by"), is_max = !strcmp(name, "max_by");
+  int is_find = !strcmp(name, "find") || !strcmp(name, "detect");
+  if ((!is_min && !is_max && !is_find) || argc != 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = comp_ntype(c, recv);
+  const char *hn = ty_hash_cname(rt);
+  if (!hn) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
+  if (bn < 1) return 0;
+
+  int trecv = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp, tbest = ++g_tmp, twin = ++g_tmp;
+  { Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+    buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p); }
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tres, tres);
+  /* Index of the winning entry, or -1 if none qualified. The pair is built
+     once after the loop, so no result array is allocated until the walk is
+     done (and never at all for a no-match find, which renders as nil). */
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = -1;\n", twin);
+  if (is_min || is_max) {
+    emit_indent(g_pre, g_indent);
+    /* The best-so-far block value is held across allocating iterations, so it
+       must be rooted; SP_GC_ROOT_RBVAL roots by address, so the later
+       reassignment is tracked without a re-root. Seed it nil so the root scan
+       sees a valid value before the first assignment. */
+    buf_printf(g_pre, "sp_RbVal _bk%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_bk%d);\n", tbest, tbest);
+  }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+  TyKind bret;
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  if (is_find) {
+    emit_indent(g_pre, g_indent + 1);
+    if (bret == TY_POLY)
+      buf_printf(g_pre, "if (sp_poly_truthy(%s)) {\n", vb ? vb : "sp_box_nil()");
+    else
+      buf_printf(g_pre, "if (%s) {\n", vb ? vb : "0");
+    emit_indent(g_pre, g_indent + 2); buf_printf(g_pre, "_t%d = _t%d; break;\n", twin, ti);
+    emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+  }
+  else {
+    /* box the block's value so any comparable type sorts uniformly */
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _kv%d = ", ti);
+    if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");
+    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vb ? vb : "", &bx);
+           buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+    buf_puts(g_pre, ";\n");
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d == -1 || sp_poly_%s(_kv%d, _bk%d)) {\n",
+               twin, is_min ? "lt" : "gt", ti, tbest);
+    emit_indent(g_pre, g_indent + 2); buf_printf(g_pre, "_t%d = _t%d; _bk%d = _kv%d;\n", twin, ti, tbest, ti);
+    emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+  }
+  free(vb);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d >= 0) {\n", twin);
+  emit_hash_pair_at(rt, hn, trecv, twin, tres, g_indent + 1);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 /* Recursively patch c->ntype[id]=ty for every LocalVariableReadNode named nm
    within the subtree at id. Saved old values in ids_out/ty_out (max cap).
    Returns count of patched nodes. */
@@ -2335,7 +2435,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     }
   }
 
-  if (ty_is_hash(rt)) return emit_hash_collect_expr(c, id, b);
+  if (ty_is_hash(rt)) {
+    if (emit_hash_collect_expr(c, id, b)) return 1;
+    if (emit_hash_reduce_search_expr(c, id, b)) return 1;
+    return 0;
+  }
   int range_recv = (rt == TY_RANGE);
   if (rt == TY_POLY) {
     /* poly-typed receiver (e.g. `arr = nil` default): iterate via

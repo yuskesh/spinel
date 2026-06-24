@@ -2179,10 +2179,14 @@ else {
     if (!strcmp(name, "keys"))   return ty_array_of(ty_hash_key(rt));
     if (!strcmp(name, "values")) return ty_array_of(ty_hash_val(rt));
     if (!strcmp(name, "values_at") || !strcmp(name, "fetch_values")) return TY_POLY_ARRAY;
-    if ((!strcmp(name, "to_a") || !strcmp(name, "entries")) && nt_ref(nt, id, "block") < 0)
+    int block = nt_ref(nt, id, "block");
+    if ((!strcmp(name, "to_a") || !strcmp(name, "entries")) && block < 0)
       return TY_POLY_ARRAY;
+    if (block >= 0 &&
+        (!strcmp(name, "min_by") || !strcmp(name, "max_by") ||
+         !strcmp(name, "find") || !strcmp(name, "detect")))
+      return TY_POLY_ARRAY;   /* the winning [k, v] pair, or nil */
     {
-      int block = nt_ref(nt, id, "block");
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
