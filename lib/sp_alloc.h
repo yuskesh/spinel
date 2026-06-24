@@ -170,7 +170,6 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_RANGE (-10)
 #define SP_BUILTIN_TIME (-11)
 #define SP_BUILTIN_POLY_ARRAY (-12)
-#define SP_BUILTIN_EXCEPTION (-13)
 #define SP_BUILTIN_STR_INT_HASH (-13)
 #define SP_BUILTIN_STR_STR_HASH (-14)
 #define SP_BUILTIN_INT_STR_HASH (-15)
@@ -183,6 +182,12 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_FIBER         (-22)
 #define SP_BUILTIN_IO            (-23)
 #define SP_BUILTIN_METHOD        (-24)
+/* Exception lived at -13, aliasing SP_BUILTIN_STR_INT_HASH, which both put
+   exceptions inside the hash cls_id block [-20,-13] (breaking is_a?(Hash) /
+   poly .class for exceptions) and made a str_int_hash arriving as a poly value
+   misdispatch through the Exception inspect path. Give it a distinct id below
+   the hash block so the two no longer collide. */
+#define SP_BUILTIN_EXCEPTION     (-28)
 
 static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
 static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }

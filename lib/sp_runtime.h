@@ -2511,6 +2511,17 @@ static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return s
 static const char *sp_PolyArray_inspect(sp_PolyArray *a);
 static const char*sp_PolyArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_PolyArray_inspect((sp_PolyArray*)a->data[i]));}sp_String_append(s,"]");return s->data;}
 
+/* Poly-key/value hash inspect helpers are defined after sp_poly_inspect
+   (they call back into it for their elements), so forward-declare them
+   here for the SP_TAG_OBJ hash arms below. The struct typedefs also live
+   further down, so forward-declare those tags too. */
+typedef struct sp_StrPolyHash sp_StrPolyHash;
+typedef struct sp_SymPolyHash sp_SymPolyHash;
+typedef struct sp_PolyPolyHash sp_PolyPolyHash;
+static const char *sp_StrPolyHash_inspect(sp_StrPolyHash *h);
+static const char *sp_SymPolyHash_inspect(sp_SymPolyHash *h);
+static const char *sp_PolyPolyHash_inspect(sp_PolyPolyHash *h);
+
 /* Object#inspect for a tagged sp_RbVal. Dispatches on the runtime tag;
    each branch reuses the matching primitive inspect helper. Falls back
    to "#<Object>" for SP_TAG_OBJ because the runtime has no class-name
@@ -2548,6 +2559,12 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_sprintf("#<%s: %s>", sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p), sp_exc_message((volatile struct sp_Exception_s *)v.v.p));
+        case SP_BUILTIN_STR_INT_HASH:  return sp_StrIntHash_inspect((sp_StrIntHash *)v.v.p);
+        case SP_BUILTIN_STR_STR_HASH:  return sp_StrStrHash_inspect((sp_StrStrHash *)v.v.p);
+        case SP_BUILTIN_INT_STR_HASH:  return sp_IntStrHash_inspect((sp_IntStrHash *)v.v.p);
+        case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_inspect((sp_StrPolyHash *)v.v.p);
+        case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_inspect((sp_SymPolyHash *)v.v.p);
+        case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_inspect((sp_PolyPolyHash *)v.v.p);
         default:                   return SPL("#<Object>");
       }
     default:          return sp_str_empty;
@@ -2797,7 +2814,7 @@ static mrb_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
   }
   return FALSE;
 }
-typedef struct{sp_RbVal*keys;sp_RbVal*vals;mrb_int*order;mrb_bool*occ;mrb_int len;mrb_int cap;mrb_int mask;}sp_PolyPolyHash;
+typedef struct sp_PolyPolyHash{sp_RbVal*keys;sp_RbVal*vals;mrb_int*order;mrb_bool*occ;mrb_int len;mrb_int cap;mrb_int mask;}sp_PolyPolyHash;
 static void sp_PolyPolyHash_fin(void*p){sp_PolyPolyHash*h=(sp_PolyPolyHash*)p;free(h->keys);free(h->vals);free(h->order);free(h->occ);}
 static void sp_PolyPolyHash_scan(void*p){sp_PolyPolyHash*h=(sp_PolyPolyHash*)p;for(mrb_int i=0;i<h->cap;i++){if(h->occ[i]){sp_mark_rbval(h->keys[i]);sp_mark_rbval(h->vals[i]);}}}
 static sp_PolyPolyHash*sp_PolyPolyHash_new(void){sp_PolyPolyHash*h=(sp_PolyPolyHash*)sp_gc_alloc(sizeof(sp_PolyPolyHash),sp_PolyPolyHash_fin,sp_PolyPolyHash_scan);h->cap=16;h->mask=15;h->keys=(sp_RbVal*)calloc(h->cap,sizeof(sp_RbVal));h->vals=(sp_RbVal*)calloc(h->cap,sizeof(sp_RbVal));h->order=(mrb_int*)malloc(sizeof(mrb_int)*h->cap);h->occ=(mrb_bool*)calloc(h->cap,sizeof(mrb_bool));h->len=0;return h;}
