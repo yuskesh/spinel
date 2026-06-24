@@ -4115,6 +4115,43 @@ static sp_RbVal sp_PolyArray_min(sp_PolyArray *a) {
 }
 static void sp_PolyArray_sort_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } if (a->len > 1) qsort(a->data, (size_t)a->len, sizeof(sp_RbVal), _sp_poly_cmp_qsort); }
 static sp_PolyArray *sp_PolyArray_sort(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_sort_bang(b); return b; }
+/* Compare two boxed arrays element-wise (Array#<=> semantics): first differing
+   comparable element decides, else the shorter array sorts first. Used to order
+   Hash#sort's [key, value] pairs. */
+static int _sp_pair_cmp_incomparable;  /* set when two pairs cannot be ordered */
+static int _sp_poly_pair_cmp_qsort(const void *pa, const void *pb) {
+  /* Once a pair is found incomparable the sort result is discarded and we
+     raise, so skip the remaining comparisons (and any work they would do). */
+  if (_sp_pair_cmp_incomparable) return 0;
+  sp_RbVal a = *(const sp_RbVal *)pa, b = *(const sp_RbVal *)pb;
+  mrb_int na = sp_poly_arr_len(a), nb = sp_poly_arr_len(b);
+  mrb_int n = na < nb ? na : nb;
+  for (mrb_int i = 0; i < n; i++) {
+    mrb_bool ok = FALSE;
+    mrb_int r = sp_poly_cmp(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i), &ok);
+    if (!ok) { _sp_pair_cmp_incomparable = 1; return 0; }
+    if (r != 0) return r < 0 ? -1 : 1;
+  }
+  return (na > nb) - (na < nb);
+}
+static sp_PolyArray *sp_PolyArray_sort_pairs(sp_PolyArray *a) {
+  /* `a` is the caller's transient pair array, unrooted at the call site; root
+     it before sp_PolyArray_dup allocates (and may collect). */
+  SP_GC_ROOT(a);
+  sp_PolyArray *b = sp_PolyArray_dup(a);
+  if (b && b->len > 1) {
+    /* Save/restore the flag around the sort so a comparison that re-enters
+       sort_pairs (e.g. via a nested sort) cannot clobber this call's state. */
+    int prev = _sp_pair_cmp_incomparable;
+    _sp_pair_cmp_incomparable = 0;
+    qsort(b->data, (size_t)b->len, sizeof(sp_RbVal), _sp_poly_pair_cmp_qsort);
+    int incomparable = _sp_pair_cmp_incomparable;
+    _sp_pair_cmp_incomparable = prev;
+    if (incomparable)
+      sp_raise_cls("ArgumentError", "comparison of Array with Array failed");
+  }
+  return b;
+}
 static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eq(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[(mrb_int)(rand()%a->len)]; }
 
