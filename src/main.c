@@ -421,8 +421,11 @@ int main(int argc, char **argv) {
   snprintf(tmp, sizeof tmp, "-I\"%s\" -I\"%s%cregexp\" ", lib_dir, lib_dir, PATH_SEP); s_add(&cmd, tmp);
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   s_add_arg(&cmd, c_path);
-  s_add(&cmd, "-lm ");
   snprintf(tmp, sizeof tmp, "\"%s%clibspinel_rt.a\" ", lib_dir, PATH_SEP); s_add(&cmd, tmp);
+  /* -lm AFTER the archive: ld processes inputs left to right and (with the
+     GNU default --as-needed) drops a DSO no preceding input references.
+     sp_format.o pulls in sqrt/sin/cos, so libm must follow libspinel_rt.a. */
+  s_add(&cmd, "-lm ");
   s_add(&cmd, ov_define); s_add(&cmd, " ");
   if (want_g) s_add(&cmd, "-g ");
 #if !defined(__APPLE__)
