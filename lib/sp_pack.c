@@ -33,14 +33,7 @@
    the string allocator (sp_str_alloc / _set_len / _byte_len / sp_str_empty) come
    straight from the shared headers: this separate TU can now allocate GC strings
    directly onto the one shared heap, so no sp_ext_str_* shim is needed. */
-#include "sp_alloc.h"
-
-/* sp_PolyArray construction (box + push) is not yet in the shared headers, so
-   those few operations still go through extern shims defined by the main TU. */
-typedef struct sp_PolyArray sp_PolyArray;
-extern sp_PolyArray *sp_ext_poly_array_new(void);
-extern void          sp_ext_poly_array_push_int(sp_PolyArray *a, int64_t v);
-extern void          sp_ext_poly_array_push_str(sp_PolyArray *a, const char *s);
+#include "sp_alloc.h"   /* string + object allocation, sp_box_*, sp_PolyArray */
 
 /* ---------- Helpers ---------- */
 
@@ -135,13 +128,6 @@ static const char *pk_poly_to_str(sp_RbVal v) {
   }
 }
 
-/* PolyArray layout — must match sp_runtime.h. We only need
-   `data` and `len` for read access. */
-struct sp_PolyArray {
-  sp_RbVal *data;
-  mrb_int   len;
-  mrb_int   cap;
-};
 
 /* ---------- Pack entry points ---------- */
 
@@ -316,7 +302,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
 /* ---------- Unpack entry point ---------- */
 
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
-  sp_PolyArray *out = sp_ext_poly_array_new();
+  sp_PolyArray *out = sp_PolyArray_new();
   if (!str || !fmt) return out;
   /* sp_ext_str_byte_len honors the heap-string header so embedded
      NULs (binary data) don't truncate the source. */
@@ -350,7 +336,7 @@ else {
         while (off + z < slen && src[z]) z++;
         char *s = sp_str_alloc(z);
         memcpy(s, src, z); s[z] = 0; sp_str_set_len(s, z);
-        sp_ext_poly_array_push_str(out, s);
+        sp_PolyArray_push(out, sp_box_str(s));
         off += z;
         if (off < slen && str[off] == 0) off++;
       }
@@ -369,7 +355,7 @@ else if (spec == 'Z') {
           real = z;
         }
         sp_str_set_len(s, real);
-        sp_ext_poly_array_push_str(out, s);
+        sp_PolyArray_push(out, sp_box_str(s));
         off += take;
       }
       continue;
@@ -396,7 +382,7 @@ else if (spec == 'Z') {
         case 'x': break;
       }
       off += fsize;
-      if (spec != 'x') sp_ext_poly_array_push_int(out, v);
+      if (spec != 'x') sp_PolyArray_push(out, sp_box_int((mrb_int)v));
     }
   }
   return out;

@@ -473,7 +473,7 @@ static sp_Rational sp_rational_pow(sp_Rational a, mrb_int e) {
    hook is responsible for deciding whether to keep the storage
    (pool push) or free it. Used by class-instance free-list pools. */
 /* sp_gc_heap / sp_gc_bytes are defined in lib/sp_gc.c (extern via sp_gc.h). */
-static size_t sp_gc_threshold = 256*1024;
+/* sp_gc_threshold moved to sp_alloc.c (extern, shared) */
 
 /* ---- GC verify: opt-in mark-path validation (release-neutral) ------------
  * SPINEL_GC_VERIFY=1  before the collector invokes an object's scan hook,
@@ -806,16 +806,16 @@ static inline int sp_gc_bucket(size_t sz){int b=(int)(sz/16);return b<SP_GC_NBUC
    sp_gc_old_heap is collector-private to lib/sp_gc.c. */
 
 /* GC verify support + sp_gc_collect live in lib/sp_gc.c. */
-static size_t sp_gc_threshold_init=256*1024;
+/* sp_gc_threshold_init moved to sp_alloc.c */
 /* sp_oom_die + the SPINEL_MAX_HEAP_MB governor (sp_gc_enforce_mem_limit)
    live in lib/sp_gc.c. */
 /* SPINEL_GC_STRESS=1: shrink the collection threshold to a few KB so a
    cycle runs at almost every allocation. A rooting hole that normal
    thresholds hide (the GC rarely lands inside the vulnerable window)
    becomes a deterministic failure; pair with SPINEL_GC_VERIFY=1. */
-static int sp_gc_stress_checked = 0;
-void*sp_gc_alloc(size_t sz,void(*fin)(void*),void(*scn)(void*)){if(!sp_gc_stress_checked){sp_gc_stress_checked=1;const char*e=getenv("SPINEL_GC_STRESS");if(e&&*e&&*e!='0'){sp_gc_threshold=2048;sp_gc_threshold_init=2048;}}if(sp_gc_bytes>sp_gc_threshold){size_t before=sp_gc_bytes;sp_gc_collect();size_t freed=before-sp_gc_bytes;if(freed<before/4){sp_gc_threshold=before*2;}else if(sp_gc_bytes>0){sp_gc_threshold=sp_gc_bytes*4;if(sp_gc_threshold<sp_gc_threshold_init)sp_gc_threshold=sp_gc_threshold_init;}else{sp_gc_threshold=sp_gc_threshold_init;}sp_gc_enforce_mem_limit();}size_t need=sizeof(sp_gc_hdr)+sz;sp_gc_hdr*h=(sp_gc_hdr*)calloc(1,need);if(!h)sp_oom_die();h->finalize=fin;h->scan=scn;h->size=need;h->marked=0;h->next=sp_gc_heap;sp_gc_heap=h;sp_gc_bytes+=need;return(char*)h+sizeof(sp_gc_hdr);}
-void*sp_gc_alloc_nogc(size_t sz,void(*fin)(void*),void(*scn)(void*)){size_t need=sizeof(sp_gc_hdr)+sz;sp_gc_hdr*h=(sp_gc_hdr*)calloc(1,need);if(!h)sp_oom_die();h->finalize=fin;h->scan=scn;h->size=need;h->marked=0;h->next=sp_gc_heap;sp_gc_heap=h;sp_gc_bytes+=need;return(char*)h+sizeof(sp_gc_hdr);}
+/* sp_gc_stress_checked moved to sp_alloc.c */
+/* sp_gc_alloc / sp_gc_alloc_nogc moved to sp_alloc.h (shared inline over the
+   extern heap + threshold state). */
 /* GC-header frozen bit — used for containers whose mutators are NOT
    on a hot path (hashes), so the extra cache line vs. a struct field
    doesn't matter. Arrays co-locate `frozen` in the struct instead
@@ -907,7 +907,6 @@ static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Ob
 
 /* Cold out-of-line raise for frozen-container mutation; keeps the
    hot mutators (push / []=) small enough to stay inlined. */
-static void __attribute__((noinline,cold)) sp_raise_frozen_array(void){sp_raise_cls("FrozenError","can't modify frozen Array");}
 
 /* `frozen` rides in the struct (not the GC header) so the hot push /
    []= paths read it from the same cache line as len/cap — no extra
@@ -2907,34 +2906,11 @@ typedef uint64_t sp_RbValue;
    per type. Non-negative cls_id stays an index into the user-class
    table as before. The element-type tag and the array cls_id are
    paired by `array_cls_id = -element_tag - 1`. */
-#define SP_BUILTIN_ARRAY_OF(tag) (-(tag) - 1)
-#define SP_BUILTIN_INT_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_INT) /* -1 */
-#define SP_BUILTIN_STR_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_STR) /* -2 */
-#define SP_BUILTIN_FLT_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_FLT) /* -3 */
-#define SP_BUILTIN_PTR_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_OBJ) /* -6 */
-#define SP_BUILTIN_SYM_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_SYM) /* -7 */
-#define SP_BUILTIN_PROC (-9) /* sp_Proc *, distinct from any tag-based id */
-#define SP_BUILTIN_RANGE (-10) /* sp_Range *, heap copy of stack-typed sp_Range when crossing into poly */
-#define SP_BUILTIN_TIME (-11) /* sp_Time *, heap copy of stack-typed sp_Time when crossing into poly */
-#define SP_BUILTIN_POLY_ARRAY (-12) /* sp_PolyArray *, array of sp_RbVal */
-#define SP_BUILTIN_EXCEPTION (-13) /* sp_Exception *, a rescued exception crossing into poly */
 struct sp_Exception_s;
 static const char *sp_exc_class_name(volatile struct sp_Exception_s *ve);
 static const char *sp_exc_message(volatile struct sp_Exception_s *ve);
 /* Hash variant cls_ids — boxed into the cls_id of a poly slot so
    Hash#dig can recover the concrete hash type at runtime. */
-#define SP_BUILTIN_STR_INT_HASH (-13)
-#define SP_BUILTIN_STR_STR_HASH (-14)
-#define SP_BUILTIN_INT_STR_HASH (-15)
-#define SP_BUILTIN_SYM_INT_HASH (-16)
-#define SP_BUILTIN_SYM_STR_HASH (-17)
-#define SP_BUILTIN_STR_POLY_HASH (-18)
-#define SP_BUILTIN_SYM_POLY_HASH (-19)
-#define SP_BUILTIN_POLY_POLY_HASH (-20)
-#define SP_BUILTIN_OBJECT        (-21) /* Object.new identity sentinel */
-#define SP_BUILTIN_FIBER         (-22) /* sp_Fiber * boxed into poly slot */
-#define SP_BUILTIN_IO            (-23) /* sp_File * (File/IO handle) boxed into poly slot */
-#define SP_BUILTIN_METHOD        (-24) /* sp_BoundMethod * boxed into poly slot */
 /* SP_BUILTIN_FOREIGN_PTR (-25), SP_BUILTIN_COMPLEX (-26) and
    SP_BUILTIN_RATIONAL (-27) are defined in sp_gc.h (shared with lib readers). */
 /* sp_RbVal is defined in sp_gc.h (the mark helpers dispatch on its tag). */
@@ -2952,18 +2928,11 @@ int sp_bigint_sign(sp_Bigint *b);
 size_t sp_bigint_byte_len(sp_Bigint *b);
 size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);
 sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, size_t n);
-static sp_RbVal sp_box_int(mrb_int v) { sp_RbVal r; r.tag = SP_TAG_INT; r.cls_id = 0; r.v.i = v; return r; }
-static sp_RbVal sp_box_str(const char *v) { sp_RbVal r; r.tag = SP_TAG_STR; r.cls_id = 0; r.v.s = v; return r; }
-static sp_RbVal sp_box_float(mrb_float v) { sp_RbVal r; r.tag = SP_TAG_FLT; r.cls_id = 0; r.v.f = v; return r; }
-static sp_RbVal sp_box_bool(mrb_bool v) { sp_RbVal r; r.tag = SP_TAG_BOOL; r.cls_id = 0; r.v.b = v; return r; }
-static sp_RbVal sp_box_nil(void) { sp_RbVal r; r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.i = 0; return r; }
 /* Boxing a nullable-int value (int?): SP_INT_NIL is the reserved nil sentinel
    and never a legitimate integer, so a sentinel must surface as Ruby nil rather
    than a boxed INT_MIN. Used when an int? value (hash miss, rindex, nonzero?,
    ...) flows into a poly slot. */
 static sp_RbVal sp_box_int_or_nil(mrb_int v) { return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v); }
-static sp_RbVal sp_box_obj(void *p, int cls_id) { sp_RbVal r; r.tag = SP_TAG_OBJ; r.cls_id = cls_id; r.v.p = p; return r; }
-static sp_RbVal sp_box_sym(sp_sym v) { sp_RbVal r; r.tag = SP_TAG_SYM; r.cls_id = 0; r.v.i = (mrb_int)v; return r; }
 /* box a sp_Class into a poly slot. */
 static sp_RbVal sp_box_class(sp_Class c) { sp_RbVal r; r.tag = SP_TAG_CLASS; r.cls_id = (int)c.cls_id; r.v.i = c.cls_id; return r; }
 /* box a sp_Bigint* into a poly slot (heterogeneous container element, or a
@@ -3305,7 +3274,6 @@ SP_NORETURN SP_COLD static void sp_raise_no_str_conversion(sp_RbVal v) {
   snprintf(buf, sizeof buf, "no implicit conversion of %s into String", sp_poly_class_name(v));
   sp_raise_cls("TypeError", buf);
 }
-typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;
 static mrb_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
 static mrb_float sp_poly_to_f(sp_RbVal v);  /* defined below; used by the bigint+float arms */
 /* int+int that auto-promotes to bigint on overflow in --int-overflow=promote;
@@ -3381,10 +3349,6 @@ static sp_RbVal sp_poly_neg(sp_RbVal a) { if (a.tag == SP_TAG_FLT) return sp_box
 /* Definition of the root-entry marker forward-declared near
    sp_gc_mark_all: a low-bit-tagged slot is an sp_RbVal* root. */
 /* sp_gc_mark_root_entry is an inline helper in sp_gc.h. */
-static void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; for (mrb_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]); }
-static void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
-static sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } return a; }
-static void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; a->cap = a->cap * 2 + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } a->data[a->len++] = v; }
 static sp_RbVal sp_PolyArray_pop(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } return a->data[--a->len]; }
 /* log(|Gamma(x)|) for x > 0, via the Stirling asymptotic series pushed into
    its accurate region (x >= 12) by the recurrence Gamma(x) = Gamma(x+1)/x. We
@@ -3666,7 +3630,6 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
   return sp_box_int(sp_poly_to_i(a) << sp_poly_to_i(b));
 }
 static mrb_int sp_PolyArray_length(sp_PolyArray *a) { if (!a) return 0; return a->len; }
-static sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
 /* Helpers for iterating over a poly value that holds a boxed array. */
 static mrb_int sp_poly_arr_len(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
@@ -6068,22 +6031,9 @@ const char *sp_StringScanner_pre_match(sp_StringScanner *sc);
 const char *sp_StringScanner_post_match(sp_StringScanner *sc);
 sp_StringScanner *sp_StringScanner_reset(sp_StringScanner *sc);
 
-/* External-TU shim wrappers. The runtime's GC-allocating helpers
-   are `static inline`; separately-compiled .c files in
-   libspinel_rt.a can't reach the per-TU state. Define plain
-   external-linkage wrappers here so the main binary's single TU
-   owns the GC state and lib code calls in via stable symbols.
-   sp_runtime.h is included exactly once per binary (in the
-   generated main file), so there's no multi-definition risk. */
-sp_PolyArray *sp_ext_poly_array_new(void) { return sp_PolyArray_new(); }
-void sp_ext_poly_array_push_int(sp_PolyArray *a, int64_t v) { sp_PolyArray_push(a, sp_box_int((mrb_int)v)); }
-void sp_ext_poly_array_push_str(sp_PolyArray *a, const char *s) { sp_PolyArray_push(a, sp_box_str(s)); }
-char *sp_ext_str_alloc(size_t n) { return sp_str_alloc(n); }
-void sp_ext_str_set_len(char *s, size_t n) { sp_str_set_len(s, n); }
-const char *sp_ext_str_empty(void) { return sp_str_empty; }
-size_t sp_ext_str_byte_len(const char *s) { return sp_str_byte_len(s); }
-void *sp_ext_gc_alloc(size_t sz, void (*fin)(void *), void (*scan)(void *)) { return sp_gc_alloc(sz, fin, scan); }
-void sp_ext_mark_string(const char *s) { sp_mark_string(s); }
+/* The sp_ext_* shim wrappers are gone: string/object allocation, sp_box_*, and
+   sp_PolyArray now live in the shared headers (sp_alloc.h / sp_gc.h), so lib C
+   files (sp_pack.c, sp_strscan.c, sp_marshal.c, ...) allocate directly. */
 
 #ifdef __APPLE__
 #pragma clang diagnostic pop

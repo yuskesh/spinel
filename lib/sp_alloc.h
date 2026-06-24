@@ -154,4 +154,63 @@ static inline const char*sp_float_to_s(mrb_float f){
   }
   out[o]=0;sp_str_set_len(out,(size_t)o);return out;
 }
+
+/* ---- object construction (shared so lib C files can build values) ----
+   The built-in cls_id sentinels, the core sp_box_* constructors, the object
+   allocator, and sp_PolyArray. Moved here from sp_runtime.h so a standalone TU
+   (sp_pack.c, sp_strscan.c, ...) can allocate and box without the per-TU heap
+   state. SP_BUILTIN_FOREIGN_PTR/COMPLEX/RATIONAL are in sp_gc.h. */
+#define SP_BUILTIN_ARRAY_OF(tag) (-(tag) - 1)
+#define SP_BUILTIN_INT_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_INT) /* -1 */
+#define SP_BUILTIN_STR_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_STR) /* -2 */
+#define SP_BUILTIN_FLT_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_FLT) /* -3 */
+#define SP_BUILTIN_PTR_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_OBJ) /* -6 */
+#define SP_BUILTIN_SYM_ARRAY SP_BUILTIN_ARRAY_OF(SP_TAG_SYM) /* -7 */
+#define SP_BUILTIN_PROC (-9)
+#define SP_BUILTIN_RANGE (-10)
+#define SP_BUILTIN_TIME (-11)
+#define SP_BUILTIN_POLY_ARRAY (-12)
+#define SP_BUILTIN_EXCEPTION (-13)
+#define SP_BUILTIN_STR_INT_HASH (-13)
+#define SP_BUILTIN_STR_STR_HASH (-14)
+#define SP_BUILTIN_INT_STR_HASH (-15)
+#define SP_BUILTIN_SYM_INT_HASH (-16)
+#define SP_BUILTIN_SYM_STR_HASH (-17)
+#define SP_BUILTIN_STR_POLY_HASH (-18)
+#define SP_BUILTIN_SYM_POLY_HASH (-19)
+#define SP_BUILTIN_POLY_POLY_HASH (-20)
+#define SP_BUILTIN_OBJECT        (-21)
+#define SP_BUILTIN_FIBER         (-22)
+#define SP_BUILTIN_IO            (-23)
+#define SP_BUILTIN_METHOD        (-24)
+
+static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
+static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }
+static inline sp_RbVal sp_box_float(mrb_float v){ sp_RbVal r; r.tag = SP_TAG_FLT;  r.cls_id = 0; r.v.f = v; return r; }
+static inline sp_RbVal sp_box_bool(mrb_bool v)  { sp_RbVal r; r.tag = SP_TAG_BOOL; r.cls_id = 0; r.v.b = v; return r; }
+static inline sp_RbVal sp_box_nil(void)         { sp_RbVal r; r.tag = SP_TAG_NIL;  r.cls_id = 0; r.v.i = 0; return r; }
+static inline sp_RbVal sp_box_obj(void *p, int cls_id) { sp_RbVal r; r.tag = SP_TAG_OBJ; r.cls_id = cls_id; r.v.p = p; return r; }
+static inline sp_RbVal sp_box_sym(sp_sym v)     { sp_RbVal r; r.tag = SP_TAG_SYM;  r.cls_id = 0; r.v.i = (mrb_int)v; return r; }
+
+/* GC object allocator. The threshold/stress state is extern (defined in
+   sp_alloc.c) so every TU shares it -- the same model as sp_gc_heap/bytes.
+   sp_gc_alloc itself is an external function (defined in sp_alloc.c) so the
+   cold lib C files that already link it (sp_fiber.c, sp_io.c, sp_bigint.c)
+   keep resolving the same symbol. */
+extern size_t sp_gc_threshold;
+extern size_t sp_gc_threshold_init;
+extern int sp_gc_stress_checked;
+void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
+void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *));
+
+__attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);  /* lib/sp_core.c */
+static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", "can't modify frozen Array"); }
+
+/* sp_PolyArray: a growable array of boxed values. */
+typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;
+static inline void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; for (mrb_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]); }
+static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
+static inline sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } return a; }
+static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; a->cap = a->cap * 2 + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } a->data[a->len++] = v; }
+static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
 #endif /* SP_ALLOC_H */
