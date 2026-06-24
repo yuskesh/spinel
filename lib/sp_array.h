@@ -151,4 +151,44 @@ void sp_PtrArray_shuffle_bang(sp_PtrArray *a);
 sp_PtrArray *sp_PtrArray_shuffle(sp_PtrArray *a);
 void *sp_PtrArray_sample(sp_PtrArray *a);
 
+/* ============================= sp_StrArray ============================ */
+/* Small-array optimization: keep the first SP_STRARR_INLINE elements
+   inside the struct so empty/short StrArrays skip the data malloc.
+   data == inline_data is the discriminator for "still on inline storage". */
+static void sp_StrArray_fin(void*p){sp_StrArray*a=(sp_StrArray*)p;if(a->data!=a->inline_data){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(const char*)*a->cap;h->size-=sizeof(const char*)*a->cap;free(a->data);}}
+static void sp_StrArray_scan(void*p){sp_StrArray*a=(sp_StrArray*)p;for(mrb_int i=0;i<a->len;i++)sp_mark_string(a->data[i]);}
+static sp_StrArray*sp_StrArray_new(void){sp_StrArray*a=(sp_StrArray*)sp_gc_alloc(sizeof(sp_StrArray),sp_StrArray_fin,sp_StrArray_scan);a->cap=SP_STRARR_INLINE;a->data=a->inline_data;a->len=0;return a;}
+static inline void sp_StrArray_push(sp_StrArray*a,const char*v){if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));mrb_int nc=a->cap*2+1;if(a->data==a->inline_data){const char**nd=(const char**)malloc(sizeof(const char*)*nc);if(!nd)sp_oom_die();memcpy(nd,a->data,sizeof(const char*)*a->len);a->data=nd;}else{sp_gc_bytes-=sizeof(const char*)*a->cap;h->size-=sizeof(const char*)*a->cap;void*nd=realloc(a->data,sizeof(const char*)*nc);if(!nd)sp_oom_die();a->data=(const char**)nd;}a->cap=nc;h->size+=sizeof(const char*)*a->cap;sp_gc_bytes+=sizeof(const char*)*a->cap;}a->data[a->len++]=v;}
+static inline mrb_int sp_StrArray_length(sp_StrArray*a){return a->len;}
+static inline mrb_bool sp_StrArray_empty(sp_StrArray*a){return a->len==0;}
+static inline const char*sp_StrArray_get(sp_StrArray*a,mrb_int i){if(!a)return NULL;if(i<0)i+=a->len;if(i<0||i>=a->len)return NULL;return a->data[i];}
+static inline void sp_StrArray_set(sp_StrArray*a,mrb_int i,const char*v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}mrb_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));while(i>=a->len)sp_StrArray_push(a,sp_str_empty);a->data[i]=v;}
+
+/* ---- sp_StrArray cold ops (compiled in lib/sp_array.c) ---- */
+void sp_StrArray_replace(sp_StrArray *dst, sp_StrArray *src);
+const char *sp_StrArray_pop(sp_StrArray *a);
+const char *sp_StrArray_shift(sp_StrArray *a);
+sp_StrArray *sp_StrArray_slice(sp_StrArray *a, mrb_int start, mrb_int len);
+sp_StrArray *sp_StrArray_slice_range(sp_StrArray *a, mrb_int start, mrb_int end_, mrb_int excl);
+void sp_StrArray_reverse_bang(sp_StrArray *a);
+void sp_StrArray_rotate_bang(sp_StrArray *a, mrb_int n);
+void sp_StrArray_sort_bang(sp_StrArray *a);
+void sp_StrArray_uniq_bang(sp_StrArray *a);
+const char *sp_StrArray_join(sp_StrArray *a, const char *sep);
+mrb_bool sp_StrArray_include(sp_StrArray *a, const char *v);
+sp_StrArray *sp_StrArray_intersect(sp_StrArray *a, sp_StrArray *b);
+sp_StrArray *sp_StrArray_union(sp_StrArray *a, sp_StrArray *b);
+sp_StrArray *sp_StrArray_difference(sp_StrArray *a, sp_StrArray *b);
+mrb_int sp_StrArray_index(sp_StrArray *a, const char *v);
+mrb_int sp_StrArray_rindex(sp_StrArray *a, const char *v);
+sp_StrArray *sp_StrArray_compact(sp_StrArray *a);
+const char *sp_StrArray_delete_at(sp_StrArray *a, mrb_int i);
+const char *sp_StrArray_delete(sp_StrArray *a, const char *v);
+void sp_StrArray_insert(sp_StrArray *a, mrb_int i, const char *v);
+void sp_StrArray_shuffle_bang(sp_StrArray *a);
+sp_StrArray *sp_StrArray_dup(sp_StrArray *a);
+sp_StrArray *sp_StrArray_sort(sp_StrArray *a);
+sp_StrArray *sp_StrArray_shuffle(sp_StrArray *a);
+const char *sp_StrArray_sample(sp_StrArray *a);
+
 #endif /* SP_ARRAY_H */
