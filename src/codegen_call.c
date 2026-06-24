@@ -2306,6 +2306,21 @@ else {
   return 0;
 }
 
+/* True when nodes a and b are the same side-effect-free lvalue -- the same local
+   or instance variable read. Used to resolve `x.equal?(x)` (object identity) for
+   receivers whose value identity is not otherwise modeled: re-reading one
+   variable yields the same object, so the reflexive case is certainly true,
+   while method calls / literals (which would produce fresh objects, or which the
+   C compiler merges) are excluded. */
+static int same_sefree_lvalue(Compiler *c, int a, int b) {
+  if (a < 0 || b < 0) return 0;
+  const char *ta = nt_type(c->nt, a), *tb = nt_type(c->nt, b);
+  if (!ta || !tb || strcmp(ta, tb)) return 0;
+  if (strcmp(ta, "LocalVariableReadNode") && strcmp(ta, "InstanceVariableReadNode")) return 0;
+  const char *na = nt_str(c->nt, a, "name"), *nb = nt_str(c->nt, b, "name");
+  return na && nb && !strcmp(na, nb);
+}
+
 static int emit_scalar_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -2594,6 +2609,29 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (!strcmp(name, "rjust") && argc == 2) {
         buf_printf(b, "sp_str_rjust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
+      /* String#eql?(x): byte-equal only when x is itself String-typed (no
+         coercion, unlike ==). A poly arg checks its tag; any other concrete
+         type is never equal. */
+      else if (!strcmp(name, "eql?") && argc == 1) {
+        if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else if (a0 == TY_POLY) {
+          int te = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; _t%d.tag == SP_TAG_STR && sp_str_eq(_t%d.v.s, %s); })", te, te, r);
+        }
+        else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      }
+      /* String#equal?(x): object identity. A String is a `const char *` whose
+         literals the C compiler merges at -O2, so raw pointer equality would
+         wrongly equate distinct equal-valued literals (`a = "x"; b = "x"`).
+         Only the unambiguous reflexive case -- the same side-effect-free local
+         or ivar read on both sides (`x.equal?(x)`) -- is certainly identity-
+         true; every other form is conservatively false, still evaluating the
+         argument for its side effects. */
+      else if (!strcmp(name, "equal?") && argc == 1) {
+        if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
+        else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      }
       else handled = 0;
     }
     else if (rt == TY_INT) {
@@ -2687,6 +2725,19 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
                         " sp_IntArray_push(_t%d, _t%d);"
                         " sp_IntArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
         }
+      }
+      /* Integer#eql?/equal?(x): value-equal only when x is itself Integer-typed
+         (no numeric coercion -- 1.eql?(1.0) is false). For a fixnum receiver
+         equal? is value identity, so it behaves the same as eql?. A Float or
+         any other concrete arg is never equal; a poly arg checks its tag. */
+      else if ((!strcmp(name, "eql?") || !strcmp(name, "equal?")) && argc == 1) {
+        if (a0 == TY_INT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+        else if (a0 == TY_POLY) {
+          int te = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; _t%d.tag == SP_TAG_INT && _t%d.v.i == (%s); })", te, te, r);
+        }
+        else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
       }
       else handled = 0;
     }
