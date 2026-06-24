@@ -11,6 +11,7 @@
 #include "sp_alloc.h"   /* shared string-heap state + allocators (extern; see sp_alloc.c) */
 #include "sp_json.h"    /* JSON.generate serializers (lib/sp_json.c); calls emitted by codegen */
 #include "sp_marshal.h" /* Marshal.dump/load (lib/sp_marshal.c) + the sp_marshal_v vtable */
+#include "sp_format.h"  /* cold value-type display helpers (lib/sp_format.c) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -313,47 +314,7 @@ static sp_Complex sp_complex_pow(sp_Complex a,mrb_int e){
 /* Inspect renders Complex per Ruby: `(re+imi)` or `(re-imi)` for
    negative imaginary. Integer-valued components render without
    decimals; fractional render via %g. Issue #840. */
-static const char *sp_complex_inspect(sp_Complex c) {
-  char buf[128];
-  int n = 0;
-  /* Real part: keep integer-looking values short. */
-  if (c.re == (mrb_int)c.re) n += snprintf(buf + n, sizeof(buf) - n, "(%lld", (long long)c.re);
-  else n += snprintf(buf + n, sizeof(buf) - n, "(%g", c.re);
-  /* Imaginary sign + value. */
-  if (c.im < 0) {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "-%lldi)", -(long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "%gi)", c.im);
-  }
-else {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "+%lldi)", (long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "+%gi)", c.im);
-  }
-  if (n < 0) n = 0;
-  char *r = sp_str_alloc_raw(n + 1);
-  memcpy(r, buf, n);
-  r[n] = 0;
-  return r;
-}
-/* Complex#to_s: bare `re+imi` (no surrounding parens, unlike #inspect). */
-static const char *sp_complex_to_s(sp_Complex c) {
-  char buf[128];
-  int n = 0;
-  if (c.re == (mrb_int)c.re) n += snprintf(buf + n, sizeof(buf) - n, "%lld", (long long)c.re);
-  else n += snprintf(buf + n, sizeof(buf) - n, "%g", c.re);
-  if (c.im < 0) {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "-%lldi", -(long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "%gi", c.im);
-  }
-  else {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "+%lldi", (long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "+%gi", c.im);
-  }
-  if (n < 0) n = 0;
-  char *r = sp_str_alloc_raw(n + 1);
-  memcpy(r, buf, n);
-  r[n] = 0;
-  return r;
-}
+/* sp_complex_inspect / sp_complex_to_s moved to lib/sp_format.c (cold). */
 
 /* ---- Rational runtime ---- */
 /* Value-type Rational: 16 bytes (two mrb_ints), passed by value.
@@ -376,25 +337,7 @@ static inline sp_Rational sp_rational_new(mrb_int n, mrb_int d) {
   r.den = d / g;
   return r;
 }
-static const char *sp_rational_inspect(sp_Rational r) {
-  char buf[64];
-  int n = snprintf(buf, sizeof(buf), "(%lld/%lld)", (long long)r.num, (long long)r.den);
-  if (n < 0) n = 0;
-  char *o = sp_str_alloc_raw(n + 1);
-  memcpy(o, buf, n);
-  o[n] = 0;
-  return o;
-}
-/* Rational#to_s: bare `num/den` (no parens, unlike #inspect). */
-static const char *sp_rational_to_s(sp_Rational r) {
-  char buf[64];
-  int n = snprintf(buf, sizeof(buf), "%lld/%lld", (long long)r.num, (long long)r.den);
-  if (n < 0) n = 0;
-  char *o = sp_str_alloc_raw(n + 1);
-  memcpy(o, buf, n);
-  o[n] = 0;
-  return o;
-}
+/* sp_rational_inspect / sp_rational_to_s moved to lib/sp_format.c (cold). */
 /* Phase-1 Rational arithmetic over fixed mrb_int num/den. Intermediate
    products are computed in a wider type and any result that does not fit back
    into mrb_int raises RangeError (mruby promotes to Bigint here -- a later
@@ -3118,13 +3061,7 @@ static sp_RbVal sp_box_rational(sp_Rational v) {
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_RATIONAL);
 }
-static const char *sp_Range_inspect(sp_Range *r) {
-  /* "first..last" / "first...last" form. Buffer sized for two int64s
-     plus the dots. */
-  char *buf = sp_str_alloc_raw(48);
-  snprintf(buf, 48, r->excl ? "%lld...%lld" : "%lld..%lld", (long long)r->first, (long long)r->last);
-  return buf;
-}
+/* sp_Range_inspect moved to lib/sp_format.c (cold). */
 /* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
    tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers
    so no scanner is needed. */
