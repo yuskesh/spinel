@@ -1757,7 +1757,8 @@ static mrb_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.
 static const char *sp_class_to_s(sp_Class c);
 static inline const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
-    case SP_TAG_INT: return sp_int_to_s(v.v.i);
+    /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
+    case SP_TAG_INT: return v.v.i == SP_INT_NIL ? sp_str_empty : sp_int_to_s(v.v.i);
     case SP_TAG_STR: return v.v.s ? v.v.s : sp_str_empty;
     case SP_TAG_FLT: return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
@@ -2516,7 +2517,9 @@ static const char*sp_PolyArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_S
    table yet (follow-up PR). Returns a GC-managed C string. */
 static inline const char *sp_poly_inspect(sp_RbVal v) {
   switch (v.tag) {
-    case SP_TAG_INT:  return sp_int_to_s(v.v.i);
+    /* An int-typed nil (unfilled int block param, nullable-int miss) carries
+       the SP_INT_NIL sentinel; render it as nil, not the raw INT64_MIN. */
+    case SP_TAG_INT:  return v.v.i == SP_INT_NIL ? SPL("nil") : sp_int_to_s(v.v.i);
     case SP_TAG_STR:  return sp_str_inspect(v.v.s);
     case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
