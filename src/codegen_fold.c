@@ -1675,6 +1675,10 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* defined below, before emit_collect_expr; used by the each-chain terminals */
+static void emit_block_value_into(Compiler *c, int block, const char *dest,
+                                  int want_poly, int indent);
+
 /* The non-fold terminals over arr.each.with_index / arr.each_with_index:
    map/collect (collect block value), select/filter & reject & to_a/entries
    (collect the [v,i] pair), count, any?/all?/none? (scalar), each (side effect,
@@ -1798,35 +1802,45 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     buf_puts(g_pre, ");\n");
   }
   else {   /* map / select / reject / count / any? / all? / none? -- need the block value */
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, din);
-    int saveInd = g_indent; g_indent = din;
-    Buf vb; memset(&vb, 0, sizeof vb); if (bn > 0) emit_expr(c, bb[bn - 1], &vb); g_indent = saveInd;
-    const char *v = vb.p ? vb.p : "0";
+    /* collect the block's value (next-aware) into a temp so an interior or tail
+       `next <v>` contributes <v> rather than being dropped as a skip. */
+    /* An empty block body (e.g. `map { |x, i| }`) has bn == 0, so guard the
+       bb[bn - 1] read and treat the absent tail value as nil -- a poly value so
+       the temp initializes to sp_box_nil() rather than an integer 0. */
+    TyKind bt = bn > 0 ? comp_ntype(c, bb[bn - 1]) : TY_NIL;
+    if (bt == TY_UNKNOWN) bt = TY_INT;
+    int vpoly = (bt == TY_POLY || bt == TY_NIL);
+    int tv = ++g_tmp; char tvb[24]; snprintf(tvb, sizeof tvb, "_t%d", tv);
+    emit_indent(g_pre, din);
+    if (vpoly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
+    else { emit_ctype(c, bt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value(bt)); }
+    emit_block_value_into(c, block, tvb, vpoly, din);
+    char truth[40];
+    if (vpoly) snprintf(truth, sizeof truth, "sp_poly_truthy(_t%d)", tv);
+    else snprintf(truth, sizeof truth, "(_t%d)", tv);
     if (is_map) {
-      TyKind bt = comp_ntype(c, bb[bn - 1]);
       emit_indent(g_pre, din); buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
-      if (!strcmp(rk, "Poly") && bt != TY_POLY) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bt, v, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
-      else buf_puts(g_pre, v);
+      if (!strcmp(rk, "Poly") && !vpoly) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bt, tvb, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+      else buf_puts(g_pre, tvb);
       buf_puts(g_pre, ");\n");
     }
     else if (is_sel || is_rej) {
-      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s(%s)) sp_PolyArray_push(_t%d, ", is_rej ? "!" : "", v, tres);
+      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s%s) sp_PolyArray_push(_t%d, ", is_rej ? "!" : "", truth, tres);
       Buf bx; memset(&bx, 0, sizeof bx); char pe[32]; snprintf(pe, sizeof pe, "_t%d", tpair); emit_boxed_text(c, pair_ty, pe, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
       buf_puts(g_pre, ");\n");
     }
     else if (is_cnt) {
-      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s) _t%d++;\n", v, tcnt);
+      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s) _t%d++;\n", truth, tcnt);
     }
     else if (is_any) {
-      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s) { _t%d = 1; break; }\n", v, tflag);
+      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s) { _t%d = 1; break; }\n", truth, tflag);
     }
     else if (is_none) {
-      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s) { _t%d = 0; break; }\n", v, tflag);
+      emit_indent(g_pre, din); buf_printf(g_pre, "if (%s) { _t%d = 0; break; }\n", truth, tflag);
     }
     else if (is_all) {
-      emit_indent(g_pre, din); buf_printf(g_pre, "if (!(%s)) { _t%d = 0; break; }\n", v, tflag);
+      emit_indent(g_pre, din); buf_printf(g_pre, "if (!%s) { _t%d = 0; break; }\n", truth, tflag);
     }
-    free(vb.p);
   }
 
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
