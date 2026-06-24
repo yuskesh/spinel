@@ -9370,7 +9370,7 @@ else {
       return;
     }
     if (!strcmp(name, "inspect")) {
-      buf_puts(b, "sp_str_concat(SPL(\":\"), sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "))");
+      buf_puts(b, "sp_sym_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
     if (!strcmp(name, "to_sym") || !strcmp(name, "itself")) { emit_expr(c, recv, b); return; }

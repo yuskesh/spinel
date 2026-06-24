@@ -238,9 +238,9 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
   }
   else if (t == TY_SYMBOL) {
-    buf_puts(b, "fputs(sp_str_concat(SPL(\":\"), sp_sym_to_s(");
+    buf_puts(b, "fputs(sp_sym_inspect(");
     emit_expr(c, arg, b);
-    buf_puts(b, ")), stdout); putchar('\\n');\n");
+    buf_puts(b, "), stdout); putchar('\\n');\n");
   }
   else if (ty_is_array(t) && array_kind(t)) {
     buf_printf(b, "fputs(sp_%sArray_inspect(", array_kind(t));

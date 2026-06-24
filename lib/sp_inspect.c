@@ -7,6 +7,7 @@
    probe path. The result is built with the shared sp_String builder. */
 #include "sp_inspect.h"
 #include "sp_string.h"   /* sp_String, sp_alloc.h, SP_GC_ROOT via sp_gc.h */
+#include "sp_str.h"      /* sp_sym_inspect_key for the symbol hash-key short form */
 
 const char *sp_inspect_container(sp_RbVal v) {
   int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
@@ -29,7 +30,7 @@ const char *sp_inspect_container(sp_RbVal v) {
     sp_RbVal k, val;
     sp_json_hpair_fn(v, i, &k, &val);
     if (k.tag == SP_TAG_SYM) {
-      sp_String_append(s, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)k.v.i) : "");
+      sp_String_append(s, sp_sym_inspect_key(sp_sym_name_fn ? sp_sym_name_fn((sp_sym)k.v.i) : ""));
       sp_String_append(s, ": ");
     }
     else {

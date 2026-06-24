@@ -43,6 +43,41 @@ const char*sp_str_concat4(const char*a,const char*b,const char*c,const char*d){i
 /* Issue #760: NULL entries treated as empty strings. */
 const char*sp_str_concat_arr(const char *const *parts,int n){size_t total=0;for(int i=0;i<n;i++)total+=sp_str_byte_len(parts[i]?parts[i]:"");char*r=sp_str_alloc(total);char*p=r;for(int i=0;i<n;i++){const char*s=parts[i]?parts[i]:"";size_t sl=sp_str_byte_len(s);memcpy(p,s,sl);p+=sl;}return r;}
 const char*sp_str_inspect(const char*s){if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=(sl*4)+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c<0x20||c==0x7f){snprintf(r+o,5,"\\x%02X",c);o+=4;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
+/* A symbol prints without quotes when its name is a plain identifier (an
+   @ivar / @@cvar / $gvar, or a bare name optionally ending in ? ! =) or a
+   known operator method name; otherwise it is quoted like a string: :"a b". */
+mrb_bool sp_sym_plain_name_p(const char *p, mrb_bool allow_suffix) {
+  /* ASCII identifier classification, locale-independent on purpose: symbol
+     quoting must not shift with LC_CTYPE. A multibyte name stays quoted. */
+  unsigned char c = (unsigned char)*p;
+  if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_')) return FALSE;
+  for (p++; (c = (unsigned char)*p) != '\0'; p++)
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '_')) break;
+  if (allow_suffix && (*p == '?' || *p == '!' || *p == '=')) p++;
+  return *p == '\0';
+}
+mrb_bool sp_sym_simple_p(const char *n) {
+  if (!n || !*n) return FALSE;
+  if (*n == '$') return sp_sym_plain_name_p(n + 1, FALSE);
+  if (*n == '@') { const char *p = n + 1; if (*p == '@') p++; return sp_sym_plain_name_p(p, FALSE); }
+  if (sp_sym_plain_name_p(n, TRUE)) return TRUE;
+  static const char *const ops[] = {
+    "+", "-", "*", "/", "%", "**", "==", "===", "!=", "=~", "!~",
+    "<", "<=", ">", ">=", "<=>", "<<", ">>", "&", "|", "^", "~",
+    "!", "+@", "-@", "[]", "[]=", "`", NULL };
+  for (int i = 0; ops[i]; i++) if (!strcmp(n, ops[i])) return TRUE;
+  return FALSE;
+}
+const char *sp_sym_inspect_name(const char *name) {
+  if (sp_sym_simple_p(name)) return sp_str_concat(":", name);
+  return sp_str_concat(":", sp_str_inspect(name));
+}
+/* A symbol hash key in the `key: value` short form: a simple name is bare, a
+   name needing quotes is string-quoted (`"k space": ...`) -- no leading colon. */
+const char *sp_sym_inspect_key(const char *name) {
+  return sp_sym_simple_p(name) ? name : sp_str_inspect(name);
+}
 const char*sp_str_upcase(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++)r[i]=toupper((unsigned char)s[i]);r[l]=0;return r;}
 const char*sp_str_downcase(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++)r[i]=tolower((unsigned char)s[i]);r[l]=0;return r;}
 const char*sp_str_swapcase(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char c=(unsigned char)s[i];if(isupper(c))r[i]=tolower(c);else if(islower(c))r[i]=toupper(c);else r[i]=s[i];}r[l]=0;return r;}
