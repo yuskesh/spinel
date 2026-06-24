@@ -13,6 +13,9 @@
 #include <string.h>
 #include <stdio.h>
 #include "sp_array.h"
+#include "sp_string.h"   /* sp_String builder for join/to_poly */
+#include "sp_inspect.h"  /* sp_inspect_container for the #inspect wrappers */
+#include "sp_str.h"      /* sp_str_succ for from_string_range */
 
 /* Issue #799: clamp e-s+1 against size_t overflow + an arbitrary sanity
    cap (1 << 30 elements; ~8 GB at 8 bytes/elem). Without the cap,
@@ -143,3 +146,136 @@ sp_StrArray*sp_StrArray_dup(sp_StrArray*a){SP_GC_ROOT(a);sp_StrArray*r=sp_StrArr
 sp_StrArray*sp_StrArray_sort(sp_StrArray*a){sp_StrArray*b=sp_StrArray_dup(a);sp_StrArray_sort_bang(b);return b;}
 sp_StrArray*sp_StrArray_shuffle(sp_StrArray*a){sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);sp_StrArray_shuffle_bang(r);return r;}
 const char *sp_StrArray_sample(sp_StrArray*a){if(a->len<=0)return sp_str_empty;return a->data[(mrb_int)(rand()%a->len)];}
+
+/* ============ poly/inspect-dependent array ops (display, concat, to_poly) ============ */
+sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, mrb_int excl) {
+  sp_StrArray *a = sp_StrArray_new();
+  if (!s || !e) return a;
+  const char *cur = s;
+  int iters = 0;
+  while (iters < 4096) {
+    int cmp = strcmp(cur, e);
+    if (cmp > 0) break;
+    if (cmp == 0 && excl) break;
+    char *copy = sp_str_alloc(strlen(cur));
+    strcpy(copy, cur);
+    sp_StrArray_push(a, copy);
+    if (cmp == 0) break;
+    cur = sp_str_succ(cur);
+    iters++;
+  }
+  return a;
+}
+const char*sp_IntArray_inspect(sp_IntArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_INT_ARRAY)):"[]";}
+const char*sp_FloatArray_inspect(sp_FloatArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_FLT_ARRAY)):"[]";}
+const char*sp_FloatArray_join(sp_FloatArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;if(a){for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}const char*es=sp_float_to_s(a->data[i]);size_t el=strlen(es);if(len+el>=cap){while(len+el>=cap)cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,es,el);len+=el;}}buf[len]=0;char*r=sp_str_alloc(len);memcpy(r,buf,len);free(buf);return r;}
+mrb_bool sp_FloatArray_eq(sp_FloatArray*a,sp_FloatArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(a->data[i]!=b->data[i])return FALSE;return TRUE;}
+const char*sp_StrArray_inspect(sp_StrArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_STR_ARRAY)):"[]";}
+const char*sp_PtrArray_inspect(sp_PtrArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,"#<Object>");}sp_String_append(s,"]");return s->data;}
+/* Array#slice_before(delim): start a new chunk before each element == delim. */
+sp_PtrArray*sp_IntArray_slice_before(sp_IntArray*a,mrb_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(mrb_int i=0;i<a->len;i++){mrb_int e=a->data[a->start+i];if(e==d&&cur->len>0){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}sp_IntArray_push(cur,e);}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
+/* Array#slice_after(delim): end a chunk after each element == delim. */
+sp_PtrArray*sp_IntArray_slice_after(sp_IntArray*a,mrb_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(mrb_int i=0;i<a->len;i++){mrb_int e=a->data[a->start+i];sp_IntArray_push(cur,e);if(e==d){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
+sp_PtrArray *sp_IntArray_product(sp_IntArray *a, sp_IntArray *b) {
+  SP_GC_ROOT(a); SP_GC_ROOT(b);
+  sp_PtrArray *out = sp_PtrArray_new();
+  SP_GC_ROOT(out);
+  if (!a || !b) return out;
+  for (mrb_int i = 0; i < a->len; i++) {
+    for (mrb_int j = 0; j < b->len; j++) {
+      sp_IntArray *pair = sp_IntArray_new();
+      sp_IntArray_push(pair, a->data[a->start + i]);
+      sp_IntArray_push(pair, b->data[b->start + j]);
+      sp_PtrArray_push(out, pair);
+    }
+  }
+  return out;
+}
+const char*sp_PtrArray_str_join(sp_PtrArray*a,const char*sep){mrb_int al=a->len;if(al==0)return sp_str_empty;size_t sl=strlen(sep),total=0;for(mrb_int i=0;i<al;i++){if(i>0)total+=sl;sp_String*s=(sp_String*)a->data[i];if(s)total+=(size_t)s->len;}char*r=sp_str_alloc(total);size_t cur=0;for(mrb_int i=0;i<al;i++){if(i>0){memcpy(r+cur,sep,sl);cur+=sl;}sp_String*s=(sp_String*)a->data[i];if(s&&s->len){memcpy(r+cur,s->data,(size_t)s->len);cur+=(size_t)s->len;}}return r;}
+sp_RbVal sp_IntArray_index_poly(sp_IntArray *a, mrb_int v)         { mrb_int n = sp_IntArray_index(a, v);   return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_RbVal sp_IntArray_rindex_poly(sp_IntArray *a, mrb_int v)        { mrb_int n = sp_IntArray_rindex(a, v);  return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_RbVal sp_StrArray_index_poly(sp_StrArray *a, const char *v)     { mrb_int n = sp_StrArray_index(a, v);   return n < 0 ? sp_box_nil() : sp_box_int(n); }
+sp_RbVal sp_StrArray_rindex_poly(sp_StrArray *a, const char *v)    { mrb_int n = sp_StrArray_rindex(a, v);  return n < 0 ? sp_box_nil() : sp_box_int(n); }
+mrb_int sp_IntArray_index_opt(sp_IntArray *a, mrb_int v)           { mrb_int n = sp_IntArray_index(a, v);   return n < 0 ? SP_INT_NIL : n; }
+mrb_int sp_IntArray_rindex_opt(sp_IntArray *a, mrb_int v)          { mrb_int n = sp_IntArray_rindex(a, v);  return n < 0 ? SP_INT_NIL : n; }
+const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) { return a ? (const int64_t *)(a->data + a->start) : (const int64_t *)0; }
+const double  *sp_FloatArray_ffi_data(sp_FloatArray *a) { return a ? (const double *)a->data : (const double *)0; }
+sp_IntArray *sp_IntArray_concat(sp_IntArray *a, sp_IntArray *b) { sp_IntArray *r = sp_IntArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_IntArray_push(r, sp_IntArray_get(a, i)); if (b) for (mrb_int i = 0; i < b->len; i++) sp_IntArray_push(r, sp_IntArray_get(b, i)); return r; }
+sp_StrArray *sp_StrArray_concat(sp_StrArray *a, sp_StrArray *b) { sp_StrArray *r = sp_StrArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_StrArray_push(r, sp_StrArray_get(a, i)); if (b) for (mrb_int i = 0; i < b->len; i++) sp_StrArray_push(r, sp_StrArray_get(b, i)); return r; }
+sp_FloatArray *sp_FloatArray_concat(sp_FloatArray *a, sp_FloatArray *b) { sp_FloatArray *r = sp_FloatArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(a, i)); if (b) for (mrb_int i = 0; i < b->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(b, i)); return r; }
+sp_PolyArray *sp_IntArray_to_poly(sp_IntArray *a) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (!a) return r;
+  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_int(a->data[a->start + i]));
+  return r;
+}
+sp_PolyArray *sp_StrArray_to_poly_fmt(sp_StrArray *a) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  if (!a) return r;
+  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_str(a->data[i]));
+  return r;
+}
+sp_IntArray *sp_IntArray_slice_bang(sp_IntArray *a, mrb_int from, mrb_int n) {
+  if (!a) return sp_IntArray_new();
+  if (a->frozen) { sp_raise_frozen_array(); return sp_IntArray_new(); }
+  if (from < 0) from += a->len;
+  if (from < 0) from = 0;
+  if (from > a->len) from = a->len;
+  if (n < 0) n = 0;
+  if (from + n > a->len) n = a->len - from;
+  sp_IntArray *r = sp_IntArray_new();
+  for (mrb_int i = 0; i < n; i++) sp_IntArray_push(r, a->data[a->start + from + i]);
+  if (from == 0) {
+    a->start += n;
+    a->len -= n;
+  }
+else {
+    for (mrb_int i = from; i + n < a->len; i++) a->data[a->start + i] = a->data[a->start + i + n];
+    a->len -= n;
+  }
+  return r;
+}
+sp_FloatArray *sp_FloatArray_slice_bang(sp_FloatArray *a, mrb_int from, mrb_int n) {
+  if (!a) return sp_FloatArray_new();
+  if (a->frozen) { sp_raise_frozen_array(); return sp_FloatArray_new(); }
+  if (from < 0) from += a->len;
+  if (from < 0) from = 0;
+  if (from > a->len) from = a->len;
+  if (n < 0) n = 0;
+  if (from + n > a->len) n = a->len - from;
+  sp_FloatArray *r = sp_FloatArray_new();
+  for (mrb_int i = 0; i < n; i++) sp_FloatArray_push(r, a->data[from + i]);
+  for (mrb_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
+  a->len -= n;
+  return r;
+}
+sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int n) {
+  if (!a) return sp_StrArray_new();
+  if (a->frozen) { sp_raise_frozen_array(); return sp_StrArray_new(); }
+  if (from < 0) from += a->len;
+  if (from < 0) from = 0;
+  if (from > a->len) from = a->len;
+  if (n < 0) n = 0;
+  if (from + n > a->len) n = a->len - from;
+  sp_StrArray *r = sp_StrArray_new();
+  for (mrb_int i = 0; i < n; i++) sp_StrArray_push(r, a->data[from + i]);
+  for (mrb_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
+  a->len -= n;
+  return r;
+}
+sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int n) {
+  if (!a) return sp_PtrArray_new_scan(NULL);
+  if (a->frozen) { sp_raise_frozen_array(); return sp_PtrArray_new_scan(a->scan_elem); }
+  if (from < 0) from += a->len;
+  if (from < 0) from = 0;
+  if (from > a->len) from = a->len;
+  if (n < 0) n = 0;
+  if (from + n > a->len) n = a->len - from;
+  sp_PtrArray *r = sp_PtrArray_new_scan(a->scan_elem);
+  for (mrb_int i = 0; i < n; i++) sp_PtrArray_push(r, a->data[from + i]);
+  for (mrb_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
+  a->len -= n;
+  return r;
+}

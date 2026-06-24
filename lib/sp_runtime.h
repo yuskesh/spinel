@@ -618,24 +618,6 @@ static mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
 /* String range to_a — single-char and multi-char ASCII ranges via
    sp_str_succ. The 4096-iteration cap stops a pathological prepend-
    style infinite loop before it eats memory. */
-static sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, mrb_int excl) {
-  sp_StrArray *a = sp_StrArray_new();
-  if (!s || !e) return a;
-  const char *cur = s;
-  int iters = 0;
-  while (iters < 4096) {
-    int cmp = strcmp(cur, e);
-    if (cmp > 0) break;
-    if (cmp == 0 && excl) break;
-    char *copy = sp_str_alloc(strlen(cur));
-    strcpy(copy, cur);
-    sp_StrArray_push(a, copy);
-    if (cmp == 0) break;
-    cur = sp_str_succ(cur);
-    iters++;
-  }
-  return a;
-}
 /* Case-insensitive string compare. Portable across glibc / MinGW
    (avoids strcasecmp which lives in strings.h on POSIX and is named
    stricmp on Windows). Returns -1 / 0 / 1 like CRuby's String#casecmp. */
@@ -1167,23 +1149,17 @@ static sp_StrArray *sp_file_readlines_chomp(const char *path) {
    emits a 0 placeholder that flows into `.inspect`, and dereferencing
    a->len would segfault. Rendering "[]" stops the crash and degrades to
    the same shape as the empty-array case. */
-static const char*sp_IntArray_inspect(sp_IntArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_INT_ARRAY)):"[]";}
-static const char*sp_FloatArray_inspect(sp_FloatArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_FLT_ARRAY)):"[]";}
 /* Array#join for float arrays -- each element via the Ruby-faithful
    sp_float_to_s ("1.0", not "1"). Mirrors sp_IntArray_join exactly: build in a
    malloc buffer, return an sp_str_alloc'd copy. (Not sp_String#data, whose owner
    isn't GC-rooted across the return.) sp_float_to_s's result is copied
    immediately, before the next call can reuse its buffer. */
-static const char*sp_FloatArray_join(sp_FloatArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;if(a){for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}const char*es=sp_float_to_s(a->data[i]);size_t el=strlen(es);if(len+el>=cap){while(len+el>=cap)cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,es,el);len+=el;}}buf[len]=0;char*r=sp_str_alloc(len);memcpy(r,buf,len);free(buf);return r;}
-static mrb_bool sp_FloatArray_eq(sp_FloatArray*a,sp_FloatArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(a->data[i]!=b->data[i])return FALSE;return TRUE;}
-static const char*sp_StrArray_inspect(sp_StrArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_STR_ARRAY)):"[]";}
 static mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}
 /* Symbol arrays share the IntArray representation (sp_sym = mrb_int),
    but each element is rendered as ":name" via sp_sym_to_s. */
 static inline const char*sp_SymArray_inspect(sp_IntArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_SYM_ARRAY)):"[]";}
 /* PtrArray elements are object pointers without a per-element class
    tag, so we render them as `#<Object>` rather than recursing. */
-static const char*sp_PtrArray_inspect(sp_PtrArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,"#<Object>");}sp_String_append(s,"]");return s->data;}
 /* Issue #851: Hash#inspect for typed-hash variants beyond
    sym_int_hash. Renders Ruby's `{"k" => v, ...}` (string keys),
    `{42 => "v", ...}` (int keys), or `{:k => v, ...}` (sym keys but
@@ -1199,10 +1175,6 @@ static const char*sp_IntIntHash_inspect(sp_IntIntHash*h){SP_GC_ROOT(h);sp_String
    type is one of the four built-in T_array shapes, recurse into the
    matching primitive inspect . */
 static const char*sp_IntArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_IntArray_inspect((sp_IntArray*)a->data[i]));}sp_String_append(s,"]");return s->data;}
-/* Array#slice_before(delim): start a new chunk before each element == delim. */
-static sp_PtrArray*sp_IntArray_slice_before(sp_IntArray*a,mrb_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(mrb_int i=0;i<a->len;i++){mrb_int e=a->data[a->start+i];if(e==d&&cur->len>0){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}sp_IntArray_push(cur,e);}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
-/* Array#slice_after(delim): end a chunk after each element == delim. */
-static sp_PtrArray*sp_IntArray_slice_after(sp_IntArray*a,mrb_int d){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a)return out;sp_IntArray*cur=sp_IntArray_new();SP_GC_ROOT(cur);for(mrb_int i=0;i<a->len;i++){mrb_int e=a->data[a->start+i];sp_IntArray_push(cur,e);if(e==d){sp_PtrArray_push(out,cur);cur=sp_IntArray_new();}}if(cur->len>0)sp_PtrArray_push(out,cur);return out;}
 /* Issue #742: Array#combination(k) on int_array -- emit all
    k-element ordered combinations as a PtrArray of IntArrays. */
 static void sp_int_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<=src->len-k;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_combination_recur(src,i+1,k-1,acc,out);acc->len--;}}
@@ -1214,21 +1186,6 @@ static sp_PtrArray*sp_IntArray_repeated_combination(sp_IntArray*a,mrb_int k){sp_
 
 /* Cartesian product of two int arrays. Returns a PtrArray of
    2-element IntArrays. */
-static sp_PtrArray *sp_IntArray_product(sp_IntArray *a, sp_IntArray *b) {
-  SP_GC_ROOT(a); SP_GC_ROOT(b);
-  sp_PtrArray *out = sp_PtrArray_new();
-  SP_GC_ROOT(out);
-  if (!a || !b) return out;
-  for (mrb_int i = 0; i < a->len; i++) {
-    for (mrb_int j = 0; j < b->len; j++) {
-      sp_IntArray *pair = sp_IntArray_new();
-      sp_IntArray_push(pair, a->data[a->start + i]);
-      sp_IntArray_push(pair, b->data[b->start + j]);
-      sp_PtrArray_push(out, pair);
-    }
-  }
-  return out;
-}
 /* Array#permutation(k) -- ordered k-permutations. */
 static void sp_int_permutation_recur(sp_IntArray*src,mrb_int k,sp_IntArray*used,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=0;i<src->len;i++){if(used->data[used->start+i])continue;used->data[used->start+i]=1;sp_IntArray_push(acc,src->data[src->start+i]);sp_int_permutation_recur(src,k-1,used,acc,out);acc->len--;used->data[used->start+i]=0;}}
 static sp_PtrArray*sp_IntArray_permutation(sp_IntArray*a,mrb_int k){SP_GC_ROOT(a);sp_PtrArray*out=sp_PtrArray_new();SP_GC_ROOT(out);if(!a||k<0||k>a->len)return out;sp_IntArray*used=sp_IntArray_new();SP_GC_ROOT(used);for(mrb_int i=0;i<a->len;i++)sp_IntArray_push(used,0);sp_IntArray*acc=sp_IntArray_new();SP_GC_ROOT(acc);sp_int_permutation_recur(a,k,used,acc,out);return out;}
@@ -1244,7 +1201,6 @@ static const char*sp_SymArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_St
    realloc-grow loop's leak-on-failure and long-separator overflow
    risks, and skips an intermediate malloc'd buffer. NULL entries
    contribute zero length. */
-static const char*sp_PtrArray_str_join(sp_PtrArray*a,const char*sep){mrb_int al=a->len;if(al==0)return sp_str_empty;size_t sl=strlen(sep),total=0;for(mrb_int i=0;i<al;i++){if(i>0)total+=sl;sp_String*s=(sp_String*)a->data[i];if(s)total+=(size_t)s->len;}char*r=sp_str_alloc(total);size_t cur=0;for(mrb_int i=0;i<al;i++){if(i>0){memcpy(r+cur,sep,sl);cur+=sl;}sp_String*s=(sp_String*)a->data[i];if(s&&s->len){memcpy(r+cur,s->data,(size_t)s->len);cur+=(size_t)s->len;}}return r;}
 
 #ifdef __FreeBSD__
 
@@ -1993,18 +1949,12 @@ static sp_RbVal sp_box_method(void *p)      { return sp_box_obj(p, SP_BUILTIN_ME
    Issue raised during #585 follow-up: spinel positions itself
    as a Ruby SUBSET, so documented Ruby APIs must match CRuby
    behavior. */
-static sp_RbVal sp_IntArray_index_poly(sp_IntArray *a, mrb_int v)         { mrb_int n = sp_IntArray_index(a, v);   return n < 0 ? sp_box_nil() : sp_box_int(n); }
-static sp_RbVal sp_IntArray_rindex_poly(sp_IntArray *a, mrb_int v)        { mrb_int n = sp_IntArray_rindex(a, v);  return n < 0 ? sp_box_nil() : sp_box_int(n); }
-static sp_RbVal sp_StrArray_index_poly(sp_StrArray *a, const char *v)     { mrb_int n = sp_StrArray_index(a, v);   return n < 0 ? sp_box_nil() : sp_box_int(n); }
-static sp_RbVal sp_StrArray_rindex_poly(sp_StrArray *a, const char *v)    { mrb_int n = sp_StrArray_rindex(a, v);  return n < 0 ? sp_box_nil() : sp_box_int(n); }
 /* int? siblings of the *_index_poly wrappers above. Same not-found
    semantics, but return the int? sentinel (SP_INT_NIL) instead of
    boxing into sp_RbVal. Used when the call site's static type
    tracking carries the result as int? rather than poly — eliminates
    the box/unbox round-trip for the common `i = arr.index(x);
    i.nil? ? ... : <use i as int>` idiom. */
-static mrb_int sp_IntArray_index_opt(sp_IntArray *a, mrb_int v)           { mrb_int n = sp_IntArray_index(a, v);   return n < 0 ? SP_INT_NIL : n; }
-static mrb_int sp_IntArray_rindex_opt(sp_IntArray *a, mrb_int v)          { mrb_int n = sp_IntArray_rindex(a, v);  return n < 0 ? SP_INT_NIL : n; }
 /* Inspect / to_s for an int? value. CRuby distinguishes the two on
    nil: `nil.to_s` is "" while `nil.inspect` is "nil". For a real
    integer they agree (Integer#to_s and #inspect are both the decimal
@@ -2296,8 +2246,6 @@ static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) ret
    be punned -- its ->data is sp_RbVal[] (boxed) -- so unbox element-wise into
    a fresh GC-tracked buffer (sp_gc_alloc_nogc: no collection mid-build, so a
    sibling array arg's buffer can't be swept; freed at a later GC). */
-static const int64_t *sp_IntArray_ffi_data(sp_IntArray *a) { return a ? (const int64_t *)(a->data + a->start) : (const int64_t *)0; }
-static const double  *sp_FloatArray_ffi_data(sp_FloatArray *a) { return a ? (const double *)a->data : (const double *)0; }
 static const int64_t *sp_PolyArray_ffi_int_data(sp_PolyArray *a) {
   if (!a || a->len <= 0) return (const int64_t *)0;
   int64_t *buf = (int64_t *)sp_gc_alloc_nogc((size_t)a->len * sizeof(int64_t), NULL, NULL);
@@ -2698,9 +2646,6 @@ static mrb_bool sp_PolyArray_include_val(sp_PolyArray *a, sp_RbVal v) { if (!a) 
 static sp_PolyArray *sp_PolyArray_intersect(sp_PolyArray *a, sp_PolyArray *b) { sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a || !b) return r; for (mrb_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (sp_PolyArray_include_val(b, v) && !sp_PolyArray_include_val(r, v)) sp_PolyArray_push(r, v); } return r; }
 static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b) { sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_val(r, v)) sp_PolyArray_push(r, v); } if (b) for (mrb_int i = 0; i < b->len; i++) { sp_RbVal v = b->data[i]; if (!sp_PolyArray_include_val(r, v)) sp_PolyArray_push(r, v); } return r; }
 static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) { sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a) return r; for (mrb_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_val(b, v)) sp_PolyArray_push(r, v); } return r; }
-static sp_IntArray *sp_IntArray_concat(sp_IntArray *a, sp_IntArray *b) { sp_IntArray *r = sp_IntArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_IntArray_push(r, sp_IntArray_get(a, i)); if (b) for (mrb_int i = 0; i < b->len; i++) sp_IntArray_push(r, sp_IntArray_get(b, i)); return r; }
-static sp_StrArray *sp_StrArray_concat(sp_StrArray *a, sp_StrArray *b) { sp_StrArray *r = sp_StrArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_StrArray_push(r, sp_StrArray_get(a, i)); if (b) for (mrb_int i = 0; i < b->len; i++) sp_StrArray_push(r, sp_StrArray_get(b, i)); return r; }
-static sp_FloatArray *sp_FloatArray_concat(sp_FloatArray *a, sp_FloatArray *b) { sp_FloatArray *r = sp_FloatArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(a, i)); if (b) for (mrb_int i = 0; i < b->len; i++) sp_FloatArray_push(r, sp_FloatArray_get(b, i)); return r; }
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */
 static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
 static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) { if (!a) return a; mrb_int w = 0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) a->data[w++] = a->data[i]; } a->len = w; return a; }
@@ -2727,20 +2672,6 @@ static sp_PolyArray *sp_PolyArray_flatten(sp_PolyArray *a) { SP_GC_ROOT(a); sp_P
 /* Box-into-poly converters used by the printf-with-array codegen
    (`"%fmt" % typed_array`). The format helper expects sp_RbVal
    slots so it can dispatch per-element. */
-static sp_PolyArray *sp_IntArray_to_poly(sp_IntArray *a) {
-  SP_GC_ROOT(a);
-  sp_PolyArray *r = sp_PolyArray_new();
-  SP_GC_ROOT(r);
-  if (!a) return r;
-  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_int(a->data[a->start + i]));
-  return r;
-}
-static sp_PolyArray *sp_StrArray_to_poly_fmt(sp_StrArray *a) {
-  sp_PolyArray *r = sp_PolyArray_new();
-  if (!a) return r;
-  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_str(a->data[i]));
-  return r;
-}
 
 /* String#% with a poly_array argument. Walks the format and for
    each spec ("%s", "%d", "%f", "%x", "%o", etc.) pulls the next
@@ -4586,54 +4517,6 @@ static sp_IntArray *sp_file_binread_bytes(const char *path) {
    starting at `from` and removes them from `a`. IntArray uses its
    `start` field for an O(1) head peel (from == 0); the others
    shift the tail down to fill the hole. */
-static sp_IntArray *sp_IntArray_slice_bang(sp_IntArray *a, mrb_int from, mrb_int n) {
-  if (!a) return sp_IntArray_new();
-  if (a->frozen) { sp_raise_frozen_array(); return sp_IntArray_new(); }
-  if (from < 0) from += a->len;
-  if (from < 0) from = 0;
-  if (from > a->len) from = a->len;
-  if (n < 0) n = 0;
-  if (from + n > a->len) n = a->len - from;
-  sp_IntArray *r = sp_IntArray_new();
-  for (mrb_int i = 0; i < n; i++) sp_IntArray_push(r, a->data[a->start + from + i]);
-  if (from == 0) {
-    a->start += n;
-    a->len -= n;
-  }
-else {
-    for (mrb_int i = from; i + n < a->len; i++) a->data[a->start + i] = a->data[a->start + i + n];
-    a->len -= n;
-  }
-  return r;
-}
-static sp_FloatArray *sp_FloatArray_slice_bang(sp_FloatArray *a, mrb_int from, mrb_int n) {
-  if (!a) return sp_FloatArray_new();
-  if (a->frozen) { sp_raise_frozen_array(); return sp_FloatArray_new(); }
-  if (from < 0) from += a->len;
-  if (from < 0) from = 0;
-  if (from > a->len) from = a->len;
-  if (n < 0) n = 0;
-  if (from + n > a->len) n = a->len - from;
-  sp_FloatArray *r = sp_FloatArray_new();
-  for (mrb_int i = 0; i < n; i++) sp_FloatArray_push(r, a->data[from + i]);
-  for (mrb_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
-  a->len -= n;
-  return r;
-}
-static sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int n) {
-  if (!a) return sp_StrArray_new();
-  if (a->frozen) { sp_raise_frozen_array(); return sp_StrArray_new(); }
-  if (from < 0) from += a->len;
-  if (from < 0) from = 0;
-  if (from > a->len) from = a->len;
-  if (n < 0) n = 0;
-  if (from + n > a->len) n = a->len - from;
-  sp_StrArray *r = sp_StrArray_new();
-  for (mrb_int i = 0; i < n; i++) sp_StrArray_push(r, a->data[from + i]);
-  for (mrb_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
-  a->len -= n;
-  return r;
-}
 /* at_exit hooks: a static LIFO of registered procs. Initialized
    zero-len in BSS; main()'s tail walks it in reverse-registration
    order before returning. */
@@ -4641,20 +4524,6 @@ static sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int
 struct sp_Proc;
 static struct sp_Proc *sp_at_exit_hooks[SP_AT_EXIT_MAX];
 static mrb_int sp_at_exit_count = 0;
-static sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int n) {
-  if (!a) return sp_PtrArray_new_scan(NULL);
-  if (a->frozen) { sp_raise_frozen_array(); return sp_PtrArray_new_scan(a->scan_elem); }
-  if (from < 0) from += a->len;
-  if (from < 0) from = 0;
-  if (from > a->len) from = a->len;
-  if (n < 0) n = 0;
-  if (from + n > a->len) n = a->len - from;
-  sp_PtrArray *r = sp_PtrArray_new_scan(a->scan_elem);
-  for (mrb_int i = 0; i < n; i++) sp_PtrArray_push(r, a->data[from + i]);
-  for (mrb_int i = from; i + n < a->len; i++) a->data[i] = a->data[i + n];
-  a->len -= n;
-  return r;
-}
 
 typedef struct sp_Proc { void *fn; void *cap; void (*cap_scan)(void *); mrb_int arity; mrb_bool lambda_p; mrb_int param_count; const sp_sym *param_kinds; const sp_sym *param_names; } sp_Proc;
 static void sp_Proc_scan(void *p) { sp_Proc *pr = (sp_Proc *)p; if (pr->cap && pr->cap_scan) pr->cap_scan(pr->cap); }

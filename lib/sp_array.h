@@ -191,4 +191,34 @@ sp_StrArray *sp_StrArray_sort(sp_StrArray *a);
 sp_StrArray *sp_StrArray_shuffle(sp_StrArray *a);
 const char *sp_StrArray_sample(sp_StrArray *a);
 
+/* ---- poly/inspect-dependent ops (lib/sp_array.c; need sp_inspect.h/sp_str.h) ---- */
+sp_StrArray *sp_StrArray_from_string_range(const char *s, const char *e, mrb_int excl);
+const char*sp_IntArray_inspect(sp_IntArray*a);
+const char*sp_FloatArray_inspect(sp_FloatArray*a);
+const char*sp_FloatArray_join(sp_FloatArray*a,const char*sep);
+mrb_bool sp_FloatArray_eq(sp_FloatArray*a,sp_FloatArray*b);
+const char*sp_StrArray_inspect(sp_StrArray*a);
+const char*sp_PtrArray_inspect(sp_PtrArray*a);
+sp_PtrArray*sp_IntArray_slice_before(sp_IntArray*a,mrb_int d);
+sp_PtrArray*sp_IntArray_slice_after(sp_IntArray*a,mrb_int d);
+sp_PtrArray *sp_IntArray_product(sp_IntArray *a, sp_IntArray *b);
+const char*sp_PtrArray_str_join(sp_PtrArray*a,const char*sep);
+sp_RbVal sp_IntArray_index_poly(sp_IntArray *a, mrb_int v);
+sp_RbVal sp_IntArray_rindex_poly(sp_IntArray *a, mrb_int v);
+sp_RbVal sp_StrArray_index_poly(sp_StrArray *a, const char *v);
+sp_RbVal sp_StrArray_rindex_poly(sp_StrArray *a, const char *v);
+mrb_int sp_IntArray_index_opt(sp_IntArray *a, mrb_int v);
+mrb_int sp_IntArray_rindex_opt(sp_IntArray *a, mrb_int v);
+const int64_t *sp_IntArray_ffi_data(sp_IntArray *a);
+const double *sp_FloatArray_ffi_data(sp_FloatArray *a);
+sp_IntArray *sp_IntArray_concat(sp_IntArray *a, sp_IntArray *b);
+sp_StrArray *sp_StrArray_concat(sp_StrArray *a, sp_StrArray *b);
+sp_FloatArray *sp_FloatArray_concat(sp_FloatArray *a, sp_FloatArray *b);
+sp_PolyArray *sp_IntArray_to_poly(sp_IntArray *a);
+sp_PolyArray *sp_StrArray_to_poly_fmt(sp_StrArray *a);
+sp_IntArray *sp_IntArray_slice_bang(sp_IntArray *a, mrb_int from, mrb_int n);
+sp_FloatArray *sp_FloatArray_slice_bang(sp_FloatArray *a, mrb_int from, mrb_int n);
+sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int n);
+sp_PtrArray *sp_PtrArray_slice_bang(sp_PtrArray *a, mrb_int from, mrb_int n);
+
 #endif /* SP_ARRAY_H */
