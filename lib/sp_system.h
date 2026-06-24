@@ -4,8 +4,7 @@
  * `system` / backtick). `sp_system_args` runs argv[0] with the rest as
  * arguments (the multi-arg `system(...)` form), setting `sp_last_status`
  * and returning whether the child exited 0. The bool result is declared
- * as `int` to stay decoupled from the runtime's mrb_bool typedef and the
- * mruby_shim.h conflict -- same convention as sp_core.h / sp_time.h.
+ * as `int` to stay decoupled from the runtime's typedefs.
  */
 #ifndef SP_SYSTEM_H
 #define SP_SYSTEM_H

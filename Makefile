@@ -206,11 +206,11 @@ build/sp_crypto.o: lib/sp_crypto.c lib/sp_crypto.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_crypto.c -o build/sp_crypto.o
 
-build/sp_pack.o: lib/sp_pack.c lib/mruby_shim.h
+build/sp_pack.o: lib/sp_pack.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_pack.c -o build/sp_pack.o
 
-build/sp_strscan.o: lib/sp_strscan.c lib/mruby_shim.h
+build/sp_strscan.o: lib/sp_strscan.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib -Ilib/regexp lib/sp_strscan.c -o build/sp_strscan.o
 

@@ -3,10 +3,9 @@
  * re-codegen'd in every generated translation unit.
  *
  * Signatures use intptr_t / double directly (== mrb_int / mrb_float)
- * to stay decoupled from the runtime's typedefs and the mrb_bool
- * conflict between sp_runtime.h and mruby_shim.h -- same convention as
- * sp_time.h. These helpers call sp_raise_cls / sp_sprintf, which live
- * in the generated TU (sp_runtime.h) and resolve at link time.
+ * to stay decoupled from the runtime's typedefs. These helpers call
+ * sp_raise_cls / sp_sprintf, which live in the generated TU
+ * (sp_runtime.h) and resolve at link time.
  */
 #ifndef SP_CORE_H
 #define SP_CORE_H

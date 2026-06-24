@@ -3,11 +3,8 @@
  *
  * Implements the common Perl/Ruby pack format specifiers. Built
  * as a separate translation unit and linked into libspinel_rt.a;
- * the main generated .c file (which includes sp_runtime.h with
- * its static GC state) provides a small set of extern shims
- * (sp_ext_*) so this file can hand back GC-managed PolyArrays
- * and strings without dragging the entire runtime header into a
- * second TU.
+ * it allocates GC-managed strings and PolyArrays directly through
+ * the shared headers (sp_alloc.h), so no sp_ext_* shim is needed.
  *
  * Supported specifiers (initial):
  *   C / c   unsigned / signed 8-bit

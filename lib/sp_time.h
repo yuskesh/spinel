@@ -11,10 +11,8 @@
  * into the GC string heap. This keeps libspinel_rt zero-dependency on
  * the runtime's static-inline helpers.
  *
- * Signatures use int64_t / double directly rather than mrb_int /
- * mrb_float because sp_runtime.h and mruby_shim.h disagree on the
- * mrb_bool typedef (bool vs int) — including either from this header
- * would tip the conflict at every TU that consumes both.
+ * Signatures use int64_t / double directly so this header stays
+ * decoupled from the runtime's typedefs.
  */
 #ifndef SP_TIME_H
 #define SP_TIME_H

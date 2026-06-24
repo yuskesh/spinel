@@ -1,14 +1,11 @@
 /* sp_io.c -- File / IO handle ops in libspinel_rt.a.
  *
  * The allocation-free handle ops (open / pipe / fdopen / write / close /
- * closed? / puts / print / flush / eof?). The string-returning readers
- * (gets / read / read_n / path) stay inline in sp_runtime.h since they
- * allocate via the hot static sp_str_alloc, whose per-TU sp_str_heap
- * can't be shared across translation units.
+ * closed? / puts / print / flush / eof?); the string-returning readers
+ * (gets / read / read_n / path) stay inline in sp_runtime.h.
  *
  * Self-contained: includes sp_io.h (the sp_File layout) + sp_gc.h
- * (sp_mark_string), but not sp_runtime.h, so it avoids the mruby_shim.h
- * mrb_bool conflict (same convention as sp_gc.c / sp_fiber.c). */
+ * (sp_mark_string), not sp_runtime.h. */
 #include "sp_io.h"
 #include "sp_gc.h"   /* sp_mark_string */
 #include <stdlib.h>
