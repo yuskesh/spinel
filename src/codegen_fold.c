@@ -2235,20 +2235,15 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                            p0_es, k, ta_es, ti_es, ts_es);
               }
             }
-            for (int j = 0; j < bn_es - 1; j++) emit_stmt(c, bb_es[j], g_pre, g_indent + 1);
-            int saveInd_es = g_indent; g_indent = g_indent + 1;
-            Buf vb_es; memset(&vb_es, 0, sizeof vb_es); emit_expr(c, bb_es[bn_es - 1], &vb_es);
-            g_indent = saveInd_es;
-            TyKind bty_es = comp_ntype(c, bb_es[bn_es - 1]);
+            /* collect the block's value (next-aware) into a result temp, push it */
+            TyKind melem_es = res_poly_es ? TY_POLY : ty_array_elem(restype_es);
+            int tv_es = ++g_tmp; char tvb_es[24]; snprintf(tvb_es, sizeof tvb_es, "_t%d", tv_es);
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk_es, tres_es);
-            if (res_poly_es && bty_es != TY_POLY) {
-              Buf bx_es; memset(&bx_es, 0, sizeof bx_es);
-              emit_boxed_text(c, bty_es, vb_es.p ? vb_es.p : "", &bx_es);
-              buf_puts(g_pre, bx_es.p ? bx_es.p : ""); free(bx_es.p);
-            }
-            else buf_puts(g_pre, vb_es.p ? vb_es.p : "");
-            buf_puts(g_pre, ");\n"); free(vb_es.p);
+            if (res_poly_es) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv_es);
+            else { emit_ctype(c, melem_es, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv_es, default_value(melem_es)); }
+            emit_block_value_into(c, block, tvb_es, res_poly_es, g_indent + 1);
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk_es, tres_es, tv_es);
             emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
             buf_printf(b, "_t%d", tres_es);
             return 1;
