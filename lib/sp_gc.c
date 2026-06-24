@@ -25,6 +25,11 @@ int sp_gc_cycle = 0;
 void (*sp_gc_mark_suspended_fibers_hook)(void) = NULL;
 void (*sp_gc_mark_globals_hook)(void) = NULL;
 void (*sp_gc_str_sweep_hook)(void) = NULL;
+const char *(*sp_sym_name_fn)(sp_sym) = NULL;
+int (*sp_json_kind_fn)(sp_RbVal) = NULL;
+mrb_int (*sp_json_len_fn)(sp_RbVal) = NULL;
+sp_RbVal (*sp_json_aref_fn)(sp_RbVal, mrb_int) = NULL;
+void (*sp_json_hpair_fn)(sp_RbVal, mrb_int, sp_RbVal *, sp_RbVal *) = NULL;
 
 /* ---- Collector-private globals ---- */
 static int sp_gc_verify = 0;

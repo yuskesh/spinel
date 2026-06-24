@@ -9,6 +9,7 @@
    define them before the first system header. Must precede <stdio.h>. */
 #include "sp_types.h"
 #include "sp_alloc.h"   /* shared string-heap state + allocators (extern; see sp_alloc.c) */
+#include "sp_json.h"    /* JSON.generate serializers (lib/sp_json.c); calls emitted by codegen */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1407,43 +1408,13 @@ static const char*sp_str_concat4(const char*a,const char*b,const char*c,const ch
 /* Concatenate N strings into a single GC-managed buffer. */
 /* Issue #760: NULL entries treated as empty strings. */
 static const char*sp_str_concat_arr(const char *const *parts,int n){size_t total=0;for(int i=0;i<n;i++)total+=sp_str_byte_len(parts[i]?parts[i]:"");char*r=sp_str_alloc(total);char*p=r;for(int i=0;i<n;i++){const char*s=parts[i]?parts[i]:"";size_t sl=sp_str_byte_len(s);memcpy(p,s,sl);p+=sl;}return r;}
-static const char*sp_int_to_s(mrb_int n){char*b=sp_str_alloc_raw(32);int len=snprintf(b,32,"%lld",(long long)n);if(len<0)len=0;sp_str_set_len(b,(size_t)len);return b;}
-/* String-interpolation of an int slot: a nil sentinel renders as the empty
-   string (CRuby interpolates nil as ""), every other value as its decimal. */
+/* sp_int_to_s / sp_float_to_s moved to sp_alloc.h (shared so lib/sp_json.c can
+   format numbers). String-interpolation of an int slot: a nil sentinel renders
+   as the empty string (CRuby interpolates nil as ""), every other value as its
+   decimal. */
 static const char*sp_int_interp(mrb_int n){return n==SP_INT_NIL?sp_str_empty:sp_int_to_s(n);}
 static const char*sp_int_to_s_base(mrb_int n,mrb_int base){if(base<2||base>36)base=10;char*b=sp_str_alloc_raw(72);char tmp[72];int i=0;int neg=0;uint64_t u;if(n<0){neg=1;u=(uint64_t)(-(n+1))+1;}else{u=(uint64_t)n;}if(u==0){tmp[i++]='0';}else{while(u>0){mrb_int d=u%base;tmp[i++]=d<10?'0'+d:'a'+d-10;u/=base;}}int j=0;if(neg)b[j++]='-';while(i>0)b[j++]=tmp[--i];b[j]=0;sp_str_set_len(b,(size_t)j);return b;}
-/* Float#to_s (Ruby semantics): produce the shortest decimal that
-   round-trips back to the same double, formatted per CRuby — fixed
-   point when the decimal exponent is in [-4, 15], scientific
-   (`d.ddde+NN`, two-digit zero-padded) otherwise. NaN, ±Infinity and
-   -0.0 match CRuby's spelling. Float#inspect is aliased. */
-static const char*sp_float_to_s(mrb_float f){
-  if(f!=f){char*r=sp_str_alloc_raw(4);r[0]='N';r[1]='a';r[2]='N';r[3]=0;return r;}
-  if(f==HUGE_VAL||f==-HUGE_VAL){if(f<0){char*r=sp_str_alloc_raw(10);memcpy(r,"-Infinity",10);return r;}char*r=sp_str_alloc_raw(9);memcpy(r,"Infinity",9);return r;}
-  if(f==0.0){if(signbit(f)){char*r=sp_str_alloc_raw(5);memcpy(r,"-0.0",5);return r;}char*r=sp_str_alloc_raw(4);memcpy(r,"0.0",4);return r;}
-  char tmp[64];int p;
-  for(p=0;p<=17;p++){snprintf(tmp,sizeof(tmp),"%.*e",p,(double)f);if(strtod(tmp,NULL)==f)break;}
-  int neg=(tmp[0]=='-')?1:0;const char*s=tmp+neg;char digits[32];int dlen=0;
-  digits[dlen++]=*s++;
-  if(*s=='.'){s++;while(*s&&*s!='e'&&*s!='E')digits[dlen++]=*s++;}
-  while(*s&&*s!='e'&&*s!='E')s++;
-  int exp_val=(*s)?atoi(s+1):0;int decpt=exp_val+1;
-  char*out=sp_str_alloc_raw(64);int o=0;
-  if(neg)out[o++]='-';
-  if(decpt>0&&decpt<=15){
-    if(decpt<dlen){memcpy(out+o,digits,decpt);o+=decpt;out[o++]='.';memcpy(out+o,digits+decpt,dlen-decpt);o+=(dlen-decpt);}
-    else{memcpy(out+o,digits,dlen);o+=dlen;for(int i=dlen;i<decpt;i++)out[o++]='0';out[o++]='.';out[o++]='0';}
-  }else if(decpt<=0&&decpt>-4){
-    out[o++]='0';out[o++]='.';for(int i=decpt;i<0;i++)out[o++]='0';memcpy(out+o,digits,dlen);o+=dlen;
-  }else{
-    out[o++]=digits[0];out[o++]='.';
-    if(dlen==1)out[o++]='0';else{memcpy(out+o,digits+1,dlen-1);o+=(dlen-1);}
-    out[o++]='e';int e=decpt-1;
-    if(e>=0)out[o++]='+';else{out[o++]='-';e=-e;}
-    if(e<10){out[o++]='0';out[o++]=(char)('0'+e);}else o+=snprintf(out+o,16,"%d",e);
-  }
-  out[o]=0;sp_str_set_len(out,(size_t)o);return out;
-}
+/* sp_float_to_s now lives in sp_alloc.h (shared). Float#inspect is aliased. */
 #define sp_float_inspect sp_float_to_s
 
 /* Bound-checked clamp. The arithmetic lives in the compiled-once leaf
@@ -3386,7 +3357,8 @@ static mrb_int sp_poly_to_i(sp_RbVal v) { if (v.tag == SP_TAG_INT || v.tag == SP
 static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.f; if (v.tag == SP_TAG_INT || v.tag == SP_TAG_SYM) return (mrb_float)v.v.i; if (v.tag == SP_TAG_BIGINT) return (mrb_float)sp_bigint_to_int((sp_Bigint *)v.v.p); if (v.tag == SP_TAG_BOOL) return v.v.b ? 1.0 : 0.0; return 0.0; }
 static mrb_bool sp_poly_numeric_p(sp_RbVal v) { return v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT || v.tag == SP_TAG_BIGINT; }
 static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); default: return FALSE; } case SP_TAG_CLASS: return a.v.i == b.v.i; default: return FALSE; } }
-static const char *(*sp_sym_name_fn)(sp_sym) = NULL;
+/* sp_sym_name_fn is now an extern hook (sp_gc.h / sp_gc.c) so cold lib readers
+   like sp_json.c can resolve symbol names too; the generated TU still sets it. */
 static mrb_int sp_poly_arr_cmp(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);
 #define SP_IS_BUILTIN_ARRAY(id) ((id) == SP_BUILTIN_INT_ARRAY || (id) == SP_BUILTIN_STR_ARRAY || \
                                  (id) == SP_BUILTIN_FLT_ARRAY || (id) == SP_BUILTIN_POLY_ARRAY)
@@ -4847,75 +4819,42 @@ static sp_PolyPolyHash*sp_StrIntHash_invert_poly(sp_StrIntHash*h){sp_PolyPolyHas
 static sp_PolyPolyHash*sp_IntStrHash_invert(sp_IntStrHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_str(sp_IntStrHash_get(h,h->order[i])),sp_box_int(h->order[i]));return r;}
 static mrb_bool sp_PolyPolyHash_eq(sp_PolyPolyHash*a,sp_PolyPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){sp_RbVal k=a->keys[a->order[i]];if(!sp_PolyPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_PolyPolyHash_get(a,k),sp_PolyPolyHash_get(b,k)))return FALSE;}return TRUE;}
 
-/* JSON.generate support. sp_json_str quotes + escapes a string per
-   JSON rules (control chars -> \uNNNN, plus the \" \\ \n \t \r \b \f
-   shorthands; UTF-8 bytes >= 0x80 pass through unescaped, matching
-   CRuby's default). sp_json_val recursively serializes any boxed
-   value -- scalars, arrays, and the typed hash variants -- in CRuby's
-   compact form (no spaces, `:` separator). Object keys are coerced to
-   JSON strings (symbol -> name, integer -> decimal). Raw container
-   element / value types are boxed and routed back through sp_json_val
-   so nesting works. The sp_String accumulator is GC-rooted so a
-   collection triggered by a nested allocation can't free it. */
-static const char *sp_json_str(const char *s) __attribute__((unused));
-static const char *sp_json_str(const char *s) {
-  sp_String *o = sp_String_new("\"");
-  SP_GC_ROOT(o);
-  if (s) { const char *p = s; while (*p) { unsigned char c = (unsigned char)*p;
-    if (c == '"') sp_String_append(o, "\\\"");
-    else if (c == '\\') sp_String_append(o, "\\\\");
-    else if (c == '\n') sp_String_append(o, "\\n");
-    else if (c == '\t') sp_String_append(o, "\\t");
-    else if (c == '\r') sp_String_append(o, "\\r");
-    else if (c == '\b') sp_String_append(o, "\\b");
-    else if (c == '\f') sp_String_append(o, "\\f");
-    else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", (unsigned)c); sp_String_append(o, b); }
-    else { char ch[2]; ch[0] = (char)c; ch[1] = 0; sp_String_append(o, ch); }
-    p++; } }
-  sp_String_append(o, "\"");
-  return o->data;
-}
-static const char *sp_json_val(sp_RbVal v) __attribute__((unused));
-static const char *sp_json_key(sp_RbVal k) {
-  if (k.tag == SP_TAG_STR) return sp_json_str(k.v.s);
-  if (k.tag == SP_TAG_SYM) return sp_json_str(sp_sym_to_s((sp_sym)k.v.i));
-  if (k.tag == SP_TAG_INT) return sp_json_str(sp_int_to_s(k.v.i));
-  if (k.tag == SP_TAG_BOOL) return sp_json_str(k.v.b ? "true" : "false");
-  if (k.tag == SP_TAG_NIL) return sp_json_str("");
-  return sp_json_str("");
-}
-static const char *sp_json_val(sp_RbVal v) {
-  switch (v.tag) {
-    case SP_TAG_INT:  return sp_int_to_s(v.v.i);
-    case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
-    case SP_TAG_BOOL: return v.v.b ? SPL("true") : SPL("false");
-    case SP_TAG_NIL:  return SPL("null");
-    case SP_TAG_STR:  return sp_json_str(v.v.s);
-    case SP_TAG_SYM:  return sp_json_str(sp_sym_to_s((sp_sym)v.v.i));
-    case SP_TAG_OBJ: {
-      sp_String *o;
-      switch (v.cls_id) {
-        case SP_BUILTIN_INT_ARRAY: { sp_IntArray *a=(sp_IntArray*)v.v.p; o=sp_String_new("["); SP_GC_ROOT(o); if(a){for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_int_to_s(a->data[a->start+i]));}} sp_String_append(o,"]"); return o->data; }
-        case SP_BUILTIN_FLT_ARRAY: { sp_FloatArray *a=(sp_FloatArray*)v.v.p; o=sp_String_new("["); SP_GC_ROOT(o); if(a){for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_float_to_s(a->data[i]));}} sp_String_append(o,"]"); return o->data; }
-        case SP_BUILTIN_STR_ARRAY: { sp_StrArray *a=(sp_StrArray*)v.v.p; o=sp_String_new("["); SP_GC_ROOT(o); if(a){for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_str(a->data[i]));}} sp_String_append(o,"]"); return o->data; }
-        case SP_BUILTIN_SYM_ARRAY: { sp_IntArray *a=(sp_IntArray*)v.v.p; o=sp_String_new("["); SP_GC_ROOT(o); if(a){for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_str(sp_sym_to_s((sp_sym)a->data[a->start+i])));}} sp_String_append(o,"]"); return o->data; }
-        case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *a=(sp_PolyArray*)v.v.p; o=sp_String_new("["); SP_GC_ROOT(o); if(a){for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_val(a->data[i]));}} sp_String_append(o,"]"); return o->data; }
-        case SP_BUILTIN_STR_INT_HASH: { sp_StrIntHash *h=(sp_StrIntHash*)v.v.p; o=sp_String_new("{"); SP_GC_ROOT(o); if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_str(h->order[i]));sp_String_append(o,":");sp_String_append(o,sp_int_to_s(sp_StrIntHash_get(h,h->order[i])));}} sp_String_append(o,"}"); return o->data; }
-        case SP_BUILTIN_STR_STR_HASH: { sp_StrStrHash *h=(sp_StrStrHash*)v.v.p; o=sp_String_new("{"); SP_GC_ROOT(o); if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_str(h->order[i]));sp_String_append(o,":");sp_String_append(o,sp_json_str(sp_StrStrHash_get(h,h->order[i])));}} sp_String_append(o,"}"); return o->data; }
-        case SP_BUILTIN_INT_STR_HASH: { sp_IntStrHash *h=(sp_IntStrHash*)v.v.p; o=sp_String_new("{"); SP_GC_ROOT(o); if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_str(sp_int_to_s(h->order[i])));sp_String_append(o,":");sp_String_append(o,sp_json_str(sp_IntStrHash_get(h,h->order[i])));}} sp_String_append(o,"}"); return o->data; }
-        /* SYM_INT_HASH / SYM_STR_HASH structs are codegen-emitted (not
-           in this static header), so their serializers are emitted by
-           codegen as sp_SymIntHash_json / sp_SymStrHash_json and called
-           directly from the JSON dispatch. A nested sym-int/str hash
-           reaching here as a boxed poly value falls through to null. */
-        case SP_BUILTIN_STR_POLY_HASH: { sp_StrPolyHash *h=(sp_StrPolyHash*)v.v.p; o=sp_String_new("{"); SP_GC_ROOT(o); if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_str(h->order[i]));sp_String_append(o,":");sp_String_append(o,sp_json_val(sp_StrPolyHash_get(h,h->order[i])));}} sp_String_append(o,"}"); return o->data; }
-        case SP_BUILTIN_SYM_POLY_HASH: { sp_SymPolyHash *h=(sp_SymPolyHash*)v.v.p; o=sp_String_new("{"); SP_GC_ROOT(o); if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_str(sp_sym_to_s((sp_sym)h->order[i])));sp_String_append(o,":");sp_String_append(o,sp_json_val(sp_SymPolyHash_get(h,h->order[i])));}} sp_String_append(o,"}"); return o->data; }
-        case SP_BUILTIN_POLY_POLY_HASH: { sp_PolyPolyHash *h=(sp_PolyPolyHash*)v.v.p; o=sp_String_new("{"); SP_GC_ROOT(o); if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(o,",");sp_String_append(o,sp_json_key(h->keys[h->order[i]]));sp_String_append(o,":");sp_String_append(o,sp_json_val(h->vals[h->order[i]]));}} sp_String_append(o,"}"); return o->data; }
-        default: return SPL("null");
-      }
-    }
-    default: return SPL("null");
+/* JSON serialization now lives in lib/sp_json.c. It owns no container types and
+   reaches them only through these generic readers, registered into the sp_json_*
+   hooks below. sp_json_kind classifies a boxed value (1=array, 2=hash, 0=other);
+   sp_poly_hash_pair yields a hash's boxed (key,value) at insertion index i.
+   SYM_INT/SYM_STR hashes are not listed -> kind 0 -> null, as before. */
+static int sp_json_kind(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ) return 0;
+  switch (v.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
+    case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
+    case SP_BUILTIN_POLY_ARRAY: return 1;
+    case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:
+    case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_STR_POLY_HASH:
+    case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH:
+      return 2;
+    default: return 0;
   }
+}
+static void sp_poly_hash_pair(sp_RbVal v, mrb_int i, sp_RbVal *k, sp_RbVal *out) {
+  *k = sp_box_nil(); *out = sp_box_nil();
+  if (v.tag != SP_TAG_OBJ) return;
+  switch (v.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH: { sp_StrIntHash *h=(sp_StrIntHash*)v.v.p; const char *key=h->order[i]; *k=sp_box_str(key); *out=sp_box_int(sp_StrIntHash_get(h,key)); break; }
+    case SP_BUILTIN_STR_STR_HASH: { sp_StrStrHash *h=(sp_StrStrHash*)v.v.p; const char *key=h->order[i]; *k=sp_box_str(key); *out=sp_box_str(sp_StrStrHash_get(h,key)); break; }
+    case SP_BUILTIN_INT_STR_HASH: { sp_IntStrHash *h=(sp_IntStrHash*)v.v.p; mrb_int key=h->order[i]; *k=sp_box_int(key); *out=sp_box_str(sp_IntStrHash_get(h,key)); break; }
+    case SP_BUILTIN_STR_POLY_HASH: { sp_StrPolyHash *h=(sp_StrPolyHash*)v.v.p; const char *key=h->order[i]; *k=sp_box_str(key); *out=sp_StrPolyHash_get(h,key); break; }
+    case SP_BUILTIN_SYM_POLY_HASH: { sp_SymPolyHash *h=(sp_SymPolyHash*)v.v.p; sp_sym key=h->order[i]; *k=sp_box_sym(key); *out=sp_SymPolyHash_get(h,key); break; }
+    case SP_BUILTIN_POLY_POLY_HASH: { sp_PolyPolyHash *h=(sp_PolyPolyHash*)v.v.p; mrb_int oi=h->order[i]; *k=h->keys[oi]; *out=h->vals[oi]; break; }
+    default: break;
+  }
+}
+__attribute__((constructor)) static void sp_json_install_hooks(void) {
+  sp_json_kind_fn = sp_json_kind;
+  sp_json_len_fn = sp_poly_length;
+  sp_json_aref_fn = sp_poly_arr_get;
+  sp_json_hpair_fn = sp_poly_hash_pair;
 }
 
 #include <setjmp.h>
