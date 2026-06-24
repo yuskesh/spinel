@@ -269,6 +269,102 @@ class_add_shorthand(re_charclass *cc, int ch)
   }
 }
 
+/* Add the ASCII range set for a POSIX bracket class `[:name:]`. Returns
+   TRUE if `name` (length `len`) is a recognized class, FALSE otherwise so
+   the caller can fall back to literal parsing. Semantics are the C/POSIX
+   locale, which matches CRuby for ASCII input. Negation of the enclosing
+   class is handled by the RE_NCLASS emit in compile_charclass, exactly as
+   for the `\d`/`\w` shorthands, so these helpers only ever add the
+   positive set. */
+static mrb_bool
+class_add_posix(re_charclass *cc, const char *name, size_t len)
+{
+#define POSIX_IS(s) (len == sizeof(s) - 1 && memcmp(name, s, len) == 0)
+  if (POSIX_IS("alpha")) {
+    class_set_range(cc, 'a', 'z');
+    class_set_range(cc, 'A', 'Z');
+  }
+  else if (POSIX_IS("digit")) {
+    class_set_range(cc, '0', '9');
+  }
+  else if (POSIX_IS("alnum")) {
+    class_set_range(cc, 'a', 'z');
+    class_set_range(cc, 'A', 'Z');
+    class_set_range(cc, '0', '9');
+  }
+  else if (POSIX_IS("upper")) {
+    class_set_range(cc, 'A', 'Z');
+  }
+  else if (POSIX_IS("lower")) {
+    class_set_range(cc, 'a', 'z');
+  }
+  else if (POSIX_IS("space")) {
+    /* [ \t\n\v\f\r] */
+    class_set_range(cc, '\t', '\r');
+    class_set_bit(cc, ' ');
+  }
+  else if (POSIX_IS("blank")) {
+    class_set_bit(cc, ' ');
+    class_set_bit(cc, '\t');
+  }
+  else if (POSIX_IS("xdigit")) {
+    class_set_range(cc, '0', '9');
+    class_set_range(cc, 'a', 'f');
+    class_set_range(cc, 'A', 'F');
+  }
+  else if (POSIX_IS("word")) {
+    class_set_range(cc, 'a', 'z');
+    class_set_range(cc, 'A', 'Z');
+    class_set_range(cc, '0', '9');
+    class_set_bit(cc, '_');
+  }
+  else if (POSIX_IS("cntrl")) {
+    class_set_range(cc, 0, 0x1f);
+    class_set_bit(cc, 0x7f);
+  }
+  else if (POSIX_IS("print")) {
+    /* printable, including space: 0x20-0x7e */
+    class_set_range(cc, 0x20, 0x7e);
+  }
+  else if (POSIX_IS("graph")) {
+    /* printable, excluding space: 0x21-0x7e */
+    class_set_range(cc, 0x21, 0x7e);
+  }
+  else if (POSIX_IS("punct")) {
+    /* printable non-alnum non-space ASCII */
+    class_set_range(cc, '!', '/');
+    class_set_range(cc, ':', '@');
+    class_set_range(cc, '[', '`');
+    class_set_range(cc, '{', '~');
+  }
+  else if (POSIX_IS("ascii")) {
+    class_set_range(cc, 0, 0x7f);
+  }
+  else {
+    return FALSE;
+  }
+  return TRUE;
+#undef POSIX_IS
+}
+
+/* Negated POSIX class `[:^name:]`: add the ASCII complement of the named
+   set plus utf8_any, mirroring how the `\D`/`\W`/`\S` shorthands build a
+   positive complement set. ASCII input matches CRuby; non-ASCII follows
+   the deferred-Unicode (B50) approximation, same as the shorthands.
+   Returns FALSE for an unrecognized name so the caller can raise. */
+static mrb_bool
+class_add_posix_negated(re_charclass *cc, const char *name, size_t len)
+{
+  re_charclass tmp;
+  memset(&tmp, 0, sizeof(tmp));
+  if (!class_add_posix(&tmp, name, len)) return FALSE;
+  for (int i = 0; i < 128; i++) {
+    if (!(tmp.bitmap[i >> 3] & (1 << (i & 7)))) class_set_bit(cc, (uint8_t)i);
+  }
+  cc->utf8_any = TRUE;
+  return TRUE;
+}
+
 static int
 parse_escape(re_compiler *c)
 {
@@ -381,6 +477,30 @@ compile_charclass(re_compiler *c)
         class_add_shorthand(cc, esc);
         continue;
       }
+    }
+
+    /* POSIX bracket class `[:name:]` inside the enclosing `[...]`. Adds
+       the corresponding ASCII ranges via the same helpers used for `\d`
+       etc.; enclosing negation is applied by the RE_NCLASS emit below. A
+       leading `^` (`[:^name:]`) negates the class in place. A complete
+       `[:...:]` with an unrecognized name is a hard error in CRuby
+       ("invalid POSIX bracket type"); raise rather than match nothing. */
+    if (peek(c) == '[' && c->p + 1 < c->src_end && c->p[1] == ':') {
+      const char *name = c->p + 2;
+      mrb_bool posix_neg = FALSE;
+      if (name < c->src_end && *name == '^') { posix_neg = TRUE; name++; }
+      const char *q = name;
+      while (q < c->src_end && *q != ':' && *q != ']') q++;
+      if (q + 1 < c->src_end && q[0] == ':' && q[1] == ']') {
+        size_t nlen = (size_t)(q - name);
+        mrb_bool ok = posix_neg ? class_add_posix_negated(cc, name, nlen)
+                                : class_add_posix(cc, name, nlen);
+        if (!ok) compile_error(c, "invalid POSIX bracket type");
+        c->p = q + 2;  /* consume past ":]" */
+        continue;
+      }
+      /* No `:]` terminator: not a POSIX class. Fall through and treat
+         '[' literally (e.g. `[[:]` is the literal set {'[', ':'}). */
     }
 
     uint32_t cp = read_class_atom(c);
