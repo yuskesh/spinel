@@ -2639,19 +2639,28 @@ else if (p0) {
     buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk, tres, tv);
   }
   else {
-    /* select/reject: run the body, push the element when the block's value
-       (negated for reject) is truthy. */
-    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, innerIndent);
-    int saveIndent = g_indent;
-    g_indent = innerIndent;
-    Buf vb; memset(&vb, 0, sizeof vb);
-    emit_expr(c, bb[bn - 1], &vb);  /* value preludes flow to g_pre at innerIndent */
-    g_indent = saveIndent;
+    /* select/reject: collect the block's value (next-aware) into a temp, then
+       push the element when that value (negated for reject) is truthy -- so a
+       `next <cond>` inside the block decides inclusion instead of being lost. */
+    TyKind cty = comp_ntype(c, bb[bn - 1]);
+    if (cty == TY_UNKNOWN) cty = TY_INT;
+    int cond_poly = (cty == TY_POLY);
+    int tv = ++g_tmp;
+    char tvbuf[24]; snprintf(tvbuf, sizeof tvbuf, "_t%d", tv);
     emit_indent(g_pre, innerIndent);
-    buf_printf(g_pre, "if (%s(", is_rej ? "!" : "");
-    buf_puts(g_pre, vb.p ? vb.p : ""); buf_puts(g_pre, ")) ");
+    if (cond_poly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
+    else { emit_ctype(c, cty, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value(cty)); }
+    emit_block_value_into(c, block, tvbuf, cond_poly, innerIndent);
+    emit_indent(g_pre, innerIndent);
+    /* Ruby truthiness: only nil and false are falsy. A nilable int/float reads
+       falsy at its sentinel, but 0 / 0.0 are truthy -- so a block returning
+       `x % 2` must keep the element. A bool keeps C-truthiness (0/1); a pointer
+       value is falsy only when NULL (nil). Mirrors emit_cond. */
+    if (cond_poly)         buf_printf(g_pre, "if (%ssp_poly_truthy(_t%d)) ", is_rej ? "!" : "", tv);
+    else if (cty == TY_INT)   buf_printf(g_pre, "if (%s(_t%d != SP_INT_NIL)) ", is_rej ? "!" : "", tv);
+    else if (cty == TY_FLOAT) buf_printf(g_pre, "if (%s(!sp_float_is_nil(_t%d))) ", is_rej ? "!" : "", tv);
+    else                   buf_printf(g_pre, "if (%s(_t%d)) ", is_rej ? "!" : "", tv);
     buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
-    free(vb.p);
   }
   if (use_shadow) { emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "}\n"); }
   if (use_shadow && clv0) clv0->type = csaved0;
