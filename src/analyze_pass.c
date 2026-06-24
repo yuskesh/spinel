@@ -1960,6 +1960,23 @@ const char *block_param_name(Compiler *c, int block, int idx) {
   return NULL;
 }
 
+/* The name of a block's trailing rest parameter (`|*a|`), or NULL if the block
+   has none or it is anonymous (`|*|`). The rest collects the arguments past the
+   required ones into an array. */
+const char *block_rest_name(Compiler *c, int block) {
+  int bp = nt_ref(c->nt, block, "parameters");      /* BlockParametersNode */
+  if (bp < 0) return NULL;
+  const char *bpty = nt_type(c->nt, bp);
+  if (bpty && !strcmp(bpty, "NumberedParametersNode")) return NULL;
+  int pn = nt_ref(c->nt, bp, "parameters");          /* ParametersNode */
+  if (pn < 0) return NULL;
+  int rest = nt_ref(c->nt, pn, "rest");
+  if (rest < 0) return NULL;
+  const char *rty = nt_type(c->nt, rest);
+  if (!rty || strcmp(rty, "RestParameterNode")) return NULL;  /* must be `*name` */
+  return nt_str(c->nt, rest, "name");
+}
+
 int block_param_is_multi(Compiler *c, int block, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");
   if (bp < 0) return 0;
@@ -2964,6 +2981,14 @@ int infer_block_params(Compiler *c) {
           LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
           TyKind m = ty_unify(lv->type, TY_POLY);
           if (m != lv->type) { lv->type = m; changed = 1; }
+        }
+        /* A trailing rest param (`|*a|`) collects the yielded arguments past the
+           requireds into an array; emit_block_invoke binds it. Scoped to this
+           yield-consumed block so iteration/escaped-proc blocks are unaffected. */
+        const char *brest = block_rest_name(c, block);
+        if (brest) {
+          LocalVar *lv = scope_local_intern(bs, brest); lv->is_block_param = 1;
+          if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
         }
         continue;
       }
