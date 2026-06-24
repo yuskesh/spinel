@@ -78,4 +78,45 @@ const char *sp_IntArray_join(sp_IntArray *a, const char *sep);
 mrb_bool sp_IntArray_eq(sp_IntArray *a, sp_IntArray *b);
 mrb_int sp_IntArray_cmp(sp_IntArray *a, sp_IntArray *b);
 
+/* =========================== sp_FloatArray =========================== */
+static void sp_FloatArray_fin(void*p){sp_FloatArray*a=(sp_FloatArray*)p;sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*a->cap;h->size-=sizeof(mrb_float)*a->cap;free(a->data);}
+static sp_FloatArray*sp_FloatArray_new(void){sp_FloatArray*a=(sp_FloatArray*)sp_gc_alloc(sizeof(sp_FloatArray),sp_FloatArray_fin,NULL);a->cap=16;a->data=(mrb_float*)malloc(sizeof(mrb_float)*a->cap);if(!a->data)sp_oom_die();a->len=0;{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));h->size+=sizeof(mrb_float)*a->cap;sp_gc_bytes+=sizeof(mrb_float)*a->cap;}return a;}
+static inline void sp_FloatArray_push(sp_FloatArray*a,mrb_float v){if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*a->cap;h->size-=sizeof(mrb_float)*a->cap;a->cap=a->cap*2+1;a->data=(mrb_float*)realloc(a->data,sizeof(mrb_float)*a->cap);h->size+=sizeof(mrb_float)*a->cap;sp_gc_bytes+=sizeof(mrb_float)*a->cap;}a->data[a->len++]=v;}
+static inline mrb_float sp_FloatArray_pop(sp_FloatArray*a){if(!a||a->len<=0)return 0.0;if(a->frozen){sp_raise_frozen_array();return 0.0;}return a->data[--a->len];}
+static inline mrb_float sp_FloatArray_shift(sp_FloatArray*a){if(!a||a->len==0)return 0.0;if(a->frozen){sp_raise_frozen_array();return 0.0;}mrb_float v=a->data[0];for(mrb_int i=0;i+1<a->len;i++)a->data[i]=a->data[i+1];a->len--;return v;}
+/* FloatArray is 0-based (no `start` offset, unlike IntArray). delete_at
+   returns 0.0 on out-of-range (delete_at's nil there). */
+static inline mrb_float sp_FloatArray_delete_at(sp_FloatArray*a,mrb_int i){if(!a)return 0.0;if(a->frozen){sp_raise_frozen_array();return 0.0;}if(i<0)i+=a->len;if(i<0||i>=a->len)return 0.0;mrb_float v=a->data[i];for(mrb_int j=i;j+1<a->len;j++)a->data[j]=a->data[j+1];a->len--;return v;}
+static inline mrb_int sp_FloatArray_length(sp_FloatArray*a){return a->len;}
+static inline mrb_bool sp_FloatArray_empty(sp_FloatArray*a){return a->len==0;}
+static inline mrb_float sp_FloatArray_get(sp_FloatArray*a,mrb_int i){if(!a)return sp_float_nil();if(i<0)i+=a->len;if(i<0||i>=a->len)return sp_float_nil();return a->data[i];}
+/* first/last as float? : nil (sentinel) when empty, else the element.
+   `[i]` stays non-nullable (0.0 for OOB) -- only first/last produce nil. */
+static inline mrb_float sp_FloatArray_first_opt(sp_FloatArray*a){return (!a||a->len<=0)?sp_float_nil():sp_FloatArray_get(a,0);}
+static inline mrb_float sp_FloatArray_last_opt(sp_FloatArray*a){return (!a||a->len<=0)?sp_float_nil():sp_FloatArray_get(a,a->len-1);}
+/* Issue #769: no-op for negative index after adjustment. */
+static inline void sp_FloatArray_set(sp_FloatArray*a,mrb_int i,mrb_float v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}mrb_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));while(i>=a->cap){a->cap=a->cap*2+1;a->data=(mrb_float*)realloc(a->data,sizeof(mrb_float)*a->cap);}while(i>=a->len){a->data[a->len]=0.0;a->len++;}a->data[i]=v;}
+
+/* ---- sp_FloatArray cold ops (compiled in lib/sp_array.c) ---- */
+void sp_FloatArray_unshift(sp_FloatArray *a, mrb_float v);
+sp_FloatArray *sp_FloatArray_from_step(mrb_float s, mrb_float e, mrb_float k);
+mrb_float sp_FloatArray_min(sp_FloatArray *a);
+mrb_float sp_FloatArray_max(sp_FloatArray *a);
+mrb_float sp_FloatArray_sum(sp_FloatArray *a, mrb_float init);
+void sp_FloatArray_replace(sp_FloatArray *dst, sp_FloatArray *src);
+sp_FloatArray *sp_FloatArray_slice(sp_FloatArray *a, mrb_int start, mrb_int len);
+sp_FloatArray *sp_FloatArray_slice_range(sp_FloatArray *a, mrb_int start, mrb_int end_, mrb_int excl);
+void sp_FloatArray_reverse_bang(sp_FloatArray *a);
+void sp_FloatArray_rotate_bang(sp_FloatArray *a, mrb_int n);
+void sp_FloatArray_sort_bang(sp_FloatArray *a);
+void sp_FloatArray_shuffle_bang(sp_FloatArray *a);
+sp_FloatArray *sp_FloatArray_dup(sp_FloatArray *a);
+sp_FloatArray *sp_FloatArray_sort(sp_FloatArray *a);
+sp_FloatArray *sp_FloatArray_shuffle(sp_FloatArray *a);
+mrb_float sp_FloatArray_sample(sp_FloatArray *a);
+mrb_bool sp_FloatArray_include(sp_FloatArray *a, mrb_float v);
+sp_FloatArray *sp_FloatArray_intersect(sp_FloatArray *a, sp_FloatArray *b);
+sp_FloatArray *sp_FloatArray_union(sp_FloatArray *a, sp_FloatArray *b);
+sp_FloatArray *sp_FloatArray_difference(sp_FloatArray *a, sp_FloatArray *b);
+
 #endif /* SP_ARRAY_H */

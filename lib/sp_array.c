@@ -73,3 +73,31 @@ mrb_bool sp_IntArray_eq(sp_IntArray*a,sp_IntArray*b){if(!a||!b)return a==b;if(a-
    (`[1,2] <=> [1,2,3] == -1`). NULL recv compares equal to NULL, lower
    than any non-NULL. */
 mrb_int sp_IntArray_cmp(sp_IntArray*a,sp_IntArray*b){if(!a||!b)return a==b?0:(a?1:-1);mrb_int n=a->len<b->len?a->len:b->len;for(mrb_int i=0;i<n;i++){mrb_int av=a->data[a->start+i],bv=b->data[b->start+i];if(av<bv)return -1;if(av>bv)return 1;}if(a->len<b->len)return -1;if(a->len>b->len)return 1;return 0;}
+
+/* ============================ sp_FloatArray ============================ */
+void sp_FloatArray_unshift(sp_FloatArray*a,mrb_float v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}sp_FloatArray_push(a,0.0);if(a->len>1)memmove(&a->data[1],&a->data[0],(size_t)(a->len-1)*sizeof(mrb_float));a->data[0]=v;}
+/* Float#step materialised as a FloatArray. Direction follows the sign of
+   k; k==0 yields an empty array to avoid an infinite loop. */
+sp_FloatArray*sp_FloatArray_from_step(mrb_float s,mrb_float e,mrb_float k){sp_FloatArray*a=sp_FloatArray_new();if(k==0.0)return a;mrb_float v=s;if(k>0){while(v<=e){sp_FloatArray_push(a,v);v+=k;}}else{while(v>=e){sp_FloatArray_push(a,v);v+=k;}}return a;}
+mrb_float sp_FloatArray_min(sp_FloatArray*a){if(a->len==0)return 0;mrb_float m=a->data[0];for(mrb_int i=1;i<a->len;i++)if(a->data[i]<m)m=a->data[i];return m;}
+mrb_float sp_FloatArray_max(sp_FloatArray*a){if(a->len==0)return 0;mrb_float m=a->data[0];for(mrb_int i=1;i<a->len;i++)if(a->data[i]>m)m=a->data[i];return m;}
+mrb_float sp_FloatArray_sum(sp_FloatArray*a,mrb_float init){mrb_float s=init;for(mrb_int i=0;i<a->len;i++)s+=a->data[i];return s;}
+void sp_FloatArray_replace(sp_FloatArray*dst,sp_FloatArray*src){dst->len=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*dst->cap;h->size-=sizeof(mrb_float)*dst->cap;void*nd=realloc(dst->data,sizeof(mrb_float)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(mrb_float*)nd;dst->cap=src->len;h->size+=sizeof(mrb_float)*dst->cap;sp_gc_bytes+=sizeof(mrb_float)*dst->cap;}memcpy(dst->data,src->data,sizeof(mrb_float)*src->len);dst->len=src->len;}
+/* a[start, len] / a[start..end] for FloatArray. Same negative-start and
+   length-clamping semantics as sp_IntArray_slice. */
+sp_FloatArray*sp_FloatArray_slice(sp_FloatArray*a,mrb_int start,mrb_int len){SP_GC_ROOT(a);if(start<0)start+=a->len;if(start<0)start=0;sp_FloatArray*b=sp_FloatArray_new();if(start>=a->len||len<=0)return b;if(start+len>a->len)len=a->len-start;if(len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_float)*b->cap;h->size-=sizeof(mrb_float)*b->cap;b->cap=len;b->data=(mrb_float*)realloc(b->data,sizeof(mrb_float)*b->cap);h->size+=sizeof(mrb_float)*b->cap;sp_gc_bytes+=sizeof(mrb_float)*b->cap;}memcpy(b->data,a->data+start,sizeof(mrb_float)*len);b->len=len;return b;}
+sp_FloatArray*sp_FloatArray_slice_range(sp_FloatArray*a,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=a->len;if(start<0)start+=a->len;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_FloatArray_slice(a,start,n);}
+void sp_FloatArray_reverse_bang(sp_FloatArray*a){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}for(mrb_int i=0,j=a->len-1;i<j;i++,j--){mrb_float t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
+void sp_FloatArray_rotate_bang(sp_FloatArray*a,mrb_int n){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;mrb_float*d=a->data;mrb_int lo=0,hi=n-1;while(lo<hi){mrb_float t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){mrb_float t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){mrb_float t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
+static int _sp_float_cmp(const void*a,const void*b){mrb_float va=*(const mrb_float*)a,vb=*(const mrb_float*)b;return(va>vb)-(va<vb);}
+void sp_FloatArray_sort_bang(sp_FloatArray*a){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}qsort(a->data,a->len,sizeof(mrb_float),_sp_float_cmp);}
+void sp_FloatArray_shuffle_bang(sp_FloatArray*a){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}for(mrb_int i=a->len-1;i>0;i--){mrb_int j=(mrb_int)(rand()%(i+1));mrb_float t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
+sp_FloatArray*sp_FloatArray_dup(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_new();sp_FloatArray_replace(b,a);return b;}
+sp_FloatArray*sp_FloatArray_sort(sp_FloatArray*a){sp_FloatArray*b=sp_FloatArray_dup(a);sp_FloatArray_sort_bang(b);return b;}
+sp_FloatArray*sp_FloatArray_shuffle(sp_FloatArray*a){sp_FloatArray*r=sp_FloatArray_new();sp_FloatArray_replace(r,a);sp_FloatArray_shuffle_bang(r);return r;}
+mrb_float sp_FloatArray_sample(sp_FloatArray*a){if(a->len<=0)return 0.0;return a->data[(mrb_int)(rand()%a->len)];}
+/* IEEE 754 == on mrb_float: NaN never matches; +0.0 == -0.0 (diverges from Float#eql?). */
+mrb_bool sp_FloatArray_include(sp_FloatArray*a,mrb_float v){if(!a)return FALSE;for(mrb_int i=0;i<a->len;i++)if(a->data[i]==v)return TRUE;return FALSE;}
+sp_FloatArray*sp_FloatArray_intersect(sp_FloatArray*a,sp_FloatArray*b){sp_FloatArray*r=sp_FloatArray_new();if(!a||!b)return r;for(mrb_int i=0;i<a->len;i++){mrb_float v=a->data[i];if(sp_FloatArray_include(b,v)&&!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}return r;}
+sp_FloatArray*sp_FloatArray_union(sp_FloatArray*a,sp_FloatArray*b){sp_FloatArray*r=sp_FloatArray_new();if(a)for(mrb_int i=0;i<a->len;i++){mrb_float v=a->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}if(b){for(mrb_int i=0;i<b->len;i++){mrb_float v=b->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}}return r;}
+sp_FloatArray*sp_FloatArray_difference(sp_FloatArray*a,sp_FloatArray*b){sp_FloatArray*r=sp_FloatArray_new();for(mrb_int i=0;i<a->len;i++){mrb_float v=a->data[i];if(!sp_FloatArray_include(b,v))sp_FloatArray_push(r,v);}return r;}
