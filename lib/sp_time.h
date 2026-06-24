@@ -1,18 +1,13 @@
 /* sp_time.h -- Time value type + libc-backed accessors / formatters.
  *
- * The bulk of spinel's Time implementation lives in lib/sp_time.c
- * (compiled into libspinel_rt.a). sp_runtime.h carries only the
- * GC-aware wrappers (sp_box_time, sp_time_strftime_gc) — the small
- * sp_str_dup_external trampolines that bind the libspinel_rt format
- * helpers to the GC string heap.
+ * The whole of spinel's Time implementation lives in lib/sp_time.c
+ * (compiled into libspinel_rt.a), including the formatters, which now
+ * return GC-heap strings directly (sp_time.c includes sp_alloc.h) — so
+ * the generated TU calls them straight, with no buffer-copying
+ * trampoline in sp_runtime.h.
  *
- * The format helpers (strftime / iso8601 / zone / inspect) write into
- * a caller-provided buffer; the caller is responsible for copying
- * into the GC string heap. This keeps libspinel_rt zero-dependency on
- * the runtime's static-inline helpers.
- *
- * Signatures use int64_t / double directly so this header stays
- * decoupled from the runtime's typedefs.
+ * The value ops (constructors, accessors, shifts) use int64_t / double
+ * directly, keeping that part decoupled from the runtime's typedefs.
  */
 #ifndef SP_TIME_H
 #define SP_TIME_H
@@ -58,11 +53,10 @@ sp_Time sp_time_add_i(sp_Time t, int64_t secs);
 sp_Time sp_time_sub_i(sp_Time t, int64_t secs);
 double sp_time_sub_t(sp_Time a, sp_Time b);
 
-/* Format helpers: write into `buf` (cap bytes incl NUL), return the
-   number of bytes written excluding NUL. Return 0 on failure. */
-size_t sp_time_strftime_to(sp_Time t, const char *fmt, char *buf, size_t cap);
-size_t sp_time_iso8601_to(sp_Time t, char *buf, size_t cap);
-size_t sp_time_zone_to(sp_Time t, char *buf, size_t cap);
-size_t sp_time_inspect_to(sp_Time t, char *buf, size_t cap);
+/* Formatters: return a GC-heap string (from sp_alloc.h), "" on failure. */
+const char *sp_time_strftime(sp_Time t, const char *fmt);
+const char *sp_time_iso8601(sp_Time t);
+const char *sp_time_zone(sp_Time t);
+const char *sp_time_inspect_v(sp_Time t);
 
 #endif

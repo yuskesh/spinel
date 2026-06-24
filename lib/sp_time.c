@@ -1,8 +1,10 @@
 /* sp_time.c -- libc-backed Time implementations.
  *
- * Sibling to sp_bigint.c / sp_crypto.c. No spinel-runtime
- * dependencies; the GC-aware wrappers (sp_box_time, sp_time_*_gc
- * trampolines) live in sp_runtime.h.
+ * Sibling to sp_bigint.c / sp_crypto.c. The libc value ops (construct,
+ * accessors, shifts) carry no runtime dependency; the formatters
+ * (strftime / iso8601 / zone / inspect) return GC-heap strings directly
+ * via sp_alloc.h, so the generated TU no longer needs buffer-copying
+ * trampolines for them.
  */
 
 #include <stdio.h>
@@ -10,6 +12,7 @@
 #include <time.h>
 
 #include "sp_time.h"
+#include "sp_alloc.h"   /* sp_str_dup_external / sp_str_empty for the GC formatters */
 
 sp_Time sp_time_now(void) {
   struct timespec ts;
@@ -130,81 +133,99 @@ sp_Time sp_time_add(sp_Time t, double secs) {
   return (sp_Time){ t.tv_sec + whole + carry, (int32_t)ns, t.is_utc };
 }
 
-size_t sp_time_strftime_to(sp_Time t, const char *fmt, char *buf, size_t cap) {
+/* strftime returns 0 -- never overruns the buffer -- when the formatted
+   result would exceed it, which we surface as "". The 4 KB buffer covers
+   any realistic format (CRuby's built-ins are ~25 bytes; this leaves room
+   for long literal text or wide fields). A pathological field width
+   (`"%1000000000F"`, which CRuby rejects with ERANGE) does not fit and
+   yields "" -- a graceful empty string rather than a crash. */
+const char *sp_time_strftime(sp_Time t, const char *fmt) {
+  char buf[4096];
   time_t s = (time_t)t.tv_sec;
   struct tm *lt = t.is_utc ? gmtime(&s) : localtime(&s);
-  if (lt == NULL) { if (cap > 0) buf[0] = 0; return 0; }
-  size_t n = strftime(buf, cap, fmt, lt);
-  if (n < cap) buf[n] = 0;
-  return n;
+  if (lt == NULL) return sp_str_empty;
+  size_t n = strftime(buf, sizeof(buf), fmt, lt);
+  if (n == 0) return sp_str_empty;
+  buf[n] = 0;
+  return sp_str_dup_external(buf);
 }
 
 /* RFC 3339 / iso8601. Format date+time prefix with strftime, then
    compute the UTC offset manually via mktime(gmtime(s)) - s (MSVCRT
    %z renders the timezone name, so we do it ourselves). */
-size_t sp_time_iso8601_to(sp_Time t, char *buf, size_t cap) {
+const char *sp_time_iso8601(sp_Time t) {
+  char buf[64];
+  size_t cap = sizeof(buf);
   time_t s = (time_t)t.tv_sec;
   if (t.is_utc) {
     struct tm *gt = gmtime(&s);
-    if (gt == NULL) { if (cap > 0) buf[0] = 0; return 0; }
+    if (gt == NULL) return sp_str_empty;
     size_t n = strftime(buf, cap, "%Y-%m-%dT%H:%M:%SZ", gt);
-    return n;
+    if (n == 0) return sp_str_empty;
+    return sp_str_dup_external(buf);
   }
   struct tm *lt = localtime(&s);
-  if (lt == NULL) { if (cap > 0) buf[0] = 0; return 0; }
+  if (lt == NULL) return sp_str_empty;
   size_t n = strftime(buf, cap, "%Y-%m-%dT%H:%M:%S", lt);
-  if (n == 0 || n + 6 >= cap) return n;
-  struct tm gm = *gmtime(&s);
-  gm.tm_isdst = -1;
-  time_t gm_as_if_local = mktime(&gm);
-  long offset_sec = (long)(s - gm_as_if_local);
-  char sign = offset_sec >= 0 ? '+' : '-';
-  long abs_off = offset_sec < 0 ? -offset_sec : offset_sec;
-  int oh = (int)(abs_off / 3600);
-  int om = (int)((abs_off / 60) % 60);
-  buf[n++] = sign;
-  buf[n++] = (char)('0' + (oh / 10));
-  buf[n++] = (char)('0' + (oh % 10));
-  buf[n++] = ':';
-  buf[n++] = (char)('0' + (om / 10));
-  buf[n++] = (char)('0' + (om % 10));
-  buf[n] = 0;
-  return n;
+  if (n == 0) return sp_str_empty;
+  if (n + 6 < cap) {
+    struct tm gm = *gmtime(&s);
+    gm.tm_isdst = -1;
+    time_t gm_as_if_local = mktime(&gm);
+    long offset_sec = (long)(s - gm_as_if_local);
+    char sign = offset_sec >= 0 ? '+' : '-';
+    long abs_off = offset_sec < 0 ? -offset_sec : offset_sec;
+    int oh = (int)(abs_off / 3600);
+    int om = (int)((abs_off / 60) % 60);
+    buf[n++] = sign;
+    buf[n++] = (char)('0' + (oh / 10));
+    buf[n++] = (char)('0' + (oh % 10));
+    buf[n++] = ':';
+    buf[n++] = (char)('0' + (om / 10));
+    buf[n++] = (char)('0' + (om % 10));
+    buf[n] = 0;
+  }
+  return sp_str_dup_external(buf);
 }
 
-size_t sp_time_zone_to(sp_Time t, char *buf, size_t cap) {
-  if (cap < 8) { if (cap > 0) buf[0] = 0; return 0; }
+const char *sp_time_zone(sp_Time t) {
+  char buf[8];
   struct tm b;
   sp_time_vtm(t, &b, NULL, buf);
-  return strlen(buf);
+  return sp_str_dup_external(buf);
 }
 
 /* Scalar Time inspect. CRuby form: local "YYYY-MM-DD HH:MM:SS +0900",
-   UTC "YYYY-MM-DD HH:MM:SS UTC". */
-size_t sp_time_inspect_to(sp_Time t, char *buf, size_t cap) {
+   UTC "YYYY-MM-DD HH:MM:SS UTC". The poly-box path keeps its own
+   sp_Time_inspect; this value-taking variant is for the scalar
+   p/puts/to_s codegen path. */
+const char *sp_time_inspect_v(sp_Time t) {
+  char buf[40];
+  size_t cap = sizeof(buf);
   struct tm b;
   int32_t off;
   sp_time_vtm(t, &b, &off, NULL);
   size_t n = strftime(buf, cap, "%Y-%m-%d %H:%M:%S", &b);
   if (n == 0) {
-    int w = snprintf(buf, cap, "Time(%lld)", (long long)t.tv_sec);
-    return w > 0 ? (size_t)w : 0;
+    snprintf(buf, cap, "Time(%lld)", (long long)t.tv_sec);
+    return sp_str_dup_external(buf);
   }
-  if (n + 8 >= cap) return n;
-  if (t.is_utc) {
-    buf[n++]=' '; buf[n++]='U'; buf[n++]='T'; buf[n++]='C'; buf[n]=0;
-  }
+  if (n + 8 < cap) {
+    if (t.is_utc) {
+      buf[n++]=' '; buf[n++]='U'; buf[n++]='T'; buf[n++]='C'; buf[n]=0;
+    }
 else {
-    char sign = off >= 0 ? '+' : '-';
-    long a = off < 0 ? -(long)off : (long)off;
-    int oh = (int)(a / 3600);
-    int om = (int)((a / 60) % 60);
-    buf[n++]=' '; buf[n++]=sign;
-    buf[n++]=(char)('0'+oh/10); buf[n++]=(char)('0'+oh%10);
-    buf[n++]=(char)('0'+om/10); buf[n++]=(char)('0'+om%10);
-    buf[n]=0;
+      char sign = off >= 0 ? '+' : '-';
+      long a = off < 0 ? -(long)off : (long)off;
+      int oh = (int)(a / 3600);
+      int om = (int)((a / 60) % 60);
+      buf[n++]=' '; buf[n++]=sign;
+      buf[n++]=(char)('0'+oh/10); buf[n++]=(char)('0'+oh%10);
+      buf[n++]=(char)('0'+om/10); buf[n++]=(char)('0'+om%10);
+      buf[n]=0;
+    }
   }
-  return n;
+  return sp_str_dup_external(buf);
 }
 
 /* ---- comparison + shifts (moved from sp_runtime.h; cold) ---- */

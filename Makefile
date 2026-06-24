@@ -214,7 +214,7 @@ build/sp_strscan.o: lib/sp_strscan.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib -Ilib/regexp lib/sp_strscan.c -o build/sp_strscan.o
 
-build/sp_time.o: lib/sp_time.c lib/sp_time.h
+build/sp_time.o: lib/sp_time.c lib/sp_time.h lib/sp_alloc.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_time.c -o build/sp_time.o
 

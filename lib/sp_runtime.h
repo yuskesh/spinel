@@ -561,42 +561,10 @@ static int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp){for(size_t i
 /* sp_mark_string is an inline helper in sp_gc.h. sp_str_sweep moved to
    sp_alloc.c (single definition, registered with the GC there). */
 
-/* GC-aware Time trampolines. The libspinel_rt format helpers write
-   into a local buffer; we sp_str_dup_external the result so the GC
-   tracks the lifetime. strftime returns 0 -- never overruns the buffer
-   -- when the formatted result would exceed it, which we surface as "".
-   The 4 KB buffer covers any realistic format (CRuby's built-ins are
-   ~25 bytes; this leaves room for long literal text or wide fields). A
-   pathological field width (`"%1000000000F"`, which CRuby rejects with
-   ERANGE) does not fit and yields "" -- a graceful empty string rather
-   than a crash. */
-static const char *sp_time_strftime(sp_Time t, const char *fmt) {
-  char buf[4096];
-  size_t n = sp_time_strftime_to(t, fmt, buf, sizeof(buf));
-  if (n == 0) return SPL("");
-  return sp_str_dup_external(buf);
-}
-static const char *sp_time_iso8601(sp_Time t) {
-  char buf[64];
-  size_t n = sp_time_iso8601_to(t, buf, sizeof(buf));
-  if (n == 0) return SPL("");
-  return sp_str_dup_external(buf);
-}
-static const char *sp_time_zone(sp_Time t) {
-  char buf[8];
-  sp_time_zone_to(t, buf, sizeof(buf));
-  return sp_str_dup_external(buf);
-}
-/* Scalar Time inspect. CRuby form: local "YYYY-MM-DD HH:MM:SS +0900",
-   UTC "YYYY-MM-DD HH:MM:SS UTC". The poly-box path keeps its own
-   sp_Time_inspect; this value-taking variant is for the scalar
-   p/puts/to_s codegen path. */
-static const char *sp_time_inspect_v(sp_Time t) {
-  char buf[40];
-  sp_time_inspect_to(t, buf, sizeof(buf));
-  return sp_str_dup_external(buf);
-}
-/* sp_time_cmp / add_f / add_i / sub_i / sub_t moved to lib/sp_time.c (cold). */
+/* Time formatters (strftime / iso8601 / zone / inspect_v) and the cold
+   value ops (cmp / add_f / add_i / sub_i / sub_t) live in lib/sp_time.c;
+   the formatters now return GC-heap strings directly, so no trampoline
+   is needed here. */
 
 /* SP_GC_STACK_MAX, sp_gc_roots, sp_gc_nroots come from sp_gc.h / lib/sp_gc.c. */
 /* Cooperative-fiber GC root storage (issue #636).
