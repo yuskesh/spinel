@@ -97,6 +97,12 @@ static inline mrb_int sp_imod(mrb_int a, mrb_int b) {
   if ((r != 0) && ((r ^ b) < 0)) r += b;
   return r;
 }
+/* Integer#remainder: truncated remainder (sign follows the dividend, i.e. plain
+   C `%`), unlike the floored sp_imod. Zero divisor raises like sp_imod/sp_idiv. */
+static inline mrb_int sp_iremainder(mrb_int a, mrb_int b) {
+  if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  return a % b;
+}
 /* Overflow-checked integer arithmetic (BIGINT.md option β: raise on
    overflow, keep locals at native mrb_int width).
 
