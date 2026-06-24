@@ -711,45 +711,8 @@ static mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
 /* sp_FloatArray lives in sp_array.h (hot core inline) + lib/sp_array.c
    (cold ops). */
 
-/* ---- PtrArray: array of void* pointers ---- */
-static void sp_PtrArray_fin(void*p){sp_PtrArray*a=(sp_PtrArray*)p;sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(void*)*a->cap;h->size-=sizeof(void*)*a->cap;free(a->data);}
-static void sp_PtrArray_gc_scan(void*p){sp_PtrArray*a=(sp_PtrArray*)p;if(!a->scan_elem)return;for(mrb_int i=0;i<a->len;i++){if(a->data[i])a->scan_elem(a->data[i]);}}
-static sp_PtrArray*sp_PtrArray_new_scan(void(*scan_elem)(void*)){sp_PtrArray*a=(sp_PtrArray*)sp_gc_alloc(sizeof(sp_PtrArray),sp_PtrArray_fin,scan_elem?sp_PtrArray_gc_scan:NULL);a->cap=16;a->data=(void**)malloc(sizeof(void*)*a->cap);if(!a->data)sp_oom_die();a->len=0;a->scan_elem=scan_elem;{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));h->size+=sizeof(void*)*a->cap;sp_gc_bytes+=sizeof(void*)*a->cap;}return a;}
-static sp_PtrArray*sp_PtrArray_new(void){return sp_PtrArray_new_scan(sp_gc_mark);}
-/* PtrArray for raw external pointers (FFI `:ptr` returns, dlopen
-   handles, ...). These don't carry sp_gc_hdr -- the default
-   sp_gc_mark element scan would read undefined bytes and likely
-   crash at collection time. Skip per-element scanning; the array
-   header itself is still GC-tracked. */
-static sp_PtrArray*sp_PtrArray_new_noscan(void){return sp_PtrArray_new_scan(NULL);}
-static inline void sp_PtrArray_push(sp_PtrArray*a,void*v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(void*)*a->cap;h->size-=sizeof(void*)*a->cap;a->cap=a->cap*2+1;void*nd=realloc(a->data,sizeof(void*)*a->cap);if(!nd)sp_oom_die();a->data=(void**)nd;h->size+=sizeof(void*)*a->cap;sp_gc_bytes+=sizeof(void*)*a->cap;}a->data[a->len++]=v;}
-/* Array#pop on a `<X>_ptr_array`. Returns NULL when empty
-   (matches CRuby's nil for typed-element arrays since the slot
-   can't carry nil). Issue #520: previously the dispatch on
-   `int_array_ptr_array.pop` warned "cannot resolve call to
-   'pop'" and emitted 0, silently leaving the array intact. */
-static inline void *sp_PtrArray_pop(sp_PtrArray*a){if(!a||a->len==0)return NULL;return a->data[--a->len];}
-static inline void*sp_PtrArray_get(sp_PtrArray*a,mrb_int i){if(!a)return NULL;if(i<0)i+=a->len;if(i<0||i>=a->len)return NULL;return a->data[i];}
-/* Issue #770: bounds-check the final index. CRuby grows the array on
-   out-of-range set; spinel's typed-array slots have a fixed capacity
-   shape per element type, so the safer fallback is to no-op rather
-   than write into adjacent memory. */
-static inline void sp_PtrArray_set(sp_PtrArray*a,mrb_int i,void*v){if(!a)return;if(i<0)i+=a->len;if(i<0||i>=a->len)return;a->data[i]=v;}
-static inline mrb_int sp_PtrArray_length(sp_PtrArray*a){if(!a)return 0;return a->len;}
-static inline mrb_bool sp_PtrArray_empty(sp_PtrArray*a){if(!a)return TRUE;return a->len==0;}
-/* `Array#delete_at(i)` -- remove and return the element at index i.
-   Negative indices count from the end. Returns NULL when i is out
-   of range (matches CRuby's nil for typed-element arrays). Mirrors
-   sp_IntArray_delete_at / sp_StrArray_delete_at; without this peer
-   user-class arrays can't shrink. */
-static void*sp_PtrArray_delete_at(sp_PtrArray*a,mrb_int i){if(i<0)i+=a->len;if(i<0||i>=a->len)return NULL;void*v=a->data[i];for(mrb_int j=i;j<a->len-1;j++)a->data[j]=a->data[j+1];a->len--;return v;}
-static void sp_PtrArray_reverse_bang(sp_PtrArray*a){for(mrb_int i=0,j=a->len-1;i<j;i++,j--){void*t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
-static void sp_PtrArray_rotate_bang(sp_PtrArray*a,mrb_int n){if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;void**d=a->data;mrb_int lo=0,hi=n-1;while(lo<hi){void*t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){void*t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){void*t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
-static sp_PtrArray*sp_PtrArray_dup(sp_PtrArray*a){sp_PtrArray*b=sp_PtrArray_new_scan(a->scan_elem);for(mrb_int i=0;i<a->len;i++)sp_PtrArray_push(b,a->data[i]);return b;}
-static sp_PtrArray*sp_PtrArray_slice(sp_PtrArray*a,mrb_int start,mrb_int len){if(start<0)start+=a->len;if(start<0)start=0;sp_PtrArray*b=sp_PtrArray_new_scan(a->scan_elem);if(start>=a->len||len<=0)return b;if(start+len>a->len)len=a->len-start;for(mrb_int i=0;i<len;i++)sp_PtrArray_push(b,a->data[start+i]);return b;}
-static void sp_PtrArray_shuffle_bang(sp_PtrArray*a){for(mrb_int i=a->len-1;i>0;i--){mrb_int j=(mrb_int)(rand()%(i+1));void*t=a->data[i];a->data[i]=a->data[j];a->data[j]=t;}}
-static sp_PtrArray*sp_PtrArray_shuffle(sp_PtrArray*a){sp_PtrArray*b=sp_PtrArray_dup(a);sp_PtrArray_shuffle_bang(b);return b;}
-static void *sp_PtrArray_sample(sp_PtrArray*a){if(a->len<=0)return NULL;return a->data[(mrb_int)(rand()%a->len)];}
+/* sp_PtrArray lives in sp_array.h (hot core inline) + lib/sp_array.c
+   (cold ops). */
 
 /* Small-array optimization: keep the first SP_STRARR_INLINE elements
  * inside the struct so empty/short StrArrays skip the data malloc.
