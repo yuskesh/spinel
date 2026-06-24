@@ -2421,32 +2421,70 @@ static void sp_PolyArray_reverse_bang(sp_PolyArray *a) { if (!a || a->frozen) { 
 static void sp_PolyArray_shuffle_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } for (mrb_int i = a->len - 1; i > 0; i--) { mrb_int j = (mrb_int)(rand() % (i + 1)); sp_RbVal t = a->data[i]; a->data[i] = a->data[j]; a->data[j] = t; } }
 static void sp_PolyArray_rotate_bang(sp_PolyArray*a,mrb_int n){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;sp_RbVal*d=a->data;mrb_int lo=0,hi=n-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){sp_RbVal t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
 static sp_PolyArray *sp_PolyArray_shuffle(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_shuffle_bang(b); return b; }
-static int _sp_poly_cmp_qsort(const void *pa, const void *pb) { mrb_bool ok = FALSE; mrb_int r = sp_poly_cmp(*(const sp_RbVal *)pa, *(const sp_RbVal *)pb, &ok); return ok ? (int)r : 0; }
+/* When sort hits an incomparable pair the result is discarded and we raise
+   ArgumentError, matching CRuby. The comparator cannot raise (it would longjmp
+   out of qsort), so it records the offending pair and sort_bang raises after. */
+static int _sp_sort_incomparable;
+static sp_RbVal _sp_sort_inc_a, _sp_sort_inc_b;
+static int _sp_poly_cmp_qsort(const void *pa, const void *pb) {
+  if (_sp_sort_incomparable) return 0;
+  mrb_bool ok = FALSE;
+  mrb_int r = sp_poly_cmp(*(const sp_RbVal *)pa, *(const sp_RbVal *)pb, &ok);
+  if (!ok) { _sp_sort_incomparable = 1; _sp_sort_inc_a = *(const sp_RbVal *)pa; _sp_sort_inc_b = *(const sp_RbVal *)pb; return 0; }
+  return (int)r;
+}
 /* max/min over boxed elements: numerics/strings via sp_poly_cmp, int arrays
    lexicographically. Returns nil for an empty array. */
 static sp_RbVal sp_PolyArray_max(sp_PolyArray *a) {
   if (!a || a->len == 0) return sp_box_nil();
+  SP_GC_ROOT(a);  /* sp_poly_cmp can allocate; keep a (and best, which is one of
+                     its elements) reachable across the comparisons. */
   sp_RbVal best = a->data[0];
   for (mrb_int i = 1; i < a->len; i++) {
     mrb_bool ok = FALSE;
     mrb_int r = sp_poly_cmp(a->data[i], best, &ok);
     if (!ok) r = sp_poly_cmp_int_arrays(a->data[i], best, &ok);
-    if (ok && r > 0) best = a->data[i];
+    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a->data[i]), sp_poly_class_name(best)));
+    if (r > 0) best = a->data[i];
   }
   return best;
 }
 static sp_RbVal sp_PolyArray_min(sp_PolyArray *a) {
   if (!a || a->len == 0) return sp_box_nil();
+  SP_GC_ROOT(a);  /* sp_poly_cmp can allocate; keep a (and best, which is one of
+                     its elements) reachable across the comparisons. */
   sp_RbVal best = a->data[0];
   for (mrb_int i = 1; i < a->len; i++) {
     mrb_bool ok = FALSE;
     mrb_int r = sp_poly_cmp(a->data[i], best, &ok);
     if (!ok) r = sp_poly_cmp_int_arrays(a->data[i], best, &ok);
-    if (ok && r < 0) best = a->data[i];
+    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a->data[i]), sp_poly_class_name(best)));
+    if (r < 0) best = a->data[i];
   }
   return best;
 }
-static void sp_PolyArray_sort_bang(sp_PolyArray *a) { if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; } if (a->len > 1) qsort(a->data, (size_t)a->len, sizeof(sp_RbVal), _sp_poly_cmp_qsort); }
+static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
+  if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; }
+  /* Root the array across the sort: the comparator runs sp_poly_cmp, which can
+     allocate (e.g. a bigint temp) and trigger GC; without this, a precise sweep
+     could collect a (and its elements) mid-qsort. This also roots the transient
+     copy made by sp_PolyArray_sort. */
+  SP_GC_ROOT(a);
+  if (a->len > 1) {
+    /* save/restore the flag and the offending pair so a comparison that
+       re-enters sort cannot clobber this call's state. */
+    int prev = _sp_sort_incomparable;
+    sp_RbVal prev_a = _sp_sort_inc_a, prev_b = _sp_sort_inc_b;
+    _sp_sort_incomparable = 0;
+    qsort(a->data, (size_t)a->len, sizeof(sp_RbVal), _sp_poly_cmp_qsort);
+    int inc = _sp_sort_incomparable;
+    sp_RbVal ia = _sp_sort_inc_a, ib = _sp_sort_inc_b;
+    _sp_sort_incomparable = prev;
+    _sp_sort_inc_a = prev_a;
+    _sp_sort_inc_b = prev_b;
+    if (inc) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(ia), sp_poly_class_name(ib)));
+  }
+}
 static sp_PolyArray *sp_PolyArray_sort(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_sort_bang(b); return b; }
 /* Compare two boxed arrays element-wise (Array#<=> semantics): first differing
    comparable element decides, else the shorter array sorts first. Used to order
