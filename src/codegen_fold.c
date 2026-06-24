@@ -1,5 +1,11 @@
 #include "codegen_internal.h"
 
+/* Defined lower in this file; declared here so the collecting emitters above
+   its definition (the hash block-walk binder, flat_map) can route a block's
+   next-aware value into a caller-declared lvalue. */
+static void emit_block_value_into(Compiler *c, int block, const char *dest,
+                                  int want_poly, int indent);
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -136,16 +142,26 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
   if (ns0 && p0_lv) p0_lv->type = p0_actual;
   if (ns1 && p1_lv) p1_lv->type = p1_actual;
   TyKind bret = (bb && bn > 0) ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+  /* A value-carrying next widens the block value past the tail, so the temp is
+     boxed when a next yields a different type than the tail expression. */
+  TyKind bnt = ie_block_break_next_ty(c, body);
+  if (bnt != TY_UNKNOWN) bret = (bret == TY_UNKNOWN) ? bnt : ty_unify(bret, bnt);
   if (bret == TY_UNKNOWN) bret = (ns1 ? p1_actual : p0_actual);
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-  int save = g_indent; g_indent++;
-  Buf vb; memset(&vb, 0, sizeof vb); if (bb && bn > 0) emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  /* Collect the block's value next-aware into a temp: a tail or interior
+     `next <v>` assigns the temp and falls through to the caller's collection
+     rather than dropping the entry as a bare continue would. */
+  int tvv = ++g_tmp; char tvvb[24]; snprintf(tvvb, sizeof tvvb, "_t%d", tvv);
+  int want_poly = (bret == TY_POLY);
+  emit_indent(g_pre, g_indent + 1);
+  if (want_poly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tvv);
+  else { emit_ctype(c, bret, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tvv, default_value(bret)); }
+  emit_block_value_into(c, block, tvvb, want_poly, g_indent + 1);
   if (ns0 && p0_lv) p0_lv->type = p0_decl;
   if (ns1 && p1_lv) p1_lv->type = p1_decl;
   if (sri1 >= 0) { if (srn1) g_nren = sri1; else strncpy(g_ren_to[sri1], sro1, sizeof g_ren_to[0]-1); }
   if (sri0 >= 0) { if (srn0) g_nren = sri0; else strncpy(g_ren_to[sri0], sro0, sizeof g_ren_to[0]-1); }
   if (out_bret) *out_bret = bret;
-  return vb.p;
+  Buf rv; memset(&rv, 0, sizeof rv); buf_puts(&rv, tvvb); return rv.p;
 }
 
 /* hash.map / collect { |k, v| ... } as an expression -> an array of the block
