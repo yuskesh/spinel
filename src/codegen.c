@@ -1763,7 +1763,8 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   }
   buf_puts(b, "    default: return 0;\n  }\n}\n");
 
-  buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_PolyArray *iv, int *ok) {\n");
+  buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal iv_boxed, int *ok) {\n");
+  buf_puts(b, "  sp_PolyArray *iv = (sp_PolyArray *)iv_boxed.v.p;\n");
   buf_puts(b, "  *ok = 1; (void)iv;\n");
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_marshalable(c, i)) continue;
@@ -1981,6 +1982,15 @@ void emit_regex_section(Buf *b) {
      nor its main() call is emitted, so the symbol/regex runtime it would pin
      stays unreferenced and links away. */
   if (!g_re_init_needed) return;
+  /* Forward-declare the symbol interner and the Marshal object dispatchers so
+     sp_re_init can take their addresses before their definitions (emitted into
+     the later `body` buffer). */
+  if (g_uses_marshal) {
+    buf_puts(b,
+      "static sp_sym sp_sym_intern(const char *s);\n"
+      "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p);\n"
+      "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal iv, int *ok);\n");
+  }
   buf_puts(b, "static void sp_re_init(void) {\n");
   if (g_uses_symbols)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
@@ -1992,6 +2002,21 @@ void emit_regex_section(Buf *b) {
      equal the constructor-installed default, so it isn't emitted either. */
   if (g_has_user_global_marks)
     buf_puts(b, "  sp_gc_mark_globals_hook = sp_mark_user_globals;\n");
+  /* Install the Marshal vtable: the construction wrappers (sp_runtime.h) plus
+     the generated symbol interner and per-class object dump/load. */
+  if (g_uses_marshal) {
+    buf_puts(b,
+      "  sp_marshal_v.sym_intern = sp_sym_intern;\n"
+      "  sp_marshal_v.arr_new = sp_marv_arr_new;\n"
+      "  sp_marshal_v.arr_push = sp_marv_arr_push;\n"
+      "  sp_marshal_v.hash_new = sp_marv_hash_new;\n"
+      "  sp_marshal_v.hash_set = sp_marv_hash_set;\n"
+      "  sp_marshal_v.box_complex = sp_marv_box_complex;\n"
+      "  sp_marshal_v.box_rational = sp_marv_box_rational;\n"
+      "  sp_marshal_v.obj_dump = sp_marshal_obj_dump;\n"
+      "  sp_marshal_v.obj_load = sp_marshal_obj_load;\n"
+      "  sp_marshal_v.raise = sp_marv_raise;\n");
+  }
   if (g_re_count > 0) {
     buf_puts(b, "  sp_re_set_error_handler(sp_re_startup_error_handler);\n");
     for (int i = 0; i < g_re_count; i++) {
@@ -2423,6 +2448,7 @@ static int program_needs_class_machinery(Compiler *c) {
 static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
+  g_uses_marshal = 0;
   g_uses_regex = 0; g_uses_argv = 0; g_uses_random = 0;
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
@@ -2438,6 +2464,10 @@ static void scan_prologue_features(Compiler *c) {
       else if (!strcmp(nm, "Random")) g_uses_random = 1;
       else if (!strcmp(nm, "ARGV") || !strcmp(nm, "ARGF")) g_uses_argv = 1;
       else if (!strcmp(nm, "Symbol")) g_uses_symbols = 1;
+      /* Marshal.load reconstructs symbols at runtime, so it needs the symbol
+         table (sp_sym_intern / sp_sym_to_s) emitted even if the program uses no
+         symbol literals; it also drives the sp_marshal_v vtable install. */
+      else if (!strcmp(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; }
     }
     else if (!strcmp(ty, "GlobalVariableReadNode") || !strcmp(ty, "GlobalVariableWriteNode")) {
       const char *nm = nt_str(nt, i, "name");
@@ -3095,7 +3125,7 @@ char *codegen_program(const NodeTable *nt) {
     free(mk.p);
   }
   /* sp_re_init is worth emitting only if it would set at least one hook. */
-  g_re_init_needed = g_uses_symbols || g_uses_regex || g_needs_class_machinery ||
+  g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
                      g_has_user_global_marks;
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any

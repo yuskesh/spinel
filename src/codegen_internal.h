@@ -198,6 +198,7 @@ extern int g_has_user_global_marks;
    conditions that give sp_re_init a body (symbols/regex/class-machinery/user
    global marks); when 0, neither sp_re_init nor its call is emitted. */
 extern int g_uses_symbols;
+extern int g_uses_marshal;
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_random;

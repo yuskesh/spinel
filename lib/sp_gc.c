@@ -14,6 +14,7 @@
 #endif
 #include <unistd.h>
 #include "sp_gc.h"
+#include "sp_marshal.h"   /* sp_marshal_vt -- the instance lives here (always linked) */
 
 /* ---- Globals shared with the generated TU (declared extern in sp_gc.h) ---- */
 void **sp_gc_roots[SP_GC_STACK_MAX];
@@ -30,6 +31,7 @@ int (*sp_json_kind_fn)(sp_RbVal) = NULL;
 mrb_int (*sp_json_len_fn)(sp_RbVal) = NULL;
 sp_RbVal (*sp_json_aref_fn)(sp_RbVal, mrb_int) = NULL;
 void (*sp_json_hpair_fn)(sp_RbVal, mrb_int, sp_RbVal *, sp_RbVal *) = NULL;
+sp_marshal_vt sp_marshal_v = {0};   /* filled by the generated TU (sp_re_init) */
 
 /* ---- Collector-private globals ---- */
 static int sp_gc_verify = 0;

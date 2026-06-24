@@ -250,6 +250,7 @@ int g_needs_at_exit = 0;
 int g_needs_class_machinery = 0;
 int g_has_user_global_marks = 0;
 int g_uses_symbols = 0;
+int g_uses_marshal = 0;
 int g_uses_regex = 0;
 int g_uses_argv = 0;
 int g_uses_random = 0;
