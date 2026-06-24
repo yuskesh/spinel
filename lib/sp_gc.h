@@ -111,6 +111,9 @@ extern int (*sp_json_kind_fn)(sp_RbVal);
 extern mrb_int (*sp_json_len_fn)(sp_RbVal);
 extern sp_RbVal (*sp_json_aref_fn)(sp_RbVal, mrb_int);
 extern void (*sp_json_hpair_fn)(sp_RbVal, mrb_int, sp_RbVal *, sp_RbVal *);
+/* Recursive #inspect of a boxed value, for lib/sp_inspect.c's container walker
+   (set to sp_poly_inspect; same idiom as the JSON hooks). */
+extern const char *(*sp_poly_inspect_fn)(sp_RbVal);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */

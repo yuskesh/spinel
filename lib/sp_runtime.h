@@ -14,6 +14,7 @@
 #include "sp_format.h"  /* cold value-type display helpers (lib/sp_format.c) */
 #include "sp_stringio.h" /* StringIO (lib/sp_stringio.c) */
 #include "sp_string.h"  /* sp_String builder (hot core inline; cold mutators in lib/sp_string.c) */
+#include "sp_inspect.h" /* generic container #inspect (lib/sp_inspect.c) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1963,8 +1964,8 @@ static sp_StrArray *sp_file_readlines_chomp(const char *path) {
    emits a 0 placeholder that flows into `.inspect`, and dereferencing
    a->len would segfault. Rendering "[]" stops the crash and degrades to
    the same shape as the empty-array case. */
-static const char*sp_IntArray_inspect(sp_IntArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(a->data[a->start+i]));}sp_String_append(s,"]");return s->data;}
-static const char*sp_FloatArray_inspect(sp_FloatArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_float_inspect(a->data[i]));}sp_String_append(s,"]");return s->data;}
+static const char*sp_IntArray_inspect(sp_IntArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_INT_ARRAY)):"[]";}
+static const char*sp_FloatArray_inspect(sp_FloatArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_FLT_ARRAY)):"[]";}
 /* Array#join for float arrays -- each element via the Ruby-faithful
    sp_float_to_s ("1.0", not "1"). Mirrors sp_IntArray_join exactly: build in a
    malloc buffer, return an sp_str_alloc'd copy. (Not sp_String#data, whose owner
@@ -1972,11 +1973,11 @@ static const char*sp_FloatArray_inspect(sp_FloatArray*a){if(!a)return "[]";SP_GC
    immediately, before the next call can reuse its buffer. */
 static const char*sp_FloatArray_join(sp_FloatArray*a,const char*sep){size_t sl=strlen(sep),cap=256;char*buf=(char*)malloc(cap);size_t len=0;if(a){for(mrb_int i=0;i<a->len;i++){if(i>0){if(len+sl>=cap){cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,sep,sl);len+=sl;}const char*es=sp_float_to_s(a->data[i]);size_t el=strlen(es);if(len+el>=cap){while(len+el>=cap)cap*=2;buf=(char*)realloc(buf,cap);}memcpy(buf+len,es,el);len+=el;}}buf[len]=0;char*r=sp_str_alloc(len);memcpy(r,buf,len);free(buf);return r;}
 static mrb_bool sp_FloatArray_eq(sp_FloatArray*a,sp_FloatArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(a->data[i]!=b->data[i])return FALSE;return TRUE;}
-static const char*sp_StrArray_inspect(sp_StrArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(a->data[i]));}sp_String_append(s,"]");return s->data;}
+static const char*sp_StrArray_inspect(sp_StrArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_STR_ARRAY)):"[]";}
 static mrb_bool sp_StrArray_eq(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++)if(!sp_str_eq(a->data[i],b->data[i]))return FALSE;return TRUE;}
 /* Symbol arrays share the IntArray representation (sp_sym = mrb_int),
    but each element is rendered as ":name" via sp_sym_to_s. */
-static inline const char*sp_SymArray_inspect(sp_IntArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,":");sp_String_append(s,sp_sym_to_s((sp_sym)a->data[a->start+i]));}sp_String_append(s,"]");return s->data;}
+static inline const char*sp_SymArray_inspect(sp_IntArray*a){return a?sp_inspect_container(sp_box_obj(a,SP_BUILTIN_SYM_ARRAY)):"[]";}
 /* PtrArray elements are object pointers without a per-element class
    tag, so we render them as `#<Object>` rather than recursing. */
 static const char*sp_PtrArray_inspect(sp_PtrArray*a){if(!a)return "[]";SP_GC_ROOT(a);sp_String*s=sp_String_new("[");SP_GC_ROOT(s);for(mrb_int i=0;i<a->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,"#<Object>");}sp_String_append(s,"]");return s->data;}
@@ -1985,11 +1986,11 @@ static const char*sp_PtrArray_inspect(sp_PtrArray*a){if(!a)return "[]";SP_GC_ROO
    `{42 => "v", ...}` (int keys), or `{:k => v, ...}` (sym keys but
    non-int value, since the bare `k: v` shorthand only applies
    when values are inspectable as one-liners — match CRuby). */
-static const char*sp_StrIntHash_inspect(sp_StrIntHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_int_to_s(sp_StrIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_StrIntHash_inspect(sp_StrIntHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_STR_INT_HASH)):"{}";}
 /* Hash#to_proc lookup fn — cap is the hash, args[0] the string key. */
 static mrb_int sp_StrIntHash_proc_fn(void *cap, mrb_int argc, mrb_int *args) { if (argc < 1) return 0; return sp_StrIntHash_get((sp_StrIntHash *)cap, (const char *)(uintptr_t)args[0]); }
-static const char*sp_StrStrHash_inspect(sp_StrStrHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_str_inspect(sp_StrStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
-static const char*sp_IntStrHash_inspect(sp_IntStrHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_str_inspect(sp_IntStrHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_StrStrHash_inspect(sp_StrStrHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_STR_STR_HASH)):"{}";}
+static const char*sp_IntStrHash_inspect(sp_IntStrHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_INT_STR_HASH)):"{}";}
 static const char*sp_IntIntHash_inspect(sp_IntIntHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_int_to_s(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_int_to_s(sp_IntIntHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
 /* Nested-array inspect: when codegen knows the ptr_array's element
    type is one of the four built-in T_array shapes, recurse into the
@@ -3907,15 +3908,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
    miss, etc.) round-trip cleanly through `.inspect`. */
 static const char *sp_PolyArray_inspect(sp_PolyArray *a) {
   if (!a) { char *r = sp_str_alloc(3); r[0] = 'n'; r[1] = 'i'; r[2] = 'l'; r[3] = 0; sp_str_set_len(r, 3); return r; }
-  SP_GC_ROOT(a);
-  sp_String *s = sp_String_new("[");
-  SP_GC_ROOT(s);
-  for (mrb_int i = 0; i < a->len; i++) {
-    if (i > 0) sp_String_append(s, ", ");
-    sp_String_append(s, sp_poly_inspect(a->data[i]));
-  }
-  sp_String_append(s, "]");
-  return s->data;
+  return sp_inspect_container(sp_box_poly_array(a));
 }
 /* Array#join for a mixed-element (poly) array: to_s each element via
    sp_poly_to_s and concatenate with sep. Mirrors sp_StrArray_join for
@@ -4026,7 +4019,7 @@ static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){
 static void sp_StrPolyHash_clear(sp_StrPolyHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;}
 static mrb_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Issue #851: inspect for str_poly_hash. */
-static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(h){for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_str_inspect(h->order[i]));sp_String_append(s," => ");sp_String_append(s,sp_poly_inspect(sp_StrPolyHash_get(h,h->order[i])));}}sp_String_append(s,"}");return s->data;}
+static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_STR_POLY_HASH)):"{}";}
 /* Convert a narrower StrStrHash to a StrPolyHash. Needed when the
    analyzer widens an LV slot to sp_StrPolyHash* (e.g. later poly-value
    writes) but the initial RHS is a sibling narrower hash variant —
@@ -4064,7 +4057,7 @@ static void sp_SymPolyHash_clear(sp_SymPolyHash*h){if(!h)return;for(mrb_int i=0;
 static mrb_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Hash#inspect for sym_poly_hash. CRuby 4.0 renders symbol keys
    in shorthand: `{a: 1, b: "x"}` rather than `{:a => 1, :b => "x"}`. */
-static const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h){if(!h){char*r=sp_str_alloc_raw(3);r[0]='{';r[1]='}';r[2]=0;sp_str_set_len(r,2);return r;}SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_String_append(s,sp_sym_to_s(h->order[i]));sp_String_append(s,": ");sp_String_append(s,sp_poly_inspect(sp_SymPolyHash_get(h,h->order[i])));}sp_String_append(s,"}");return s->data;}
+static const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_SYM_POLY_HASH)):"{}";}
 
 /* poly_val[sym_key]: runtime dispatch for poly receiver `[]` with symbol arg. */
 /* sp_poly_get_sym moved below PolyPolyHash so it can dispatch to it. */
@@ -4493,7 +4486,7 @@ static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h){sp_PolyPolyHash*r=
    k,v. Output mirrors Ruby's `{k => v, ...}` for non-symbol keys and
    `{k: v, ...}` shorthand for symbol keys. */
 static const char *sp_poly_inspect(sp_RbVal v);
-static const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_String*s=sp_String_new("{");SP_GC_ROOT(s);if(!h){sp_String_append(s,"}");return s->data;}for(mrb_int i=0;i<h->len;i++){if(i>0)sp_String_append(s,", ");sp_RbVal k=h->keys[h->order[i]];if(k.tag==SP_TAG_SYM){sp_String_append(s,sp_sym_to_s((sp_sym)k.v.i));sp_String_append(s,": ");}else{sp_String_append(s,sp_poly_inspect(k));sp_String_append(s," => ");}sp_String_append(s,sp_poly_inspect(h->vals[h->order[i]]));}sp_String_append(s,"}");return s->data;}
+static const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_POLY_POLY_HASH)):"{}";}
 /* Issue #738: Hash#invert -- swap keys and values. Returns a
    poly_poly_hash so any (key, value) pair shape is uniformly
    representable. str_str_hash_invert lives above (line ~1132)
@@ -4538,6 +4531,7 @@ __attribute__((constructor)) static void sp_json_install_hooks(void) {
   sp_json_len_fn = sp_poly_length;
   sp_json_aref_fn = sp_poly_arr_get;
   sp_json_hpair_fn = sp_poly_hash_pair;
+  sp_poly_inspect_fn = sp_poly_inspect;
 }
 
 #include <setjmp.h>

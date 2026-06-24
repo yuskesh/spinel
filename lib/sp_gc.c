@@ -31,6 +31,7 @@ int (*sp_json_kind_fn)(sp_RbVal) = NULL;
 mrb_int (*sp_json_len_fn)(sp_RbVal) = NULL;
 sp_RbVal (*sp_json_aref_fn)(sp_RbVal, mrb_int) = NULL;
 void (*sp_json_hpair_fn)(sp_RbVal, mrb_int, sp_RbVal *, sp_RbVal *) = NULL;
+const char *(*sp_poly_inspect_fn)(sp_RbVal) = NULL;
 sp_marshal_vt sp_marshal_v = {0};   /* filled by the generated TU (sp_re_init) */
 
 /* ---- Collector-private globals ---- */
