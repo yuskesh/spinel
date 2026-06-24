@@ -1069,6 +1069,40 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   const char *cn = nt_str(nt, create, "name");
   int is_lambda = is_lambda_node || (cn && !strcmp(cn, "lambda"));
 
+  /* The arity reported by Proc#arity (CRuby's "at least this many" encoding).
+     `arity` above counts the leading required positionals; a post param (after a
+     rest) is also required, and a required keyword adds one mandatory slot (the
+     keyword hash), keeping the count positive. The arity is negative when the
+     signature accepts a variable count: a rest positional, an optional keyword /
+     keyword-rest *without* a required keyword (a required keyword makes the hash
+     mandatory), or an optional positional -- but only for a lambda. A non-lambda
+     proc is lenient about optional positionals, so they keep the positive count
+     (`proc { |a, b=1| }.arity == 1`, while `->(a, b=1){}.arity == -2`). */
+  int meta_arity = arity;
+  {
+    int pn = proc_params_node(c, create);
+    if (pn >= 0) {
+      int nopt = 0, npost = 0, nkw = 0;
+      nt_arr(nt, pn, "optionals", &nopt);
+      nt_arr(nt, pn, "posts", &npost);
+      const int *kw = nt_arr(nt, pn, "keywords", &nkw);
+      int rest = nt_ref(nt, pn, "rest");
+      int kwrest = nt_ref(nt, pn, "keyword_rest");
+      int has_req_kw = 0, has_opt_kw = 0;
+      for (int i = 0; i < nkw; i++) {
+        const char *kt = nt_type(nt, kw[i]);
+        if (kt && !strcmp(kt, "RequiredKeywordParameterNode")) has_req_kw = 1;
+        else if (kt && !strcmp(kt, "OptionalKeywordParameterNode")) has_opt_kw = 1;
+      }
+      const char *kwt = kwrest >= 0 ? nt_type(nt, kwrest) : NULL;
+      int has_kwrest = kwt && !strcmp(kwt, "KeywordRestParameterNode");
+      int mandatory = arity + npost + (has_req_kw ? 1 : 0);
+      int neg = rest >= 0 || (nopt > 0 && is_lambda) ||
+                ((has_opt_kw || has_kwrest) && !has_req_kw);
+      meta_arity = neg ? -(mandatory + 1) : mandatory;
+    }
+  }
+
   /* An explicit `return <expr>` tail is a ReturnNode; its value node is the
      argument. Treating it as the effective tail keeps the body's return ABI
      (pointer launder / poly slot) consistent with an implicit tail expression,
@@ -1327,7 +1361,7 @@ else if (orecv >= 0 && onm) {
 
   if (ncap == 0 && !cap_self) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",
-               pid, arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
+               pid, meta_arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
   }
   else {
     /* Allocate + populate the cap struct in the enclosing statement's prelude
@@ -1345,7 +1379,7 @@ else if (orecv >= 0 && onm) {
       if (cap_self) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->__self = (void *)%s;\n", pid, sv_self ? sv_self : "self"); }
     }
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
-               pid, pid, pid, arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
+               pid, pid, pid, meta_arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
   }
 
   free(params.v); free(used.v); free(locals.v); free(caps.v);
