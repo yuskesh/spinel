@@ -1954,7 +1954,8 @@ else {
         buf_puts(b, "; })");
         return 1;
       }
-      if ((!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) && argc == 0) {
+      if ((!strcmp(name, "length") || !strcmp(name, "size") ||
+           (!strcmp(name, "count") && nt_ref(nt, id, "block") < 0)) && argc == 0) {
         buf_printf(b, "sp_%sHash_length(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }

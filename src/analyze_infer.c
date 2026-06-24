@@ -2193,6 +2193,10 @@ else {
       return TY_POLY_ARRAY;   /* the winning [k, v] pair, or nil */
     if (nt_ref(nt, id, "block") >= 0 && !strcmp(name, "sort_by"))
       return TY_POLY_ARRAY;   /* [k, v] pairs ordered by the block value */
+    if (nt_ref(nt, id, "block") >= 0 && (!strcmp(name, "all?") || !strcmp(name, "any?")))
+      return TY_BOOL;
+    if (nt_ref(nt, id, "block") >= 0 && !strcmp(name, "sum"))
+      return TY_POLY;   /* boxed accumulation via sp_poly_add */
     {
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
         int body = nt_ref(nt, block, "body");
