@@ -676,7 +676,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_proc_call(");
       emit_yblk_ref(b);
       buf_puts(b, ", ");
-      emit_proc_call_args(c, yargc, yargv, b);
+      emit_proc_call_args(c, yargc, yargv, b, 0);
       return;
     }
     if (g_block_id < 0) {  /* no block: yield is nil */

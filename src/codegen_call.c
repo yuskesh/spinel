@@ -3724,39 +3724,66 @@ int diagnose_eval_call(Compiler *c, int id) {
 
 /* Emit the `<argc>, (mrb_int[16]){...}` argument tail of an sp_proc_call.
    A TY_POLY argument does not fit the mrb_int slot, so it is published to the
-   _sp_proc_poly_args side-channel (with a 0 placeholder in the slot) and a
-   heap-pointer argument is laundered through (mrb_int)(uintptr_t). Shared by
-   the <proc>.call path and the lowered-yield emission. */
-void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b) {
+   _sp_proc_poly_args side-channel and a heap-pointer argument is laundered
+   through (mrb_int)(uintptr_t). Shared by the <proc>.call path and the
+   lowered-yield emission.
+
+   force_poly is set for a first-class proc value's `.call`: such a proc is
+   type-erased at the call site, so its parameter types are unknown here. A
+   poly parameter in the callee reads its argument back from the poly
+   side-channel, so every argument -- including a concrete-typed one -- must be
+   boxed and published, not just the statically-poly ones. (A `yield` knows its
+   block's parameter types, so it passes force_poly=0 and keeps the lean ABI.) */
+void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int force_poly) {
   int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at mrb_int[16] */
-  int any_poly = 0;
-  for (int k = 0; k < nargs; k++) if (comp_ntype(c, argv[k]) == TY_POLY) { any_poly = 1; break; }
+  int any_poly = force_poly;
+  for (int k = 0; k < nargs && !any_poly; k++) if (comp_ntype(c, argv[k]) == TY_POLY) any_poly = 1;
   buf_printf(b, "%d, ", argc);
   if (any_poly) {
     if (!g_needs_proc_poly_argslot) {
       g_needs_proc_poly_argslot = 1;
       buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_args[16];\n");
     }
+    /* Each argument is evaluated once into a natural-typed temp so it can be
+       published both unboxed (the mrb_int[] slot, for a concrete parameter)
+       and boxed (the side-channel, for a poly parameter). A nil/unknown arg
+       has no storable C type; it rides an mrb_int temp and boxes to nil. */
     int atmp[16];
     for (int k = 0; k < nargs; k++) {
       TyKind at = comp_ntype(c, argv[k]);
+      int storable = ty_is_object(at) || c_type_name(at) != NULL;
       atmp[k] = ++g_tmp;
+      /* render the value into a side buffer first: emit_expr drains the arg's
+         own prelude (e.g. a nested proc call) into g_pre, which must land
+         before -- not inside -- this temp's declaration line. */
       Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, argv[k], &vb);
       emit_indent(g_pre, g_indent);
-      if (at == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
-      else if (proc_slot_is_ptr(at)) buf_printf(g_pre, "mrb_int _t%d = (mrb_int)(uintptr_t)(%s);\n", atmp[k], vb.p ? vb.p : "");
-      else buf_printf(g_pre, "mrb_int _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
+      if (storable) emit_ctype(c, at, g_pre); else buf_puts(g_pre, "mrb_int");
+      buf_printf(g_pre, " _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
+      /* Root a GC-managed temp: a later argument's evaluation, or sp_proc_call
+         itself, can allocate and collect before the callee reads the value back
+         from the (un-scanned) side-channel. Use the type-correct macro. */
+      if (at == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
+      else if (proc_slot_is_ptr(at)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
       free(vb.p);
     }
-    for (int k = 0; k < nargs; k++) if (comp_ntype(c, argv[k]) == TY_POLY) {
-      emit_indent(g_pre, g_indent); buf_printf(g_pre, "_sp_proc_poly_args[%d] = _t%d;\n", k, atmp[k]);
+    for (int k = 0; k < nargs; k++) {
+      TyKind at = comp_ntype(c, argv[k]);
+      int storable = ty_is_object(at) || c_type_name(at) != NULL;
+      char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "_sp_proc_poly_args[%d] = ", k);
+      if (storable) emit_boxed_text(c, at, tn, g_pre); else buf_puts(g_pre, "sp_box_nil()");
+      buf_puts(g_pre, ";\n");
     }
     buf_puts(b, "(mrb_int[16]){");
     for (int k = 0; k < nargs; k++) {
+      TyKind at = comp_ntype(c, argv[k]);
       if (k) buf_puts(b, ", ");
-      if (comp_ntype(c, argv[k]) == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", atmp[k]);
+      if (at == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", atmp[k]);
+      else if (proc_slot_is_ptr(at)) buf_printf(b, "(mrb_int)(uintptr_t)_t%d", atmp[k]);
       else buf_printf(b, "_t%d", atmp[k]);
     }
+    if (nargs == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
     buf_puts(b, "})");
   }
   else {
@@ -4575,7 +4602,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_proc_call(");
     emit_expr(c, recv, b);
     buf_puts(b, ", ");
-    emit_proc_call_args(c, argc, argv, b);
+    emit_proc_call_args(c, argc, argv, b, 1);
     if (unbox_ptr) buf_puts(b, ")");
     if (unbox_poly) buf_puts(b, ", _sp_proc_poly_ret)");
     if (unbox_float) buf_puts(b, ", sp_poly_to_f(_sp_proc_poly_ret))");
