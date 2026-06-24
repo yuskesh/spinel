@@ -56,10 +56,8 @@ jobs:
       - name: Fetch libprism sources
         run: make deps
 
-      # Builds the C compiler (parse + regexp + spinelc). `-O3 -flto`
-      # adds link time on every job without buying CI anything, so LTO=0.
       - name: Build (parse + regexp + spinelc)
-        run: make -j$(getconf _NPROCESSORS_ONLN) LTO=0 all
+        run: make -j$(getconf _NPROCESSORS_ONLN) all
 
       - name: Run tests
         # OPT=-O1, counter-intuitively, compiles each test ~3x FASTER than

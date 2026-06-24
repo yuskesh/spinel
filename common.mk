@@ -40,16 +40,11 @@ endif
 OPT     ?= -O2
 CFLAGS   = $(OPT) -Wno-all -Wno-unknown-warning-option -Wno-alloc-size-larger-than -Wno-format-truncation
 
-# Bootstrap-only flags: the legacy compiler runs on the developer's
-# machine only, so -O3 -flto buys ~5-10% wall-clock without constraining
-# users (whose generated C is built with plain CFLAGS). Override with
-# LTO=0 on toolchains without LTO, or for a faster debug relink.
-LTO     ?= 1
-ifeq ($(LTO),1)
-  BOOTSTRAP_CFLAGS = -O3 -flto=auto -Wno-all
-else
-  BOOTSTRAP_CFLAGS = $(CFLAGS)
-endif
+# Bootstrap-only flags: the legacy compiler is a rarely-built regression
+# oracle (only `make legacy` / `make bootstrap`), so it gets plain -O3.
+# The product build -- bin/spinel, libspinel_rt.a, and the generated
+# programs -- uses CFLAGS and never used LTO, so there is no LTO toggle.
+BOOTSTRAP_CFLAGS = -O3 -Wno-all
 
 # Per-function sections let the linker strip unused bigint/regexp code.
 SEC_FLAGS = -ffunction-sections -fdata-sections

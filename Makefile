@@ -15,7 +15,7 @@
 # / `make bootstrap` delegators or by `cd legacy && make`; the C compiler is
 # master and a plain `make` / `make gate` never compiles it.
 
-# Shared toolchain configuration (CC wrapping, CFLAGS, LTO, stamps, …).
+# Shared toolchain configuration (CC wrapping, CFLAGS, stamps, …).
 include common.mk
 
 # Prism library: prefer vendor/prism (fetched via `make deps`), then fall
@@ -167,7 +167,7 @@ legacy:
 	+@$(MAKE) -C legacy --no-print-directory legacy
 
 bootstrap:
-	+@$(MAKE) -C legacy --no-print-directory LTO=$(LTO) bootstrap
+	+@$(MAKE) -C legacy --no-print-directory bootstrap
 
 codegen: legacy
 
@@ -584,7 +584,7 @@ optcarrot: $(SPINEL) $(SP_RT_LIB)
 # the 800+ unreferenced static fns before codegen). Skips bench/optcarrot —
 # run `make gate` before pushing for those.
 check:
-	+@$(MAKE) --no-print-directory LTO=0 all
+	+@$(MAKE) --no-print-directory all
 	+@$(MAKE) --no-print-directory test OPT=-O1
 
 # Full pre-push gate: test || bench || optcarrot in parallel. The C compiler is
@@ -592,7 +592,7 @@ check:
 # are NOT part of the gate (run `make bootstrap` / `cd legacy && make` explicitly
 # for those).
 gate:
-	+@$(MAKE) --no-print-directory LTO=0 all
+	+@$(MAKE) --no-print-directory all
 	+@$(MAKE) --no-print-directory gate-legs
 	@echo "gate: ALL GREEN"
 
