@@ -10768,6 +10768,21 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     }
     buf_puts(b, as_expr ? "; " : ";\n");
   }
+  /* A trailing rest parameter (`|*a|`) collects the yielded arguments past the
+     requireds into a fresh array. */
+  const char *brest = block_rest_name(c, blk);
+  if (brest) {
+    const char *brestr = rename_local(brest);
+    int nreq = 0; while (block_param_name(c, blk, nreq)) nreq++;
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "lv_%s = sp_PolyArray_new();%s", brestr, as_expr ? " " : "\n");
+    for (int j = nreq; j < yc; j++) {
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "sp_PolyArray_push(lv_%s, ", brestr);
+      emit_boxed(c, yargs[j], b);
+      buf_puts(b, as_expr ? "); " : ");\n");
+    }
+  }
   /* Keep the rename table active for the block body: the block's variable
      references are in the same lexical scope as the surrounding inlined
      method, so renames like x → _y3_x must stay visible. Nested inlines

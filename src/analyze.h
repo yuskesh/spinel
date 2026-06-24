@@ -33,6 +33,8 @@ TyKind ie_block_break_next_ty(Compiler *c, int node);
 
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
+/* Name of a block's trailing rest parameter (`|*a|`), or NULL. */
+const char *block_rest_name(Compiler *c, int block);
 
 /* Element type an `each_with_object([])` accumulator is filled with, inferred
    from how the memo param is pushed to (following a forwarded callable's body).
