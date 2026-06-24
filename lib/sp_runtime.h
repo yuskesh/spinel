@@ -593,41 +593,7 @@ static const char *sp_time_inspect_v(sp_Time t) {
   sp_time_inspect_to(t, buf, sizeof(buf));
   return sp_str_dup_external(buf);
 }
-static inline int sp_time_cmp(sp_Time a, sp_Time b) {
-  if (a.tv_sec < b.tv_sec) return -1;
-  if (a.tv_sec > b.tv_sec) return 1;
-  if (a.tv_nsec < b.tv_nsec) return -1;
-  if (a.tv_nsec > b.tv_nsec) return 1;
-  return 0;
-}
-/* Time + seconds (int or float), Time - seconds */
-static inline sp_Time sp_time_add_f(sp_Time t, double secs) {
-  long long ns = (long long)(secs * 1000000000.0);
-  long long total_ns = (long long)t.tv_sec * 1000000000LL + t.tv_nsec + ns;
-  sp_Time r;
-  r.tv_sec = (time_t)(total_ns / 1000000000LL);
-  r.tv_nsec = (int32_t)(total_ns % 1000000000LL);
-  if (r.tv_nsec < 0) { r.tv_sec--; r.tv_nsec += 1000000000; }
-  r.is_utc = t.is_utc;
-  return r;
-}
-static inline sp_Time sp_time_add_i(sp_Time t, mrb_int secs) {
-  sp_Time r;
-  r.tv_sec = t.tv_sec + (time_t)secs;
-  r.tv_nsec = t.tv_nsec;
-  r.is_utc = t.is_utc;
-  return r;
-}
-static inline sp_Time sp_time_sub_i(sp_Time t, mrb_int secs) {
-  sp_Time r;
-  r.tv_sec = t.tv_sec - (time_t)secs;
-  r.tv_nsec = t.tv_nsec;
-  r.is_utc = t.is_utc;
-  return r;
-}
-static inline double sp_time_sub_t(sp_Time a, sp_Time b) {
-  return (double)(a.tv_sec - b.tv_sec) + (double)(a.tv_nsec - b.tv_nsec) / 1e9;
-}
+/* sp_time_cmp / add_f / add_i / sub_i / sub_t moved to lib/sp_time.c (cold). */
 
 /* SP_GC_STACK_MAX, sp_gc_roots, sp_gc_nroots come from sp_gc.h / lib/sp_gc.c. */
 /* Cooperative-fiber GC root storage (issue #636).

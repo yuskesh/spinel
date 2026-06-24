@@ -51,6 +51,13 @@ int64_t sp_time_utc_offset(sp_Time t);
 /* Time + Numeric / Time - Numeric. secs may be fractional. */
 sp_Time sp_time_add(sp_Time t, double secs);
 
+/* Comparison + integer/float shifts + Time-Time difference (cold value ops). */
+int sp_time_cmp(sp_Time a, sp_Time b);
+sp_Time sp_time_add_f(sp_Time t, double secs);
+sp_Time sp_time_add_i(sp_Time t, int64_t secs);
+sp_Time sp_time_sub_i(sp_Time t, int64_t secs);
+double sp_time_sub_t(sp_Time a, sp_Time b);
+
 /* Format helpers: write into `buf` (cap bytes incl NUL), return the
    number of bytes written excluding NUL. Return 0 on failure. */
 size_t sp_time_strftime_to(sp_Time t, const char *fmt, char *buf, size_t cap);
