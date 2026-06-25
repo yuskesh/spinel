@@ -1064,10 +1064,15 @@ compile_alt(re_compiler *c)
     }
   }
 
-  /* Now set up SPLIT chain: each SPLIT tries next instruction or jumps to alt */
+  /* Now set up the SPLIT chain. Each SPLIT falls through to the next, and the
+     chain's final fall-through reaches the first alternative, so the engines
+     (which rank a SPLIT's fall-through above its jump) explore alternative 0
+     first. The jump targets are then unwound in reverse, so SPLIT i must jump
+     to alternative (split_count - i) to keep the remaining alternatives in
+     source order -- i.e. leftmost-first across three or more branches. */
   for (uint32_t i = 0; i < split_count; i++) {
     uint32_t pos = alt_starts[0] - split_count + i;
-    uint32_t target = alt_starts[i + 1];
+    uint32_t target = alt_starts[split_count - i];
     if (target > 0xFFFF) {
       free(alt_starts);
       compile_error(c, "regex too large (alternation offset overflow)");

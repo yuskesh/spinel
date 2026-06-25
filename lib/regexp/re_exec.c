@@ -83,6 +83,8 @@ typedef struct {
   const char *str_end;
   mrb_bool matched;
   mrb_bool match_only;    /* true: skip capture tracking (match? path) */
+  mrb_bool cut;           /* a higher-priority thread matched this step:
+                             stop adding/processing lower-priority threads */
   int *result_caps;       /* best match (ncap ints) */
 } pike_state;
 
@@ -117,6 +119,7 @@ add_thread(pike_state *s, re_threadlist *list,
            uint32_t pc, int cap_slot, const char *sp)
 {
   for (;;) {
+    if (s->cut) return;
     if (pc >= s->pat->code_len) return;
     if (s->visited[pc] == s->gen) return;
     s->visited[pc] = s->gen;
@@ -128,19 +131,30 @@ add_thread(pike_state *s, re_threadlist *list,
       continue;
 
     case RE_SPLIT:
+      /* Greedy fork: the fall-through (pc+1) outranks the jump target, the
+         same priority order the backtracking engine uses. Explore the
+         higher-priority branch first so it claims shared pcs (visited[]) and
+         reaches a match before the lower one. Snapshot the captures before
+         pc+1's closure can mutate the shared slot; the jump branch then runs
+         on that snapshot. */
       {
         int cp = s->match_only ? 0 : pool_copy(s, cap_slot);
-        add_thread(s, list, inst.offset, cp, sp);
+        add_thread(s, list, pc + 1, cap_slot, sp);
+        if (s->cut) return;
+        pc = inst.offset;
+        cap_slot = cp;
       }
-      pc++;
       continue;
 
     case RE_SPLITNG:
+      /* Non-greedy fork: the jump target outranks the fall-through. */
       {
         int cp = s->match_only ? 0 : pool_copy(s, cap_slot);
-        add_thread(s, list, pc + 1, cp, sp);
+        add_thread(s, list, inst.offset, cap_slot, sp);
+        if (s->cut) return;
+        pc = pc + 1;
+        cap_slot = cp;
       }
-      pc = inst.offset;
       continue;
 
     case RE_SAVE:
@@ -203,24 +217,15 @@ add_thread(pike_state *s, re_threadlist *list,
       return;
 
     case RE_MATCH:
-      /* Issue #909: pick the best match per Ruby semantics — earliest
-         start position wins; within the same start, longest length
-         (greedy) wins. The previous "last MATCH overwrites" rule got
-         greedy quantifiers right (`\w+` correctly extended the
-         match) but let a later-starting thread (like `\w\w`'s second
-         thread starting one byte later) clobber an earlier-starting
-         match's captures. */
-      if (s->result_caps) {
-        int *cap = CAP(s, cap_slot);
-        int new_start = cap[0], new_end = cap[1];
-        int cur_start = s->result_caps[0], cur_end = s->result_caps[1];
-        if (s->matched) {
-          if (new_start > cur_start) return;
-          if (new_start == cur_start && new_end <= cur_end) return;
-        }
-        memcpy(s->result_caps, cap, sizeof(int) * s->ncap);
-      }
       s->matched = TRUE;
+      if (s->result_caps) {
+        memcpy(s->result_caps, CAP(s, cap_slot), sizeof(int) * s->ncap);
+      }
+      /* Leftmost-first: this is the highest-priority thread to reach a match
+         this step (closures run in priority order), so cut every lower one.
+         A surviving higher-priority thread can still match later and override
+         this in a subsequent step, which is the correct greedy/longest case. */
+      s->cut = TRUE;
       return;
 
     default:
@@ -272,6 +277,7 @@ pike_vm(const mrb_regexp_pattern *pat,
   s.str_end = str_end;
   s.matched = FALSE;
   s.match_only = match_only;
+  s.cut = FALSE;
   s.gen = 1;
   if (match_only) {
     s.pool_capa = 1;
@@ -327,6 +333,7 @@ pike_vm(const mrb_regexp_pattern *pat,
       int slot = match_only ? 0 : pool_alloc(&s);
       if (!match_only) memset(CAP(&s, slot), -1, sizeof(int) * ncap);
       s.gen++;
+      s.cut = FALSE;
       add_thread(&s, &curr, 0, slot, sp);
       if (s.matched && curr.count == 0) break;
     }
@@ -355,6 +362,7 @@ pike_vm(const mrb_regexp_pattern *pat,
     }
 
     s.gen++;
+    s.cut = FALSE;
     next.count = 0;
 
     int ch = (uint8_t)*sp;
@@ -422,6 +430,10 @@ pike_vm(const mrb_regexp_pattern *pat,
       default:
         break;
       }
+
+      /* A higher-priority thread reached a match while building `next`; the
+         remaining (lower-priority) threads in `curr` are cut for this step. */
+      if (s.cut) break;
     }
 
     /* swap curr and next */
