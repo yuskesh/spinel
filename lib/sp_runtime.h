@@ -4104,7 +4104,17 @@ static sp_BoundMethod *sp_bound_method_new(void *self, mrb_int fn, const char *n
    (boxed into a PolyArray at creation). #next / #peek walk the cursor and raise
    StopIteration past the end; #rewind resets it. Block-form chains (each.map,
    each.with_index, ...) are handled by codegen and never build this object. */
-typedef struct { sp_PolyArray *items; mrb_int cursor; } sp_Enumerator;
+/* Two flavors: a materialized snapshot (items + cursor, from a collection's
+   blockless #each) or a fiber-backed generator (Enumerator.new { |y| ... },
+   where `y << v` is a Fiber.yield). The fiber is created lazily on first #next
+   and re-created on #rewind. */
+typedef struct {
+  sp_PolyArray *items; mrb_int cursor;   /* materialized mode (items != NULL) */
+  void (*gen)(sp_Fiber *);                /* generator body (fiber mode, gen != NULL) */
+  void *gen_cap;                          /* captures, passed via fiber user_data */
+  sp_Fiber *fib;                          /* current generator fiber (lazy) */
+  mrb_bool peeked; sp_RbVal peek_val;     /* #peek lookahead cache */
+} sp_Enumerator;
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) {
     void *p = v.v.p;
@@ -4118,24 +4128,83 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   }
   return sp_PolyArray_new();
 }
-static void sp_Enumerator_scan(void *p) { sp_Enumerator *e = (sp_Enumerator *)p; if (e->items) sp_gc_mark(e->items); }
+static void sp_Enumerator_scan(void *p) {
+  sp_Enumerator *e = (sp_Enumerator *)p;
+  if (e->items) sp_gc_mark(e->items);
+  if (e->fib) sp_gc_mark(e->fib);
+  if (e->gen_cap) sp_gc_mark(e->gen_cap);
+  if (e->peeked) sp_mark_rbval(e->peek_val);
+}
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0;
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
   return e;
 }
+static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap) {
+  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE;
+  return e;
+}
+/* Pull the next value from the generator fiber, or raise StopIteration when it
+   has run to completion. A resume that ends the body terminates the fiber and
+   returns the body value, which is discarded in favor of StopIteration. */
+static sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {
+  if (!e->fib) {
+    e->fib = sp_Fiber_new(e->gen);
+    if (e->gen_cap) e->fib->user_data = e->gen_cap;
+  }
+  if (!sp_Fiber_alive(e->fib)) sp_raise_cls("StopIteration", "iteration reached an end");
+  sp_RbVal v = sp_Fiber_resume(e->fib, sp_box_nil());
+  if (!sp_Fiber_alive(e->fib)) sp_raise_cls("StopIteration", "iteration reached an end");
+  return v;
+}
 static sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {
+  if (e->gen) {
+    if (e->peeked) { e->peeked = FALSE; return e->peek_val; }
+    return sp_enum_gen_pull(e);
+  }
   if (!e->items || e->cursor >= e->items->len) sp_raise_cls("StopIteration", "iteration reached an end");
   return e->items->data[e->cursor++];
 }
 static sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {
+  if (e->gen) {
+    if (!e->peeked) { e->peek_val = sp_enum_gen_pull(e); e->peeked = TRUE; }
+    return e->peek_val;
+  }
   if (!e->items || e->cursor >= e->items->len) sp_raise_cls("StopIteration", "iteration reached an end");
   return e->items->data[e->cursor];
 }
-static sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) { e->cursor = 0; return e; }
+static sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) {
+  if (e->gen) { e->fib = NULL; e->peeked = FALSE; }
+  else e->cursor = 0;
+  return e;
+}
 static mrb_int sp_Enumerator_size(sp_Enumerator *e) { return e && e->items ? e->items->len : 0; }
+/* Enumerator#take(n) / #first(n): collect up to n values from a fresh run of the
+   source (independent of the #next cursor), matching CRuby. */
+static sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (n <= 0) return r;
+  if (e->gen) {
+    sp_Fiber *f = sp_Fiber_new(e->gen);
+    SP_GC_ROOT(f);
+    if (e->gen_cap) f->user_data = e->gen_cap;
+    for (mrb_int i = 0; i < n; i++) {
+      if (!sp_Fiber_alive(f)) break;
+      sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
+      if (!sp_Fiber_alive(f)) break;
+      sp_PolyArray_push(r, v);
+    }
+    return r;
+  }
+  mrb_int lim = e->items ? e->items->len : 0;
+  if (n < lim) lim = n;
+  for (mrb_int i = 0; i < lim; i++) sp_PolyArray_push(r, e->items->data[i]);
+  return r;
+}
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }

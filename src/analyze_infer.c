@@ -1059,6 +1059,8 @@ else {
        Handles both bare Const and ::Const path forms. */
     if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
       const char *cn2 = nt_str(nt, recv, "name");
+      if (cn2 && !strcmp(name, "new") && !strcmp(cn2, "Enumerator") &&
+          nt_ref(nt, id, "block") >= 0) return TY_ENUMERATOR;
       if (cn2 && !strcmp(name, "new") && !strcmp(cn2, "Fiber")) return TY_FIBER;
       /* Thread.new { block } modeled as a Fiber (single-threaded); #value
          resumes it to completion. */
@@ -1091,6 +1093,7 @@ else {
     if (!strcmp(name, "next") || !strcmp(name, "peek")) return TY_POLY;
     if (!strcmp(name, "rewind")) return TY_ENUMERATOR;
     if (!strcmp(name, "size")) return TY_INT;
+    if ((!strcmp(name, "take") || !strcmp(name, "first")) && argc == 1) return TY_POLY_ARRAY;
   }
 
   /* TY_RANDOM instance methods */

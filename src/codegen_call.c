@@ -3833,6 +3833,34 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* Inside an Enumerator.new { |y| ... } generator, `y << v` and `y.yield(v)` on
+     the yielder lower to a Fiber.yield (the generator runs on a fiber). */
+  if (g_yielder_name) {
+    int rcv = nt_ref(nt, id, "receiver");
+    const char *cn = nt_str(nt, id, "name");
+    if (rcv >= 0 && cn && (!strcmp(cn, "<<") || !strcmp(cn, "yield")) &&
+        nt_type(nt, rcv) && !strcmp(nt_type(nt, rcv), "LocalVariableReadNode") &&
+        nt_str(nt, rcv, "name") && !strcmp(nt_str(nt, rcv, "name"), g_yielder_name)) {
+      int ar = nt_ref(nt, id, "arguments");
+      int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
+      buf_puts(b, "sp_Fiber_yield(");
+      if (ac == 1) emit_boxed(c, av[0], b);
+      else if (ac > 1) {
+        /* y.yield(a, b, ...) yields an array of the values */
+        int t = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", t, t);
+        for (int k = 0; k < ac; k++) {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, av[k], g_pre); buf_puts(g_pre, ");\n");
+        }
+        buf_printf(b, "sp_box_poly_array(_t%d)", t);
+      }
+      else buf_puts(b, "sp_box_nil()");
+      buf_puts(b, ")");
+      return;
+    }
+  }
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;
   if (emit_each_with_index_chain(c, id, b)) return;
@@ -4742,6 +4770,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (!strcmp(name, "size") && argc == 0) {
       buf_puts(b, "sp_Enumerator_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if ((!strcmp(name, "take") || !strcmp(name, "first")) && argc == 1) {
+      buf_puts(b, "sp_Enumerator_take("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
   }
 
@@ -6444,10 +6476,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         return;
       }
+      if (cn && !strcmp(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) {
+        /* Enumerator.new { |y| ... }: a fiber-backed generator where `y << v`
+           lowers to a Fiber.yield. */
+        emit_fiber_new(c, id, b, 1);
+        return;
+      }
       if (cn && (!strcmp(cn, "Fiber") || !strcmp(cn, "Thread")) && nt_ref(nt, id, "block") >= 0) {
         /* Single-threaded: a Thread is modeled as a Fiber that runs to
            completion on #value (no preemption, no Fiber.yield in the body). */
-        emit_fiber_new(c, id, b);
+        emit_fiber_new(c, id, b, 0);
         return;
       }
       if (cn && !strcmp(cn, "Random")) {

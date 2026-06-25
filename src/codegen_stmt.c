@@ -2570,6 +2570,23 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const char *ty = nt_type(nt, id);
   if (!ty) unsupported(c, id, "statement (no type)");
 
+  /* `y << v` / `y.yield(v)` inside an Enumerator.new generator lowers to a
+     Fiber.yield. Intercept here so the statement-level `<<` mutation fast path
+     does not treat the yielder as an array; emit_expr routes through emit_call's
+     yielder rewrite. */
+  if (g_yielder_name && !strcmp(ty, "CallNode")) {
+    int yrcv = nt_ref(nt, id, "receiver");
+    const char *ynm = nt_str(nt, id, "name");
+    if (yrcv >= 0 && ynm && (!strcmp(ynm, "<<") || !strcmp(ynm, "yield")) &&
+        nt_type(nt, yrcv) && !strcmp(nt_type(nt, yrcv), "LocalVariableReadNode") &&
+        nt_str(nt, yrcv, "name") && !strcmp(nt_str(nt, yrcv, "name"), g_yielder_name)) {
+      emit_indent(b, indent);
+      emit_expr(c, id, b);
+      buf_puts(b, ";\n");
+      return;
+    }
+  }
+
   /* `define_method` and the `[lits].each { define_method ... }` unroll are
      resolved at analyze time into real method scopes; emit nothing here. */
   if (!strcmp(ty, "CallNode")) {

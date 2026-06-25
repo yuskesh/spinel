@@ -738,10 +738,10 @@ int fiber_body_uses_self(Compiler *c, int id) {
   return 0;
 }
 
-void emit_fiber_new(Compiler *c, int id, Buf *b) {
+void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
-  if (blk < 0) { buf_puts(b, "sp_Fiber_new(NULL)"); return; }
+  if (blk < 0) { buf_puts(b, as_gen ? "sp_Enumerator_new_gen(NULL, NULL)" : "sp_Fiber_new(NULL)"); return; }
 
   int fid = ++g_fiber_counter;
   char fname[48];
@@ -829,9 +829,11 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
   /* Save global emission state */
   Buf *sv_pre = g_pre; int sv_indent = g_indent, sv_nren = g_nren, sv_block = g_block_id;
   const char *sv_bpn = g_block_param_name, *sv_self = g_self, *sv_rv = g_result_var;
+  const char *sv_yld = g_yielder_name;
   TyKind sv_rt = g_ret_type; int sv_rp = g_result_poly;
   g_pre = NULL; g_indent = 1; g_nren = 0; g_block_id = blk;
   g_block_param_name = bp0; g_self = sv_self;
+  g_yielder_name = as_gen ? bp0 : NULL;   /* `y << v` -> Fiber.yield in the body */
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
 
   /* Unpack capture struct */
@@ -877,9 +879,16 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
   }
   free(fib_locals.v);
 
+  /* A generator yields imperatively via `y << v`; its body value is discarded
+     (running off the end terminates the fiber, which #next maps to
+     StopIteration). Emit every statement plainly and leave yielded_value nil. */
+  if (as_gen) {
+    if (body >= 0) { int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn); for (int k = 0; k < bn; k++) emit_stmt(c, bb[k], pb, 1); }
+    buf_puts(pb, "    _fb->yielded_value = sp_box_nil();\n");
+  }
   /* Emit body: all-but-last as side-effect statements, last sets yielded_value.
      For void/nil last statements emit as stmt first then set yielded=nil. */
-  if (body >= 0) {
+  else if (body >= 0) {
     int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
     if (bn > 0) {
@@ -924,18 +933,23 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
   /* Restore emission state */
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
-  g_result_poly = sv_rp; g_result_var = sv_rv;
+  g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
 
   /* Emit creation expression:
      If there are captures, allocate a GC-managed capture struct, fill it,
      assign to fiber->user_data, then return the fiber.
      Without captures: just sp_Fiber_new(fname). */
   if (ncap > 0 || cap_self) {
-    int tf = ++g_tmp, tc = ++g_tmp;
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_Fiber *_t%d = sp_Fiber_new(%s);\n", tf, fname);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tf);
+    int tc = ++g_tmp;
+    /* For a generator the fiber is created lazily by the enumerator, so only the
+       capture struct is built here and handed to sp_Enumerator_new_gen. */
+    int tf = as_gen ? -1 : ++g_tmp;
+    if (!as_gen) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Fiber *_t%d = sp_Fiber_new(%s);\n", tf, fname);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tf);
+    }
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "_fib_cap_%d *_t%d = (_fib_cap_%d *)sp_gc_alloc(sizeof(_fib_cap_%d), NULL, _fib_cap_scan_%d);\n",
                fid, tc, fid, fid, fid);
@@ -948,12 +962,17 @@ void emit_fiber_new(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "_t%d->%s = lv_%s;\n", tc, caps.v[i], rn);
     }
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "_t%d->user_data = _t%d;\n", tf, tc);
-    buf_printf(b, "_t%d", tf);
+    if (as_gen) {
+      buf_printf(b, "sp_Enumerator_new_gen(%s, _t%d)", fname, tc);
+    }
+    else {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d->user_data = _t%d;\n", tf, tc);
+      buf_printf(b, "_t%d", tf);
+    }
   }
   else {
-    buf_printf(b, "sp_Fiber_new(%s)", fname);
+    buf_printf(b, as_gen ? "sp_Enumerator_new_gen(%s, NULL)" : "sp_Fiber_new(%s)", fname);
   }
   free(caps.v);
 }

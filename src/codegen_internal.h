@@ -64,6 +64,7 @@ extern int  g_yield_block_fallback;
 /* Name of the `&block` parameter of the method currently being inlined, so
    `<blk>.call(args)` inside it expands the active block like `yield args`. */
 extern const char *g_block_param_name;
+extern const char *g_yielder_name;
 /* Result temp for a do{}while(0)-wrapped instance_exec splice; a top-level
    `next <v>` captures into it before continuing out. NULL otherwise. */
 extern const char *g_ie_next_var;
@@ -272,7 +273,7 @@ int  subtree_has_own_redo(const NodeTable *nt, int id);
 int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 int  emit_inline_expr(Compiler *c, int id, Buf *b);
 void emit_cond(Compiler *c, int id, Buf *b);
-void emit_fiber_new(Compiler *c, int id, Buf *b);
+void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen);
 int  needs_root(TyKind t);
 int  method_is_void(Scope *s);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
@@ -486,7 +487,7 @@ int proc_slot_is_ptr(TyKind t);
 int proc_body_has_yield(Compiler *c, int id);
 int fiber_cap_needs_root(TyKind t);
 int fiber_body_uses_self(Compiler *c, int id);
-void emit_fiber_new(Compiler *c, int id, Buf *b);
+void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen);
 void emit_proc_literal(Compiler *c, int create, Buf *b);
 int is_builtin_reopen(const char *name);
 int is_exc_name(const char *n);

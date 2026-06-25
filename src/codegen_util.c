@@ -73,6 +73,9 @@ int  g_nren = 0;
 int  g_block_id = -1;
 int  g_yield_block_fallback = -1;
 const char *g_block_param_name = NULL;
+/* Inside an Enumerator.new { |y| ... } generator body, the name of the yielder
+   block param. A `y << v` / `y.yield(v)` on it lowers to a Fiber.yield. */
+const char *g_yielder_name = NULL;
 const char *g_self = "self";
 /* Member-access operator for `self`: "->" when self is a pointer (the usual
    heap object), "." when emitting a value-type method body (self is a value). */
