@@ -666,7 +666,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
         rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
-        ty_is_array(rt) || ty_is_hash(rt))
+        rt == TY_FIBER || ty_is_array(rt) || ty_is_hash(rt))
       return TY_STRING;
   }
 
@@ -1062,7 +1062,7 @@ else {
 
   /* TY_FIBER instance methods */
   if (recv >= 0 && rt == TY_FIBER) {
-    if (!strcmp(name, "resume") || !strcmp(name, "transfer")) return TY_POLY;
+    if (!strcmp(name, "resume") || !strcmp(name, "transfer") || !strcmp(name, "raise")) return TY_POLY;
     if (!strcmp(name, "alive?")) return TY_BOOL;
     if (!strcmp(name, "value")) return TY_POLY;
   }

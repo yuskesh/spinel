@@ -4664,6 +4664,40 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b); buf_puts(b, ", sp_box_nil())");
       return;
     }
+    if (!strcmp(name, "raise")) {
+      /* Fiber#raise: inject an exception at the fiber's suspension point. The
+         argument forms mirror Kernel#raise: (), ("msg"), (Class), (Class, "msg"),
+         or (exc_object). The object form is unpacked into class-name/message here
+         because sp_exc_class_name/_message are TU-static (unreachable from the
+         fiber runtime), so the runtime takes (cls, msg, obj). */
+      TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
+        (!strcmp(nt_type(nt, argv[0]), "ConstantReadNode") ||
+         !strcmp(nt_type(nt, argv[0]), "ConstantPathNode"));
+      int arg0_exc = a0t == TY_EXCEPTION ||
+        (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
+      if (argc >= 1 && arg0_exc) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Fiber *_fr%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Exception *_fe%d = (sp_Exception *)(", t); emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_Fiber_raise(_fr%d, sp_exc_class_name(_fe%d), sp_exc_message(_fe%d), _fe%d); })",
+                   t, t, t, t);
+        return;
+      }
+      buf_puts(b, "sp_Fiber_raise("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (arg0_const) {
+        buf_printf(b, "\"%s\", ", nt_str(nt, argv[0], "name"));
+        if (argc >= 2) emit_expr(c, argv[1], b);
+        else buf_puts(b, "(&(\"\\xff\")[1])");
+        buf_puts(b, ", NULL");
+      }
+      else if (argc >= 1) {
+        buf_puts(b, "\"RuntimeError\", "); emit_expr(c, argv[0], b); buf_puts(b, ", NULL");
+      }
+      else buf_puts(b, "\"RuntimeError\", (&(\"\\xff\")[1]), NULL");
+      buf_puts(b, ")");
+      return;
+    }
   }
 
   /* Random class methods: Random.rand(n) / Random.rand / Random.bytes(n)
@@ -5522,6 +5556,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_SYMBOL) cn = "Symbol";
     else if (rt == TY_RANGE) cn = "Range";
     else if (rt == TY_TIME) cn = "Time";
+    else if (rt == TY_FIBER) cn = "Fiber";
     else if (rt == TY_IO) cn = "IO";
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";

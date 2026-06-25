@@ -699,6 +699,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   else if (ty_is_hash(t)) self_cls = "Hash";
   else if (t == TY_NIL) self_cls = "NilClass";
   else if (t == TY_BOOL) self_cls = "Boolean"; /* true/false split handled at call site */
+  else if (t == TY_FIBER) self_cls = "Fiber";
   if (!self_cls) return -1;
   if (!strcmp(cn, self_cls)) return 1;
   if (exact) return 0;

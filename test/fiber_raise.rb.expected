@@ -1,0 +1,8 @@
+1
+"rescued: boom"
+:done
+caught RuntimeError: up
+false
+caught ArgumentError
+caught TypeError: obj msg
+caught bare RuntimeError
