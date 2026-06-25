@@ -857,6 +857,45 @@ compile_atom(re_compiler *c)
       next_char(c);
       emit(c, RE_NWBOUND, 0, 0);
     }
+    else if (ch == 'k' && c->p + 1 < c->src_end &&
+             (c->p[1] == '<' || c->p[1] == '\'')) {
+      /* \k<name> / \k'name': backreference to a named group. Numeric forms
+         \k<2> (absolute) and \k<-1> (relative to the groups seen so far) are
+         also accepted, like the \g/\k family in Onigmo. */
+      next_char(c);  /* skip k */
+      int close = (peek(c) == '<') ? '>' : '\'';
+      next_char(c);  /* skip < or ' */
+      const char *name = c->p;
+      while (peek(c) != close && peek(c) >= 0) next_char(c);
+      if (peek(c) != close) compile_error(c, "unterminated backreference name");
+      uint16_t name_len = (uint16_t)(c->p - name);
+      next_char(c);  /* skip the closing > or ' */
+
+      int group = -1;
+      if (name_len > 0 && (name[0] == '-' || (name[0] >= '0' && name[0] <= '9'))) {
+        mrb_bool relative = (name[0] == '-');
+        int n = 0;
+        for (uint16_t i = (relative ? 1 : 0); i < name_len; i++) {
+          if (name[i] < '0' || name[i] > '9') compile_error(c, "invalid backreference");
+          n = n * 10 + (name[i] - '0');
+        }
+        group = relative ? (int)c->num_captures - n : n;
+      }
+      else {
+        for (uint16_t i = 0; i < c->num_named; i++) {
+          if (c->named_captures[i].name_len == name_len &&
+              memcmp(c->named_captures[i].name, name, name_len) == 0) {
+            group = c->named_captures[i].group;
+            break;
+          }
+        }
+      }
+      if (group < 1 || group >= (int)c->num_captures) {
+        compile_error(c, "undefined group name reference");
+      }
+      emit(c, RE_BACKREF, (uint8_t)group, 0);
+      c->has_backref = TRUE;
+    }
     else {
       ch = parse_escape(c);
       if (c->flags & RE_FLAG_IGNORECASE) {
@@ -907,6 +946,32 @@ compile_atom(re_compiler *c)
     }
     emit(c, RE_CHAR, (uint8_t)ch, 0);
     break;
+  }
+}
+
+/* Append a copy of the atom bytecode in [start, start+size) at the current
+   position. Internal jump/split targets are relocated to the copy, so a
+   repeated group like (a{2,3}){2} keeps each iteration self-contained instead
+   of jumping back into the first copy (which corrupted its captures). Capture
+   slots (RE_SAVE) are shared across copies on purpose: a repeated group keeps
+   only its last iteration, like CRuby. */
+static void
+emit_atom_copy(re_compiler *c, uint32_t start, uint32_t size)
+{
+  int32_t delta = (int32_t)c->code_len - (int32_t)start;
+  uint32_t atom_end = start + size;
+  for (uint32_t j = 0; j < size; j++) {
+    re_inst in = c->code[start + j];
+    switch (in.op) {
+    case RE_JMP: case RE_SPLIT: case RE_SPLITNG:
+      if (in.offset >= start && in.offset <= atom_end) {
+        in.offset = (uint16_t)((int32_t)in.offset + delta);
+      }
+      break;
+    default:
+      break;
+    }
+    emit(c, in.op, in.a, in.offset);
   }
 }
 
@@ -992,27 +1057,21 @@ compile_quantified(re_compiler *c)
 
       /* We have one copy already; emit lo-1 more mandatory copies. */
       for (int i = 1; i < lo; i++) {
-        for (uint32_t j = 0; j < atom_size; j++) {
-          emit(c, c->code[start + j].op, c->code[start + j].a, c->code[start + j].offset);
-        }
+        emit_atom_copy(c, start, atom_size);
       }
       /* Then optional copies */
       if (max < 0) {
         /* {n,} = lo copies + * */
         uint32_t loop_start = c->code_len;
         uint32_t split_pos = emit(c, nongreedy ? RE_SPLITNG : RE_SPLIT, 0, 0);
-        for (uint32_t j = 0; j < atom_size; j++) {
-          emit(c, c->code[start + j].op, c->code[start + j].a, c->code[start + j].offset);
-        }
+        emit_atom_copy(c, start, atom_size);
         emit(c, RE_JMP, 0, loop_start);
         patch(c, split_pos, c->code_len);
       }
       else {
         for (int i = lo; i < max; i++) {
           uint32_t split_pos = emit(c, nongreedy ? RE_SPLITNG : RE_SPLIT, 0, 0);
-          for (uint32_t j = 0; j < atom_size; j++) {
-            emit(c, c->code[start + j].op, c->code[start + j].a, c->code[start + j].offset);
-          }
+          emit_atom_copy(c, start, atom_size);
           patch(c, split_pos, c->code_len);
         }
       }
