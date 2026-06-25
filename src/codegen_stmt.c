@@ -2580,9 +2580,25 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (yrcv >= 0 && ynm && (!strcmp(ynm, "<<") || !strcmp(ynm, "yield")) &&
         nt_type(nt, yrcv) && !strcmp(nt_type(nt, yrcv), "LocalVariableReadNode") &&
         nt_str(nt, yrcv, "name") && !strcmp(nt_str(nt, yrcv, "name"), g_yielder_name)) {
+      /* Emit the Fiber.yield directly: re-dispatching `y.yield(v)` through
+         emit_expr would let the yield-keyword inlining intercept it. */
+      int yar = nt_ref(nt, id, "arguments");
+      int yac = 0; const int *yav = yar >= 0 ? nt_arr(nt, yar, "arguments", &yac) : NULL;
       emit_indent(b, indent);
-      emit_expr(c, id, b);
-      buf_puts(b, ";\n");
+      buf_puts(b, "sp_Fiber_yield(");
+      if (yac == 1) emit_boxed(c, yav[0], b);
+      else if (yac > 1) {
+        int t = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", t, t);
+        for (int k = 0; k < yac; k++) {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, yav[k], g_pre); buf_puts(g_pre, ");\n");
+        }
+        buf_printf(b, "sp_box_poly_array(_t%d)", t);
+      }
+      else buf_puts(b, "sp_box_nil()");
+      buf_puts(b, ");\n");
       return;
     }
   }
