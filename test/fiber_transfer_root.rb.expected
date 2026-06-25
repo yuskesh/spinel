@@ -1,0 +1,8 @@
+in fiber
+back in main: 42
+fiber resumed with 7
+back in main again: 99
+0
+10
+15
+115
