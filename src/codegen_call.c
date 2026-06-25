@@ -3818,6 +3818,184 @@ static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b); buf_puts(b, "), 0})");
 }
 
+/* Returns 1 if `id` is a `Float::INFINITY` / `nil` / absent range endpoint. */
+static int lazy_endpoint_is_infinite(Compiler *c, int right) {
+  const NodeTable *nt = c->nt;
+  if (right < 0) return 1;
+  const char *rty = nt_type(nt, right);
+  if (rty && !strcmp(rty, "NilNode")) return 1;
+  if (rty && !strcmp(rty, "ConstantPathNode")) {
+    const char *cpnm = nt_str(nt, right, "name");
+    if (cpnm && !strcmp(cpnm, "INFINITY")) {
+      int par = nt_ref(nt, right, "parent");
+      const char *parnm = (par >= 0 && nt_type(nt, par) &&
+                           !strcmp(nt_type(nt, par), "ConstantReadNode"))
+                          ? nt_str(nt, par, "name") : NULL;
+      if (parnm && !strcmp(parnm, "Float")) return 1;
+    }
+  }
+  return 0;
+}
+
+/* (int-range | int-array).lazy.<map/select/reject/filter/take_while...>
+   .{first(n) | take(n) | to_a | force}: fuse the whole lazy chain into one int
+   loop collecting into an sp_IntArray, short-circuiting at the terminal count.
+   Int-typed throughout (source and every stage stay mrb_int). Returns 1 if it
+   handled the call. */
+int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *tname = nt_str(nt, id, "name");
+  if (!tname) return 0;
+  /* `first(n)` / `to_a` / `force` force the lazy chain; `take(n)` stays lazy in
+     CRuby (returns another Lazy) so it is not a forcing terminal here. */
+  int is_first = !strcmp(tname, "first");
+  int is_toa = !strcmp(tname, "to_a") || !strcmp(tname, "force");
+  if (!is_first && !is_toa) return 0;
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+
+  int has_count = 0, count_node = -1;
+  {
+    int ar = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
+    if (is_first) {
+      if (ac == 1) { has_count = 1; count_node = av[0]; }
+      else return 0;   /* first with no count: a different handler */
+    }
+    else if (ac != 0) return 0;
+  }
+
+  enum { OP_MAP, OP_FILTER, OP_TAKEWHILE };
+  struct { int kind; int block; int negate; } ops[16];
+  int nops = 0, cur = recv, lazy_src = -1;
+  while (cur >= 0 && nt_type(nt, cur) && !strcmp(nt_type(nt, cur), "CallNode")) {
+    const char *nm = nt_str(nt, cur, "name");
+    if (!nm) return 0;
+    if (!strcmp(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
+      lazy_src = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+      break;
+    }
+    int blk = nt_ref(nt, cur, "block");
+    if (blk < 0 || nops >= 16) return 0;
+    if (!strcmp(nm, "map") || !strcmp(nm, "collect")) ops[nops].kind = OP_MAP, ops[nops].negate = 0;
+    else if (!strcmp(nm, "select") || !strcmp(nm, "filter")) ops[nops].kind = OP_FILTER, ops[nops].negate = 0;
+    else if (!strcmp(nm, "reject")) ops[nops].kind = OP_FILTER, ops[nops].negate = 1;
+    else if (!strcmp(nm, "take_while")) ops[nops].kind = OP_TAKEWHILE, ops[nops].negate = 0;
+    else return 0;
+    ops[nops].block = blk;
+    nops++;
+    cur = nt_ref(nt, cur, "receiver");
+  }
+  if (lazy_src < 0) return 0;
+
+  TyKind st = infer_type(c, lazy_src);
+  int src_is_range = (st == TY_RANGE), src_is_intarr = (st == TY_INT_ARRAY);
+  if (!src_is_range && !src_is_intarr) return 0;
+
+  int excl = 0, endless = 0, right = -1, left_n = -1;
+  if (src_is_range) {
+    excl = (int)(nt_int(nt, lazy_src, "flags", 0) & 4) ? 1 : 0;
+    right = nt_ref(nt, lazy_src, "right");
+    endless = lazy_endpoint_is_infinite(c, right);
+    left_n = nt_ref(nt, lazy_src, "left");
+  }
+  if (is_toa && (src_is_range && endless)) return 0;   /* would not terminate */
+
+  /* prelude temps. The pipeline is poly-typed: lazy block params infer poly, so
+     each stage carries a boxed value and collects into a PolyArray. */
+  int tres = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+  int tn = -1;
+  if (has_count) {
+    Buf nb; memset(&nb, 0, sizeof nb); emit_expr(c, count_node, &nb);
+    tn = ++g_tmp; emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_int _t%d = %s;\n", tn, nb.p ? nb.p : "0"); free(nb.p);
+  }
+  int thi = -1, tsrc = -1;
+  if (src_is_range && !endless) {
+    Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, right, &hb);
+    thi = ++g_tmp; emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_int _t%d = %s;\n", thi, hb.p ? hb.p : "0"); free(hb.p);
+  }
+  if (src_is_intarr) {
+    Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, lazy_src, &sb);
+    tsrc = ++g_tmp; emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_IntArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", tsrc, sb.p ? sb.p : "0", tsrc); free(sb.p);
+  }
+
+  int tloop = ++g_tmp, tv = ++g_tmp;
+  Buf lo_b; memset(&lo_b, 0, sizeof lo_b);
+  if (src_is_range) emit_expr(c, left_n, &lo_b);
+  emit_indent(g_pre, g_indent);
+  const char *climit = has_count ? "" : NULL;
+  char cbuf[64]; cbuf[0] = 0;
+  if (has_count) snprintf(cbuf, sizeof cbuf, " && sp_PolyArray_length(_t%d) < _t%d", tres, tn);
+  (void)climit;
+  if (src_is_range) {
+    if (endless)
+      buf_printf(g_pre, "for (mrb_int _t%d = %s; 1%s; _t%d++) {\n", tloop, lo_b.p ? lo_b.p : "0", cbuf, tloop);
+    else
+      buf_printf(g_pre, "for (mrb_int _t%d = %s; _t%d %s _t%d%s; _t%d++) {\n",
+                 tloop, lo_b.p ? lo_b.p : "0", tloop, excl ? "<" : "<=", thi, cbuf, tloop);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(_t%d);\n", tv, tloop);
+  }
+  else {
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_IntArray_length(_t%d)%s; _t%d++) {\n",
+               tloop, tloop, tsrc, cbuf, tloop);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(sp_IntArray_get(_t%d, _t%d)); SP_GC_ROOT_RBVAL(_t%d);\n", tv, tsrc, tloop, tv);
+  }
+  free(lo_b.p);
+
+  char vbuf[24]; snprintf(vbuf, sizeof vbuf, "_t%d", tv);
+  /* ops are collected terminal-first; apply them source-first. */
+  for (int oi = nops - 1; oi >= 0; oi--) {
+    int blk = ops[oi].block;
+    const char *bp0 = block_param_name(c, blk, 0);
+    const char *bp = (bp0 && bp0[0]) ? rename_local(bp0) : "_lx";
+    /* The running value is boxed (poly); the block param may infer a narrower
+       type, so unbox to match its C type. */
+    Scope *bs = comp_scope_of(c, blk);
+    LocalVar *plv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
+    TyKind pt = (plv && plv->type != TY_UNKNOWN) ? plv->type : TY_POLY;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = ", bp);
+    if (pt == TY_POLY) buf_puts(g_pre, vbuf);
+    else { Buf ub; memset(&ub, 0, sizeof ub); emit_unbox_text(c, pt, vbuf, &ub); buf_puts(g_pre, ub.p ? ub.p : vbuf); free(ub.p); }
+    buf_puts(g_pre, ";\n");
+    int bbody = nt_ref(nt, blk, "body");
+    int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+    for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], g_pre, g_indent + 1);
+    if (bn < 1) continue;
+    if (ops[oi].kind == OP_MAP) {
+      Buf eb; memset(&eb, 0, sizeof eb);
+      int svind = g_indent; g_indent += 1; emit_boxed(c, bb[bn - 1], &eb); g_indent = svind;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "%s = %s;\n", vbuf, eb.p ? eb.p : "sp_box_nil()"); free(eb.p);
+    }
+    else {
+      Buf cb; memset(&cb, 0, sizeof cb);
+      int svind = g_indent; g_indent += 1; emit_cond(c, bb[bn - 1], &cb); g_indent = svind;
+      emit_indent(g_pre, g_indent + 1);
+      if (ops[oi].kind == OP_TAKEWHILE)
+        buf_printf(g_pre, "if (!(%s)) break;\n", cb.p ? cb.p : "0");
+      else if (ops[oi].negate)
+        buf_printf(g_pre, "if (%s) continue;\n", cb.p ? cb.p : "0");
+      else
+        buf_printf(g_pre, "if (!(%s)) continue;\n", cb.p ? cb.p : "0");
+      free(cb.p);
+    }
+  }
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", tres, vbuf);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tres);
+  return 1;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* `require` / `require_relative` is a compile-time directive: top-level ones
@@ -3861,6 +4039,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  if (emit_lazy_pipeline_expr(c, id, b)) return;
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;
   if (emit_each_with_index_chain(c, id, b)) return;

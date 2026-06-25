@@ -387,6 +387,7 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b);
 void emit_block_param_assign(Compiler *c, int scope_id, const char *nm, int tidx, TyKind et, Buf *b);
 int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b);
 int emit_partition_expr(Compiler *c, int id, Buf *b);
+int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b);
 int emit_collect_expr(Compiler *c, int id, Buf *b);
 int emit_with_index_expr(Compiler *c, int id, Buf *b);
 int emit_each_with_index_chain(Compiler *c, int id, Buf *b);

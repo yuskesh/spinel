@@ -2165,7 +2165,32 @@ else {
       }
     }
     if (lazy_src >= 0 && infer_type(c, lazy_src) == TY_RANGE)
-      return (argc == 1) ? TY_INT_ARRAY : TY_INT;
+      return (argc == 1) ? TY_POLY_ARRAY : TY_INT;  /* emit_lazy_pipeline_expr -> PolyArray */
+  }
+
+  /* General lazy pipeline: <int range | int array>.lazy.<map/select/reject/
+     filter/take_while...>.{first(n) | take(n) | to_a | force} -> an int array. */
+  if ((!strcmp(name, "first") ||
+       !strcmp(name, "to_a") || !strcmp(name, "force")) &&
+      recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_ref(nt, id, "block") < 0 &&
+      !(!strcmp(name, "first") && argc != 1) &&
+      !((!strcmp(name, "to_a") || !strcmp(name, "force")) && argc != 0)) {
+    int cur = recv, lazy_src = -1, ok = 1, saw_op = 0;
+    while (cur >= 0 && nt_type(nt, cur) && !strcmp(nt_type(nt, cur), "CallNode")) {
+      const char *nm = nt_str(nt, cur, "name");
+      if (!nm) { ok = 0; break; }
+      if (!strcmp(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
+      if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
+      if (strcmp(nm, "map") && strcmp(nm, "collect") && strcmp(nm, "select") &&
+          strcmp(nm, "filter") && strcmp(nm, "reject") && strcmp(nm, "take_while")) { ok = 0; break; }
+      saw_op = 1;
+      cur = nt_ref(nt, cur, "receiver");
+    }
+    if (ok && saw_op && lazy_src >= 0) {
+      TyKind st = infer_type(c, lazy_src);
+      if (st == TY_RANGE || st == TY_INT_ARRAY) return TY_POLY_ARRAY;
+    }
   }
 
   /* hash receiver methods */
