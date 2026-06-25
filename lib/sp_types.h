@@ -15,22 +15,16 @@
 #define SP_TYPES_H
 
 #ifdef __APPLE__
-/* On Darwin, <ucontext.h> is a hard #error unless _XOPEN_SOURCE is defined, and
-   sp_runtime.h includes it unconditionally, so the gate is required to compile
-   even though the portable asm context switch is what actually runs.
-   _DARWIN_C_SOURCE re-enables Darwin extensions (MAP_ANON, used by the fiber
-   stack mmap) that _XOPEN_SOURCE alone would hide. Define both here -- the
-   lowest shared base header -- so every TU that pulls sp_types.h in sets them
-   before the first system header: the generated TU (via sp_runtime.h) and
-   standalone libspinel_rt.a units like sp_fiber.c. Suppress the deprecation
-   warning so -Werror builds pass; the ucontext fallback path knowingly uses
-   these APIs. The push has no matching pop in standalone units (only
-   sp_runtime.h pops it), which is intentional: it keeps the suppression active
-   across sp_fiber.c, where the fallback references ucontext. */
-#define _XOPEN_SOURCE 600
+/* _DARWIN_C_SOURCE re-enables Darwin extensions (MAP_ANON, used by the fiber
+   stack mmap in sp_fiber.c) that a strict POSIX build would otherwise hide.
+   Define it here -- the lowest shared base header -- so every TU that pulls
+   sp_types.h in sets it before the first system header.
+   No _XOPEN_SOURCE / -Wdeprecated-declarations gate is needed: the portable
+   asm context switch runs on every Darwin arch (x86_64 / arm64), so the only
+   <ucontext.h> include (sp_fiber_ctx.h's non-asm fallback) is never compiled
+   there, and PR #1563 removed the stale unconditional include from
+   sp_runtime.h. */
 #define _DARWIN_C_SOURCE
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
 
 #include <stdint.h>
