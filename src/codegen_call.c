@@ -11282,6 +11282,35 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* The nil sentinel a block param of type `pt` receives when an auto-splat
+   source array has no item at the param's index. Mirrors the proc-literal
+   convention in codegen.c (a missing arg binds nil, not a typed zero).
+   `pt` is only ever TY_POLY or a scalar slot type (int/bool/float/symbol/
+   string) here: these params are bound from poly-container elements, and a
+   value-type (Range/Time/Complex/Rational/object value-type) boxes to poly
+   inside a container, so it never arrives as a typed struct slot. */
+static void emit_block_param_nil(Compiler *c, TyKind pt, Buf *b) {
+  (void)c;
+  if (pt == TY_POLY)                      buf_puts(b, "sp_box_nil()");
+  else if (pt == TY_INT || pt == TY_BOOL) buf_puts(b, "SP_INT_NIL");
+  else if (pt == TY_FLOAT)                buf_puts(b, "sp_float_nil()");
+  else if (pt == TY_SYMBOL)               buf_puts(b, "((sp_sym)-1)");
+  else                                    buf_puts(b, "NULL");  /* string / heap ptr */
+}
+
+/* Bind block param `pname` (already renamed) of type `pt` from a boxed
+   sp_RbVal source `src`: a poly param takes the box directly; a scalar param
+   unboxes down to its slot type. As in emit_block_param_nil, `pt` is TY_POLY
+   or a scalar slot type only -- a value-type element is boxed to poly in its
+   container, so emit_unbox_text is never asked for a struct-by-value slot. */
+static void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt,
+                                        const char *src, Buf *b) {
+  buf_printf(b, "lv_%s = ", pname);
+  if (pt == TY_POLY) buf_puts(b, src);
+  else emit_unbox_text(c, pt, src, b);
+  buf_puts(b, ";\n");
+}
+
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -11657,18 +11686,44 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
-    /* multi-param: auto-splat each poly element into params */
+    /* multi-param: auto-splat each poly element into params. Ruby splats only
+       when the element is itself an Array (sp_poly_each_elem already renders a
+       hash pair as a 2-element array, so |k, v| over a hash still splats); a
+       non-array element binds param 0 with the rest nil. */
     int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
     if (npp_poly >= 2) {
+      Scope *blk_pv = comp_scope_of(c, block);
       int telem = ++g_tmp;
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", telem, ta, ti);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) {\n", telem, telem);
       for (int pj = 0; pj < npp_poly; pj++) {
         const char *pnj = block_param_name(c, block, pj);
         if (!pnj) break;
-        emit_indent(b, indent + 1);
-        buf_printf(b, "lv_%s = sp_poly_arr_get_hash(_t%d, (mrb_int)%d);\n", rename_local(pnj), telem, pj);
+        LocalVar *plv = blk_pv ? scope_local(blk_pv, pnj) : NULL;
+        TyKind pt = plv ? plv->type : TY_POLY;
+        char src[64]; snprintf(src, sizeof src, "sp_poly_arr_get(_t%d, %d)", telem, pj);
+        emit_indent(b, indent + 2);
+        emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
       }
+      emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+      for (int pj = 0; pj < npp_poly; pj++) {
+        const char *pnj = block_param_name(c, block, pj);
+        if (!pnj) break;
+        LocalVar *plv = blk_pv ? scope_local(blk_pv, pnj) : NULL;
+        TyKind pt = plv ? plv->type : TY_POLY;
+        emit_indent(b, indent + 2);
+        if (pj == 0) {
+          char src[32]; snprintf(src, sizeof src, "_t%d", telem);
+          emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
+        } else {
+          buf_printf(b, "lv_%s = ", rename_local(pnj));
+          emit_block_param_nil(c, pt, b);
+          buf_puts(b, ";\n");
+        }
+      }
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
     }
     else {
       emit_indent(b, indent + 1);
@@ -11725,6 +11780,45 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
           }
           did_destruct = 1;
         }
+      }
+      /* Poly-param auto-splat: a 2+ param block whose params weren't proven to
+         be a typed inner array (so they're poly/unknown). Ruby auto-splats each
+         element ONLY when it is itself an Array -- destructure item k into param
+         k (missing item -> nil); a non-array element binds param 0, rest nil. */
+      if (!did_destruct && npp >= 2) {
+        Scope *blk_sp2 = comp_scope_of(c, block);
+        int telem = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, ta, t);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) {\n", telem, telem);
+        for (int pj = 0; pj < npp; pj++) {
+          const char *pnj = block_param_name(c, block, pj);
+          if (!pnj) break;
+          LocalVar *plv = blk_sp2 ? scope_local(blk_sp2, pnj) : NULL;
+          TyKind pt = plv ? plv->type : TY_POLY;
+          char src[64]; snprintf(src, sizeof src, "sp_poly_arr_get(_t%d, %d)", telem, pj);
+          emit_indent(b, indent + 2);
+          emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
+        }
+        emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+        for (int pj = 0; pj < npp; pj++) {
+          const char *pnj = block_param_name(c, block, pj);
+          if (!pnj) break;
+          LocalVar *plv = blk_sp2 ? scope_local(blk_sp2, pnj) : NULL;
+          TyKind pt = plv ? plv->type : TY_POLY;
+          emit_indent(b, indent + 2);
+          if (pj == 0) {
+            char src[32]; snprintf(src, sizeof src, "_t%d", telem);
+            emit_block_param_from_boxed(c, rename_local(pnj), pt, src, b);
+          } else {
+            buf_printf(b, "lv_%s = ", rename_local(pnj));
+            emit_block_param_nil(c, pt, b);
+            buf_puts(b, ";\n");
+          }
+        }
+        emit_indent(b, indent + 1); buf_puts(b, "}\n");
+        did_destruct = 1;
       }
       if (!did_destruct) {
         emit_indent(b, indent + 1);
