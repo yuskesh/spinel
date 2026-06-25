@@ -2,10 +2,9 @@
 #ifndef SP_RUNTIME_H
 #define SP_RUNTIME_H
 
-/* Platform feature-test macros (_XOPEN_SOURCE for Darwin's ucontext, etc.)
-   live at the top of sp_types.h so every translation unit that includes it --
-   the generated TU here, and the standalone libspinel_rt.a units like
-   sp_fiber.c that reach <ucontext.h> via sp_fiber.h -> sp_gc.h -> sp_types.h --
+/* Platform feature-test macros (_DARWIN_C_SOURCE for MAP_ANON, etc.) live at
+   the top of sp_types.h so every translation unit that includes it -- the
+   generated TU here, and the standalone libspinel_rt.a units like sp_fiber.c --
    define them before the first system header. Must precede <stdio.h>. */
 #include "sp_types.h"
 #include "sp_alloc.h"   /* shared string-heap state + allocators (extern; see sp_alloc.c) */
@@ -4370,9 +4369,5 @@ sp_StringScanner *sp_StringScanner_reset(sp_StringScanner *sc);
 /* The sp_ext_* shim wrappers are gone: string/object allocation, sp_box_*, and
    sp_PolyArray now live in the shared headers (sp_alloc.h / sp_gc.h), so lib C
    files (sp_pack.c, sp_strscan.c, sp_marshal.c, ...) allocate directly. */
-
-#ifdef __APPLE__
-#pragma clang diagnostic pop
-#endif
 
 #endif /* SP_RUNTIME_H */
