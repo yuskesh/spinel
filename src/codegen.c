@@ -882,8 +882,15 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   /* Emit fiber body function prototype before main bodies */
   buf_printf(&g_proc_protos, "static void %s(sp_Fiber *_fb);\n", fname);
 
-  /* Emit fiber body function into g_procs buffer */
-  Buf *pb = &g_procs;
+  /* Emit the fiber body function into a LOCAL buffer, not directly into
+     g_procs. A nested `Fiber.new` in this body re-enters emit_fiber_new while
+     we are mid-emission; if both wrote to g_procs the inner function
+     definition would land inside this one (an illegal C nested function).
+     Building into a local buffer lets the inner body append its own complete
+     definition to g_procs first; we append ours after it (both at file
+     scope). */
+  Buf body_buf = {0};
+  Buf *pb = &body_buf;
   buf_printf(pb, "static void %s(sp_Fiber *_fb) {\n", fname);
   buf_puts(pb, "    SP_GC_SAVE();\n");
 
@@ -1000,6 +1007,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   }
 
   buf_puts(pb, "}\n");
+
+  /* Append the completed body to g_procs. Any nested fiber bodies emitted
+     while building body_buf already appended themselves to g_procs, so they
+     precede this definition there; both sit at file scope. */
+  buf_puts(&g_procs, body_buf.p ? body_buf.p : "");
+  free(body_buf.p);
 
   /* Restore emission state */
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
