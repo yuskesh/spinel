@@ -10,6 +10,11 @@
 #include "sp_str.h"      /* sp_sym_inspect_key for the symbol hash-key short form */
 
 const char *sp_inspect_container(sp_RbVal v) {
+  /* The container is live across the sp_String allocations below; root it so a
+     GC mid-inspect can't free it -- otherwise inspecting a freshly built,
+     otherwise-unrooted collection (e.g. `p hash.flat_map { ... }`) is a
+     use-after-free under GC pressure. */
+  SP_GC_ROOT_RBVAL(v);
   int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
   mrb_int n = sp_json_len_fn ? sp_json_len_fn(v) : 0;
   if (kind == 1) {  /* array: [e0, e1, ...] */

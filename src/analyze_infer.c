@@ -2256,6 +2256,12 @@ else {
       return TY_BOOL;
     if (nt_ref(nt, id, "block") >= 0 && !strcmp(name, "sum"))
       return TY_POLY;   /* boxed accumulation via sp_poly_add */
+    if (nt_ref(nt, id, "block") >= 0 &&
+        (!strcmp(name, "flat_map") || !strcmp(name, "collect_concat") ||
+         !strcmp(name, "filter_map") || !strcmp(name, "partition")))
+      return TY_POLY_ARRAY;
+    if (nt_ref(nt, id, "block") >= 0 && !strcmp(name, "group_by"))
+      return TY_POLY_POLY_HASH;
     {
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
         int body = nt_ref(nt, block, "body");
