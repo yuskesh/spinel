@@ -46,7 +46,6 @@ static const char *sp_bt_srcfile = ""; /* toplevel .rb path, set by debug main()
 static void *sp_bt_buf[256];       /* frames captured at the last raise */
 static int sp_bt_n = 0;
 #endif
-#include <ucontext.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
