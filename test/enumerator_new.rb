@@ -1,8 +1,8 @@
-# Enumerator.new { |y| ... } is a fiber-backed external generator: `y << v` and
-# `y.yield(v)` produce values lazily, #next / #peek walk them, the generator
-# terminates with StopIteration, and #rewind restarts it. Works with infinite
-# generators via #take / #first. (`y.yield v` without parentheses is not
-# supported; use `y << v` or `y.yield(v)`.)
+# Enumerator.new { |y| ... } is a fiber-backed external generator: `y << v`,
+# `y.yield(v)` and the bare `y.yield v` (no parentheses) all produce values
+# lazily, #next / #peek walk them, the generator terminates with StopIteration,
+# and #rewind restarts it. Works with infinite generators via #take / #first.
+# (See enumerator_bare_yield.rb for the no-parentheses form.)
 
 e = Enumerator.new do |y|
   y << 1
