@@ -1,0 +1,8 @@
+raised (root yield): FiberError: attempt to yield on a not resumed fiber
+raised (transfer yield): FiberError: attempt to yield on a not resumed fiber
+raised (double resume): FiberError: attempt to resume a resumed fiber (double resume)
+11
+10
+99
+false
+[0, 1, 1, 2, 3, 5, 8, 13]
