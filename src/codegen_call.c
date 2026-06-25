@@ -4335,6 +4335,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(g_pre, "sp_catch_tag[sp_catch_top] = ");
       emit_catch_tag(c, argv[0], g_pre);
       buf_puts(g_pre, ";\n");
+      /* record the exception-handler depth at this catch's entry so a `throw`
+         can run intervening `ensure` blocks before delivering here. */
+      emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_exc_top[sp_catch_top] = sp_exc_top;\n");
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_top++;\n");
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "if (setjmp(sp_catch_stack[sp_catch_top-1]) == 0) {\n");

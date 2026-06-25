@@ -100,6 +100,15 @@ const char *g_ie_next_var = NULL;
 int g_ie_res_poly = 0;
 const char *g_result_var = NULL;
 int g_result_poly = 0;
+/* Non-lambda proc `return` support. While emitting a method that owns a
+   proc-return frame, g_method_pr_label / g_method_pr_var name the single-exit
+   goto label and the value var, so an explicit `return` funnels there (popping
+   the frame once) instead of returning directly. While emitting a returning
+   proc's body, g_proc_return_home is the C expression for the home frame index
+   (read from the proc capture), so `return` longjmps to the home method. */
+const char *g_method_pr_label = NULL;
+const char *g_method_pr_var = NULL;
+const char *g_proc_return_home = NULL;
 /* Loop-invariant string-length hoisting: while a loop whose receiver string is
    not mutated in its body is being emitted, g_hoist_len_recv holds that
    receiver's AST local name and g_hoist_len_var the C temp caching its length;

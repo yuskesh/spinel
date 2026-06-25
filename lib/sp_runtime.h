@@ -1213,6 +1213,9 @@ static mrb_bool sp_argf_eof(void) { return !sp_argf_ensure(); }
    The helper itself is defined further down (after sp_exc_msg /
    sp_exc_top are declared); only the prototype lives here. */
 static void sp_mark_in_flight_exceptions(void);
+/* Mark the current fiber's in-flight proc-return values; defined with the
+   proc-return machinery (sp_proc_home) further down. */
+static void sp_mark_proc_homes(void);
 
 /* Mark the regex globals as live during GC. Each holds a pointer to a
    string allocated via sp_str_alloc_raw on the str-heap; without this
@@ -1236,6 +1239,7 @@ static void sp_re_mark_globals(void) {
   for (mrb_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
   if (sp_argv_array_cache) sp_gc_mark(sp_argv_array_cache);
   sp_mark_in_flight_exceptions();
+  sp_mark_proc_homes();
   sp_mark_fiber_root_storage();
 }
 
@@ -3337,10 +3341,22 @@ static sp_StrArray *sp_caller(mrb_int start, mrb_bool have_len, mrb_int len) {
   return r;
 }
 
+/* Non-local-unwind state (a proc `return` or `throw` in flight while it runs the
+   ensures it passes over). Declared here, before sp_raise_cls, so a real raise
+   can clear it -- an exception raised inside an ensure during an unwind
+   supersedes that unwind. The machinery that uses it lives further down. */
+enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW };
+struct sp_proc_home;
+static int sp_unwind_kind = SP_UNWIND_NONE, sp_unwind_target = -1, sp_unwind_exc_top = 0;
+static struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (THROW uses sp_unwind_target) */
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   if (sp_bt_enabled) sp_bt_n = backtrace(sp_bt_buf, 256);
 #endif
+  /* A real exception supersedes any non-local unwind in flight (e.g. raised from
+     inside an `ensure` running during a proc-return / throw): clear the unwind so
+     an outer handler treats this as an exception, not a continued unwind. */
+  sp_unwind_kind = SP_UNWIND_NONE;
   if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
@@ -3480,6 +3496,7 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"RegexpError",           "StandardError"},
     {"StringScanner_Error",   "StandardError"},
     {"FiberError",            "StandardError"},
+    {"UncaughtThrowError",    "ArgumentError"},
     {"SyntaxError",           "ScriptError"},
     {"ScriptError",           "Exception"},
     {"StandardError",         "Exception"},
@@ -3539,6 +3556,7 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
     {"RegexpError",          "StandardError"},
     {"StringScanner_Error",  "StandardError"},
     {"FiberError",           "StandardError"},
+    {"UncaughtThrowError",   "ArgumentError"},
     {"SyntaxError",          "ScriptError"},
     {"ScriptError",          "Exception"},
     {"StandardError",        "Exception"},
@@ -3571,12 +3589,104 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
 void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError", msg); }
 /* sp_exc_is_a: see earlier definition (takes volatile sp_Exception *) */
 
+/* A non-local control-flow unwind -- a proc `return` or a `throw` -- runs the
+   `ensure` blocks it passes over before delivering to its target, like an
+   exception does. It first longjmps through the sp_exc_stack handler chain (each
+   handler runs its ensure), bounded by the exception depth recorded at the
+   target's entry, then delivers to the target. sp_unwind_resume drives each step;
+   the codegen-emitted exception handlers call it when an unwind is in flight.
+   The SP_UNWIND_* enum and sp_unwind_* state are declared earlier (before
+   sp_raise_cls, which clears them when a real exception supersedes an unwind). */
+
 #define SP_CATCH_STACK_MAX 64
 static jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];
 static const char *sp_catch_tag[SP_CATCH_STACK_MAX];
 static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
+static int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
 static volatile int sp_catch_top = 0;
-static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; while (i >= 0) { if (strcmp(sp_catch_tag[i], tag) == 0) { sp_catch_val[i] = val; sp_catch_top = i + 1; longjmp(sp_catch_stack[i], 1); } i--; } fprintf(stderr, "uncaught throw: %s\n", tag); exit(1); }
+static void sp_throw(const char *tag, mrb_int val) {
+  int i = sp_catch_top - 1;
+  while (i >= 0) {
+    if (strcmp(sp_catch_tag[i], tag) == 0) {
+      sp_catch_val[i] = val; sp_catch_top = i + 1;
+      if (sp_exc_top > sp_catch_exc_top[i]) {       /* run intervening ensures first */
+        sp_unwind_kind = SP_UNWIND_THROW; sp_unwind_target = i; sp_unwind_exc_top = sp_catch_exc_top[i];
+        longjmp(sp_exc_stack[sp_exc_top - 1], 1);
+      }
+      longjmp(sp_catch_stack[i], 1);
+    }
+    i--;
+  }
+  sp_raise_cls("UncaughtThrowError", sp_sprintf("uncaught throw :%s", tag));
+}
+
+/* ---- non-lambda proc `return` (non-local return to the home method) -------
+   A non-lambda proc's `return` returns from the method that created the proc.
+   The home method declares a `sp_proc_home` node on its own C stack and links it
+   onto a per-fiber chain (sp_proc_ret_head), capturing the node's fresh,
+   never-reused id into every returning proc it creates. The proc's `return`
+   walks the chain for that id and longjmps to the node's setjmp target, so the
+   home method returns the boxed value.
+
+   This mirrors CRuby's EC_PUSH_TAG tag chain: each node rides the home method's
+   C-stack frame (so depth is bounded by the C stack, like ordinary recursion,
+   not a fixed array), and the single chain head is swapped per fiber via
+   sp_exc_ctx, so fibers are isolated by construction. An escaped proc whose home
+   has returned -- or one called from another fiber, whose home node is on a
+   different (inactive) chain -- finds no matching id and raises LocalJumpError,
+   matching CRuby. Like sp_throw, a proc return runs the `ensure` blocks it passes
+   over (see the unwind machinery above); when there are none it longjmps straight
+   home. The `exc_top` field records the exception-handler depth at the method's
+   entry so intervening ensures run and so an exception that unwinds the home pops
+   the node (sp_proc_homes_unwind). */
+typedef struct sp_proc_home {
+  jmp_buf jb;                 /* the home method's setjmp target (on its C stack) */
+  sp_RbVal val;               /* the in-flight return value (nil until delivered) */
+  int exc_top;                /* sp_exc_top at the method's entry */
+  int catch_top;              /* sp_catch_top at the method's entry */
+  mrb_int id;                 /* fresh id captured by the home's returning procs */
+  struct sp_proc_home *prev;  /* enclosing home, forming the per-fiber chain */
+} sp_proc_home;
+static sp_proc_home *sp_proc_ret_head = NULL;
+static mrb_int sp_proc_home_seq = 0;
+static void sp_proc_return(mrb_int id, sp_RbVal v) {
+  for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev) {
+    if (h->id == id) {
+      h->val = v;
+      if (sp_exc_top > h->exc_top) {   /* run intervening ensures first */
+        sp_unwind_kind = SP_UNWIND_PROCRET; sp_unwind_home = h; sp_unwind_exc_top = h->exc_top;
+        longjmp(sp_exc_stack[sp_exc_top - 1], 1);
+      }
+      longjmp(h->jb, 1);
+    }
+  }
+  sp_raise_cls("LocalJumpError", "unexpected return");
+}
+/* Pop home nodes whose method an exception has unwound past (recorded exc_top now
+   above the live exception depth), so a later proc-return to a dead home misses
+   and raises LocalJumpError rather than longjmping into a freed C frame. Called
+   wherever a caught exception drops sp_exc_top. A no-op during a proc-return /
+   throw unwind: the target's exc_top is at or below the new depth. */
+static void sp_proc_homes_unwind(void) {
+  while (sp_proc_ret_head && sp_proc_ret_head->exc_top > sp_exc_top)
+    sp_proc_ret_head = sp_proc_ret_head->prev;
+}
+/* GC: mark the current fiber's chain of in-flight return values (suspended fibers
+   are handled by sp_exc_ctx_mark). Each node's val is sp_box_nil() until a return
+   is delivered, so this is cheap and safe when no return is in flight. */
+static void sp_mark_proc_homes(void) {
+  for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev) sp_mark_rbval(h->val);
+}
+/* Continue a non-local unwind after a handler has run its ensure: if more ensure
+   handlers lie between here and the target, longjmp to the next; otherwise
+   deliver to the target (the proc-return home node, or the matched catch slot). */
+static void sp_unwind_resume(void) {
+  if (sp_exc_top > sp_unwind_exc_top) longjmp(sp_exc_stack[sp_exc_top - 1], 1);
+  int kind = sp_unwind_kind;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  if (kind == SP_UNWIND_PROCRET) longjmp(sp_unwind_home->jb, 1);
+  longjmp(sp_catch_stack[sp_unwind_target], 1);
+}
 
 /* ---- Per-fiber exception/catch handler context (#1474) -------------------
    The handler stacks above are process-global, but begin/rescue handlers and
@@ -3589,7 +3699,9 @@ static void sp_throw(const char *tag, mrb_int val) { int i = sp_catch_top - 1; w
    free there). These are non-static: reached by name from libspinel_rt.a. */
 typedef struct {
   jmp_buf *es; const char **em; const char **ec; void **eo; int en, ecap;
-  jmp_buf *cs; const char **ct; mrb_int *cv;              int cn, ccap;
+  jmp_buf *cs; const char **ct; mrb_int *cv; int *cet;    int cn, ccap;
+  sp_proc_home *prhead;  /* this fiber's proc-return chain head (nodes on its C stack) */
+  int uk, ut, ue; sp_proc_home *uh;  /* transient unwind state (in flight only while running ensures) */
 } sp_exc_ctx_t;
 
 void *sp_exc_ctx_new(void) { return calloc(1, sizeof(sp_exc_ctx_t)); }
@@ -3597,7 +3709,7 @@ void sp_exc_ctx_free(void *p) {
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
   free(x->es); free(x->em); free(x->ec); free(x->eo);
-  free(x->cs); free(x->ct); free(x->cv); free(x);
+  free(x->cs); free(x->ct); free(x->cv); free(x->cet); free(x);
 }
 void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
@@ -3614,10 +3726,13 @@ void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   if (m > x->ccap) { x->ccap = m;
     x->cs = (jmp_buf *)realloc(x->cs, sizeof(jmp_buf) * m);
     x->ct = (const char **)realloc(x->ct, sizeof(char *) * m);
-    x->cv = (mrb_int *)realloc(x->cv, sizeof(mrb_int) * m); }
+    x->cv = (mrb_int *)realloc(x->cv, sizeof(mrb_int) * m);
+    x->cet = (int *)realloc(x->cet, sizeof(int) * m); }
   for (int i = 0; i < m; i++) { memcpy(x->cs[i], sp_catch_stack[i], sizeof(jmp_buf));
-    x->ct[i] = sp_catch_tag[i]; x->cv[i] = sp_catch_val[i]; }
+    x->ct[i] = sp_catch_tag[i]; x->cv[i] = sp_catch_val[i]; x->cet[i] = sp_catch_exc_top[i]; }
   x->cn = m;
+  x->prhead = sp_proc_ret_head;
+  x->uk = sp_unwind_kind; x->ut = sp_unwind_target; x->ue = sp_unwind_exc_top; x->uh = sp_unwind_home;
 }
 void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
@@ -3625,13 +3740,18 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
     sp_exc_msg[i] = x->em[i]; sp_exc_cls[i] = x->ec[i]; sp_exc_obj[i] = x->eo[i]; }
   sp_exc_top = x->en;
   for (int i = 0; i < x->cn; i++) { memcpy(sp_catch_stack[i], x->cs[i], sizeof(jmp_buf));
-    sp_catch_tag[i] = x->ct[i]; sp_catch_val[i] = x->cv[i]; }
+    sp_catch_tag[i] = x->ct[i]; sp_catch_val[i] = x->cv[i]; sp_catch_exc_top[i] = x->cet[i]; }
   sp_catch_top = x->cn;
+  sp_proc_ret_head = x->prhead;
+  sp_unwind_kind = x->uk; sp_unwind_target = x->ut; sp_unwind_exc_top = x->ue; sp_unwind_home = x->uh;
 }
 void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carried exc objects */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
   for (int i = 0; i < x->en; i++) if (x->eo[i]) sp_gc_mark(x->eo[i]);
+  /* a suspended fiber's proc-return chain (nodes on its preserved C stack) may
+     carry an in-flight return value; mark each so it survives a GC during yield. */
+  for (sp_proc_home *h = x->prhead; h; h = h->prev) sp_mark_rbval(h->val);
 }
 /* Trampoline base handler (#1474): the fiber trampoline arms a copy of its own
    setjmp buffer as the fiber's lowest handler, so an otherwise-unhandled raise

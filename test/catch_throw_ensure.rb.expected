@@ -1,0 +1,20 @@
+ensure-ret
+30
+inner
+outer
+1
+ensure-nonmatch
+7
+5
+9
+throw-ensure
+11
+between-ensure
+22
+33
+exc-ensure
+caught: boom
+uncaught throw :nope
+bare: uncaught throw :nope
+uncaught-ensure
+rescued-uncaught

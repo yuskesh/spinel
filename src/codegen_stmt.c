@@ -2130,6 +2130,57 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int n = 0;
   const int *a = args >= 0 ? nt_arr(c->nt, args, "arguments", &n) : NULL;
 
+  /* Inside a non-lambda proc body: `return` is non-local -- longjmp to the
+     creating method's frame with the boxed value (CRuby proc-return semantics). */
+  if (g_proc_return_home) {
+    emit_indent(b, indent);
+    if (n > 1) {
+      int ta = ++g_tmp;
+      buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+      for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+      buf_printf(b, " sp_proc_return(%s, sp_box_poly_array(_t%d)); }\n", g_proc_return_home, ta);
+    }
+    else {
+      buf_printf(b, "{ sp_proc_return(%s, ", g_proc_return_home);
+      if (n == 0) buf_puts(b, "sp_box_nil()");
+      else emit_boxed(c, a[0], b);
+      buf_puts(b, "); }\n");
+    }
+    return;
+  }
+
+  /* Inside a method that owns a proc-return frame: funnel every `return`
+     through the single exit that pops the frame, storing the value first. */
+  if (g_method_pr_label && g_ensure_depth == 0) {
+    emit_indent(b, indent);
+    buf_puts(b, "{ ");
+    if (g_method_pr_var) {
+      if (n > 1) {
+        int ta = ++g_tmp;
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+        for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+        buf_printf(b, " %s = _t%d; ", g_method_pr_var, ta);
+      }
+      else if (n == 1) {
+        buf_printf(b, "%s = ", g_method_pr_var);
+        TyKind r0 = comp_ntype(c, a[0]);
+        if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+        else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
+        else emit_tail_value(c, a[0], b);
+        buf_puts(b, "; ");
+      }
+      else {
+        const char *nilv = g_ret_type == TY_POLY ? "sp_box_nil()"
+                         : g_ret_type == TY_INT ? "SP_INT_NIL"
+                         : g_ret_type == TY_FLOAT ? "sp_float_nil()"
+                         : g_ret_type == TY_STRING ? "NULL" : default_value(g_ret_type);
+        buf_printf(b, "%s = %s; ", g_method_pr_var, nilv);
+      }
+    }
+    buf_printf(b, "goto %s; }\n", g_method_pr_label);
+    return;
+  }
+
   if (g_ensure_depth > 0) {
     /* Inside a begin..ensure body: defer the return until ensure runs. */
     EnsureCtx *ctx = &g_ensure_stack[g_ensure_depth - 1];
@@ -2404,31 +2455,56 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    /* A non-local unwind (proc return / throw) only passes through here; it is
+       not an exception, so skip rescue -- only the ensure (below) runs. */
+    emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {\n");
+    /* A real exception unwound past any proc-return home methods between the
+       raise and here; drop their now-dead nodes so a later proc-return misses
+       and raises LocalJumpError instead of longjmping into a freed C frame. */
+    emit_indent(b, indent + 2); buf_puts(b, "sp_proc_homes_unwind();\n");
     if (rescue >= 0) {
       /* A Fiber#kill signal bypasses every rescue clause -- defer it to the
          ensure + re-raise path (FiberKillSignal must match lib/sp_fiber.c) so
          this begin's ensure still runs, then it propagates toward the fiber. */
-      emit_indent(b, indent + 1);
+      emit_indent(b, indent + 2);
       buf_printf(b, "if (sp_str_eq((const char *)sp_last_exc_cls, \"FiberKillSignal\")) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; }\n",
                  eid, eid, eid);
-      emit_indent(b, indent + 1); buf_puts(b, "else {\n");
-      emit_rescue(c, rescue, b, indent + 2, fr, resultvar);
-      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      emit_indent(b, indent + 2); buf_puts(b, "else {\n");
+      emit_rescue(c, rescue, b, indent + 3, fr, resultvar);
+      emit_indent(b, indent + 2); buf_puts(b, "}\n");
     }
     else {
       /* No rescue: save exception info for re-raise after ensure runs.
          sp_exc_top has just been decremented so sp_exc_top is the right index. */
-      emit_indent(b, indent + 1);
+      emit_indent(b, indent + 2);
       buf_printf(b, "_excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top];\n",
                  eid, eid, eid);
     }
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
 
     g_ensure_depth--;
 
     /* Ensure label: reached by deferred-return goto AND by normal fall-through. */
     buf_printf(b, "_ensure%d: ;\n", eid);
+    /* Save the in-flight unwind state across the ensure body: a nested throw /
+       catch / proc-return that completes *inside* this ensure resets the globals
+       to SP_UNWIND_NONE, which would otherwise drop an outer unwind passing
+       through. An ensure that starts its own escaping unwind longjmps out before
+       the restore, so that new unwind correctly supersedes. */
+    emit_indent(b, indent);
+    buf_printf(b, "int _uk%d = sp_unwind_kind, _ut%d = sp_unwind_target, _ue%d = sp_unwind_exc_top; sp_proc_home *_uh%d = sp_unwind_home;\n",
+               eid, eid, eid, eid);
     emit_stmts(c, ensure_stmts, b, indent);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_unwind_kind = _uk%d; sp_unwind_target = _ut%d; sp_unwind_exc_top = _ue%d; sp_unwind_home = _uh%d;\n",
+               eid, eid, eid, eid);
+
+    /* A non-local unwind passing through has now run this ensure: continue to the
+       next handler or deliver to its target (never falls through to the
+       deferred-return / re-raise propagation below). */
+    emit_indent(b, indent);
+    buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
 
     emit_indent(b, indent);
     if (g_ensure_depth > 0) {
@@ -2495,17 +2571,34 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent); buf_puts(b, "}\n");
   emit_indent(b, indent); buf_puts(b, "else {\n");
   emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+  /* Drop home nodes a real exception unwound past (no-op for a throw/proc-return
+     pass-through, where sp_unwind_kind is set); see the tail-position begin. */
+  emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n");
+  /* A non-local unwind (proc return / throw) only passes through; skip rescue. */
   if (rescue >= 0) {
+    emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {\n");
     /* A Fiber#kill signal bypasses every rescue clause. This begin has no ensure
        to run first, so re-raise it straight away (FiberKillSignal must match
        lib/sp_fiber.c); it propagates toward the fiber's terminating trampoline. */
-    emit_indent(b, indent + 1);
+    emit_indent(b, indent + 2);
     buf_puts(b, "if (sp_str_eq((const char *)sp_last_exc_cls, \"FiberKillSignal\")) sp_raise_cls(\"FiberKillSignal\", sp_exc_msg[sp_exc_top]);\n");
-    emit_indent(b, indent + 1); buf_puts(b, "else {\n");
-    emit_rescue(c, rescue, b, indent + 2, fr, resultvar);
+    emit_indent(b, indent + 2); buf_puts(b, "else {\n");
+    emit_rescue(c, rescue, b, indent + 3, fr, resultvar);
+    emit_indent(b, indent + 2); buf_puts(b, "}\n");
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
   }
-  if (ensure_stmts >= 0) emit_stmts(c, ensure_stmts, b, indent + 1);
+  if (ensure_stmts >= 0) {
+    /* preserve an outer unwind across a nested one completing inside the ensure */
+    int uid = ++g_tmp;
+    emit_indent(b, indent + 1);
+    buf_printf(b, "int _uk%d = sp_unwind_kind, _ut%d = sp_unwind_target, _ue%d = sp_unwind_exc_top; sp_proc_home *_uh%d = sp_unwind_home;\n",
+               uid, uid, uid, uid);
+    emit_stmts(c, ensure_stmts, b, indent + 1);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_unwind_kind = _uk%d; sp_unwind_target = _ut%d; sp_unwind_exc_top = _ue%d; sp_unwind_home = _uh%d;\n",
+               uid, uid, uid, uid);
+  }
+  emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent); buf_puts(b, "}\n");
   g_retry_label = saved_retry;
 }
@@ -4150,6 +4243,9 @@ else {
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n");
+    /* A non-local unwind only passes through (no ensure here): continue it. */
+    emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
     if (r >= 0) emit_stmt(c, r, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
