@@ -4648,6 +4648,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (!strcmp(name, "alive?")) {
       buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
+    if (!strcmp(name, "kill") && argc == 0) {
+      buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
     if (!strcmp(name, "transfer")) {
       buf_puts(b, "sp_Fiber_transfer("); emit_expr(c, recv, b);
       for (int k = 0; k < argc; k++) {

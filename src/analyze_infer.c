@@ -1065,6 +1065,7 @@ else {
     if (!strcmp(name, "resume") || !strcmp(name, "transfer") || !strcmp(name, "raise")) return TY_POLY;
     if (!strcmp(name, "alive?")) return TY_BOOL;
     if (!strcmp(name, "value")) return TY_POLY;
+    if (!strcmp(name, "kill")) return TY_FIBER;   /* returns the receiver */
   }
 
   /* TY_RANDOM instance methods */

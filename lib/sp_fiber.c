@@ -184,12 +184,20 @@ static void sp_Fiber_scan(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->user_data)sp_gc_
 sp_Fiber*sp_Fiber_new(void(*body)(sp_Fiber*)){sp_Fiber*f=(sp_Fiber*)sp_gc_alloc(sizeof(sp_Fiber),sp_Fiber_fin,sp_Fiber_scan);{size_t _g=sp_fiber_guard();f->stack=(char*)mmap(NULL,_g+SP_FIBER_STACK_SIZE,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK,-1,0);if(f->stack==MAP_FAILED){f->stack=NULL;sp_raise_cls("FiberError","failed to allocate fiber stack");}mprotect(f->stack,_g,PROT_NONE);}f->state=0;f->transferred=0;f->body=body;f->yielded_value=sp_box_nil();f->resumed_value=sp_box_nil();f->user_data=NULL;f->saved_exc_top=0;f->saved_catch_top=0;f->exc_ctx=sp_exc_ctx_new();f->raised=0;f->raised_cls=NULL;f->raised_msg=NULL;f->raised_obj=NULL;f->inject=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;f->storage=NULL;f->saved_roots=NULL;f->saved_nroots=0;f->saved_roots_cap=0;f->fiber_next=NULL;f->fiber_prev=NULL;sp_fiber_list_add(f);sp_fiber_install_gc_hook();if(sp_fiber_current&&sp_fiber_current->storage){sp_Fiber*volatile _froot=f;int _pushed=0;if(sp_gc_nroots<SP_GC_STACK_MAX){sp_gc_roots[sp_gc_nroots++]=(void**)&_froot;_pushed=1;}f->storage=sp_FiberStore_dup((sp_FiberStore*)sp_fiber_current->storage);if(_pushed)sp_gc_nroots--;}return f;}
 sp_RbVal sp_Fiber_storage_get(sp_Fiber*f,sp_sym k){if(!f->storage)return sp_box_nil();return sp_FiberStore_get((sp_FiberStore*)f->storage,k);}
 void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){if(!f->storage)f->storage=sp_FiberStore_new();sp_FiberStore_set((sp_FiberStore*)f->storage,k,v);}
-/* Raise the exception queued by sp_Fiber_raise in the fiber's own context. Runs
-   at the fiber's suspension point (sp_Fiber_yield) or, for an unstarted fiber,
-   at body entry (the trampoline). Clears the slot first so a rescue/retry does
+/* Internal class name of the Fiber#kill signal. It is raised to unwind the
+   fiber (running ensure blocks) but is excluded from every user rescue clause by
+   the codegen (emit_begin), so only ensures run; the trampoline below recognizes
+   it and terminates without propagating. Must stay in sync with the literal the
+   codegen emits in src/codegen_stmt.c. */
+#define SP_FIBER_KILL_CLS "FiberKillSignal"
+
+/* Raise the exception queued by sp_Fiber_raise / sp_Fiber_kill in the fiber's
+   own context. Runs at the fiber's suspension point (sp_Fiber_yield) or, for an
+   unstarted fiber, at body entry (the trampoline). inject==2 is a kill signal;
+   inject==1 is an ordinary raise. Clears the slot first so a rescue/retry does
    not re-fire it. */
-static void sp_fiber_consume_inject(sp_Fiber*f){const char*cl=f->inj_cls;const char*ms=f->inj_msg;void*ob=f->inj_obj;f->inject=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;sp_fiber_reraise(cl,ms,ob);}
-static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);if(f->inject)sp_fiber_consume_inject(f);f->body(f);sp_exc_disarm();}else{f->raised=1;f->raised_cls=sp_exc_cur_cls();f->raised_msg=sp_exc_cur_msg();f->raised_obj=sp_exc_cur_obj();}f->state=3;if(f->transferred){sp_fiber_current=&sp_fiber_root;sp_ctx_swap(&f->ctx,&sp_fiber_root.ctx);}else{sp_ctx_swap(&f->ctx,&f->caller_ctx);}}
+static void sp_fiber_consume_inject(sp_Fiber*f){int kind=f->inject;const char*cl=f->inj_cls;const char*ms=f->inj_msg;void*ob=f->inj_obj;f->inject=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;if(kind==2)sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));else sp_fiber_reraise(cl,ms,ob);}
+static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);if(f->inject)sp_fiber_consume_inject(f);f->body(f);sp_exc_disarm();}else{const char*_cc=sp_exc_cur_cls();if(_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS)){/* killed: ensures already ran while unwinding; terminate without propagating */}else{f->raised=1;f->raised_cls=_cc;f->raised_msg=sp_exc_cur_msg();f->raised_obj=sp_exc_cur_obj();}}f->state=3;if(f->transferred){sp_fiber_current=&sp_fiber_root;sp_ctx_swap(&f->ctx,&sp_fiber_root.ctx);}else{sp_ctx_swap(&f->ctx,&f->caller_ctx);}}
 sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){if(f->state==3){sp_raise_cls("FiberError","attempt to resume a terminated fiber");}if(f->transferred){sp_raise_cls("FiberError","attempt to resume a transferred fiber");}if(f->state==1){sp_raise_cls("FiberError","attempt to resume a resumed fiber (double resume)");}f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;if(f->state==0){f->state=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&f->caller_ctx,&f->ctx);}else{f->state=1;sp_ctx_swap(&f->caller_ctx,&f->ctx);}sp_exc_ctx_save(f->exc_ctx);sp_exc_ctx_load(prev->exc_ctx);sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return f->yielded_value;}
 /* Fiber.yield is only valid inside a fiber entered via #resume. The root fiber
    was never resumed, and a fiber entered via #transfer has no resumer to return
@@ -204,6 +212,17 @@ sp_RbVal sp_Fiber_raise(sp_Fiber*f,const char*cls,const char*msg,void*obj){
   if(f->state==3){sp_raise_cls("FiberError","dead fiber called");}
   f->inject=1;f->inj_cls=cls;f->inj_msg=msg;f->inj_obj=obj;
   return sp_Fiber_resume(f,sp_box_nil());
+}
+/* Fiber#kill: terminate the fiber, running its ensure blocks. A suspended fiber
+   is resumed with a kill signal that unwinds it (ensures run, user rescues are
+   bypassed) until the trampoline terminates it. An unstarted fiber never ran its
+   body, so it is just marked dead. Returns the fiber, matching CRuby. */
+sp_Fiber*sp_Fiber_kill(sp_Fiber*f){
+  if(f->state==3)return f;             /* already dead: no-op */
+  if(f->state==0){f->state=3;return f;}/* unstarted: nothing to unwind */
+  f->inject=2;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;
+  sp_Fiber_resume(f,sp_box_nil());     /* runs ensures; the trampoline terminates it */
+  return f;
 }
 sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;if(f->state==0){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}else{f->state=1;sp_ctx_swap(&prev->ctx,&f->ctx);}sp_exc_ctx_save(f->exc_ctx);sp_exc_ctx_load(prev->exc_ctx);sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return prev->resumed_value;}
 

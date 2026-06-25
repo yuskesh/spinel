@@ -2404,7 +2404,15 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
     if (rescue >= 0) {
-      emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
+      /* A Fiber#kill signal bypasses every rescue clause -- defer it to the
+         ensure + re-raise path (FiberKillSignal must match lib/sp_fiber.c) so
+         this begin's ensure still runs, then it propagates toward the fiber. */
+      emit_indent(b, indent + 1);
+      buf_printf(b, "if (sp_str_eq((const char *)sp_last_exc_cls, \"FiberKillSignal\")) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; }\n",
+                 eid, eid, eid);
+      emit_indent(b, indent + 1); buf_puts(b, "else {\n");
+      emit_rescue(c, rescue, b, indent + 2, fr, resultvar);
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
     }
     else {
       /* No rescue: save exception info for re-raise after ensure runs.
@@ -2486,7 +2494,16 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent); buf_puts(b, "}\n");
   emit_indent(b, indent); buf_puts(b, "else {\n");
   emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
-  if (rescue >= 0) emit_rescue(c, rescue, b, indent + 1, fr, resultvar);
+  if (rescue >= 0) {
+    /* A Fiber#kill signal bypasses every rescue clause. This begin has no ensure
+       to run first, so re-raise it straight away (FiberKillSignal must match
+       lib/sp_fiber.c); it propagates toward the fiber's terminating trampoline. */
+    emit_indent(b, indent + 1);
+    buf_puts(b, "if (sp_str_eq((const char *)sp_last_exc_cls, \"FiberKillSignal\")) sp_raise_cls(\"FiberKillSignal\", sp_exc_msg[sp_exc_top]);\n");
+    emit_indent(b, indent + 1); buf_puts(b, "else {\n");
+    emit_rescue(c, rescue, b, indent + 2, fr, resultvar);
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+  }
   if (ensure_stmts >= 0) emit_stmts(c, ensure_stmts, b, indent + 1);
   emit_indent(b, indent); buf_puts(b, "}\n");
   g_retry_label = saved_retry;

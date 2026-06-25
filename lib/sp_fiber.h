@@ -30,6 +30,8 @@ sp_RbVal sp_Fiber_transfer(sp_Fiber *f, sp_RbVal val);
    is a pre-built exception object to raise instead. Returns the next yielded
    value, or re-raises in the caller if the fiber does not handle it. */
 sp_RbVal sp_Fiber_raise(sp_Fiber *f, const char *cls, const char *msg, void *obj);
+/* Fiber#kill: terminate the fiber (running its ensure blocks); returns it. */
+sp_Fiber *sp_Fiber_kill(sp_Fiber *f);
 mrb_bool sp_Fiber_alive(sp_Fiber *f);
 sp_RbVal sp_Fiber_storage_get(sp_Fiber *f, sp_sym k);
 void sp_Fiber_storage_set(sp_Fiber *f, sp_sym k, sp_RbVal v);
