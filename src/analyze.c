@@ -266,8 +266,25 @@ else {
   return 1;
 }
 
+/* `Fiber.new { }` / `Enumerator.new { }` / `Thread.new { }` run their block on a
+   fiber stack, so -- like an escaping proc -- an enclosing local they mutate must
+   live in a shared heap cell rather than be captured by value. */
+int a_is_fiber_or_gen_create(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty || strcmp(ty, "CallNode")) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || strcmp(nm, "new") || nt_ref(nt, id, "block") < 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0) return 0;
+  const char *rty = nt_type(nt, recv);
+  if (!rty || (strcmp(rty, "ConstantReadNode") && strcmp(rty, "ConstantPathNode"))) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  return rn && (!strcmp(rn, "Fiber") || !strcmp(rn, "Enumerator") || !strcmp(rn, "Thread"));
+}
+
 int a_proc_create_or_lifted(Compiler *c, int id) {
-  return is_proc_create(c, id) || a_block_is_lifted(c, id);
+  return is_proc_create(c, id) || a_block_is_lifted(c, id) || a_is_fiber_or_gen_create(c, id);
 }
 
 void mark_proc_captures(Compiler *c) {
@@ -279,6 +296,12 @@ void mark_proc_captures(Compiler *c) {
 
   for (int id = 0; id < nt->count; id++) {
     if (!a_proc_create_or_lifted(c, id)) continue;
+    /* A fiber/generator only needs a cell for a *value-type* capture, where a
+       by-value copy would drop the write. A captured heap object (string, array,
+       hash, ...) is already shared by pointer -- in-place mutation reaches the
+       enclosing scope -- and the cell machinery does not handle some of those
+       types (e.g. a mutable-string buffer), so leave them by value. */
+    int fib_create = a_is_fiber_or_gen_create(c, id);
     int body = a_proc_body(c, id);
     if (body < 0) continue;
     int encl = c->nscope[id];
@@ -299,7 +322,12 @@ void mark_proc_captures(Compiler *c) {
         const char *wn = nt_str(nt, w, "name");
         if (wn && !strcmp(wn, nm)) owned = 1;
       }
-      if (owned) lv->is_cell = 1;
+      if (owned) {
+        if (fib_create && lv->type != TY_INT && lv->type != TY_BOOL &&
+            lv->type != TY_FLOAT && lv->type != TY_POLY)
+          continue;   /* fiber capture of a heap object: shared by pointer, no cell */
+        lv->is_cell = 1;
+      }
     }
     free(params.v); free(used.v);
   }

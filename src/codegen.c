@@ -768,15 +768,18 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   NameSet fib_used = {0};
   if (body >= 0) proc_collect_used(c, body, &fib_used);
 
-  /* caps: outer-scope vars referenced in body but not written in body */
+  /* caps: outer-scope vars referenced in the body. A var written in the body is
+     normally a fiber-body local (not captured) -- EXCEPT a celled one, which is
+     captured by its shared heap cell pointer so the write reaches the enclosing
+     scope (matching escaping-proc capture). */
   NameSet caps = {0};
   if (encl) {
     for (int u = 0; u < fib_used.n; u++) {
       const char *nm = fib_used.v[u];
       if (bp0 && !strcmp(nm, bp0)) continue;
-      if (nameset_has(&fib_locals, nm)) continue;
       LocalVar *lv = scope_local(encl, nm);
       if (!lv || lv->type == TY_UNKNOWN) continue;
+      if (nameset_has(&fib_locals, nm) && !lv->is_cell) continue;
       nameset_add(&caps, nm);
     }
   }
@@ -798,9 +801,18 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
     if (cap_self) buf_printf(&g_proc_protos, " sp_%s *self_ptr;", cap_self_class);
     for (int i = 0; i < ncap; i++) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
-      TyKind ct = lv ? lv->type : TY_POLY;
-      buf_printf(&g_proc_protos, " "); emit_ctype(c, ct, &g_proc_protos);
-      buf_printf(&g_proc_protos, " %s;", caps.v[i]);
+      if (lv && lv->is_cell) {
+        /* a shared heap-cell pointer (see emit_scope_decls): float -> mrb_float*,
+           poly -> sp_RbVal*, everything else laundered through mrb_int*. */
+        const char *cty = (lv->type == TY_FLOAT) ? "mrb_float"
+                        : (lv->type == TY_POLY) ? "sp_RbVal" : "mrb_int";
+        buf_printf(&g_proc_protos, " %s *%s;", cty, caps.v[i]);
+      }
+      else {
+        TyKind ct = lv ? lv->type : TY_POLY;
+        buf_printf(&g_proc_protos, " "); emit_ctype(c, ct, &g_proc_protos);
+        buf_printf(&g_proc_protos, " %s;", caps.v[i]);
+      }
     }
     buf_printf(&g_proc_protos, " } _fib_cap_%d;\n", fid);
     buf_printf(&g_proc_protos, "static void _fib_cap_scan_%d(void *p) {\n", fid);
@@ -810,7 +822,10 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
     for (int i = 0; i < ncap; i++) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
       TyKind ct = lv ? lv->type : TY_POLY;
-      if (fiber_cap_needs_root(ct)) {
+      if (lv && lv->is_cell) {
+        buf_printf(&g_proc_protos, "  if (_c->%s) sp_gc_mark((void *)_c->%s);\n", caps.v[i], caps.v[i]);
+      }
+      else if (fiber_cap_needs_root(ct)) {
         if (ct == TY_POLY) buf_printf(&g_proc_protos, "  sp_mark_rbval(_c->%s);\n", caps.v[i]);
         else buf_printf(&g_proc_protos, "  if (_c->%s) sp_gc_mark((void *)_c->%s);\n", caps.v[i], caps.v[i]);
       }
@@ -846,6 +861,15 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
     }
     for (int i = 0; i < ncap; i++) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
+      if (lv && lv->is_cell) {
+        /* unpack the shared cell pointer; reads/writes go through (*_cell_<name>)
+           (emit_local_ref), so the write reaches the enclosing scope. */
+        const char *cty = (lv->type == TY_FLOAT) ? "mrb_float"
+                        : (lv->type == TY_POLY) ? "sp_RbVal" : "mrb_int";
+        buf_printf(pb, "    %s *_cell_%s = _fc->%s;\n", cty, caps.v[i], caps.v[i]);
+        buf_printf(pb, "    SP_GC_ROOT(_cell_%s);\n", caps.v[i]);
+        continue;
+      }
       TyKind ct = lv ? lv->type : TY_POLY;
       const char *rn = rename_local(caps.v[i]);
       buf_printf(pb, "    "); emit_ctype(c, ct, pb);
@@ -958,9 +982,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
       buf_printf(g_pre, "_t%d->self_ptr = %s;\n", tc, sv_self ? sv_self : "self");
     }
     for (int i = 0; i < ncap; i++) {
-      const char *rn = rename_local(caps.v[i]);
+      LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "_t%d->%s = lv_%s;\n", tc, caps.v[i], rn);
+      if (lv && lv->is_cell)
+        buf_printf(g_pre, "_t%d->%s = _cell_%s;\n", tc, caps.v[i], caps.v[i]);   /* the shared cell pointer */
+      else
+        buf_printf(g_pre, "_t%d->%s = lv_%s;\n", tc, caps.v[i], rename_local(caps.v[i]));
     }
     if (as_gen) {
       buf_printf(b, "sp_Enumerator_new_gen(%s, _t%d)", fname, tc);
