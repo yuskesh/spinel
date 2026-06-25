@@ -758,11 +758,6 @@ static void sp_IntIntHash_clear(sp_IntIntHash*h){if(!h)return;for(mrb_int i=0;i<
    mapping each distinct element to its occurrence count. */
 static sp_IntIntHash*sp_IntArray_tally_int(sp_IntArray*a){sp_IntIntHash*h=sp_IntIntHash_new();if(!a)return h;for(mrb_int i=0;i<a->len;i++){mrb_int k=a->data[a->start+i];mrb_int c=sp_IntIntHash_has_key(h,k)?sp_IntIntHash_get(h,k):0;sp_IntIntHash_set(h,k,c+1);}return h;}
 
-/* Reuse an existing StrArray for split, avoiding GC alloc.
-   Clears a->len and refills.  Substring strings are still malloc'd. */
-/* Extract the n-th field (0-based) from s split by sep, without
-   allocating a full StrArray.  Returns a newly allocated string.
-   If the field doesn't exist, returns "". */
 /* sp_int_to_s / sp_float_to_s moved to sp_alloc.h (shared so lib/sp_json.c can
    format numbers). String-interpolation of an int slot: a nil sentinel renders
    as the empty string (CRuby interpolates nil as ""), every other value as its
@@ -789,101 +784,11 @@ static inline mrb_float sp_float_clamp_ck(mrb_float v,mrb_float lo,mrb_float hi)
   if(v!=v)sp_raise_cls("ArgumentError",sp_sprintf("comparison of Float with %s failed",sp_float_to_s(lo)));
   return sp_float_clamp(v,lo,hi);
 }
-/* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
-   plus any non-printable byte as \xNN. Output is always ASCII-safe. */
 /* `:name`, or `:"name"` when the name needs quoting -- shares the
    name-string predicates in lib/sp_str.c with the hash-key short form. */
 static const char *sp_sym_inspect(sp_sym id) { return sp_sym_inspect_name(sp_sym_to_s(id)); }
-/* Issue #791: loop to `i < l` and write the NUL terminator explicitly.
-   The original `<= l` form worked because sp_str_alloc_raw(l+1) makes
-   index l valid, but it's brittle if allocation changes. Issue #797
-   adds the NULL guard. */
-/* String#undump: reverse of String#dump. The argument must be wrapped in
-   double quotes; the escapes dump can emit (\n \t \r \f \v \a \b \e \s \0
-   \" \\ \# \xHH \uHHHH \u{...}) are decoded back to bytes. The decoded
-   string is never longer than the dumped form, so one buffer suffices. */
-/* _sp_hexval moved to lib/sp_str.c with its sole caller sp_str_undump. */
-/* String#dump: a double-quoted, escaped form that sp_str_undump reverses.
-   UTF-8 high bytes pass through literally (undump copies them back), so a
-   dump/undump round-trip is byte-identical. */
-/* Issue #797: NULL guards on receiver + needle for the chunk of
-   string functions that read directly into a non-checked strlen. */
-/* Issue #758: NULL guard + bound the start so a negative result from
-   sp_str_index doesn't underflow the source pointer. */
-/* The ASCII same-length carry paths below allocate l+2 bytes (room for a
-   prepend) but return a string of length l, leaving the heap header's len
-   field one too large. Callers that read sp_str_byte_len (e.g. concat) then
-   copy a trailing NUL. The wrapper normalizes the header len to strlen;
-   succ never produces an embedded NUL so this is always correct. */
 static const char*sp_gets(void){char buf[4096];if(!fgets(buf,sizeof(buf),stdin))return NULL;size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);return r;}
 static sp_StrArray*sp_readlines(void){sp_StrArray*a=sp_StrArray_new();char buf[4096];while(fgets(buf,sizeof(buf),stdin)){size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);sp_StrArray_push(a,r);}return a;}
-/* strip / lstrip / rstrip. CRuby strips the set "\0\t\n\v\f\r " from the
-   ends -- i.e. isspace() plus the NUL byte. Use sp_str_byte_len (not
-   strlen) so a heap string carrying an embedded NUL (e.g. from pack /
-   concat) is measured and stripped correctly; the result is a
-   length-tracked heap string so any interior NUL survives. (A frozen
-   literal with an embedded NUL is still truncated at the C level -- that
-   needs length-tracked literals, out of scope.) */
-
-/* Issue #881: `"hello!".chomp("!")` strips the explicit separator.
-   Empty sep strips any trailing newlines (CRuby paragraph mode).
-   NULL sep is caller's responsibility (codegen routes nil to a
-   no-op before calling). */
-/* Same as sp_str_split but removes trailing empty strings
-   (CRuby default limit behavior: split without limit drops
-   trailing empties; split(sep, -1) keeps them). */
-/* `s.split(sep, n)` with explicit limit. Positive n caps the result
-   at n elements: the last element holds the unsplit remainder.
-   n == 0 means "no limit" and drops trailing empty strings (same as
-   the no-arg default); n < 0 means "no limit" but keeps trailing
-   empties. Empty separator works the same as the no-limit path --
-   splits into Unicode characters; the limit caps the array.
-   Issue #619 puzzle 2. */
-/* `s.split` / `s.split(nil)` -- whitespace mode: split on runs of
-   ASCII whitespace, skip leading whitespace. Issue #507: the no-arg
-   form previously emitted `sp_str_split(s, 0)` and segfaulted at
-   strlen(NULL). */
-/* String#lines: split on \n but PRESERVE the trailing newline on each
-   line (CRuby semantics). The last line keeps its terminator if present;
-   if absent, it just stops there. Empty string returns an empty array.
-   `end` is computed once at entry so a string with no newlines avoids
-   a redundant strlen call on the trailing piece. */
-/* Issue #827: gsub previously returned a raw malloc buffer. The GC's
-   sp_mark_string writes byte[-1] = 0xfc, which on a raw malloc buffer
-   clobbers malloc metadata. Build into a scratch buffer, then copy
-   into a sp_str_alloc'd buffer that has the GC marker byte. */
-/* Issue #850: empty pattern inserts the replacement between every
-   character (and at the start). CRuby walks codepoint-by-codepoint;
-   spinel's gsub is byte-oriented so we mirror that with UTF-8 stride
-   to keep multi-byte characters intact. */
-/* Returns a *character* offset (codepoint index), not a byte offset. */
-/* Issue #759: NULL sub to strstr is UB. Issue #847: nil sub raises
-   TypeError per MRI rather than silently returning -1 (would conflate
-   "nil arg" with "not found"). Self NULL stays -1 -- shouldn't happen
-   but keep defensive. */
-/* `s.index(sub, start)` -- search starts at codepoint index `start`.
-   Negative start counts back from the end of the string. Returns the
-   absolute codepoint offset of the match (not relative to start), or
-   -1 when no match exists at or after start. Out-of-range starts
-   (start > length) return -1, matching CRuby. The codepoint counter
-   begins at `start` and walks from `s + boff`, so the "walk all
-   matches" loop is O(N) total rather than O(N^2). */
-/* `s.rindex(sub, pos)` — find the rightmost occurrence of sub at or
-   before codepoint index pos. Walks all matches and keeps the last
-   one whose codepoint index <= pos. */
-
-/* Single-character form of `s[i]`. Returns NULL on out-of-bounds to
-   match CRuby's `"hello"[20] -> nil`. The two-arg `s[i, len]` /
-   range forms keep returning "" on OOB via sp_str_sub_range; only
-   the bare single-int index aliases here. Issue #619 puzzle 3. */
-/* String#byteslice(start,len): byte-indexed (unlike the char-indexed
-   sp_str_sub_range). Negative start counts from the byte length. Out of
-   range yields the empty string, matching slice's "" rather than CRuby nil. */
-/* Char-indexed variant; the second arg used to be a hoisted byte length, now a
-   hoisted codepoint count.  We don't need it for correctness, but keeping the
-   ABI lets callers pass it without a wrapper. */
-/* String s[start..end] / s[start...end] with possibly negative
-   endpoints. Mirrors sp_IntArray_slice_range; issue #496. */
 const char*sp_sprintf(const char*fmt,...){char _sp_tmp[4096];va_list ap;va_start(ap,fmt);int _sp_n=vsnprintf(_sp_tmp,sizeof(_sp_tmp),fmt,ap);va_end(ap);if(_sp_n<0)_sp_n=0;char*b=sp_str_alloc((size_t)_sp_n);if(_sp_n<(int)sizeof(_sp_tmp)){memcpy(b,_sp_tmp,(size_t)_sp_n);}else{/* result didn't fit the stack temp; re-render at full width (sp_str_alloc gives _sp_n bytes + NUL) so long string interpolations aren't truncated. re-arm the va_list rather than va_copy so the common fast path pays nothing */va_start(ap,fmt);vsnprintf(b,(size_t)_sp_n+1,fmt,ap);va_end(ap);}return b;}
 /* Use a temp pointer for realloc so the original buffer is not leaked
    on allocation failure. Match the perror+exit pattern used elsewhere

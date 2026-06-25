@@ -24,6 +24,9 @@ static int _sp_hexval(unsigned char d){return (d<='9')?(d-'0'):(tolower(d)-'a'+1
 int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp){for(size_t i=0;i<n;i++)if(cps[i]==cp)return 1;return 0;}
 mrb_int sp_str_casecmp(const char*a,const char*b){if(!a||!b)return a==b?0:(a?1:-1);for(;;){int ca=tolower((unsigned char)*a),cb=tolower((unsigned char)*b);if(ca!=cb)return ca<cb?-1:1;if(!*a)return 0;a++;b++;}}
 mrb_bool sp_str_valid_encoding(const char*s){if(!s)return TRUE;const unsigned char*p=(const unsigned char*)s;while(*p){unsigned c=*p;if(c<0x80){p++;continue;}int extra;unsigned cp;unsigned min;if((c&0xE0)==0xC0){extra=1;cp=c&0x1F;min=0x80;}else if((c&0xF0)==0xE0){extra=2;cp=c&0x0F;min=0x800;}else if((c&0xF8)==0xF0){extra=3;cp=c&0x07;min=0x10000;}else return FALSE;p++;for(int i=0;i<extra;i++){if((*p&0xC0)!=0x80)return FALSE;cp=(cp<<6)|(*p&0x3F);p++;}if(cp<min)return FALSE;if(cp>=0xD800&&cp<=0xDFFF)return FALSE;if(cp>0x10FFFF)return FALSE;}return TRUE;}
+/* Extract the n-th field (0-based) from s split by sep, without
+   allocating a full StrArray.  Returns a newly allocated string.
+   If the field doesn't exist, returns "". */
 const char*sp_str_field(const char*s,const char*sep,mrb_int n){
   size_t sl=strlen(sep);mrb_int cur=0;const char*p=s;
   if(sl==0)return sp_str_empty;
@@ -42,6 +45,8 @@ const char*sp_str_concat4(const char*a,const char*b,const char*c,const char*d){i
 /* Concatenate N strings into a single GC-managed buffer. */
 /* Issue #760: NULL entries treated as empty strings. */
 const char*sp_str_concat_arr(const char *const *parts,int n){size_t total=0;for(int i=0;i<n;i++)total+=sp_str_byte_len(parts[i]?parts[i]:"");char*r=sp_str_alloc(total);char*p=r;for(int i=0;i<n;i++){const char*s=parts[i]?parts[i]:"";size_t sl=sp_str_byte_len(s);memcpy(p,s,sl);p+=sl;}return r;}
+/* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
+   plus any non-printable byte as \xNN. Output is always ASCII-safe. */
 const char*sp_str_inspect(const char*s){if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=(sl*4)+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c<0x20||c==0x7f){snprintf(r+o,5,"\\x%02X",c);o+=4;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
 /* A symbol prints without quotes when its name is a plain identifier (an
    @ivar / @@cvar / $gvar, or a bare name optionally ending in ? ! =) or a
@@ -81,6 +86,9 @@ const char *sp_sym_inspect_key(const char *name) {
 const char*sp_str_upcase(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++)r[i]=toupper((unsigned char)s[i]);r[l]=0;return r;}
 const char*sp_str_downcase(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++)r[i]=tolower((unsigned char)s[i]);r[l]=0;return r;}
 const char*sp_str_swapcase(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char c=(unsigned char)s[i];if(isupper(c))r[i]=tolower(c);else if(islower(c))r[i]=toupper(c);else r[i]=s[i];}r[l]=0;return r;}
+/* String#dump: a double-quoted, escaped form that sp_str_undump reverses.
+   UTF-8 high bytes pass through literally (undump copies them back), so a
+   dump/undump round-trip is byte-identical. */
 const char*sp_str_dump(const char*s){
   if(!s)return sp_str_empty;
   size_t n=strlen(s);
@@ -108,8 +116,19 @@ const char*sp_str_dump(const char*s){
 const char*sp_str_delete_prefix(const char*s,const char*p){if(!s)return sp_str_empty;if(!p)return s;size_t sl=strlen(s),pl=strlen(p);if(pl<=sl&&memcmp(s,p,pl)==0){char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s+pl,sl-pl+1);return r;}char*r=sp_str_alloc_raw(sl+1);memcpy(r,s,sl+1);return r;}
 const char*sp_str_substr(const char*s,mrb_int start,mrb_int len){if(!s||len<=0){char*r=sp_str_alloc_raw(1);r[0]=0;return r;}if(start<0)start=0;char*r=sp_str_alloc_raw(len+1);memcpy(r,s+start,len);r[len]=0;return r;}
 const char*sp_str_delete_suffix(const char*s,const char*p){if(!s)return sp_str_empty;if(!p)return s;size_t sl=strlen(s),pl=strlen(p);if(pl<=sl&&memcmp(s+sl-pl,p,pl)==0){char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s,sl-pl);r[sl-pl]=0;return r;}char*r=sp_str_alloc_raw(sl+1);memcpy(r,s,sl+1);return r;}
+/* strip / lstrip / rstrip. CRuby strips the set "\0\t\n\v\f\r " from the
+   ends -- i.e. isspace() plus the NUL byte. Use sp_str_byte_len (not
+   strlen) so a heap string carrying an embedded NUL (e.g. from pack /
+   concat) is measured and stripped correctly; the result is a
+   length-tracked heap string so any interior NUL survives. (A frozen
+   literal with an embedded NUL is still truncated at the C level -- that
+   needs length-tracked literals, out of scope.) */
 const char*sp_str_strip(const char*s){if(!s)return sp_str_empty;size_t len=sp_str_byte_len(s);size_t a=0;while(a<len&&(isspace((unsigned char)s[a])||s[a]=='\0'))a++;size_t b=len;while(b>a&&(isspace((unsigned char)s[b-1])||s[b-1]=='\0'))b--;size_t n=b-a;char*r=sp_str_alloc(n);memcpy(r,s+a,n);r[n]=0;return r;}
 const char*sp_str_chomp(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);if(l>=2&&s[l-2]=='\r'&&s[l-1]=='\n')l-=2;else if(l>0&&s[l-1]=='\n')l--;else if(l>0&&s[l-1]=='\r')l--;char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
+/* Issue #881: `"hello!".chomp("!")` strips the explicit separator.
+   Empty sep strips any trailing newlines (CRuby paragraph mode).
+   NULL sep is caller's responsibility (codegen routes nil to a
+   no-op before calling). */
 const char *sp_str_chomp_sep(const char *s, const char *sep) {
   if (!s) return sp_str_empty;
   size_t l = strlen(s);
@@ -133,9 +152,12 @@ else {
   return r;
 }
 const char*sp_str_chop(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);if(l>0){if(l>=2&&s[l-2]=='\r'&&s[l-1]=='\n')l-=2;else l--;}char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
+/* Issue #797: NULL guards on receiver + needle for the chunk of
+   string functions that read directly into a non-checked strlen. */
 mrb_bool sp_str_include(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;return strstr(s,sub)!=NULL;}
 mrb_bool sp_str_start_with(const char*s,const char*p){if(!p)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;return strncmp(s,p,strlen(p))==0;}
 mrb_bool sp_str_end_with(const char*s,const char*suf){if(!suf)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)return FALSE;size_t ls=strlen(s),lsuf=strlen(suf);if(lsuf>ls)return FALSE;return strcmp(s+ls-lsuf,suf)==0;}
+/* partition: [before, sep, after] at the first sep; no match -> [s, "", ""]. */
 /* partition: [before, sep, after] at the first sep; no match -> [s, "", ""]. */
 sp_StrArray *sp_str_partition(const char *s, const char *sep) {
   SP_GC_ROOT(s); SP_GC_ROOT(sep);
@@ -150,6 +172,7 @@ sp_StrArray *sp_str_partition(const char *s, const char *sep) {
   return r;
 }
 /* rpartition: split at the last sep; no match -> ["", "", s]. */
+/* rpartition: split at the last sep; no match -> ["", "", s]. */
 sp_StrArray *sp_str_rpartition(const char *s, const char *sep) {
   SP_GC_ROOT(s); SP_GC_ROOT(sep);
   sp_StrArray *r = sp_StrArray_new();
@@ -163,8 +186,16 @@ sp_StrArray *sp_str_rpartition(const char *s, const char *sep) {
   sp_StrArray_push(r, sp_str_byteslice(s, pre + sl, bl - pre - sl));
   return r;
 }
+/* String#lines: split on \n but PRESERVE the trailing newline on each
+   line (CRuby semantics). The last line keeps its terminator if present;
+   if absent, it just stops there. Empty string returns an empty array.
+   `end` is computed once at entry so a string with no newlines avoids
+   a redundant strlen call on the trailing piece. */
 sp_StrArray*sp_str_lines(const char*s){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;const char*end=s+strlen(s);const char*p=s;while(p<end){const char*nl=strchr(p,'\n');size_t n=nl?(size_t)(nl-p+1):(size_t)(end-p);char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);if(!nl)break;p=nl+1;}return a;}
 sp_StrArray*sp_str_lines_chomp(const char*s){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;const char*end=s+strlen(s);const char*p=s;while(p<end){const char*nl=strchr(p,'\n');size_t n=nl?(size_t)(nl-p):(size_t)(end-p);if(nl&&nl>s&&nl[-1]=='\r')n--;char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);if(!nl)break;p=nl+1;}return a;}
+/* String#byteslice(start,len): byte-indexed (unlike the char-indexed
+   sp_str_sub_range). Negative start counts back from the byte length.
+   Out-of-range yields the empty string rather than CRuby nil. */
 const char*sp_str_byteslice(const char*s,mrb_int start,mrb_int len){mrb_int bl=(mrb_int)sp_str_byte_len(s);if(start<0)start+=bl;if(start<0||start>bl||len<0){return &("\xff" "")[1];}if(start+len>bl)len=bl-start;if(len<=0){return &("\xff" "")[1];}char*r=sp_str_alloc_raw(len+1);memcpy(r,s+start,len);r[len]=0;return r;}
 /* String#ascii_only?: 1 iff every byte is in the 7-bit ASCII range. */
 int sp_str_ascii_only(const char*s){mrb_int bl=(mrb_int)sp_str_byte_len(s);for(mrb_int i=0;i<bl;i++){if((unsigned char)s[i]>=0x80)return 0;}return 1;}
@@ -306,6 +337,8 @@ uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n){
   *out_n=n;
   return cps;
 }
+/* Reuse an existing StrArray for split, avoiding GC alloc.
+   Clears a->len and refills.  Substring strings are still malloc'd. */
 void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep){
   SP_GC_ROOT(a);
   SP_GC_ROOT(s);
@@ -334,6 +367,10 @@ void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep){
     p=f+sl;
   }
 }
+/* String#undump: reverse of String#dump. The argument must be wrapped in
+   double quotes; the escapes dump can emit (\n \t \r \f \v \a \b \e \s \0
+   \" \\ \# \xHH \uHHHH \u{...}) are decoded back to bytes. The decoded
+   string is never longer than the dumped form, so one buffer suffices. */
 const char*sp_str_undump(const char*s){
   if(!s)return sp_str_empty;
   size_t n=strlen(s);
@@ -359,6 +396,11 @@ const char*sp_str_undump(const char*s){
   out[oi]=0;return out;
 }
 const char*sp_str_succ_impl(const char*s){if(!s)return sp_str_empty;size_t l=strlen(s);if(l==0){char*r=sp_str_alloc_raw(1);r[0]=0;return r;}/* Find start of last codepoint */size_t lc=l-1;while(lc>0&&((unsigned char)s[lc]&0xC0)==0x80)lc--;if((unsigned char)s[lc]>=0x80){/* Multibyte tail: increment its codepoint */uint32_t cp;sp_utf8_decode(s+lc,&cp);cp++;char enc[4];int el=sp_utf8_encode(cp,enc);char*r=sp_str_alloc_raw(lc+el+1);memcpy(r,s,lc);memcpy(r+lc,enc,el);r[lc+el]=0;return r;}/* ASCII tail: existing carry logic */char*r=sp_str_alloc_raw(l+2);memcpy(r,s,l+1);mrb_int i=(mrb_int)l-1;while(i>=0){unsigned char c=(unsigned char)r[i];if(c>='0'&&c<'9'){r[i]=c+1;return r;}if(c=='9'){r[i]='0';i--;continue;}if(c>='a'&&c<'z'){r[i]=c+1;return r;}if(c=='z'){r[i]='a';i--;continue;}if(c>='A'&&c<'Z'){r[i]=c+1;return r;}if(c=='Z'){r[i]='A';i--;continue;}r[i]=c+1;return r;}memmove(r+1,r,l+1);if(r[1]=='0')r[0]='1';else if(r[1]=='a')r[0]='a';else if(r[1]=='A')r[0]='A';else r[0]=r[1];return r;}
+/* The ASCII same-length carry paths in succ_impl allocate l+2 bytes (room for
+   a prepend) but return a string of length l, leaving the heap header's len
+   field one too large. Callers that read sp_str_byte_len (e.g. concat) then
+   copy a trailing NUL. This wrapper normalizes the header len to strlen; succ
+   never produces an embedded NUL so this is always correct. */
 const char*sp_str_succ(const char*s){const char*r=sp_str_succ_impl(s);if(r){unsigned char m=((const unsigned char*)r)[-1];if(m==0xfe||m==0xfc)sp_str_set_len((char*)r,strlen(r));}return r;}
 sp_StrArray*sp_str_split(const char*s,const char*sep){
   SP_GC_ROOT(s);
@@ -367,7 +409,17 @@ sp_StrArray*sp_str_split(const char*s,const char*sep){
   sp_str_split_into(a,s,sep);
   return a;
 }
+/* Same as sp_str_split but removes trailing empty strings
+   (CRuby default limit behavior: split without limit drops
+   trailing empties; split(sep, -1) keeps them). */
 sp_StrArray*sp_str_split_drop_trailing(const char*s,const char*sep){sp_StrArray*a=sp_str_split(s,sep);while(a->len>0&&a->data[a->len-1][0]==0)a->len--;return a;}
+/* `s.split(sep, n)` with explicit limit. Positive n caps the result
+   at n elements: the last element holds the unsplit remainder.
+   n == 0 means "no limit" and drops trailing empty strings (same as
+   the no-arg default); n < 0 means "no limit" but keeps trailing
+   empties. Empty separator works the same as the no-limit path --
+   splits into Unicode characters; the limit caps the array.
+   Issue #619 puzzle 2. */
 sp_StrArray*sp_str_split_limit(const char*s,const char*sep,mrb_int n){
   if(n==0)return sp_str_split_drop_trailing(s,sep);
   if(n<0)return sp_str_split(s,sep);
@@ -404,6 +456,10 @@ sp_StrArray*sp_str_split_limit(const char*s,const char*sep,mrb_int n){
   sp_str_split_push(a,p,strlen(p));
   return a;
 }
+/* `s.split` / `s.split(nil)` -- whitespace mode: split on runs of
+   ASCII whitespace, skip leading whitespace. Issue #507: the no-arg
+   form previously emitted `sp_str_split(s, 0)` and segfaulted at
+   strlen(NULL). */
 sp_StrArray*sp_str_split_ws(const char*s){
   SP_GC_ROOT(s);
   sp_StrArray*a=sp_StrArray_new();
@@ -419,6 +475,11 @@ sp_StrArray*sp_str_split_ws(const char*s){
   }
   return a;
 }
+/* String#gsub(pat, rep) for literal (non-regex) patterns. Issue #827: the
+   result must come from sp_str_alloc, not a raw malloc buffer, because the
+   GC's sp_mark_string writes the marker byte at offset -1 and would corrupt
+   malloc metadata otherwise. Issue #850: an empty pattern inserts the
+   replacement between every character (and at both ends). */
 const char*sp_str_gsub(const char*s,const char*pat,const char*rep){
   if(!s)return sp_str_empty;
   if(!pat||!rep)return s;
@@ -455,12 +516,25 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){
   }
   out[ol]=0;char*r=sp_str_alloc(ol);memcpy(r,out,ol+1);free(out);return r;
 }
+/* `s.index(sub)` — leftmost occurrence; returns a codepoint offset (not a
+   byte offset), or -1 if not found. */
 mrb_int sp_str_index(const char*s,const char*sub){if(!s)return -1;if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*f=strstr(s,sub);if(!f)return -1;mrb_int n=0;const char*p=s;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
+/* Issue #758: NULL guard + bound the start so a negative result from
+   sp_str_index doesn't underflow the source pointer. */
 mrb_int sp_str_index_from(const char*s,const char*sub,mrb_int start){mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>cl)return -1;size_t boff=sp_utf8_byte_offset(s,start);const char*f=strstr(s+boff,sub);if(!f)return -1;mrb_int n=start;const char*p=s+boff;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
+/* `s.rindex(sub)` — rightmost occurrence of sub; returns a codepoint
+   offset, or -1 if not found. Empty sub matches at the end. */
 mrb_int sp_str_rindex(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t sl=strlen(sub);if(sl==0)return sp_str_length(s);const char*last=NULL;const char*p=s;while((p=strstr(p,sub))){last=p;p++;}if(!last)return -1;mrb_int n=0;const char*q=s;while(q<last){q+=sp_utf8_advance(q);n++;}return n;}
+/* `s.rindex(sub, pos)` — rightmost occurrence at or before codepoint pos.
+   Negative pos counts back from the char length; nil (SP_INT_NIL) on miss. */
 mrb_int sp_str_rindex_from(const char*s,const char*sub,mrb_int pos){if(!s)return SP_INT_NIL;if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");mrb_int cl=sp_str_length(s);if(pos<0)pos=cl+pos;if(pos<0)return SP_INT_NIL;size_t sl=strlen(sub);if(sl==0){if(pos>=cl)return cl;return pos;}const char*p=s;mrb_int best=-1;const char*r=s;mrb_int cur_n=0;while((p=strstr(p,sub))!=NULL){while(r<p){r+=sp_utf8_advance(r);cur_n++;}if(cur_n>pos)break;best=cur_n;p++;}return best<0?SP_INT_NIL:best;}
 /* start/len are codepoint indices/counts. */
+/* `s[start, len]` char-indexed slice (UTF-8 aware). Negative start counts
+   back from the char length. A single-char ASCII result aliases the
+   per-process sp_char_cache so common indexing avoids an allocation. */
 const char*sp_str_sub_range(const char*s,mrb_int start,mrb_int len){mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;return r;}
+/* Single-character `s[i]`. Returns NULL on out-of-bounds so the caller can
+   yield CRuby's `"hello"[20] -> nil`. */
 const char*sp_str_char_at_or_nil(const char*s,mrb_int i){mrb_int cl=sp_str_length(s);if(i<0)i+=cl;if(i<0||i>=cl)return NULL;return sp_str_sub_range(s,i,1);}
 const char*sp_str_sub_range_len(const char*s,mrb_int cl,mrb_int start,mrb_int len){if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;return r;}
 const char*sp_str_sub_range_r(const char*s,mrb_int start,mrb_int end_,mrb_int excl){mrb_int cl=sp_str_length(s);if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
