@@ -141,22 +141,22 @@ TyKind ty_promote_numeric(TyKind a, TyKind b) {
    receives exactly one param = the array element. Enumerated once here so the
    knowledge is not re-encoded as scattered method-name lists. */
 static int ty_is_array_elem_iter(const char *n) {
-  return !strcmp(n, "each") || !strcmp(n, "map") || !strcmp(n, "collect") ||
-         !strcmp(n, "select") || !strcmp(n, "reject") || !strcmp(n, "filter") ||
-         !strcmp(n, "find") || !strcmp(n, "detect") || !strcmp(n, "find_all") ||
-         !strcmp(n, "sort_by") || !strcmp(n, "min_by") || !strcmp(n, "max_by") ||
-         !strcmp(n, "count") || !strcmp(n, "sum") || !strcmp(n, "flat_map") ||
-         !strcmp(n, "filter_map") || !strcmp(n, "partition") || !strcmp(n, "group_by") ||
-         !strcmp(n, "any?") || !strcmp(n, "all?") || !strcmp(n, "none?") ||
-         !strcmp(n, "one?") || !strcmp(n, "take_while") || !strcmp(n, "drop_while") ||
-         !strcmp(n, "reverse_each") || !strcmp(n, "each_entry") || !strcmp(n, "find_index");
+  return sp_streq(n, "each") || sp_streq(n, "map") || sp_streq(n, "collect") ||
+         sp_streq(n, "select") || sp_streq(n, "reject") || sp_streq(n, "filter") ||
+         sp_streq(n, "find") || sp_streq(n, "detect") || sp_streq(n, "find_all") ||
+         sp_streq(n, "sort_by") || sp_streq(n, "min_by") || sp_streq(n, "max_by") ||
+         sp_streq(n, "count") || sp_streq(n, "sum") || sp_streq(n, "flat_map") ||
+         sp_streq(n, "filter_map") || sp_streq(n, "partition") || sp_streq(n, "group_by") ||
+         sp_streq(n, "any?") || sp_streq(n, "all?") || sp_streq(n, "none?") ||
+         sp_streq(n, "one?") || sp_streq(n, "take_while") || sp_streq(n, "drop_while") ||
+         sp_streq(n, "reverse_each") || sp_streq(n, "each_entry") || sp_streq(n, "find_index");
 }
 
 TyIterShape ty_iter_shape(const char *name) {
   if (!name) return TY_ITER_NONE;
-  if (!strcmp(name, "map") || !strcmp(name, "collect")) return TY_ITER_MAP;
-  if (!strcmp(name, "select") || !strcmp(name, "filter")) return TY_ITER_SELECT;
-  if (!strcmp(name, "reject")) return TY_ITER_REJECT;
+  if (sp_streq(name, "map") || sp_streq(name, "collect")) return TY_ITER_MAP;
+  if (sp_streq(name, "select") || sp_streq(name, "filter")) return TY_ITER_SELECT;
+  if (sp_streq(name, "reject")) return TY_ITER_REJECT;
   return TY_ITER_NONE;
 }
 
@@ -166,25 +166,25 @@ int ty_block_yield(TyKind recv, const char *name, TyKind *out, int max) {
   if (ty_is_array(recv)) {
     TyKind e = ty_array_elem(recv);
     if (ty_is_array_elem_iter(name)) { BY_PUT(0, e); return 1; }
-    if (!strcmp(name, "each_with_index")) { BY_PUT(0, e); BY_PUT(1, TY_INT); return 2; }
+    if (sp_streq(name, "each_with_index")) { BY_PUT(0, e); BY_PUT(1, TY_INT); return 2; }
     return 0;
   }
   if (ty_is_hash(recv)) {
-    if (!strcmp(name, "each") || !strcmp(name, "each_pair")) {
+    if (sp_streq(name, "each") || sp_streq(name, "each_pair")) {
       BY_PUT(0, ty_hash_key(recv)); BY_PUT(1, ty_hash_val(recv)); return 2;
     }
-    if (!strcmp(name, "each_key")) { BY_PUT(0, ty_hash_key(recv)); return 1; }
-    if (!strcmp(name, "each_value")) { BY_PUT(0, ty_hash_val(recv)); return 1; }
+    if (sp_streq(name, "each_key")) { BY_PUT(0, ty_hash_key(recv)); return 1; }
+    if (sp_streq(name, "each_value")) { BY_PUT(0, ty_hash_val(recv)); return 1; }
     return 0;
   }
   if (recv == TY_RANGE) {
     /* a range yields ints to its element iterators */
-    if (!strcmp(name, "each_with_index")) { BY_PUT(0, TY_INT); BY_PUT(1, TY_INT); return 2; }
+    if (sp_streq(name, "each_with_index")) { BY_PUT(0, TY_INT); BY_PUT(1, TY_INT); return 2; }
     if (ty_is_array_elem_iter(name)) { BY_PUT(0, TY_INT); return 1; }
     return 0;
   }
   if (recv == TY_INT) {
-    if (!strcmp(name, "times") || !strcmp(name, "upto") || !strcmp(name, "downto")) {
+    if (sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto")) {
       BY_PUT(0, TY_INT); return 1;
     }
     return 0;

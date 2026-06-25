@@ -202,24 +202,24 @@ int main(int argc, char **argv) {
     else if (!strncmp(a, "--output=", 9)) { output = a + 9; i++; }
     else if (!strncmp(a, "--cc=", 5))     { cc_cmd = a + 5; i++; }
     else if (!strncmp(a, "--rbs=", 6))    { rbs_dir = a + 6; i++; }
-    else if (!strcmp(a, "--rbs"))         { if (++i < argc) rbs_dir = argv[i]; i++; }
+    else if (sp_streq(a, "--rbs"))         { if (++i < argc) rbs_dir = argv[i]; i++; }
     else if (!strncmp(a, "--int-overflow=", 15)) { int_overflow = a + 15; i++; }
-    else if (!strcmp(a, "--int-overflow")) { if (++i < argc) int_overflow = argv[i]; i++; }
-    else if (!strcmp(a, "-o"))            { if (++i < argc) output = argv[i]; i++; }
-    else if (!strcmp(a, "-O"))            { if (++i < argc) opt_level = argv[i]; i++; }
-    else if (!strcmp(a, "--debug"))       { debug = 1; opt_level = "0"; want_g = 1; i++; }
-    else if (!strcmp(a, "-g"))            { debug = 1; want_g = 1; i++; }
-    else if (!strcmp(a, "--line-map"))    { line_map = 1; i++; }
-    else if (!strcmp(a, "--no-line-map")) { line_map = 0; i++; }
-    else if (!strcmp(a, "-c"))            { c_only = 1; i++; }
-    else if (!strcmp(a, "-S"))            { stdout_mode = 1; i++; }
-    else if (!strcmp(a, "-E"))            { run_mode = 1; i++; }
-    else if (!strcmp(a, "--emit-rbs"))    { emit_rbs = 1; i++; }
-    else if (!strcmp(a, "--emit-types"))  { emit_types = 1; i++; }
-    else if (!strcmp(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
-    else if (!strcmp(a, "--dump-ast"))    { dump_ast = 1; i++; }
-    else if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(); return 0; }
-    else if (!strcmp(a, "-e")) {
+    else if (sp_streq(a, "--int-overflow")) { if (++i < argc) int_overflow = argv[i]; i++; }
+    else if (sp_streq(a, "-o"))            { if (++i < argc) output = argv[i]; i++; }
+    else if (sp_streq(a, "-O"))            { if (++i < argc) opt_level = argv[i]; i++; }
+    else if (sp_streq(a, "--debug"))       { debug = 1; opt_level = "0"; want_g = 1; i++; }
+    else if (sp_streq(a, "-g"))            { debug = 1; want_g = 1; i++; }
+    else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
+    else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
+    else if (sp_streq(a, "-c"))            { c_only = 1; i++; }
+    else if (sp_streq(a, "-S"))            { stdout_mode = 1; i++; }
+    else if (sp_streq(a, "-E"))            { run_mode = 1; i++; }
+    else if (sp_streq(a, "--emit-rbs"))    { emit_rbs = 1; i++; }
+    else if (sp_streq(a, "--emit-types"))  { emit_types = 1; i++; }
+    else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
+    else if (sp_streq(a, "--dump-ast"))    { dump_ast = 1; i++; }
+    else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
+    else if (sp_streq(a, "-e")) {
       if (++i < argc) {
         if (eval_used) s_add(&eval_src, "\n");
         s_add(&eval_src, argv[i]);
@@ -227,7 +227,7 @@ int main(int argc, char **argv) {
       }
       i++;
     }
-    else if (!strcmp(a, "--")) {
+    else if (sp_streq(a, "--")) {
       i++;
       if (!source && i < argc) { source = argv[i]; i++; }
       if (run_mode) { run_args = &argv[i]; n_run_args = argc - i; }
@@ -272,13 +272,13 @@ int main(int argc, char **argv) {
   }
 
   const char *ov_define = NULL;
-  if (!strcmp(int_overflow, "raise"))   ov_define = "-DSP_INT_OVERFLOW_MODE_RAISE";
-  else if (!strcmp(int_overflow, "wrap"))    ov_define = "-DSP_INT_OVERFLOW_MODE_WRAP";
-  else if (!strcmp(int_overflow, "promote")) ov_define = "-DSP_INT_OVERFLOW_MODE_PROMOTE";
+  if (sp_streq(int_overflow, "raise"))   ov_define = "-DSP_INT_OVERFLOW_MODE_RAISE";
+  else if (sp_streq(int_overflow, "wrap"))    ov_define = "-DSP_INT_OVERFLOW_MODE_WRAP";
+  else if (sp_streq(int_overflow, "promote")) ov_define = "-DSP_INT_OVERFLOW_MODE_PROMOTE";
   else { fprintf(stderr, "spinel: --int-overflow expects raise|wrap|promote, got '%s'\n", int_overflow); return 2; }
   /* Let the analyzer widen accumulating int locals to bigint more freely in
      promote mode (block-iteration loops, not just `while`). See analyze.h. */
-  g_promote_mode = !strcmp(int_overflow, "promote");
+  g_promote_mode = sp_streq(int_overflow, "promote");
 
   /* Base name for default output paths. */
   char basename[1024];

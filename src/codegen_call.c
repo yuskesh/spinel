@@ -3,14 +3,14 @@
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || !nt_type(nt, block) || strcmp(nt_type(nt, block), "BlockNode")) return 0;
+  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   int mi = comp_method_in_chain(c, ci, "initialize", NULL);
   if (mi < 0 || !c->scopes[mi].yields) return 0;
   Scope *m = &c->scopes[mi];
   if (g_nren + m->nlocals >= MAX_RENAME) return 0;
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
     if (!is_scalar_ret(lv->type)) return 0;
   }
 
@@ -37,7 +37,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   /* declare the initialize body's locals under renamed names */
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
     snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
     snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
     const char *rn = g_ren_to[g_nren];
@@ -94,9 +94,9 @@ static void emit_bigint_operand(Compiler *c, int node, Buf *b) {
 static int str_index1(Compiler *c, int node, int *out_recv, int *out_idx) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
-  if (!ty || strcmp(ty, "CallNode")) return 0;
+  if (!ty || !sp_streq(ty, "CallNode")) return 0;
   const char *nm = nt_str(nt, node, "name");
-  if (!nm || (strcmp(nm, "[]") && strcmp(nm, "slice"))) return 0;
+  if (!nm || (!sp_streq(nm, "[]") && !sp_streq(nm, "slice"))) return 0;
   if (nt_ref(nt, node, "block") >= 0) return 0;
   int recv = nt_ref(nt, node, "receiver");
   if (recv < 0 || comp_ntype(c, recv) != TY_STRING) return 0;
@@ -112,7 +112,7 @@ static int str_index1(Compiler *c, int node, int *out_recv, int *out_idx) {
 /* A bare single-byte string literal, e.g. `"{"`. */
 static int single_byte_lit(Compiler *c, int node, unsigned char *out) {
   const char *ty = nt_type(c->nt, node);
-  if (!ty || strcmp(ty, "StringNode")) return 0;
+  if (!ty || !sp_streq(ty, "StringNode")) return 0;
   const char *s = nt_str(c->nt, node, "unescaped");
   if (!s) s = nt_str(c->nt, node, "content");
   if (!s || s[0] == '\0' || s[1] != '\0') return 0;
@@ -133,7 +133,7 @@ static int emit_strchar_cmp(Compiler *c, int recv, int arg, int eq, Buf *b) {
   /* A negative literal index would read out of bounds; only fold when the
      index can't be a negative literal. */
   const char *ity = nt_type(c->nt, si);
-  if (ity && !strcmp(ity, "IntegerNode") && nt_int(c->nt, si, "value", 0) < 0) return 0;
+  if (ity && sp_streq(ity, "IntegerNode") && nt_int(c->nt, si, "value", 0) < 0) return 0;
   buf_puts(b, "((unsigned char)(");
   emit_expr(c, sr, b);
   buf_puts(b, ")[(mrb_int)(");
@@ -149,11 +149,11 @@ static int ie_body_has_break_next(Compiler *c, int node) {
   if (node < 0) return 0;
   const char *ty = nt_type(nt, node);
   if (!ty) return 0;
-  if (!strcmp(ty, "BreakNode") || !strcmp(ty, "NextNode")) return 1;
+  if (sp_streq(ty, "BreakNode") || sp_streq(ty, "NextNode")) return 1;
   /* constructs that bind their own break/next */
-  if (!strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
-      !strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode") || !strcmp(ty, "DefNode") ||
-      !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return 0;
+  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
+      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return 0;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) if (ie_body_has_break_next(c, nt_ref_at(nt, node, i))) return 1;
   int na = nt_num_arrs(nt, node);
@@ -170,14 +170,14 @@ static TyKind ie_splice_value_ty(Compiler *c, int node) {
   if (node < 0) return TY_UNKNOWN;
   const char *ty = nt_type(nt, node);
   if (!ty) return TY_UNKNOWN;
-  if (!strcmp(ty, "BreakNode") || !strcmp(ty, "NextNode")) {
+  if (sp_streq(ty, "BreakNode") || sp_streq(ty, "NextNode")) {
     int a = nt_ref(nt, node, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     return an > 0 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
   }
-  if (!strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
-      !strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode") || !strcmp(ty, "DefNode") ||
-      !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return TY_UNKNOWN;
+  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
+      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
@@ -274,25 +274,25 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && ty_is_obj_array(rt)) {
     int ecls = ty_obj_array_class(rt);
     const char *ecn = c->classes[ecls].name;
-    if ((!strcmp(name, "[]") || !strcmp(name, "at")) && argc == 1) {
+    if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) {
       buf_printf(b, "((sp_%s *)sp_PtrArray_get(", ecn);
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
-    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 0) {
+    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) {
       buf_printf(b, "((sp_%s *)sp_PtrArray_get(", ecn);
       emit_expr(c, recv, b);
-      buf_puts(b, !strcmp(name, "first") ? ", 0))" : ", -1))");
+      buf_puts(b, sp_streq(name, "first") ? ", 0))" : ", -1))");
       return 1;
     }
-    if (!strcmp(name, "[]=") && argc == 2) {
+    if (sp_streq(name, "[]=") && argc == 2) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_%s *_t%d = ", ecn, tv); emit_expr(c, argv[1], b);
       buf_puts(b, "; sp_PtrArray_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b); buf_printf(b, ", _t%d); _t%d; })", tv, tv);
       return 1;
     }
-    if ((!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) && argc >= 1) {
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
       int tr = ++g_tmp;
       buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
       for (int a = 0; a < argc; a++) {
@@ -301,25 +301,25 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", tr);
       return 1;
     }
-    if ((!strcmp(name, "length") || !strcmp(name, "size")) && argc == 0) {
+    if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0) {
       buf_puts(b, "sp_PtrArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
-    if (!strcmp(name, "empty?") && argc == 0) {
+    if (sp_streq(name, "empty?") && argc == 0) {
       buf_puts(b, "sp_PtrArray_empty("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
     return 0;  /* unsupported obj-array op: pass should have prevented this. */
   }
   if (recv >= 0 && ty_is_array(rt)) {
-    if (!strcmp(name, "pack") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY)) {
+    if (sp_streq(name, "pack") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY)) {
       buf_printf(b, "sp_%sArray_pack(", rt == TY_POLY_ARRAY ? "Poly" : "Int");
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
     /* values_at(i, j, ...) -> fresh same-kind array of the picked elements
        (works for typed and poly arrays alike, and range args) */
-    if (!strcmp(name, "values_at") && argc >= 1) {
+    if (sp_streq(name, "values_at") && argc >= 1) {
       const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
       if (an) {
         int tr = ++g_tmp, to = ++g_tmp;
@@ -345,13 +345,13 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     const char *k = array_kind(rt);
     /* drop(n) / take(n): subarrays via slice (all kinds incl. poly). */
-    if ((!strcmp(name, "drop") || !strcmp(name, "take")) && argc == 1) {
+    if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1) {
       const char *dk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
       if (dk) {
         int t = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", dk, t); emit_expr(c, recv, b);
         buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-        if (!strcmp(name, "take"))
+        if (sp_streq(name, "take"))
           buf_printf(b, "; sp_%sArray_slice(_t%d, 0, _t%d); })", dk, t, tn);
         else
           buf_printf(b, "; sp_%sArray_slice(_t%d, _t%d, _t%d->len - _t%d); })", dk, t, tn, t, tn);
@@ -360,13 +360,13 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     /* poly-array max/min: boxed elements compared at runtime (numerics,
        strings, int-array tuples lexicographically). */
-    if ((!strcmp(name, "max") || !strcmp(name, "min")) && argc == 0 &&
+    if ((sp_streq(name, "max") || sp_streq(name, "min")) && argc == 0 &&
         rt == TY_POLY_ARRAY && nt_ref(nt, id, "block") < 0) {
       buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
     /* fill(val[, start[, len]]): fill a range with val, evaluate to self. */
-    if (!strcmp(name, "fill") && argc >= 1 && argc <= 3) {
+    if (sp_streq(name, "fill") && argc >= 1 && argc <= 3) {
       const char *fk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
       if (fk) {
         int t = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp;
@@ -407,11 +407,11 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    if (rt == TY_POLY_ARRAY && !strcmp(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "sum") && argc == 0 && nt_ref(nt, id, "block") < 0) {
       buf_puts(b, "sp_box_int(sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, "))");
       return 1;
     }
-    if (rt == TY_POLY_ARRAY && !strcmp(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
       TyKind init_t = comp_ntype(c, argv[0]);
       buf_puts(b, "sp_box_int(");
       if (init_t == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -419,11 +419,11 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, " + sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, "))");
       return 1;
     }
-    if (rt == TY_POLY_ARRAY && (!strcmp(name, "shift") || !strcmp(name, "pop")) && argc == 0) {
+    if (rt == TY_POLY_ARRAY && (sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 0) {
       buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
-    if (rt == TY_POLY_ARRAY && !strcmp(name, "dig") && argc >= 1) {
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "dig") && argc >= 1) {
       if (argc == 1) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -437,7 +437,7 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
     /* each_index { |i| ... } - iterate with index (works for all array kinds) */
     {
       int ei_blk = nt_ref(nt, id, "block");
-      if (!strcmp(name, "each_index") && ei_blk >= 0) {
+      if (sp_streq(name, "each_index") && ei_blk >= 0) {
         const char *ek = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
         if (ek) {
           const char *ip = block_param_name(c, ei_blk, 0); if (ip) ip = rename_local(ip);
@@ -466,9 +466,9 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
       }
     }
     /* take_while / drop_while (works for typed and poly arrays alike) */
-    if ((!strcmp(name, "take_while") || !strcmp(name, "drop_while")) && argc == 0
+    if ((sp_streq(name, "take_while") || sp_streq(name, "drop_while")) && argc == 0
         && nt_ref(nt, id, "block") >= 0) {
-      int is_drop = !strcmp(name, "drop_while");
+      int is_drop = sp_streq(name, "drop_while");
       int tw_blk = nt_ref(nt, id, "block");
       const char *tw_bp = block_param_name(c, tw_blk, 0); if (tw_bp) tw_bp = rename_local(tw_bp);
       int tw_body = nt_ref(nt, tw_blk, "body");
@@ -518,20 +518,20 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
-    if (rt == TY_POLY_ARRAY && !strcmp(name, "tally") && argc == 0) {
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "tally") && argc == 0) {
       buf_puts(b, "sp_PolyArray_tally("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
     }
-    if (rt == TY_POLY_ARRAY && !strcmp(name, "delete_at") && argc == 1) {
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "delete_at") && argc == 1) {
       buf_puts(b, "sp_PolyArray_delete_at("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
     if (k) {
-      if ((!strcmp(name, "to_a") || !strcmp(name, "to_ary") || !strcmp(name, "entries") ||
-           !strcmp(name, "flatten") || !strcmp(name, "compact")) && argc == 0) {
+      if ((sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "entries") ||
+           sp_streq(name, "flatten") || sp_streq(name, "compact")) && argc == 0) {
         /* a scalar-element array can't nest or hold nil: these are identity */
         emit_expr(c, recv, b); return 1;
       }
-      if (!strcmp(name, "[]") && argc == 1 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "RangeNode")) {
+      if (sp_streq(name, "[]") && argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
         /* arr[a..b] / arr[a...b] -> subarray */
         int rn = argv[0];
         int excl = (int)(nt_int(nt, rn, "flags", 0) & 4) ? 1 : 0;
@@ -543,13 +543,13 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, ", %d)", hi >= 0 ? excl : 0);
         return 1;
       }
-      if (!strcmp(name, "[]") && argc == 2) {
+      if (sp_streq(name, "[]") && argc == 2) {
         /* arr[start, len] -> subarray */
         buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "[]") || !strcmp(name, "at")) && argc == 1) {
+      if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) {
         buf_printf(b, "sp_%sArray_get(", k);
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (infer_type(c, argv[0]) == TY_POLY) {
@@ -564,7 +564,7 @@ else {
         buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "fetch") && (argc == 1 || argc == 2)) {
+      if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
         int ta = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tnorm = ++g_tmp;
         Buf ra; memset(&ra, 0, sizeof ra); emit_expr(c, recv, &ra);
         buf_printf(b, "({ sp_%sArray *_t%d = %s;", k, ta, ra.p ? ra.p : "NULL"); free(ra.p);
@@ -581,7 +581,7 @@ else {
         }
         return 1;
       }
-      if (!strcmp(name, "dig") && argc >= 1) {
+      if (sp_streq(name, "dig") && argc >= 1) {
         if (argc == 1) {
           /* single-step: same as arr[i] */
           buf_printf(b, "sp_%sArray_get(", k); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -607,13 +607,13 @@ else {
         }
         return 1;
       }
-      if (!strcmp(name, "+") && argc == 1 && a0 == rt) {
+      if (sp_streq(name, "+") && argc == 1 && a0 == rt) {
         /* array + array of the same kind -> a fresh concatenation */
         buf_printf(b, "sp_%sArray_concat(", k);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "+") && argc == 1 && ty_is_array(a0) && a0 != rt) {
+      if (sp_streq(name, "+") && argc == 1 && ty_is_array(a0) && a0 != rt) {
         /* array + different-kind array -> poly_array */
         const char *k2 = (a0 == TY_POLY_ARRAY) ? "Poly" : array_kind(a0);
         if (k2) {
@@ -655,19 +655,19 @@ else {
           return 1;
         }
       }
-      if (!strcmp(name, "clear") && argc == 0) {
+      if (sp_streq(name, "clear") && argc == 0) {
         /* empty the array in place, evaluate to it (Ruby returns self) */
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
         return 1;
       }
-      if ((!strcmp(name, "shift") || !strcmp(name, "pop")) && argc == 0) {
+      if ((sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 0) {
         /* remove and return first/last element (nil sentinel when empty) */
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "unshift") && argc >= 1) {
+      if (sp_streq(name, "unshift") && argc >= 1) {
         int t = ++g_tmp;
         if (rt == TY_INT_ARRAY) {
           buf_printf(b, "({ sp_IntArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
@@ -698,17 +698,17 @@ else {
         return 1;
       }
       /* non-mutating copy-then-operate methods */
-      if (!strcmp(name, "shuffle") && argc == 0) {
+      if (sp_streq(name, "shuffle") && argc == 0) {
         buf_printf(b, "sp_%sArray_shuffle(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       /* in-place mutators that return self (raise FrozenError when frozen) */
       {
         const char *base = NULL;
-        if      (!strcmp(name, "reverse!")) base = "reverse_bang";
-        else if (!strcmp(name, "sort!"))    base = "sort_bang";
-        else if (!strcmp(name, "shuffle!")) base = "shuffle_bang";
-        else if (!strcmp(name, "uniq!"))    base = "uniq_bang";
+        if      (sp_streq(name, "reverse!")) base = "reverse_bang";
+        else if (sp_streq(name, "sort!"))    base = "sort_bang";
+        else if (sp_streq(name, "shuffle!")) base = "shuffle_bang";
+        else if (sp_streq(name, "uniq!"))    base = "uniq_bang";
         if (base && argc == 0) {
           int t = ++g_tmp;
           buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
@@ -716,19 +716,19 @@ else {
           return 1;
         }
       }
-      if ((!strcmp(name, "dup") || !strcmp(name, "clone")) && argc == 0) {
+      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
         /* a real copy: arrays are mutable, so dup/clone must not alias. */
         buf_printf(b, "sp_%sArray_dup(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "reverse") && argc == 0) {
+      if (sp_streq(name, "reverse") && argc == 0) {
         /* copy + reverse in place; sp_*Array_dup exists for Int/Str/Float/Poly */
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_dup(", k, t, k); emit_expr(c, recv, b);
         buf_printf(b, "); sp_%sArray_reverse_bang(_t%d); _t%d; })", k, t, t);
         return 1;
       }
-      if (!strcmp(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0) {
         /* recv.zip(b, c...) → [[recv[0],b[0],c[0],...], ...] as PolyArray of PolyArrays */
         int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tpair = ++g_tmp;
         int tb[16]; TyKind at[16]; int nargs = argc < 16 ? argc : 16;
@@ -765,7 +765,7 @@ else {
         buf_printf(b, " } _t%d; })", tr);
         return 1;
       }
-      if (!strcmp(name, "product") && argc == 1) {
+      if (sp_streq(name, "product") && argc == 1) {
         TyKind at = comp_ntype(c, argv[0]);
         const char *kb = (at == TY_POLY_ARRAY) ? "Poly" : (array_kind(at) ? array_kind(at) : "Poly");
         int ta = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, tpair = ++g_tmp;
@@ -799,7 +799,7 @@ else {
         buf_printf(b, " } } _t%d; })", tr);
         return 1;
       }
-      if (!strcmp(name, "repeated_combination") && argc == 1 && rt == TY_INT_ARRAY) {
+      if (sp_streq(name, "repeated_combination") && argc == 1 && rt == TY_INT_ARRAY) {
         int ta = ++g_tmp, tc = ++g_tmp, tout = ++g_tmp, ti = ++g_tmp;
         Buf ra; memset(&ra, 0, sizeof ra); emit_expr(c, recv, &ra);
         buf_printf(b, "({ sp_IntArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
@@ -811,7 +811,7 @@ else {
         buf_printf(b, " _t%d; })", tout);
         return 1;
       }
-      if (!strcmp(name, "rotate!") && argc <= 1) {
+      if (sp_streq(name, "rotate!") && argc <= 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sArray_rotate_bang(_t%d, ", k, t);
@@ -819,34 +819,34 @@ else {
         buf_printf(b, "); _t%d; })", t);
         return 1;
       }
-      if (!strcmp(name, "replace") && argc == 1 && a0 == rt) {
+      if (sp_streq(name, "replace") && argc == 1 && a0 == rt) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sArray_replace(_t%d, ", k, t); emit_expr(c, argv[0], b);
         buf_printf(b, "); _t%d; })", t);
         return 1;
       }
-      if (!strcmp(name, "insert") && argc == 2 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+      if (sp_streq(name, "insert") && argc == 2 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sArray_insert(_t%d, ", k, t); emit_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_printf(b, "); _t%d; })", t);
         return 1;
       }
-      if (!strcmp(name, "delete_at") && argc == 1) {
+      if (sp_streq(name, "delete_at") && argc == 1) {
         buf_printf(b, "sp_%sArray_delete_at(", k); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "delete") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+      if (sp_streq(name, "delete") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
         buf_printf(b, "sp_%sArray_delete(", k); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "tally") && argc == 0) {
+      if (sp_streq(name, "tally") && argc == 0) {
         if (rt == TY_INT_ARRAY) { buf_printf(b, "sp_IntArray_tally_int("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
         if (rt == TY_STR_ARRAY) { buf_printf(b, "sp_StrArray_tally("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
         if (rt == TY_POLY_ARRAY) { buf_printf(b, "sp_PolyArray_tally("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       }
-      if (!strcmp(name, "slice!") && argc == 2) {
+      if (sp_streq(name, "slice!") && argc == 2) {
         /* slice!(start, len): remove and return the subarray (raises
            FrozenError inside the runtime helper when the array is frozen) */
         buf_printf(b, "sp_%sArray_slice_bang(", k); emit_expr(c, recv, b);
@@ -855,7 +855,7 @@ else {
       }
       int block = nt_ref(nt, id, "block");
       /* bsearch { |x| cond } on typed arrays - find-minimum mode */
-      if (!strcmp(name, "bsearch") && block >= 0) {
+      if (sp_streq(name, "bsearch") && block >= 0) {
         const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -888,7 +888,7 @@ else {
       }
       /* bsearch_index { |x| cond }: find-minimum binary search returning the
          index of the first element satisfying the predicate, or nil. */
-      if (!strcmp(name, "bsearch_index") && block >= 0) {
+      if (sp_streq(name, "bsearch_index") && block >= 0) {
         const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -919,7 +919,7 @@ else {
         }
       }
       /* find_index { |x| cond } on typed arrays - returns index or SP_INT_NIL */
-      if (!strcmp(name, "find_index") && block >= 0) {
+      if (sp_streq(name, "find_index") && block >= 0) {
         const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -945,7 +945,7 @@ else {
         }
       }
       /* find / detect { |x| cond } - returns element or nil */
-      if ((!strcmp(name, "find") || !strcmp(name, "detect")) && block >= 0) {
+      if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0) {
         const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -976,7 +976,7 @@ else {
         }
       }
       /* map! / collect! { |x| body } - in-place transform, returns receiver */
-      if ((!strcmp(name, "map!") || !strcmp(name, "collect!")) && block >= 0) {
+      if ((sp_streq(name, "map!") || sp_streq(name, "collect!")) && block >= 0) {
         const char *bp0 = block_param_name(c, block, 0);
         const char *bp = bp0 ? rename_local(bp0) : NULL;
         int body = nt_ref(nt, block, "body");
@@ -1010,9 +1010,9 @@ else {
         }
       }
       /* select! / filter! / keep_if / reject! / delete_if { |x| cond } - in-place filter */
-      if ((!strcmp(name, "select!") || !strcmp(name, "filter!") || !strcmp(name, "keep_if") ||
-           !strcmp(name, "reject!") || !strcmp(name, "delete_if")) && block >= 0) {
-        int is_rej = !strcmp(name, "reject!") || !strcmp(name, "delete_if");
+      if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "keep_if") ||
+           sp_streq(name, "reject!") || sp_streq(name, "delete_if")) && block >= 0) {
+        int is_rej = sp_streq(name, "reject!") || sp_streq(name, "delete_if");
         const char *bp0 = block_param_name(c, block, 0);
         const char *bp = bp0 ? rename_local(bp0) : NULL;
         int body = nt_ref(nt, block, "body");
@@ -1054,16 +1054,16 @@ else {
           buf_printf(b, "_t%d", trecv); return 1;
         }
       }
-      if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||
-           !strcmp(name, "none?") || !strcmp(name, "one?")) &&
+      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
+           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
           argc == 0 && nt_ref(nt, id, "block") < 0) {
         /* scalar-element arrays never hold nil/false: predicate is length-based */
-        const char *op = !strcmp(name, "all?") ? ">= 0" : !strcmp(name, "any?") ? "> 0"
-                       : !strcmp(name, "none?") ? "== 0" : "== 1";
+        const char *op = sp_streq(name, "all?") ? ">= 0" : sp_streq(name, "any?") ? "> 0"
+                       : sp_streq(name, "none?") ? "== 0" : "== 1";
         buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_printf(b, ") %s)", op);
         return 1;
       }
-      if ((!strcmp(name, "any?") || !strcmp(name, "none?") || !strcmp(name, "one?") || !strcmp(name, "count")) &&
+      if ((sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "count")) &&
           argc == 1 && nt_ref(nt, id, "block") < 0) {
         /* array.any?(v) / none?(v) / one?(v) / count(v) -- compare by == */
         int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
@@ -1078,18 +1078,18 @@ else {
           buf_printf(b, " if (strcmp(sp_%sArray_get(_t%d, _t%d), _t%d) == 0) _t%d++;", k, ta, ti, tv, tc);
         else
           buf_printf(b, " if (sp_%sArray_get(_t%d, _t%d) == _t%d) _t%d++;", k, ta, ti, tv, tc);
-        if (!strcmp(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
-        else if (!strcmp(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
-        else if (!strcmp(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
+        if (sp_streq(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
+        else if (sp_streq(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
+        else if (sp_streq(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
         else                              buf_printf(b, " _t%d; })", tc);
         return 1;
       }
-      if ((!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) &&
+      if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) &&
           argc == 0 && nt_ref(nt, id, "block") < 0) {
         buf_printf(b, "sp_%sArray_length(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+      if (sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
         /* count { |x| cond } -- loop and count truthy block results */
         int blk = nt_ref(nt, id, "block");
         const char *bp = block_param_name(c, blk, 0); if (bp) bp = rename_local(bp);
@@ -1120,15 +1120,15 @@ else {
           return 1;
         }
       }
-      if (!strcmp(name, "empty?") && argc == 0) {
+      if (sp_streq(name, "empty?") && argc == 0) {
         buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
         return 1;
       }
-      if (!strcmp(name, "sum") && argc == 0) {
+      if (sp_streq(name, "sum") && argc == 0) {
         buf_printf(b, "sp_%sArray_sum(", k); emit_expr(c, recv, b); buf_puts(b, ", 0)");
         return 1;
       }
-      if (!strcmp(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         TyKind init_t = comp_ntype(c, argv[0]);
         buf_printf(b, "sp_%sArray_sum(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (rt == TY_FLOAT_ARRAY && init_t == TY_INT) {
@@ -1146,7 +1146,7 @@ else {
         buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "join") && argc <= 1) {
+      if (sp_streq(name, "join") && argc <= 1) {
         buf_printf(b, "sp_%sArray_join(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (argc == 1 && comp_ntype(c, argv[0]) == TY_POLY) {
           buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -1156,20 +1156,20 @@ else {
         buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) {
+      if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
         buf_printf(b, "sp_%sArray_inspect(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "first") && argc == 0) {
+      if (sp_streq(name, "first") && argc == 0) {
         buf_printf(b, "sp_%sArray_get(", k); emit_expr(c, recv, b); buf_puts(b, ", 0)");
         return 1;
       }
-      if (!strcmp(name, "first") && argc == 1) {
+      if (sp_streq(name, "first") && argc == 1) {
         buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", 0, ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "last") && argc == 1) {
+      if (sp_streq(name, "last") && argc == 1) {
         /* slice's negative start counts from the end -> the last n elements */
         int tn = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
@@ -1177,15 +1177,15 @@ else {
         buf_printf(b, ", -_t%d, _t%d); })", tn, tn);
         return 1;
       }
-      if (!strcmp(name, "pop") && argc == 0) {
+      if (sp_streq(name, "pop") && argc == 0) {
         buf_printf(b, "sp_%sArray_pop(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "min") || !strcmp(name, "max")) && argc == 0 && rt != TY_STR_ARRAY) {
+      if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 && rt != TY_STR_ARRAY) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "minmax") && argc == 0 && rt != TY_STR_ARRAY && block < 0) {
+      if (sp_streq(name, "minmax") && argc == 0 && rt != TY_STR_ARRAY && block < 0) {
         int t = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); sp_%sArray_push(_t%d, sp_%sArray_min(_t%d));"
@@ -1193,16 +1193,16 @@ else {
                    k, o, k, k, o, k, t, k, o, k, t, o);
         return 1;
       }
-      if ((!strcmp(name, "index") || !strcmp(name, "find_index") || !strcmp(name, "rindex")) && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+      if ((sp_streq(name, "index") || sp_streq(name, "find_index") || sp_streq(name, "rindex")) && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
         /* nil-on-miss -> poly */
-        const char *fn = !strcmp(name, "rindex") ? "rindex_poly" : "index_poly";
+        const char *fn = sp_streq(name, "rindex") ? "rindex_poly" : "index_poly";
         buf_printf(b, "sp_%sArray_%s(", k, fn);
         emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (!strcmp(k, "Int")) emit_int_expr(c, argv[0], b); else emit_expr(c, argv[0], b);
+        if (sp_streq(k, "Int")) emit_int_expr(c, argv[0], b); else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "include?") && argc == 1) {
+      if (sp_streq(name, "include?") && argc == 1) {
         /* a typed array can never contain an element of an incompatible
            type (numeric vs string), so the answer is statically false;
            still evaluate both operands for any side effects. */
@@ -1216,24 +1216,24 @@ else {
           return 1;
         }
       }
-      if ((!strcmp(name, "include?") || !strcmp(name, "member?") || !strcmp(name, "index") || !strcmp(name, "find_index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
-        const char *fn = (!strcmp(name, "include?") || !strcmp(name, "member?")) ? "include" : "index";
+      if ((sp_streq(name, "include?") || sp_streq(name, "member?") || sp_streq(name, "index") || sp_streq(name, "find_index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
+        const char *fn = (sp_streq(name, "include?") || sp_streq(name, "member?")) ? "include" : "index";
         buf_printf(b, "sp_%sArray_%s(", k, fn);
         emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (!strcmp(k, "Int")) emit_int_expr(c, argv[0], b); else emit_expr(c, argv[0], b);
+        if (sp_streq(k, "Int")) emit_int_expr(c, argv[0], b); else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "sort") && argc == 0 &&
+      if (sp_streq(name, "sort") && argc == 0 &&
           (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_STR_ARRAY)) {
         buf_printf(b, "sp_%sArray_sort(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "uniq") && argc == 0 && rt == TY_INT_ARRAY) {
+      if (sp_streq(name, "uniq") && argc == 0 && rt == TY_INT_ARRAY) {
         buf_puts(b, "sp_IntArray_uniq("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "last") && argc == 0) {
+      if (sp_streq(name, "last") && argc == 0) {
         int t = ++g_tmp;
         Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
         emit_indent(g_pre, g_indent);
@@ -1242,24 +1242,24 @@ else {
         buf_printf(b, "sp_%sArray_get(_t%d, sp_%sArray_length(_t%d) - 1)", k, t, k, t);
         return 1;
       }
-      if ((!strcmp(name, "&") || !strcmp(name, "intersection") ||
-           !strcmp(name, "|") || !strcmp(name, "union") ||
-           !strcmp(name, "-") || !strcmp(name, "difference")) && argc == 1 && (a0 == rt || a0 == TY_UNKNOWN)) {
-        const char *fn = (!strcmp(name, "&") || !strcmp(name, "intersection")) ? "intersect" : ((!strcmp(name, "|") || !strcmp(name, "union")) ? "union" : "difference");
+      if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
+           sp_streq(name, "|") || sp_streq(name, "union") ||
+           sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 && (a0 == rt || a0 == TY_UNKNOWN)) {
+        const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : ((sp_streq(name, "|") || sp_streq(name, "union")) ? "union" : "difference");
         /* empty literal [] arg: use a null pointer (safe for all sp_*Array_* set ops) */
         if (a0 == TY_UNKNOWN) { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", NULL)"); }
         else { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         return 1;
       }
-      if (!strcmp(name, "union") && argc == 0) {
+      if (sp_streq(name, "union") && argc == 0) {
         buf_printf(b, "sp_%sArray_union(", k); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
         return 1;
       }
-      if (!strcmp(name, "sample") && argc == 0) {
+      if (sp_streq(name, "sample") && argc == 0) {
         buf_printf(b, "sp_%sArray_sample(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "rotate") && argc <= 1) {
+      if (sp_streq(name, "rotate") && argc <= 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_dup(", k, t, k); emit_expr(c, recv, b);
         buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%sArray_rotate_bang(_t%d, ", t, k, t);
@@ -1267,23 +1267,23 @@ else {
         buf_printf(b, "); _t%d; })", t);
         return 1;
       }
-      if ((!strcmp(name, "slice") || !strcmp(name, "[]")) && argc == 2) {
+      if ((sp_streq(name, "slice") || sp_streq(name, "[]")) && argc == 2) {
         buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "sample") && argc == 1) {
+      if (sp_streq(name, "sample") && argc == 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_shuffle(", k, t, k); emit_expr(c, recv, b);
         buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%sArray_slice(_t%d, 0, ", t, k, t); emit_int_expr(c, argv[0], b);
         buf_puts(b, "); })");
         return 1;
       }
-      if ((!strcmp(name, "min") || !strcmp(name, "max")) && argc == 1 && block < 0) {
+      if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && block < 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_sort(", k, t, k); emit_expr(c, recv, b);
         buf_printf(b, "); SP_GC_ROOT(_t%d);", t);
-        if (!strcmp(name, "max")) buf_printf(b, " sp_%sArray_reverse_bang(_t%d);", k, t);
+        if (sp_streq(name, "max")) buf_printf(b, " sp_%sArray_reverse_bang(_t%d);", k, t);
         buf_printf(b, " sp_%sArray_slice(_t%d, 0, ", k, t); emit_int_expr(c, argv[0], b);
         buf_puts(b, "); })");
         return 1;
@@ -1291,41 +1291,41 @@ else {
     }
     /* poly (mixed-element) array methods: elements are boxed sp_RbVal */
     if (rt == TY_POLY_ARRAY) {
-      if (!strcmp(name, "[]") && argc == 1) {
+      if (sp_streq(name, "[]") && argc == 1) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (a0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "clear") && argc == 0) {
+      if (sp_streq(name, "clear") && argc == 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
         buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
         return 1;
       }
-      if (!strcmp(name, "+") && argc == 1 && a0 == TY_POLY_ARRAY) {
+      if (sp_streq(name, "+") && argc == 1 && a0 == TY_POLY_ARRAY) {
         buf_puts(b, "sp_PolyArray_concat("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "&") || !strcmp(name, "intersection") ||
-           !strcmp(name, "|") || !strcmp(name, "union") ||
-           !strcmp(name, "-") || !strcmp(name, "difference")) && argc == 1 && (a0 == TY_POLY_ARRAY || a0 == TY_UNKNOWN)) {
-        const char *fn = (!strcmp(name, "&") || !strcmp(name, "intersection")) ? "intersect" : (!strcmp(name, "|") || !strcmp(name, "union") ? "union" : "difference");
+      if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
+           sp_streq(name, "|") || sp_streq(name, "union") ||
+           sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 && (a0 == TY_POLY_ARRAY || a0 == TY_UNKNOWN)) {
+        const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
         buf_printf(b, "sp_PolyArray_%s(", fn);
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (a0 == TY_UNKNOWN) buf_puts(b, "NULL"); else emit_expr(c, argv[0], b);
         buf_puts(b, ")"); return 1;
       }
-      if (!strcmp(name, "union") && argc == 0) {
+      if (sp_streq(name, "union") && argc == 0) {
         buf_puts(b, "sp_PolyArray_union("); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
         return 1;
       }
-      if (!strcmp(name, "sample") && argc == 0) {
+      if (sp_streq(name, "sample") && argc == 0) {
         buf_puts(b, "sp_PolyArray_sample("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "rotate") && argc <= 1) {
+      if (sp_streq(name, "rotate") && argc <= 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_dup(", t); emit_expr(c, recv, b);
         buf_printf(b, "); SP_GC_ROOT(_t%d); sp_PolyArray_rotate_bang(_t%d, ", t, t);
@@ -1333,29 +1333,29 @@ else {
         buf_printf(b, "); _t%d; })", t);
         return 1;
       }
-      if ((!strcmp(name, "slice") || !strcmp(name, "[]")) && argc == 2) {
+      if ((sp_streq(name, "slice") || sp_streq(name, "[]")) && argc == 2) {
         buf_puts(b, "sp_PolyArray_slice("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "sample") && argc == 1) {
+      if (sp_streq(name, "sample") && argc == 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_shuffle(", t); emit_expr(c, recv, b);
         buf_printf(b, "); SP_GC_ROOT(_t%d); sp_PolyArray_slice(_t%d, 0, ", t, t); emit_int_expr(c, argv[0], b);
         buf_puts(b, "); })");
         return 1;
       }
-      if ((!strcmp(name, "min") || !strcmp(name, "max")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_sort(", t); emit_expr(c, recv, b);
         buf_printf(b, "); SP_GC_ROOT(_t%d);", t);
-        if (!strcmp(name, "max")) buf_printf(b, " sp_PolyArray_reverse_bang(_t%d);", t);
+        if (sp_streq(name, "max")) buf_printf(b, " sp_PolyArray_reverse_bang(_t%d);", t);
         buf_printf(b, " sp_PolyArray_slice(_t%d, 0, ", t); emit_int_expr(c, argv[0], b);
         buf_puts(b, "); })");
         return 1;
       }
-      if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||
-           !strcmp(name, "none?") || !strcmp(name, "one?")) &&
+      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
+           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
           argc == 0 && nt_ref(nt, id, "block") < 0) {
         /* count truthy elements; a poly element may be nil/false */
         int t = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
@@ -1363,16 +1363,16 @@ else {
         buf_printf(b, "; mrb_int _t%d = 0; for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
                       " if (sp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) _t%d++;",
                    tn, ti, ti, t, ti, t, ti, tn);
-        const char *expr = !strcmp(name, "all?") ? "_t%d == sp_PolyArray_length(_t%d)"
-                         : !strcmp(name, "any?") ? "_t%d > 0"
-                         : !strcmp(name, "none?") ? "_t%d == 0" : "_t%d == 1";
+        const char *expr = sp_streq(name, "all?") ? "_t%d == sp_PolyArray_length(_t%d)"
+                         : sp_streq(name, "any?") ? "_t%d > 0"
+                         : sp_streq(name, "none?") ? "_t%d == 0" : "_t%d == 1";
         buf_puts(b, " (");
-        if (!strcmp(name, "all?")) buf_printf(b, expr, tn, t);
+        if (sp_streq(name, "all?")) buf_printf(b, expr, tn, t);
         else buf_printf(b, expr, tn);
         buf_puts(b, "); })");
         return 1;
       }
-      if ((!strcmp(name, "any?") || !strcmp(name, "none?") || !strcmp(name, "one?") || !strcmp(name, "count")) &&
+      if ((sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "count")) &&
           argc == 1 && nt_ref(nt, id, "block") < 0) {
         /* poly_array.one?(v) / any?(v) / none?(v) / count(v) */
         int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
@@ -1382,18 +1382,18 @@ else {
         buf_printf(b, " mrb_int _t%d = 0;", tc);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
         buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) _t%d++;", ta, ti, tv, tc);
-        if (!strcmp(name, "any?"))        buf_printf(b, " _t%d > 0; })", tc);
-        else if (!strcmp(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
-        else if (!strcmp(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
+        if (sp_streq(name, "any?"))        buf_printf(b, " _t%d > 0; })", tc);
+        else if (sp_streq(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
+        else if (sp_streq(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
         else                              buf_printf(b, " _t%d; })", tc);
         return 1;
       }
-      if ((!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) && argc == 0
+      if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0
           && nt_ref(nt, id, "block") < 0) {
         buf_puts(b, "sp_PolyArray_length("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+      if (sp_streq(name, "count") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
         /* count { |x| cond } on PolyArray */
         int blk = nt_ref(nt, id, "block");
         const char *bp = block_param_name(c, blk, 0); if (bp) bp = rename_local(bp);
@@ -1424,20 +1424,20 @@ else {
           return 1;
         }
       }
-      if (!strcmp(name, "empty?") && argc == 0) {
+      if (sp_streq(name, "empty?") && argc == 0) {
         buf_puts(b, "(sp_PolyArray_length("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
         return 1;
       }
-      if ((!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) && argc == 1) {
+      if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc == 1) {
         buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "first") && argc == 0) {
+      if (sp_streq(name, "first") && argc == 0) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", 0)");
         return 1;
       }
-      if (!strcmp(name, "to_a") && argc == 0) { emit_expr(c, recv, b); return 1; }
-      if (!strcmp(name, "fetch") && (argc == 1 || argc == 2)) {
+      if (sp_streq(name, "to_a") && argc == 0) { emit_expr(c, recv, b); return 1; }
+      if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
         int ta = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tnorm = ++g_tmp;
         Buf ra; memset(&ra, 0, sizeof ra); emit_expr(c, recv, &ra);
         buf_printf(b, "({ sp_PolyArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
@@ -1453,7 +1453,7 @@ else {
         }
         return 1;
       }
-      if (!strcmp(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "zip") && argc >= 1 && nt_ref(nt, id, "block") < 0) {
         int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tpair = ++g_tmp;
         int tb[16]; TyKind at[16]; int nargs = argc < 16 ? argc : 16;
         for (int j = 0; j < nargs; j++) { tb[j] = ++g_tmp; at[j] = comp_ntype(c, argv[j]); }
@@ -1481,7 +1481,7 @@ else {
         buf_printf(b, " } _t%d; })", tr);
         return 1;
       }
-      if (!strcmp(name, "last") && argc == 0) {
+      if (sp_streq(name, "last") && argc == 0) {
         int t = ++g_tmp;
         Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
         emit_indent(g_pre, g_indent);
@@ -1490,37 +1490,37 @@ else {
         buf_printf(b, "sp_PolyArray_get(_t%d, sp_PolyArray_length(_t%d) - 1)", t, t);
         return 1;
       }
-      if (!strcmp(name, "include?") && argc == 1) {
+      if (sp_streq(name, "include?") && argc == 1) {
         buf_puts(b, "sp_PolyArray_include("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "dup") && argc == 0) {
+      if (sp_streq(name, "dup") && argc == 0) {
         buf_puts(b, "sp_PolyArray_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "compact") && argc == 0) {
+      if (sp_streq(name, "compact") && argc == 0) {
         buf_puts(b, "sp_PolyArray_compact("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "compact!") && argc == 0) {
+      if (sp_streq(name, "compact!") && argc == 0) {
         buf_puts(b, "sp_PolyArray_compact_bang("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "flatten") && argc <= 1) {
+      if (sp_streq(name, "flatten") && argc <= 1) {
         if (argc == 1) { buf_puts(b, "sp_PolyArray_flatten_n("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_PolyArray_flatten("); emit_expr(c, recv, b); buf_puts(b, ")"); }
         return 1;
       }
-      if (!strcmp(name, "transpose") && argc == 0) {
+      if (sp_streq(name, "transpose") && argc == 0) {
         buf_puts(b, "sp_int_array_transpose("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && argc == 1) {
+      if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {
         buf_printf(b, "sp_PolyArray_%s(", name); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "join") && argc <= 1) {
+      if (sp_streq(name, "join") && argc <= 1) {
         buf_puts(b, "sp_PolyArray_join("); emit_expr(c, recv, b); buf_puts(b, ", ");
         /* the separator must be a const char*; a poly separator (e.g. a reader
            whose ivar widened to poly) is converted with sp_poly_to_s. */
@@ -1532,33 +1532,33 @@ else {
         buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) {
+      if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
         buf_puts(b, "sp_PolyArray_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "slice!") && argc == 2) {
+      if (sp_streq(name, "slice!") && argc == 2) {
         buf_puts(b, "sp_PolyArray_slice_bang("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "replace") && argc == 1 && a0 == TY_POLY_ARRAY) {
+      if (sp_streq(name, "replace") && argc == 1 && a0 == TY_POLY_ARRAY) {
         buf_puts(b, "sp_PolyArray_replace("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "shuffle") && argc == 0) {
+      if (sp_streq(name, "shuffle") && argc == 0) {
         buf_puts(b, "sp_PolyArray_shuffle("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
         buf_puts(b, "sp_PolyArray_sort("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       {
         const char *base = NULL;
-        if      (!strcmp(name, "reverse!")) base = "reverse_bang";
-        else if (!strcmp(name, "shuffle!")) base = "shuffle_bang";
-        else if (!strcmp(name, "sort!"))    base = "sort_bang";
-        else if (!strcmp(name, "uniq!"))    base = "uniq_bang";
+        if      (sp_streq(name, "reverse!")) base = "reverse_bang";
+        else if (sp_streq(name, "shuffle!")) base = "shuffle_bang";
+        else if (sp_streq(name, "sort!"))    base = "sort_bang";
+        else if (sp_streq(name, "uniq!"))    base = "uniq_bang";
         if (base && argc == 0) {
           int t = ++g_tmp;
           buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
@@ -1566,7 +1566,7 @@ else {
           return 1;
         }
       }
-      if (!strcmp(name, "product") && argc == 1 && a0 == TY_POLY_ARRAY) {
+      if (sp_streq(name, "product") && argc == 1 && a0 == TY_POLY_ARRAY) {
         int ta = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, tpair = ++g_tmp;
         Buf ra; memset(&ra, 0, sizeof ra); Buf rb2; memset(&rb2, 0, sizeof rb2);
         emit_expr(c, recv, &ra); emit_expr(c, argv[0], &rb2);
@@ -1584,7 +1584,7 @@ else {
         buf_printf(b, " } } _t%d; })", tr);
         return 1;
       }
-      if (!strcmp(name, "rotate!") && argc <= 1) {
+      if (sp_streq(name, "rotate!") && argc <= 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_PolyArray_rotate_bang(_t%d, ", t);
@@ -1592,7 +1592,7 @@ else {
         buf_printf(b, "); _t%d; })", t);
         return 1;
       }
-      if ((!strcmp(name, "map!") || !strcmp(name, "collect!")) && nt_ref(nt, id, "block") >= 0) {
+      if ((sp_streq(name, "map!") || sp_streq(name, "collect!")) && nt_ref(nt, id, "block") >= 0) {
         int blk = nt_ref(nt, id, "block");
         const char *bp = block_param_name(c, blk, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, blk, "body");
@@ -1614,9 +1614,9 @@ else {
           buf_printf(b, "_t%d", trecv); return 1;
         }
       }
-      if ((!strcmp(name, "select!") || !strcmp(name, "filter!") || !strcmp(name, "keep_if") ||
-           !strcmp(name, "reject!") || !strcmp(name, "delete_if")) && nt_ref(nt, id, "block") >= 0) {
-        int is_rej = !strcmp(name, "reject!") || !strcmp(name, "delete_if");
+      if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "keep_if") ||
+           sp_streq(name, "reject!") || sp_streq(name, "delete_if")) && nt_ref(nt, id, "block") >= 0) {
+        int is_rej = sp_streq(name, "reject!") || sp_streq(name, "delete_if");
         int blk = nt_ref(nt, id, "block");
         const char *bp = block_param_name(c, blk, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, blk, "body");
@@ -1644,7 +1644,7 @@ else {
           buf_printf(b, "_t%d", trecv); return 1;
         }
       }
-      if (!strcmp(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) {
         TyKind res = comp_ntype(c, id);
         const char *hn = ty_hash_cname(res);
         if (!hn) hn = "SymPoly";
@@ -1724,7 +1724,7 @@ static int emit_hash_call(Compiler *c, int id, Buf *b) {
     if (hn) {
       /* Hash#to_proc: a Proc mapping a key to the hash value, closing over the
          hash. Emit a per-variant lookup fn matching the sp_proc_call ABI. */
-      if (!strcmp(name, "to_proc") && argc == 0) {
+      if (sp_streq(name, "to_proc") && argc == 0) {
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
         int pn = ++g_proc_counter;
         const char *keyexpr = (kt == TY_SYMBOL) ? "(sp_sym)args[0]"
@@ -1752,11 +1752,11 @@ static int emit_hash_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "), sp_hashproc_cap_scan, 1, FALSE, 1, NULL, NULL)");
         return 1;
       }
-      if ((!strcmp(name, "dup") || !strcmp(name, "clone")) && argc == 0) {
+      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
         buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "[]") && argc == 1) {
+      if (sp_streq(name, "[]") && argc == 1) {
         TyKind arg_kt = comp_ntype(c, argv[0]);
         TyKind hash_kt = ty_hash_key(rt);
         /* key type mismatch: sym key on str-keyed hash (or vice versa) -- the key
@@ -1786,7 +1786,7 @@ static int emit_hash_call(Compiler *c, int id, Buf *b) {
         }
         return 1;
       }
-      if (!strcmp(name, "dig") && argc >= 1) {
+      if (sp_streq(name, "dig") && argc >= 1) {
         TyKind vt = ty_hash_val(rt);
         TyKind kt = ty_hash_key(rt);
         /* Static key-type mismatch (string key on sym hash, etc.) -> nil. */
@@ -1856,10 +1856,10 @@ static int emit_hash_call(Compiler *c, int id, Buf *b) {
         }
         return 1;
       }
-      if ((!strcmp(name, "values_at") || !strcmp(name, "fetch_values")) && argc >= 1) {
+      if ((sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) && argc >= 1) {
         /* collect looked-up values into a poly array; values_at yields nil for
            a missing key, fetch_values raises KeyError */
-        int is_fetch = !strcmp(name, "fetch_values");
+        int is_fetch = sp_streq(name, "fetch_values");
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
         int th = ++g_tmp, tr = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
@@ -1878,7 +1878,7 @@ static int emit_hash_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
-      if (!strcmp(name, "fetch") && argc == 1) {
+      if (sp_streq(name, "fetch") && argc == 1) {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0) {
           /* fetch(key) { default } -> has_key? ? get : block-default */
@@ -1924,14 +1924,14 @@ else {
                    hn, th, tk, hn, th, tk, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
         return 1;
       }
-      if (!strcmp(name, "fetch") && argc == 2) {
+      if (sp_streq(name, "fetch") && argc == 2) {
         /* fetch(key, default) -> has_key? ? value : default */
         TyKind vt = ty_hash_val(rt);
         TyKind dt = comp_ntype(c, argv[1]);
         /* Empty `{}` default infers TY_UNKNOWN but is a hash — incompatible with int/str etc. */
         if (dt == TY_UNKNOWN) {
           const char *atn = nt_type(c->nt, argv[1]);
-          if (atn && (!strcmp(atn, "HashNode") || !strcmp(atn, "KeywordHashNode")))
+          if (atn && (sp_streq(atn, "HashNode") || sp_streq(atn, "KeywordHashNode")))
             dt = TY_POLY_POLY_HASH;
         }
         int needs_box = (vt != TY_POLY && ty_unify(vt, dt) == TY_POLY);
@@ -1954,24 +1954,24 @@ else {
         buf_puts(b, "; })");
         return 1;
       }
-      if ((!strcmp(name, "length") || !strcmp(name, "size") ||
-           (!strcmp(name, "count") && nt_ref(nt, id, "block") < 0)) && argc == 0) {
+      if ((sp_streq(name, "length") || sp_streq(name, "size") ||
+           (sp_streq(name, "count") && nt_ref(nt, id, "block") < 0)) && argc == 0) {
         buf_printf(b, "sp_%sHash_length(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "empty?") && argc == 0) {
+      if (sp_streq(name, "empty?") && argc == 0) {
         buf_printf(b, "(sp_%sHash_length(", hn); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
         return 1;
       }
-      if (!strcmp(name, "clear") && argc == 0) {
+      if (sp_streq(name, "clear") && argc == 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t);
         emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sHash_clear(_t%d); _t%d; })", hn, t, t);
         return 1;
       }
-      if ((!strcmp(name, "has_key?") || !strcmp(name, "key?") ||
-           !strcmp(name, "include?") || !strcmp(name, "member?")) && argc == 1) {
+      if ((sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
+           sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1) {
         TyKind arg_kt = comp_ntype(c, argv[0]);
         TyKind hash_kt = ty_hash_key(rt);
         if (hash_kt != TY_POLY && arg_kt != TY_POLY && arg_kt != TY_UNKNOWN && arg_kt != hash_kt) {
@@ -1982,7 +1982,7 @@ else {
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_hash_key(c, argv[0], hash_kt, b); buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "value?") || !strcmp(name, "has_value?")) && argc == 1) {
+      if ((sp_streq(name, "value?") || sp_streq(name, "has_value?")) && argc == 1) {
         int poly = (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH);
         buf_printf(b, "sp_%sHash_has_value(", hn);
         emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -1991,19 +1991,19 @@ else {
         return 1;
       }
       /* Hash#key(value): the first key mapping to value (sym-keyed hash). */
-      if (!strcmp(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) {
+      if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) {
         buf_puts(b, "sp_SymPolyHash_key(");
         emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_boxed(c, argv[0], b);
         buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
+      if (sp_streq(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
         buf_printf(b, "sp_%sHash_replace(", hn);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "default") && argc == 0) {
+      if (sp_streq(name, "default") && argc == 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
         if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
@@ -2020,7 +2020,7 @@ else {
         }
         return 1;
       }
-      if (!strcmp(name, "default=") && argc == 1) {
+      if (sp_streq(name, "default=") && argc == 1) {
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
         if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
@@ -2034,7 +2034,7 @@ else {
         }
         emit_expr(c, argv[0], b); buf_puts(b, "; })"); return 1;
       }
-      if (!strcmp(name, "keys") && argc == 0 && rt == TY_SYM_POLY_HASH) {
+      if (sp_streq(name, "keys") && argc == 0 && rt == TY_SYM_POLY_HASH) {
         /* runtime returns sym ids as an IntArray; box into a poly (sym) array */
         int ki = ++g_tmp, kp = ++g_tmp, ii = ++g_tmp;
         buf_printf(b, "({ sp_IntArray *_t%d = sp_SymPolyHash_keys(", ki); emit_expr(c, recv, b);
@@ -2045,19 +2045,19 @@ else {
         buf_printf(b, " _t%d; })", kp);
         return 1;
       }
-      if (!strcmp(name, "keys") && argc == 0) {
+      if (sp_streq(name, "keys") && argc == 0) {
         buf_printf(b, "sp_%sHash_keys(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "values") && argc == 0 && rt != TY_INT_INT_HASH) {
+      if (sp_streq(name, "values") && argc == 0 && rt != TY_INT_INT_HASH) {
         buf_printf(b, "sp_%sHash_values(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) {
+      if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
         buf_printf(b, "sp_%sHash_inspect(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
+      if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
         /* merge(other) { |k, v1, v2| } -- conflict-resolution block. The
            result starts as a copy of the receiver, then each key of `other`
            is inserted; on a collision the block picks the value. */
@@ -2098,7 +2098,7 @@ else {
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
-      if (!strcmp(name, "merge") && argc == 1 &&
+      if (sp_streq(name, "merge") && argc == 1 &&
           (rt == TY_STR_INT_HASH || rt == TY_STR_POLY_HASH || rt == TY_SYM_POLY_HASH ||
            rt == TY_STR_STR_HASH)) {
         TyKind at = comp_ntype(c, argv[0]);
@@ -2134,7 +2134,7 @@ else {
         buf_puts(b, ")");
         return 1;
       }
-      if (!strcmp(name, "invert") && argc == 0) {
+      if (sp_streq(name, "invert") && argc == 0) {
         if (rt == TY_STR_STR_HASH) {
           buf_printf(b, "sp_StrStrHash_invert("); emit_expr(c, recv, b); buf_puts(b, ")");
         }
@@ -2175,7 +2175,7 @@ else {
         }
         return 1;
       }
-      if (!strcmp(name, "flatten") && argc <= 1) {
+      if (sp_streq(name, "flatten") && argc <= 1) {
         /* interleave keys and values into a flat PolyArray */
         int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
@@ -2199,20 +2199,20 @@ else {
         buf_printf(b, " } _t%d; })", tr);
         return 1;
       }
-      if ((!strcmp(name, "to_a") || !strcmp(name, "entries")) && argc == 0) {
+      if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
         emit_hash_pairs_expr(c, recv, rt, hn, b);
         return 1;
       }
-      if (!strcmp(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
         /* sort entries by Array#<=> over each [key, value] pair */
         buf_puts(b, "sp_PolyArray_sort_pairs(");
         emit_hash_pairs_expr(c, recv, rt, hn, b);
         buf_puts(b, ")");
         return 1;
       }
-      if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && argc == 1) {
+      if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {
         /* find first pair where key==arg (assoc) or value==arg (rassoc); returns [k,v] or nil */
-        int is_rassoc = !strcmp(name, "rassoc");
+        int is_rassoc = sp_streq(name, "rassoc");
         TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
         int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, ta = ++g_tmp;
         buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b); buf_puts(b, ";");
@@ -2262,7 +2262,7 @@ else {
         buf_printf(b, " break; } } _t%d; })", tr);  /* NULL = nil in poly context */
         return 1;
       }
-      if (!strcmp(name, "compact") && argc == 0) {
+      if (sp_streq(name, "compact") && argc == 0) {
         TyKind vt = ty_hash_val(rt);
         if (vt != TY_POLY) {
           /* Non-poly values can't be nil; compact is equivalent to dup */
@@ -2289,7 +2289,7 @@ else {
         }
         return 1;
       }
-      if (!strcmp(name, "delete") && argc == 1 &&
+      if (sp_streq(name, "delete") && argc == 1 &&
           (rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH || rt == TY_SYM_POLY_HASH ||
            rt == TY_STR_POLY_HASH)) {
         /* returns the deleted value (or nil on a miss), then removes the key */
@@ -2316,10 +2316,10 @@ else {
 static int same_sefree_lvalue(Compiler *c, int a, int b) {
   if (a < 0 || b < 0) return 0;
   const char *ta = nt_type(c->nt, a), *tb = nt_type(c->nt, b);
-  if (!ta || !tb || strcmp(ta, tb)) return 0;
-  if (strcmp(ta, "LocalVariableReadNode") && strcmp(ta, "InstanceVariableReadNode")) return 0;
+  if (!ta || !tb || !sp_streq(ta, tb)) return 0;
+  if (!sp_streq(ta, "LocalVariableReadNode") && !sp_streq(ta, "InstanceVariableReadNode")) return 0;
   const char *na = nt_str(c->nt, a, "name"), *nb = nt_str(c->nt, b, "name");
-  return na && nb && !strcmp(na, nb);
+  return na && nb && sp_streq(na, nb);
 }
 
 static int emit_scalar_call(Compiler *c, int id, Buf *b) {
@@ -2342,58 +2342,58 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
        unresolvable chain like `Rails.application.class.to_s` in a method that
        is compiled but never called -- emits sp_box_nil(); coerce it to a
        const char* (yields "" at runtime) so the string ops below type-check. */
-    if (rt == TY_STRING && !strcmp(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
+    if (rt == TY_STRING && sp_streq(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
     int handled = 1;
 
     if (rt == TY_STRING) {
       /* blockless "a".upto("c") materializes the succ-sequence as an array */
-      if (!strcmp(name, "upto") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      if (sp_streq(name, "upto") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         buf_printf(b, "sp_StrArray_from_string_range(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 0)");
       }
       /* string methods taking a regex-literal argument route to the engine */
-      else if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+      else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
         const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
         buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
         emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2 &&
-               nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
+      else if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2 &&
+               nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "InterpolatedRegularExpressionNode")) {
         Buf rp; memset(&rp, 0, sizeof rp);
         emit_regex_pat_to_buf(c, argv[0], &rp);
         buf_printf(b, "sp_re_%s(%s, %s, ", name, rp.p ? rp.p : "NULL", r);
         emit_expr(c, argv[1], b); buf_puts(b, ")");
         free(rp.p);
       }
-      else if (!strcmp(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      else if (sp_streq(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
-      else if (!strcmp(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+      else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                !re_has_captures(re_lit_src(c, argv[0]))) {
         buf_printf(b, "sp_re_scan(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
-      else if (!strcmp(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
+      else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                re_has_captures(re_lit_src(c, argv[0]))) {
         buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
-      else if (!strcmp(name, "to_sym") || !strcmp(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
-      else if (!strcmp(name, "length") || !strcmp(name, "size")) {
+      else if (sp_streq(name, "to_sym") || sp_streq(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
+      else if (sp_streq(name, "length") || sp_streq(name, "size")) {
         if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
-            !strcmp(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
-            !strcmp(nt_str(nt, recv, "name"), g_hoist_len_recv))
+            sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
+            sp_streq(nt_str(nt, recv, "name"), g_hoist_len_recv))
           buf_puts(b, g_hoist_len_var);
         else buf_printf(b, "sp_str_length(%s)", r);
       }
-      else if (!strcmp(name, "bytesize")) buf_printf(b, "(mrb_int)sp_str_byte_len(%s)", r);
-      else if (!strcmp(name, "upcase"))     buf_printf(b, "sp_str_upcase(%s)", r);
-      else if (!strcmp(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
-      else if (!strcmp(name, "capitalize")) buf_printf(b, "sp_str_capitalize(%s)", r);
-      else if (!strcmp(name, "reverse"))    buf_printf(b, "sp_str_reverse(%s)", r);
-      else if (!strcmp(name, "strip"))      buf_printf(b, "sp_str_strip(%s)", r);
-      else if (!strcmp(name, "lstrip"))     buf_printf(b, "sp_str_lstrip(%s)", r);
-      else if (!strcmp(name, "rstrip"))     buf_printf(b, "sp_str_rstrip(%s)", r);
-      else if (!strcmp(name, "chomp") && argc == 1) {
+      else if (sp_streq(name, "bytesize")) buf_printf(b, "(mrb_int)sp_str_byte_len(%s)", r);
+      else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase(%s)", r);
+      else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
+      else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize(%s)", r);
+      else if (sp_streq(name, "reverse"))    buf_printf(b, "sp_str_reverse(%s)", r);
+      else if (sp_streq(name, "strip"))      buf_printf(b, "sp_str_strip(%s)", r);
+      else if (sp_streq(name, "lstrip"))     buf_printf(b, "sp_str_lstrip(%s)", r);
+      else if (sp_streq(name, "rstrip"))     buf_printf(b, "sp_str_rstrip(%s)", r);
+      else if (sp_streq(name, "chomp") && argc == 1) {
         const char *a0ty = nt_type(nt, argv[0]);
-        if (a0ty && !strcmp(a0ty, "NilNode")) {
+        if (a0ty && sp_streq(a0ty, "NilNode")) {
           /* chomp(nil) returns the string unchanged */
           buf_puts(b, r);
         }
@@ -2401,44 +2401,44 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "sp_str_chomp_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
       }
-      else if (!strcmp(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
-      else if (!strcmp(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
-      else if (!strcmp(name, "to_s") || !strcmp(name, "to_str")) buf_puts(b, r);
-      else if ((!strcmp(name, "dup") || !strcmp(name, "clone")) && argc == 0) buf_printf(b, "sp_str_dup_external(%s)", r);
-      else if (!strcmp(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
-      else if (!strcmp(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
-      else if (!strcmp(name, "include?") && argc == 1) {
+      else if (sp_streq(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
+      else if (sp_streq(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
+      else if (sp_streq(name, "to_s") || sp_streq(name, "to_str")) buf_puts(b, r);
+      else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) buf_printf(b, "sp_str_dup_external(%s)", r);
+      else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
+      else if (sp_streq(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
+      else if (sp_streq(name, "include?") && argc == 1) {
         buf_printf(b, "sp_str_include(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      else if (sp_streq(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* s.start_with?(/re/): true when the pattern matches at index 0 */
         buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) == 0)", re_lit_index(c, argv[0]), r);
       }
-      else if (!strcmp(name, "start_with?") && argc == 1) {
+      else if (sp_streq(name, "start_with?") && argc == 1) {
         buf_printf(b, "sp_str_start_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "end_with?") && argc == 1) {
+      else if (sp_streq(name, "end_with?") && argc == 1) {
         buf_printf(b, "sp_str_end_with(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "ascii_only?") && argc == 0) buf_printf(b, "sp_str_ascii_only(%s)", r);
-      else if (!strcmp(name, "valid_encoding?") && argc == 0) buf_printf(b, "sp_str_valid_encoding(%s)", r);
-      else if (!strcmp(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      else if (sp_streq(name, "ascii_only?") && argc == 0) buf_printf(b, "sp_str_ascii_only(%s)", r);
+      else if (sp_streq(name, "valid_encoding?") && argc == 0) buf_printf(b, "sp_str_valid_encoding(%s)", r);
+      else if (sp_streq(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_index_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
-      else if (!strcmp(name, "index") && argc == 1) {
+      else if (sp_streq(name, "index") && argc == 1) {
         /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
         buf_printf(b, "sp_str_index_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "index") && argc == 2) {
+      else if (sp_streq(name, "index") && argc == 2) {
         buf_printf(b, "sp_str_index_from_opt(%s, ", r);
         emit_expr(c, argv[0], b); buf_puts(b, ", ");
         emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if ((!strcmp(name, "partition") || !strcmp(name, "rpartition")) && argc == 1 &&
+      else if ((sp_streq(name, "partition") || sp_streq(name, "rpartition")) && argc == 1 &&
                re_lit_index(c, argv[0]) < 0) {
         buf_printf(b, "sp_str_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "partition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      else if (sp_streq(name, "partition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* [before, match, after] from the first regex match, else [s, "", ""] */
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_StrArray *_t%d = sp_StrArray_new();"
@@ -2449,23 +2449,23 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " _t%d; })",
                    tr, re_lit_index(c, argv[0]), r, tr, tr, tr, tr, r, tr, tr, tr);
       }
-      else if (!strcmp(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      else if (sp_streq(name, "rpartition") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_rpartition(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
-      else if (!strcmp(name, "rindex") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      else if (sp_streq(name, "rindex") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_rindex_opt(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
-      else if (!strcmp(name, "rindex") && argc == 1) { buf_printf(b, "sp_str_rindex_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "crypt") && argc == 1) { buf_printf(b, "sp_str_crypt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "scrub") && argc == 0) buf_printf(b, "sp_str_scrub(%s, 0)", r);
-      else if (!strcmp(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      else if (sp_streq(name, "rindex") && argc == 1) { buf_printf(b, "sp_str_rindex_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "rindex") && argc == 2) { buf_printf(b, "sp_str_rindex_from(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "crypt") && argc == 1) { buf_printf(b, "sp_str_crypt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "scrub") && argc == 0) buf_printf(b, "sp_str_scrub(%s, 0)", r);
+      else if (sp_streq(name, "scrub") && argc == 1) { buf_printf(b, "sp_str_scrub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* s[/re/] -> the matched substring, or nil (NULL) on no match */
         buf_printf(b, "(sp_re_match(sp_re_pat_%d, %s) >= 0 ? sp_re_match_str : NULL)", re_lit_index(c, argv[0]), r);
       }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
-               !strcmp(nt_type(c->nt, argv[0]), "RangeNode")) {
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
+               sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
         /* s[a..b] / s[a...b]; beginless/endless ranges use 0 / length */
         int rn = argv[0];
         int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
@@ -2476,35 +2476,35 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
         if (hi >= 0) { emit_int_expr(c, hi, b); buf_printf(b, ", %d)", excl); }
         else buf_printf(b, "(mrb_int)sp_str_length(%s), 0)", r);  /* endless: to the end */
       }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 2) {
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2) {
         /* s[start, len] */
         buf_printf(b, "sp_str_sub_range(%s, ", r);
         emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
         /* s["sub"] -> the substring if present, else nil */
         int tsub = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", tsub); emit_str_expr(c, argv[0], b);
         buf_printf(b, "; (strstr(%s, _t%d) ? _t%d : NULL); })", r, tsub, tsub);
       }
-      else if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1) {
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1) {
         buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "split") && argc == 0) buf_printf(b, "sp_str_split_ws(%s)", r);
-      else if (!strcmp(name, "split") && argc == 1) {
+      else if (sp_streq(name, "split") && argc == 0) buf_printf(b, "sp_str_split_ws(%s)", r);
+      else if (sp_streq(name, "split") && argc == 1) {
         /* split(nil) and split(" ") are whitespace-mode; split(sep) drops trailing empties */
         const char *aty = nt_type(c->nt, argv[0]);
-        int nil_arg = aty && !strcmp(aty, "NilNode");
-        int ws = nil_arg || (aty && !strcmp(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
-                 !strcmp(nt_str(c->nt, argv[0], "content"), " "));
+        int nil_arg = aty && sp_streq(aty, "NilNode");
+        int ws = nil_arg || (aty && sp_streq(aty, "StringNode") && nt_str(c->nt, argv[0], "content") &&
+                 sp_streq(nt_str(c->nt, argv[0], "content"), " "));
         if (ws) buf_printf(b, "sp_str_split_ws(%s)", r);
         else { buf_printf(b, "sp_str_split_drop_trailing(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       }
-      else if (!strcmp(name, "split") && argc == 2) {
+      else if (sp_streq(name, "split") && argc == 2) {
         buf_printf(b, "sp_str_split_limit(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "clamp") && (argc == 2 ||
-               (argc == 1 && nt_type(c->nt, argv[0]) && !strcmp(nt_type(c->nt, argv[0]), "RangeNode")))) {
+      else if (sp_streq(name, "clamp") && (argc == 2 ||
+               (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
         int lo_n, hi_n;
         if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
         else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
@@ -2514,106 +2514,106 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; strcmp(_t%d, _t%d) < 0 ? _t%d : (strcmp(_t%d, _t%d) > 0 ? _t%d : _t%d); })",
                    tc, tlo, tlo, tc, thi, thi, tc);
       }
-      else if (!strcmp(name, "oct") && argc == 0) buf_printf(b, "sp_str_oct(%s)", r);
-      else if (!strcmp(name, "hex") && argc == 0) buf_printf(b, "sp_str_to_i_base(%s, 16)", r);
-      else if (!strcmp(name, "ord") && argc == 0) buf_printf(b, "sp_str_ord(%s)", r);
-      else if ((!strcmp(name, "force_encoding") || !strcmp(name, "b") || !strcmp(name, "encode")) && argc <= 1) buf_printf(b, "(%s)", r);
-      else if (!strcmp(name, "encoding") && argc == 0) buf_printf(b, "((void)(%s), sp_box_encoding(sp_encoding_utf8()))", r);
-      else if (!strcmp(name, "dump") && argc == 0) buf_printf(b, "sp_str_dump(%s)", r);
-      else if (!strcmp(name, "undump") && argc == 0) buf_printf(b, "sp_str_undump(%s)", r);
-      else if (!strcmp(name, "casecmp") && argc == 1) { buf_printf(b, "sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
-      else if (!strcmp(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
-      else if (!strcmp(name, "setbyte") && argc == 2) { buf_printf(b, "sp_str_setbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "getbyte") && argc == 1) {
+      else if (sp_streq(name, "oct") && argc == 0) buf_printf(b, "sp_str_oct(%s)", r);
+      else if (sp_streq(name, "hex") && argc == 0) buf_printf(b, "sp_str_to_i_base(%s, 16)", r);
+      else if (sp_streq(name, "ord") && argc == 0) buf_printf(b, "sp_str_ord(%s)", r);
+      else if ((sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) && argc <= 1) buf_printf(b, "(%s)", r);
+      else if (sp_streq(name, "encoding") && argc == 0) buf_printf(b, "((void)(%s), sp_box_encoding(sp_encoding_utf8()))", r);
+      else if (sp_streq(name, "dump") && argc == 0) buf_printf(b, "sp_str_dump(%s)", r);
+      else if (sp_streq(name, "undump") && argc == 0) buf_printf(b, "sp_str_undump(%s)", r);
+      else if (sp_streq(name, "casecmp") && argc == 1) { buf_printf(b, "sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
+      else if (sp_streq(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+      else if (sp_streq(name, "setbyte") && argc == 2) { buf_printf(b, "sp_str_setbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "getbyte") && argc == 1) {
         /* inline to a direct byte load (matches the legacy generator): the
            per-byte sp_str_getbyte call recomputes the string length and bounds
            every iteration, which the C compiler can't hoist across an aliasing
            setbyte. An out-of-range index reads adjacent bytes (as in legacy). */
         buf_printf(b, "((mrb_int)(unsigned char)(%s)[", r); emit_int_expr(c, argv[0], b); buf_puts(b, "])");
       }
-      else if (!strcmp(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
-      else if (!strcmp(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "squeeze") && argc >= 2) {
+      else if (sp_streq(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
+      else if (sp_streq(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "squeeze") && argc >= 2) {
         buf_printf(b, "sp_str_squeeze_n(%s, (const char *[]){", r);
         for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
         buf_printf(b, "}, %d)", argc);
       }
-      else if ((!strcmp(name, "tr") || !strcmp(name, "tr_s")) && argc == 2) {
+      else if ((sp_streq(name, "tr") || sp_streq(name, "tr_s")) && argc == 2) {
         buf_printf(b, "sp_str_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); return 1; }
-      else if (!strcmp(name, "delete") && argc == 1) { buf_printf(b, "sp_str_delete(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "delete") && argc >= 2) {
+      else if (sp_streq(name, "delete") && argc == 0) { buf_printf(b, "(%s)", r); return 1; }
+      else if (sp_streq(name, "delete") && argc == 1) { buf_printf(b, "sp_str_delete(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "delete") && argc >= 2) {
         buf_printf(b, "sp_str_delete_n(%s, (const char *[]){", r);
         for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
         buf_printf(b, "}, %d)", argc);
       }
-      else if (!strcmp(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return 1; }
-      else if (!strcmp(name, "count") && argc == 1) { buf_printf(b, "sp_str_count(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "count") && argc >= 2) {
+      else if (sp_streq(name, "count") && argc == 0) { buf_printf(b, "(sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into String\"), 0LL)"); return 1; }
+      else if (sp_streq(name, "count") && argc == 1) { buf_printf(b, "sp_str_count(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "count") && argc >= 2) {
         buf_printf(b, "sp_str_count_n(%s, (const char *[]){", r);
         for (int a = 0; a < argc; a++) { if (a) buf_puts(b, ", "); emit_expr(c, argv[a], b); }
         buf_printf(b, "}, %d)", argc);
       }
-      else if (!strcmp(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
-      else if (!strcmp(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&
-               !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) {
+      else if (sp_streq(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
+      else if (sp_streq(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&
+               sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
         int chomp_v = struct_kwarg_value(c, argv[0], "chomp");
         int is_chomp = (chomp_v >= 0 && nt_type(nt, chomp_v) &&
-                        !strcmp(nt_type(nt, chomp_v), "TrueNode"));
+                        sp_streq(nt_type(nt, chomp_v), "TrueNode"));
         buf_printf(b, "%s(%s)", is_chomp ? "sp_str_lines_chomp" : "sp_str_lines", r);
       }
-      else if (!strcmp(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
-      else if (!strcmp(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
-      else if (!strcmp(name, "unpack") && argc == 1)  { buf_printf(b, "sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "unpack1") && argc == 1) { buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
-      else if (!strcmp(name, "sum") && argc == 0) {
+      else if (sp_streq(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
+      else if (sp_streq(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
+      else if (sp_streq(name, "unpack") && argc == 1)  { buf_printf(b, "sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "unpack1") && argc == 1) { buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      else if (sp_streq(name, "sum") && argc == 0) {
         /* default 16-bit byte checksum: sum of byte values modulo 2**16 */
         int ts = ++g_tmp, tp = ++g_tmp, tacc = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = %s; mrb_int _t%d = 0; for (const char *_t%d = _t%d; *_t%d; _t%d++)"
                       " _t%d += (unsigned char)*_t%d; _t%d & 0xffff; })", ts, r, tacc, tp, ts, tp, tp, tacc, tp, tacc);
       }
-      else if (!strcmp(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
-      else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);
-      else if (!strcmp(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
-      else if (!strcmp(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
-      else if (!strcmp(name, "gsub") && argc == 2) {
+      else if (sp_streq(name, "chars") && argc == 0)   buf_printf(b, "sp_str_chars(%s)", r);
+      else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "sp_str_succ(%s)", r);
+      else if (sp_streq(name, "to_i") && argc == 0)    buf_printf(b, "sp_str_to_i_cruby(%s)", r);
+      else if (sp_streq(name, "to_i") && argc == 1)    { buf_printf(b, "sp_str_to_i_base(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "to_f") && argc == 0)    buf_printf(b, "atof(%s)", r);
+      else if (sp_streq(name, "gsub") && argc == 2) {
         buf_printf(b, "sp_str_gsub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "sub") && argc == 2 && comp_ntype(c, argv[1]) == TY_STR_STR_HASH) {
+      else if (sp_streq(name, "sub") && argc == 2 && comp_ntype(c, argv[1]) == TY_STR_STR_HASH) {
         buf_printf(b, "sp_str_sub_str_str_hash(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "sub") && argc == 2) {
+      else if (sp_streq(name, "sub") && argc == 2) {
         buf_printf(b, "sp_str_sub(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "tr") && argc == 2) {
+      else if (sp_streq(name, "tr") && argc == 2) {
         buf_printf(b, "sp_str_tr(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "center") && argc == 1) {
+      else if (sp_streq(name, "center") && argc == 1) {
         buf_printf(b, "sp_str_center(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "center") && argc == 2) {
+      else if (sp_streq(name, "center") && argc == 2) {
         buf_printf(b, "sp_str_center2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "ljust") && argc == 1) {
+      else if (sp_streq(name, "ljust") && argc == 1) {
         buf_printf(b, "sp_str_ljust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "ljust") && argc == 2) {
+      else if (sp_streq(name, "ljust") && argc == 2) {
         buf_printf(b, "sp_str_ljust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "rjust") && argc == 1) {
+      else if (sp_streq(name, "rjust") && argc == 1) {
         buf_printf(b, "sp_str_rjust(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "rjust") && argc == 2) {
+      else if (sp_streq(name, "rjust") && argc == 2) {
         buf_printf(b, "sp_str_rjust2(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
       /* String#eql?(x): byte-equal only when x is itself String-typed (no
          coercion, unlike ==). A poly arg checks its tag; any other concrete
          type is never equal. */
-      else if (!strcmp(name, "eql?") && argc == 1) {
+      else if (sp_streq(name, "eql?") && argc == 1) {
         if (a0 == TY_STRING) { buf_printf(b, "sp_str_eq(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else if (a0 == TY_POLY) {
           int te = ++g_tmp;
@@ -2629,7 +2629,7 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
          or ivar read on both sides (`x.equal?(x)`) -- is certainly identity-
          true; every other form is conservatively false, still evaluating the
          argument for its side effects. */
-      else if (!strcmp(name, "equal?") && argc == 1) {
+      else if (sp_streq(name, "equal?") && argc == 1) {
         if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
         else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
       }
@@ -2639,78 +2639,78 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       /* a nullable int's to_s/inspect tests the value and converts it -- bind
          the receiver to a temp first so a side-effecting `r` (e.g. ARGF.read,
          a method call) is evaluated exactly once, not twice. */
-      if (!strcmp(name, "to_s") && argc == 0) {
+      if (sp_streq(name, "to_s") && argc == 0) {
         int _tn = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
       }
-      else if (!strcmp(name, "inspect")) {
+      else if (sp_streq(name, "inspect")) {
         int _tn = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = (%s); _t%d == SP_INT_NIL ? SPL(\"nil\") : sp_int_to_s(_t%d); })", _tn, r, _tn, _tn);
       }
-      else if (!strcmp(name, "to_f"))   buf_printf(b, "((mrb_float)(%s))", r);
-      else if ((!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "floor") ||
-                !strcmp(name, "ceil") || !strcmp(name, "round") || !strcmp(name, "truncate")) &&
+      else if (sp_streq(name, "to_f"))   buf_printf(b, "((mrb_float)(%s))", r);
+      else if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "floor") ||
+                sp_streq(name, "ceil") || sp_streq(name, "round") || sp_streq(name, "truncate")) &&
                argc == 0) buf_printf(b, "(%s)", r);
-      else if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-                !strcmp(name, "round") || !strcmp(name, "truncate")) && argc == 1) {
+      else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
+                sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
         buf_printf(b, "sp_int_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "abs"))    buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "chr"))    buf_printf(b, "sp_int_chr(%s)", r);
-      else if (!strcmp(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
-      else if (!strcmp(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
-      else if (!strcmp(name, "fdiv") && argc == 1) { buf_printf(b, "((mrb_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
-      else if (!strcmp(name, "[]") && argc == 2) {
+      else if (sp_streq(name, "abs"))    buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "chr"))    buf_printf(b, "sp_int_chr(%s)", r);
+      else if (sp_streq(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
+      else if (sp_streq(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
+      else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((mrb_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
+      else if (sp_streq(name, "[]") && argc == 2) {
         /* n[start, len]: the len-bit field starting at bit `start`. Routed
            through a runtime helper that clamps an out-of-range start/len so
            the shift never goes undefined. */
         buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "even?"))  buf_printf(b, "((%s) %% 2 == 0)", r);
-      else if (!strcmp(name, "odd?"))   buf_printf(b, "((%s) %% 2 != 0)", r);
-      else if (!strcmp(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
-      else if (!strcmp(name, "nonzero?")) buf_printf(b, "((%s) == 0 ? SP_INT_NIL : (%s))", r, r);
-      else if (!strcmp(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
-      else if (!strcmp(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
-      else if (!strcmp(name, "divmod") && argc == 1) {
+      else if (sp_streq(name, "even?"))  buf_printf(b, "((%s) %% 2 == 0)", r);
+      else if (sp_streq(name, "odd?"))   buf_printf(b, "((%s) %% 2 != 0)", r);
+      else if (sp_streq(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
+      else if (sp_streq(name, "nonzero?")) buf_printf(b, "((%s) == 0 ? SP_INT_NIL : (%s))", r, r);
+      else if (sp_streq(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
+      else if (sp_streq(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
+      else if (sp_streq(name, "divmod") && argc == 1) {
         int tb = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
                       " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
       }
-      else if (!strcmp(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "remainder") && argc == 1) { buf_printf(b, "sp_iremainder(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "size") && argc == 0) buf_puts(b, "((mrb_int)sizeof(mrb_int))");
-      else if (!strcmp(name, "gcdlcm") && argc == 1) {
+      else if (sp_streq(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "remainder") && argc == 1) { buf_printf(b, "sp_iremainder(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "size") && argc == 0) buf_puts(b, "((mrb_int)sizeof(mrb_int))");
+      else if (sp_streq(name, "gcdlcm") && argc == 1) {
         int ta = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = ", ta); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
                       " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
       }
-      else if (!strcmp(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "clamp") && argc == 1 && nt_type(c->nt, argv[0]) && !strcmp(nt_type(c->nt, argv[0]), "RangeNode")) {
+      else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "clamp") && argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
         int rn = argv[0]; int tcr = ++g_tmp;
         buf_printf(b, "({ sp_Range _t%d = ", tcr); emit_expr(c, argv[0], b);
         buf_printf(b, "; sp_int_clamp_ck(%s, _t%d.first, _t%d.last - _t%d.excl); })", r, tcr, tcr, tcr);
         (void)rn;
       }
-      else if (!strcmp(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
-      else if (!strcmp(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "allbits?") && argc == 1) { int t = ++g_tmp; buf_printf(b, "({ mrb_int _t%d = ", t); emit_int_expr(c, argv[0], b); buf_printf(b, "; (((%s) & _t%d) == _t%d); })", r, t, t); }
-      else if (!strcmp(name, "anybits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) != 0)"); }
-      else if (!strcmp(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
-      else if (!strcmp(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
-      else if ((!strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);
-      else if (!strcmp(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (!strcmp(name, "coerce") && argc == 1) {
+      else if (sp_streq(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
+      else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "allbits?") && argc == 1) { int t = ++g_tmp; buf_printf(b, "({ mrb_int _t%d = ", t); emit_int_expr(c, argv[0], b); buf_printf(b, "; (((%s) & _t%d) == _t%d); })", r, t, t); }
+      else if (sp_streq(name, "anybits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) != 0)"); }
+      else if (sp_streq(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
+      else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
+      else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);
+      else if (sp_streq(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "coerce") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
         if (a0 == TY_FLOAT) {
           int ta = ++g_tmp, o = ++g_tmp;
@@ -2731,7 +2731,7 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
          (no numeric coercion -- 1.eql?(1.0) is false). For a fixnum receiver
          equal? is value identity, so it behaves the same as eql?. A Float or
          any other concrete arg is never equal; a poly arg checks its tag. */
-      else if ((!strcmp(name, "eql?") || !strcmp(name, "equal?")) && argc == 1) {
+      else if ((sp_streq(name, "eql?") || sp_streq(name, "equal?")) && argc == 1) {
         if (a0 == TY_INT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
         else if (a0 == TY_POLY) {
           int te = ++g_tmp;
@@ -2748,16 +2748,16 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
          value at runtime, typed Float (see infer_method_name_type / FLOAT-ROUNDING). */
       int ndig = 0;
       int nonlit = 0;
-      if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-           !strcmp(name, "round") || !strcmp(name, "truncate")) && argc == 1) {
+      if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
+           sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
         const char *aty = nt_type(c->nt, argv[0]);
-        if (aty && !strcmp(aty, "IntegerNode")) ndig = (int)nt_int(c->nt, argv[0], "value", 0);
+        if (aty && sp_streq(aty, "IntegerNode")) ndig = (int)nt_int(c->nt, argv[0], "value", 0);
         else nonlit = 1;
       }
-      const char *cfn = !strcmp(name, "floor") ? "floor" : !strcmp(name, "ceil") ? "ceil"
-                      : !strcmp(name, "truncate") ? "trunc" : "round";
-      if ((!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-           !strcmp(name, "round") || !strcmp(name, "truncate"))) {
+      const char *cfn = sp_streq(name, "floor") ? "floor" : sp_streq(name, "ceil") ? "ceil"
+                      : sp_streq(name, "truncate") ? "trunc" : "round";
+      if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
+           sp_streq(name, "round") || sp_streq(name, "truncate"))) {
         if (nonlit) {
           /* _f = 10**n at runtime; round(x * _f) / _f gives the right value for
              any n (n<=0 yields a whole number, still Float -- class-only divergence). */
@@ -2773,9 +2773,9 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
         else
           buf_printf(b, "((mrb_int)%s(%s))", cfn, r);
       }
-      else if (!strcmp(name, "to_i"))  buf_printf(b, "((mrb_int)(%s))", r);
-      else if (!strcmp(name, "to_f"))  buf_printf(b, "(%s)", r);
-      else if (!strcmp(name, "divmod") && argc == 1) {
+      else if (sp_streq(name, "to_i"))  buf_printf(b, "((mrb_int)(%s))", r);
+      else if (sp_streq(name, "to_f"))  buf_printf(b, "(%s)", r);
+      else if (sp_streq(name, "divmod") && argc == 1) {
         /* Float#divmod(n) -> [floor(x/n) (Integer), x - q*n (Float)] */
         int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ mrb_float _t%d = (%s); mrb_float _t%d = ", tx, r, tn); emit_expr(c, argv[0], b);
@@ -2786,28 +2786,28 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); _t%d; })",
                    tx, tn, tn, tq, tx, tn, o, o, tq, o, tx, tq, tn, o);
       }
-      else if (!strcmp(name, "to_s"))    buf_printf(b, "sp_float_opt_to_s(%s)", r);
-      else if (!strcmp(name, "inspect")) buf_printf(b, "sp_float_opt_inspect(%s)", r);
-      else if (!strcmp(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
-      else if (!strcmp(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
-      else if (!strcmp(name, "finite?")) buf_printf(b, "(isfinite(%s) != 0)", r);
-      else if (!strcmp(name, "infinite?")) buf_printf(b, "(isinf(%s) ? ((%s) > 0 ? 1LL : -1LL) : SP_INT_NIL)", r, r);
-      else if (!strcmp(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
-      else if (!strcmp(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
-      else if (!strcmp(name, "next_float")) buf_printf(b, "nextafter(%s, INFINITY)", r);
-      else if (!strcmp(name, "prev_float")) buf_printf(b, "nextafter(%s, -INFINITY)", r);
-      else if (!strcmp(name, "magnitude")) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (!strcmp(name, "modulo") && argc == 1) { buf_printf(b, "fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "to_s"))    buf_printf(b, "sp_float_opt_to_s(%s)", r);
+      else if (sp_streq(name, "inspect")) buf_printf(b, "sp_float_opt_inspect(%s)", r);
+      else if (sp_streq(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
+      else if (sp_streq(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
+      else if (sp_streq(name, "finite?")) buf_printf(b, "(isfinite(%s) != 0)", r);
+      else if (sp_streq(name, "infinite?")) buf_printf(b, "(isinf(%s) ? ((%s) > 0 ? 1LL : -1LL) : SP_INT_NIL)", r, r);
+      else if (sp_streq(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
+      else if (sp_streq(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
+      else if (sp_streq(name, "next_float")) buf_printf(b, "nextafter(%s, INFINITY)", r);
+      else if (sp_streq(name, "prev_float")) buf_printf(b, "nextafter(%s, -INFINITY)", r);
+      else if (sp_streq(name, "magnitude")) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       /* Float#clamp with float bounds always yields a float (the returned bound
          is itself a float), so emit only when both bounds are float-typed; the
          mixed-bound case (int bound returned as Integer) is poly and left alone.
          Mirrors the inference condition in analyze_infer.c. */
-      else if (!strcmp(name, "clamp") && argc == 2 &&
+      else if (sp_streq(name, "clamp") && argc == 2 &&
                comp_ntype(c, argv[0]) == TY_FLOAT && comp_ntype(c, argv[1]) == TY_FLOAT) {
         buf_printf(b, "sp_float_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "coerce") && argc == 1) {
+      else if (sp_streq(name, "coerce") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
         int ta = ++g_tmp, o = ++g_tmp;
         if (a0 == TY_INT) {
@@ -2823,11 +2823,11 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
                         " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
         }
       }
-      else if (!strcmp(name, "fdiv") && argc == 1) { buf_printf(b, "((%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
+      else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
       /* Float#eql?(x): true only when x is itself a Float of equal value (no
          numeric coercion, unlike ==). A float-typed arg compares directly; any
          other arg is boxed and rejected unless it is tagged float at runtime. */
-      else if (!strcmp(name, "eql?") && argc == 1) {
+      else if (sp_streq(name, "eql?") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
         if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
         else {
@@ -2857,14 +2857,14 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
   /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
      correctness with module includes; falls back to constant for builtins. */
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
-      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
-    const char *cn = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")
+      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+    const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
                      ? nt_str(nt, argv[0], "name") : NULL;
     if (cn) {
       int cid = ty_object_class(rt);
       int target = comp_class_index(c, cn);
       if (target >= 0) {
-        if (!strcmp(name, "instance_of?")) {
+        if (sp_streq(name, "instance_of?")) {
           buf_puts(b, "((void)("); emit_expr(c, recv, b);
           buf_printf(b, "), %d)", cid == target);
         }
@@ -2886,7 +2886,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       int k = ++g_tmp;
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), ");
       buf_printf(b, "({ sp_Class _t%d = ", k); emit_expr(c, argv[0], b); buf_printf(b, "; ");
-      if (!strcmp(name, "instance_of?"))
+      if (sp_streq(name, "instance_of?"))
         buf_printf(b, "((sp_Class){%d}).cls_id == _t%d.cls_id; }))", cid, k);
       else
         buf_printf(b, "sp_class_le(((sp_Class){%d}),_t%d); }))", cid, k);
@@ -2897,7 +2897,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
   /* Struct instance methods (to_h / to_a / values / members / dig). */
   if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
     ClassInfo *sc = &c->classes[ty_object_class(rt)];
-    int is_to_a = (!strcmp(name, "to_a") || !strcmp(name, "values") || !strcmp(name, "deconstruct"));
+    int is_to_a = (sp_streq(name, "to_a") || sp_streq(name, "values") || sp_streq(name, "deconstruct"));
     if (is_to_a && argc == 0) {
       int t = ++g_tmp; int rt2 = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
@@ -2913,7 +2913,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       free(rb.p);
       return 1;
     }
-    if (!strcmp(name, "to_h") && argc == 0) {
+    if (sp_streq(name, "to_h") && argc == 0) {
       int block = nt_ref(nt, id, "block");
       int t = ++g_tmp, rh = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
@@ -2931,7 +2931,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
         int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
         int last = bn > 0 ? bb[bn - 1] : -1;
         int ke = -1, ve = -1;
-        if (last >= 0 && nt_type(nt, last) && !strcmp(nt_type(nt, last), "ArrayNode")) {
+        if (last >= 0 && nt_type(nt, last) && sp_streq(nt_type(nt, last), "ArrayNode")) {
           int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
           if (en == 2) { ke = els[0]; ve = els[1]; }
         }
@@ -2961,7 +2961,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", rh);
       return 1;
     }
-    if ((!strcmp(name, "members")) && argc == 0) {
+    if ((sp_streq(name, "members")) && argc == 0) {
       int rm = ++g_tmp;
       buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
       for (int i = 0; i < sc->nivars; i++)
@@ -2969,15 +2969,15 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", rm);
       return 1;
     }
-    if (!strcmp(name, "dig") && argc >= 1) {
+    if (sp_streq(name, "dig") && argc >= 1) {
       /* literal key resolves a member at compile time */
       int mi = -1;
       const char *kty = nt_type(nt, argv[0]);
-      if (kty && !strcmp(kty, "SymbolNode")) {
+      if (kty && sp_streq(kty, "SymbolNode")) {
         char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
         mi = comp_ivar_index(sc, ivn);
       }
-      else if (kty && !strcmp(kty, "IntegerNode")) {
+      else if (kty && sp_streq(kty, "IntegerNode")) {
         int v = (int)nt_int(nt, argv[0], "value", -1);
         if (v >= 0 && v < sc->nivars) mi = v;
       }
@@ -3001,15 +3001,15 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    if (!strcmp(name, "[]") && argc == 1) {
+    if (sp_streq(name, "[]") && argc == 1) {
       /* struct[:sym] or struct[int_literal]: return member value boxed to poly */
       int mi = -1;
       const char *kty = nt_type(nt, argv[0]);
-      if (kty && !strcmp(kty, "SymbolNode") && nt_str(nt, argv[0], "value")) {
+      if (kty && sp_streq(kty, "SymbolNode") && nt_str(nt, argv[0], "value")) {
         char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
         mi = comp_ivar_index(sc, ivn);
       }
-      else if (kty && !strcmp(kty, "IntegerNode")) {
+      else if (kty && sp_streq(kty, "IntegerNode")) {
         long long v = (long long)nt_int(nt, argv[0], "value", 0);
         if (v < 0) v += (long long)sc->nivars;
         if (v >= 0 && v < sc->nivars) mi = (int)v;
@@ -3060,13 +3060,13 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
        runtime, also matching CRuby. A dynamic name -- or instance_variable_set
        to a valid name absent from the fixed object layout (no field to write) --
        cannot be represented and is diagnosed. */
-    if ((!strcmp(name, "instance_variable_get") || !strcmp(name, "instance_variable_set")) &&
+    if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set")) &&
         argc >= 1 && nt_type(nt, argv[0]) &&
-        (!strcmp(nt_type(nt, argv[0]), "SymbolNode") || !strcmp(nt_type(nt, argv[0]), "StringNode"))) {
+        (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
       const char *a0ty = nt_type(nt, argv[0]);
-      const char *sym = !strcmp(a0ty, "SymbolNode")
+      const char *sym = sp_streq(a0ty, "SymbolNode")
                           ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
-      int is_set = !strcmp(name, "instance_variable_set");
+      int is_set = sp_streq(name, "instance_variable_set");
       /* Arity is statically known: get takes just the name, set the name and a
          value. A wrong count is a clear diagnostic rather than falling through to
          the misleading by-value-receiver message below. */
@@ -3074,8 +3074,8 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       if (!is_set && argc != 1) { unsupported(c, id, "instance_variable_get takes exactly 1 argument"); return 1; }
       int is_val = comp_ty_value_obj(c, rt);
       const char *rty = nt_type(nt, recv);
-      int recv_lvalue = rty && (!strcmp(rty, "LocalVariableReadNode") ||
-                                !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"));
+      int recv_lvalue = rty && (sp_streq(rty, "LocalVariableReadNode") ||
+                                sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"));
       /* A name without a leading `@` is never a valid ivar name: raise NameError
          at runtime (evaluating the receiver first for its side effects). */
       if (!sym || sym[0] != '@') {
@@ -3087,7 +3087,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       }
       int mi = -1;
       for (int i = 0; i < c->classes[cid].nivars; i++)
-        if (!strcmp(c->classes[cid].ivars[i], sym)) { mi = i; break; }
+        if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
       if (mi >= 0) {
         /* A value object is passed by value, so a field write only sticks when
            the receiver is an lvalue (a local / ivar / self); a pointer object
@@ -3136,7 +3136,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       if (comp_ty_value_obj(c, rt)) {
         char selfv[64];
         const char *rty = nt_type(nt, recv);
-        if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+        if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
           Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
           snprintf(selfv, sizeof selfv, "%s", rb.p ? rb.p : ""); free(rb.p);
         }
@@ -3155,7 +3155,7 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
          multiple times) */
       char selfptr[64];
       const char *rty = nt_type(nt, recv);
-      if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+      if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
         Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
         snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
         free(rb.p);
@@ -3196,41 +3196,41 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
     const char *r = rs.p ? rs.p : "";
     int done = 1;
-    if (!strcmp(name, "utc") || !strcmp(name, "gmtime") || !strcmp(name, "getutc")) buf_printf(b, "sp_time_utc(%s)", r);
-    else if (!strcmp(name, "localtime") || !strcmp(name, "getlocal")) buf_printf(b, "sp_time_localtime(%s)", r);
-    else if (!strcmp(name, "year"))  buf_printf(b, "sp_time_year(%s)", r);
-    else if (!strcmp(name, "mon") || !strcmp(name, "month")) buf_printf(b, "sp_time_mon(%s)", r);
-    else if (!strcmp(name, "day") || !strcmp(name, "mday"))  buf_printf(b, "sp_time_mday(%s)", r);
-    else if (!strcmp(name, "hour")) buf_printf(b, "sp_time_hour(%s)", r);
-    else if (!strcmp(name, "min"))  buf_printf(b, "sp_time_min(%s)", r);
-    else if (!strcmp(name, "sec"))  buf_printf(b, "sp_time_sec(%s)", r);
-    else if (!strcmp(name, "wday")) buf_printf(b, "sp_time_wday(%s)", r);
-    else if (!strcmp(name, "yday")) buf_printf(b, "sp_time_yday(%s)", r);
-    else if (!strcmp(name, "to_i") || !strcmp(name, "tv_sec")) buf_printf(b, "(%s).tv_sec", r);
-    else if (!strcmp(name, "to_f")) buf_printf(b, "((mrb_float)(%s).tv_sec + (mrb_float)(%s).tv_nsec / 1e9)", r, r);
-    else if (!strcmp(name, "subsec")) buf_printf(b, "((mrb_float)(%s).tv_nsec / 1e9)", r);
-    else if (!strcmp(name, "tv_usec") || !strcmp(name, "usec")) buf_printf(b, "((mrb_int)(%s).tv_nsec / 1000)", r);
-    else if (!strcmp(name, "tv_nsec") || !strcmp(name, "nsec")) buf_printf(b, "((mrb_int)(%s).tv_nsec)", r);
-    else if (!strcmp(name, "utc?") || !strcmp(name, "gmt?")) buf_printf(b, "((%s).is_utc != 0)", r);
-    else if (!strcmp(name, "dst?") || !strcmp(name, "isdst")) buf_printf(b, "(sp_time_isdst(%s) != 0)", r);
-    else if (!strcmp(name, "utc_offset") || !strcmp(name, "gmt_offset") || !strcmp(name, "gmtoff")) buf_printf(b, "sp_time_utc_offset(%s)", r);
-    else if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
-    else if (!strcmp(name, "iso8601")) buf_printf(b, "sp_time_iso8601(%s)", r);
-    else if (!strcmp(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
-    else if (!strcmp(name, "class")) buf_puts(b, "SPL(\"Time\")");
-    else if (!strcmp(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if ((!strcmp(name, "+") || !strcmp(name, "-")) && argc == 1) {
+    if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc")) buf_printf(b, "sp_time_utc(%s)", r);
+    else if (sp_streq(name, "localtime") || sp_streq(name, "getlocal")) buf_printf(b, "sp_time_localtime(%s)", r);
+    else if (sp_streq(name, "year"))  buf_printf(b, "sp_time_year(%s)", r);
+    else if (sp_streq(name, "mon") || sp_streq(name, "month")) buf_printf(b, "sp_time_mon(%s)", r);
+    else if (sp_streq(name, "day") || sp_streq(name, "mday"))  buf_printf(b, "sp_time_mday(%s)", r);
+    else if (sp_streq(name, "hour")) buf_printf(b, "sp_time_hour(%s)", r);
+    else if (sp_streq(name, "min"))  buf_printf(b, "sp_time_min(%s)", r);
+    else if (sp_streq(name, "sec"))  buf_printf(b, "sp_time_sec(%s)", r);
+    else if (sp_streq(name, "wday")) buf_printf(b, "sp_time_wday(%s)", r);
+    else if (sp_streq(name, "yday")) buf_printf(b, "sp_time_yday(%s)", r);
+    else if (sp_streq(name, "to_i") || sp_streq(name, "tv_sec")) buf_printf(b, "(%s).tv_sec", r);
+    else if (sp_streq(name, "to_f")) buf_printf(b, "((mrb_float)(%s).tv_sec + (mrb_float)(%s).tv_nsec / 1e9)", r, r);
+    else if (sp_streq(name, "subsec")) buf_printf(b, "((mrb_float)(%s).tv_nsec / 1e9)", r);
+    else if (sp_streq(name, "tv_usec") || sp_streq(name, "usec")) buf_printf(b, "((mrb_int)(%s).tv_nsec / 1000)", r);
+    else if (sp_streq(name, "tv_nsec") || sp_streq(name, "nsec")) buf_printf(b, "((mrb_int)(%s).tv_nsec)", r);
+    else if (sp_streq(name, "utc?") || sp_streq(name, "gmt?")) buf_printf(b, "((%s).is_utc != 0)", r);
+    else if (sp_streq(name, "dst?") || sp_streq(name, "isdst")) buf_printf(b, "(sp_time_isdst(%s) != 0)", r);
+    else if (sp_streq(name, "utc_offset") || sp_streq(name, "gmt_offset") || sp_streq(name, "gmtoff")) buf_printf(b, "sp_time_utc_offset(%s)", r);
+    else if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
+    else if (sp_streq(name, "iso8601")) buf_printf(b, "sp_time_iso8601(%s)", r);
+    else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
+    else if (sp_streq(name, "class")) buf_puts(b, "SPL(\"Time\")");
+    else if (sp_streq(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if ((sp_streq(name, "+") || sp_streq(name, "-")) && argc == 1) {
       buf_printf(b, "sp_time_add(%s, %s(mrb_float)(", r, name[0] == '-' ? "-" : "");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
     }
-    else if ((!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
-              !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!=")) && argc == 1) {
+    else if ((sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+              sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) && argc == 1) {
       int tt = ++g_tmp, tu = ++g_tmp;
       buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = %s; sp_Time _t%d = ", tt, r, tu);
       emit_expr(c, argv[0], b);
       buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, name);
     }
-    else if (!strcmp(name, "<=>") && argc == 1) {
+    else if (sp_streq(name, "<=>") && argc == 1) {
       int tt = ++g_tmp, tu = ++g_tmp;
       buf_puts(b, "({ sp_Time _t"); buf_printf(b, "%d = %s; sp_Time _t%d = ", tt, r, tu);
       emit_expr(c, argv[0], b);
@@ -3247,27 +3247,27 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
     const char *r = rs.p ? rs.p : "";
     int done = 1;
-    if ((!strcmp(name, "scan") || !strcmp(name, "check") || !strcmp(name, "scan_until")) &&
+    if ((sp_streq(name, "scan") || sp_streq(name, "check") || sp_streq(name, "scan_until")) &&
         argc == 1 && re_lit_index(c, argv[0]) >= 0) {
       buf_printf(b, "sp_StringScanner_%s(%s, sp_re_pat_%d)", name, r, re_lit_index(c, argv[0]));
     }
-    else if (!strcmp(name, "matched")) buf_printf(b, "sp_StringScanner_matched(%s)", r);
-    else if (!strcmp(name, "matched?")) buf_printf(b, "sp_StringScanner_matched_p(%s)", r);
-    else if (!strcmp(name, "pre_match")) buf_printf(b, "sp_StringScanner_pre_match(%s)", r);
-    else if (!strcmp(name, "post_match")) buf_printf(b, "sp_StringScanner_post_match(%s)", r);
-    else if (!strcmp(name, "pos") || !strcmp(name, "charpos")) buf_printf(b, "sp_StringScanner_pos(%s)", r);
-    else if (!strcmp(name, "pos=") && argc == 1) { buf_printf(b, "sp_StringScanner_pos_set(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "rest")) buf_printf(b, "sp_StringScanner_rest(%s)", r);
-    else if (!strcmp(name, "rest?")) buf_printf(b, "sp_StringScanner_rest_p(%s)", r);
-    else if (!strcmp(name, "rest_size")) buf_printf(b, "sp_StringScanner_rest_size(%s)", r);
-    else if (!strcmp(name, "string")) buf_printf(b, "sp_StringScanner_string(%s)", r);
-    else if (!strcmp(name, "eos?")) buf_printf(b, "sp_StringScanner_eos_p(%s)", r);
-    else if (!strcmp(name, "getch")) buf_printf(b, "sp_StringScanner_getch(%s)", r);
-    else if (!strcmp(name, "peek") && argc == 1) { buf_printf(b, "sp_StringScanner_peek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "[]") && argc == 1) { buf_printf(b, "sp_StringScanner_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "reset")) buf_printf(b, "(sp_StringScanner_reset(%s), %s)", r, r);
-    else if (!strcmp(name, "terminate")) buf_printf(b, "(sp_StringScanner_terminate(%s), %s)", r, r);
-    else if (!strcmp(name, "unscan")) buf_printf(b, "(sp_StringScanner_unscan(%s), %s)", r, r);
+    else if (sp_streq(name, "matched")) buf_printf(b, "sp_StringScanner_matched(%s)", r);
+    else if (sp_streq(name, "matched?")) buf_printf(b, "sp_StringScanner_matched_p(%s)", r);
+    else if (sp_streq(name, "pre_match")) buf_printf(b, "sp_StringScanner_pre_match(%s)", r);
+    else if (sp_streq(name, "post_match")) buf_printf(b, "sp_StringScanner_post_match(%s)", r);
+    else if (sp_streq(name, "pos") || sp_streq(name, "charpos")) buf_printf(b, "sp_StringScanner_pos(%s)", r);
+    else if (sp_streq(name, "pos=") && argc == 1) { buf_printf(b, "sp_StringScanner_pos_set(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "rest")) buf_printf(b, "sp_StringScanner_rest(%s)", r);
+    else if (sp_streq(name, "rest?")) buf_printf(b, "sp_StringScanner_rest_p(%s)", r);
+    else if (sp_streq(name, "rest_size")) buf_printf(b, "sp_StringScanner_rest_size(%s)", r);
+    else if (sp_streq(name, "string")) buf_printf(b, "sp_StringScanner_string(%s)", r);
+    else if (sp_streq(name, "eos?")) buf_printf(b, "sp_StringScanner_eos_p(%s)", r);
+    else if (sp_streq(name, "getch")) buf_printf(b, "sp_StringScanner_getch(%s)", r);
+    else if (sp_streq(name, "peek") && argc == 1) { buf_printf(b, "sp_StringScanner_peek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "[]") && argc == 1) { buf_printf(b, "sp_StringScanner_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "reset")) buf_printf(b, "(sp_StringScanner_reset(%s), %s)", r, r);
+    else if (sp_streq(name, "terminate")) buf_printf(b, "(sp_StringScanner_terminate(%s), %s)", r, r);
+    else if (sp_streq(name, "unscan")) buf_printf(b, "(sp_StringScanner_unscan(%s), %s)", r, r);
     else done = 0;
     free(rs.p);
     if (done) return 1;
@@ -3277,26 +3277,26 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_MATCHDATA) {
     Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
     const char *r = rs.p ? rs.p : "";
-    if (!strcmp(name, "[]") && argc == 1) {
+    if (sp_streq(name, "[]") && argc == 1) {
       buf_printf(b, "sp_MatchData_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
-    else if (!strcmp(name, "pre_match"))  buf_printf(b, "sp_MatchData_pre_match(%s)", r);
-    else if (!strcmp(name, "post_match")) buf_printf(b, "sp_MatchData_post_match(%s)", r);
-    else if (!strcmp(name, "to_s"))       buf_printf(b, "sp_MatchData_to_s(%s)", r);
-    else if ((!strcmp(name, "length") || !strcmp(name, "size")) && argc == 0)
+    else if (sp_streq(name, "pre_match"))  buf_printf(b, "sp_MatchData_pre_match(%s)", r);
+    else if (sp_streq(name, "post_match")) buf_printf(b, "sp_MatchData_post_match(%s)", r);
+    else if (sp_streq(name, "to_s"))       buf_printf(b, "sp_MatchData_to_s(%s)", r);
+    else if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0)
       buf_printf(b, "sp_MatchData_length(%s)", r);
-    else if (!strcmp(name, "begin") && argc == 1) {
+    else if (sp_streq(name, "begin") && argc == 1) {
       buf_printf(b, "sp_MatchData_begin(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
-    else if (!strcmp(name, "end") && argc == 1) {
+    else if (sp_streq(name, "end") && argc == 1) {
       buf_printf(b, "sp_MatchData_end(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
-    else if (!strcmp(name, "offset") && argc == 1) {
+    else if (sp_streq(name, "offset") && argc == 1) {
       buf_printf(b, "sp_MatchData_offset(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
-    else if (!strcmp(name, "captures"))  buf_printf(b, "sp_MatchData_captures(%s)", r);
-    else if (!strcmp(name, "to_a"))      buf_printf(b, "sp_MatchData_to_a(%s)", r);
-    else if (!strcmp(name, "nil?"))      buf_printf(b, "(%s == 0)", r);
+    else if (sp_streq(name, "captures"))  buf_printf(b, "sp_MatchData_captures(%s)", r);
+    else if (sp_streq(name, "to_a"))      buf_printf(b, "sp_MatchData_to_a(%s)", r);
+    else if (sp_streq(name, "nil?"))      buf_printf(b, "(%s == 0)", r);
     else unsupported(c, id, "MatchData method");
     free(rs.p);
     return 1;
@@ -3307,33 +3307,33 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
     const char *r = rs.p ? rs.p : "";
     int done = 1;
-    if (!strcmp(name, "string")) buf_printf(b, "sp_StringIO_string(%s)", r);
-    else if (!strcmp(name, "pos") || !strcmp(name, "tell")) buf_printf(b, "sp_StringIO_pos(%s)", r);
-    else if (!strcmp(name, "size") || !strcmp(name, "length")) buf_printf(b, "sp_StringIO_size(%s)", r);
-    else if (!strcmp(name, "lineno")) buf_printf(b, "(%s)->lineno", r);
-    else if (!strcmp(name, "puts") && argc == 0) buf_printf(b, "sp_StringIO_puts_empty(%s)", r);
-    else if (!strcmp(name, "puts") && argc == 1) { buf_printf(b, "sp_StringIO_puts(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "print") && argc == 1) { buf_printf(b, "sp_StringIO_print(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if ((!strcmp(name, "write") || !strcmp(name, "<<")) && argc == 1) { buf_printf(b, "sp_StringIO_write(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "putc") && argc == 1) {
+    if (sp_streq(name, "string")) buf_printf(b, "sp_StringIO_string(%s)", r);
+    else if (sp_streq(name, "pos") || sp_streq(name, "tell")) buf_printf(b, "sp_StringIO_pos(%s)", r);
+    else if (sp_streq(name, "size") || sp_streq(name, "length")) buf_printf(b, "sp_StringIO_size(%s)", r);
+    else if (sp_streq(name, "lineno")) buf_printf(b, "(%s)->lineno", r);
+    else if (sp_streq(name, "puts") && argc == 0) buf_printf(b, "sp_StringIO_puts_empty(%s)", r);
+    else if (sp_streq(name, "puts") && argc == 1) { buf_printf(b, "sp_StringIO_puts(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "print") && argc == 1) { buf_printf(b, "sp_StringIO_print(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if ((sp_streq(name, "write") || sp_streq(name, "<<")) && argc == 1) { buf_printf(b, "sp_StringIO_write(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "putc") && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_STRING) { buf_printf(b, "sp_StringIO_putc(%s, (mrb_int)(unsigned char)(", r); emit_expr(c, argv[0], b); buf_puts(b, ")[0])"); }
       else { buf_printf(b, "sp_StringIO_putc(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     }
-    else if (!strcmp(name, "fsync") || !strcmp(name, "fileno") || !strcmp(name, "pid")) buf_printf(b, "((void)(%s), 0)", r);
-    else if (!strcmp(name, "read") && argc == 0) buf_printf(b, "sp_StringIO_read(%s)", r);
-    else if (!strcmp(name, "read") && argc == 1) { buf_printf(b, "sp_StringIO_read_n(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "gets")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_gets(%s))", r);
-    else if (!strcmp(name, "getc")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_getc(%s))", r);
-    else if (!strcmp(name, "getbyte")) buf_printf(b, "sp_StringIO_getbyte(%s)", r);
-    else if (!strcmp(name, "rewind")) buf_printf(b, "sp_StringIO_rewind(%s)", r);
-    else if (!strcmp(name, "seek") && argc >= 1) { buf_printf(b, "sp_StringIO_seek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "truncate") && argc == 1) { buf_printf(b, "sp_StringIO_truncate(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (!strcmp(name, "eof?") || !strcmp(name, "eof")) buf_printf(b, "sp_StringIO_eof_p(%s)", r);
-    else if (!strcmp(name, "close")) buf_printf(b, "sp_StringIO_close(%s)", r);
-    else if (!strcmp(name, "closed?")) buf_printf(b, "sp_StringIO_closed_p(%s)", r);
-    else if (!strcmp(name, "flush")) buf_printf(b, "sp_StringIO_flush(%s)", r);
-    else if (!strcmp(name, "sync")) buf_printf(b, "sp_StringIO_sync(%s)", r);
-    else if (!strcmp(name, "isatty") || !strcmp(name, "tty?")) buf_printf(b, "sp_StringIO_isatty(%s)", r);
+    else if (sp_streq(name, "fsync") || sp_streq(name, "fileno") || sp_streq(name, "pid")) buf_printf(b, "((void)(%s), 0)", r);
+    else if (sp_streq(name, "read") && argc == 0) buf_printf(b, "sp_StringIO_read(%s)", r);
+    else if (sp_streq(name, "read") && argc == 1) { buf_printf(b, "sp_StringIO_read_n(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "gets")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_gets(%s))", r);
+    else if (sp_streq(name, "getc")) buf_printf(b, "sp_box_nullable_str(sp_StringIO_getc(%s))", r);
+    else if (sp_streq(name, "getbyte")) buf_printf(b, "sp_StringIO_getbyte(%s)", r);
+    else if (sp_streq(name, "rewind")) buf_printf(b, "sp_StringIO_rewind(%s)", r);
+    else if (sp_streq(name, "seek") && argc >= 1) { buf_printf(b, "sp_StringIO_seek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "truncate") && argc == 1) { buf_printf(b, "sp_StringIO_truncate(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else if (sp_streq(name, "eof?") || sp_streq(name, "eof")) buf_printf(b, "sp_StringIO_eof_p(%s)", r);
+    else if (sp_streq(name, "close")) buf_printf(b, "sp_StringIO_close(%s)", r);
+    else if (sp_streq(name, "closed?")) buf_printf(b, "sp_StringIO_closed_p(%s)", r);
+    else if (sp_streq(name, "flush")) buf_printf(b, "sp_StringIO_flush(%s)", r);
+    else if (sp_streq(name, "sync")) buf_printf(b, "sp_StringIO_sync(%s)", r);
+    else if (sp_streq(name, "isatty") || sp_streq(name, "tty?")) buf_printf(b, "sp_StringIO_isatty(%s)", r);
     else done = 0;
     free(rs.p);
     if (done) return 1;
@@ -3353,7 +3353,7 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {
     int block = nt_ref(nt, id, "block");
-    if (!strcmp(name, "step") && argc == 1) {
+    if (sp_streq(name, "step") && argc == 1) {
       int t = ++g_tmp, ar = ++g_tmp, ii = ++g_tmp, st = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
       Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, argv[0], &sb);
@@ -3365,7 +3365,7 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
       free(rb.p); free(sb.p);
       return 1;
     }
-    if (!strcmp(name, "each") && block < 0) {  /* external enumerator, or to_a materialize */
+    if (sp_streq(name, "each") && block < 0) {  /* external enumerator, or to_a materialize */
       int t = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
       if (comp_ntype(c, id) == TY_ENUMERATOR) {
@@ -3384,12 +3384,12 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
       "first", "last", "size", "count", "begin", "end",
       "exclude_end?", "eql?", "minmax", "overlap?", NULL };
     int known = 0;
-    for (int i = 0; rmeths[i]; i++) if (!strcmp(name, rmeths[i])) known = 1;
+    for (int i = 0; rmeths[i]; i++) if (sp_streq(name, rmeths[i])) known = 1;
     if (known) {
       /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
-      if ((!strcmp(name, "size") || !strcmp(name, "count")) && argc == 0) {
+      if ((sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) {
         int rn = unwrap_parens(c, recv);
-        if (rn >= 0 && nt_type(nt, rn) && !strcmp(nt_type(nt, rn), "RangeNode")) {
+        if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
           int lo = nt_ref(nt, rn, "left");
           if (lo >= 0 && comp_ntype(c, lo) == TY_STRING) {
             buf_puts(b, "SP_INT_NIL"); return 1;
@@ -3401,12 +3401,12 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Range _t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      if (!strcmp(name, "to_a"))
+      if (sp_streq(name, "to_a"))
         buf_printf(b, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", t, t, t);
-      else if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
-               !strcmp(name, "cover?") || !strcmp(name, "===")) {
+      else if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
+               sp_streq(name, "cover?") || sp_streq(name, "===")) {
         /* cover?(range) checks that both endpoints of the arg fit inside self */
-        if (!strcmp(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        if (sp_streq(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
           int t2 = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
           buf_printf(b, "; _t%d.first >= _t%d.first && (_t%d.last - _t%d.excl) <= (_t%d.last - _t%d.excl); })",
@@ -3429,7 +3429,7 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, ")");
         }
       }
-      else if (!strcmp(name, "first") || !strcmp(name, "min") || !strcmp(name, "begin")) {
+      else if (sp_streq(name, "first") || sp_streq(name, "min") || sp_streq(name, "begin")) {
         if (argc == 1) {
           /* first(n): collect up to n elements starting at first */
           int tf = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
@@ -3441,10 +3441,10 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
         }
         else buf_printf(b, "(_t%d.first)", t);
       }
-      else if (!strcmp(name, "max"))  /* max element: end minus the exclusive bound */
+      else if (sp_streq(name, "max"))  /* max element: end minus the exclusive bound */
         buf_printf(b, "(_t%d.last - _t%d.excl)", t, t);
-      else if (!strcmp(name, "last") || !strcmp(name, "end")) {
-        if (argc == 1 && !strcmp(name, "last")) {
+      else if (sp_streq(name, "last") || sp_streq(name, "end")) {
+        if (argc == 1 && sp_streq(name, "last")) {
           /* last(n): collect up to n elements ending at last */
           int tf = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp;
           buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
@@ -3456,22 +3456,22 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
         }
         else buf_printf(b, "(_t%d.last)", t);
       }
-      else if (!strcmp(name, "size") || !strcmp(name, "count"))
+      else if (sp_streq(name, "size") || sp_streq(name, "count"))
         buf_printf(b, "(_t%d.last - _t%d.excl - _t%d.first + 1)", t, t, t);
-      else if (!strcmp(name, "sum"))
+      else if (sp_streq(name, "sum"))
         buf_printf(b, "sp_IntArray_sum(sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl), 0)", t, t, t);
-      else if (!strcmp(name, "exclude_end?"))
+      else if (sp_streq(name, "exclude_end?"))
         buf_printf(b, "(_t%d.excl != 0)", t);
-      else if (!strcmp(name, "eql?")) {
+      else if (sp_streq(name, "eql?")) {
         buf_printf(b, "sp_range_eq(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (!strcmp(name, "overlap?")) {
+      else if (sp_streq(name, "overlap?")) {
         int t2 = ++g_tmp;
         buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
         buf_printf(b, "; (_t%d.first <= _t%d.last - _t%d.excl && _t%d.first <= _t%d.last - _t%d.excl); })",
                    t, t2, t2, t2, t, t, t);
       }
-      else if (!strcmp(name, "minmax")) {
+      else if (sp_streq(name, "minmax")) {
         int ma = ++g_tmp;
         buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, _t%d.first);"
                       " sp_IntArray_push(_t%d, _t%d.last - _t%d.excl); _t%d; })", ma, ma, t, ma, t, t, ma);
@@ -3492,27 +3492,27 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   /* encoding.name -> the encoding name string */
-  if (!strcmp(name, "name") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_POLY) {
+  if (sp_streq(name, "name") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_POLY) {
     const char *rty2 = nt_type(nt, recv);
-    int is_enc = (rty2 && !strcmp(rty2, "SourceEncodingNode")) ||
-                 (rty2 && !strcmp(rty2, "CallNode") &&
-                  nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "encoding"));
+    int is_enc = (rty2 && sp_streq(rty2, "SourceEncodingNode")) ||
+                 (rty2 && sp_streq(rty2, "CallNode") &&
+                  nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"));
     if (is_enc) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
   }
 
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
-    if (!strcmp(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-    if (!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "empty?")) {
+    if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "empty?")) {
       int has_user_len = 0;
-      const char *lcheck = (!strcmp(name, "empty?")) ? "length" : name;
+      const char *lcheck = (sp_streq(name, "empty?")) ? "length" : name;
       for (int kk = 0; kk < c->nclasses && !has_user_len; kk++)
         if (comp_method_in_chain(c, kk, lcheck, NULL) >= 0) has_user_len = 1;
-      if (!strcmp(name, "empty?") && !has_user_len)
+      if (sp_streq(name, "empty?") && !has_user_len)
         for (int kk = 0; kk < c->nclasses && !has_user_len; kk++)
           if (comp_method_in_chain(c, kk, "empty?", NULL) >= 0) has_user_len = 1;
       if (!has_user_len) {
-        if (!strcmp(name, "empty?")) {
+        if (sp_streq(name, "empty?")) {
           buf_puts(b, "(sp_poly_length("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
         }
         else {
@@ -3521,30 +3521,30 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
-    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) {
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
       int has_user_method = 0;
       for (int k = 0; k < c->nclasses; k++)
         if (comp_method_in_chain(c, k, name, NULL) >= 0) { has_user_method = 1; break; }
       if (!has_user_method) {
-        buf_printf(b, "%s(", !strcmp(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect");
+        buf_printf(b, "%s(", sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect");
         emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
       }
     }
-    if (!strcmp(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-    if (!strcmp(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-    if (!strcmp(name, "upcase"))     { buf_puts(b, "sp_box_str(sp_str_upcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "downcase"))   { buf_puts(b, "sp_box_str(sp_str_downcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "capitalize")) { buf_puts(b, "sp_box_str(sp_str_capitalize(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "reverse"))    { buf_puts(b, "sp_box_str(sp_str_reverse(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "chr"))        { buf_puts(b, "sp_box_str(sp_str_chr(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (!strcmp(name, "freeze"))     { emit_expr(c, recv, b); return 1; }
+    if (sp_streq(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    if (sp_streq(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_box_str(sp_str_upcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "downcase"))   { buf_puts(b, "sp_box_str(sp_str_downcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "capitalize")) { buf_puts(b, "sp_box_str(sp_str_capitalize(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_box_str(sp_str_reverse(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "chr"))        { buf_puts(b, "sp_box_str(sp_str_chr(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "freeze"))     { emit_expr(c, recv, b); return 1; }
   }
   /* poly receiver: arr[start, len] = src -- 3-arg splice assign
      Skip Fiber/Fiber.current storage receivers (handled later). */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]=") && argc == 3 &&
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 3 &&
       !sp_is_fiber_storage_recv(nt, recv)) {
     int tv = ++g_tmp;
     buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[2], b);
@@ -3555,7 +3555,7 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
   }
   /* poly receiver: []= with symbol, string, int, or poly key -> runtime dispatch
      Skip Fiber/Fiber.current storage receivers (handled later). */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]=") && argc == 2 &&
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 &&
       !sp_is_fiber_storage_recv(nt, recv)) {
     TyKind at = comp_ntype(c, argv[0]);
     TyKind vt = comp_ntype(c, argv[1]);
@@ -3578,8 +3578,8 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
          where the receiver is itself an array element), drop the write-back and
          rely on in-place mutation. */
       const char *rcvty = nt_type(nt, recv);
-      int recv_is_lvalue = rcvty && (!strcmp(rcvty, "LocalVariableReadNode") ||
-                                     !strcmp(rcvty, "InstanceVariableReadNode"));
+      int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
+                                     sp_streq(rcvty, "InstanceVariableReadNode"));
       if (recv_is_lvalue) {
         emit_expr(c, recv, b);
         buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
@@ -3599,7 +3599,7 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
   }
   /* poly receiver: [] with symbol or string key -> runtime dispatch */
   /* poly receiver: arr[start, len] -> sp_poly_slice (string or typed array) */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]") && argc == 2) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 2) {
     /* The runtime dispatches on the receiver's tag: a string/array does a
        two-arg slice, a bound Method (optcarrot's poke handlers) is called with
        both int args. Both operands are raw integers. */
@@ -3607,7 +3607,7 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
     emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
     return 1;
   }
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "[]") && argc == 1) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 1) {
     /* `@table[i][j]` dispatch table narrowed to int (poly_double_index_int):
        call the entry (bound method / int array) for an unboxed int result. */
     if (comp_ntype(c, id) == TY_INT) {
@@ -3652,21 +3652,21 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
   }
   /* poly receiver: join */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "join")) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "join")) {
     buf_puts(b, "sp_poly_join("); emit_expr(c, recv, b);
     buf_puts(b, ", "); if (argc >= 1) emit_expr(c, argv[0], b); else buf_puts(b, "\"\"");
     buf_puts(b, ")"); return 1;
   }
   /* poly receiver: clamp(lo, hi) tag-dispatches int/float at runtime; the range
      form clamp(a..b) routes through the same helper with boxed bounds. */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "clamp") && argc == 2) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 2) {
     buf_puts(b, "sp_poly_clamp("); emit_boxed(c, recv, b);
     buf_puts(b, ", "); emit_boxed(c, argv[0], b);
     buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
     return 1;
   }
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "clamp") && argc == 1 &&
-      nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "RangeNode")) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 1 &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
     int tcr = ++g_tmp;
     buf_printf(b, "({ sp_Range _t%d = ", tcr); emit_expr(c, argv[0], b);
     buf_puts(b, "; sp_poly_clamp("); emit_boxed(c, recv, b);
@@ -3674,13 +3674,13 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   /* poly receiver: replace(other) -> runtime dispatch (nullable array). */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "replace") && argc == 1) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "replace") && argc == 1) {
     buf_puts(b, "sp_poly_replace("); emit_expr(c, recv, b);
     buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
   /* poly receiver: pack(fmt) -> runtime dispatch (nullable array). */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "pack") && argc == 1) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "pack") && argc == 1) {
     buf_puts(b, "sp_poly_pack("); emit_expr(c, recv, b);
     buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return 1;
@@ -3689,7 +3689,7 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly receiver: gsub/sub with a regex literal -- extract the string
      payload (poly values reaching here are strings) and route to the
      engine, just like a TY_STRING receiver. */
-  if (recv >= 0 && rt == TY_POLY && (!strcmp(name, "gsub") || !strcmp(name, "sub")) &&
+  if (recv >= 0 && rt == TY_POLY && (sp_streq(name, "gsub") || sp_streq(name, "sub")) &&
       argc == 2 && re_lit_index(c, argv[0]) >= 0) {
     const char *suf = comp_ntype(c, argv[1]) == TY_STR_STR_HASH ? "_str_str_hash" : "";
     buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, sp_poly_to_s(", name, suf, re_lit_index(c, argv[0]));
@@ -3710,9 +3710,9 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
 int diagnose_eval_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nty = nt_type(nt, id);
-  if (!nty || strcmp(nty, "CallNode")) return 0;
+  if (!nty || !sp_streq(nty, "CallNode")) return 0;
   const char *name = nt_str(nt, id, "name");
-  if (!name || strcmp(name, "eval")) return 0;
+  if (!name || !sp_streq(name, "eval")) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
@@ -3720,9 +3720,9 @@ int diagnose_eval_call(Compiler *c, int id) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (!rty || (strcmp(rty, "ConstantReadNode") && strcmp(rty, "ConstantPathNode"))) return 0;
+    if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return 0;
     const char *rnm = nt_str(nt, recv, "name");
-    if (!rnm || strcmp(rnm, "Kernel")) return 0;
+    if (!rnm || !sp_streq(rnm, "Kernel")) return 0;
   }
   unsupported(c, id, "eval of a runtime string is not supported by AOT compilation (define the code statically)");
   return 1;
@@ -3823,15 +3823,15 @@ static int lazy_endpoint_is_infinite(Compiler *c, int right) {
   const NodeTable *nt = c->nt;
   if (right < 0) return 1;
   const char *rty = nt_type(nt, right);
-  if (rty && !strcmp(rty, "NilNode")) return 1;
-  if (rty && !strcmp(rty, "ConstantPathNode")) {
+  if (rty && sp_streq(rty, "NilNode")) return 1;
+  if (rty && sp_streq(rty, "ConstantPathNode")) {
     const char *cpnm = nt_str(nt, right, "name");
-    if (cpnm && !strcmp(cpnm, "INFINITY")) {
+    if (cpnm && sp_streq(cpnm, "INFINITY")) {
       int par = nt_ref(nt, right, "parent");
       const char *parnm = (par >= 0 && nt_type(nt, par) &&
-                           !strcmp(nt_type(nt, par), "ConstantReadNode"))
+                           sp_streq(nt_type(nt, par), "ConstantReadNode"))
                           ? nt_str(nt, par, "name") : NULL;
-      if (parnm && !strcmp(parnm, "Float")) return 1;
+      if (parnm && sp_streq(parnm, "Float")) return 1;
     }
   }
   return 0;
@@ -3848,8 +3848,8 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   if (!tname) return 0;
   /* `first(n)` / `to_a` / `force` force the lazy chain; `take(n)` stays lazy in
      CRuby (returns another Lazy) so it is not a forcing terminal here. */
-  int is_first = !strcmp(tname, "first");
-  int is_toa = !strcmp(tname, "to_a") || !strcmp(tname, "force");
+  int is_first = sp_streq(tname, "first");
+  int is_toa = sp_streq(tname, "to_a") || sp_streq(tname, "force");
   if (!is_first && !is_toa) return 0;
   if (nt_ref(nt, id, "block") >= 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
@@ -3869,19 +3869,19 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   enum { OP_MAP, OP_FILTER, OP_TAKEWHILE };
   struct { int kind; int block; int negate; } ops[16];
   int nops = 0, cur = recv, lazy_src = -1;
-  while (cur >= 0 && nt_type(nt, cur) && !strcmp(nt_type(nt, cur), "CallNode")) {
+  while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
     const char *nm = nt_str(nt, cur, "name");
     if (!nm) return 0;
-    if (!strcmp(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
+    if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
       lazy_src = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
       break;
     }
     int blk = nt_ref(nt, cur, "block");
     if (blk < 0 || nops >= 16) return 0;
-    if (!strcmp(nm, "map") || !strcmp(nm, "collect")) ops[nops].kind = OP_MAP, ops[nops].negate = 0;
-    else if (!strcmp(nm, "select") || !strcmp(nm, "filter")) ops[nops].kind = OP_FILTER, ops[nops].negate = 0;
-    else if (!strcmp(nm, "reject")) ops[nops].kind = OP_FILTER, ops[nops].negate = 1;
-    else if (!strcmp(nm, "take_while")) ops[nops].kind = OP_TAKEWHILE, ops[nops].negate = 0;
+    if (sp_streq(nm, "map") || sp_streq(nm, "collect")) ops[nops].kind = OP_MAP, ops[nops].negate = 0;
+    else if (sp_streq(nm, "select") || sp_streq(nm, "filter")) ops[nops].kind = OP_FILTER, ops[nops].negate = 0;
+    else if (sp_streq(nm, "reject")) ops[nops].kind = OP_FILTER, ops[nops].negate = 1;
+    else if (sp_streq(nm, "take_while")) ops[nops].kind = OP_TAKEWHILE, ops[nops].negate = 0;
     else return 0;
     ops[nops].block = blk;
     nops++;
@@ -4006,7 +4006,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   {
     int rcv = nt_ref(nt, id, "receiver");
     const char *cn = nt_str(nt, id, "name");
-    if (rcv < 0 && cn && (!strcmp(cn, "require") || !strcmp(cn, "require_relative"))) {
+    if (rcv < 0 && cn && (sp_streq(cn, "require") || sp_streq(cn, "require_relative"))) {
       buf_puts(b, "0");
       return;
     }
@@ -4016,9 +4016,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (g_yielder_name) {
     int rcv = nt_ref(nt, id, "receiver");
     const char *cn = nt_str(nt, id, "name");
-    if (rcv >= 0 && cn && (!strcmp(cn, "<<") || !strcmp(cn, "yield")) &&
-        nt_type(nt, rcv) && !strcmp(nt_type(nt, rcv), "LocalVariableReadNode") &&
-        nt_str(nt, rcv, "name") && !strcmp(nt_str(nt, rcv, "name"), g_yielder_name)) {
+    if (rcv >= 0 && cn && (sp_streq(cn, "<<") || sp_streq(cn, "yield")) &&
+        nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "LocalVariableReadNode") &&
+        nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), g_yielder_name)) {
       int ar = nt_ref(nt, id, "arguments");
       int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
       buf_puts(b, "sp_Fiber_yield(");
@@ -4078,7 +4078,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* `@nested[i]` inferred as an int array (poly array of int arrays): unbox
      the poly element to sp_IntArray* so the surrounding code stays typed. */
-  if (recv >= 0 && !strcmp(name, "[]") && argc == 1 &&
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1 &&
       comp_ntype(c, recv) == TY_POLY_ARRAY && comp_ntype(c, id) == TY_INT_ARRAY) {
     buf_puts(b, "((sp_IntArray *)((sp_PolyArray_get(");
     emit_expr(c, recv, b); buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
@@ -4088,7 +4088,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* ---- Complex / Rational value types ---- */
   /* Kernel#Complex(re[, im]) */
-  if (recv < 0 && !strcmp(name, "Complex") && argc >= 1) {
+  if (recv < 0 && sp_streq(name, "Complex") && argc >= 1) {
     buf_puts(b, "((sp_Complex){(mrb_float)(");
     emit_expr(c, argv[0], b);
     buf_puts(b, "), (mrb_float)(");
@@ -4097,7 +4097,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")})");
     return;
   }
-  if (recv < 0 && !strcmp(name, "Rational") && (argc == 1 || argc == 2)) {
+  if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) {
     buf_puts(b, "sp_rational_new((mrb_int)(");
     emit_expr(c, argv[0], b);
     buf_puts(b, "), (mrb_int)(");
@@ -4109,8 +4109,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
     /* Complex.polar(magnitude, angle) */
-    if (rrty && !strcmp(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        !strcmp(nt_str(nt, recv, "name"), "Complex") && !strcmp(name, "polar") && argc >= 1) {
+    if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "Complex") && sp_streq(name, "polar") && argc >= 1) {
       buf_puts(b, "sp_complex_polar(");
       emit_float_expr(c, argv[0], b);
       buf_puts(b, ", ");
@@ -4121,53 +4121,53 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
     TyKind crt = comp_ntype(c, recv);
     if (crt == TY_COMPLEX) {
-      if (!strcmp(name, "real"))      { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").re"); return; }
-      if (!strcmp(name, "imaginary") || !strcmp(name, "imag")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").im"); return; }
-      if (!strcmp(name, "conjugate") || !strcmp(name, "conj")) { buf_puts(b, "sp_complex_conjugate("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if ((!strcmp(name, "abs") || !strcmp(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if (!strcmp(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if (!strcmp(name, "-@") && argc == 0) { buf_puts(b, "sp_complex_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if (!strcmp(name, "+@") && argc == 0) { emit_expr(c, recv, b); return; }
-      if ((!strcmp(name, "to_c")) && argc == 0) { emit_expr(c, recv, b); return; }
-      if (!strcmp(name, "to_s")) { buf_puts(b, "sp_complex_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if (!strcmp(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "real"))      { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").re"); return; }
+      if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").im"); return; }
+      if (sp_streq(name, "conjugate") || sp_streq(name, "conj")) { buf_puts(b, "sp_complex_conjugate("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if ((sp_streq(name, "abs") || sp_streq(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_complex_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return; }
+      if ((sp_streq(name, "to_c")) && argc == 0) { emit_expr(c, recv, b); return; }
+      if (sp_streq(name, "to_s")) { buf_puts(b, "sp_complex_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
       TyKind cxa = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       int cx_ok = cxa == TY_COMPLEX || cxa == TY_INT || cxa == TY_FLOAT;
-      if (cx_ok && argc == 1 && (!strcmp(name, "+") || !strcmp(name, "-") ||
-                                 !strcmp(name, "*") || !strcmp(name, "/"))) {
+      if (cx_ok && argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") ||
+                                 sp_streq(name, "*") || sp_streq(name, "/"))) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_complex_%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (argc == 1 && !strcmp(name, "**") && cxa == TY_INT) {
+      if (argc == 1 && sp_streq(name, "**") && cxa == TY_INT) {
         buf_puts(b, "sp_complex_pow("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
         return;
       }
-      if (cx_ok && argc == 1 && (!strcmp(name, "==") || !strcmp(name, "!="))) {
+      if (cx_ok && argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
         buf_printf(b, "(%ssp_complex_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, "))");
         return;
       }
     }
     /* Integer/Float <op> Complex: lift the scalar to re+0i. */
     if ((crt == TY_INT || crt == TY_FLOAT) && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
-      if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) {
+      if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_complex_%s(((sp_Complex){(mrb_float)(", fn); emit_expr(c, recv, b);
         buf_puts(b, "), 0}), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (!strcmp(name, "==") || !strcmp(name, "!=")) {
+      if (sp_streq(name, "==") || sp_streq(name, "!=")) {
         buf_printf(b, "(%ssp_complex_eq(((sp_Complex){(mrb_float)(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b);
         buf_puts(b, "), 0}), "); emit_expr(c, argv[0], b); buf_puts(b, "))");
         return;
       }
     }
     /* Proc#curry and curry application. */
-    if (crt == TY_PROC && !strcmp(name, "curry") && argc == 0) {
+    if (crt == TY_PROC && sp_streq(name, "curry") && argc == 0) {
       buf_puts(b, "sp_curry_new("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (crt == TY_CURRY && (!strcmp(name, "[]") || !strcmp(name, "call") || !strcmp(name, "()")) && argc == 1) {
+    if (crt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()")) && argc == 1) {
       /* The application that reaches the proc's arity realizes the curry to its
          (int) result; earlier applications return another curry. */
       int complete = 0; TyKind cret = TY_UNKNOWN;
@@ -4178,23 +4178,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
       if (realize) buf_puts(b, ")");
       return;
     }
-    if (crt == TY_INT && !strcmp(name, "quo") && argc == 1) {
+    if (crt == TY_INT && sp_streq(name, "quo") && argc == 1) {
       buf_puts(b, "sp_rational_new((mrb_int)(");
       emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)(");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
       return;
     }
     if (crt == TY_RATIONAL) {
-      if (!strcmp(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return; }
-      if (!strcmp(name, "denominator")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").den"); return; }
-      if (!strcmp(name, "to_s")) { buf_puts(b, "sp_rational_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if (!strcmp(name, "inspect")) { buf_puts(b, "sp_rational_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if ((!strcmp(name, "to_f")) && argc == 0) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if ((!strcmp(name, "to_r") || !strcmp(name, "rationalize")) && argc == 0) { emit_expr(c, recv, b); return; }
-      if (!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "truncate")) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return; }
-      if (!strcmp(name, "-@") && argc == 0) { buf_puts(b, "sp_rational_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
-      if (!strcmp(name, "+@") && argc == 0) { emit_expr(c, recv, b); return; }
-      if (!strcmp(name, "abs") && argc == 0) { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return; }
+      if (sp_streq(name, "denominator")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").den"); return; }
+      if (sp_streq(name, "to_s")) { buf_puts(b, "sp_rational_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "inspect")) { buf_puts(b, "sp_rational_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if ((sp_streq(name, "to_f")) && argc == 0) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) { emit_expr(c, recv, b); return; }
+      if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "truncate")) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return; }
+      if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_rational_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
+      if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return; }
+      if (sp_streq(name, "abs") && argc == 0) { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
       TyKind rat = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       /* Only Integer/Rational/Float operands are modeled (a poly operand --
          e.g. a Rational read out of a poly array, which has no box form yet --
@@ -4202,8 +4202,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
       int rat_ok = rat == TY_RATIONAL || rat == TY_INT || rat == TY_FLOAT;
       /* arithmetic against another Rational or an Integer yields a Rational;
          against a Float, coerce self to float (CRuby semantics). */
-      if (rat_ok && argc == 1 && (!strcmp(name, "+") || !strcmp(name, "-") ||
-                        !strcmp(name, "*") || !strcmp(name, "/"))) {
+      if (rat_ok && argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") ||
+                        sp_streq(name, "*") || sp_streq(name, "/"))) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         if (rat == TY_FLOAT) {
           const char *op = name;
@@ -4213,21 +4213,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_rational_%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (rat_ok && argc == 1 && !strcmp(name, "**")) {
+      if (rat_ok && argc == 1 && sp_streq(name, "**")) {
         if (rat == TY_INT) { buf_puts(b, "sp_rational_pow("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return; }
         buf_puts(b, "pow(sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, "), "); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (rat_ok && argc == 1 && (!strcmp(name, "<") || !strcmp(name, ">") ||
-                        !strcmp(name, "<=") || !strcmp(name, ">="))) {
+      if (rat_ok && argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") ||
+                        sp_streq(name, "<=") || sp_streq(name, ">="))) {
         buf_puts(b, "(sp_rational_cmp("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_printf(b, ") %s 0)", name);
         return;
       }
-      if (rat_ok && argc == 1 && !strcmp(name, "<=>")) {
+      if (rat_ok && argc == 1 && sp_streq(name, "<=>")) {
         buf_puts(b, "sp_rational_cmp("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (argc == 1 && (!strcmp(name, "==") || !strcmp(name, "!="))) {
+      if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
         if (rat == TY_RATIONAL || rat == TY_INT) {
           buf_printf(b, "(%ssp_rational_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, "))");
           return;
@@ -4236,23 +4236,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
     /* Integer <op> Rational: lift the Integer to n/1 (covers `2/3r`, `1 + r`). */
     if (crt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
-      if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) {
+      if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_rational_%s(sp_rational_new((mrb_int)(", fn); emit_expr(c, recv, b);
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") || !strcmp(name, ">=")) {
+      if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">=")) {
         buf_puts(b, "(sp_rational_cmp(sp_rational_new((mrb_int)("); emit_expr(c, recv, b);
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_printf(b, ") %s 0)", name);
         return;
       }
-      if (!strcmp(name, "<=>")) {
+      if (sp_streq(name, "<=>")) {
         buf_puts(b, "sp_rational_cmp(sp_rational_new((mrb_int)("); emit_expr(c, recv, b);
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (!strcmp(name, "==") || !strcmp(name, "!=")) {
+      if (sp_streq(name, "==") || sp_streq(name, "!=")) {
         buf_printf(b, "(%ssp_rational_eq(sp_rational_new((mrb_int)(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b);
         buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, "))");
         return;
@@ -4263,7 +4263,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* loop { break val } as expression: emit pre-statement for-loop, result via break var */
   /* Kernel#caller / caller(start) / caller(start, len) -> the current stack
      (method-granularity, via sp_caller_now). Bare `caller` is `caller(1)`. */
-  if (recv < 0 && !strcmp(name, "caller") && argc <= 2) {
+  if (recv < 0 && sp_streq(name, "caller") && argc <= 2) {
     buf_puts(b, "sp_caller(");
     if (argc >= 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "1");
     if (argc == 2) { buf_puts(b, ", 1, "); emit_int_expr(c, argv[1], b); }
@@ -4278,13 +4278,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
      length) arguments are still evaluated for their side effects, as CRuby
      evaluates them before the call; the `(void)` casts keep a literal arg from
      tripping -Wunused-value. */
-  if (recv < 0 && !strcmp(name, "caller_locations") && argc <= 2) {
+  if (recv < 0 && sp_streq(name, "caller_locations") && argc <= 2) {
     buf_puts(b, "(");
     for (int ai = 0; ai < argc; ai++) { buf_puts(b, "(void)("); emit_expr(c, argv[ai], b); buf_puts(b, "), "); }
     buf_puts(b, "sp_PolyArray_new())");
     return;
   }
-  if (recv < 0 && !strcmp(name, "loop") && argc == 0) {
+  if (recv < 0 && sp_streq(name, "loop") && argc == 0) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       TyKind bt = infer_type(c, id);
@@ -4322,7 +4322,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* catch(:tag) { ... [throw :tag, val] ... } as expression: a setjmp scope
      whose value is the block's last expression, or the thrown value. */
-  if (recv < 0 && !strcmp(name, "catch") && argc == 1) {
+  if (recv < 0 && sp_streq(name, "catch") && argc == 1) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       TyKind bt = comp_ntype(c, id);
@@ -4347,8 +4347,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
       if (bn > 0) {
         int last = bb[bn - 1];
         const char *lty = nt_type(nt, last);
-        const char *lnm = (lty && !strcmp(lty, "CallNode")) ? nt_str(nt, last, "name") : NULL;
-        int last_throw = (lnm && !strcmp(lnm, "throw") && nt_ref(nt, last, "receiver") < 0);
+        const char *lnm = (lty && sp_streq(lty, "CallNode")) ? nt_str(nt, last, "name") : NULL;
+        int last_throw = (lnm && sp_streq(lnm, "throw") && nt_ref(nt, last, "receiver") < 0);
         TyKind lt = comp_ntype(c, last);
         if (last_throw || lt == TY_VOID || lt == TY_UNKNOWN) {
           emit_stmt(c, last, g_pre, g_indent + 1);
@@ -4388,7 +4388,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
 
   /* throw :tag[, val] -> non-local jump to the matching catch scope. */
-  if (recv < 0 && !strcmp(name, "throw")) {
+  if (recv < 0 && sp_streq(name, "throw")) {
     buf_puts(b, "sp_throw(");
     if (argc >= 1) emit_catch_tag(c, argv[0], b);
     else buf_puts(b, "(&(\"\\xff\")[1])");
@@ -4405,7 +4405,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
 
   /* system(cmd, ...) expr: run and return bool */
-  if (recv < 0 && !strcmp(name, "system") && argc >= 1) {
+  if (recv < 0 && sp_streq(name, "system") && argc >= 1) {
     int ts = ++g_tmp;
     buf_printf(b, "({ const char *_sys_%d[] = { ", ts);
     for (int k = 0; k < argc; k++) { if (k > 0) buf_puts(b, ", "); emit_expr(c, argv[k], b); }
@@ -4414,32 +4414,32 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
   /* trap(...) / Signal.trap(...) expr: return "DEFAULT" */
   {
-    int is_trap = (recv < 0 && !strcmp(name, "trap"));
-    if (!is_trap && recv >= 0 && !strcmp(name, "trap") && argc >= 1) {
+    int is_trap = (recv < 0 && sp_streq(name, "trap"));
+    if (!is_trap && recv >= 0 && sp_streq(name, "trap") && argc >= 1) {
       const char *rty2 = nt_type(nt, recv);
-      if (rty2 && (!strcmp(rty2, "ConstantReadNode") || !strcmp(rty2, "ConstantPathNode"))) {
+      if (rty2 && (sp_streq(rty2, "ConstantReadNode") || sp_streq(rty2, "ConstantPathNode"))) {
         const char *rn = nt_str(nt, recv, "name");
-        if (rn && !strcmp(rn, "Signal")) is_trap = 1;
+        if (rn && sp_streq(rn, "Signal")) is_trap = 1;
       }
     }
     if (is_trap && argc >= 1) { emit_str_literal(b, "DEFAULT"); return; }
   }
 
   /* Fiber[:k] / Fiber.current[:k] -> sp_Fiber_storage_get */
-  if (recv >= 0 && !strcmp(name, "[]") && argc == 1) {
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1) {
     int is_fiber_recv = 0;
     const char *rty2 = nt_type(nt, recv);
-    if (rty2 && !strcmp(rty2, "ConstantReadNode")) {
+    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
-      if (rn && !strcmp(rn, "Fiber")) is_fiber_recv = 1;
+      if (rn && sp_streq(rn, "Fiber")) is_fiber_recv = 1;
     }
-    else if (rty2 && !strcmp(rty2, "CallNode")) {
+    else if (rty2 && sp_streq(rty2, "CallNode")) {
       const char *rn = nt_str(nt, recv, "name");
       int rr = nt_ref(nt, recv, "receiver");
-      if (rn && !strcmp(rn, "current") && rr >= 0) {
+      if (rn && sp_streq(rn, "current") && rr >= 0) {
         const char *rrty = nt_type(nt, rr);
         const char *rrn = nt_str(nt, rr, "name");
-        if (rrty && !strcmp(rrty, "ConstantReadNode") && rrn && !strcmp(rrn, "Fiber"))
+        if (rrty && sp_streq(rrty, "ConstantReadNode") && rrn && sp_streq(rrn, "Fiber"))
           is_fiber_recv = 1;
       }
     }
@@ -4451,22 +4451,22 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
   /* ENV[key] -> getenv */
-  if (recv >= 0 && !strcmp(name, "[]") && argc == 1) {
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1) {
     const char *rty2 = nt_type(nt, recv);
-    if (rty2 && !strcmp(rty2, "ConstantReadNode")) {
+    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
-      if (rn && !strcmp(rn, "ENV")) {
+      if (rn && sp_streq(rn, "ENV")) {
         buf_puts(b, "sp_str_dup_external(getenv("); emit_expr(c, argv[0], b); buf_puts(b, "))");
         return;
       }
     }
   }
   /* ENV.fetch(key, default) -> getenv with fallback */
-  if (recv >= 0 && !strcmp(name, "fetch") && argc >= 1) {
+  if (recv >= 0 && sp_streq(name, "fetch") && argc >= 1) {
     const char *rty2 = nt_type(nt, recv);
-    if (rty2 && !strcmp(rty2, "ConstantReadNode")) {
+    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
-      if (rn && !strcmp(rn, "ENV")) {
+      if (rn && sp_streq(rn, "ENV")) {
         int tk = ++g_tmp, tv = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = getenv(", tk); emit_expr(c, argv[0], b);
         buf_printf(b, "); const char *_t%d = _t%d ? sp_str_dup_external(_t%d) : ", tv, tk, tk);
@@ -4485,13 +4485,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int _pr_recv = nt_ref(nt, id, "receiver");
     const char *_pr_nm = nt_str(nt, id, "name");
     int is_literal = 0;
-    if (_pr_recv < 0 && _pr_nm && (!strcmp(_pr_nm, "proc") || !strcmp(_pr_nm, "lambda")))
+    if (_pr_recv < 0 && _pr_nm && (sp_streq(_pr_nm, "proc") || sp_streq(_pr_nm, "lambda")))
       is_literal = 1;
-    if (!is_literal && _pr_recv >= 0 && _pr_nm && !strcmp(_pr_nm, "new")) {
+    if (!is_literal && _pr_recv >= 0 && _pr_nm && sp_streq(_pr_nm, "new")) {
       const char *_rty = nt_type(nt, _pr_recv);
-      const char *_rnm = (_rty && (!strcmp(_rty, "ConstantReadNode") || !strcmp(_rty, "ConstantPathNode")))
+      const char *_rnm = (_rty && (sp_streq(_rty, "ConstantReadNode") || sp_streq(_rty, "ConstantPathNode")))
                          ? nt_str(nt, _pr_recv, "name") : NULL;
-      if (_rnm && !strcmp(_rnm, "Proc")) is_literal = 1;
+      if (_rnm && sp_streq(_rnm, "Proc")) is_literal = 1;
     }
     if (is_literal) { emit_proc_literal(c, id, b); return; }
   }
@@ -4499,7 +4499,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
   {
     const char *safe_op = nt_str(nt, id, "call_operator");
-    if (recv >= 0 && safe_op && !strcmp(safe_op, "&.")) {
+    if (recv >= 0 && safe_op && sp_streq(safe_op, "&.")) {
       TyKind rrt = comp_ntype(c, recv);
       if (rrt == TY_NIL) {
         /* nil&.foo always returns nil */
@@ -4514,19 +4514,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ sp_RbVal _sn_%d = ", tsn); emit_expr(c, recv, b); buf_puts(b, "; ");
         buf_printf(b, "_sn_%d.tag == SP_TAG_NIL ? sp_box_nil() : ", tsn);
         /* dispatch the method on the non-nil value */
-        if (!strcmp(name, "upcase")) {
+        if (sp_streq(name, "upcase")) {
           buf_printf(b, "sp_box_str(sp_str_upcase(_sn_%d.v.s))", tsn);
         }
-        else if (!strcmp(name, "downcase")) {
+        else if (sp_streq(name, "downcase")) {
           buf_printf(b, "sp_box_str(sp_str_downcase(_sn_%d.v.s))", tsn);
         }
-        else if (!strcmp(name, "length") || !strcmp(name, "size")) {
+        else if (sp_streq(name, "length") || sp_streq(name, "size")) {
           buf_printf(b, "sp_box_int(sp_poly_length(_sn_%d))", tsn);
         }
-        else if (!strcmp(name, "inspect")) {
+        else if (sp_streq(name, "inspect")) {
           buf_printf(b, "sp_box_str(sp_poly_inspect(_sn_%d))", tsn);
         }
-        else if (!strcmp(name, "to_s")) {
+        else if (sp_streq(name, "to_s")) {
           buf_printf(b, "sp_box_str(sp_poly_to_s(_sn_%d))", tsn);
         }
         else {
@@ -4543,8 +4543,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* n.times/upto/downto/step { ... } in expression position: run the loop
      (lowered to a statement) and evaluate to the receiver (Ruby returns self) */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 && comp_ntype(c, recv) == TY_INT &&
-      (!strcmp(name, "times") || !strcmp(name, "upto") ||
-       !strcmp(name, "downto") || !strcmp(name, "step"))) {
+      (sp_streq(name, "times") || sp_streq(name, "upto") ||
+       sp_streq(name, "downto") || sp_streq(name, "step"))) {
     buf_puts(b, "({ ");
     emit_iteration_stmt(c, id, b, 0);
     emit_expr(c, recv, b); buf_puts(b, "; })");
@@ -4553,16 +4553,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* n.times / lo.upto(hi) / hi.downto(lo) without block: produce sp_Range for chaining */
   if (recv >= 0 && nt_ref(nt, id, "block") < 0 && comp_ntype(c, recv) == TY_INT &&
       comp_ntype(c, id) == TY_RANGE) {
-    if (!strcmp(name, "times")) {
+    if (sp_streq(name, "times")) {
       buf_puts(b, "(sp_Range){ .first = 0, .last = "); emit_expr(c, recv, b); buf_puts(b, ", .excl = 1 }");
       return;
     }
-    if (!strcmp(name, "upto") && argc == 1) {
+    if (sp_streq(name, "upto") && argc == 1) {
       buf_puts(b, "(sp_Range){ .first = "); emit_expr(c, recv, b);
       buf_puts(b, ", .last = "); emit_expr(c, argv[0], b); buf_puts(b, ", .excl = 0 }");
       return;
     }
-    if (!strcmp(name, "downto") && argc == 1) {
+    if (sp_streq(name, "downto") && argc == 1) {
       buf_puts(b, "(sp_Range){ .first = "); emit_expr(c, argv[0], b);
       buf_puts(b, ", .last = "); emit_expr(c, recv, b); buf_puts(b, ", .excl = 0 }");
       return;
@@ -4573,7 +4573,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
      Only applies when no user-defined class has a `call` method (otherwise
      use the existing poly dispatch switch which handles user-defined call). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_POLY &&
-      (!strcmp(name, "call") || !strcmp(name, "()"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()"))) {
     int has_user_call = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_call; _k++)
       if (comp_method_in_class(c, _k, name) >= 0) has_user_call = 1;
@@ -4608,7 +4608,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object. */
-  if (!strcmp(name, "method") && method_sym_arg(c, id) != NULL) {
+  if (sp_streq(name, "method") && method_sym_arg(c, id) != NULL) {
     const char *sym = method_sym_arg(c, id);
     int mi = method_obj_target_mi(c, id);
     /* bare method(:sym) on an instance method binds the current self */
@@ -4631,9 +4631,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
       const char *bk = ty_is_array(brt) ? array_kind(brt) : NULL;
       const char *bop = NULL;
       if (bk && (brt == TY_INT_ARRAY || brt == TY_STR_ARRAY)) {
-        if (!strcmp(sym, "[]")) bop = "get";
-        else if (!strcmp(sym, "[]=")) bop = "set";
-        else if (!strcmp(sym, "push")) bop = "push";
+        if (sp_streq(sym, "[]")) bop = "get";
+        else if (sp_streq(sym, "[]=")) bop = "set";
+        else if (sp_streq(sym, "push")) bop = "push";
       }
       if (bop) {
         /* memoized per (kind, op): emit the adapter once */
@@ -4692,7 +4692,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     return;
   }
   /* <method>.name -> the stored method name. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && !strcmp(name, "name")) {
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "name")) {
     buf_puts(b, "(const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name");
     return;
   }
@@ -4705,7 +4705,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
      count. Required positionals, post-splat requireds, and a *mandatory*
      keyword block (a required keyword, which counts as one fixed argument) all
      contribute to that required count. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && !strcmp(name, "arity")) {
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "arity")) {
     int mn = method_recv_node(c, recv);
     int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     if (target >= 0 && c->scopes[target].def_node >= 0) {
@@ -4720,7 +4720,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         int rp = nt_ref(c->nt, pn, "rest");
         if (rp >= 0) {
           const char *rty = nt_type(c->nt, rp);
-          if (rty && !strcmp(rty, "RestParameterNode")) has_rest = 1;
+          if (rty && sp_streq(rty, "RestParameterNode")) has_rest = 1;
           else ok = 0;  /* e.g. ImplicitRestNode: leave unsupported */
         }
         int kn = 0;
@@ -4728,13 +4728,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
         if (kn > 0) kw_block = 1;
         for (int i = 0; i < kn; i++) {
           const char *kty = nt_type(c->nt, kws[i]);
-          if (kty && !strcmp(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
+          if (kty && sp_streq(kty, "RequiredKeywordParameterNode")) has_req_kw = 1;
         }
         int kwrp = nt_ref(c->nt, pn, "keyword_rest");
         if (kwrp >= 0) {
           const char *kty = nt_type(c->nt, kwrp);
-          if (kty && !strcmp(kty, "KeywordRestParameterNode")) kw_block = 1;
-          else if (kty && !strcmp(kty, "ForwardingParameterNode")) has_forward = 1;
+          if (kty && sp_streq(kty, "KeywordRestParameterNode")) kw_block = 1;
+          else if (kty && sp_streq(kty, "ForwardingParameterNode")) has_forward = 1;
         }
       }
       if (ok) {
@@ -4750,7 +4750,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
      method ref calls its function directly; an object-bound Method casts
      fn through the (void *self, mrb_int...) ABI, evaluating recv once. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD &&
-      (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
     int mn = method_recv_node(c, recv);
     int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
@@ -4810,7 +4810,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
      (A `&block`-param `.call` is handled earlier by the inline path, whose
      receiver name matches g_block_param_name; this is the escaped-value case.) */
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
-      (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
     int unbox_ptr = proc_slot_is_ptr(rty);
     int unbox_poly = (rty == TY_POLY);
@@ -4839,8 +4839,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* proc << proc / proc >> proc -> composed Proc. f<<g = f(g(x)) (outer f,
      inner g); f>>g = g(f(x)) (outer g, inner f). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 1 &&
-      (!strcmp(name, "<<") || !strcmp(name, ">>")) && comp_ntype(c, argv[0]) == TY_PROC) {
-    int fwd = !strcmp(name, ">>");
+      (sp_streq(name, "<<") || sp_streq(name, ">>")) && comp_ntype(c, argv[0]) == TY_PROC) {
+    int fwd = sp_streq(name, ">>");
     buf_puts(b, "sp_proc_compose(");
     if (fwd) emit_expr(c, argv[0], b); else emit_expr(c, recv, b);
     buf_puts(b, ", ");
@@ -4848,19 +4848,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     return;
   }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && !strcmp(name, "arity")) {
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "arity")) {
     buf_puts(b, "sp_proc_arity("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && !strcmp(name, "lambda?")) {
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "lambda?")) {
     buf_puts(b, "sp_proc_lambda_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
-  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && !strcmp(name, "parameters")) {
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "parameters")) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
 
   /* Fiber instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
-    if (!strcmp(name, "resume")) {
+    if (sp_streq(name, "resume")) {
       buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b);
       for (int k = 0; k < argc; k++) {
         buf_puts(b, ", ");
@@ -4871,13 +4871,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "alive?")) {
+    if (sp_streq(name, "alive?")) {
       buf_puts(b, "sp_Fiber_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "kill") && argc == 0) {
+    if (sp_streq(name, "kill") && argc == 0) {
       buf_puts(b, "sp_Fiber_kill("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "transfer")) {
+    if (sp_streq(name, "transfer")) {
       buf_puts(b, "sp_Fiber_transfer("); emit_expr(c, recv, b);
       for (int k = 0; k < argc; k++) {
         buf_puts(b, ", ");
@@ -4888,12 +4888,12 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "value")) {
+    if (sp_streq(name, "value")) {
       /* Fiber#value: resume until fiber finishes and return last yielded value. */
       buf_puts(b, "sp_Fiber_resume("); emit_expr(c, recv, b); buf_puts(b, ", sp_box_nil())");
       return;
     }
-    if (!strcmp(name, "raise")) {
+    if (sp_streq(name, "raise")) {
       /* Fiber#raise: inject an exception at the fiber's suspension point. The
          argument forms mirror Kernel#raise: (), ("msg"), (Class), (Class, "msg"),
          or (exc_object). The object form is unpacked into class-name/message here
@@ -4901,8 +4901,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
          fiber runtime), so the runtime takes (cls, msg, obj). */
       TyKind a0t = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       int arg0_const = argc >= 1 && nt_type(nt, argv[0]) &&
-        (!strcmp(nt_type(nt, argv[0]), "ConstantReadNode") ||
-         !strcmp(nt_type(nt, argv[0]), "ConstantPathNode"));
+        (sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ||
+         sp_streq(nt_type(nt, argv[0]), "ConstantPathNode"));
       int arg0_exc = a0t == TY_EXCEPTION ||
         (ty_is_object(a0t) && class_is_exc_subclass(c, ty_object_class(a0t)));
       if (argc >= 1 && arg0_exc) {
@@ -4933,7 +4933,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
      array's (boxed) elements. Block-form and chained (each.with_index, each.map)
      uses are matched earlier and never reach here. */
   if (recv >= 0 && ty_is_array(comp_ntype(c, recv)) &&
-      !strcmp(name, "each") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      sp_streq(name, "each") && argc == 0 && nt_ref(nt, id, "block") < 0) {
     buf_puts(b, "sp_Enumerator_new_from("); emit_boxed(c, recv, b); buf_puts(b, ")");
     return;
   }
@@ -4941,19 +4941,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
-    if (!strcmp(name, "next") && argc == 0) {
+    if (sp_streq(name, "next") && argc == 0) {
       buf_puts(b, "sp_Enumerator_next("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "peek") && argc == 0) {
+    if (sp_streq(name, "peek") && argc == 0) {
       buf_puts(b, "sp_Enumerator_peek("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "rewind") && argc == 0) {
+    if (sp_streq(name, "rewind") && argc == 0) {
       buf_puts(b, "sp_Enumerator_rewind("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "size") && argc == 0) {
+    if (sp_streq(name, "size") && argc == 0) {
       buf_puts(b, "sp_Enumerator_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
-    if ((!strcmp(name, "take") || !strcmp(name, "first")) && argc == 1) {
+    if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) {
       buf_puts(b, "sp_Enumerator_take("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
@@ -4961,9 +4961,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* Random class methods: Random.rand(n) / Random.rand / Random.bytes(n)
      share a lazily-seeded default instance. */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Random")) {
-    if (!strcmp(name, "rand")) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Random")) {
+    if (sp_streq(name, "rand")) {
       if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -4971,7 +4971,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       else buf_puts(b, "sp_Random_rand_float(sp_random_default_get())");
       return;
     }
-    if (!strcmp(name, "bytes") && argc == 1) {
+    if (sp_streq(name, "bytes") && argc == 1) {
       buf_puts(b, "sp_Random_bytes(sp_random_default_get(), ");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
@@ -4980,7 +4980,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* Random instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_RANDOM) {
-    if (!strcmp(name, "rand")) {
+    if (sp_streq(name, "rand")) {
       if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -4990,7 +4990,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
       return;
     }
-    if (!strcmp(name, "bytes") && argc == 1) {
+    if (sp_streq(name, "bytes") && argc == 1) {
       buf_puts(b, "sp_Random_bytes("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
@@ -4999,13 +4999,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* ARGF pseudo-IO methods: read the ARGV files (or stdin) in sequence. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_ARGF) {
-    if (!strcmp(name, "read")) { buf_puts(b, "sp_argf_read()"); return; }
-    if (!strcmp(name, "gets") || !strcmp(name, "readline")) { buf_puts(b, "sp_argf_gets()"); return; }
-    if (!strcmp(name, "readlines") || !strcmp(name, "to_a")) { buf_puts(b, "sp_argf_readlines()"); return; }
-    if (!strcmp(name, "filename") || !strcmp(name, "path")) { buf_puts(b, "sp_argf_filename()"); return; }
-    if (!strcmp(name, "eof?") || !strcmp(name, "eof")) { buf_puts(b, "sp_argf_eof()"); return; }
-    if (!strcmp(name, "to_s")) { buf_puts(b, "SPL(\"ARGF\")"); return; }
-    if ((!strcmp(name, "each_line") || !strcmp(name, "each_string") || !strcmp(name, "each")) &&
+    if (sp_streq(name, "read")) { buf_puts(b, "sp_argf_read()"); return; }
+    if (sp_streq(name, "gets") || sp_streq(name, "readline")) { buf_puts(b, "sp_argf_gets()"); return; }
+    if (sp_streq(name, "readlines") || sp_streq(name, "to_a")) { buf_puts(b, "sp_argf_readlines()"); return; }
+    if (sp_streq(name, "filename") || sp_streq(name, "path")) { buf_puts(b, "sp_argf_filename()"); return; }
+    if (sp_streq(name, "eof?") || sp_streq(name, "eof")) { buf_puts(b, "sp_argf_eof()"); return; }
+    if (sp_streq(name, "to_s")) { buf_puts(b, "SPL(\"ARGF\")"); return; }
+    if ((sp_streq(name, "each_line") || sp_streq(name, "each_string") || sp_streq(name, "each")) &&
         nt_ref(nt, id, "block") >= 0) {
       int blk = nt_ref(nt, id, "block");
       const char *bp = block_param_name(c, blk, 0);
@@ -5028,23 +5028,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
     Buf rb = {0};
     emit_expr(c, recv, &rb);
     r = rb.p ? rb.p : "NULL";
-    if (!strcmp(name, "read")) {
+    if (sp_streq(name, "read")) {
       if (argc == 0) buf_printf(b, "sp_File_read(%s)", r);
       else { buf_puts(b, "sp_File_read_n("); buf_puts(b, r); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       free(rb.p); return;
     }
-    if (!strcmp(name, "gets") || !strcmp(name, "readline")) {
+    if (sp_streq(name, "gets") || sp_streq(name, "readline")) {
       buf_printf(b, "sp_File_gets(%s)", r); free(rb.p); return;
     }
-    if (!strcmp(name, "readlines")) {
+    if (sp_streq(name, "readlines")) {
       buf_printf(b, "sp_File_readlines(%s)", r); free(rb.p); return;
     }
-    if (!strcmp(name, "write") || !strcmp(name, "syswrite")) {
+    if (sp_streq(name, "write") || sp_streq(name, "syswrite")) {
       if (argc >= 1) { buf_printf(b, "sp_File_write(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else buf_puts(b, "0");
       free(rb.p); return;
     }
-    if (!strcmp(name, "print") || !strcmp(name, "puts")) {
+    if (sp_streq(name, "print") || sp_streq(name, "puts")) {
       /* emit as a statement-like expression: print each arg, return nil */
       int t = ++g_tmp;
       emit_indent(g_pre, g_indent);
@@ -5052,30 +5052,30 @@ void emit_call(Compiler *c, int id, Buf *b) {
       for (int k = 0; k < argc; k++) {
         buf_printf(g_pre, "sp_File_write(%s, ", r); emit_expr(c, argv[k], g_pre); buf_puts(g_pre, "); ");
       }
-      if (!strcmp(name, "puts")) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
+      if (sp_streq(name, "puts")) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
       buf_puts(g_pre, "});\n");
       (void)t;
       buf_puts(b, "((mrb_int)0)");
       free(rb.p); return;
     }
-    if (!strcmp(name, "close")) {
+    if (sp_streq(name, "close")) {
       buf_printf(b, "sp_File_close(%s)", r); free(rb.p); return;
     }
-    if (!strcmp(name, "closed?")) {
+    if (sp_streq(name, "closed?")) {
       buf_printf(b, "sp_File_closed_p(%s)", r); free(rb.p); return;
     }
-    if (!strcmp(name, "eof?") || !strcmp(name, "eof")) {
+    if (sp_streq(name, "eof?") || sp_streq(name, "eof")) {
       buf_printf(b, "sp_File_eof_p(%s)", r); free(rb.p); return;
     }
-    if (!strcmp(name, "path") || !strcmp(name, "to_path")) {
+    if (sp_streq(name, "path") || sp_streq(name, "to_path")) {
       buf_printf(b, "sp_File_path(%s)", r); free(rb.p); return;
     }
-    if (!strcmp(name, "flush") || !strcmp(name, "sync=") || !strcmp(name, "sync")) {
-      if (!strcmp(name, "sync")) { buf_printf(b, "((mrb_bool)1)"); } /* always synced */
+    if (sp_streq(name, "flush") || sp_streq(name, "sync=") || sp_streq(name, "sync")) {
+      if (sp_streq(name, "sync")) { buf_printf(b, "((mrb_bool)1)"); } /* always synced */
       else { emit_expr(c, recv, b); }
       free(rb.p); return;
     }
-    if ((!strcmp(name, "each_line") || !strcmp(name, "each")) &&
+    if ((sp_streq(name, "each_line") || sp_streq(name, "each")) &&
         nt_ref(nt, id, "block") >= 0) {
       int blk = nt_ref(nt, id, "block");
       const char *bp = block_param_name(c, blk, 0);
@@ -5103,7 +5103,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
      appends and returns the (same) array; for an integer it returns the shifted
      value. Use sp_poly_shl's RESULT -- returning the receiver would discard the
      shift (e.g. peek16's `hi << 8`). */
-  if (recv >= 0 && !strcmp(name, "<<") && argc == 1 &&
+  if (recv >= 0 && sp_streq(name, "<<") && argc == 1 &&
       comp_ntype(c, recv) == TY_POLY) {
     int t = ++g_tmp;
     buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", t); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -5114,7 +5114,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   }
   /* poly_val >> int / poly_val & int / | / ^ : unbox recv to int, apply op */
   if (recv >= 0 && argc == 1 && comp_ntype(c, recv) == TY_POLY &&
-      (!strcmp(name, ">>") || !strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^"))) {
+      (sp_streq(name, ">>") || sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
     TyKind at = comp_ntype(c, argv[0]);
     buf_puts(b, "(sp_poly_to_i("); emit_expr(c, recv, b); buf_printf(b, ") %s ", name);
     if (at == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -5125,7 +5125,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* `arr << x` / push / append in value position: mutate, then yield the array
      (statement position is handled earlier by emit_array_mutate_stmt). */
-  if (recv >= 0 && (!strcmp(name, "<<") || !strcmp(name, "push") || !strcmp(name, "append")) &&
+  if (recv >= 0 && (sp_streq(name, "<<") || sp_streq(name, "push") || sp_streq(name, "append")) &&
       argc >= 1 && ty_is_array(comp_ntype(c, recv))) {
     TyKind art = comp_ntype(c, recv);
     /* Lift: when a typed-array literal is pushed a heterogeneous element,
@@ -5134,7 +5134,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (art != TY_POLY_ARRAY && array_kind(art)) {
       TyKind elem_t = ty_array_elem(art);
       const char *rty = nt_type(nt, recv);
-      if (rty && !strcmp(rty, "ArrayNode")) {
+      if (rty && sp_streq(rty, "ArrayNode")) {
         for (int a = 0; a < argc; a++) {
           TyKind at = comp_ntype(c, argv[a]);
           if (at != TY_UNKNOWN && at != elem_t) { needs_lift = 1; break; }
@@ -5188,7 +5188,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* __dir__ -> the source file's directory (compile-time literal, mirroring
      the legacy generator). */
-  if (recv < 0 && !strcmp(name, "__dir__") && argc == 0) {
+  if (recv < 0 && sp_streq(name, "__dir__") && argc == 0) {
     const char *sf = nt->source_file;
     char dir[1024];
     if (sf && strrchr(sf, '/')) { size_t n = (size_t)(strrchr(sf, '/') - sf); if (n >= sizeof dir) n = sizeof dir - 1; if (n == 0) { dir[0] = '/'; dir[1] = 0; }
@@ -5200,7 +5200,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* at_exit { ... } -> register the block as a Proc; main()'s tail runs the
      hooks in reverse order. The registration expression evaluates to the proc. */
-  if (recv < 0 && !strcmp(name, "at_exit") && nt_ref(nt, id, "block") >= 0) {
+  if (recv < 0 && sp_streq(name, "at_exit") && nt_ref(nt, id, "block") >= 0) {
     g_needs_at_exit = 1;
     buf_puts(b, "(sp_at_exit_hooks[sp_at_exit_count++] = ");
     emit_proc_literal(c, id, b);
@@ -5211,7 +5211,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* __method__ / __callee__ -> the enclosing method's name as a symbol
      (nil at the top level) */
   if (recv < 0 && argc == 0 &&
-      (!strcmp(name, "__method__") || !strcmp(name, "__callee__"))) {
+      (sp_streq(name, "__method__") || sp_streq(name, "__callee__"))) {
     Scope *s = comp_scope_of(c, id);
     if (s && s->name && s->name[0]) buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, s->name));
     else buf_puts(b, "sp_box_nil()");
@@ -5222,8 +5222,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      method (we only inline when a block is present). In a lowered yielding
      method the block is the `__yblk__` proc parameter, which is non-NULL
      exactly when the caller passed a block, so test it directly. */
-  if (!strcmp(name, "block_given?") &&
-      (recv < 0 || (nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode")))) {
+  if (sp_streq(name, "block_given?") &&
+      (recv < 0 || (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")))) {
     /* block_given? asks about the innermost method. An inlined yielding method
        (g_block_id >= 0) statically has a block, so fold to 1 even when the
        enclosing method is lowered; only a genuinely lowered scope inspects its
@@ -5244,7 +5244,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv < 0 && comp_method_index(c, name) < 0) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (!strcmp(name, "Integer") && ac == 1) {
+    if (sp_streq(name, "Integer") && ac == 1) {
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { buf_puts(b, "sp_str_to_i_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_FLOAT) { buf_puts(b, "((mrb_int)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
@@ -5252,7 +5252,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       return;
     }
-    if (!strcmp(name, "Integer") && ac == 2) {
+    if (sp_streq(name, "Integer") && ac == 2) {
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) {
         buf_puts(b, "sp_str_to_i_strict_base("); emit_expr(c, av[0], b);
@@ -5261,7 +5261,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       return;
     }
-    if (!strcmp(name, "Float") && ac == 1) {
+    if (sp_streq(name, "Float") && ac == 1) {
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { buf_puts(b, "sp_str_to_f_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_INT) { buf_puts(b, "((mrb_float)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
@@ -5269,7 +5269,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       return;
     }
-    if (!strcmp(name, "String") && ac == 1) {
+    if (sp_streq(name, "String") && ac == 1) {
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { emit_expr(c, av[0], b); }
       else if (at == TY_INT) { buf_puts(b, "sp_int_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
@@ -5280,7 +5280,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "sp_poly_to_s(sp_box_nil())"); }  /* nil or unknown */
       return;
     }
-    if (!strcmp(name, "Array") && ac == 1) {
+    if (sp_streq(name, "Array") && ac == 1) {
       /* an argument already typed as an array is returned as-is (identity and
          element type preserved); a statically scalar argument wraps into a typed
          one-element array (matching the precise inference); everything else
@@ -5299,7 +5299,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "sp_kernel_array("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
       return;
     }
-    if ((!strcmp(name, "format") || !strcmp(name, "sprintf")) && ac >= 1) {
+    if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && ac >= 1) {
       /* format(fmt, *args) -> sp_str_format_polyarr(fmt, poly_arr) */
       int tf = ++g_tmp, ta = ++g_tmp;
       emit_indent(g_pre, g_indent);
@@ -5324,7 +5324,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_str_format_polyarr(_t%d, _t%d)", tf, ta);
       return;
     }
-    if (!strcmp(name, "rand")) {
+    if (sp_streq(name, "rand")) {
       if (ac == 0) { buf_puts(b, "(mrb_float)((double)rand() / (RAND_MAX + 1.0))"); return; }
       TyKind a0t = comp_ntype(c, av[0]);
       if (a0t == TY_RANGE) {
@@ -5332,7 +5332,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* is the range a float range? */
         int is_float = 0;
         const char *atype = nt_type(nt, av[0]);
-        if (atype && !strcmp(atype, "RangeNode")) {
+        if (atype && sp_streq(atype, "RangeNode")) {
           int lo = nt_ref(nt, av[0], "left");
           if (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) is_float = 1;
         }
@@ -5346,7 +5346,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "((mrb_int)("); emit_expr(c, av[0], b); buf_printf(b, " > 0 ? rand() %% (int)"); emit_expr(c, av[0], b); buf_puts(b, " : rand()))");
       return;
     }
-    if (!strcmp(name, "srand")) {
+    if (sp_streq(name, "srand")) {
       if (ac == 0) { buf_puts(b, "(srand((unsigned)time(NULL)), (mrb_int)0)"); return; }
       buf_puts(b, "({ unsigned _sv = (unsigned)("); emit_expr(c, av[0], b); buf_puts(b, "); srand(_sv); (mrb_int)_sv; })");
       return;
@@ -5355,10 +5355,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* exit / abort as expressions (noreturn, emit as C statement-expression) */
   /* sleep(seconds) / Kernel.sleep(seconds) */
-  if (!strcmp(name, "sleep") && argc <= 1 &&
+  if (sp_streq(name, "sleep") && argc <= 1 &&
       (recv < 0 ||
-       (nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Kernel")))) {
+       (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Kernel")))) {
     if (argc == 0) { buf_puts(b, "((void)sp_sleep(0.0), (mrb_int)0)"); return; }
     TyKind st = comp_ntype(c, argv[0]);
     buf_puts(b, "((void)sp_sleep(");
@@ -5368,12 +5368,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     buf_puts(b, "), (mrb_int)0)");
     return;
   }
-  if (recv < 0 && (!strcmp(name, "exit") || !strcmp(name, "exit!"))) {
+  if (recv < 0 && (sp_streq(name, "exit") || sp_streq(name, "exit!"))) {
     if (argc == 0) { buf_puts(b, "({ exit(0); (mrb_int)0; })"); return; }
     buf_puts(b, "({ exit((int)("); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })");
     return;
   }
-  if (recv < 0 && !strcmp(name, "abort")) {
+  if (recv < 0 && sp_streq(name, "abort")) {
     if (argc >= 1) {
       TyKind at2 = comp_ntype(c, argv[0]);
       buf_puts(b, "({ fputs(");
@@ -5386,7 +5386,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* raise */
-  if (recv < 0 && !strcmp(name, "raise")) {
+  if (recv < 0 && sp_streq(name, "raise")) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (ac == 0) {
@@ -5394,11 +5394,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else buf_puts(b, "sp_raise((&(\"\\xff\")[1]))");
     }
     else if (ac == 1 && nt_type(nt, av[0]) &&
-             (!strcmp(nt_type(nt, av[0]), "ConstantReadNode") || !strcmp(nt_type(nt, av[0]), "ConstantPathNode"))) {
+             (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"))) {
       buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", nt_str(nt, av[0], "name"));
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
-             (!strcmp(nt_type(nt, av[0]), "ConstantReadNode") || !strcmp(nt_type(nt, av[0]), "ConstantPathNode"))) {
+             (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"))) {
       /* `raise Cls, arg` on a user exception subclass with ivars is
          `raise Cls.new(arg)`: construct the object so its ivar is set (and
          the message comes from the class's initialize/super), then carry it.
@@ -5440,7 +5440,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      through to normal object dispatch below. */
   if (recv >= 0 && ty_is_object(comp_ntype(c, recv)) &&
       class_is_exc_subclass(c, ty_object_class(comp_ntype(c, recv)))) {
-    if (!strcmp(name, "message") || !strcmp(name, "to_s") || !strcmp(name, "to_str")) {
+    if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
       buf_puts(b, "sp_exc_message((sp_Exception *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
@@ -5448,11 +5448,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* exception object methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
-    if (!strcmp(name, "message") || !strcmp(name, "to_s") || !strcmp(name, "to_str")) {
+    if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
       buf_puts(b, "sp_exc_message("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "full_message")) {
+    if (sp_streq(name, "full_message")) {
       int t = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
       emit_indent(g_pre, g_indent);
@@ -5461,7 +5461,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
       return;
     }
-    if (!strcmp(name, "inspect")) {
+    if (sp_streq(name, "inspect")) {
       /* #<ClassName: message> */
       int t = ++g_tmp;
       Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
@@ -5471,18 +5471,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
       return;
     }
-    if (!strcmp(name, "class")) {  /* used as .class.to_s / .class.name */
+    if (sp_streq(name, "class")) {  /* used as .class.to_s / .class.name */
       buf_puts(b, "sp_exc_class_name("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "backtrace")) {
+    if (sp_streq(name, "backtrace")) {
       /* the stack captured at the most recent raise (sp_bt_buf); the substrate
          is live in --debug builds and empty in release, same as Kernel#caller. */
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_backtrace_captured())");
       return;
     }
-    if (argc == 1 && (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
-      const char *cn = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")
+    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+      const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
                        ? nt_str(nt, argv[0], "name") : NULL;
       if (cn) {
         buf_puts(b, "sp_exc_is_a("); emit_expr(c, recv, b);
@@ -5501,7 +5501,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          For an inherited cls method specialized into a subclass, the emitting
          class is that subclass, so `new` resolves to the subclass constructor. */
       int new_cls = (g_emitting_class_id >= 0) ? g_emitting_class_id : encl->class_id;
-      if (!strcmp(name, "new")) {
+      if (sp_streq(name, "new")) {
         buf_printf(b, "sp_%s_new(", c->classes[new_cls].name);
         int initm = comp_method_in_chain(c, new_cls, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
@@ -5546,15 +5546,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* X.class.name / .to_s -> identity when .class yields a string;
      for user-object receivers .class now yields TY_CLASS, so wrap with sp_class_to_s. */
-  if (recv >= 0 && argc == 0 && (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class")) {
+  if (recv >= 0 && argc == 0 && (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
     if (comp_ntype(c, recv) == TY_CLASS) {
       /* When emitting a builtin-reopen method, the inner .class emits
          sp_poly_class_name (returns const char *), not sp_Class — no wrapper needed. */
       int _inner = nt_ref(nt, recv, "receiver");
       int _is_poly_ov = (_inner >= 0 && g_emitting_class_id >= 0 &&
-        nt_type(nt, _inner) && !strcmp(nt_type(nt, _inner), "SelfNode") &&
+        nt_type(nt, _inner) && sp_streq(nt_type(nt, _inner), "SelfNode") &&
         is_builtin_reopen(c->classes[g_emitting_class_id].name));
       if (_is_poly_ov) {
         emit_expr(c, recv, b);
@@ -5570,8 +5570,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* obj.class.cmeth(...) -> dispatch class method on obj's runtime class
      Emits a cls_id switch: each case calls the right class method. */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class")) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
     int robj = nt_ref(nt, recv, "receiver");
     TyKind rrt = robj >= 0 ? comp_ntype(c, robj) : TY_UNKNOWN;
     if (ty_is_object(rrt)) {
@@ -5588,7 +5588,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* Stash the receiver object in a temp (referenced in every switch case) */
         char objptr[64];
         const char *rty = nt_type(nt, robj);
-        if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+        if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
           Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, robj, &rb);
           snprintf(objptr, sizeof objptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
@@ -5699,16 +5699,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* SomeClass.name / .to_s / .inspect -> the class-name string */
   if (recv >= 0 && argc == 0 &&
-      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0) {
     buf_printf(b, "SPL(\"%s\")", nt_str(nt, recv, "name"));
     return;
   }
   /* self.name / self.to_s / self.inspect inside a class method -> class name */
   if (recv >= 0 && argc == 0 &&
-      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode")) {
+      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) {
     Scope *encl = comp_scope_of(c, id);
     if (encl && encl->is_cmethod && encl->class_id >= 0) {
       buf_printf(b, "SPL(\"%s\")", c->classes[encl->class_id].name);
@@ -5716,7 +5716,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
   /* bare `name` inside a class method body -> the class name */
-  if (recv < 0 && !strcmp(name, "name") && argc == 0) {
+  if (recv < 0 && sp_streq(name, "name") && argc == 0) {
     Scope *encl = comp_scope_of(c, id);
     if (encl && encl->is_cmethod && encl->class_id >= 0) {
       buf_printf(b, "SPL(\"%s\")", c->classes[encl->class_id].name);
@@ -5724,11 +5724,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
   /* Regexp.last_match(n) -> nth capture group string, or whole match for n=0 */
-  if (recv >= 0 && argc == 1 && !strcmp(name, "last_match") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Regexp")) {
+  if (recv >= 0 && argc == 1 && sp_streq(name, "last_match") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     const char *aty = nt_type(nt, argv[0]);
-    if (aty && !strcmp(aty, "IntegerNode")) {
+    if (aty && sp_streq(aty, "IntegerNode")) {
       long long idx = nt_int(nt, argv[0], "value", 0);
       if (idx == 0) { buf_puts(b, "sp_re_match_str"); return; }
       if (idx >= 1 && idx <= 9) { buf_printf(b, "sp_re_captures[%d]", (int)idx); return; }
@@ -5744,18 +5744,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* Regexp.escape / Regexp.quote -> escape special regex characters */
   if (recv >= 0 && argc == 1 &&
-      (!strcmp(name, "escape") || !strcmp(name, "quote")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Regexp")) {
+      (sp_streq(name, "escape") || sp_streq(name, "quote")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     TyKind _re_at = comp_ntype(c, argv[0]);
     if (_re_at == TY_POLY) { buf_puts(b, "sp_re_escape(sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
     else { buf_puts(b, "sp_re_escape("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     return;
   }
   /* Regexp.compile is an alias for Regexp.new */
-  if (recv >= 0 && argc >= 1 && !strcmp(name, "compile") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Regexp")) {
+  if (recv >= 0 && argc >= 1 && sp_streq(name, "compile") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
     int tp = ++g_tmp, ts = ++g_tmp;
     int flags = (argc >= 2) ? 1 : 0;
     /* See the Regexp.new path: emit the pattern into a local buffer so an
@@ -5774,8 +5774,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* SomeClass.superclass -> the parent class as sp_Class value */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "superclass") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name")) {
     int ci = comp_class_index(c, nt_str(nt, recv, "name"));
     if (ci >= 0) {
@@ -5786,7 +5786,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int bpar = -116;  /* Object */
       if (sc_nd >= 0) {
         const char *sc_ty2 = nt_type(nt, sc_nd);
-        const char *sc_nm2 = (sc_ty2 && (!strcmp(sc_ty2, "ConstantReadNode") || !strcmp(sc_ty2, "ConstantPathNode"))) ? nt_str(nt, sc_nd, "name") : NULL;
+        const char *sc_nm2 = (sc_ty2 && (sp_streq(sc_ty2, "ConstantReadNode") || sp_streq(sc_ty2, "ConstantPathNode"))) ? nt_str(nt, sc_nd, "name") : NULL;
         if (sc_nm2) { int bid2 = builtin_class_id(sc_nm2); if (bid2 != 0) bpar = bid2; }
       }
       buf_printf(b, "((sp_Class){%d})", bpar);
@@ -5795,17 +5795,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* x.class -> the class-name string (compile-time for known types) */
-  if (recv >= 0 && !strcmp(name, "class") && argc == 0) {
+  if (recv >= 0 && sp_streq(name, "class") && argc == 0) {
     TyKind rt = comp_ntype(c, recv);
     /* When emitting a scope transplanted from a builtin-reopen class (Object/Array/
        Numeric), self is sp_RbVal even if the nscope-based type says otherwise.
        Override the inferred type to TY_POLY so we get sp_poly_class_name(self).
        Exception: TrueClass/FalseClass use int self; keep TY_BOOL for ternary. */
     if (g_emitting_class_id >= 0 &&
-        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode") &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode") &&
         is_builtin_reopen(c->classes[g_emitting_class_id].name)) {
       const char *ecn = c->classes[g_emitting_class_id].name;
-      if (strcmp(ecn, "TrueClass") && strcmp(ecn, "FalseClass"))
+      if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass"))
         rt = TY_POLY;
     }
     const char *cn = NULL;
@@ -5850,18 +5850,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* TY_CLASS method dispatch */
   if (recv >= 0 && comp_ntype(c, recv) == TY_CLASS) {
     int _clt = ++g_tmp;
-    if (!strcmp(name, "to_s") || !strcmp(name, "name") || !strcmp(name, "inspect")) {
+    if (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")) {
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_to_s(_cl%d); })", _clt);
       return;
     }
-    if (!strcmp(name, "nil?")) { buf_puts(b, "0"); return; }
-    if (!strcmp(name, "class")) {
+    if (sp_streq(name, "nil?")) { buf_puts(b, "0"); return; }
+    if (sp_streq(name, "class")) {
       buf_printf(b, "({ sp_Class _cl%da = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_is_module_val(_cl%da)?SPL(\"Module\"):SPL(\"Class\"); })", _clt);
       return;
     }
-    if (!strcmp(name, "superclass") && argc == 0) {
+    if (sp_streq(name, "superclass") && argc == 0) {
       /* sp_class_superclass only knows the user chain; a builtin class needs
          sp_builtin_superclass (Integer -> Numeric), as sp_class_is_ancestor
          already dispatches. */
@@ -5869,18 +5869,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; _cl%d.cls_id>=0?sp_class_superclass(_cl%d):sp_builtin_superclass(_cl%d); })", _clt, _clt, _clt);
       return;
     }
-    if (!strcmp(name, "ancestors") && argc == 0) {
+    if (sp_streq(name, "ancestors") && argc == 0) {
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_ancestors(_cl%d); })", _clt);
       return;
     }
     /* ClassName.instance_methods(false): compile-time sym array of own methods */
-    if (!strcmp(name, "instance_methods") && argc == 1) {
+    if (sp_streq(name, "instance_methods") && argc == 1) {
       /* check arg is `false` */
       const char *argt = nt_type(nt, argv[0]);
-      int is_false_arg = argt && !strcmp(argt, "FalseNode");
+      int is_false_arg = argt && sp_streq(argt, "FalseNode");
       if (is_false_arg) {
-        const char *cn2 = nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")
+        const char *cn2 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")
                           ? nt_str(nt, recv, "name") : NULL;
         int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
         if (ci2 >= 0) {
@@ -5911,7 +5911,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
       }
     }
-    if ((!strcmp(name, "==" ) || !strcmp(name, "eql?")) && argc == 1) {
+    if ((sp_streq(name, "==" ) || sp_streq(name, "eql?")) && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
@@ -5920,7 +5920,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
-    if (!strcmp(name, "!=" ) && argc == 1) {
+    if (sp_streq(name, "!=" ) && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
@@ -5929,12 +5929,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
-    if ((!strcmp(name, "<") || !strcmp(name, "<=") || !strcmp(name, ">") || !strcmp(name, ">=")) && argc == 1) {
+    if ((sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") || sp_streq(name, ">=")) && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       if (at == TY_CLASS) {
-        const char *fn = !strcmp(name, "<") ? "sp_class_lt" :
-                         !strcmp(name, "<=") ? "sp_class_le" :
-                         !strcmp(name, ">") ? "sp_class_gt" : "sp_class_ge";
+        const char *fn = sp_streq(name, "<") ? "sp_class_lt" :
+                         sp_streq(name, "<=") ? "sp_class_le" :
+                         sp_streq(name, ">") ? "sp_class_gt" : "sp_class_ge";
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Class _cl%da = ", _clt); emit_expr(c, argv[0], b);
         buf_printf(b, "; %s(_cl%d, _cl%da); })", fn, _clt, _clt);
@@ -5942,25 +5942,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
     }
     /* klass.is_a?/kind_of?(Module|Class|Object|BasicObject) */
-    if (argc == 1 && (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
-      int exact = !strcmp(name, "instance_of?");
-      const char *cn2 = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")
+    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+      int exact = sp_streq(name, "instance_of?");
+      const char *cn2 = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
                         ? nt_str(nt, argv[0], "name") : NULL;
       if (cn2) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b); buf_puts(b, "; ");
         /* Module: all class/module values are instances of Module */
-        if (!strcmp(cn2, "Module")) {
+        if (sp_streq(cn2, "Module")) {
           if (exact) buf_printf(b, "sp_class_is_module_val(_cl%d); })", _clt);
           else buf_printf(b, "1; })");
         }
         /* Class: user classes only (not modules); builtin Class constant is -109 */
-        else if (!strcmp(cn2, "Class")) {
+        else if (sp_streq(cn2, "Class")) {
           if (exact)
             buf_printf(b, "(_cl%d.cls_id>=0?!sp_class_is_module_val(_cl%d):(_cl%d.cls_id==-109)); })", _clt, _clt, _clt);
           else
             buf_printf(b, "(_cl%d.cls_id>=0?!sp_class_is_module_val(_cl%d):(_cl%d.cls_id==-109||_cl%d.cls_id==-108)); })", _clt, _clt, _clt, _clt);
         }
-        else if (!strcmp(cn2, "Object") || !strcmp(cn2, "BasicObject")) {
+        else if (sp_streq(cn2, "Object") || sp_streq(cn2, "BasicObject")) {
           buf_printf(b, "1; })");
         }
         else {
@@ -5976,13 +5976,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && argc == 0 && comp_ntype(c, recv) != TY_POLY) {
     TyKind crt = comp_ntype(c, recv);
     const char *ck = (crt == TY_POLY_ARRAY) ? "Poly" : array_kind(crt);
-    if (ck && !strcmp(name, "freeze")) {
+    if (ck && sp_streq(name, "freeze")) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_%sArray *_t%d = ", ck, t); emit_expr(c, recv, b);
       buf_printf(b, "; if (_t%d) _t%d->frozen = 1; _t%d; })", t, t, t);
       return;
     }
-    if (ck && !strcmp(name, "frozen?")) {
+    if (ck && sp_streq(name, "frozen?")) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen != 0)");
       return;
     }
@@ -5990,15 +5990,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* freeze / frozen? on hashes: use the GC-header frozen bit */
   if (recv >= 0 && argc == 0 && ty_is_hash(comp_ntype(c, recv))) {
-    if (!strcmp(name, "to_h") && nt_ref(nt, id, "block") < 0) {  /* identity */
+    if (sp_streq(name, "to_h") && nt_ref(nt, id, "block") < 0) {  /* identity */
       emit_expr(c, recv, b);
       return;
     }
-    if (!strcmp(name, "freeze")) {
+    if (sp_streq(name, "freeze")) {
       buf_puts(b, "sp_gc_freeze("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "frozen?")) {
+    if (sp_streq(name, "frozen?")) {
       buf_puts(b, "sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
@@ -6006,7 +6006,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* frozen? on numeric/symbol scalars: always frozen in Ruby semantics.
      TY_STRING uses a runtime check because dup/String.new produce unfrozen strings. */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "frozen?")) {
+  if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?")) {
     TyKind frt = comp_ntype(c, recv);
     if (frt == TY_INT || frt == TY_FLOAT || frt == TY_SYMBOL || frt == TY_BOOL || frt == TY_NIL) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
@@ -6023,9 +6023,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* TY_STRING freeze: update the variable to the frozen copy and return it */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "freeze") && comp_ntype(c, recv) == TY_STRING) {
+  if (recv >= 0 && argc == 0 && sp_streq(name, "freeze") && comp_ntype(c, recv) == TY_STRING) {
     const char *rtyf = nt_type(nt, recv);
-    int assignable_f = rtyf && (!strcmp(rtyf, "LocalVariableReadNode") || !strcmp(rtyf, "InstanceVariableReadNode"));
+    int assignable_f = rtyf && (sp_streq(rtyf, "LocalVariableReadNode") || sp_streq(rtyf, "InstanceVariableReadNode"));
     if (assignable_f) {
       buf_puts(b, "({ ");
       emit_expr(c, recv, b); buf_puts(b, " = sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, "); ");
@@ -6039,15 +6039,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* identity methods -> the receiver itself */
   if (recv >= 0 &&
-      (!strcmp(name, "freeze") || !strcmp(name, "itself") ||
-       !strcmp(name, "dup") || !strcmp(name, "clone"))) {
+      (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
+       sp_streq(name, "dup") || sp_streq(name, "clone"))) {
     int args = nt_ref(nt, id, "arguments");
     int argc0 = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc0);
     /* hash, string, and array dup/clone require real copies (they are mutable
        reference types) -- skip the identity shortcut for them so the dedicated
        sp_*_dup paths run. freeze/itself on any value stay identity. */
     TyKind recv_t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
-    int is_dup_clone = !strcmp(name, "dup") || !strcmp(name, "clone");
+    int is_dup_clone = sp_streq(name, "dup") || sp_streq(name, "clone");
     if (argc0 == 0 && !ty_is_hash(recv_t) &&
         !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t)))) {
       emit_expr(c, recv, b); return;
@@ -6058,7 +6058,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* then / yield_self: pass receiver to block, return block result */
-  if (recv >= 0 && (!strcmp(name, "then") || !strcmp(name, "yield_self"))) {
+  if (recv >= 0 && (sp_streq(name, "then") || sp_streq(name, "yield_self"))) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       TyKind rtype = infer_type(c, recv);
@@ -6106,7 +6106,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  int ie_direct = recv >= 0 && (!strcmp(name, "instance_eval") || !strcmp(name, "instance_exec"));
+  int ie_direct = recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec"));
   int ie_tramp = 0;
   /* receiverless instance_eval/exec inside an instance method: self is the
      receiver. Lower it like a direct call with self aliased into the temp. */
@@ -6122,7 +6122,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* `instance_exec(args, &b)` forwarding the enclosing (now-inlined) method's
        block param: the real block is the literal active at the inline splice,
        so resolve the BlockArgumentNode to it (as `inner(&block)` does). */
-    if (blk >= 0 && nt_type(nt, blk) && !strcmp(nt_type(nt, blk), "BlockArgumentNode"))
+    if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode"))
       blk = g_block_id;
     TyKind rtype = ie_self_cls >= 0 ? ty_object(ie_self_cls) : comp_ntype(c, recv);
     if (blk >= 0 && ty_is_object(rtype) &&
@@ -6163,7 +6163,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          there): instance_exec assigns the call-site args; instance_eval
          yields the receiver to each param. */
       {
-        int is_exec = ie_tramp ? (ie_tramp == 2) : !strcmp(name, "instance_exec");
+        int is_exec = ie_tramp ? (ie_tramp == 2) : sp_streq(name, "instance_exec");
         int bp_node = nt_ref(nt, blk, "parameters");
         const char *bpty = bp_node >= 0 ? nt_type(nt, bp_node) : NULL;
         int iargs = nt_ref(nt, id, "arguments");
@@ -6171,7 +6171,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         /* a trailing `k: v` call-site hash binds keyword params, not positionals */
         int ie_kwhash = ie_call_kwhash(c, id);
         if (ie_kwhash >= 0) iac -= 1;
-        if (bpty && !strcmp(bpty, "NumberedParametersNode")) {
+        if (bpty && sp_streq(bpty, "NumberedParametersNode")) {
           /* `{ _1.method }`: _1.._N bind like positional block params. */
           int maxn = (int)nt_int(nt, bp_node, "maximum", 0);
           for (int p = 0; p < maxn; p++) {
@@ -6204,7 +6204,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            binds `a` to `arr[0]`), unlike a directly-passed array (whole array to a
            lone param), so allow `npar >= 1` when explicitly splatted. */
         int arg0 = (iac == 1 && iav) ? iav[0] : -1;
-        int is_splat = arg0 >= 0 && nt_type(nt, arg0) && !strcmp(nt_type(nt, arg0), "SplatNode");
+        int is_splat = arg0 >= 0 && nt_type(nt, arg0) && sp_streq(nt_type(nt, arg0), "SplatNode");
         if (is_splat) arg0 = nt_ref(nt, arg0, "expression");
         if (tramp_argc < 0 && is_exec && iac == 1 && (npar >= 2 || (npar >= 1 && is_splat)) && arg0 >= 0) {
           TyKind a0 = comp_ntype(c, arg0);
@@ -6235,10 +6235,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           if (as_kind) {
             /* element of the auto-splat array; box the scalar kinds into the
                poly slot (PolyArray_get already yields an sp_RbVal). */
-            const char *bx = !ppoly || !strcmp(as_kind, "Poly") ? NULL
-                           : !strcmp(as_kind, "Int") ? "sp_box_int"
-                           : !strcmp(as_kind, "Float") ? "sp_box_float"
-                           : !strcmp(as_kind, "Str") ? "sp_box_str" : NULL;
+            const char *bx = !ppoly || sp_streq(as_kind, "Poly") ? NULL
+                           : sp_streq(as_kind, "Int") ? "sp_box_int"
+                           : sp_streq(as_kind, "Float") ? "sp_box_float"
+                           : sp_streq(as_kind, "Str") ? "sp_box_str" : NULL;
             if (bx) buf_printf(g_pre, "%s(", bx);
             buf_printf(g_pre, "sp_%sArray_get(_t%d, %d)", as_kind, as_arr, p);
             if (bx) buf_puts(g_pre, ")");
@@ -6374,90 +6374,90 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (mi < 0 && !self->is_cmethod) {
         const char *bcn = c->classes[dispatch_cid].name;
         TyKind brt = TY_UNKNOWN;
-        if (!strcmp(bcn, "String"))        brt = TY_STRING;
-        else if (!strcmp(bcn, "Integer"))  brt = TY_INT;
-        else if (!strcmp(bcn, "Float"))    brt = TY_FLOAT;
-        else if (!strcmp(bcn, "Symbol"))   brt = TY_SYMBOL;
+        if (sp_streq(bcn, "String"))        brt = TY_STRING;
+        else if (sp_streq(bcn, "Integer"))  brt = TY_INT;
+        else if (sp_streq(bcn, "Float"))    brt = TY_FLOAT;
+        else if (sp_streq(bcn, "Symbol"))   brt = TY_SYMBOL;
         if (brt != TY_UNKNOWN) {
           int args2 = nt_ref(nt, id, "arguments");
           int ac2 = 0; const int *av2 = args2 >= 0 ? nt_arr(nt, args2, "arguments", &ac2) : NULL;
           const char *s = g_self;
           if (brt == TY_STRING) {
-            if (!strcmp(name, "upcase"))     { buf_printf(b, "sp_str_upcase(%s)", s); return; }
-            if (!strcmp(name, "downcase"))   { buf_printf(b, "sp_str_downcase(%s)", s); return; }
-            if (!strcmp(name, "capitalize")) { buf_printf(b, "sp_str_capitalize(%s)", s); return; }
-            if (!strcmp(name, "reverse"))    { buf_printf(b, "sp_str_reverse(%s)", s); return; }
-            if (!strcmp(name, "strip"))      { buf_printf(b, "sp_str_strip(%s)", s); return; }
-            if (!strcmp(name, "lstrip"))     { buf_printf(b, "sp_str_lstrip(%s)", s); return; }
-            if (!strcmp(name, "rstrip"))     { buf_printf(b, "sp_str_rstrip(%s)", s); return; }
-            if (!strcmp(name, "chomp"))      { buf_printf(b, "sp_str_chomp(%s, NULL)", s); return; }
-            if (!strcmp(name, "chop"))       { buf_printf(b, "sp_str_chop(%s)", s); return; }
-            if (!strcmp(name, "dup") || !strcmp(name, "clone")) { buf_printf(b, "sp_str_dup(%s)", s); return; }
-            if (!strcmp(name, "to_s") || !strcmp(name, "itself")) { buf_puts(b, s); return; }
-            if (!strcmp(name, "to_sym"))     { buf_printf(b, "sp_sym_intern(%s)", s); return; }
-            if (!strcmp(name, "to_i"))       { buf_printf(b, "sp_str_to_i(%s)", s); return; }
-            if (!strcmp(name, "to_f"))       { buf_printf(b, "sp_str_to_f(%s)", s); return; }
-            if (!strcmp(name, "length") || !strcmp(name, "size")) { buf_printf(b, "sp_str_length(%s)", s); return; }
-            if (!strcmp(name, "bytesize"))   { buf_printf(b, "sp_str_bytesize(%s)", s); return; }
-            if (!strcmp(name, "empty?"))     { buf_printf(b, "(!%s || !*%s)", s, s); return; }
-            if (!strcmp(name, "inspect"))    { buf_printf(b, "sp_str_inspect(%s)", s); return; }
-            if (!strcmp(name, "+") && ac2 == 1) {
+            if (sp_streq(name, "upcase"))     { buf_printf(b, "sp_str_upcase(%s)", s); return; }
+            if (sp_streq(name, "downcase"))   { buf_printf(b, "sp_str_downcase(%s)", s); return; }
+            if (sp_streq(name, "capitalize")) { buf_printf(b, "sp_str_capitalize(%s)", s); return; }
+            if (sp_streq(name, "reverse"))    { buf_printf(b, "sp_str_reverse(%s)", s); return; }
+            if (sp_streq(name, "strip"))      { buf_printf(b, "sp_str_strip(%s)", s); return; }
+            if (sp_streq(name, "lstrip"))     { buf_printf(b, "sp_str_lstrip(%s)", s); return; }
+            if (sp_streq(name, "rstrip"))     { buf_printf(b, "sp_str_rstrip(%s)", s); return; }
+            if (sp_streq(name, "chomp"))      { buf_printf(b, "sp_str_chomp(%s, NULL)", s); return; }
+            if (sp_streq(name, "chop"))       { buf_printf(b, "sp_str_chop(%s)", s); return; }
+            if (sp_streq(name, "dup") || sp_streq(name, "clone")) { buf_printf(b, "sp_str_dup(%s)", s); return; }
+            if (sp_streq(name, "to_s") || sp_streq(name, "itself")) { buf_puts(b, s); return; }
+            if (sp_streq(name, "to_sym"))     { buf_printf(b, "sp_sym_intern(%s)", s); return; }
+            if (sp_streq(name, "to_i"))       { buf_printf(b, "sp_str_to_i(%s)", s); return; }
+            if (sp_streq(name, "to_f"))       { buf_printf(b, "sp_str_to_f(%s)", s); return; }
+            if (sp_streq(name, "length") || sp_streq(name, "size")) { buf_printf(b, "sp_str_length(%s)", s); return; }
+            if (sp_streq(name, "bytesize"))   { buf_printf(b, "sp_str_bytesize(%s)", s); return; }
+            if (sp_streq(name, "empty?"))     { buf_printf(b, "(!%s || !*%s)", s, s); return; }
+            if (sp_streq(name, "inspect"))    { buf_printf(b, "sp_str_inspect(%s)", s); return; }
+            if (sp_streq(name, "+") && ac2 == 1) {
               buf_printf(b, "sp_str_concat(%s, ", s); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "*") && ac2 == 1) {
+            if (sp_streq(name, "*") && ac2 == 1) {
               buf_printf(b, "sp_str_repeat(%s, ", s); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
           }
           else if (brt == TY_INT) {
-            if (!strcmp(name, "to_s"))   { buf_printf(b, "sp_int_to_s(%s)", s); return; }
-            if (!strcmp(name, "to_f"))   { buf_printf(b, "((double)(%s))", s); return; }
-            if (!strcmp(name, "abs"))    { buf_printf(b, "sp_int_abs(%s)", s); return; }
-            if (!strcmp(name, "odd?"))   { buf_printf(b, "((%s) %% 2 != 0)", s); return; }
-            if (!strcmp(name, "even?"))  { buf_printf(b, "((%s) %% 2 == 0)", s); return; }
-            if (!strcmp(name, "zero?"))  { buf_printf(b, "((%s) == 0)", s); return; }
-            if (!strcmp(name, "succ") || !strcmp(name, "next")) { buf_printf(b, "sp_int_add(%s, 1LL)", s); return; }
-            if (!strcmp(name, "+") && ac2 == 1) {
+            if (sp_streq(name, "to_s"))   { buf_printf(b, "sp_int_to_s(%s)", s); return; }
+            if (sp_streq(name, "to_f"))   { buf_printf(b, "((double)(%s))", s); return; }
+            if (sp_streq(name, "abs"))    { buf_printf(b, "sp_int_abs(%s)", s); return; }
+            if (sp_streq(name, "odd?"))   { buf_printf(b, "((%s) %% 2 != 0)", s); return; }
+            if (sp_streq(name, "even?"))  { buf_printf(b, "((%s) %% 2 == 0)", s); return; }
+            if (sp_streq(name, "zero?"))  { buf_printf(b, "((%s) == 0)", s); return; }
+            if (sp_streq(name, "succ") || sp_streq(name, "next")) { buf_printf(b, "sp_int_add(%s, 1LL)", s); return; }
+            if (sp_streq(name, "+") && ac2 == 1) {
               buf_printf(b, "sp_int_add(%s, ", s); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "-") && ac2 == 1) {
+            if (sp_streq(name, "-") && ac2 == 1) {
               buf_printf(b, "sp_int_sub(%s, ", s); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "*") && ac2 == 1) {
+            if (sp_streq(name, "*") && ac2 == 1) {
               buf_printf(b, "sp_int_mul(%s, ", s); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "/") && ac2 == 1) {
+            if (sp_streq(name, "/") && ac2 == 1) {
               buf_printf(b, "sp_idiv(%s, ", s); emit_int_divisor(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "%") && ac2 == 1) {
+            if (sp_streq(name, "%") && ac2 == 1) {
               buf_printf(b, "sp_imod(%s, ", s); emit_int_divisor(c, av2[0], b); buf_puts(b, ")"); return;
             }
           }
           else if (brt == TY_FLOAT) {
-            if (!strcmp(name, "to_s"))   { buf_printf(b, "sp_float_to_s(%s)", s); return; }
-            if (!strcmp(name, "to_i"))   { buf_printf(b, "((mrb_int)(%s))", s); return; }
-            if (!strcmp(name, "abs"))    { buf_printf(b, "fabs(%s)", s); return; }
-            if (!strcmp(name, "floor"))  { buf_printf(b, "((double)((mrb_int)floor(%s)))", s); return; }
-            if (!strcmp(name, "ceil"))   { buf_printf(b, "((double)((mrb_int)ceil(%s)))", s); return; }
-            if (!strcmp(name, "round"))  { buf_printf(b, "((double)((mrb_int)round(%s)))", s); return; }
-            if (!strcmp(name, "+") && ac2 == 1) {
+            if (sp_streq(name, "to_s"))   { buf_printf(b, "sp_float_to_s(%s)", s); return; }
+            if (sp_streq(name, "to_i"))   { buf_printf(b, "((mrb_int)(%s))", s); return; }
+            if (sp_streq(name, "abs"))    { buf_printf(b, "fabs(%s)", s); return; }
+            if (sp_streq(name, "floor"))  { buf_printf(b, "((double)((mrb_int)floor(%s)))", s); return; }
+            if (sp_streq(name, "ceil"))   { buf_printf(b, "((double)((mrb_int)ceil(%s)))", s); return; }
+            if (sp_streq(name, "round"))  { buf_printf(b, "((double)((mrb_int)round(%s)))", s); return; }
+            if (sp_streq(name, "+") && ac2 == 1) {
               buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " + "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "-") && ac2 == 1) {
+            if (sp_streq(name, "-") && ac2 == 1) {
               buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " - "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "*") && ac2 == 1) {
+            if (sp_streq(name, "*") && ac2 == 1) {
               buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " * "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
-            if (!strcmp(name, "/") && ac2 == 1) {
+            if (sp_streq(name, "/") && ac2 == 1) {
               buf_puts(b, "("); buf_puts(b, s); buf_puts(b, " / "); emit_expr(c, av2[0], b); buf_puts(b, ")"); return;
             }
           }
           else if (brt == TY_SYMBOL) {
-            if (!strcmp(name, "to_s") || !strcmp(name, "id2name")) {
+            if (sp_streq(name, "to_s") || sp_streq(name, "id2name")) {
               buf_printf(b, "sp_sym_to_s(%s)", s); return;
             }
-            if (!strcmp(name, "inspect")) { buf_printf(b, "sp_sym_inspect(%s)", s); return; }
-            if (!strcmp(name, "to_sym") || !strcmp(name, "itself")) { buf_puts(b, s); return; }
+            if (sp_streq(name, "inspect")) { buf_printf(b, "sp_sym_inspect(%s)", s); return; }
+            if (sp_streq(name, "to_sym") || sp_streq(name, "itself")) { buf_puts(b, s); return; }
           }
         }
       }
@@ -6465,10 +6465,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* TY_CLASS variable .new -> runtime switch over user classes, returns TY_POLY */
-  if (recv >= 0 && !strcmp(name, "new") && comp_ntype(c, recv) == TY_CLASS &&
+  if (recv >= 0 && sp_streq(name, "new") && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
-      strcmp(nt_type(nt, recv), "ConstantReadNode") != 0 &&
-      strcmp(nt_type(nt, recv), "ConstantPathNode") != 0 &&
+      !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      !sp_streq(nt_type(nt, recv), "ConstantPathNode") &&
       argc == 0) {
     int kt = ++g_tmp, rt2 = ++g_tmp;
     buf_printf(b, "({ sp_Class _t%d = ", kt); emit_expr(c, recv, b); buf_printf(b, "; ");
@@ -6488,9 +6488,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* Class#allocate: a bare instance with default/nil ivars and no initialize.
      Exception subclasses carry raise/message state set up by their dedicated
      constructor, so they are excluded (fall through to the generic reject). */
-  if (recv >= 0 && !strcmp(name, "allocate") && argc == 0 && comp_ntype(c, recv) == TY_CLASS &&
+  if (recv >= 0 && sp_streq(name, "allocate") && argc == 0 && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
-      (!strcmp(nt_type(nt, recv), "ConstantReadNode") || !strcmp(nt_type(nt, recv), "ConstantPathNode"))) {
+      (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     int acid = comp_class_index(c, nt_str(nt, recv, "name"));
     if (acid >= 0 && !class_is_exc_subclass(c, acid)) {
       emit_obj_alloc_expr(c, acid, b);
@@ -6498,9 +6498,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  if (recv >= 0 && !strcmp(name, "new") && nt_type(nt, recv) &&
-      !strcmp(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
-      !strcmp(nt_str(nt, recv, "name"), "class")) {
+  if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
+      sp_streq(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "class")) {
     Scope *self = comp_scope_of(c, id);
     int cid = self ? self->class_id : -1;
     int has_sub = 0;
@@ -6515,8 +6515,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* namespaced class M::Sub.new -> check for user-defined `def self.new` first,
      then fall back to sp_<Sub>_new(args) */
-  if (recv >= 0 && !strcmp(name, "new") && nt_type(nt, recv) &&
-      !strcmp(nt_type(nt, recv), "ConstantPathNode")) {
+  if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
+      sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
     const char *cn = nt_str(nt, recv, "name");
     int ci = cn ? comp_class_index(c, cn) : -1;
     if (ci >= 0) {
@@ -6566,15 +6566,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* Class.new(args) -> sp_<Class>_new(args) */
-  if (recv >= 0 && !strcmp(name, "new")) {
+  if (recv >= 0 && sp_streq(name, "new")) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0 && c->classes[ci].is_struct) {
         /* Struct.new members: positional args, or keyword args mapping each
            member by name; each coerced to the member ivar type. */
         ClassInfo *cls = &c->classes[ci];
-        int kwh = (argc == 1 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
+        int kwh = (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
         buf_printf(b, "sp_%s_new(", cls->name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");
@@ -6638,39 +6638,39 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, ")");
         return;
       }
-      if (cn && !strcmp(cn, "String")) {
+      if (cn && sp_streq(cn, "String")) {
         /* String.new / String.new(s): always create a mutable heap copy */
         if (argc == 1) { buf_puts(b, "sp_str_dup_external("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else buf_puts(b, "sp_str_dup_external((&(\"\\xff\")[1]))");
         return;
       }
-      if (cn && !strcmp(cn, "Object") && argc == 0) {
+      if (cn && sp_streq(cn, "Object") && argc == 0) {
         buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)");
         return;
       }
       /* Mutex/Monitor.new: no-op sentinel (single-threaded; synchronize runs block inline) */
-      if (cn && (!strcmp(cn, "Mutex") || !strcmp(cn, "Monitor"))) {
+      if (cn && (sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor"))) {
         buf_puts(b, "sp_box_nil()"); return;
       }
-      if (cn && !strcmp(cn, "StringIO")) {
+      if (cn && sp_streq(cn, "StringIO")) {
         if (argc == 0) buf_puts(b, "sp_StringIO_new()");
         else if (argc == 1) { buf_puts(b, "sp_StringIO_new_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_StringIO_new_sm("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
         return;
       }
-      if (cn && !strcmp(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) {
+      if (cn && sp_streq(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) {
         /* Enumerator.new { |y| ... }: a fiber-backed generator where `y << v`
            lowers to a Fiber.yield. */
         emit_fiber_new(c, id, b, 1);
         return;
       }
-      if (cn && (!strcmp(cn, "Fiber") || !strcmp(cn, "Thread")) && nt_ref(nt, id, "block") >= 0) {
+      if (cn && (sp_streq(cn, "Fiber") || sp_streq(cn, "Thread")) && nt_ref(nt, id, "block") >= 0) {
         /* Single-threaded: a Thread is modeled as a Fiber that runs to
            completion on #value (no preemption, no Fiber.yield in the body). */
         emit_fiber_new(c, id, b, 0);
         return;
       }
-      if (cn && !strcmp(cn, "Random")) {
+      if (cn && sp_streq(cn, "Random")) {
         buf_puts(b, "sp_Random_new(");
         if (argc >= 1) emit_expr(c, argv[0], b);
         else buf_puts(b, "(mrb_int)time(NULL)");
@@ -6679,7 +6679,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       /* Hash.new { |hash, key| default } -> a StrPolyHash with a default-proc
          function computing the missing-key value. */
-      if (cn && !strcmp(cn, "Hash") && nt_ref(nt, id, "block") >= 0) {
+      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) {
         int hblk = nt_ref(nt, id, "block");
         int hbody = nt_ref(nt, hblk, "body");
         const char *hp = block_param_name(c, hblk, 0);
@@ -6691,8 +6691,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            or read ivars (the enclosing self is named `self` with `->`
            deref). Value-typed / top-level enclosers carry no usable pointer
            self, so pass NULL there. (#1379) */
-        int dp_self = (g_emitting_class_id >= 0 && g_self && !strcmp(g_self, "self") &&
-                       g_self_deref && !strcmp(g_self_deref, "->"));
+        int dp_self = (g_emitting_class_id >= 0 && g_self && sp_streq(g_self, "self") &&
+                       g_self_deref && sp_streq(g_self_deref, "->"));
         const char *dp_cls = dp_self ? c->classes[g_emitting_class_id].name : NULL;
         buf_printf(pb, "static sp_RbVal _sp_hash_dproc_%d(sp_StrPolyHash *_self_h, const char *_key, void *_dproc_self) {\n", dn);
         if (dp_self) buf_printf(pb, "  sp_%s *self = (sp_%s *)_dproc_self; (void)self;\n", dp_cls, dp_cls);
@@ -6706,8 +6706,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (bn > 0) {
           int last = bb[bn - 1];
           const char *lty = nt_type(nt, last);
-          int is_set = lty && !strcmp(lty, "CallNode") && nt_str(nt, last, "name") &&
-                       !strcmp(nt_str(nt, last, "name"), "[]=");
+          int is_set = lty && sp_streq(lty, "CallNode") && nt_str(nt, last, "name") &&
+                       sp_streq(nt_str(nt, last, "name"), "[]=");
           if (is_set) {
             int srecv = nt_ref(nt, last, "receiver");
             int sargs = nt_ref(nt, last, "arguments");
@@ -6760,11 +6760,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else buf_printf(b, "sp_StrPolyHash_new_dproc(_sp_hash_dproc_%d, NULL)", dn);
         return;
       }
-      if (cn && !strcmp(cn, "StringScanner") && argc == 1) {
+      if (cn && sp_streq(cn, "StringScanner") && argc == 1) {
         buf_puts(b, "sp_StringScanner_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
-      if (cn && !strcmp(cn, "Regexp") && argc >= 1) {
+      if (cn && sp_streq(cn, "Regexp") && argc >= 1) {
         int tp = ++g_tmp, ts = ++g_tmp;
         int flags = (argc >= 2) ? 1 : 0; /* Regexp::IGNORECASE=1 if 2nd arg truthy */
         /* Emit the pattern value into a local buffer first: an interpolated arg
@@ -6782,10 +6782,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "_t%d", tp);
         return;
       }
-      if (cn && !strcmp(cn, "Array") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      if (cn && sp_streq(cn, "Array") && argc == 0 && nt_ref(nt, id, "block") < 0) {
         buf_puts(b, "sp_PolyArray_new()"); return;
       }
-      if (cn && !strcmp(cn, "Array") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      if (cn && sp_streq(cn, "Array") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         /* Array.new(n) -> PolyArray of n nils */
         int tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
         Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);  /* poly size -> int (spinel-dev#24) */
@@ -6800,7 +6800,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         free(nb.p);
         buf_printf(b, "_t%d", tr); return;
       }
-      if (cn && !strcmp(cn, "Array") && nt_ref(nt, id, "block") >= 0) {
+      if (cn && sp_streq(cn, "Array") && nt_ref(nt, id, "block") >= 0) {
         /* Array.new(n) { |i| body } / Array.new(0) { body } */
         int blk = nt_ref(nt, id, "block");
         TyKind at = comp_ntype(c, id);
@@ -6834,7 +6834,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           }
           emit_expr(c, bb[bn - 1], &vb);
           emit_indent(g_pre, g_indent);
-          if (!strcmp(k, "Poly")) {
+          if (sp_streq(k, "Poly")) {
             buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tr);
             TyKind vt = comp_ntype(c, bb[bn - 1]);
             if (vt == TY_UNKNOWN) {
@@ -6858,7 +6858,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "_t%d", tr);
         return;
       }
-      if (cn && !strcmp(cn, "Array") && argc == 2) {
+      if (cn && sp_streq(cn, "Array") && argc == 2) {
         /* Array.new(n, v) -> n copies of v */
         TyKind at = comp_ntype(c, id);
         const char *k = (at == TY_POLY_ARRAY) ? "Poly" : array_kind(at);
@@ -6894,7 +6894,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           return;
         }
       }
-      if (cn && !strcmp(cn, "Time")) {
+      if (cn && sp_streq(cn, "Time")) {
         if (argc == 0) { buf_puts(b, "sp_time_now()"); return; }
         buf_printf(b, "sp_time_new(");
         for (int i = 0; i < 6; i++) {
@@ -6925,9 +6925,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* StringIO.open(args) { |io| body } -> run the block with a fresh IO,
      return the block's value, then close. */
-  if (recv >= 0 && !strcmp(name, "open") && nt_type(nt, recv) &&
-      !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-      !strcmp(nt_str(nt, recv, "name"), "StringIO")) {
+  if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
+      sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "StringIO")) {
     int block = nt_ref(nt, id, "block");
     if (block < 0) {
       /* no block: behaves like StringIO.new */
@@ -6965,52 +6965,52 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* GC module methods */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "GC")) {
-    if (!strcmp(name, "start") && argc == 0) { buf_puts(b, "(sp_gc_collect(), (mrb_int)0)"); return; }
-    if (!strcmp(name, "compact") && argc == 0) { buf_puts(b, "(sp_gc_collect(), (mrb_int)0)"); return; }
-    if (!strcmp(name, "stat") && argc == 0) { buf_puts(b, "sp_gc_stat()"); return; }
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC")) {
+    if (sp_streq(name, "start") && argc == 0) { buf_puts(b, "(sp_gc_collect(), (mrb_int)0)"); return; }
+    if (sp_streq(name, "compact") && argc == 0) { buf_puts(b, "(sp_gc_collect(), (mrb_int)0)"); return; }
+    if (sp_streq(name, "stat") && argc == 0) { buf_puts(b, "sp_gc_stat()"); return; }
   }
 
   /* Fiber class methods: Fiber.yield(val) and Fiber.current */
   if (recv_is_const(nt, recv, "Fiber")) {
-    if (!strcmp(name, "yield")) {
+    if (sp_streq(name, "yield")) {
       if (argc == 0) buf_puts(b, "sp_Fiber_yield(sp_box_nil())");
       else { buf_puts(b, "sp_Fiber_yield("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
       return;
     }
-    if (!strcmp(name, "current") && argc == 0) {
+    if (sp_streq(name, "current") && argc == 0) {
       buf_puts(b, "sp_fiber_current");
       return;
     }
   }
 
   /* Process module methods */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Process")) {
-    if (!strcmp(name, "pid") && argc == 0) { buf_puts(b, "((mrb_int)getpid())"); return; }
-    if (!strcmp(name, "ppid") && argc == 0) { buf_puts(b, "sp_process_ppid()"); return; }
-    if (!strcmp(name, "clock_gettime") && argc >= 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
+    if (sp_streq(name, "pid") && argc == 0) { buf_puts(b, "((mrb_int)getpid())"); return; }
+    if (sp_streq(name, "ppid") && argc == 0) { buf_puts(b, "sp_process_ppid()"); return; }
+    if (sp_streq(name, "clock_gettime") && argc >= 1) {
       buf_puts(b, "sp_process_clock_gettime()"); return;
     }
   }
 
   /* Integer.sqrt(n) -> integer square root (exact, Newton's method) */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Integer") &&
-      !strcmp(name, "sqrt") && argc == 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
+      sp_streq(name, "sqrt") && argc == 1) {
     buf_puts(b, "sp_int_sqrt("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return;
   }
 
   /* Marshal (Phase 1): dump a value to a binary String, load one back as poly */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Marshal")) {
-    if (!strcmp(name, "dump") && argc == 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
+    if (sp_streq(name, "dump") && argc == 1) {
       buf_puts(b, "sp_marshal_dump("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "load") && argc == 1) {
+    if (sp_streq(name, "load") && argc == 1) {
       int t = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", t); emit_str_expr(c, argv[0], b);
       buf_printf(b, "; sp_marshal_load(_t%d, (mrb_int)sp_str_byte_len(_t%d)); })", t, t);
@@ -7019,31 +7019,31 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* Math module functions -> C math.h equivalents */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Math")) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math")) {
     /* 1-arg functions */
     /* Domain-restricted functions route through sp_math_* wrappers that
        raise Math::DomainError on out-of-domain input (CRuby parity); the
        rest call libc directly (all reals are in domain). */
     const char *cfn = NULL;
-    if      (!strcmp(name, "sin"))   cfn = "sin";
-    else if (!strcmp(name, "cos"))   cfn = "cos";
-    else if (!strcmp(name, "tan"))   cfn = "tan";
-    else if (!strcmp(name, "asin"))  cfn = "sp_math_asin";
-    else if (!strcmp(name, "acos"))  cfn = "sp_math_acos";
-    else if (!strcmp(name, "atan"))  cfn = "atan";
-    else if (!strcmp(name, "sinh"))  cfn = "sinh";
-    else if (!strcmp(name, "cosh"))  cfn = "cosh";
-    else if (!strcmp(name, "tanh"))  cfn = "tanh";
-    else if (!strcmp(name, "asinh")) cfn = "asinh";
-    else if (!strcmp(name, "acosh")) cfn = "sp_math_acosh";
-    else if (!strcmp(name, "atanh")) cfn = "sp_math_atanh";
-    else if (!strcmp(name, "exp"))   cfn = "exp";
-    else if (!strcmp(name, "sqrt"))  cfn = "sp_math_sqrt";
-    else if (!strcmp(name, "cbrt"))  cfn = "cbrt";
-    else if (!strcmp(name, "erf"))   cfn = "erf";
-    else if (!strcmp(name, "erfc"))  cfn = "erfc";
-    else if (!strcmp(name, "gamma")) cfn = "sp_math_gamma";
+    if      (sp_streq(name, "sin"))   cfn = "sin";
+    else if (sp_streq(name, "cos"))   cfn = "cos";
+    else if (sp_streq(name, "tan"))   cfn = "tan";
+    else if (sp_streq(name, "asin"))  cfn = "sp_math_asin";
+    else if (sp_streq(name, "acos"))  cfn = "sp_math_acos";
+    else if (sp_streq(name, "atan"))  cfn = "atan";
+    else if (sp_streq(name, "sinh"))  cfn = "sinh";
+    else if (sp_streq(name, "cosh"))  cfn = "cosh";
+    else if (sp_streq(name, "tanh"))  cfn = "tanh";
+    else if (sp_streq(name, "asinh")) cfn = "asinh";
+    else if (sp_streq(name, "acosh")) cfn = "sp_math_acosh";
+    else if (sp_streq(name, "atanh")) cfn = "sp_math_atanh";
+    else if (sp_streq(name, "exp"))   cfn = "exp";
+    else if (sp_streq(name, "sqrt"))  cfn = "sp_math_sqrt";
+    else if (sp_streq(name, "cbrt"))  cfn = "cbrt";
+    else if (sp_streq(name, "erf"))   cfn = "erf";
+    else if (sp_streq(name, "erfc"))  cfn = "erfc";
+    else if (sp_streq(name, "gamma")) cfn = "sp_math_gamma";
     if (cfn && argc == 1) {
       TyKind a0t = comp_ntype(c, argv[0]);
       buf_printf(b, "%s(", cfn);
@@ -7052,13 +7052,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "lgamma") && argc == 1) {
+    if (sp_streq(name, "lgamma") && argc == 1) {
       /* Math.lgamma(x) -> [log(|gamma(x)|), sign] as a poly array */
       buf_puts(b, "sp_math_lgamma((double)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
       return;
     }
     /* Math.log(x) or Math.log(x, base) */
-    if (!strcmp(name, "log") && (argc == 1 || argc == 2)) {
+    if (sp_streq(name, "log") && (argc == 1 || argc == 2)) {
       TyKind a0t = comp_ntype(c, argv[0]);
       if (argc == 1) {
         buf_puts(b, "sp_math_log(");
@@ -7082,14 +7082,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     /* Math.log2(x), Math.log10(x) */
-    if (!strcmp(name, "log2") && argc == 1) {
+    if (sp_streq(name, "log2") && argc == 1) {
       TyKind a0t = comp_ntype(c, argv[0]);
       buf_puts(b, "sp_math_log2(");
       if (a0t == TY_INT) buf_puts(b, "(double)");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "log10") && argc == 1) {
+    if (sp_streq(name, "log10") && argc == 1) {
       TyKind a0t = comp_ntype(c, argv[0]);
       buf_puts(b, "sp_math_log10(");
       if (a0t == TY_INT) buf_puts(b, "(double)");
@@ -7097,7 +7097,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     /* Math.atan2(y, x), Math.hypot(x, y), Math.ldexp(x, e) */
-    if ((!strcmp(name, "atan2") || !strcmp(name, "hypot")) && argc == 2) {
+    if ((sp_streq(name, "atan2") || sp_streq(name, "hypot")) && argc == 2) {
       TyKind a0t = comp_ntype(c, argv[0]);
       TyKind a1t = comp_ntype(c, argv[1]);
       buf_printf(b, "%s(", name);
@@ -7107,7 +7107,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "ldexp") && argc == 2) {
+    if (sp_streq(name, "ldexp") && argc == 2) {
       TyKind a0t = comp_ntype(c, argv[0]);
       buf_puts(b, "ldexp(");
       if (a0t == TY_INT) buf_puts(b, "(double)");
@@ -7118,9 +7118,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* JSON.generate(x) / JSON.dump(x) -> serialize a boxed value */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "JSON") &&
-      (!strcmp(name, "generate") || !strcmp(name, "dump")) && argc == 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "JSON") &&
+      (sp_streq(name, "generate") || sp_streq(name, "dump")) && argc == 1) {
     TyKind at = comp_ntype(c, argv[0]);
     /* a Struct serializes as a JSON object of its members */
     if (ty_is_object(at) && c->classes[ty_object_class(at)].is_struct) {
@@ -7153,24 +7153,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* Dir.exist? / Dir.exists? -> directory test */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
-      (!strcmp(name, "exist?") || !strcmp(name, "exists?")) && argc == 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
+      (sp_streq(name, "exist?") || sp_streq(name, "exists?")) && argc == 1) {
     buf_puts(b, "sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return;
   }
 
   /* File class methods -> runtime helpers (the runtime has long carried
      these; only the dispatch was missing). */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "File")) {
-    if ((!strcmp(name, "basename") || !strcmp(name, "dirname") || !strcmp(name, "extname")) && argc == 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "File")) {
+    if ((sp_streq(name, "basename") || sp_streq(name, "dirname") || sp_streq(name, "extname")) && argc == 1) {
       buf_printf(b, "sp_file_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if ((!strcmp(name, "read") || !strcmp(name, "binread")) && argc == 1) {
+    if ((sp_streq(name, "read") || sp_streq(name, "binread")) && argc == 1) {
       buf_puts(b, "sp_file_read("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if ((!strcmp(name, "write") || !strcmp(name, "binwrite")) && argc == 2) {
+    if ((sp_streq(name, "write") || sp_streq(name, "binwrite")) && argc == 2) {
       /* runtime write is void; Ruby returns the byte count */
       buf_puts(b, "({ const char *_wp = "); emit_expr(c, argv[0], b);
       buf_puts(b, "; const char *_wd = ");
@@ -7180,43 +7180,43 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else emit_expr(c, argv[1], b);
       buf_puts(b, "; sp_file_write(_wp, _wd); (mrb_int)sp_str_byte_len(_wd); })"); return;
     }
-    if ((!strcmp(name, "exist?") || !strcmp(name, "exists?") || !strcmp(name, "readable?")) && argc == 1) {
+    if ((sp_streq(name, "exist?") || sp_streq(name, "exists?") || sp_streq(name, "readable?")) && argc == 1) {
       buf_puts(b, "sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if ((!strcmp(name, "directory?") || !strcmp(name, "zero?") || !strcmp(name, "empty?")) && argc == 1) {
+    if ((sp_streq(name, "directory?") || sp_streq(name, "zero?") || sp_streq(name, "empty?")) && argc == 1) {
       buf_puts(b, "sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "file?") && argc == 1) {
+    if (sp_streq(name, "file?") && argc == 1) {
       buf_puts(b, "(!sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ") && sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
     }
-    if (!strcmp(name, "delete") && argc == 1) {
+    if (sp_streq(name, "delete") && argc == 1) {
       buf_puts(b, "({ sp_file_delete("); emit_expr(c, argv[0], b); buf_puts(b, "); (mrb_int)1; })"); return;
     }
-    if (!strcmp(name, "mtime") && argc == 1) {
+    if (sp_streq(name, "mtime") && argc == 1) {
       buf_puts(b, "sp_file_mtime("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "size") && argc == 1) {
+    if (sp_streq(name, "size") && argc == 1) {
       buf_puts(b, "sp_file_size("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "expand_path") && (argc == 1 || argc == 2)) {
+    if (sp_streq(name, "expand_path") && (argc == 1 || argc == 2)) {
       buf_puts(b, "sp_file_expand_path("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
       if (argc == 2) emit_expr(c, argv[1], b); else buf_puts(b, "(const char *)0");
       buf_puts(b, ")"); return;
     }
-    if (!strcmp(name, "join")) {
+    if (sp_streq(name, "join")) {
       buf_printf(b, "sp_file_join((const char*[]){");
       for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, argv[k], b); }
       if (argc == 0) buf_puts(b, "(const char*)0");
       buf_printf(b, "}, %d)", argc); return;
     }
-    if (!strcmp(name, "readlines") && argc >= 1) {
+    if (sp_streq(name, "readlines") && argc >= 1) {
       /* File.readlines(path) or File.readlines(path, chomp: true) */
       int chomp = 0;
       for (int ki = 1; ki < argc; ki++) {
         const char *kty = nt_type(nt, argv[ki]);
-        if (kty && !strcmp(kty, "KeywordHashNode")) {
+        if (kty && sp_streq(kty, "KeywordHashNode")) {
           int cv = struct_kwarg_value(c, argv[ki], "chomp");
-          if (cv >= 0 && nt_type(nt, cv) && !strcmp(nt_type(nt, cv), "TrueNode"))
+          if (cv >= 0 && nt_type(nt, cv) && sp_streq(nt_type(nt, cv), "TrueNode"))
             chomp = 1;
         }
       }
@@ -7225,7 +7225,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
     /* File.open(path, mode) / File.new(path, mode) without block -> TY_IO handle */
-    if (!strcmp(name, "open") || !strcmp(name, "new")) {
+    if (sp_streq(name, "open") || sp_streq(name, "new")) {
       int block = nt_ref(nt, id, "block");
       if (block < 0) {
         buf_puts(b, "sp_File_open("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
@@ -7262,7 +7262,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            handles g_pre correctly; then synthesize a return value. */
         int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN &&
                         (lty != TY_NIL ||
-                         (nt_type(nt, bb[bn-1]) && !strcmp(nt_type(nt, bb[bn-1]), "NilNode"))));
+                         (nt_type(nt, bb[bn-1]) && sp_streq(nt_type(nt, bb[bn-1]), "NilNode"))));
         if (scalar && can_expr) {
           emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
           if (res == TY_POLY && lty != TY_POLY) emit_boxed(c, bb[bn-1], b);
@@ -7285,32 +7285,32 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
   }
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir")) {
-    if (!strcmp(name, "pwd") && argc == 0) { buf_puts(b, "sp_dir_pwd()"); return; }
-    if (!strcmp(name, "home") && argc == 0) { buf_puts(b, "sp_dir_home()"); return; }
-    if (!strcmp(name, "glob") && argc == 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
+    if (sp_streq(name, "pwd") && argc == 0) { buf_puts(b, "sp_dir_pwd()"); return; }
+    if (sp_streq(name, "home") && argc == 0) { buf_puts(b, "sp_dir_home()"); return; }
+    if (sp_streq(name, "glob") && argc == 1) {
       buf_puts(b, "sp_dir_glob("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
-    if ((!strcmp(name, "mkdir") || !strcmp(name, "rmdir") || !strcmp(name, "chdir")) && argc >= 1) {
+    if ((sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir")) && argc >= 1) {
       buf_printf(b, "sp_dir_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
   }
 
   /* Time class constructors */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Time")) {
-    if ((!strcmp(name, "now") || !strcmp(name, "new")) && argc == 0) { buf_puts(b, "sp_time_now()"); return; }
-    if (!strcmp(name, "at") && argc == 1) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Time")) {
+    if ((sp_streq(name, "now") || sp_streq(name, "new")) && argc == 0) { buf_puts(b, "sp_time_now()"); return; }
+    if (sp_streq(name, "at") && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
       buf_printf(b, "sp_time_at_%s(", at == TY_FLOAT ? "float" : "int");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
-    if ((!strcmp(name, "local") || !strcmp(name, "mktime") ||
-         !strcmp(name, "utc") || !strcmp(name, "gm") || !strcmp(name, "new")) && argc >= 1) {
+    if ((sp_streq(name, "local") || sp_streq(name, "mktime") ||
+         sp_streq(name, "utc") || sp_streq(name, "gm") || sp_streq(name, "new")) && argc >= 1) {
       /* y[,mo,d,h,mi,s] -- missing trailing parts default (mo/d=1, rest 0) */
-      int is_utc = (!strcmp(name, "utc") || !strcmp(name, "gm"));
+      int is_utc = (sp_streq(name, "utc") || sp_streq(name, "gm"));
       buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
       for (int i = 0; i < 6; i++) {
         if (i) buf_puts(b, ", ");
@@ -7326,22 +7326,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0) {
     const char *rty_ffi = nt_type(nt, recv);
     const char *rcmod = NULL;
-    if (rty_ffi && !strcmp(rty_ffi, "ConstantReadNode"))
+    if (rty_ffi && sp_streq(rty_ffi, "ConstantReadNode"))
       rcmod = nt_str(nt, recv, "name");
-    else if (rty_ffi && !strcmp(rty_ffi, "ConstantPathNode"))
+    else if (rty_ffi && sp_streq(rty_ffi, "ConstantPathNode"))
       rcmod = nt_str(nt, recv, "name");
     if (rcmod) {
       int fi = -1;
       for (int ffi_i = 0; ffi_i < c->n_ffi_funcs; ffi_i++)
-        if (!strcmp(c->ffi_funcs[ffi_i].mod, rcmod) && !strcmp(c->ffi_funcs[ffi_i].name, name)) {
+        if (sp_streq(c->ffi_funcs[ffi_i].mod, rcmod) && sp_streq(c->ffi_funcs[ffi_i].name, name)) {
           fi = ffi_i; break;
         }
       if (fi >= 0) {
         const char *ret_spec = c->ffi_funcs[fi].ret;
-        int is_void_ret = !strcmp(ret_spec, "void");
-        int is_ptr_ret  = !strcmp(ret_spec, "ptr");
-        int is_str_ret  = !strcmp(ret_spec, "str");
-        int is_binstr_ret = !strcmp(ret_spec, "binstr");
+        int is_void_ret = sp_streq(ret_spec, "void");
+        int is_ptr_ret  = sp_streq(ret_spec, "ptr");
+        int is_str_ret  = sp_streq(ret_spec, "str");
+        int is_binstr_ret = sp_streq(ret_spec, "binstr");
         int call_argc = c->ffi_funcs[fi].nargs;
         /* Build the raw C call */
         Buf call_buf; memset(&call_buf, 0, sizeof call_buf);
@@ -7351,13 +7351,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           if (ai) buf_puts(&call_buf, ", ");
           const char *spec = c->ffi_funcs[fi].args[ai];
           TyKind at = comp_ntype(c, argv[ai]);
-          if (!strcmp(spec, "str")) {
+          if (sp_streq(spec, "str")) {
             if (at == TY_POLY) {
               buf_puts(&call_buf, "("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.s");
             }
             else emit_expr(c, argv[ai], &call_buf);
           }
-          else if (!strcmp(spec, "ptr")) {
+          else if (sp_streq(spec, "ptr")) {
             if (at == TY_POLY) {
               buf_puts(&call_buf, "((void *)(");
               emit_expr(c, argv[ai], &call_buf);
@@ -7369,14 +7369,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               buf_puts(&call_buf, "))");
             }
           }
-          else if (!strcmp(spec, "float") || !strcmp(spec, "double")) {
+          else if (sp_streq(spec, "float") || sp_streq(spec, "double")) {
             if (at == TY_POLY) {
               buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")(");
               emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.f)");
             }
             else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
-          else if (!strcmp(spec, "int_array")) {
+          else if (sp_streq(spec, "int_array")) {
             /* Hand off element data, never the array struct pointer (which
                would pun the header / read boxed sp_RbVal tags as ints). */
             if (at == TY_INT_ARRAY)        { buf_puts(&call_buf, "sp_IntArray_ffi_data(");   emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
@@ -7384,7 +7384,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_PolyArray_ffi_int_data((sp_PolyArray *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.p)"); }
             else                           { buf_puts(&call_buf, "((const int64_t *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
-          else if (!strcmp(spec, "float_array")) {
+          else if (sp_streq(spec, "float_array")) {
             if (at == TY_FLOAT_ARRAY)      { buf_puts(&call_buf, "sp_FloatArray_ffi_data(");  emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (at == TY_POLY_ARRAY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_float_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_PolyArray_ffi_float_data((sp_PolyArray *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.p)"); }
@@ -7429,7 +7429,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         else {
           /* numeric / bool: cast to mrb_int or mrb_float */
-          int ffi_ret_is_float = (!strcmp(ret_spec, "float") || !strcmp(ret_spec, "double"));
+          int ffi_ret_is_float = (sp_streq(ret_spec, "float") || sp_streq(ret_spec, "double"));
           if (ffi_ret_is_float) {
             buf_puts(b, "((mrb_float)("); buf_puts(b, call_buf.p); buf_puts(b, "))");
           }
@@ -7444,7 +7444,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       {
         int bi = -1;
         for (int fbi = 0; fbi < c->n_ffi_bufs; fbi++)
-          if (!strcmp(c->ffi_bufs[fbi].mod, rcmod) && !strcmp(c->ffi_bufs[fbi].name, name)) {
+          if (sp_streq(c->ffi_bufs[fbi].mod, rcmod) && sp_streq(c->ffi_bufs[fbi].name, name)) {
             bi = fbi; break;
           }
         if (bi >= 0) {
@@ -7457,16 +7457,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       {
         int ri = -1;
         for (int fri = 0; fri < c->n_ffi_readers; fri++)
-          if (!strcmp(c->ffi_readers[fri].mod, rcmod) && !strcmp(c->ffi_readers[fri].name, name)) {
+          if (sp_streq(c->ffi_readers[fri].mod, rcmod) && sp_streq(c->ffi_readers[fri].name, name)) {
             ri = fri; break;
           }
         if (ri >= 0 && argc >= 1) {
           const char *kind = c->ffi_readers[ri].kind;
           int off = c->ffi_readers[ri].offset;
           const char *ctype = "uint32_t";
-          if (kind && !strcmp(kind, "i32")) ctype = "int32_t";
+          if (kind && sp_streq(kind, "i32")) ctype = "int32_t";
           if (argc >= 1) {
-            if (kind && !strcmp(kind, "ptr")) {
+            if (kind && sp_streq(kind, "ptr")) {
               int rt3 = ++g_tmp;
               buf_printf(b, "({ void *_t%d = (*(void **)((char *)(", rt3);
               /* unbox if poly */
@@ -7494,7 +7494,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* Module.field = val  /  Module.field  -> singleton accessor sg_Mod_field */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       const char *cn = nt_str(nt, recv, "name");
       int ci = cn ? comp_class_index(c, cn) : -1;
       if (ci >= 0) {
@@ -7527,7 +7527,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* self.field = val  /  self.field  inside a class method or module body */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode")) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) {
     Scope *_sgencl = comp_scope_of(c, id);
     int _sg_cid = (_sgencl && _sgencl->is_cmethod && _sgencl->class_id >= 0)
                   ? _sgencl->class_id : g_class_body_id;
@@ -7652,7 +7652,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* Class.cmethod(args) / M::Sub.cmethod(args) -> sp_<Class>_s_<method>(args) */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       int defcls = -1;
       int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
@@ -7673,50 +7673,50 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      /re/.match?(str[, pos])  and  str !~ /re/  and  str.match?(/re/[, pos]) */
   {
     int rre = re_lit_index(c, recv);
-    if (rre >= 0 && (!strcmp(name, "match?") || !strcmp(name, "===")) && argc == 1) {
+    if (rre >= 0 && (sp_streq(name, "match?") || sp_streq(name, "===")) && argc == 1) {
       /* /re/ === str and /re/.match?(str) both yield a match boolean */
       if (a0 == TY_POLY) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, sp_poly_to_s(", rre); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
       else { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       return;
     }
-    if (rre >= 0 && !strcmp(name, "match?") && argc == 2) {
+    if (rre >= 0 && sp_streq(name, "match?") && argc == 2) {
       buf_printf(b, "sp_re_match_p_at(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b);
       buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
     /* /re/ =~ str -> match offset or nil (poly) */
-    if (rre >= 0 && !strcmp(name, "=~") && argc == 1 && a0 == TY_STRING) {
+    if (rre >= 0 && sp_streq(name, "=~") && argc == 1 && a0 == TY_STRING) {
       buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     /* /re/.source and /re/.options are compile-time constants of the literal */
-    if (rre >= 0 && !strcmp(name, "source") && argc == 0) {
+    if (rre >= 0 && sp_streq(name, "source") && argc == 0) {
       emit_str_literal(b, nt_str(nt, recv, "unescaped")); return;
     }
-    if (rre >= 0 && !strcmp(name, "options") && argc == 0) {
+    if (rre >= 0 && sp_streq(name, "options") && argc == 0) {
       int pf = (int)nt_int(nt, recv, "flags", 0);
       int opt = ((pf & 4) ? 1 : 0) | ((pf & 8) ? 2 : 0) | ((pf & 16) ? 4 : 0);
       buf_printf(b, "%d", opt); return;
     }
   }
   if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL &&
-      (!strcmp(name, "match?") || !strcmp(name, "!~") || !strcmp(name, "=~") || !strcmp(name, "match"))) {
+      (sp_streq(name, "match?") || sp_streq(name, "!~") || sp_streq(name, "=~") || sp_streq(name, "match"))) {
     int are = re_lit_index(c, argv[0]);
-    if (are >= 0 && !strcmp(name, "=~") && rt == TY_STRING) {
+    if (are >= 0 && sp_streq(name, "=~") && rt == TY_STRING) {
       buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (are >= 0 && !strcmp(name, "!~")) {
+    if (are >= 0 && sp_streq(name, "!~")) {
       buf_printf(b, "(!sp_re_match_p(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
-    if (are >= 0 && !strcmp(name, "match?")) {
+    if (are >= 0 && sp_streq(name, "match?")) {
       if (argc == 1) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")"); return; }
       buf_printf(b, "sp_str_re_match_p_at(sp_re_pat_%d, ", are); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
-    if (are >= 0 && !strcmp(name, "match")) {
+    if (are >= 0 && sp_streq(name, "match")) {
       if (argc == 1) {
         buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")");
       }
@@ -7730,7 +7730,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* /re/.match(str) and /re/.match(str, pos) */
   {
     int rre = re_lit_index(c, recv);
-    if (rre >= 0 && !strcmp(name, "match") && (argc == 1 || argc == 2)) {
+    if (rre >= 0 && sp_streq(name, "match") && (argc == 1 || argc == 2)) {
       if (argc == 1) {
         buf_printf(b, "sp_re_matchdata(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -7749,11 +7749,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* Pattern from argument (str.match?(/dyn/), str =~ /dyn/, etc.) */
     if (recv >= 0 && argc >= 1) {
       const char *a0ty = nt_type(nt, argv[0]);
-      int is_interp_arg = a0ty && !strcmp(a0ty, "InterpolatedRegularExpressionNode");
+      int is_interp_arg = a0ty && sp_streq(a0ty, "InterpolatedRegularExpressionNode");
       int is_regex_lv_arg = !is_interp_arg && argc >= 1 && comp_ntype(c, argv[0]) == TY_REGEX
                             && nt_type(nt, argv[0])
-                            && (!strcmp(nt_type(nt, argv[0]), "LocalVariableReadNode") ||
-                                !strcmp(nt_type(nt, argv[0]), "ConstantReadNode"));
+                            && (sp_streq(nt_type(nt, argv[0]), "LocalVariableReadNode") ||
+                                sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"));
       if (is_interp_arg || is_regex_lv_arg) {
         Buf rp; memset(&rp, 0, sizeof rp);
         int rp_ok = emit_regex_pat_to_buf(c, argv[0], &rp) && rp.p;
@@ -7770,22 +7770,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           rp_ok = 1;
         }
         if (rp_ok && rp.p) {
-          if (!strcmp(name, "match?") && argc == 1) {
+          if (sp_streq(name, "match?") && argc == 1) {
             /* A symbol receiver matches over its name, so feed the runtime
                pattern the symbol's string rather than the raw sp_sym. */
             if (rt == TY_SYMBOL) { buf_printf(b, "sp_re_match_p(%s, sp_sym_to_s(", rp.p); emit_expr(c, recv, b); buf_puts(b, "))"); }
             else { buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")"); }
             free(rp.p); return;
           }
-          if (!strcmp(name, "=~") && rt == TY_STRING) {
+          if (sp_streq(name, "=~") && rt == TY_STRING) {
             buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")");
             free(rp.p); return;
           }
-          if (!strcmp(name, "!~")) {
+          if (sp_streq(name, "!~")) {
             buf_printf(b, "(!sp_re_match_p(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, "))");
             free(rp.p); return;
           }
-          if (!strcmp(name, "match") && argc == 1) {
+          if (sp_streq(name, "match") && argc == 1) {
             buf_printf(b, "sp_re_matchdata(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")");
             free(rp.p); return;
           }
@@ -7796,7 +7796,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* Pattern from receiver (rx.match?(str), rx =~ str, etc.) */
     {
       const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
-      int is_interp_recv = rty && !strcmp(rty, "InterpolatedRegularExpressionNode");
+      int is_interp_recv = rty && sp_streq(rty, "InterpolatedRegularExpressionNode");
       int is_regex_lv_recv = !is_interp_recv && recv >= 0 && comp_ntype(c, recv) == TY_REGEX;
       if (is_interp_recv || is_regex_lv_recv) {
         Buf rp; memset(&rp, 0, sizeof rp);
@@ -7814,12 +7814,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           rp_ok = 1;
         }
         if (rp_ok && rp.p) {
-          if ((!strcmp(name, "match?") || !strcmp(name, "===")) && argc == 1) {
+          if ((sp_streq(name, "match?") || sp_streq(name, "===")) && argc == 1) {
             if (a0 == TY_POLY) { buf_printf(b, "sp_re_match_p(%s, sp_poly_to_s(", rp.p); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
             else { buf_printf(b, "sp_re_match_p(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
             free(rp.p); return;
           }
-          if (!strcmp(name, "=~") && argc == 1) {
+          if (sp_streq(name, "=~") && argc == 1) {
             if (a0 == TY_STRING) {
               buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")");
             }
@@ -7842,7 +7842,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             }
             free(rp.p); return;
           }
-          if (!strcmp(name, "match") && (argc == 1 || argc == 2)) {
+          if (sp_streq(name, "match") && (argc == 1 || argc == 2)) {
             if (argc == 1) { buf_printf(b, "sp_re_matchdata(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
             else { buf_printf(b, "sp_re_matchdata_at(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
             free(rp.p); return;
@@ -7855,7 +7855,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* String#% with an array argument: printf-style formatting. Any typed array
      is boxed to poly so a single format path handles mixed specs. */
-  if (recv >= 0 && rt == TY_STRING && !strcmp(name, "%") && argc == 1) {
+  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "%") && argc == 1) {
     TyKind at = a0;
     if (at == TY_POLY_ARRAY) {
       buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -7884,21 +7884,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      methods directly against an empty (poly) array. */
   if (recv >= 0 && rt == TY_UNKNOWN) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ArrayNode")) {
+    if (rty && sp_streq(rty, "ArrayNode")) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en == 0) {
-        if ((!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) && argc == 0) { buf_puts(b, "0"); return; }
-        if (!strcmp(name, "empty?") && argc == 0) { buf_puts(b, "1"); return; }
-        if ((!strcmp(name, "first") || !strcmp(name, "last") ||
-             !strcmp(name, "min") || !strcmp(name, "max") ||
-             !strcmp(name, "pop") || !strcmp(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return; }
-        if (!strcmp(name, "sample") && argc == 0) { buf_puts(b, "0"); return; }
-        if ((!strcmp(name, "inspect") || !strcmp(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return; }
-        if ((!strcmp(name, "join") || !strcmp(name, "pack")) && argc <= 1) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
-        if ((!strcmp(name, "union")) && argc == 0) { buf_puts(b, "sp_IntArray_new()"); return; }
-        if ((!strcmp(name, "flatten") || !strcmp(name, "compact") || !strcmp(name, "uniq") ||
-             !strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "dup") ||
-             !strcmp(name, "clone") || !strcmp(name, "to_a")) && argc <= 1) {
+        if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) { buf_puts(b, "0"); return; }
+        if (sp_streq(name, "empty?") && argc == 0) { buf_puts(b, "1"); return; }
+        if ((sp_streq(name, "first") || sp_streq(name, "last") ||
+             sp_streq(name, "min") || sp_streq(name, "max") ||
+             sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return; }
+        if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "0"); return; }
+        if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return; }
+        if ((sp_streq(name, "join") || sp_streq(name, "pack")) && argc <= 1) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
+        if ((sp_streq(name, "union")) && argc == 0) { buf_puts(b, "sp_IntArray_new()"); return; }
+        if ((sp_streq(name, "flatten") || sp_streq(name, "compact") || sp_streq(name, "uniq") ||
+             sp_streq(name, "sort") || sp_streq(name, "reverse") || sp_streq(name, "dup") ||
+             sp_streq(name, "clone") || sp_streq(name, "to_a")) && argc <= 1) {
           buf_puts(b, "sp_PolyArray_new()"); return;
         }
       }
@@ -7908,11 +7908,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* respond_to?(:m): compile-time approximation. A universal method set is
      always true; otherwise consult the receiver's class / class-method chain.
      Unknown primitive methods answer conservatively false. */
-  if (!strcmp(name, "respond_to?") && recv >= 0 && argc >= 1) {
+  if (sp_streq(name, "respond_to?") && recv >= 0 && argc >= 1) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
-    if (aty && !strcmp(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
-    else if (aty && !strcmp(aty, "StringNode")) qm = nt_str(nt, argv[0], "unescaped");
+    if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
+    else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "unescaped");
     if (qm) {
       static const char *const uni[] = {
         "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
@@ -7920,10 +7920,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         "respond_to?", "is_a?", "kind_of?", "instance_of?", "itself",
         "tap", "then", "send", "===", NULL };
       int yes = 0, resolved = 0;
-      for (int u = 0; uni[u]; u++) if (!strcmp(qm, uni[u])) { yes = resolved = 1; break; }
+      for (int u = 0; uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
       if (!resolved) {
         const char *rty = nt_type(nt, recv);
-        if (rty && !strcmp(rty, "ConstantReadNode")) {
+        if (rty && sp_streq(rty, "ConstantReadNode")) {
           int ci = comp_class_index(c, nt_str(nt, recv, "name"));
           if (ci >= 0) {
             resolved = 1;
@@ -7945,7 +7945,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (!yes) {
               int dn = c->classes[ci].def_node;
               const char *dt = dn >= 0 ? nt_type(nt, dn) : NULL;
-              if (dt && !strcmp(dt, "ModuleNode")) yes = comp_method_in_chain(c, ci, qm, NULL) >= 0;
+              if (dt && sp_streq(dt, "ModuleNode")) yes = comp_method_in_chain(c, ci, qm, NULL) >= 0;
             }
             /* builtin Class/Module methods every class object inherits */
             if (!yes) {
@@ -7955,12 +7955,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                 "instance_method", "method_defined?", "superclass", "ancestors",
                 "include?", "const_get", "const_set", "const_defined?",
                 "define_method", "allocate", "<", "<=", ">", ">=", NULL };
-              for (int u = 0; cls_uni[u]; u++) if (!strcmp(qm, cls_uni[u])) { yes = 1; break; }
+              for (int u = 0; cls_uni[u]; u++) if (sp_streq(qm, cls_uni[u])) { yes = 1; break; }
               /* `new`: a class responds, a module does not */
-              if (!yes && !strcmp(qm, "new")) {
+              if (!yes && sp_streq(qm, "new")) {
                 int dn = c->classes[ci].def_node;
                 const char *dt = dn >= 0 ? nt_type(nt, dn) : NULL;
-                yes = !(dt && !strcmp(dt, "ModuleNode"));
+                yes = !(dt && sp_streq(dt, "ModuleNode"));
               }
             }
           }
@@ -7983,18 +7983,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* Class.method_defined?(:m[, inherit]): compile-time decided from the
      class's recorded method table (instance methods + attr readers/writers).
      inherit=false restricts the lookup to the receiver's own definitions. */
-  if (!strcmp(name, "method_defined?") && recv >= 0 && argc >= 1 &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")) {
+  if (sp_streq(name, "method_defined?") && recv >= 0 && argc >= 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
-    if (aty && !strcmp(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
-    else if (aty && !strcmp(aty, "StringNode")) qm = nt_str(nt, argv[0], "content");
+    if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
+    else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "content");
     int ci = comp_class_index(c, nt_str(nt, recv, "name"));
     if (qm && ci >= 0) {
       int inherit = 1;
       if (argc >= 2) {
         const char *it = nt_type(nt, argv[1]);
-        if (it && !strcmp(it, "FalseNode")) inherit = 0;
+        if (it && sp_streq(it, "FalseNode")) inherit = 0;
       }
       /* a writer query (`m=`) consults the writer table under its base name */
       size_t ln = strlen(qm);
@@ -8029,7 +8029,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      table, and builtin classes have no enumerable method set. Emit a specific
      diagnostic rather than a generic unsupported-call node dump. Covers both an
      explicit receiver and an implicit-self call (recv < 0). */
-  if (!strcmp(name, "method_defined?")) {
+  if (sp_streq(name, "method_defined?")) {
     unsupported(c, id, "method_defined? (needs a compile-time-known class and literal method name)");
     return;
   }
@@ -8040,11 +8040,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      <Name>" for a valid constant name, "wrong constant name <name>" for one that
      is not (no leading uppercase). A dynamic name can't be resolved ahead of time
      and is diagnosed. */
-  if (!strcmp(name, "const_get") && recv >= 0 && argc >= 1) {
+  if (sp_streq(name, "const_get") && recv >= 0 && argc >= 1) {
     const char *cg_aty = nt_type(nt, argv[0]);
     const char *cg_qm = NULL;
-    if (cg_aty && !strcmp(cg_aty, "SymbolNode")) cg_qm = nt_str(nt, argv[0], "value");
-    else if (cg_aty && !strcmp(cg_aty, "StringNode")) cg_qm = nt_str(nt, argv[0], "content");
+    if (cg_aty && sp_streq(cg_aty, "SymbolNode")) cg_qm = nt_str(nt, argv[0], "value");
+    else if (cg_aty && sp_streq(cg_aty, "StringNode")) cg_qm = nt_str(nt, argv[0], "content");
     if (cg_qm) {
       LocalVar *cv = comp_const(c, cg_qm);
       if (cv && cv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", cg_qm); return; }
@@ -8058,8 +8058,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            class/module (M, or nested M::N); a builtin like Object resolves to no
            user-class index and stays unqualified, matching CRuby. */
         const char *rcv_ty = nt_type(nt, recv);
-        const char *rcv_nm = (rcv_ty && (!strcmp(rcv_ty, "ConstantReadNode") ||
-                                         !strcmp(rcv_ty, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
+        const char *rcv_nm = (rcv_ty && (sp_streq(rcv_ty, "ConstantReadNode") ||
+                                         sp_streq(rcv_ty, "ConstantPathNode"))) ? nt_str(nt, recv, "name") : NULL;
         int rcid = rcv_nm ? comp_class_index(c, rcv_nm) : -1;
         if (rcid >= 0) {
           const char *qn = class_ruby_name(c, rcid); if (!qn) qn = c->classes[rcid].name;
@@ -8082,12 +8082,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* Class.const_defined?(:K): compile-time presence check. Constants are
      recorded in a flat namespace, so this consults the global const and class
      tables rather than the receiver's own constants. */
-  if (!strcmp(name, "const_defined?") && recv >= 0 && argc >= 1 &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")) {
+  if (sp_streq(name, "const_defined?") && recv >= 0 && argc >= 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
-    if (aty && !strcmp(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
-    else if (aty && !strcmp(aty, "StringNode")) qm = nt_str(nt, argv[0], "content");
+    if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
+    else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "content");
     if (qm) {
       int yes = comp_const(c, qm) != NULL || comp_class_index(c, qm) >= 0;
       buf_printf(b, "%d", yes);
@@ -8095,7 +8095,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  if ((!strcmp(name, "-@") || !strcmp(name, "+@")) && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
+  if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
     if (rt == TY_POLY) {
       if (name[0] == '-') { buf_puts(b, "sp_poly_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else { emit_expr(c, recv, b); }  /* +@ is identity on poly */
@@ -8106,31 +8106,31 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* poly `<<` in expression position: sp_poly_shl dispatches on the runtime tag
      (Integer#<< shift -> boxed int, Array#push append -> the array) and returns
      a poly either way, matching the statement-level path. */
-  if (recv >= 0 && rt == TY_POLY && !strcmp(name, "<<") && argc == 1) {
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "<<") && argc == 1) {
     buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return;
   }
   /* unary bitwise complement: ~int -> (~x); ~poly -> coerce to int first */
-  if (!strcmp(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY)) {
+  if (sp_streq(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY)) {
     if (rt == TY_POLY) { buf_puts(b, "(~sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     else { buf_puts(b, "(~"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;
   }
   /* poly numeric predicates: coerce the poly value to int and test. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 &&
-      (!strcmp(name, "even?") || !strcmp(name, "odd?") || !strcmp(name, "zero?") ||
-       !strcmp(name, "positive?") || !strcmp(name, "negative?"))) {
+      (sp_streq(name, "even?") || sp_streq(name, "odd?") || sp_streq(name, "zero?") ||
+       sp_streq(name, "positive?") || sp_streq(name, "negative?"))) {
     int t = ++g_tmp;
     buf_printf(b, "({ mrb_int _t%d = sp_poly_to_i(", t); emit_expr(c, recv, b); buf_puts(b, "); ");
-    if (!strcmp(name, "even?")) buf_printf(b, "(_t%d %% 2 == 0); })", t);
-    else if (!strcmp(name, "odd?")) buf_printf(b, "(_t%d %% 2 != 0); })", t);
-    else if (!strcmp(name, "zero?")) buf_printf(b, "(_t%d == 0); })", t);
-    else if (!strcmp(name, "positive?")) buf_printf(b, "(_t%d > 0); })", t);
+    if (sp_streq(name, "even?")) buf_printf(b, "(_t%d %% 2 == 0); })", t);
+    else if (sp_streq(name, "odd?")) buf_printf(b, "(_t%d %% 2 != 0); })", t);
+    else if (sp_streq(name, "zero?")) buf_printf(b, "(_t%d == 0); })", t);
+    else if (sp_streq(name, "positive?")) buf_printf(b, "(_t%d > 0); })", t);
     else buf_printf(b, "(_t%d < 0); })", t);
     return;
   }
-  if (!strcmp(name, "!") && recv >= 0 && argc == 0) {
+  if (sp_streq(name, "!") && recv >= 0 && argc == 0) {
     /* Ruby truthiness: only nil and false are falsy. `!x` negates the same
        per-type truthiness emit_cond uses -- a poly / nullable scalar / nullable
        pointer can be falsy, so the result is not unconditionally false. */
@@ -8153,24 +8153,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      sp_str_concat/sp_str_repeat with the poly operand coerced), not poly
      arithmetic, so let them fall through. */
   if (recv >= 0 && argc == 1 && (rt == TY_POLY || a0 == TY_POLY) &&
-      !(rt == TY_STRING && (!strcmp(name, "+") || !strcmp(name, "*"))) &&
-      !((ty_is_array(rt) || rt == TY_POLY_ARRAY) && !strcmp(name, "*"))) {
+      !(rt == TY_STRING && (sp_streq(name, "+") || sp_streq(name, "*"))) &&
+      !((ty_is_array(rt) || rt == TY_POLY_ARRAY) && sp_streq(name, "*"))) {
     const char *pfn = NULL;
-    if (!strcmp(name, "+")) pfn = "sp_poly_add";
-    else if (!strcmp(name, "-")) pfn = "sp_poly_sub";
-    else if (!strcmp(name, "*")) pfn = "sp_poly_mul";
-    else if (!strcmp(name, "/")) pfn = "sp_poly_div";
-    else if (!strcmp(name, "%")) pfn = "sp_poly_mod";
-    else if (!strcmp(name, "**")) pfn = "sp_poly_pow";
+    if (sp_streq(name, "+")) pfn = "sp_poly_add";
+    else if (sp_streq(name, "-")) pfn = "sp_poly_sub";
+    else if (sp_streq(name, "*")) pfn = "sp_poly_mul";
+    else if (sp_streq(name, "/")) pfn = "sp_poly_div";
+    else if (sp_streq(name, "%")) pfn = "sp_poly_mod";
+    else if (sp_streq(name, "**")) pfn = "sp_poly_pow";
     if (pfn) {
       buf_printf(b, "%s(", pfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     const char *cfn = NULL;
-    if (!strcmp(name, "<")) cfn = "sp_poly_lt";
-    else if (!strcmp(name, ">")) cfn = "sp_poly_gt";
-    else if (!strcmp(name, "<=")) cfn = "sp_poly_le";
-    else if (!strcmp(name, ">=")) cfn = "sp_poly_ge";
+    if (sp_streq(name, "<")) cfn = "sp_poly_lt";
+    else if (sp_streq(name, ">")) cfn = "sp_poly_gt";
+    else if (sp_streq(name, "<=")) cfn = "sp_poly_le";
+    else if (sp_streq(name, ">=")) cfn = "sp_poly_ge";
     if (cfn) {
       buf_printf(b, "%s(", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return;
@@ -8178,7 +8178,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* Array#* (join): arr * sep_str  ->  elements joined by separator string. */
-  if (recv >= 0 && argc == 1 && !strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
+  if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
       comp_ntype(c, argv[0]) == TY_STRING) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) k = "Str";
@@ -8191,7 +8191,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      The count is emitted via emit_int_expr, which unboxes a promote-widened
      poly count, so accept TY_POLY as well as TY_INT -- otherwise `arr * n`
      with a poly `n` falls through to sp_poly_mul (arithmetic) and yields 0. */
-  if (recv >= 0 && argc == 1 && !strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
+  if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
       (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
     int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
     if (rt == TY_POLY_ARRAY) {
@@ -8240,8 +8240,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       (int_arith_fn(name) ||
        /* bigint shifts aren't "int arith" ops but lower through the same
           TY_BIGINT branch below (sp_bigint_shl / sp_bigint_shr). */
-       (res == TY_BIGINT && (!strcmp(name, "<<") || !strcmp(name, ">>"))))) {
-    if (rt == TY_STRING && !strcmp(name, "+")) {
+       (res == TY_BIGINT && (sp_streq(name, "<<") || sp_streq(name, ">>"))))) {
+    if (rt == TY_STRING && sp_streq(name, "+")) {
       /* Root both operands when either may allocate: `a + b` evaluates both,
          and a fresh heap string from one can be swept while the other
          allocates or forces a GC (chained `a + b + c` with side-effecting
@@ -8268,7 +8268,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       return;
     }
-    if (rt == TY_STRING && !strcmp(name, "*")) {
+    if (rt == TY_STRING && sp_streq(name, "*")) {
       buf_puts(b, "sp_str_repeat(");
       emit_expr(c, recv, b); buf_puts(b, ", ");
       if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -8279,9 +8279,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (res == TY_BIGINT) {
       /* **, <<, >> take an int64 second operand (exponent / shift), not a bigint;
          bigint_arith_fn doesn't map them, so emit them directly. */
-      if (!strcmp(name, "**") || !strcmp(name, "<<") || !strcmp(name, ">>")) {
-        const char *sfn = !strcmp(name, "**") ? "sp_bigint_pow"
-                        : !strcmp(name, "<<") ? "sp_bigint_shl"
+      if (sp_streq(name, "**") || sp_streq(name, "<<") || sp_streq(name, ">>")) {
+        const char *sfn = sp_streq(name, "**") ? "sp_bigint_pow"
+                        : sp_streq(name, "<<") ? "sp_bigint_shl"
                         : "sp_bigint_shr";
         buf_printf(b, "%s(", sfn);
         emit_bigint_operand(c, recv, b);
@@ -8308,7 +8308,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else if (rt == TY_INT && (a0 == TY_INT || a0 == TY_UNKNOWN)) eff_res = TY_INT;
     }
     if (eff_res == TY_INT) {
-      int isdivmod = !strcmp(name, "/") || !strcmp(name, "%");
+      int isdivmod = sp_streq(name, "/") || sp_streq(name, "%");
       buf_printf(b, "%s(", int_arith_fn(name));
       emit_expr(c, recv, b); buf_puts(b, ", ");
       if (isdivmod) emit_int_divisor(c, argv[0], b);
@@ -8316,7 +8316,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ")");
       return;
     }
-    if (eff_res == TY_FLOAT && !strcmp(name, "**") && rt != TY_TIME) {
+    if (eff_res == TY_FLOAT && sp_streq(name, "**") && rt != TY_TIME) {
       TyKind at0 = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       buf_puts(b, "pow(");
       if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
@@ -8327,7 +8327,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ")");
       return;
     }
-    if (eff_res == TY_FLOAT && rt != TY_TIME && strcmp(name, "%") && strcmp(name, "**")) {
+    if (eff_res == TY_FLOAT && rt != TY_TIME && !sp_streq(name, "%") && !sp_streq(name, "**")) {
       buf_puts(b, "(");
       emit_expr(c, recv, b);
       buf_printf(b, " %s ", name);
@@ -8336,10 +8336,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     /* Time + int/float, Time - int/float, Time - Time */
-    if (rt == TY_TIME && (!strcmp(name, "+") || !strcmp(name, "-"))) {
+    if (rt == TY_TIME && (sp_streq(name, "+") || sp_streq(name, "-"))) {
       TyKind at = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       int tt = ++g_tmp, tu = ++g_tmp;
-      if (!strcmp(name, "-") && at == TY_TIME) {
+      if (sp_streq(name, "-") && at == TY_TIME) {
         /* Time - Time -> Float */
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
@@ -8348,7 +8348,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else if (at == TY_FLOAT) {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; double _t%d = ", tu); emit_expr(c, argv[0], b);
-        if (!strcmp(name, "+"))
+        if (sp_streq(name, "+"))
           buf_printf(b, "; sp_time_add_f(_t%d, _t%d); })", tt, tu);
         else
           buf_printf(b, "; sp_time_add_f(_t%d, -_t%d); })", tt, tu);
@@ -8356,7 +8356,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; mrb_int _t%d = ", tu); emit_int_expr(c, argv[0], b);
-        if (!strcmp(name, "+"))
+        if (sp_streq(name, "+"))
           buf_printf(b, "; sp_time_add_i(_t%d, _t%d); })", tt, tu);
         else
           buf_printf(b, "; sp_time_sub_i(_t%d, _t%d); })", tt, tu);
@@ -8369,7 +8369,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
      bigint, but the int receiver would otherwise emit a UB C `1LL << 64LL`.
      Promote to a bigint shift. */
-  if (recv >= 0 && argc == 1 && !strcmp(name, "<<") && rt == TY_INT &&
+  if (recv >= 0 && argc == 1 && sp_streq(name, "<<") && rt == TY_INT &&
       comp_ntype(c, id) == TY_BIGINT) {
     buf_puts(b, "sp_bigint_shl(sp_bigint_new_int(");
     emit_expr(c, recv, b);
@@ -8384,18 +8384,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      <</>> take an int64 shift amount. The result stays a bignum -- a masked
      value can still exceed int64 (`bignum & MASK64`). */
   if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
-      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
-       !strcmp(name, "<<") || !strcmp(name, ">>"))) {
+      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+       sp_streq(name, "<<") || sp_streq(name, ">>"))) {
     TyKind at0 = comp_ntype(c, argv[0]);
-    if (!strcmp(name, "<<") || !strcmp(name, ">>")) {
-      buf_printf(b, "sp_bigint_%s(", !strcmp(name, "<<") ? "shl" : "shr");
+    if (sp_streq(name, "<<") || sp_streq(name, ">>")) {
+      buf_printf(b, "sp_bigint_%s(", sp_streq(name, "<<") ? "shl" : "shr");
       emit_expr(c, recv, b); buf_puts(b, ", ");
       if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ")");
     }
     else {
-      const char *fn = !strcmp(name, "&") ? "and" : !strcmp(name, "|") ? "or" : "xor";
+      const char *fn = sp_streq(name, "&") ? "and" : sp_streq(name, "|") ? "or" : "xor";
       buf_printf(b, "sp_bigint_%s(", fn);
       emit_expr(c, recv, b); buf_puts(b, ", ");
       if (at0 == TY_BIGINT) emit_expr(c, argv[0], b);
@@ -8410,10 +8410,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      inference types these TY_INT); `<<` on a poly is handled earlier as the
      ambiguous shift/append via sp_poly_shl, so only &,|,^,>> reach here. */
   if (recv >= 0 && argc == 1 &&
-      ((rt == TY_INT && (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
-                         !strcmp(name, "<<") || !strcmp(name, ">>"))) ||
-       (rt == TY_POLY && (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
-                          !strcmp(name, ">>"))))) {
+      ((rt == TY_INT && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+                         sp_streq(name, "<<") || sp_streq(name, ">>"))) ||
+       (rt == TY_POLY && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+                          sp_streq(name, ">>"))))) {
     TyKind at0 = comp_ntype(c, argv[0]);
     buf_puts(b, "(");
     if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
@@ -8433,7 +8433,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
-  if (recv >= 0 && argc == 1 && !strcmp(name, "<=>")) {
+  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) {
     /* Re-infer when stale cache has TY_POLY (e.g. block params temporarily pinned to element type). */
     TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? infer_type(c, recv) : rt;
     TyKind at = comp_ntype(c, argv[0]);
@@ -8491,8 +8491,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   if (recv >= 0 && argc == 1 &&
-      (!strcmp(name, "<") || !strcmp(name, ">") ||
-       !strcmp(name, "<=") || !strcmp(name, ">="))) {
+      (sp_streq(name, "<") || sp_streq(name, ">") ||
+       sp_streq(name, "<=") || sp_streq(name, ">="))) {
     if (rt == TY_BIGINT || comp_ntype(c, argv[0]) == TY_BIGINT) {
       buf_printf(b, "(sp_bigint_cmp(");
       emit_bigint_operand(c, recv, b);
@@ -8530,9 +8530,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           comp_method_in_chain(c, cid4, "<=>", NULL) >= 0) {
         char selfptr[64];
         const char *rtyp = nt_type(nt, recv);
-        if (rtyp && (!strcmp(rtyp, "LocalVariableReadNode") ||
-                     !strcmp(rtyp, "InstanceVariableReadNode") ||
-                     !strcmp(rtyp, "SelfNode"))) {
+        if (rtyp && (sp_streq(rtyp, "LocalVariableReadNode") ||
+                     sp_streq(rtyp, "InstanceVariableReadNode") ||
+                     sp_streq(rtyp, "SelfNode"))) {
           Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
           snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
@@ -8558,35 +8558,35 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* concrete builtin receiver: is_a?/kind_of?/instance_of? is known at compile
      time (evaluate the receiver for side effects, then yield the constant). */
   if (recv >= 0 && argc == 1 &&
-      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?")) &&
-      nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode")) {
+      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")) {
     /* `[]` and a bare `Array.new` are arrays even when their element type (and
        so the inferred type) is still UNKNOWN -- treat them as such for the fold. */
     TyKind eff_rt = rt;
     if (eff_rt == TY_UNKNOWN) {
       const char *rvt = nt_type(nt, recv);
-      if (rvt && !strcmp(rvt, "ArrayNode")) eff_rt = TY_POLY_ARRAY;
-      else if (rvt && !strcmp(rvt, "CallNode") && nt_str(nt, recv, "name") &&
-               !strcmp(nt_str(nt, recv, "name"), "new")) {
+      if (rvt && sp_streq(rvt, "ArrayNode")) eff_rt = TY_POLY_ARRAY;
+      else if (rvt && sp_streq(rvt, "CallNode") && nt_str(nt, recv, "name") &&
+               sp_streq(nt_str(nt, recv, "name"), "new")) {
         int rr = nt_ref(nt, recv, "receiver");
-        if (rr >= 0 && nt_type(nt, rr) && !strcmp(nt_type(nt, rr), "ConstantReadNode") &&
-            nt_str(nt, rr, "name") && !strcmp(nt_str(nt, rr, "name"), "Array")) eff_rt = TY_POLY_ARRAY;
+        if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "ConstantReadNode") &&
+            nt_str(nt, rr, "name") && sp_streq(nt_str(nt, rr, "name"), "Array")) eff_rt = TY_POLY_ARRAY;
       }
     }
-    int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), !strcmp(name, "instance_of?"));
+    int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
     if (yes >= 0) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes); return; }
   }
 
   /* poly.is_a?(class_var) where the argument is a TY_CLASS typed expression.
      Skip if argv[0] is a ConstantReadNode: the fast-path below handles builtins. */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?")) &&
+      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
       comp_ntype(c, argv[0]) == TY_CLASS &&
-      !(nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode"))) {
+      !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
     buf_printf(b, "sp_Class _t%d = ", k); emit_expr(c, argv[0], b); buf_printf(b, "; ");
-    if (!strcmp(name, "instance_of?"))
+    if (sp_streq(name, "instance_of?"))
       buf_printf(b, "sp_poly_get_class(_t%d).cls_id == _t%d.cls_id; })", t, k);
     else
       buf_printf(b, "sp_poly_is_a(_t%d, _t%d); })", t, k);
@@ -8595,27 +8595,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* poly.is_a?(Class) / kind_of?: runtime tag/cls_id check */
   if (recv >= 0 && rt == TY_POLY && argc == 1 &&
-      (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
+      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
     const char *cty = nt_type(nt, argv[0]);
-    const char *cn = cty && !strcmp(cty, "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
+    const char *cn = cty && sp_streq(cty, "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
     if (cn) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
       char v[32]; snprintf(v, sizeof v, "_t%d", t);
-      if (!strcmp(cn, "Integer") || !strcmp(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
-      else if (!strcmp(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
-      else if (!strcmp(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
-      else if (!strcmp(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
-      else if (!strcmp(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);
-      else if (!strcmp(cn, "TrueClass"))  buf_printf(b, "(%s.tag == SP_TAG_BOOL && %s.v.b)", v, v);
-      else if (!strcmp(cn, "FalseClass")) buf_printf(b, "(%s.tag == SP_TAG_BOOL && !%s.v.b)", v, v);
-      else if (!strcmp(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
-      else if (!strcmp(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", v, v, v);
-      else if (!strcmp(cn, "Hash"))     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -13 && %s.cls_id >= -20)", v, v, v);
-      else if (!strcmp(cn, "Encoding")) buf_printf(b, "%s.tag == SP_TAG_ENCODING", v);
+      if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
+      else if (sp_streq(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
+      else if (sp_streq(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
+      else if (sp_streq(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
+      else if (sp_streq(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);
+      else if (sp_streq(cn, "TrueClass"))  buf_printf(b, "(%s.tag == SP_TAG_BOOL && %s.v.b)", v, v);
+      else if (sp_streq(cn, "FalseClass")) buf_printf(b, "(%s.tag == SP_TAG_BOOL && !%s.v.b)", v, v);
+      else if (sp_streq(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
+      else if (sp_streq(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", v, v, v);
+      else if (sp_streq(cn, "Hash"))     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -13 && %s.cls_id >= -20)", v, v, v);
+      else if (sp_streq(cn, "Encoding")) buf_printf(b, "%s.tag == SP_TAG_ENCODING", v);
       else {
         int cid = comp_class_index(c, cn);
-        int exact = !strcmp(name, "instance_of?");
+        int exact = sp_streq(name, "instance_of?");
         if (cid >= 0) {
           buf_printf(b, "(%s.tag == SP_TAG_OBJ && (", v);
           int first = 1;
@@ -8636,21 +8636,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* nil receiver: nil.inspect -> "nil", nil.to_s -> "", nil.nil? -> true.
      Evaluate the receiver for side effects, then yield the constant. */
   if (recv >= 0 && rt == TY_NIL) {
-    if (argc == 0 && !strcmp(name, "inspect")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"nil\"))"); return; }
-    if (argc == 0 && !strcmp(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"\"))"); return; }
-    if (argc == 0 && !strcmp(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
-    if (argc == 0 && !strcmp(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)0)"); return; }
-    if (argc == 0 && !strcmp(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return; }
-    if (argc == 0 && !strcmp(name, "to_r"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_float)0.0)"); return; }
-    if (argc == 0 && !strcmp(name, "to_a"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())"); return; }
-    if (argc == 0 && !strcmp(name, "to_h"))    {
+    if (argc == 0 && sp_streq(name, "inspect")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"nil\"))"); return; }
+    if (argc == 0 && sp_streq(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"\"))"); return; }
+    if (argc == 0 && sp_streq(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
+    if (argc == 0 && sp_streq(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)0)"); return; }
+    if (argc == 0 && sp_streq(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return; }
+    if (argc == 0 && sp_streq(name, "to_r"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_float)0.0)"); return; }
+    if (argc == 0 && sp_streq(name, "to_a"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())"); return; }
+    if (argc == 0 && sp_streq(name, "to_h"))    {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
       buf_puts(b, "), sp_SymPolyHash_new())");
       return;
     }
-    if (argc == 1 && (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) {
-      const char *cn = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
-      int yes = cn ? (!strcmp(cn, "NilClass") || !strcmp(name, "instance_of?") ? !strcmp(cn, "NilClass") : (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject"))) : 0;
+    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+      const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
+      int yes = cn ? (sp_streq(cn, "NilClass") || sp_streq(name, "instance_of?") ? sp_streq(cn, "NilClass") : (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) : 0;
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
       return;
     }
@@ -8659,7 +8659,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (emit_poly_call(c, id, b)) return;
 
   /* between?(lo, hi): lo <= self <= hi */
-  if (!strcmp(name, "between?") && argc == 2) {
+  if (sp_streq(name, "between?") && argc == 2) {
     if (rt == TY_STRING) {
       int tv = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", tv); emit_expr(c, recv, b);
@@ -8708,7 +8708,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* object_id: a stable integer id. Int uses MRI's 2n+1; pointer-backed
      values use the pointer bit pattern; a symbol uses its interned id. */
-  if (!strcmp(name, "object_id") && recv >= 0 && argc == 0) {
+  if (sp_streq(name, "object_id") && recv >= 0 && argc == 0) {
     if (rt == TY_INT) { buf_puts(b, "(2*("); emit_expr(c, recv, b); buf_puts(b, ")+1)"); }
     else if (rt == TY_SYMBOL) { buf_puts(b, "((mrb_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
     else if (rt == TY_BOOL || rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }
@@ -8721,28 +8721,28 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* nil? on an integer: a nullable int carries the SP_INT_NIL sentinel
      (e.g. an int-valued hash miss). A plain int is never the sentinel, so
      `5.nil?` constant-folds to false; a missing-key value reads true. */
-  if (recv >= 0 && rt == TY_INT && !strcmp(name, "nil?") && argc == 0) {
+  if (recv >= 0 && rt == TY_INT && sp_streq(name, "nil?") && argc == 0) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)");
     return;
   }
   /* nil? on a string: a nullable string carries NULL (e.g. a scan miss) */
-  if (recv >= 0 && rt == TY_STRING && !strcmp(name, "nil?") && argc == 0) {
+  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "nil?") && argc == 0) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");
     return;
   }
   /* nil? on a float: a nullable float carries the NaN sentinel (e.g. first/
      last of an empty float array). A real float is never the sentinel. */
-  if (recv >= 0 && rt == TY_FLOAT && !strcmp(name, "nil?") && argc == 0) {
+  if (recv >= 0 && rt == TY_FLOAT && sp_streq(name, "nil?") && argc == 0) {
     buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")");
     return;
   }
   /* nil? on an array/hash: a nil container is a NULL pointer */
-  if (recv >= 0 && (ty_is_array(rt) || ty_is_hash(rt)) && !strcmp(name, "nil?") && argc == 0) {
+  if (recv >= 0 && (ty_is_array(rt) || ty_is_hash(rt)) && sp_streq(name, "nil?") && argc == 0) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
     return;
   }
   /* nil? on a pointer-backed concrete type: nil is the NULL pointer. */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "nil?") &&
+  if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") &&
       (rt == TY_FIBER || rt == TY_PROC || rt == TY_CURRY || rt == TY_RANDOM ||
        rt == TY_METHOD || rt == TY_IO || rt == TY_STRINGIO || rt == TY_STRINGSCANNER ||
        rt == TY_MATCHDATA || rt == TY_REGEX || rt == TY_EXCEPTION || rt == TY_BIGINT)) {
@@ -8750,7 +8750,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
   /* nil? on a value-typed concrete receiver is always false. */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "nil?") &&
+  if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") &&
       (rt == TY_RANGE || rt == TY_TIME || rt == TY_COMPLEX || rt == TY_RATIONAL ||
        rt == TY_SYMBOL || rt == TY_BOOL || rt == TY_CLASS)) {
     buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
@@ -8759,32 +8759,32 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* a predicate on an empty array literal folds to a constant: the block (if
      any) never runs, so empty all?/none? are true, any?/one? false */
   if (recv >= 0 && (argc == 0 || argc == 1) &&
-      (!strcmp(name, "all?") || !strcmp(name, "any?") ||
-       !strcmp(name, "none?") || !strcmp(name, "one?") || !strcmp(name, "count")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode") &&
+      (sp_streq(name, "all?") || sp_streq(name, "any?") ||
+       sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "count")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
-    if (!strcmp(name, "count")) { buf_puts(b, "0"); return; }
-    buf_puts(b, (!strcmp(name, "all?") || !strcmp(name, "none?")) ? "1" : "0");
+    if (sp_streq(name, "count")) { buf_puts(b, "0"); return; }
+    buf_puts(b, (sp_streq(name, "all?") || sp_streq(name, "none?")) ? "1" : "0");
     return;
   }
 
   /* Class.===(obj): equivalent to obj.is_a?(Class). Receiver is a class constant. */
-  if (recv >= 0 && argc == 1 && !strcmp(name, "===") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")) {
+  if (recv >= 0 && argc == 1 && sp_streq(name, "===") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
     const char *cn = nt_str(nt, recv, "name");
     if (cn) {
       TyKind at2 = comp_ntype(c, argv[0]);
       /* TrueClass/FalseClass/NilClass === <literal/typed value>: decide
          statically from the arg's node kind or scalar type. */
       const char *aty = nt_type(nt, argv[0]);
-      if (!strcmp(cn, "NilClass") || !strcmp(cn, "TrueClass") || !strcmp(cn, "FalseClass")) {
+      if (sp_streq(cn, "NilClass") || sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass")) {
         int yn = -1;
-        if (!strcmp(cn, "NilClass"))
-          yn = (at2 == TY_NIL || (aty && !strcmp(aty, "NilNode"))) ? 1 : (at2 != TY_POLY ? 0 : -1);
-        else if (!strcmp(cn, "TrueClass"))
-          yn = (aty && !strcmp(aty, "TrueNode")) ? 1 : (aty && !strcmp(aty, "FalseNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
+        if (sp_streq(cn, "NilClass"))
+          yn = (at2 == TY_NIL || (aty && sp_streq(aty, "NilNode"))) ? 1 : (at2 != TY_POLY ? 0 : -1);
+        else if (sp_streq(cn, "TrueClass"))
+          yn = (aty && sp_streq(aty, "TrueNode")) ? 1 : (aty && sp_streq(aty, "FalseNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
         else
-          yn = (aty && !strcmp(aty, "FalseNode")) ? 1 : (aty && !strcmp(aty, "TrueNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
+          yn = (aty && sp_streq(aty, "FalseNode")) ? 1 : (aty && sp_streq(aty, "TrueNode")) ? 0 : (at2 != TY_BOOL && at2 != TY_POLY ? 0 : -1);
         if (yn >= 0) { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yn); return; }
       }
       int yes = ty_matches_class(at2, cn, 0);
@@ -8797,13 +8797,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int tv = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], b); buf_printf(b, "; ");
         char v[32]; snprintf(v, sizeof v, "_t%d", tv);
-        if (!strcmp(cn, "Integer") || !strcmp(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
-        else if (!strcmp(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
-        else if (!strcmp(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
-        else if (!strcmp(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
-        else if (!strcmp(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);
-        else if (!strcmp(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
-        else if (!strcmp(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", v, v, v);
+        if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) buf_printf(b, "%s.tag == SP_TAG_INT", v);
+        else if (sp_streq(cn, "String"))   buf_printf(b, "%s.tag == SP_TAG_STR", v);
+        else if (sp_streq(cn, "Float"))    buf_printf(b, "%s.tag == SP_TAG_FLT", v);
+        else if (sp_streq(cn, "Symbol"))   buf_printf(b, "%s.tag == SP_TAG_SYM", v);
+        else if (sp_streq(cn, "NilClass")) buf_printf(b, "%s.tag == SP_TAG_NIL", v);
+        else if (sp_streq(cn, "Numeric"))  buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_FLT)", v, v);
+        else if (sp_streq(cn, "Array"))    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", v, v, v);
         else buf_printf(b, "0");
         buf_puts(b, "; })");
         return;
@@ -8814,7 +8814,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* `===` on a scalar comparable (bool/int/float/string/symbol) is case
      equality == value equality. Range/Class/Regexp `===` have their own
      handlers and fall through here. */
-  if (argc == 1 && !strcmp(name, "===")) {
+  if (argc == 1 && sp_streq(name, "===")) {
     int fr = eq_family(rt), fa = eq_family(a0);
     if (fr && fr != 5 && fa && fa != 5) {
       if (fr == fa) {
@@ -8826,11 +8826,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  if (argc == 1 && (!strcmp(name, "==") || !strcmp(name, "!="))) {
-    int eq = !strcmp(name, "==");
+  if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
+    int eq = sp_streq(name, "==");
     /* `x == nil` / `x != nil` for any receiver */
-    int a_nil = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "NilNode");
-    int r_nil = nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "NilNode");
+    int a_nil = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode");
+    int r_nil = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "NilNode");
     if (a_nil || r_nil) {
       int other = a_nil ? recv : argv[0];
       TyKind ot = comp_ntype(c, other);
@@ -8866,9 +8866,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     equality_skip_nil:;
     /* arr == [] : an array equals the empty literal iff it has no elements */
     {
-      int er = nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode") &&
+      int er = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
                ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; });
-      int ea = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "ArrayNode") &&
+      int ea = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode") &&
                ({ int _n = 0; nt_arr(nt, argv[0], "elements", &_n); _n == 0; });
       if ((er && (array_kind(a0) || a0 == TY_POLY_ARRAY)) ||
           (ea && (array_kind(rt) || rt == TY_POLY_ARRAY))) {
@@ -8909,9 +8909,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* hash == hash */
     if (ty_is_hash(rt) || ty_is_hash(a0) || rt == TY_UNKNOWN || a0 == TY_UNKNOWN) {
       /* two empty hash literals are trivially equal */
-      int re = nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "HashNode") &&
+      int re = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "HashNode") &&
                ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; });
-      int ae = nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "HashNode") &&
+      int ae = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "HashNode") &&
                ({ int _n = 0; nt_arr(nt, argv[0], "elements", &_n); _n == 0; });
       if (re && ae) { buf_puts(b, eq ? "1" : "0"); return; }
       if (ty_is_hash(rt) && ty_is_hash(a0)) {
@@ -8979,9 +8979,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (emi >= 0) {
         char selfptr[64];
         const char *rty2 = nt_type(nt, recv);
-        if (rty2 && (!strcmp(rty2, "LocalVariableReadNode") ||
-                     !strcmp(rty2, "InstanceVariableReadNode") ||
-                     !strcmp(rty2, "SelfNode"))) {
+        if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") ||
+                     sp_streq(rty2, "InstanceVariableReadNode") ||
+                     sp_streq(rty2, "SelfNode"))) {
           Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
           snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
@@ -9002,9 +9002,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (comp_method_in_chain(c, ecid, "<=>", NULL) >= 0) {
         char selfptr[64];
         const char *rty2 = nt_type(nt, recv);
-        if (rty2 && (!strcmp(rty2, "LocalVariableReadNode") ||
-                     !strcmp(rty2, "InstanceVariableReadNode") ||
-                     !strcmp(rty2, "SelfNode"))) {
+        if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") ||
+                     sp_streq(rty2, "InstanceVariableReadNode") ||
+                     sp_streq(rty2, "SelfNode"))) {
           Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
           snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
@@ -9029,9 +9029,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (eqm2 >= 0) {
           char selfptr2[64];
           const char *rty3 = nt_type(nt, recv);
-          if (rty3 && (!strcmp(rty3, "LocalVariableReadNode") ||
-                       !strcmp(rty3, "InstanceVariableReadNode") ||
-                       !strcmp(rty3, "SelfNode"))) {
+          if (rty3 && (sp_streq(rty3, "LocalVariableReadNode") ||
+                       sp_streq(rty3, "InstanceVariableReadNode") ||
+                       sp_streq(rty3, "SelfNode"))) {
             Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
             snprintf(selfptr2, sizeof selfptr2, "%s", rb.p ? rb.p : "");
             free(rb.p);
@@ -9132,15 +9132,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      (it falls through to the general poly dispatch below). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0) {
     const char *pm = NULL;
-    if (!strcmp(name, "sum")) pm = "sp_poly_sum";
-    else if (!strcmp(name, "min")) pm = "sp_poly_min";
-    else if (!strcmp(name, "max")) pm = "sp_poly_max";
-    else if (!strcmp(name, "first")) pm = "sp_poly_first";
-    else if (!strcmp(name, "last")) pm = "sp_poly_last";
+    if (sp_streq(name, "sum")) pm = "sp_poly_sum";
+    else if (sp_streq(name, "min")) pm = "sp_poly_min";
+    else if (sp_streq(name, "max")) pm = "sp_poly_max";
+    else if (sp_streq(name, "first")) pm = "sp_poly_first";
+    else if (sp_streq(name, "last")) pm = "sp_poly_last";
     /* a Thread (Fiber-modelled) carried through a poly slot: #value/#resume/#join
        dispatch on the boxed Fiber when no user class defines the name (#1261). */
-    else if (!strcmp(name, "value") || !strcmp(name, "resume")) pm = "sp_poly_fiber_value";
-    else if (!strcmp(name, "join")) pm = "sp_poly_fiber_join";
+    else if (sp_streq(name, "value") || sp_streq(name, "resume")) pm = "sp_poly_fiber_value";
+    else if (sp_streq(name, "join")) pm = "sp_poly_fiber_join";
     if (pm) {
       int ncand = 0;
       for (int k = 0; k < c->nclasses; k++)
@@ -9156,8 +9156,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      matching class's method (walking the chain for inherited methods),
      unboxing the pointer. */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
-    int is_lengthlike = !strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count");
-    int is_empty = !strcmp(name, "empty?");
+    int is_lengthlike = sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count");
+    int is_empty = sp_streq(name, "empty?");
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) ncand++;
@@ -9202,10 +9202,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
              instead of casting .v.p to a non-existent sp_<Prim> struct. */
           const char *_dcn = c->classes[defcls].name;
           char _dself[64];
-          if (!strcmp(_dcn, "Integer") || !strcmp(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d.v.i", tv);
-          else if (!strcmp(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
-          else if (!strcmp(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
-          else if (!strcmp(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
+          if (sp_streq(_dcn, "Integer") || sp_streq(_dcn, "Numeric")) snprintf(_dself, sizeof _dself, "_t%d.v.i", tv);
+          else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
+          else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
+          else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
           else snprintf(_dself, sizeof _dself, "(sp_%s *)_t%d.v.p", _dcn, tv);
           buf_printf(&cb, "sp_%s_%s(%s", _dcn, mc(c->scopes[mi].name), _dself);
           if (c->scopes[mi].nparams > 0) {
@@ -9250,7 +9250,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
       }
       /* built-in array receivers reaching a length-like poly dispatch */
-      if (!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "count")) {
+      if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) {
         buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY: _t%d = %ssp_IntArray_length((sp_IntArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
         buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = %ssp_StrArray_length((sp_StrArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
         buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_length((sp_FloatArray *)_t%d.v.p)%s; break;", tr, bopen, tv, bclose);
@@ -9274,8 +9274,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          classes still answers them. Without a default arm the result stayed
          the empty-string default, so `@x.to_s` on a poly-widened int printed
          blank. Route the fallthrough through the runtime poly converter. */
-      if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) {
-        const char *pfn = !strcmp(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
+      if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
+        const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
         buf_printf(b, " default: _t%d = ", tr);
         if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s(_t%d))", pfn, tv);
         else buf_printf(b, "%s(_t%d)", pfn, tv);
@@ -9293,10 +9293,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* the builtin-array `[]` / Integer#[] bit-ref arm applies to an integer
        index; in promote mode that index variable may have widened to poly, so
        accept poly too (the index is unboxed where it is used below). */
-    int is_index = !strcmp(name, "[]") && argc == 1 &&
+    int is_index = sp_streq(name, "[]") && argc == 1 &&
                    (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY);
-    int is_include = (!strcmp(name, "include?") || !strcmp(name, "member?") ||
-                      !strcmp(name, "has_key?") || !strcmp(name, "key?")) && argc == 1;
+    int is_include = (sp_streq(name, "include?") || sp_streq(name, "member?") ||
+                      sp_streq(name, "has_key?") || sp_streq(name, "key?")) && argc == 1;
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
@@ -9447,8 +9447,8 @@ else {
       /* the poly value may actually be a string-keyed hash: dispatch `[]` /
          `fetch` to the matching hash storage, boxing the value into the poly
          result. */
-      int is_aref = !strcmp(name, "[]") && argc == 1;
-      int is_fetch = !strcmp(name, "fetch") && (argc == 1 || argc == 2);
+      int is_aref = sp_streq(name, "[]") && argc == 1;
+      int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2);
       if ((is_aref || is_fetch) && infer_type(c, argv[0]) == TY_STRING) {
         TyKind trt = is_scalar_ret(ret) ? ret : TY_INT;  /* the result temp's type */
         static const struct { const char *cls, *hn; TyKind vt; } HV[] = {
@@ -9506,13 +9506,13 @@ else {
      string bounds, so inline strcmp / char-iteration for a literal
      `("a".."z")` receiver. */
   if (recv >= 0 && rt == TY_RANGE && nt_type(nt, unwrap_parens(c, recv)) &&
-      !strcmp(nt_type(nt, unwrap_parens(c, recv)), "RangeNode")) {
+      sp_streq(nt_type(nt, unwrap_parens(c, recv)), "RangeNode")) {
     int rnode = unwrap_parens(c, recv);
     int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
     if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
       int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
-      if ((!strcmp(name, "include?") || !strcmp(name, "member?") ||
-           !strcmp(name, "cover?") || !strcmp(name, "===")) && argc == 1) {
+      if ((sp_streq(name, "include?") || sp_streq(name, "member?") ||
+           sp_streq(name, "cover?") || sp_streq(name, "===")) && argc == 1) {
         if (a0 != TY_STRING) {
           /* a non-string can't be in a string range: false (eval arg) */
           buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
@@ -9525,7 +9525,7 @@ else {
         }
         return;
       }
-      if (!strcmp(name, "to_a") && argc == 0) {
+      if (sp_streq(name, "to_a") && argc == 0) {
         /* succ-based string range (handles multi-char: "aa".."ac" etc.) */
         buf_puts(b, "sp_StrArray_from_string_range("); emit_expr(c, lo, b);
         buf_puts(b, ", "); emit_expr(c, hi, b); buf_printf(b, ", %d)", excl);
@@ -9538,7 +9538,7 @@ else {
 
   /* hash value methods */
   /* {}.default (empty hash literal with unknown type) always returns nil */
-  if (recv >= 0 && !strcmp(name, "default") && argc == 0 && !ty_is_hash(rt)) {
+  if (recv >= 0 && sp_streq(name, "default") && argc == 0 && !ty_is_hash(rt)) {
     buf_puts(b, "sp_box_nil()");
     return;
   }
@@ -9548,7 +9548,7 @@ else {
      (Ruby []= returns the assigned value). The statement form is emitted
      elsewhere; this covers rvalue chains like `b = arr[i] = v`. */
   /* a[i, n] = src  —  slice assignment */
-  if (recv >= 0 && ty_is_array(rt) && !strcmp(name, "[]=") && argc == 3) {
+  if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 3) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     TyKind rhs_ty = comp_ntype(c, argv[2]);
     if (k && ty_is_array(rhs_ty)) {
@@ -9607,7 +9607,7 @@ else {
       return;
     }
   }
-  if (recv >= 0 && ty_is_array(rt) && !strcmp(name, "[]=") && argc == 2) {
+  if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 2) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (k) {
       int t = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
@@ -9632,8 +9632,8 @@ else {
 
   /* array value methods */
   /* empty array literal [] has TY_UNKNOWN; sum returns init or 0 */
-  if (recv >= 0 && rt == TY_UNKNOWN && !strcmp(name, "sum") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode")) {
+  if (recv >= 0 && rt == TY_UNKNOWN && sp_streq(name, "sum") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
     int en = 0; nt_arr(nt, recv, "elements", &en);
     if (en == 0) {
       TyKind call_t = comp_ntype(c, id);
@@ -9650,20 +9650,20 @@ else {
   }
   /* take_while/drop_while/each_index/set-ops on empty array literal [] (TY_UNKNOWN receiver) */
   if (recv >= 0 && rt == TY_UNKNOWN &&
-      (!strcmp(name, "take_while") || !strcmp(name, "drop_while") || !strcmp(name, "each_index") ||
-       !strcmp(name, "difference") || !strcmp(name, "-") || !strcmp(name, "&") || !strcmp(name, "|") ||
-       !strcmp(name, "intersection") || !strcmp(name, "union") || !strcmp(name, "+") ||
-       !strcmp(name, "zip") || !strcmp(name, "flatten") || !strcmp(name, "compact") ||
-       !strcmp(name, "uniq") || !strcmp(name, "sort") || !strcmp(name, "reverse") ||
-       !strcmp(name, "shuffle")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode")) {
+      (sp_streq(name, "take_while") || sp_streq(name, "drop_while") || sp_streq(name, "each_index") ||
+       sp_streq(name, "difference") || sp_streq(name, "-") || sp_streq(name, "&") || sp_streq(name, "|") ||
+       sp_streq(name, "intersection") || sp_streq(name, "union") || sp_streq(name, "+") ||
+       sp_streq(name, "zip") || sp_streq(name, "flatten") || sp_streq(name, "compact") ||
+       sp_streq(name, "uniq") || sp_streq(name, "sort") || sp_streq(name, "reverse") ||
+       sp_streq(name, "shuffle")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
     int en = 0; nt_arr(nt, recv, "elements", &en);
     if (en == 0) {
-      if (!strcmp(name, "each_index")) {
+      if (sp_streq(name, "each_index")) {
         /* each_index on [] is a no-op; evaluate receiver for side-effects */
         emit_expr(c, recv, b);
       }
-      else if (!strcmp(name, "take_while") || !strcmp(name, "drop_while")) {
+      else if (sp_streq(name, "take_while") || sp_streq(name, "drop_while")) {
         buf_puts(b, "sp_PolyArray_new()");
       }
       else {
@@ -9672,14 +9672,14 @@ else {
         const char *ek = ty_is_array(akt) ? ((akt == TY_POLY_ARRAY) ? "Poly" : array_kind(akt)) : NULL;
         if (!ek) ek = "Poly";
         if (argc > 0 && akt != TY_UNKNOWN &&
-            (!strcmp(name, "union") || !strcmp(name, "|") ||
-             !strcmp(name, "difference") || !strcmp(name, "-") ||
-             !strcmp(name, "intersection") || !strcmp(name, "&") ||
-             !strcmp(name, "+") || !strcmp(name, "zip"))) {
+            (sp_streq(name, "union") || sp_streq(name, "|") ||
+             sp_streq(name, "difference") || sp_streq(name, "-") ||
+             sp_streq(name, "intersection") || sp_streq(name, "&") ||
+             sp_streq(name, "+") || sp_streq(name, "zip"))) {
           /* call the real function with NULL receiver (handles empty-self case) */
-          const char *fn = (!strcmp(name, "&") || !strcmp(name, "intersection")) ? "intersect"
-                         : (!strcmp(name, "|") || !strcmp(name, "union")) ? "union"
-                         : (!strcmp(name, "+")) ? "concat"
+          const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect"
+                         : (sp_streq(name, "|") || sp_streq(name, "union")) ? "union"
+                         : (sp_streq(name, "+")) ? "concat"
                          : "difference";
           buf_printf(b, "sp_%sArray_%s(NULL, ", ek, fn); emit_expr(c, argv[0], b); buf_puts(b, ")");
         }
@@ -9694,30 +9694,30 @@ else {
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
-    if (!strcmp(name, "to_s") || !strcmp(name, "id2name") || !strcmp(name, "name")) {
+    if (sp_streq(name, "to_s") || sp_streq(name, "id2name") || sp_streq(name, "name")) {
       buf_puts(b, "sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "inspect")) {
+    if (sp_streq(name, "inspect")) {
       buf_puts(b, "sp_sym_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "to_sym") || !strcmp(name, "itself")) { emit_expr(c, recv, b); return; }
+    if (sp_streq(name, "to_sym") || sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
     /* case-folding methods return a (re-interned) symbol */
-    if (!strcmp(name, "upcase") || !strcmp(name, "downcase") ||
-        !strcmp(name, "capitalize") || !strcmp(name, "swapcase")) {
+    if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
+        sp_streq(name, "capitalize") || sp_streq(name, "swapcase")) {
       buf_printf(b, "sp_sym_intern(sp_str_%s(sp_sym_to_s(", name); emit_expr(c, recv, b); buf_puts(b, ")))");
       return;
     }
-    if (!strcmp(name, "length") || !strcmp(name, "size")) {
+    if (sp_streq(name, "length") || sp_streq(name, "size")) {
       buf_puts(b, "((mrb_int)strlen(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))");
       return;
     }
-    if (!strcmp(name, "empty?")) {
+    if (sp_streq(name, "empty?")) {
       buf_puts(b, "(strlen(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")) == 0)");
       return;
     }
-    if (!strcmp(name, "==") || !strcmp(name, "!=")) {
+    if (sp_streq(name, "==") || sp_streq(name, "!=")) {
       buf_puts(b, name[0] == '=' ? "(" : "(!(");
       emit_expr(c, recv, b); buf_puts(b, " == "); emit_expr(c, argv[0], b);
       buf_puts(b, name[0] == '=' ? ")" : "))");
@@ -9725,26 +9725,26 @@ else {
     }
     /* string-surface methods over the symbol's name; succ re-interns a symbol,
        index/slice yield a substring (or nil), the predicates yield a bool. */
-    if (!strcmp(name, "succ") || !strcmp(name, "next")) {
+    if (sp_streq(name, "succ") || sp_streq(name, "next")) {
       buf_puts(b, "sp_sym_intern(sp_str_succ(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))");
       return;
     }
-    if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 1) {
+    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1) {
       buf_puts(b, "sp_str_char_at_or_nil(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
-    if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && argc == 2) {
+    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 2) {
       buf_puts(b, "sp_str_sub_range(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
-    if ((!strcmp(name, "start_with?") || !strcmp(name, "end_with?")) && argc == 1) {
-      buf_printf(b, "sp_str_%s(sp_sym_to_s(", !strcmp(name, "start_with?") ? "start_with" : "end_with");
+    if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc == 1) {
+      buf_printf(b, "sp_str_%s(sp_sym_to_s(", sp_streq(name, "start_with?") ? "start_with" : "end_with");
       emit_expr(c, recv, b); buf_puts(b, "), "); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
-    if (!strcmp(name, "match?") && argc == 1) {
+    if (sp_streq(name, "match?") && argc == 1) {
       int rre = re_lit_index(c, argv[0]);
       if (rre >= 0) {
         buf_printf(b, "(sp_re_match(sp_re_pat_%d, sp_sym_to_s(", rre); emit_expr(c, recv, b);
@@ -9756,11 +9756,11 @@ else {
 
   /* boolean receiver methods */
   if (recv >= 0 && rt == TY_BOOL) {
-    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) {
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SPL(\"true\") : SPL(\"false\"))");
       return;
     }
-    if (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^")) {
+    if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")) {
       buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, " %s ", name); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
@@ -9768,15 +9768,15 @@ else {
 
   /* str.each_char / each_line / chars / lines / bytes / codepoints { |x| ... } -> iterate, return self. */
   if (recv >= 0 && rt == TY_STRING && nt_ref(nt, id, "block") >= 0 &&
-      (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "each_byte") ||
-       !strcmp(name, "chars") || !strcmp(name, "lines") || !strcmp(name, "bytes") || !strcmp(name, "codepoints"))) {
+      (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte") ||
+       sp_streq(name, "chars") || sp_streq(name, "lines") || sp_streq(name, "bytes") || sp_streq(name, "codepoints"))) {
     int block = nt_ref(nt, id, "block");
     int body = nt_ref(nt, block, "body");
     const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
     int ts = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-    int is_line = !strcmp(name, "each_line") || !strcmp(name, "lines");
-    int is_byte = !strcmp(name, "each_byte") || !strcmp(name, "bytes") || !strcmp(name, "codepoints");
+    int is_line = sp_streq(name, "each_line") || sp_streq(name, "lines");
+    int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes") || sp_streq(name, "codepoints");
     Scope *cs_ech = p0 ? comp_scope_of(c, id) : NULL;
     LocalVar *clv_ech = (p0 && cs_ech) ? scope_local(cs_ech, p0) : NULL;
     int p0_box_poly_ech = clv_ech && clv_ech->type == TY_POLY;
@@ -9792,9 +9792,9 @@ else {
       int tl = ++g_tmp;
       /* chomp: true keyword arg uses the _chomp variant */
       int eline_chomp = 0;
-      if (argc == 1 && argv && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) {
+      if (argc == 1 && argv && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
         int cv = struct_kwarg_value(c, argv[0], "chomp");
-        eline_chomp = (cv >= 0 && nt_type(nt, cv) && !strcmp(nt_type(nt, cv), "TrueNode"));
+        eline_chomp = (cv >= 0 && nt_type(nt, cv) && sp_streq(nt_type(nt, cv), "TrueNode"));
       }
       buf_printf(b, "sp_StrArray *_t%d = %s(_t%d); for (mrb_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) { ",
                  tl, eline_chomp ? "sp_str_lines_chomp" : "sp_str_lines", ts, ti, ti, tl, ti);
@@ -9831,33 +9831,33 @@ else {
   if (recv >= 0 && rt == TY_BIGINT) {
     Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
     const char *r = rs.p ? rs.p : "";
-    if ((!strcmp(name, "to_s") || !strcmp(name, "inspect")) && argc == 0) {
+    if ((sp_streq(name, "to_s") || sp_streq(name, "inspect")) && argc == 0) {
       buf_printf(b, "sp_bigint_to_s(%s)", r); free(rs.p); return;
     }
-    if (!strcmp(name, "to_i") && argc == 0) {
+    if (sp_streq(name, "to_i") && argc == 0) {
       buf_printf(b, "sp_bigint_to_int(%s)", r); free(rs.p); return;
     }
-    if (!strcmp(name, "to_f") && argc == 0) {
+    if (sp_streq(name, "to_f") && argc == 0) {
       buf_printf(b, "((mrb_float)sp_bigint_to_int(%s))", r); free(rs.p); return;
     }
     free(rs.p);
   }
 
   /* Fiber[:k] = v (expression form) */
-  if (!strcmp(name, "[]=") && argc == 2 && recv >= 0) {
+  if (sp_streq(name, "[]=") && argc == 2 && recv >= 0) {
     int is_fiber2 = 0;
     const char *rty3 = nt_type(nt, recv);
-    if (rty3 && !strcmp(rty3, "ConstantReadNode")) {
+    if (rty3 && sp_streq(rty3, "ConstantReadNode")) {
       const char *rn3 = nt_str(nt, recv, "name");
-      if (rn3 && !strcmp(rn3, "Fiber")) is_fiber2 = 1;
+      if (rn3 && sp_streq(rn3, "Fiber")) is_fiber2 = 1;
     }
-    else if (rty3 && !strcmp(rty3, "CallNode")) {
+    else if (rty3 && sp_streq(rty3, "CallNode")) {
       const char *rn3 = nt_str(nt, recv, "name");
       int rr3 = nt_ref(nt, recv, "receiver");
-      if (rn3 && !strcmp(rn3, "current") && rr3 >= 0) {
+      if (rn3 && sp_streq(rn3, "current") && rr3 >= 0) {
         const char *rrty3 = nt_type(nt, rr3);
         const char *rrn3 = nt_str(nt, rr3, "name");
-        if (rrty3 && !strcmp(rrty3, "ConstantReadNode") && rrn3 && !strcmp(rrn3, "Fiber"))
+        if (rrty3 && sp_streq(rrty3, "ConstantReadNode") && rrn3 && sp_streq(rrn3, "Fiber"))
           is_fiber2 = 1;
       }
     }
@@ -9887,7 +9887,7 @@ else {
 
   /* `[]=` in expression position: mutate and return the assigned value.
      Ruby's `(h[k] = v)` and `(a[i] = v)` evaluate to v. */
-  if (!strcmp(name, "[]=") && argc == 2 && recv >= 0) {
+  if (sp_streq(name, "[]=") && argc == 2 && recv >= 0) {
     TyKind vt = comp_ntype(c, argv[1]);
     if (ty_is_hash(rt)) {
       const char *hn = ty_hash_cname(rt);
@@ -9962,13 +9962,13 @@ else {
 
   /* $stderr.puts / $stderr.print: emit to stderr */
   if (recv >= 0 && argc >= 0 && nt_type(nt, recv) &&
-      !strcmp(nt_type(nt, recv), "GlobalVariableReadNode")) {
+      sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
     const char *gvnm = nt_str(nt, recv, "name");
-    if (gvnm && (!strcmp(gvnm, "$stderr") || !strcmp(gvnm, "$stdout"))) {
+    if (gvnm && (sp_streq(gvnm, "$stderr") || sp_streq(gvnm, "$stdout"))) {
       int is_err = gvnm[1] == 's' && gvnm[2] == 't' && gvnm[3] == 'd' && gvnm[4] == 'e';
       const char *fd = is_err ? "stderr" : "stdout";
-      if (!strcmp(name, "puts") || !strcmp(name, "print")) {
-        int want_nl = !strcmp(name, "puts");
+      if (sp_streq(name, "puts") || sp_streq(name, "print")) {
+        int want_nl = sp_streq(name, "puts");
         /* Join with the comma operator so the whole thing stays a single C
            expression -- valid both as a statement and in value position (a
            return/if-else arm). puts adds a newline after each argument. */
@@ -9983,22 +9983,22 @@ else {
         if (argc == 0 && want_nl) buf_printf(b, "fputc('\\n', %s)", fd);
         return;
       }
-      if (!strcmp(name, "flush")) { buf_printf(b, "fflush(%s)", fd); return; }
+      if (sp_streq(name, "flush")) { buf_printf(b, "fflush(%s)", fd); return; }
     }
   }
   /* Last-resort fallbacks for inspect/to_s on unresolved receivers.
      The test array_unresolved_inspect_no_segv expects "[]" when an
      unsupported method chains into inspect. Emit a safe nil-degrade
      rather than aborting the compiler. */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "inspect")) {
+  if (recv >= 0 && argc == 0 && sp_streq(name, "inspect")) {
     buf_puts(b, "\"[]\""); return;
   }
-  if (recv >= 0 && argc == 0 && !strcmp(name, "to_s")) {
+  if (recv >= 0 && argc == 0 && sp_streq(name, "to_s")) {
     buf_puts(b, "\"\""); return;
   }
   /* nil? on an object type: a value-type object is never nil; a heap object
      reference is nil exactly when its pointer is NULL. */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "nil?") && ty_is_object(rt)) {
+  if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") && ty_is_object(rt)) {
     if (comp_ty_value_obj(c, rt)) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); }
     else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)"); }
     return;
@@ -10099,7 +10099,7 @@ else {
   }
 
   /* Mutex/Monitor#synchronize { block }: run block inline (single-threaded) */
-  if (!strcmp(name, "synchronize") && nt_ref(nt, id, "block") >= 0) {
+  if (sp_streq(name, "synchronize") && nt_ref(nt, id, "block") >= 0) {
     int blk = nt_ref(nt, id, "block");
     int bdy = nt_ref(nt, blk, "body");
     int bbn = 0; const int *bbb = bdy >= 0 ? nt_arr(nt, bdy, "body", &bbn) : NULL;
@@ -10111,7 +10111,7 @@ else {
     if (bbn > 0) {
       TyKind lty = comp_ntype(c, bbb[bbn-1]);
       const char *lnty = nt_type(nt, bbb[bbn-1]);
-      int nil_lit = (lty == TY_NIL && lnty && !strcmp(lnty, "NilNode"));
+      int nil_lit = (lty == TY_NIL && lnty && sp_streq(lnty, "NilNode"));
       int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN && (lty != TY_NIL || nil_lit));
       if (scalar && can_expr) {
         emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
@@ -10135,23 +10135,23 @@ else {
   }
 
   /* (range).lazy[.select/reject/filter{blk}].first(n) -- lower to a C for-loop */
-  if (!strcmp(name, "first") && recv >= 0 &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode")) {
+  if (sp_streq(name, "first") && recv >= 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
     const char *rname0 = nt_str(nt, recv, "name");
     int lazy_nid = -1;
     int filter_block = -1;
     int filter_negate = 0;
-    if (rname0 && !strcmp(rname0, "lazy") && nt_ref(nt, recv, "block") < 0) {
+    if (rname0 && sp_streq(rname0, "lazy") && nt_ref(nt, recv, "block") < 0) {
       lazy_nid = recv;
     }
-    else if (rname0 && (!strcmp(rname0, "select") || !strcmp(rname0, "reject") || !strcmp(rname0, "filter"))) {
+    else if (rname0 && (sp_streq(rname0, "select") || sp_streq(rname0, "reject") || sp_streq(rname0, "filter"))) {
       filter_block = nt_ref(nt, recv, "block");
       if (filter_block >= 0) {
-        filter_negate = !strcmp(rname0, "reject") ? 1 : 0;
+        filter_negate = sp_streq(rname0, "reject") ? 1 : 0;
         int inner = nt_ref(nt, recv, "receiver");
-        if (inner >= 0 && nt_type(nt, inner) && !strcmp(nt_type(nt, inner), "CallNode")) {
+        if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "CallNode")) {
           const char *iname = nt_str(nt, inner, "name");
-          if (iname && !strcmp(iname, "lazy") && nt_ref(nt, inner, "block") < 0)
+          if (iname && sp_streq(iname, "lazy") && nt_ref(nt, inner, "block") < 0)
             lazy_nid = inner;
         }
       }
@@ -10162,15 +10162,15 @@ else {
         int excl = (int)(nt_int(nt, src, "flags", 0) & 4) ? 1 : 0;
         int right = nt_ref(nt, src, "right");
         int endless = (right < 0);
-        if (!endless && nt_type(nt, right) && !strcmp(nt_type(nt, right), "NilNode")) endless = 1;
-        if (!endless && nt_type(nt, right) && !strcmp(nt_type(nt, right), "ConstantPathNode")) {
+        if (!endless && nt_type(nt, right) && sp_streq(nt_type(nt, right), "NilNode")) endless = 1;
+        if (!endless && nt_type(nt, right) && sp_streq(nt_type(nt, right), "ConstantPathNode")) {
           const char *cpnm = nt_str(nt, right, "name");
-          if (cpnm && !strcmp(cpnm, "INFINITY")) {
+          if (cpnm && sp_streq(cpnm, "INFINITY")) {
             int par = nt_ref(nt, right, "parent");
             const char *parnm = (par >= 0 && nt_type(nt, par) &&
-                                 !strcmp(nt_type(nt, par), "ConstantReadNode"))
+                                 sp_streq(nt_type(nt, par), "ConstantReadNode"))
                                 ? nt_str(nt, par, "name") : NULL;
-            if (parnm && !strcmp(parnm, "Float")) endless = 1;
+            if (parnm && sp_streq(parnm, "Float")) endless = 1;
           }
         }
         int left_n = nt_ref(nt, src, "left");
@@ -10346,10 +10346,10 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
      O(1)) via sp_String_append. Chains (`s << a << b`) all target the same
      buffer. recv is emitted raw (the sp_String*), not via emit_expr (which
      would hand out a copy). */
-  if ((!strcmp(name, "<<") || !strcmp(name, "concat")) && argc == 1) {
+  if ((sp_streq(name, "<<") || sp_streq(name, "concat")) && argc == 1) {
     int chain[64]; int nchain = 0; int cur = id;
     while (nchain < 64) {
-      while (nt_type(nt, cur) && !strcmp(nt_type(nt, cur), "ParenthesesNode")) {
+      while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
         int pb = nt_ref(nt, cur, "body");
         if (pb < 0) break;
         int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
@@ -10357,10 +10357,10 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         cur = bb[0];
       }
       const char *cty = nt_type(nt, cur);
-      if (!cty || strcmp(cty, "CallNode")) break;
+      if (!cty || !sp_streq(cty, "CallNode")) break;
       const char *cnm = nt_str(nt, cur, "name");
       int crecv = nt_ref(nt, cur, "receiver");
-      if (!cnm || (strcmp(cnm, "<<") && strcmp(cnm, "concat")) || crecv < 0) break;
+      if (!cnm || (!sp_streq(cnm, "<<") && !sp_streq(cnm, "concat")) || crecv < 0) break;
       int cargs = nt_ref(nt, cur, "arguments");
       int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
       if (cac != 1) break;
@@ -10368,7 +10368,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       cur = crecv;
     }
     const char *bty = nt_type(nt, cur);
-    LocalVar *blv = (bty && !strcmp(bty, "LocalVariableReadNode"))
+    LocalVar *blv = (bty && sp_streq(bty, "LocalVariableReadNode"))
                     ? scope_local(comp_scope_of(c, cur), nt_str(nt, cur, "name")) : NULL;
     if (nchain > 0 && blv && blv->type == TY_STRBUF) {
       const char *bn2 = rename_local(nt_str(nt, cur, "name"));
@@ -10390,13 +10390,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
      recv must be an assignable lvalue (local or ivar). A chained append
      `s << a << b << c` bottoms out at the same lvalue, so unroll it into
      one reassignment per argument in left-to-right order. */
-  if (rt == TY_STRING && !strcmp(name, "<<") && argc == 1) {
+  if (rt == TY_STRING && sp_streq(name, "<<") && argc == 1) {
     /* walk down the receiver chain, collecting each `<<` argument */
     int chain[64]; int nchain = 0;
     int cur = id;
     while (nchain < 64) {
       /* unwrap ParenthesesNode wrappers (e.g. `(s << a) << b`) */
-      while (nt_type(nt, cur) && !strcmp(nt_type(nt, cur), "ParenthesesNode")) {
+      while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
         int pb = nt_ref(nt, cur, "body");
         if (pb < 0) break;
         int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
@@ -10404,10 +10404,10 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         cur = bb[0];
       }
       const char *cty = nt_type(nt, cur);
-      if (!cty || strcmp(cty, "CallNode")) break;
+      if (!cty || !sp_streq(cty, "CallNode")) break;
       const char *cnm = nt_str(nt, cur, "name");
       int crecv = nt_ref(nt, cur, "receiver");
-      if (!cnm || strcmp(cnm, "<<") || crecv < 0 || comp_ntype(c, crecv) != TY_STRING) break;
+      if (!cnm || !sp_streq(cnm, "<<") || crecv < 0 || comp_ntype(c, crecv) != TY_STRING) break;
       int cargs = nt_ref(nt, cur, "arguments");
       int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
       if (cac != 1) break;
@@ -10416,7 +10416,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
     const char *rty = nt_type(nt, cur);
     if (nchain > 0 && rty &&
-        (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+        (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
       /* chain was collected outermost-first; emit left-to-right */
       for (int j = nchain - 1; j >= 0; j--) {
         int arg = chain[j];
@@ -10434,7 +10434,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       return 1;
     }
     /* `<<` onto a frozen string literal raises FrozenError */
-    if (rty && !strcmp(rty, "StringNode")) {
+    if (rty && sp_streq(rty, "StringNode")) {
       emit_indent(b, indent);
       buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
       return 1;
@@ -10446,20 +10446,20 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
      receiver to the transformed value (value-semantics mutation, like <<). */
   if (rt == TY_STRING && argc == 0) {
     const char *base = NULL;
-    if      (!strcmp(name, "chomp!"))      base = "chomp";
-    else if (!strcmp(name, "chop!"))       base = "chop";
-    else if (!strcmp(name, "upcase!"))     base = "upcase";
-    else if (!strcmp(name, "downcase!"))   base = "downcase";
-    else if (!strcmp(name, "capitalize!")) base = "capitalize";
-    else if (!strcmp(name, "swapcase!"))   base = "swapcase";
-    else if (!strcmp(name, "strip!"))      base = "strip";
-    else if (!strcmp(name, "lstrip!"))     base = "lstrip";
-    else if (!strcmp(name, "rstrip!"))     base = "rstrip";
-    else if (!strcmp(name, "reverse!"))    base = "reverse";
-    else if (!strcmp(name, "squeeze!"))    base = "squeeze";
+    if      (sp_streq(name, "chomp!"))      base = "chomp";
+    else if (sp_streq(name, "chop!"))       base = "chop";
+    else if (sp_streq(name, "upcase!"))     base = "upcase";
+    else if (sp_streq(name, "downcase!"))   base = "downcase";
+    else if (sp_streq(name, "capitalize!")) base = "capitalize";
+    else if (sp_streq(name, "swapcase!"))   base = "swapcase";
+    else if (sp_streq(name, "strip!"))      base = "strip";
+    else if (sp_streq(name, "lstrip!"))     base = "lstrip";
+    else if (sp_streq(name, "rstrip!"))     base = "rstrip";
+    else if (sp_streq(name, "reverse!"))    base = "reverse";
+    else if (sp_streq(name, "squeeze!"))    base = "squeeze";
     if (base) {
       const char *rty = nt_type(nt, recv);
-      if (rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"))) {
+      if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
         emit_indent(b, indent);
         emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ");\n");
         return 1;
@@ -10469,32 +10469,32 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* replace / prepend / clear / delete_prefix!/suffix! via reassignment */
   if (rt == TY_STRING) {
     const char *rty = nt_type(nt, recv);
-    int assignable = rty && (!strcmp(rty, "LocalVariableReadNode") || !strcmp(rty, "InstanceVariableReadNode") || !strcmp(rty, "SelfNode"));
+    int assignable = rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"));
     /* an in-place mutator on a frozen string literal raises FrozenError */
-    if (rty && !strcmp(rty, "StringNode") &&
-        (!strcmp(name, "insert") || !strcmp(name, "prepend") || !strcmp(name, "<<") ||
-         !strcmp(name, "concat") || !strcmp(name, "replace") || !strcmp(name, "clear") ||
-         !strcmp(name, "delete_prefix!") || !strcmp(name, "delete_suffix!"))) {
+    if (rty && sp_streq(rty, "StringNode") &&
+        (sp_streq(name, "insert") || sp_streq(name, "prepend") || sp_streq(name, "<<") ||
+         sp_streq(name, "concat") || sp_streq(name, "replace") || sp_streq(name, "clear") ||
+         sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!"))) {
       emit_indent(b, indent);
       buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
       return 1;
     }
-    if (assignable && !strcmp(name, "replace") && argc == 1) {
+    if (assignable && sp_streq(name, "replace") && argc == 1) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = "); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
       return 1;
     }
-    if (assignable && !strcmp(name, "prepend") && argc == 1) {
+    if (assignable && sp_streq(name, "prepend") && argc == 1) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
-    if (assignable && !strcmp(name, "clear") && argc == 0) {
+    if (assignable && sp_streq(name, "clear") && argc == 0) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = (&(\"\\xff\")[1]);\n");
       return 1;
     }
-    if (assignable && !strcmp(name, "insert") && argc == 2) {
+    if (assignable && sp_streq(name, "insert") && argc == 2) {
       /* insert(i, x): s[0,i] + x + s[i..]. A negative i counts from the end
          and inserts after that character (i += len + 1). */
       int ti = ++g_tmp;
@@ -10508,8 +10508,8 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, ", _t%d, (mrb_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_printf(b, "))); }\n");
       return 1;
     }
-    if (assignable && (!strcmp(name, "delete_prefix!") || !strcmp(name, "delete_suffix!")) && argc == 1) {
-      const char *base = !strcmp(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
+    if (assignable && (sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
+      const char *base = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
       emit_indent(b, indent); emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ");\n");
       return 1;
     }
@@ -10517,7 +10517,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   if (ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
-    if (hn && !strcmp(name, "[]=") && argc == 2) {
+    if (hn && sp_streq(name, "[]=") && argc == 2) {
       emit_indent(b, indent);
       buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash();\n");
       emit_indent(b, indent);
@@ -10543,13 +10543,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   if (rt == TY_POLY_ARRAY) {
-    if (!strcmp(name, "[]=") && argc == 2) {
+    if (sp_streq(name, "[]=") && argc == 2) {
       emit_indent(b, indent);
       buf_puts(b, "sp_PolyArray_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ");\n");
       return 1;
     }
-    if ((!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) && argc >= 1) {
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent);
         buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -10557,7 +10557,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
       return 1;
     }
-    if (!strcmp(name, "clear") && argc == 0) {
+    if (sp_streq(name, "clear") && argc == 0) {
       emit_indent(b, indent);
       buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")->len = 0;\n");
       return 1;
@@ -10565,7 +10565,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 0;
   }
 
-  if (rt == TY_POLY && !strcmp(name, "<<") && argc == 1) {
+  if (rt == TY_POLY && sp_streq(name, "<<") && argc == 1) {
     emit_indent(b, indent);
     buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ");\n");
     return 1;
@@ -10575,7 +10575,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   const char *k = array_kind(rt);
   if (!k) return 0;
 
-  if (!strcmp(name, "[]=") && argc == 2) {
+  if (sp_streq(name, "[]=") && argc == 2) {
     emit_indent(b, indent);
     buf_printf(b, "sp_%sArray_set(", k);
     emit_expr(c, recv, b); buf_puts(b, ", ");
@@ -10590,7 +10590,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, ");\n");
     return 1;
   }
-  if ((!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) && argc >= 1) {
+  if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
     TyKind et = ty_array_elem(rt);
     for (int a = 0; a < argc; a++) {
       emit_indent(b, indent);
@@ -10607,7 +10607,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     }
     return 1;
   }
-  if (!strcmp(name, "concat") && argc >= 1) {
+  if (sp_streq(name, "concat") && argc >= 1) {
     /* Process each arg sequentially, snapshotting each arg's length before
        its own loop (the test expects sequential/non-snapshotted behavior). */
     int tr = ++g_tmp;
@@ -10632,11 +10632,11 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(&eb, "sp_%sArray_get(", ak); { Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, argv[a], &ab); buf_puts(&eb, ab.p ? ab.p : ""); free(ab.p); }
       buf_printf(&eb, ", _t%d)", ti);
       snprintf(getexpr, sizeof getexpr, "%s", eb.p ? eb.p : ""); free(eb.p);
-      if (!strcmp(k, "Poly") && strcmp(ak, "Poly")) {
+      if (sp_streq(k, "Poly") && !sp_streq(ak, "Poly")) {
         /* box the source scalar into the poly receiver */
         emit_boxed_text(c, ty_array_elem(at), getexpr, b);
       }
-      else if (strcmp(k, "Poly") && !strcmp(ak, "Poly")) {
+      else if (!sp_streq(k, "Poly") && sp_streq(ak, "Poly")) {
         /* unbox the source poly element into the receiver's scalar */
         if (et == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", getexpr);
         else if (et == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", getexpr);
@@ -10679,10 +10679,10 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "; ");
     buf_printf(b, "sp_%sHash_set(_t%d, _t%d, ", hn, ta, tb);
     const char *pf = vt == TY_POLY ?
-        (!strcmp(op, "+") ? "sp_poly_add" : !strcmp(op, "-") ? "sp_poly_sub" :
-         !strcmp(op, "*") ? "sp_poly_mul" : !strcmp(op, "/") ? "sp_poly_div" :
-         !strcmp(op, "%") ? "sp_poly_mod" : !strcmp(op, "**") ? "sp_poly_pow" : NULL) : NULL;
-    if (vt == TY_STRING && !strcmp(op, "+")) {
+        (sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
+         sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
+         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL) : NULL;
+    if (vt == TY_STRING && sp_streq(op, "+")) {
       buf_printf(b, "sp_str_concat(sp_%sHash_get(_t%d, _t%d), ", hn, ta, tb);
       emit_expr(c, v, b); buf_puts(b, ")");
     }
@@ -10816,7 +10816,7 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
 int scope_has_return(Compiler *c, int scope_idx) {
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
-    if (ty && !strcmp(ty, "ReturnNode") && c->nscope[id] == scope_idx) return 1;
+    if (ty && sp_streq(ty, "ReturnNode") && c->nscope[id] == scope_idx) return 1;
   }
   return 0;
 }
@@ -10831,15 +10831,15 @@ static int pure_forwarding_target(Compiler *c, int mi, int depth) {
   Scope *m = &c->scopes[mi];
   if (m->yields || (m->blk_param && m->blk_param[0])) return mi;
   int body = m->body;
-  if (body < 0 || !nt_type(c->nt, body) || strcmp(nt_type(c->nt, body), "StatementsNode")) return -1;
+  if (body < 0 || !nt_type(c->nt, body) || !sp_streq(nt_type(c->nt, body), "StatementsNode")) return -1;
   int n = 0; const int *st = nt_arr(c->nt, body, "body", &n);
   if (n != 1) return -1;
   int call = st[0];
   const char *cty = nt_type(c->nt, call);
-  if (!cty || strcmp(cty, "CallNode") || nt_ref(c->nt, call, "receiver") >= 0) return -1;
+  if (!cty || !sp_streq(cty, "CallNode") || nt_ref(c->nt, call, "receiver") >= 0) return -1;
   int args = nt_ref(c->nt, call, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
-  if (ac != 1 || !nt_type(c->nt, av[0]) || strcmp(nt_type(c->nt, av[0]), "ForwardingArgumentsNode")) return -1;
+  if (ac != 1 || !nt_type(c->nt, av[0]) || !sp_streq(nt_type(c->nt, av[0]), "ForwardingArgumentsNode")) return -1;
   const char *tn = nt_str(c->nt, call, "name");
   if (!tn) return -1;
   int t = comp_method_index(c, tn);
@@ -10869,7 +10869,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   else {
     TyKind rt = comp_ntype(c, recv);
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
       /* Cls.method with a yield block: look up as a class method */
       const char *cname = nt_str(nt, recv, "name");
       int ci = cname ? comp_class_index(c, cname) : -1;
@@ -10889,7 +10889,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      with this call's args + block (target then splices the block normally). */
   {
     int blk0 = nt_ref(nt, id, "block");
-    if (blk0 >= 0 && nt_type(nt, blk0) && !strcmp(nt_type(nt, blk0), "BlockNode")) {
+    if (blk0 >= 0 && nt_type(nt, blk0) && sp_streq(nt_type(nt, blk0), "BlockNode")) {
       int t = pure_forwarding_target(c, mi, 0);
       if (t >= 0) mi = t;
     }
@@ -10899,14 +10899,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int block = nt_ref(nt, id, "block");   /* may be -1: no block passed */
   /* `inner(&)` / `inner(&block)`: a BlockArgumentNode forwards the block
      active at this (already-inlined) site, not a fresh literal. */
-  if (block >= 0 && nt_type(nt, block) && !strcmp(nt_type(nt, block), "BlockArgumentNode"))
+  if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode"))
     block = g_block_id;
   if (g_nren + m->nlocals >= MAX_RENAME) return 0;
   /* Pre-check: every body local must have an emittable type. Bail BEFORE
      writing anything (a mid-emit bail would leave an unbalanced `{`). */
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
     if (!is_scalar_ret(lv->type)) return 0;
   }
 
@@ -10944,7 +10944,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* declare method locals under renamed names */
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;  /* virtual &block slot */
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;  /* virtual &block slot */
     snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
     snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
     const char *rn = g_ren_to[g_nren];
@@ -10964,12 +10964,12 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      literal ForwardingArgumentsNode (which has no value of its own). */
   Scope *fwd_encl = NULL;
   if (argc == 1 && argv && nt_type(nt, argv[0]) &&
-      !strcmp(nt_type(nt, argv[0]), "ForwardingArgumentsNode"))
+      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode"))
     fwd_encl = comp_scope_of(c, argv[0]);
   /* A trailing keyword-hash arg binds by param name, not positionally. */
   int kwh = -1, pos_argc = argc;
   if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
-      !strcmp(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
     kwh = argv[argc - 1]; pos_argc = argc - 1;
   }
   for (int i = 0; i < m->nparams; i++) {
@@ -11030,13 +11030,13 @@ int is_block_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (!g_block_param_name || !g_block_param_name[0] || g_block_id < 0) return 0;
   const char *ty = nt_type(nt, id);
-  if (!ty || strcmp(ty, "CallNode")) return 0;
+  if (!ty || !sp_streq(ty, "CallNode")) return 0;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || (strcmp(nm, "call") && strcmp(nm, "()") && strcmp(nm, "[]") && strcmp(nm, "yield"))) return 0;
+  if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") && !sp_streq(nm, "[]") && !sp_streq(nm, "yield"))) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
   const char *rn = nt_str(nt, recv, "name");
-  return rn && !strcmp(rn, g_block_param_name);
+  return rn && sp_streq(rn, g_block_param_name);
 }
 
 /* A `<&block-param>.call(...)` on the inlined method's block param while NO
@@ -11048,13 +11048,13 @@ int is_blockless_block_param_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (!g_block_param_name || !g_block_param_name[0] || g_block_id >= 0) return 0;
   const char *ty = nt_type(nt, id);
-  if (!ty || strcmp(ty, "CallNode")) return 0;
+  if (!ty || !sp_streq(ty, "CallNode")) return 0;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || (strcmp(nm, "call") && strcmp(nm, "()") && strcmp(nm, "[]"))) return 0;
+  if (!nm || (!sp_streq(nm, "call") && !sp_streq(nm, "()") && !sp_streq(nm, "[]"))) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
   const char *rn = nt_str(nt, recv, "name");
-  return rn && !strcmp(rn, g_block_param_name);
+  return rn && sp_streq(rn, g_block_param_name);
 }
 
 /* Expand the active block's body, binding its params to the given call
@@ -11129,7 +11129,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
        expression there (a trailing `return;` makes the ({...}) void). */
     int bn2 = 0; const int *bd2 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn2) : NULL;
     if (bn2 > 0 && nt_type(nt, bd2[bn2 - 1]) &&
-        !strcmp(nt_type(nt, bd2[bn2 - 1]), "ReturnNode")) {
+        sp_streq(nt_type(nt, bd2[bn2 - 1]), "ReturnNode")) {
       int ra = nt_ref(nt, bd2[bn2 - 1], "arguments");
       int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
       TyKind rt2 = rn > 0 ? comp_ntype(c, rv[0]) : TY_INT;
@@ -11175,13 +11175,13 @@ int subtree_has_own_redo(const NodeTable *nt, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
   if (!ty) return 0;
-  if (!strcmp(ty, "RedoNode")) return 1;
+  if (sp_streq(ty, "RedoNode")) return 1;
   /* nested scope/loop boundaries: a redo inside binds to that inner loop */
-  if (!strcmp(ty, "DefNode") || !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode") ||
-      !strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
-      !strcmp(ty, "LambdaNode"))
+  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
+      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+      sp_streq(ty, "LambdaNode"))
     return 0;
-  if (!strcmp(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
+  if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;  /* nested iteration */
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) if (subtree_has_own_redo(nt, nt_ref_at(nt, id, i))) return 1;
   int na = nt_num_arrs(nt, id);
@@ -11217,11 +11217,11 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
-  int is_tap = !strcmp(name, "tap");
-  int is_then = !strcmp(name, "then") || !strcmp(name, "yield_self");
+  int is_tap = sp_streq(name, "tap");
+  int is_then = sp_streq(name, "then") || sp_streq(name, "yield_self");
   if (!is_tap && !is_then) return 0;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || !nt_type(nt, block) || strcmp(nt_type(nt, block), "BlockNode")) return 0;
+  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind et = comp_ntype(c, recv);
@@ -11323,7 +11323,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (!name) return 0;
 
   /* loop { ... } -- infinite loop, exited by break */
-  if (recv < 0 && !strcmp(name, "loop")) {
+  if (recv < 0 && sp_streq(name, "loop")) {
     int lbody = nt_ref(nt, block, "body");
     /* Kernel#loop rescues StopIteration to terminate normally (e.g. an external
        Enumerator's #next at the end). Wrap the loop in a setjmp handler; a
@@ -11350,7 +11350,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   TyKind rt = comp_ntype(c, recv);
 
   /* n.times { |i| ... } */
-  if (!strcmp(name, "times") && rt == TY_INT) {
+  if (sp_streq(name, "times") && rt == TY_INT) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, recv, &rb);
@@ -11367,7 +11367,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* num.step(limit[, step]) { [|i|] ... } -- stepping loop. A float receiver
      or a float limit/step makes it a float walk (yielding floats), computed
      by iteration count to avoid floating-point drift (CRuby semantics). */
-  if (!strcmp(name, "step") && (rt == TY_INT || rt == TY_FLOAT)) {
+  if (sp_streq(name, "step") && (rt == TY_INT || rt == TY_FLOAT)) {
     int args = nt_ref(nt, id, "arguments");
     int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
@@ -11412,7 +11412,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* hash.each / each_pair { |k, v| ... } */
-  if ((!strcmp(name, "each") || !strcmp(name, "each_pair")) && ty_is_hash(rt)) {
+  if ((sp_streq(name, "each") || sp_streq(name, "each_pair")) && ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     if (!hn) return 0;
     const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
@@ -11461,10 +11461,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* hash.each_value { |v| ... } / each_key { |k| ... } -- single param */
-  if ((!strcmp(name, "each_value") || !strcmp(name, "each_key")) && ty_is_hash(rt)) {
+  if ((sp_streq(name, "each_value") || sp_streq(name, "each_key")) && ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
     if (!hn) return 0;
-    int is_val = !strcmp(name, "each_value");
+    int is_val = sp_streq(name, "each_value");
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, recv, &rb);
@@ -11503,11 +11503,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* hash.delete_if / reject! / select! / filter! / keep_if { |k, v| cond } */
-  if ((!strcmp(name, "delete_if") || !strcmp(name, "reject!") || !strcmp(name, "select!") ||
-       !strcmp(name, "filter!") || !strcmp(name, "keep_if")) && ty_is_hash(rt) && block >= 0) {
+  if ((sp_streq(name, "delete_if") || sp_streq(name, "reject!") || sp_streq(name, "select!") ||
+       sp_streq(name, "filter!") || sp_streq(name, "keep_if")) && ty_is_hash(rt) && block >= 0) {
     const char *hn = ty_hash_cname(rt);
     if (hn && rt != TY_POLY_POLY_HASH) {
-      int is_rej = (!strcmp(name, "delete_if") || !strcmp(name, "reject!"));
+      int is_rej = (sp_streq(name, "delete_if") || sp_streq(name, "reject!"));
       const char *p0_raw = block_param_name(c, block, 0);
       const char *p1_raw = block_param_name(c, block, 1);
       const char *kp = p0_raw ? rename_local(p0_raw) : NULL;
@@ -11573,7 +11573,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* array.each_with_index { |x, i| ... } */
-  if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
+  if (sp_streq(name, "each_with_index") && ty_is_array(rt)) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) return 0;
     const char *p1 = block_param_name(c, block, 1); if (p1) p1 = rename_local(p1);
@@ -11624,7 +11624,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* array.zip(other) { |a, b| ... } — block form, returns nil */
-  if (!strcmp(name, "zip") && ty_is_array(rt) && block >= 0) {
+  if (sp_streq(name, "zip") && ty_is_array(rt) && block >= 0) {
     int zargs_n = nt_ref(nt, id, "arguments");
     int zargc = 0; const int *zargv = zargs_n >= 0 ? nt_arr(nt, zargs_n, "arguments", &zargc) : NULL;
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
@@ -11679,7 +11679,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array or hash */
-  if (!strcmp(name, "each") && rt == TY_POLY && block >= 0 && p0) {
+  if (sp_streq(name, "each") && rt == TY_POLY && block >= 0 && p0) {
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
@@ -11738,7 +11738,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* array.each { |x| ... } */
-  if (!strcmp(name, "each") && rt == TY_POLY_ARRAY) {
+  if (sp_streq(name, "each") && rt == TY_POLY_ARRAY) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     int ta = ++g_tmp;
@@ -11833,11 +11833,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (outer_pa) { emit_indent(b, indent); buf_printf(b, "lv_%s = _t%d;\n", p0, ts_pa); }
     return 1;
   }
-  if ((!strcmp(name, "each") || !strcmp(name, "each_entry") || !strcmp(name, "reverse_each")) &&
+  if ((sp_streq(name, "each") || sp_streq(name, "each_entry") || sp_streq(name, "reverse_each")) &&
       ty_is_array(rt)) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) return 0;
-    int rev = !strcmp(name, "reverse_each");
+    int rev = sp_streq(name, "reverse_each");
     int t = ++g_tmp, tn = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_expr(c, recv, &rb);
@@ -11871,7 +11871,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       LocalVar *bp0 = orig_p0_name ? scope_local(blk_s, orig_p0_name) : NULL;
       TyKind bp0_type = bp0 ? bp0->type : TY_UNKNOWN;
       int np = 0; while (block_param_name(c, block, np)) np++;
-      if (np >= 2 && !strcmp(k, "Poly") && bp0_type != TY_POLY && bp0_type != TY_UNKNOWN) {
+      if (np >= 2 && sp_streq(k, "Poly") && bp0_type != TY_POLY && bp0_type != TY_UNKNOWN) {
         /* Get the inner array kind from the first param's element type */
         const char *inner_k = array_kind(ty_array_of(bp0_type));
         if (inner_k) {
@@ -11915,7 +11915,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   /* int_array.combination(k) { |c| ... } -- yield each k-combination as a
      fresh int_array */
-  if (!strcmp(name, "combination") && rt == TY_INT_ARRAY) {
+  if (sp_streq(name, "combination") && rt == TY_INT_ARRAY) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (ac != 1) return 0;
@@ -11943,7 +11943,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* array.each_cons(n) { |a, b, ...| } -- sliding window of n consecutive
      elements; a single param binds the n-element sub-array, multiple params
      destructure the window */
-  if (!strcmp(name, "each_cons") && ty_is_array(rt)) {
+  if (sp_streq(name, "each_cons") && ty_is_array(rt)) {
     int args = nt_ref(nt, id, "arguments");
     int ec = 0; const int *eav = args >= 0 ? nt_arr(nt, args, "arguments", &ec) : NULL;
     if (ec != 1) return 0;
@@ -11993,7 +11993,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* (a..b).each { |i| ... } -- any range-typed receiver */
-  if (!strcmp(name, "each") && rt == TY_RANGE && p0) {
+  if (sp_streq(name, "each") && rt == TY_RANGE && p0) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
@@ -12025,8 +12025,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   /* n.upto(m) / n.downto(m) { [|i|] ... } -- a fresh temp drives the loop and
      the block param (if any) is rebound from it each iteration, like n.times.
      A blockless-param form (`1.upto(5) { body }`) must still run the body. */
-  if ((!strcmp(name, "upto") || !strcmp(name, "downto")) && rt == TY_INT) {
-    int up = !strcmp(name, "upto");
+  if ((sp_streq(name, "upto") || sp_streq(name, "downto")) && rt == TY_INT) {
+    int up = sp_streq(name, "upto");
     int args = nt_ref(nt, id, "arguments");
     int argc = 0;
     const int *argv = NULL;
@@ -12048,7 +12048,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   /* "a".upto("e") { |c| ... } -- string succ-sequence loop, mirrors
      sp_StrArray_from_string_range semantics (inclusive, 4096-cap) */
-  if (!strcmp(name, "upto") && rt == TY_STRING && p0) {
+  if (sp_streq(name, "upto") && rt == TY_STRING && p0) {
     int args = nt_ref(nt, id, "arguments");
     int argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -12068,7 +12068,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
-  if (!strcmp(name, "tap") && recv >= 0) {
+  if (sp_streq(name, "tap") && recv >= 0) {
     TyKind et = infer_type(c, recv);
     Scope *tsc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *tlv0 = (tsc && p0) ? scope_local(tsc, p0) : NULL;
@@ -12097,7 +12097,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* array.cycle(n) { |p| body } -- repeat n times over the array */
-  if (!strcmp(name, "cycle") && ty_is_array(rt)) {
+  if (sp_streq(name, "cycle") && ty_is_array(rt)) {
     int args = nt_ref(nt, id, "arguments");
     int cyc_argc = 0; const int *cyc_argv = args >= 0 ? nt_arr(nt, args, "arguments", &cyc_argc) : NULL;
     if (cyc_argc != 1) return 0;
@@ -12141,7 +12141,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* array.each_slice(n) { |p| body } -- yield subarrays of size n */
-  if (!strcmp(name, "each_slice") && ty_is_array(rt)) {
+  if (sp_streq(name, "each_slice") && ty_is_array(rt)) {
     int args = nt_ref(nt, id, "arguments");
     int es_argc = 0; const int *es_argv = args >= 0 ? nt_arr(nt, args, "arguments", &es_argc) : NULL;
     if (es_argc != 1) return 0;
@@ -12193,7 +12193,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* str.scan(/re/) { |m| body } -- iterate over regex matches */
-  if (!strcmp(name, "scan") && rt == TY_STRING) {
+  if (sp_streq(name, "scan") && rt == TY_STRING) {
     int args = nt_ref(nt, id, "arguments");
     int sc_argc = 0; const int *sc_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sc_argc) : NULL;
     if (sc_argc != 1 || re_lit_index(c, sc_argv[0]) < 0) return 0;

@@ -79,7 +79,7 @@ void comp_free(Compiler *c) {
 }
 
 static LocalVar *lv_find(LocalVar *arr, int n, const char *name) {
-  for (int i = 0; i < n; i++) if (strcmp(arr[i].name, name) == 0) return &arr[i];
+  for (int i = 0; i < n; i++) if (sp_streq(arr[i].name, name)) return &arr[i];
   return NULL;
 }
 static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
@@ -96,12 +96,12 @@ LocalVar *comp_gvar(Compiler *c, const char *name) { return lv_find(c->gvars, c-
 LocalVar *comp_gvar_intern(Compiler *c, const char *name) { return lv_intern(&c->gvars, &c->ngvars, &c->cgvars, name); }
 const char *comp_resolve_gvar(Compiler *c, const char *name) {
   for (int i = 0; i < c->ngvar_aliases; i++)
-    if (strcmp(c->gvar_alias_from[i], name) == 0) return c->gvar_alias_to[i];
+    if (sp_streq(c->gvar_alias_from[i], name)) return c->gvar_alias_to[i];
   return name;
 }
 void comp_add_gvar_alias(Compiler *c, const char *from, const char *to) {
   for (int i = 0; i < c->ngvar_aliases; i++)
-    if (strcmp(c->gvar_alias_from[i], from) == 0) return; /* already recorded */
+    if (sp_streq(c->gvar_alias_from[i], from)) return; /* already recorded */
   c->gvar_alias_from = realloc(c->gvar_alias_from, sizeof(char*) * (size_t)(c->ngvar_aliases + 1));
   c->gvar_alias_to   = realloc(c->gvar_alias_to,   sizeof(char*) * (size_t)(c->ngvar_aliases + 1));
   c->gvar_alias_from[c->ngvar_aliases] = strdup(from);
@@ -113,7 +113,7 @@ LocalVar *comp_const_intern(Compiler *c, const char *name) { return lv_intern(&c
 
 int comp_sym_intern(Compiler *c, const char *name) {
   for (int i = 0; i < c->nsymbols; i++)
-    if (strcmp(c->symbols[i], name) == 0) return i;
+    if (sp_streq(c->symbols[i], name)) return i;
   if (c->nsymbols >= c->csymbols) {
     c->csymbols = c->csymbols ? c->csymbols * 2 : 8;
     c->symbols = realloc(c->symbols, sizeof(char *) * (size_t)c->csymbols);
@@ -157,13 +157,13 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
 int comp_class_index(Compiler *c, const char *name) {
   if (!name) return -1;
   for (int i = 0; i < c->nclasses; i++)
-    if (c->classes[i].name && strcmp(c->classes[i].name, name) == 0) return i;
+    if (c->classes[i].name && sp_streq(c->classes[i].name, name)) return i;
   return -1;
 }
 
 int comp_ivar_index(ClassInfo *ci, const char *name) {
   for (int i = 0; i < ci->nivars; i++)
-    if (strcmp(ci->ivars[i], name) == 0) return i;
+    if (sp_streq(ci->ivars[i], name)) return i;
   return -1;
 }
 
@@ -182,7 +182,7 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
 
 int comp_cvar_index(ClassInfo *ci, const char *name) {
   for (int i = 0; i < ci->ncvars; i++)
-    if (strcmp(ci->cvars[i], name) == 0) return i;
+    if (sp_streq(ci->cvars[i], name)) return i;
   return -1;
 }
 
@@ -204,7 +204,7 @@ int comp_method_in_class(Compiler *c, int class_id, const char *name) {
   /* iterate in reverse so a reopened class's later definition wins */
   for (int s = c->nscopes - 1; s >= 0; s--)
     if (c->scopes[s].class_id == class_id && !c->scopes[s].is_cmethod &&
-        c->scopes[s].name && strcmp(c->scopes[s].name, name) == 0) return s;
+        c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
   return -1;
 }
 
@@ -212,7 +212,7 @@ int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
   if (!name) return -1;
   for (int s = c->nscopes - 1; s >= 0; s--)
     if (c->scopes[s].class_id == class_id && c->scopes[s].is_cmethod &&
-        c->scopes[s].name && strcmp(c->scopes[s].name, name) == 0) return s;
+        c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
   return -1;
 }
 int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
@@ -251,11 +251,11 @@ int comp_trampoline_kind(Compiler *c, int class_id, const char *name, int *def_c
   if (bn != 1 || !bb) return 0;
   int call = bb[0];
   const char *ct = nt_type(nt, call);
-  if (!ct || strcmp(ct, "CallNode")) return 0;
+  if (!ct || !sp_streq(ct, "CallNode")) return 0;
   if (nt_ref(nt, call, "receiver") >= 0) return 0;  /* must be receiverless */
   const char *cn = nt_str(nt, call, "name");
   if (!cn) return 0;
-  int kind = !strcmp(cn, "instance_eval") ? 1 : !strcmp(cn, "instance_exec") ? 2 : 0;
+  int kind = sp_streq(cn, "instance_eval") ? 1 : sp_streq(cn, "instance_exec") ? 2 : 0;
   if (!kind) return 0;
   /* The block arg must forward the method's own &block parameter. */
   int barg = nt_ref(nt, call, "block");
@@ -263,7 +263,7 @@ int comp_trampoline_kind(Compiler *c, int class_id, const char *name, int *def_c
   int bexpr = nt_ref(nt, barg, "expression");
   if (bexpr < 0) return 0;
   const char *bvn = nt_str(nt, bexpr, "name");
-  if (!bvn || strcmp(bvn, s->blk_param)) return 0;
+  if (!bvn || !sp_streq(bvn, s->blk_param)) return 0;
   if (def_class) *def_class = dc;
   return kind;
 }
@@ -282,7 +282,7 @@ int comp_sg_const_candidates(Compiler *c, int class_id, const char *base, int *o
   int count = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     size_t nl = strlen(nm);
@@ -290,14 +290,14 @@ int comp_sg_const_candidates(Compiler *c, int class_id, const char *base, int *o
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     const char *rty = nt_type(nt, recv);
-    if (!rty || (strcmp(rty, "ConstantReadNode") && strcmp(rty, "ConstantPathNode"))) continue;
+    if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || strcmp(rn, cls_name)) continue;
+    if (!rn || !sp_streq(rn, cls_name)) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an != 1) return -1;
     const char *vty = nt_type(nt, av[0]);
-    if (!vty || (strcmp(vty, "ConstantReadNode") && strcmp(vty, "ConstantPathNode"))) return -1;
+    if (!vty || (!sp_streq(vty, "ConstantReadNode") && !sp_streq(vty, "ConstantPathNode"))) return -1;
     int rci = comp_class_index(c, nt_str(nt, av[0], "name"));
     if (rci < 0) return -1;
     int seen = 0;
@@ -320,7 +320,7 @@ int comp_sg_const_binding(Compiler *c, int class_id, const char *base) {
 int comp_sg_reader_const(Compiler *c, int call_id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, call_id);
-  if (!ty || strcmp(ty, "CallNode")) return -1;
+  if (!ty || !sp_streq(ty, "CallNode")) return -1;
   if (nt_ref(nt, call_id, "block") >= 0) return -1;
   if (nt_ref(nt, call_id, "arguments") >= 0) return -1;
   const char *nm = nt_str(nt, call_id, "name");
@@ -330,7 +330,7 @@ int comp_sg_reader_const(Compiler *c, int call_id) {
   int recv = nt_ref(nt, call_id, "receiver");
   if (recv < 0) return -1;
   const char *rty = nt_type(nt, recv);
-  if (!rty || (strcmp(rty, "ConstantReadNode") && strcmp(rty, "ConstantPathNode"))) return -1;
+  if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return -1;
   const char *rn = nt_str(nt, recv, "name");
   int ci = rn ? comp_class_index(c, rn) : -1;
   if (ci < 0 || !comp_is_sg_reader(&c->classes[ci], nm)) return -1;
@@ -343,7 +343,7 @@ int comp_sg_reader_const(Compiler *c, int call_id) {
 int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, call_id);
-  if (!ty || strcmp(ty, "CallNode")) return 0;
+  if (!ty || !sp_streq(ty, "CallNode")) return 0;
   if (nt_ref(nt, call_id, "block") >= 0) return 0;
   if (nt_ref(nt, call_id, "arguments") >= 0) return 0;
   const char *nm = nt_str(nt, call_id, "name");
@@ -353,7 +353,7 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
   int recv = nt_ref(nt, call_id, "receiver");
   if (recv < 0) return 0;
   const char *rty = nt_type(nt, recv);
-  if (!rty || (strcmp(rty, "ConstantReadNode") && strcmp(rty, "ConstantPathNode"))) return 0;
+  if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) return 0;
   const char *rn = nt_str(nt, recv, "name");
   int ci = rn ? comp_class_index(c, rn) : -1;
   if (ci < 0 || !comp_is_sg_reader(&c->classes[ci], nm)) return 0;
@@ -364,11 +364,11 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
 static int is_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
-  if (!ty || strcmp(ty, "ArrayNode")) return 0;
+  if (!ty || !sp_streq(ty, "ArrayNode")) return 0;
   int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
   for (int i = 0; i < en; i++) {
     const char *et = nt_type(nt, els[i]);
-    if (!et || strcmp(et, "IntegerNode")) return 0;
+    if (!et || !sp_streq(et, "IntegerNode")) return 0;
   }
   return 1;
 }
@@ -379,7 +379,7 @@ static int is_int_array_literal(Compiler *c, int node) {
 int comp_is_nested_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
-  if (!ty || strcmp(ty, "ArrayNode")) return 0;
+  if (!ty || !sp_streq(ty, "ArrayNode")) return 0;
   int en = 0; const int *els = nt_arr(nt, node, "elements", &en);
   if (en == 0) return 0;
   for (int i = 0; i < en; i++)
@@ -388,7 +388,7 @@ int comp_is_nested_int_array_literal(Compiler *c, int node) {
 }
 
 static int name_in(char **list, int n, const char *name) {
-  for (int i = 0; i < n; i++) if (strcmp(list[i], name) == 0) return 1;
+  for (int i = 0; i < n; i++) if (sp_streq(list[i], name)) return 1;
   return 0;
 }
 void comp_add_reader(ClassInfo *ci, const char *name) {
@@ -446,7 +446,7 @@ int comp_is_sg_writer(ClassInfo *ci, const char *name) { return name_in(ci->sg_w
 void comp_add_alias(ClassInfo *ci, const char *new_name, const char *old_name) {
   if (!new_name || !old_name) return;
   for (int i = 0; i < ci->naliases; i++)
-    if (strcmp(ci->alias_new[i], new_name) == 0) return;
+    if (sp_streq(ci->alias_new[i], new_name)) return;
   if (ci->naliases >= ci->caliases) {
     ci->caliases = ci->caliases ? ci->caliases * 2 : 4;
     ci->alias_new = realloc(ci->alias_new, sizeof(char *) * (size_t)ci->caliases);
@@ -465,7 +465,7 @@ const char *comp_resolve_alias(Compiler *c, int class_id, const char *name) {
     for (int cid = class_id; cid >= 0 && !next; cid = c->classes[cid].parent) {
       ClassInfo *ci = &c->classes[cid];
       for (int i = 0; i < ci->naliases; i++)
-        if (strcmp(ci->alias_new[i], name) == 0) { next = ci->alias_old[i]; break; }
+        if (sp_streq(ci->alias_new[i], name)) { next = ci->alias_old[i]; break; }
     }
     if (!next) return name;
     name = next;
@@ -497,7 +497,7 @@ int comp_method_index(Compiler *c, const char *name) {
   if (!name) return -1;
   for (int s = 0; s < c->nscopes; s++)
     if (c->scopes[s].class_id < 0 && c->scopes[s].name &&
-        strcmp(c->scopes[s].name, name) == 0) return s;
+        sp_streq(c->scopes[s].name, name)) return s;
   return -1;
 }
 
@@ -518,7 +518,7 @@ int comp_included_method_index(Compiler *c, const char *name) {
 
 LocalVar *scope_local(Scope *s, const char *name) {
   for (int i = 0; i < s->nlocals; i++)
-    if (strcmp(s->locals[i].name, name) == 0) return &s->locals[i];
+    if (sp_streq(s->locals[i].name, name)) return &s->locals[i];
   return NULL;
 }
 
@@ -557,7 +557,7 @@ const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name) 
   if (class_id < 0 || class_id >= c->nclasses || !name) return NULL;
   ClassInfo *ci = &c->classes[class_id];
   for (int k = 0; k < ci->nprep_chain; k++)
-    if (!strcmp(ci->prep_from[k], name)) return ci->prep_to[k];
+    if (sp_streq(ci->prep_from[k], name)) return ci->prep_to[k];
   return NULL;
 }
 

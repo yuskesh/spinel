@@ -49,10 +49,10 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(nt, id);
   if (!ty) return 0;
-  if (!strcmp(ty, "CallNode") || !strcmp(ty, "ArrayNode") ||
-      !strcmp(ty, "HashNode") || !strcmp(ty, "KeywordHashNode") ||
-      !strcmp(ty, "InterpolatedStringNode") || !strcmp(ty, "SuperNode") ||
-      !strcmp(ty, "ForwardingSuperNode") || !strcmp(ty, "YieldNode"))
+  if (sp_streq(ty, "CallNode") || sp_streq(ty, "ArrayNode") ||
+      sp_streq(ty, "HashNode") || sp_streq(ty, "KeywordHashNode") ||
+      sp_streq(ty, "InterpolatedStringNode") || sp_streq(ty, "SuperNode") ||
+      sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode"))
     return 1;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
@@ -148,44 +148,44 @@ int re_lit_index(Compiler *c, int nid) {
   if (!ty) return -1;
   /* a constant bound to a regex literal (PATTERN = /re/[.freeze], possibly
      namespaced) resolves to that literal's precompiled pattern */
-  if (!strcmp(ty, "ConstantReadNode") || !strcmp(ty, "ConstantPathNode")) {
+  if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
     const char *nm = nt_str(c->nt, nid, "name");
     if (!nm) return -1;
     for (int k = 0; k < c->nt->count; k++) {
       const char *kt = nt_type(c->nt, k);
-      if (!kt || (strcmp(kt, "ConstantWriteNode") && strcmp(kt, "ConstantPathWriteNode"))) continue;
+      if (!kt || (!sp_streq(kt, "ConstantWriteNode") && !sp_streq(kt, "ConstantPathWriteNode"))) continue;
       const char *kn = nt_str(c->nt, k, "name");
-      if (!kn || strcmp(kn, nm)) continue;
+      if (!kn || !sp_streq(kn, nm)) continue;
       int v = nt_ref(c->nt, k, "value");
-      if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "CallNode") &&
-          nt_str(c->nt, v, "name") && !strcmp(nt_str(c->nt, v, "name"), "freeze"))
+      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "CallNode") &&
+          nt_str(c->nt, v, "name") && sp_streq(nt_str(c->nt, v, "name"), "freeze"))
         v = nt_ref(c->nt, v, "receiver");
-      if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "RegularExpressionNode"))
+      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "RegularExpressionNode"))
         return re_lit_index(c, v);
     }
     return -1;
   }
   /* a local variable of type TY_REGEX: look up its write node */
-  if (!strcmp(ty, "LocalVariableReadNode") && comp_ntype(c, nid) == TY_REGEX) {
+  if (sp_streq(ty, "LocalVariableReadNode") && comp_ntype(c, nid) == TY_REGEX) {
     const char *nm = nt_str(c->nt, nid, "name");
     if (!nm) return -1;
     for (int k = 0; k < c->nt->count; k++) {
       const char *kt = nt_type(c->nt, k);
-      if (!kt || strcmp(kt, "LocalVariableWriteNode")) continue;
+      if (!kt || !sp_streq(kt, "LocalVariableWriteNode")) continue;
       const char *kn = nt_str(c->nt, k, "name");
-      if (!kn || strcmp(kn, nm)) continue;
+      if (!kn || !sp_streq(kn, nm)) continue;
       int v = nt_ref(c->nt, k, "value");
-      if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "RegularExpressionNode"))
+      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "RegularExpressionNode"))
         return re_lit_index(c, v);
     }
     return -1;
   }
-  if (strcmp(ty, "RegularExpressionNode")) return -1;
+  if (!sp_streq(ty, "RegularExpressionNode")) return -1;
   const char *src = nt_str(c->nt, nid, "unescaped");
   if (!src) return -1;
   int flg = re_engine_flags((int)nt_int(c->nt, nid, "flags", 0));
   for (int i = 0; i < g_re_count; i++)
-    if (g_re_flg[i] == flg && !strcmp(g_re_src[i], src)) return i;
+    if (g_re_flg[i] == flg && sp_streq(g_re_src[i], src)) return i;
   if (g_re_count >= g_re_cap) {
     g_re_cap = g_re_cap ? g_re_cap * 2 : 8;
     g_re_src = realloc(g_re_src, sizeof(char *) * (size_t)g_re_cap);
@@ -199,20 +199,20 @@ const char *re_lit_src(Compiler *c, int nid) {
   if (nid < 0) return NULL;
   const char *ty = nt_type(c->nt, nid);
   if (!ty) return NULL;
-  if (!strcmp(ty, "RegularExpressionNode")) return nt_str(c->nt, nid, "unescaped");
-  if (!strcmp(ty, "ConstantReadNode") || !strcmp(ty, "ConstantPathNode")) {
+  if (sp_streq(ty, "RegularExpressionNode")) return nt_str(c->nt, nid, "unescaped");
+  if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
     const char *nm = nt_str(c->nt, nid, "name");
     if (!nm) return NULL;
     for (int k = 0; k < c->nt->count; k++) {
       const char *kt = nt_type(c->nt, k);
-      if (!kt || (strcmp(kt, "ConstantWriteNode") && strcmp(kt, "ConstantPathWriteNode"))) continue;
+      if (!kt || (!sp_streq(kt, "ConstantWriteNode") && !sp_streq(kt, "ConstantPathWriteNode"))) continue;
       const char *kn = nt_str(c->nt, k, "name");
-      if (!kn || strcmp(kn, nm)) continue;
+      if (!kn || !sp_streq(kn, nm)) continue;
       int v = nt_ref(c->nt, k, "value");
-      if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "CallNode") &&
-          nt_str(c->nt, v, "name") && !strcmp(nt_str(c->nt, v, "name"), "freeze"))
+      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "CallNode") &&
+          nt_str(c->nt, v, "name") && sp_streq(nt_str(c->nt, v, "name"), "freeze"))
         v = nt_ref(c->nt, v, "receiver");
-      if (v >= 0 && nt_type(c->nt, v) && !strcmp(nt_type(c->nt, v), "RegularExpressionNode"))
+      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "RegularExpressionNode"))
         return nt_str(c->nt, v, "unescaped");
     }
   }
@@ -228,7 +228,7 @@ int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b) {
   int ri = re_lit_index(c, nid);
   if (ri >= 0) { buf_printf(b, "sp_re_pat_%d", ri); return 1; }
   const char *ty = nt_type(c->nt, nid);
-  if (ty && !strcmp(ty, "InterpolatedRegularExpressionNode")) {
+  if (ty && sp_streq(ty, "InterpolatedRegularExpressionNode")) {
     int flg = re_engine_flags((int)nt_int(c->nt, nid, "flags", 0));
     int ts = ++g_tmp, tp = ++g_tmp;
     /* Emit the interpolated pattern into a local buffer: an embedded call that
@@ -248,7 +248,7 @@ int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b) {
 }
 int nameset_has(NameSet *s, const char *nm) {
   if (!nm) return 0;
-  for (int i = 0; i < s->n; i++) if (!strcmp(s->v[i], nm)) return 1;
+  for (int i = 0; i < s->n; i++) if (sp_streq(s->v[i], nm)) return 1;
   return 0;
 }
 void nameset_add(NameSet *s, const char *nm) {
@@ -301,7 +301,7 @@ void emit_tail_lead(Buf *b) {
 }
 const char *rename_local(const char *nm) {
   for (int i = 0; i < g_nren; i++)
-    if (strcmp(g_ren_from[i], nm) == 0) return g_ren_to[i];
+    if (sp_streq(g_ren_from[i], nm)) return g_ren_to[i];
   return nm;
 }
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
@@ -319,7 +319,7 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
     if (!file || !*file) file = "source.rb";
     snprintf(pos, sizeof pos, "%s:%d: ", file, ln);
   }
-  const char *mname = ty && !strcmp(ty, "CallNode") ? nt_str(c->nt, id, "name") : NULL;
+  const char *mname = ty && sp_streq(ty, "CallNode") ? nt_str(c->nt, id, "name") : NULL;
   if (mname) {
     int recv = nt_ref(c->nt, id, "receiver");
     int args = nt_ref(c->nt, id, "arguments");
@@ -343,38 +343,38 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
 }
 int builtin_class_id(const char *name) {
   if (!name) return 0;
-  if (!strcmp(name, "Integer"))     return -100;
-  if (!strcmp(name, "Float"))       return -101;
-  if (!strcmp(name, "String"))      return -102;
-  if (!strcmp(name, "Symbol"))      return -103;
-  if (!strcmp(name, "Array"))       return -104;
-  if (!strcmp(name, "Hash"))        return -105;
-  if (!strcmp(name, "Range"))       return -106;
-  if (!strcmp(name, "Time"))        return -107;
-  if (!strcmp(name, "Module"))      return -108;
-  if (!strcmp(name, "Class"))       return -109;
-  if (!strcmp(name, "NilClass"))    return -110;
-  if (!strcmp(name, "TrueClass"))   return -111;
-  if (!strcmp(name, "FalseClass"))  return -112;
-  if (!strcmp(name, "Numeric"))     return -113;
-  if (!strcmp(name, "Comparable"))  return -114;
-  if (!strcmp(name, "Enumerable"))  return -115;
-  if (!strcmp(name, "Object"))      return -116;
-  if (!strcmp(name, "BasicObject")) return -117;
-  if (!strcmp(name, "Proc"))        return -118;
-  if (!strcmp(name, "Kernel"))      return -119;
-  if (!strcmp(name, "IO"))          return -120;
-  if (!strcmp(name, "File"))        return -121;
-  if (!strcmp(name, "Exception"))   return -122;
-  if (!strcmp(name, "StandardError")) return -123;
-  if (!strcmp(name, "RuntimeError")) return -124;
-  if (!strcmp(name, "TypeError"))   return -125;
-  if (!strcmp(name, "ArgumentError")) return -126;
-  if (!strcmp(name, "NameError"))   return -127;
-  if (!strcmp(name, "NoMethodError")) return -128;
-  if (!strcmp(name, "StopIteration")) return -129;
-  if (!strcmp(name, "Math"))        return -130;
-  if (!strcmp(name, "Complex"))     return -131;
+  if (sp_streq(name, "Integer"))     return -100;
+  if (sp_streq(name, "Float"))       return -101;
+  if (sp_streq(name, "String"))      return -102;
+  if (sp_streq(name, "Symbol"))      return -103;
+  if (sp_streq(name, "Array"))       return -104;
+  if (sp_streq(name, "Hash"))        return -105;
+  if (sp_streq(name, "Range"))       return -106;
+  if (sp_streq(name, "Time"))        return -107;
+  if (sp_streq(name, "Module"))      return -108;
+  if (sp_streq(name, "Class"))       return -109;
+  if (sp_streq(name, "NilClass"))    return -110;
+  if (sp_streq(name, "TrueClass"))   return -111;
+  if (sp_streq(name, "FalseClass"))  return -112;
+  if (sp_streq(name, "Numeric"))     return -113;
+  if (sp_streq(name, "Comparable"))  return -114;
+  if (sp_streq(name, "Enumerable"))  return -115;
+  if (sp_streq(name, "Object"))      return -116;
+  if (sp_streq(name, "BasicObject")) return -117;
+  if (sp_streq(name, "Proc"))        return -118;
+  if (sp_streq(name, "Kernel"))      return -119;
+  if (sp_streq(name, "IO"))          return -120;
+  if (sp_streq(name, "File"))        return -121;
+  if (sp_streq(name, "Exception"))   return -122;
+  if (sp_streq(name, "StandardError")) return -123;
+  if (sp_streq(name, "RuntimeError")) return -124;
+  if (sp_streq(name, "TypeError"))   return -125;
+  if (sp_streq(name, "ArgumentError")) return -126;
+  if (sp_streq(name, "NameError"))   return -127;
+  if (sp_streq(name, "NoMethodError")) return -128;
+  if (sp_streq(name, "StopIteration")) return -129;
+  if (sp_streq(name, "Math"))        return -130;
+  if (sp_streq(name, "Complex"))     return -131;
   return 0;
 }
 const char *c_type_name(TyKind t) {
@@ -430,25 +430,25 @@ int is_scalar_ret(TyKind t) {
 }
 const char *ffi_c_type(const char *spec) {
   if (!spec) return "void";
-  if (!strcmp(spec, "int"))    return "int";
-  if (!strcmp(spec, "uint32")) return "uint32_t";
-  if (!strcmp(spec, "int32"))  return "int32_t";
-  if (!strcmp(spec, "uint16")) return "uint16_t";
-  if (!strcmp(spec, "int16"))  return "int16_t";
-  if (!strcmp(spec, "uint8"))  return "uint8_t";
-  if (!strcmp(spec, "int8"))   return "int8_t";
-  if (!strcmp(spec, "size_t")) return "size_t";
-  if (!strcmp(spec, "long"))   return "long";
-  if (!strcmp(spec, "int64"))  return "int64_t";
-  if (!strcmp(spec, "float"))  return "float";
-  if (!strcmp(spec, "double")) return "double";
-  if (!strcmp(spec, "bool"))   return "int";
-  if (!strcmp(spec, "str"))    return "const char *";
-  if (!strcmp(spec, "binstr")) return "const char *";  /* bytes + sp_net_bin_len */
-  if (!strcmp(spec, "ptr"))    return "void *";
-  if (!strcmp(spec, "float_array")) return "const double *";
-  if (!strcmp(spec, "int_array"))   return "const int64_t *";
-  if (!strcmp(spec, "void"))   return "void";
+  if (sp_streq(spec, "int"))    return "int";
+  if (sp_streq(spec, "uint32")) return "uint32_t";
+  if (sp_streq(spec, "int32"))  return "int32_t";
+  if (sp_streq(spec, "uint16")) return "uint16_t";
+  if (sp_streq(spec, "int16"))  return "int16_t";
+  if (sp_streq(spec, "uint8"))  return "uint8_t";
+  if (sp_streq(spec, "int8"))   return "int8_t";
+  if (sp_streq(spec, "size_t")) return "size_t";
+  if (sp_streq(spec, "long"))   return "long";
+  if (sp_streq(spec, "int64"))  return "int64_t";
+  if (sp_streq(spec, "float"))  return "float";
+  if (sp_streq(spec, "double")) return "double";
+  if (sp_streq(spec, "bool"))   return "int";
+  if (sp_streq(spec, "str"))    return "const char *";
+  if (sp_streq(spec, "binstr")) return "const char *";  /* bytes + sp_net_bin_len */
+  if (sp_streq(spec, "ptr"))    return "void *";
+  if (sp_streq(spec, "float_array")) return "const double *";
+  if (sp_streq(spec, "int_array"))   return "const int64_t *";
+  if (sp_streq(spec, "void"))   return "void";
   return "void";
 }
 const char *default_value(TyKind t) {
@@ -569,8 +569,8 @@ void emit_str_literal(Buf *b, const char *content) {
 }
 void emit_catch_tag(Compiler *c, int id, Buf *b) {
   const char *ty = nt_type(c->nt, id);
-  if (ty && !strcmp(ty, "SymbolNode")) { emit_str_literal(b, nt_str(c->nt, id, "value")); return; }
-  if (ty && !strcmp(ty, "StringNode")) { emit_str_literal(b, nt_str(c->nt, id, "unescaped")); return; }
+  if (ty && sp_streq(ty, "SymbolNode")) { emit_str_literal(b, nt_str(c->nt, id, "value")); return; }
+  if (ty && sp_streq(ty, "StringNode")) { emit_str_literal(b, nt_str(c->nt, id, "unescaped")); return; }
   emit_expr(c, id, b);
 }
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
@@ -580,7 +580,7 @@ void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
      :sym becomes the name string directly; a symbol value uses sp_sym_to_s. */
   if (kt == TY_STRING && actual == TY_SYMBOL) {
     const char *kty = nt_type(c->nt, key);
-    if (kty && !strcmp(kty, "SymbolNode")) {
+    if (kty && sp_streq(kty, "SymbolNode")) {
       emit_str_literal(b, nt_str(c->nt, key, "value"));
     }
 else {
@@ -604,7 +604,7 @@ else {
 int unwrap_parens(Compiler *c, int id) {
   while (id >= 0) {
     const char *ty = nt_type(c->nt, id);
-    if (!ty || strcmp(ty, "ParenthesesNode")) break;
+    if (!ty || !sp_streq(ty, "ParenthesesNode")) break;
     int body = nt_ref(c->nt, id, "body");
     int n = 0;
     const int *bd = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
@@ -614,20 +614,20 @@ int unwrap_parens(Compiler *c, int id) {
   return id;
 }
 const char *int_arith_fn(const char *op) {
-  if (!strcmp(op, "+"))  return "sp_int_add";
-  if (!strcmp(op, "-"))  return "sp_int_sub";
-  if (!strcmp(op, "*"))  return "sp_int_mul";
-  if (!strcmp(op, "/"))  return "sp_idiv";
-  if (!strcmp(op, "%"))  return "sp_imod";
-  if (!strcmp(op, "**")) return "sp_int_pow";
+  if (sp_streq(op, "+"))  return "sp_int_add";
+  if (sp_streq(op, "-"))  return "sp_int_sub";
+  if (sp_streq(op, "*"))  return "sp_int_mul";
+  if (sp_streq(op, "/"))  return "sp_idiv";
+  if (sp_streq(op, "%"))  return "sp_imod";
+  if (sp_streq(op, "**")) return "sp_int_pow";
   return NULL;
 }
 const char *bigint_arith_fn(const char *op) {
-  if (!strcmp(op, "+"))  return "sp_bigint_add";
-  if (!strcmp(op, "-"))  return "sp_bigint_sub";
-  if (!strcmp(op, "*"))  return "sp_bigint_mul";
-  if (!strcmp(op, "/"))  return "sp_bigint_div";
-  if (!strcmp(op, "%"))  return "sp_bigint_mod";
+  if (sp_streq(op, "+"))  return "sp_bigint_add";
+  if (sp_streq(op, "-"))  return "sp_bigint_sub";
+  if (sp_streq(op, "*"))  return "sp_bigint_mul";
+  if (sp_streq(op, "/"))  return "sp_bigint_div";
+  if (sp_streq(op, "%"))  return "sp_bigint_mod";
   return NULL;
 }
 const char *mc(const char *name) {
@@ -672,7 +672,7 @@ int scope_is_shadowed(Compiler *c, int s) {
   for (int k = s + 1; k < c->nscopes; k++) {
     Scope *o = &c->scopes[k];
     if (o->class_id == sc->class_id && o->is_cmethod == sc->is_cmethod &&
-        o->name && !strcmp(o->name, sc->name)) return 1;
+        o->name && sp_streq(o->name, sc->name)) return 1;
   }
   return 0;
 }
@@ -681,11 +681,11 @@ int struct_kwarg_value(Compiler *c, int kwh, const char *name) {
   int n = 0;
   const int *els = nt_arr(nt, kwh, "elements", &n);
   for (int i = 0; i < n; i++) {
-    if (!nt_type(nt, els[i]) || strcmp(nt_type(nt, els[i]), "AssocNode")) continue;
+    if (!nt_type(nt, els[i]) || !sp_streq(nt_type(nt, els[i]), "AssocNode")) continue;
     int key = nt_ref(nt, els[i], "key");
-    if (key >= 0 && nt_type(nt, key) && !strcmp(nt_type(nt, key), "SymbolNode")) {
+    if (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode")) {
       const char *kn = nt_str(nt, key, "value");
-      if (kn && !strcmp(kn, name)) return nt_ref(nt, els[i], "value");
+      if (kn && sp_streq(kn, name)) return nt_ref(nt, els[i], "value");
     }
   }
   return -1;
@@ -712,11 +712,11 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   else if (t == TY_FIBER) self_cls = "Fiber";
   else if (t == TY_ENUMERATOR) self_cls = "Enumerator";
   if (!self_cls) return -1;
-  if (!strcmp(cn, self_cls)) return 1;
+  if (sp_streq(cn, self_cls)) return 1;
   if (exact) return 0;
-  if (!strcmp(cn, "Object") || !strcmp(cn, "BasicObject") || !strcmp(cn, "Kernel")) return 1;
-  if (!strcmp(cn, "Comparable") && (t == TY_STRING || t == TY_INT || t == TY_FLOAT || t == TY_SYMBOL)) return 1;
-  if (!strcmp(cn, "Numeric") && (t == TY_INT || t == TY_FLOAT)) return 1;
-  if (!strcmp(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE)) return 1;
+  if (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) return 1;
+  if (sp_streq(cn, "Comparable") && (t == TY_STRING || t == TY_INT || t == TY_FLOAT || t == TY_SYMBOL)) return 1;
+  if (sp_streq(cn, "Numeric") && (t == TY_INT || t == TY_FLOAT)) return 1;
+  if (sp_streq(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE)) return 1;
   return 0;
 }

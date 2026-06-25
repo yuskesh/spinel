@@ -14,8 +14,8 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
   if (!rty) return 0;
-  int is_ivar = !strcmp(rty, "InstanceVariableReadNode");
-  int is_local = !strcmp(rty, "LocalVariableReadNode");
+  int is_ivar = sp_streq(rty, "InstanceVariableReadNode");
+  int is_local = sp_streq(rty, "LocalVariableReadNode");
   if (!is_ivar && !is_local) return 0;
   const char *rnm = nt_str(nt, recv, "name");
   if (!rnm) return 0;
@@ -23,14 +23,14 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   const char *wkind = is_ivar ? "InstanceVariableWriteNode" : "LocalVariableWriteNode";
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, wkind)) continue;
+    if (!ty || !sp_streq(ty, wkind)) continue;
     const char *wnm = nt_str(nt, id, "name");
-    if (!wnm || strcmp(wnm, rnm)) continue;
+    if (!wnm || !sp_streq(wnm, rnm)) continue;
     if (is_local && comp_scope_of(c, id) != rscope) continue;
     int v = nt_ref(nt, id, "value");
     if (v < 0) continue;
     const char *vty = nt_type(nt, v);
-    if (vty && (!strcmp(vty, "IntegerNode") || !strcmp(vty, "FloatNode"))) return 1;
+    if (vty && (sp_streq(vty, "IntegerNode") || sp_streq(vty, "FloatNode"))) return 1;
     TyKind vt = infer_type(c, v);
     if (vt == TY_INT || vt == TY_FLOAT || vt == TY_BIGINT) return 1;
   }
@@ -46,8 +46,8 @@ static TyKind aset_value_type(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   const char *rty = nt_type(nt, recv);
   if (!rty) return TY_UNKNOWN;
-  int is_ivar = !strcmp(rty, "InstanceVariableReadNode");
-  int is_local = !strcmp(rty, "LocalVariableReadNode");
+  int is_ivar = sp_streq(rty, "InstanceVariableReadNode");
+  int is_local = sp_streq(rty, "LocalVariableReadNode");
   if (!is_ivar && !is_local) return TY_UNKNOWN;
   const char *rnm = nt_str(nt, recv, "name");
   if (!rnm) return TY_UNKNOWN;
@@ -57,11 +57,11 @@ static TyKind aset_value_type(Compiler *c, int recv) {
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || strcmp(nm, "[]=")) continue;
+    if (!nm || !sp_streq(nm, "[]=")) continue;
     int wrecv = nt_ref(nt, id, "receiver");
     if (wrecv < 0) continue;
     const char *wn = nt_str(nt, wrecv, "name");
-    if (!wn || strcmp(wn, rnm)) continue;
+    if (!wn || !sp_streq(wn, rnm)) continue;
     if (is_ivar) {
       if (nt_kind(nt, wrecv) != NK_InstanceVariableReadNode) continue;
       Scope *ws = comp_scope_of(c, wrecv);
@@ -107,11 +107,11 @@ int infer_param_hash_value(Compiler *c) {
       for (int id = 0; id < nt->count; id++) {
         if (nt_kind(nt, id) != NK_CallNode) continue;
         const char *nm = nt_str(nt, id, "name");
-        if (!nm || strcmp(nm, "[]=")) continue;
+        if (!nm || !sp_streq(nm, "[]=")) continue;
         int wr = nt_ref(nt, id, "receiver");
         if (wr < 0 || nt_kind(nt, wr) != NK_LocalVariableReadNode) continue;
         const char *wn = nt_str(nt, wr, "name");
-        if (!wn || strcmp(wn, sc->pnames[p]) || comp_scope_of(c, wr) != sc) continue;
+        if (!wn || !sp_streq(wn, sc->pnames[p]) || comp_scope_of(c, wr) != sc) continue;
         int args = nt_ref(nt, id, "arguments");
         int an = 0;
         const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -141,7 +141,7 @@ static int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name)
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
     const char *wn = nt_str(nt, id, "name");
-    if (!wn || strcmp(wn, name) || comp_scope_of(c, id) != sc) continue;
+    if (!wn || !sp_streq(wn, name) || comp_scope_of(c, id) != sc) continue;
     int v = nt_ref(nt, id, "value");
     if (v < 0 || nt_kind(nt, v) != NK_HashNode) return 0;
     int hn = 0; nt_arr(nt, v, "elements", &hn);
@@ -290,7 +290,7 @@ int infer_write_types(Compiler *c) {
     if (!ty) continue;
     const char *nm = NULL;
     TyKind newt = TY_UNKNOWN;
-    if (!strcmp(ty, "LocalVariableWriteNode")) {
+    if (sp_streq(ty, "LocalVariableWriteNode")) {
       nm = nt_str(nt, id, "name");
       int val_id = nt_ref(nt, id, "value");
       newt = infer_type(c, val_id);
@@ -303,9 +303,9 @@ int infer_write_types(Compiler *c) {
          downstream uses like `x.map {...}` are not starved of type information. */
       if (newt == TY_UNKNOWN && nm) {
         const char *vty2 = nt_type(nt, val_id);
-        int is_empty_col = vty2 && ((!strcmp(vty2, "ArrayNode") &&
+        int is_empty_col = vty2 && ((sp_streq(vty2, "ArrayNode") &&
           ({ int _n = 0; nt_arr(nt, val_id, "elements", &_n); _n; }) == 0) ||
-          (!strcmp(vty2, "HashNode") &&
+          (sp_streq(vty2, "HashNode") &&
           ({ int _n2 = 0; nt_arr(nt, val_id, "elements", &_n2); _n2; }) == 0));
         if (is_empty_col) {
           Scope *s2 = comp_scope_of(c, id);
@@ -315,13 +315,13 @@ int infer_write_types(Compiler *c) {
         /* `d = h.dup/clone`: inherit receiver's hash type from prior iteration */
         if (newt == TY_UNKNOWN) {
           const char *rvty2 = nt_type(nt, val_id);
-          if (rvty2 && !strcmp(rvty2, "CallNode")) {
+          if (rvty2 && sp_streq(rvty2, "CallNode")) {
             const char *rvnm2 = nt_str(nt, val_id, "name");
             int rvrecv2 = nt_ref(nt, val_id, "receiver");
             if (rvrecv2 >= 0 && rvnm2 &&
-                (!strcmp(rvnm2, "dup") || !strcmp(rvnm2, "clone"))) {
+                (sp_streq(rvnm2, "dup") || sp_streq(rvnm2, "clone"))) {
               const char *rrt2 = nt_type(nt, rvrecv2);
-              if (rrt2 && !strcmp(rrt2, "LocalVariableReadNode")) {
+              if (rrt2 && sp_streq(rrt2, "LocalVariableReadNode")) {
                 const char *rrn2 = nt_str(nt, rvrecv2, "name");
                 LocalVar *rlv2 = rrn2 ? scope_local(comp_scope_of(c, rvrecv2), rrn2) : NULL;
                 if (rlv2 && ty_is_hash((TyKind)rlv2->gc_root)) newt = (TyKind)rlv2->gc_root;
@@ -331,7 +331,7 @@ int infer_write_types(Compiler *c) {
         }
       }
     }
-    else if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
+    else if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
       nm = nt_str(nt, id, "name");
       Scope *s = comp_scope_of(c, id);
       LocalVar *cur = nm ? scope_local(s, nm) : NULL;
@@ -345,8 +345,8 @@ int infer_write_types(Compiler *c) {
       }
       else newt = ct;
     }
-    else if (!strcmp(ty, "LocalVariableOrWriteNode") ||
-             !strcmp(ty, "LocalVariableAndWriteNode")) {
+    else if (sp_streq(ty, "LocalVariableOrWriteNode") ||
+             sp_streq(ty, "LocalVariableAndWriteNode")) {
       /* a ||= v / a &&= v : the variable can hold its prior value or v */
       nm = nt_str(nt, id, "name");
       Scope *s = comp_scope_of(c, id);
@@ -383,14 +383,14 @@ int infer_write_types(Compiler *c) {
      Those locals were just typed by the main loop above, so recompute here so
      `x` is not stranded at UNKNOWN by within-pass node ordering. */
   for (int id = 0; id < nt->count; id++) {
-    if (strcmp(nt_type(nt, id) ? nt_type(nt, id) : "", "LocalVariableWriteNode")) continue;
+    if (!sp_streq(nt_type(nt, id) ? nt_type(nt, id) : "", "LocalVariableWriteNode")) continue;
     int val_id = nt_ref(nt, id, "value");
-    if (val_id < 0 || strcmp(nt_type(nt, val_id) ? nt_type(nt, val_id) : "", "CallNode")) continue;
+    if (val_id < 0 || !sp_streq(nt_type(nt, val_id) ? nt_type(nt, val_id) : "", "CallNode")) continue;
     if (nt_ref(nt, val_id, "block") < 0) continue;
     const char *vnm = nt_str(nt, val_id, "name");
     int vrecv = nt_ref(nt, val_id, "receiver");
     if (!vnm || vrecv < 0) continue;
-    int is_ie = !strcmp(vnm, "instance_eval") || !strcmp(vnm, "instance_exec");
+    int is_ie = sp_streq(vnm, "instance_eval") || sp_streq(vnm, "instance_exec");
     if (!is_ie) {
       TyKind vrt = infer_type(c, vrecv);
       if (!ty_is_object(vrt) || !comp_trampoline_kind(c, ty_object_class(vrt), vnm, NULL)) continue;
@@ -407,19 +407,19 @@ int infer_write_types(Compiler *c) {
   /* Multiple assignment `a, b = e0, e1`: each target gets its element's
      type (the RHS ArrayNode is a tuple here, not an array value). */
   for (int id = 0; id < nt->count; id++) {
-    if (strcmp(nt_type(nt, id) ? nt_type(nt, id) : "", "MultiWriteNode")) continue;
+    if (!sp_streq(nt_type(nt, id) ? nt_type(nt, id) : "", "MultiWriteNode")) continue;
     int ln = 0;
     const int *lefts = nt_arr(nt, id, "lefts", &ln);
     int value = nt_ref(nt, id, "value");
     const char *vty = nt_type(nt, value);
     /* `r, w = IO.pipe` -> both targets are IO handles. */
-    if (ln == 2 && vty && !strcmp(vty, "CallNode") && nt_str(nt, value, "name") &&
-        !strcmp(nt_str(nt, value, "name"), "pipe")) {
+    if (ln == 2 && vty && sp_streq(vty, "CallNode") && nt_str(nt, value, "name") &&
+        sp_streq(nt_str(nt, value, "name"), "pipe")) {
       int vrecv = nt_ref(nt, value, "receiver");
-      if (vrecv >= 0 && nt_type(nt, vrecv) && !strcmp(nt_type(nt, vrecv), "ConstantReadNode") &&
-          nt_str(nt, vrecv, "name") && !strcmp(nt_str(nt, vrecv, "name"), "IO")) {
+      if (vrecv >= 0 && nt_type(nt, vrecv) && sp_streq(nt_type(nt, vrecv), "ConstantReadNode") &&
+          nt_str(nt, vrecv, "name") && sp_streq(nt_str(nt, vrecv, "name"), "IO")) {
         for (int i = 0; i < 2; i++) {
-          if (strcmp(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
+          if (!sp_streq(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, lefts[i], "name");
           LocalVar *lv = lnm ? scope_local_intern(comp_scope_of(c, id), lnm) : NULL;
           if (lv && lv->type != TY_IO) { lv->type = TY_IO; changed = 1; }
@@ -427,17 +427,17 @@ int infer_write_types(Compiler *c) {
         continue;
       }
     }
-    if (!vty || strcmp(vty, "ArrayNode")) {
+    if (!vty || !sp_streq(vty, "ArrayNode")) {
       /* scalar RHS (`a, b = 1`): the first target gets the scalar, the rest
          their slot default. Type every target as the scalar's kind. Array /
          hash RHS would splat and is handled elsewhere, so skip those. */
-      int multi_src = vty && (!strcmp(vty, "CallNode") || !strcmp(vty, "SuperNode") ||
-                              !strcmp(vty, "ForwardingSuperNode") || !strcmp(vty, "YieldNode"));
+      int multi_src = vty && (sp_streq(vty, "CallNode") || sp_streq(vty, "SuperNode") ||
+                              sp_streq(vty, "ForwardingSuperNode") || sp_streq(vty, "YieldNode"));
       if (vty && value >= 0 && !multi_src) {
         TyKind st = infer_type(c, value);
         if (st != TY_UNKNOWN && st != TY_NIL && !ty_is_array(st) && !ty_is_hash(st)) {
           for (int i = 0; i < ln; i++) {
-            if (strcmp(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
+            if (!sp_streq(nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "", "LocalVariableTargetNode")) continue;
             const char *lnm = nt_str(nt, lefts[i], "name");
             LocalVar *lv = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
             if (!lv || lv->is_param || lv->is_block_param) continue;
@@ -453,7 +453,7 @@ int infer_write_types(Compiler *c) {
           Scope *ms_poly = comp_scope_of(c, id);
           for (int i = 0; i < ln; i++) {
             const char *lty_p = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
-            if (!strcmp(lty_p, "LocalVariableTargetNode")) {
+            if (sp_streq(lty_p, "LocalVariableTargetNode")) {
               const char *lnm_p = nt_str(nt, lefts[i], "name");
               LocalVar *lv_p = lnm_p ? scope_local(ms_poly, lnm_p) : NULL;
               if (!lv_p || lv_p->is_param || lv_p->is_block_param) continue;
@@ -469,13 +469,13 @@ int infer_write_types(Compiler *c) {
           Scope *ms_arr = comp_scope_of(c, id);
           for (int i = 0; i < ln; i++) {
             const char *lty_ms = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
-            if (!strcmp(lty_ms, "LocalVariableTargetNode")) {
+            if (sp_streq(lty_ms, "LocalVariableTargetNode")) {
               const char *lnm = nt_str(nt, lefts[i], "name");
               LocalVar *lv = lnm ? scope_local(ms_arr, lnm) : NULL;
               if (!lv || lv->is_param || lv->is_block_param) continue;
               lv->type = ty_unify(lv->type, elem);
             }
-            else if (!strcmp(lty_ms, "InstanceVariableTargetNode") &&
+            else if (sp_streq(lty_ms, "InstanceVariableTargetNode") &&
                      ms_arr && ms_arr->class_id >= 0) {
               const char *ivnm = nt_str(nt, lefts[i], "name");
               int iv_ms = ivnm ? comp_ivar_index(&c->classes[ms_arr->class_id], ivnm) : -1;
@@ -485,7 +485,7 @@ int infer_write_types(Compiler *c) {
                 c->classes[ms_arr->class_id].ivar_types[iv_ms] = mg; changed = 1;
               }
             }
-            else if (!strcmp(lty_ms, "ConstantTargetNode")) {
+            else if (sp_streq(lty_ms, "ConstantTargetNode")) {
               const char *cnm_ms = nt_str(nt, lefts[i], "name");
               LocalVar *cv_ms = cnm_ms ? comp_const(c, cnm_ms) : NULL;
               if (!cv_ms) continue;
@@ -495,13 +495,13 @@ int infer_write_types(Compiler *c) {
           }
           for (int j = 0; j < rn2; j++) {
             const char *lty_ms = nt_type(nt, rights2[j]) ? nt_type(nt, rights2[j]) : "";
-            if (!strcmp(lty_ms, "LocalVariableTargetNode")) {
+            if (sp_streq(lty_ms, "LocalVariableTargetNode")) {
               const char *rnm2 = nt_str(nt, rights2[j], "name");
               LocalVar *lv = rnm2 ? scope_local(ms_arr, rnm2) : NULL;
               if (!lv || lv->is_param || lv->is_block_param) continue;
               lv->type = ty_unify(lv->type, elem);
             }
-            else if (!strcmp(lty_ms, "InstanceVariableTargetNode") &&
+            else if (sp_streq(lty_ms, "InstanceVariableTargetNode") &&
                      ms_arr && ms_arr->class_id >= 0) {
               const char *ivnm2 = nt_str(nt, rights2[j], "name");
               int iv_ms2 = ivnm2 ? comp_ivar_index(&c->classes[ms_arr->class_id], ivnm2) : -1;
@@ -511,7 +511,7 @@ int infer_write_types(Compiler *c) {
                 c->classes[ms_arr->class_id].ivar_types[iv_ms2] = mg2; changed = 1;
               }
             }
-            else if (!strcmp(lty_ms, "ConstantTargetNode")) {
+            else if (sp_streq(lty_ms, "ConstantTargetNode")) {
               const char *cnm_ms2 = nt_str(nt, rights2[j], "name");
               LocalVar *cv_ms2 = cnm_ms2 ? comp_const(c, cnm_ms2) : NULL;
               if (!cv_ms2) continue;
@@ -523,10 +523,10 @@ int infer_write_types(Compiler *c) {
           if (rest_nid2 >= 0) {
             const char *rsty2 = nt_type(nt, rest_nid2);
             int inner2 = -1;
-            if (rsty2 && !strcmp(rsty2, "SplatNode"))
+            if (rsty2 && sp_streq(rsty2, "SplatNode"))
               inner2 = nt_ref(nt, rest_nid2, "expression");
             if (inner2 >= 0 && nt_type(nt, inner2) &&
-                !strcmp(nt_type(nt, inner2), "LocalVariableTargetNode")) {
+                sp_streq(nt_type(nt, inner2), "LocalVariableTargetNode")) {
               const char *rnm3 = nt_str(nt, inner2, "name");
               LocalVar *lv3 = rnm3 ? scope_local(comp_scope_of(c, id), rnm3) : NULL;
               if (lv3 && !lv3->is_param && !lv3->is_block_param)
@@ -542,7 +542,7 @@ int infer_write_types(Compiler *c) {
     for (int i = 0; i < ln && i < en; i++) {
       const char *lty = nt_type(nt, lefts[i]);
       if (!lty) continue;
-      if (!strcmp(lty, "LocalVariableTargetNode")) {
+      if (sp_streq(lty, "LocalVariableTargetNode")) {
         const char *lnm = nt_str(nt, lefts[i], "name");
         TyKind et = infer_type(c, els[i]);
         if (et == TY_NIL) continue;
@@ -550,7 +550,7 @@ int infer_write_types(Compiler *c) {
         if (!lv || lv->is_param || lv->is_block_param) continue;
         lv->type = ty_unify(lv->type, et);
       }
-      else if (!strcmp(lty, "ConstantTargetNode")) {
+      else if (sp_streq(lty, "ConstantTargetNode")) {
         const char *cnm = nt_str(nt, lefts[i], "name");
         LocalVar *cv = cnm ? comp_const(c, cnm) : NULL;
         if (!cv) continue;
@@ -559,7 +559,7 @@ int infer_write_types(Compiler *c) {
         TyKind mg = ty_unify(cv->type, et);
         if (mg != cv->type) { cv->type = mg; changed = 1; }
       }
-      else if (!strcmp(lty, "InstanceVariableTargetNode")) {
+      else if (sp_streq(lty, "InstanceVariableTargetNode")) {
         Scope *iv_sc = comp_scope_of(c, id);
         int iv_cid = iv_sc ? iv_sc->class_id : -1;
         if (iv_cid < 0) continue;
@@ -573,17 +573,17 @@ int infer_write_types(Compiler *c) {
           c->classes[iv_cid].ivar_types[iv_idx] = mg; changed = 1;
         }
       }
-      else if (!strcmp(lty, "MultiTargetNode")) {
+      else if (sp_streq(lty, "MultiTargetNode")) {
         /* (b, c) nested target: inner RHS must be an ArrayNode literal */
         const char *ety = nt_type(nt, els[i]);
-        if (!ety || strcmp(ety, "ArrayNode")) continue;
+        if (!ety || !sp_streq(ety, "ArrayNode")) continue;
         int inn = 0;
         const int *inner_els = nt_arr(nt, els[i], "elements", &inn);
         int inn2 = 0;
         const int *inner_lefts = nt_arr(nt, lefts[i], "lefts", &inn2);
         for (int j = 0; j < inn2 && j < inn; j++) {
           const char *ilty = nt_type(nt, inner_lefts[j]);
-          if (!ilty || strcmp(ilty, "LocalVariableTargetNode")) continue;
+          if (!ilty || !sp_streq(ilty, "LocalVariableTargetNode")) continue;
           const char *lnm2 = nt_str(nt, inner_lefts[j], "name");
           TyKind et2 = infer_type(c, inner_els[j]);
           if (et2 == TY_NIL) continue;
@@ -603,20 +603,20 @@ int infer_write_types(Compiler *c) {
       if (!rty3) continue;
       TyKind et = infer_type(c, els[ridx]);
       if (et == TY_NIL) continue;
-      if (!strcmp(rty3, "LocalVariableTargetNode")) {
+      if (sp_streq(rty3, "LocalVariableTargetNode")) {
         const char *rnm2 = nt_str(nt, rights[j], "name");
         LocalVar *lv = rnm2 ? scope_local(comp_scope_of(c, id), rnm2) : NULL;
         if (!lv || lv->is_param || lv->is_block_param) continue;
         lv->type = ty_unify(lv->type, et);
       }
-      else if (!strcmp(rty3, "ConstantTargetNode")) {
+      else if (sp_streq(rty3, "ConstantTargetNode")) {
         const char *cnm2 = nt_str(nt, rights[j], "name");
         LocalVar *cv2 = cnm2 ? comp_const(c, cnm2) : NULL;
         if (!cv2) continue;
         TyKind mg3 = ty_unify(cv2->type, et);
         if (mg3 != cv2->type) { cv2->type = mg3; changed = 1; }
       }
-      else if (!strcmp(rty3, "InstanceVariableTargetNode")) {
+      else if (sp_streq(rty3, "InstanceVariableTargetNode")) {
         Scope *iv_sc3 = comp_scope_of(c, id);
         int iv_cid3 = iv_sc3 ? iv_sc3->class_id : -1;
         if (iv_cid3 < 0) continue;
@@ -634,10 +634,10 @@ int infer_write_types(Compiler *c) {
     if (rest_nid >= 0) {
       const char *rsty = nt_type(nt, rest_nid);
       int inner = -1;
-      if (rsty && !strcmp(rsty, "SplatNode"))
+      if (rsty && sp_streq(rsty, "SplatNode"))
         inner = nt_ref(nt, rest_nid, "expression");
       if (inner >= 0 && nt_type(nt, inner) &&
-          !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
+          sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
         const char *rnm = nt_str(nt, inner, "name");
         int rstart = ln, rend = en - rn;
         if (rend < rstart) rend = rstart;
@@ -655,25 +655,25 @@ int infer_write_types(Compiler *c) {
   /* MatchRequiredNode: `value => pattern` — infer locals from pattern shape. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "MatchRequiredNode")) continue;
+    if (!ty || !sp_streq(ty, "MatchRequiredNode")) continue;
     int value = nt_ref(nt, id, "value");
     int pattern = nt_ref(nt, id, "pattern");
     if (value < 0 || pattern < 0) continue;
     const char *pty = nt_type(nt, pattern);
     if (!pty) continue;
     Scope *ms = comp_scope_of(c, id);
-    if (!strcmp(pty, "ArrayPatternNode")) {
+    if (sp_streq(pty, "ArrayPatternNode")) {
       int rn = 0;
       const int *reqs = nt_arr(nt, pattern, "requireds", &rn);
       /* Try to get types from a literal ArrayNode value. */
       const char *vty = nt_type(nt, value);
       int en = 0;
-      const int *els = (vty && !strcmp(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
+      const int *els = (vty && sp_streq(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
       TyKind arr_elem = TY_UNKNOWN;
       if (ty_is_array(infer_type(c, value))) arr_elem = ty_array_elem(infer_type(c, value));
       for (int i = 0; i < rn; i++) {
         const char *lty2 = nt_type(nt, reqs[i]);
-        if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+        if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
         const char *lnm = nt_str(nt, reqs[i], "name");
         LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
         if (!lv || lv->is_param || lv->is_block_param) continue;
@@ -683,34 +683,34 @@ int infer_write_types(Compiler *c) {
         if (mg != lv->type) { lv->type = mg; changed = 1; }
       }
     }
-    else if (!strcmp(pty, "HashPatternNode")) {
+    else if (sp_streq(pty, "HashPatternNode")) {
       int pn = 0;
       const int *pelms = nt_arr(nt, pattern, "elements", &pn);
       /* Try to match keys from a literal HashNode value. */
       const char *vty = nt_type(nt, value);
       int vn = 0;
-      const int *velms = (vty && !strcmp(vty, "HashNode")) ? nt_arr(nt, value, "elements", &vn) : NULL;
+      const int *velms = (vty && sp_streq(vty, "HashNode")) ? nt_arr(nt, value, "elements", &vn) : NULL;
       for (int i = 0; i < pn; i++) {
         const char *ety = nt_type(nt, pelms[i]);
-        if (!ety || strcmp(ety, "AssocNode")) continue;
+        if (!ety || !sp_streq(ety, "AssocNode")) continue;
         int pkey = nt_ref(nt, pelms[i], "key");
         int ptgt = nt_ref(nt, pelms[i], "value");
         if (ptgt < 0) continue;
         const char *tty = nt_type(nt, ptgt);
-        if (!tty || strcmp(tty, "LocalVariableTargetNode")) continue;
+        if (!tty || !sp_streq(tty, "LocalVariableTargetNode")) continue;
         const char *lnm = nt_str(nt, ptgt, "name");
         LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
         if (!lv || lv->is_param || lv->is_block_param) continue;
         /* find matching key in value hash */
         const char *pkey_val = (pkey >= 0 && nt_type(nt, pkey) &&
-          !strcmp(nt_type(nt, pkey), "SymbolNode")) ? nt_str(nt, pkey, "value") : NULL;
+          sp_streq(nt_type(nt, pkey), "SymbolNode")) ? nt_str(nt, pkey, "value") : NULL;
         TyKind et = TY_UNKNOWN;
         if (pkey_val && velms) {
           for (int j = 0; j < vn; j++) {
             int vkey = nt_ref(nt, velms[j], "key");
             const char *vkty = vkey >= 0 ? nt_type(nt, vkey) : NULL;
-            const char *vkval = (vkty && !strcmp(vkty, "SymbolNode")) ? nt_str(nt, vkey, "value") : NULL;
-            if (vkval && !strcmp(vkval, pkey_val)) { et = infer_type(c, nt_ref(nt, velms[j], "value")); break; }
+            const char *vkval = (vkty && sp_streq(vkty, "SymbolNode")) ? nt_str(nt, vkey, "value") : NULL;
+            if (vkval && sp_streq(vkval, pkey_val)) { et = infer_type(c, nt_ref(nt, velms[j], "value")); break; }
           }
         }
         if (et == TY_UNKNOWN || et == TY_NIL) continue;
@@ -725,7 +725,7 @@ int infer_write_types(Compiler *c) {
      and array patterns (`in [first, *rest]` / `in Array(head, *tail)`). */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CaseMatchNode")) continue;
+    if (!ty || !sp_streq(ty, "CaseMatchNode")) continue;
     int pred = nt_ref(nt, id, "predicate");
     if (pred < 0) continue;
     TyKind scrutinee_t = infer_type(c, pred);
@@ -733,7 +733,7 @@ int infer_write_types(Compiler *c) {
     const int *conds = nt_arr(nt, id, "conditions", &cn);
     for (int ci = 0; ci < cn; ci++) {
       const char *cty = nt_type(nt, conds[ci]);
-      if (!cty || strcmp(cty, "InNode")) continue;
+      if (!cty || !sp_streq(cty, "InNode")) continue;
       int pat = nt_ref(nt, conds[ci], "pattern");
       if (pat < 0) continue;
       Scope *ms = comp_scope_of(c, conds[ci]);
@@ -742,43 +742,43 @@ int infer_write_types(Compiler *c) {
       int bind_lv_node = -1;
       int array_pat = -1;
       TyKind array_scrutinee = TY_UNKNOWN;
-      if (!strcmp(pty, "LocalVariableTargetNode")) {
+      if (sp_streq(pty, "LocalVariableTargetNode")) {
         /* in x */
         bind_lv_node = pat;
       }
-      else if (!strcmp(pty, "IfNode")) {
+      else if (sp_streq(pty, "IfNode")) {
         /* in x if guard — binding is in IfNode.statements body */
         int stmts = nt_ref(nt, pat, "statements");
         if (stmts >= 0 && nt_type(nt, stmts) &&
-            !strcmp(nt_type(nt, stmts), "StatementsNode")) {
+            sp_streq(nt_type(nt, stmts), "StatementsNode")) {
           int bn = 0;
           const int *body = nt_arr(nt, stmts, "body", &bn);
           for (int k = 0; k < bn; k++) {
             const char *bty = nt_type(nt, body[k]);
-            if (bty && !strcmp(bty, "LocalVariableTargetNode")) {
+            if (bty && sp_streq(bty, "LocalVariableTargetNode")) {
               bind_lv_node = body[k]; break;
             }
           }
         }
       }
-      else if (!strcmp(pty, "CapturePatternNode")) {
+      else if (sp_streq(pty, "CapturePatternNode")) {
         /* in PATTERN => var */
         int tgt = nt_ref(nt, pat, "target");
         if (tgt >= 0 && nt_type(nt, tgt) &&
-            !strcmp(nt_type(nt, tgt), "LocalVariableTargetNode"))
+            sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
           bind_lv_node = tgt;
         /* inner ArrayPatternNode also gets element-level types */
         int val = nt_ref(nt, pat, "value");
         if (val >= 0 && nt_type(nt, val) &&
-            !strcmp(nt_type(nt, val), "ArrayPatternNode")) {
+            sp_streq(nt_type(nt, val), "ArrayPatternNode")) {
           array_pat = val; array_scrutinee = scrutinee_t;
         }
       }
-      else if (!strcmp(pty, "ArrayPatternNode")) {
+      else if (sp_streq(pty, "ArrayPatternNode")) {
         /* in [first, *rest] or in Array(head, *tail) */
         array_pat = pat; array_scrutinee = scrutinee_t;
       }
-      else if (!strcmp(pty, "FindPatternNode")) {
+      else if (sp_streq(pty, "FindPatternNode")) {
         /* in [*head, a, b, *tail] -- the two splats bind to arrays of the
            scrutinee's element type; required LV targets bind to an element. */
         TyKind arr_t = ty_is_array(scrutinee_t) ? scrutinee_t : TY_POLY_ARRAY;
@@ -786,10 +786,10 @@ int infer_write_types(Compiler *c) {
         int sides[2] = { nt_ref(nt, pat, "left"), nt_ref(nt, pat, "right") };
         for (int sidx = 0; sidx < 2; sidx++) {
           int sp = sides[sidx];
-          if (sp < 0 || !nt_type(nt, sp) || strcmp(nt_type(nt, sp), "SplatNode")) continue;
+          if (sp < 0 || !nt_type(nt, sp) || !sp_streq(nt_type(nt, sp), "SplatNode")) continue;
           int inner = nt_ref(nt, sp, "expression");
           if (inner < 0 || !nt_type(nt, inner) ||
-              strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) continue;
+              !sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) continue;
           const char *snm = nt_str(nt, inner, "name");
           LocalVar *lv = snm ? scope_local(ms, snm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
@@ -800,7 +800,7 @@ int infer_write_types(Compiler *c) {
         const int *reqs = nt_arr(nt, pat, "requireds", &rn);
         for (int k = 0; k < rn; k++) {
           const char *lty2 = nt_type(nt, reqs[k]);
-          if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, reqs[k], "name");
           LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
@@ -825,7 +825,7 @@ int infer_write_types(Compiler *c) {
         const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
         for (int k = 0; k < apn; k++) {
           const char *lty2 = nt_type(nt, reqs[k]);
-          if (!lty2 || strcmp(lty2, "LocalVariableTargetNode")) continue;
+          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, reqs[k], "name");
           LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
@@ -838,10 +838,10 @@ int infer_write_types(Compiler *c) {
         if (rest_nid >= 0) {
           const char *rsty2 = nt_type(nt, rest_nid);
           int inner = -1;
-          if (rsty2 && !strcmp(rsty2, "SplatNode"))
+          if (rsty2 && sp_streq(rsty2, "SplatNode"))
             inner = nt_ref(nt, rest_nid, "expression");
           if (inner >= 0 && nt_type(nt, inner) &&
-              !strcmp(nt_type(nt, inner), "LocalVariableTargetNode")) {
+              sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
             const char *rnm = nt_str(nt, inner, "name");
             LocalVar *lv = rnm ? scope_local(ms, rnm) : NULL;
             if (lv && !lv->is_param && !lv->is_block_param) {
@@ -863,23 +863,23 @@ int infer_write_types(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0;
-    if (!strcmp(ty, "CallNode")) {
+    if (sp_streq(ty, "CallNode")) {
       recv = nt_ref(nt, id, "receiver");
       const char *name = nt_str(nt, id, "name");
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (name && (!strcmp(name, "push") || !strcmp(name, "<<")) && an == 1) {
+      if (name && (sp_streq(name, "push") || sp_streq(name, "<<")) && an == 1) {
         /* `<<` is ambiguous (Array#push vs Integer#<< shift): a numeric-assigned
            receiver is a shift, so don't promote its slot to an array. */
-        if (!strcmp(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;
+        if (sp_streq(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;
         is_push = 1; vt = infer_type(c, argv[0]);
       }
-      else if (name && !strcmp(name, "[]=") && an == 2) {
+      else if (name && sp_streq(name, "[]=") && an == 2) {
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
       }
-      else if (name && (!strcmp(name, "fetch") ||
-                        (!strcmp(name, "[]") && an == 1)) && an >= 1) {
+      else if (name && (sp_streq(name, "fetch") ||
+                        (sp_streq(name, "[]") && an == 1)) && an >= 1) {
         /* hash.fetch(key,..) / hash[key]: promote TY_UNKNOWN local to a typed hash.
            Only fires when the slot is currently TY_UNKNOWN (empty hash).
            A 2-arg [] is a string/array slice, never a hash read — only the
@@ -887,12 +887,12 @@ int infer_write_types(Compiler *c) {
         TyKind rslot = TY_UNKNOWN;
         const char *rrty = nt_type(nt, recv);
         const char *rnm2 = NULL;
-        if (rrty && !strcmp(rrty, "LocalVariableReadNode")) {
+        if (rrty && sp_streq(rrty, "LocalVariableReadNode")) {
           rnm2 = nt_str(nt, recv, "name");
           LocalVar *lv2 = rnm2 ? scope_local(comp_scope_of(c, recv), rnm2) : NULL;
           if (lv2) rslot = lv2->type;
         }
-        else if (rrty && !strcmp(rrty, "InstanceVariableReadNode")) {
+        else if (rrty && sp_streq(rrty, "InstanceVariableReadNode")) {
           /* an already-typed ivar hash must not be re-promoted: unifying e.g.
              a str_str_hash with the promotion's str_poly target would widen the
              slot to poly. Only an untyped (empty-{}) ivar promotes here. */
@@ -909,11 +909,11 @@ int infer_write_types(Compiler *c) {
             for (int _r = ivw_index_first(&ivw_ix, pin); _r >= 0 && !blocked; _r = ivw_ix.next[_r]) {
               int wi = ivw_ix.node[_r];
               const char *wnm = nt_str(nt, wi, "name");
-              if (!wnm || !pin || strcmp(wnm, pin)) continue;
+              if (!wnm || !pin || !sp_streq(wnm, pin)) continue;
               int wv = nt_ref(nt, wi, "value");
               const char *wvty = wv >= 0 ? nt_type(nt, wv) : NULL;
               int is_empty_hash = 0;
-              if (wvty && !strcmp(wvty, "HashNode")) {
+              if (wvty && sp_streq(wvty, "HashNode")) {
                 int hn = 0; nt_arr(nt, wv, "elements", &hn);
                 if (hn == 0) is_empty_hash = 1;
               }
@@ -928,7 +928,7 @@ int infer_write_types(Compiler *c) {
            get their type from infer_block_params; promoting them here to
            TY_STR_POLY_HASH before is_block_param is set creates a TY_POLY
            that ty_unify can never narrow back to the yield arg type. */
-        if (rrty && !strcmp(rrty, "LocalVariableReadNode") && rnm2) {
+        if (rrty && sp_streq(rrty, "LocalVariableReadNode") && rnm2) {
           Scope *recv_scope = comp_scope_of(c, recv);
           int recv_sid = (int)(recv_scope - c->scopes);
           int has_write = 0;
@@ -936,7 +936,7 @@ int infer_write_types(Compiler *c) {
             int _wi = lw_ix.node[_r];
             if (comp_scope_of(c, _wi) != recv_scope) continue;
             const char *_wnm = nt_str(nt, _wi, "name");
-            if (_wnm && !strcmp(_wnm, rnm2)) has_write = 1;
+            if (_wnm && sp_streq(_wnm, rnm2)) has_write = 1;
           }
           if (!has_write) continue;
         }
@@ -958,9 +958,9 @@ int infer_write_types(Compiler *c) {
       }
       else continue;
     }
-    else if (!strcmp(ty, "IndexOperatorWriteNode") ||
-             !strcmp(ty, "IndexOrWriteNode") ||
-             !strcmp(ty, "IndexAndWriteNode")) {
+    else if (sp_streq(ty, "IndexOperatorWriteNode") ||
+             sp_streq(ty, "IndexOrWriteNode") ||
+             sp_streq(ty, "IndexAndWriteNode")) {
       /* h[k] op= v / h[k] ||= v / h[k] &&= v: same promotion as h[k] = v. */
       is_idx_write = 1;
       recv = nt_ref(nt, id, "receiver");
@@ -979,7 +979,7 @@ int infer_write_types(Compiler *c) {
        `@buf << x` infers its element type the same way a local does) */
     TyKind *slot = NULL;
     const char *watch_nm = NULL;  /* ivar name for SP_IVWATCH, NULL for locals */
-    if (rty && !strcmp(rty, "LocalVariableReadNode")) {
+    if (rty && sp_streq(rty, "LocalVariableReadNode")) {
       const char *rnm = nt_str(nt, recv, "name");
       Scope *lsc = rnm ? comp_scope_of(c, recv) : NULL;
       LocalVar *lv = lsc ? scope_local(lsc, rnm) : NULL;
@@ -995,7 +995,7 @@ int infer_write_types(Compiler *c) {
           int w = lw_ix.node[_r];
           if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
           const char *wn = nt_str(nt, w, "name");
-          if (!wn || strcmp(wn, rnm) || comp_scope_of(c, w) != lsc) continue;
+          if (!wn || !sp_streq(wn, rnm) || comp_scope_of(c, w) != lsc) continue;
           int wv = nt_ref(nt, w, "value");
           if (wv >= 0 && ty_is_array(infer_type(c, wv))) has_array_write = 1;
         }
@@ -1003,7 +1003,7 @@ int infer_write_types(Compiler *c) {
       }
       slot = &lv->type;
     }
-    else if (rty && !strcmp(rty, "InstanceVariableReadNode")) {
+    else if (rty && sp_streq(rty, "InstanceVariableReadNode")) {
       const char *inm = nt_str(nt, recv, "name");
       Scope *s = comp_scope_of(c, recv);
       int ivar_cls_id = s->class_id;
@@ -1031,7 +1031,7 @@ int infer_write_types(Compiler *c) {
           int _wi = ivw_ix.node[_r];
           if (nt_kind(nt, _wi) != NK_InstanceVariableWriteNode) continue;
           const char *_wnm = nt_str(nt, _wi, "name");
-          if (!_wnm || strcmp(_wnm, inm)) continue;
+          if (!_wnm || !sp_streq(_wnm, inm)) continue;
           Scope *_ws = comp_scope_of(c, _wi);
           int _ws_cls = _ws ? _ws->class_id : -1;
           if (_ws_cls < 0) _ws_cls = comp_class_index(c, "Toplevel");
@@ -1044,13 +1044,13 @@ int infer_write_types(Compiler *c) {
              hash-promotion from [] read or [0]= write. Empty {} does NOT
              block promotion — the hash type is determined by key/value usage. */
           const char *_wvty = nt_type(nt, _wval);
-          if (_wvty && !strcmp(_wvty, "ArrayNode"))
+          if (_wvty && sp_streq(_wvty, "ArrayNode"))
             has_typed_write = 1;
         }
         if (has_typed_write) continue;
       }
     }
-    else if (is_push && rty && !strcmp(rty, "CallNode")) {
+    else if (is_push && rty && sp_streq(rty, "CallNode")) {
       /* `getter_method << x` where getter returns @ivar: trace through
          to that ivar so cross-class lazy-init getters get widened. */
       int recv_args = nt_ref(nt, recv, "arguments");
@@ -1066,7 +1066,7 @@ int infer_write_types(Compiler *c) {
       if (getter_mi < 0) continue;
       int last2 = scope_body_last(c, getter_mi);
       if (last2 < 0 || !nt_type(nt, last2) ||
-          strcmp(nt_type(nt, last2), "InstanceVariableReadNode")) continue;
+          !sp_streq(nt_type(nt, last2), "InstanceVariableReadNode")) continue;
       const char *inm2 = nt_str(nt, last2, "name");
       if (!inm2) continue;
       ClassInfo *ci2 = &c->classes[defcls2];
@@ -1145,7 +1145,7 @@ int infer_write_types(Compiler *c) {
      evaluates the body's return type. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "LocalVariableWriteNode")) continue;
+    if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
@@ -1180,7 +1180,7 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
      callee's params from the enclosing `def foo(...)` method's synthesized
      __fwd_* params, positionally, so the callee's return type resolves (#1288). */
   if (argc == 1 && argv && nt_type(nt, argv[0]) &&
-      !strcmp(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
+      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
     Scope *encl = comp_scope_of(c, argv[0]);
     if (!encl) return 0;
     int n = m->nparams < encl->nparams ? m->nparams : encl->nparams;
@@ -1197,7 +1197,7 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   int kwh = -1;
   int pos_argc = argc;
   if (argc > 0 && nt_type(nt, argv[argc - 1]) &&
-      !strcmp(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
     kwh = argv[argc - 1];
     pos_argc = argc - 1;
   }
@@ -1210,7 +1210,7 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
        infer the element type of the splatted array instead. */
     TyKind at;
     const char *apty = argv ? nt_type(nt, argv[k]) : NULL;
-    if (apty && !strcmp(apty, "SplatNode")) {
+    if (apty && sp_streq(apty, "SplatNode")) {
       int inner = nt_ref(nt, argv[k], "expression");
       TyKind arr = inner >= 0 ? infer_type(c, inner) : TY_UNKNOWN;
       at = ty_is_array(arr) ? ty_array_elem(arr) : TY_POLY;
@@ -1234,7 +1234,7 @@ else {
        that hash container, filled inside the callee through the reference.
        Type the local as the param's hash so it is constructed (sp_<H>Hash_new)
        rather than passed as a NULL-deref'ing poly nil. */
-    if (ty_is_hash(p->type) && apty && !strcmp(apty, "LocalVariableReadNode")) {
+    if (ty_is_hash(p->type) && apty && sp_streq(apty, "LocalVariableReadNode")) {
       const char *an = nt_str(nt, argv[k], "name");
       Scope *asc = an ? comp_scope_of(c, argv[k]) : NULL;
       LocalVar *al = asc ? scope_local(asc, an) : NULL;
@@ -1271,7 +1271,7 @@ else {
     TyKind ds_val = TY_UNKNOWN;
     for (int e = 0; e < en; e++) {
       const char *ety = nt_type(nt, elems[e]);
-      if (ety && !strcmp(ety, "AssocSplatNode")) {
+      if (ety && sp_streq(ety, "AssocSplatNode")) {
         int inner = nt_ref(nt, elems[e], "value");
         if (inner >= 0) {
           TyKind ht = infer_type(c, inner);
@@ -1299,7 +1299,7 @@ else {
         int val = nt_ref(nt, elems[e], "value");
         if (key < 0 || val < 0) continue;
         const char *kty = nt_type(nt, key);
-        const char *kname = (kty && !strcmp(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+        const char *kname = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
         if (!kname) continue;
         LocalVar *p = scope_local(m, kname);
         if (!p || p->rbs_seeded) continue;
@@ -1338,7 +1338,7 @@ int propagate_prep_params(Compiler *c) {
       int to_mi = -1;
       for (int s = 0; s < c->nscopes; s++) {
         if (c->scopes[s].class_id == ci && !c->scopes[s].is_cmethod &&
-            c->scopes[s].name && !strcmp(c->scopes[s].name, to_name)) {
+            c->scopes[s].name && sp_streq(c->scopes[s].name, to_name)) {
           to_mi = s; break;
         }
       }
@@ -1370,7 +1370,7 @@ int infer_default_param_types(Compiler *c) {
          it as TY_SYM_POLY_HASH since it is used as a kwargs receiver. */
       if (dt == TY_UNKNOWN) {
         const char *dty = nt_type(c->nt, sc->pdefault[i]);
-        if (dty && (!strcmp(dty, "HashNode") || !strcmp(dty, "KeywordHashNode"))) {
+        if (dty && (sp_streq(dty, "HashNode") || sp_streq(dty, "KeywordHashNode"))) {
           int dn = 0; nt_arr(c->nt, sc->pdefault[i], "elements", &dn);
           if (dn == 0) dt = TY_SYM_POLY_HASH;
         }
@@ -1397,7 +1397,7 @@ int is_string_only_method(const char *m) {
     "partition", "rpartition", "succ", "hex", "oct", "codepoints", "scrub",
     "crypt", "delete_prefix", "delete_suffix", "casecmp", "casecmp?",
     "force_encoding", NULL };
-  for (int i = 0; set[i]; i++) if (!strcmp(m, set[i])) return 1;
+  for (int i = 0; set[i]; i++) if (sp_streq(m, set[i])) return 1;
   return 0;
 }
 
@@ -1410,16 +1410,16 @@ int infer_params_from_ivar_hash_ops(Compiler *c) {
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
-    int is_set = !strcmp(name, "[]=");
-    int is_get = !strcmp(name, "[]");
+    int is_set = sp_streq(name, "[]=");
+    int is_get = sp_streq(name, "[]");
     if (!is_set && !is_get) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     const char *rty = nt_type(nt, recv);
-    if (!rty || strcmp(rty, "InstanceVariableReadNode")) continue;
+    if (!rty || !sp_streq(rty, "InstanceVariableReadNode")) continue;
     const char *inm = nt_str(nt, recv, "name");
     if (!inm) continue;
     Scope *s = comp_scope_of(c, id);
@@ -1437,7 +1437,7 @@ int infer_params_from_ivar_hash_ops(Compiler *c) {
     /* [](key) => key is hash key type; []=(key, val) => key + val */
     if (an >= 1 && argv && hk != TY_UNKNOWN) {
       const char *aty = nt_type(nt, argv[0]);
-      if (aty && !strcmp(aty, "LocalVariableReadNode")) {
+      if (aty && sp_streq(aty, "LocalVariableReadNode")) {
         const char *anm = nt_str(nt, argv[0], "name");
         LocalVar *lv = anm ? scope_local(s, anm) : NULL;
         if (lv && lv->is_param && lv->type == TY_UNKNOWN) {
@@ -1447,7 +1447,7 @@ int infer_params_from_ivar_hash_ops(Compiler *c) {
     }
     if (is_set && an >= 2 && argv && hv != TY_UNKNOWN) {
       const char *aty = nt_type(nt, argv[1]);
-      if (aty && !strcmp(aty, "LocalVariableReadNode")) {
+      if (aty && sp_streq(aty, "LocalVariableReadNode")) {
         const char *anm = nt_str(nt, argv[1], "name");
         LocalVar *lv = anm ? scope_local(s, anm) : NULL;
         if (lv && lv->is_param && lv->type == TY_UNKNOWN) {
@@ -1479,12 +1479,12 @@ int infer_hash_params(Compiler *c) {
        not CallNodes, so the CallNode path never reaches them; without this a hash
        passed in empty (`{}` infers TY_UNKNOWN) stays unresolved and the method's
        return type degrades to poly, which the caller then rejects. */
-    if (!strcmp(ty, "IndexOrWriteNode") || !strcmp(ty, "IndexAndWriteNode") ||
-        !strcmp(ty, "IndexOperatorWriteNode")) {
+    if (sp_streq(ty, "IndexOrWriteNode") || sp_streq(ty, "IndexAndWriteNode") ||
+        sp_streq(ty, "IndexOperatorWriteNode")) {
       int wrecv = nt_ref(nt, id, "receiver");
       if (wrecv < 0) continue;
       const char *wrty = nt_type(nt, wrecv);
-      if (!wrty || strcmp(wrty, "LocalVariableReadNode")) continue;
+      if (!wrty || !sp_streq(wrty, "LocalVariableReadNode")) continue;
       const char *wrnm = nt_str(nt, wrecv, "name");
       if (!wrnm) continue;
       Scope *ws = comp_scope_of(c, id);
@@ -1503,18 +1503,18 @@ int infer_hash_params(Compiler *c) {
       wlv->type = wwant; changed = 1;
       continue;
     }
-    if (strcmp(ty, "CallNode")) continue;
+    if (!sp_streq(ty, "CallNode")) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     const char *rty = nt_type(nt, recv);
-    if (!rty || strcmp(rty, "LocalVariableReadNode")) continue;
+    if (!rty || !sp_streq(rty, "LocalVariableReadNode")) continue;
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
     if (!lv || !lv->is_param || lv->type != TY_UNKNOWN) continue;
     /* Literal-key [] / fetch: infer specific variant */
-    if (!strcmp(name, "[]") || !strcmp(name, "fetch")) {
+    if (sp_streq(name, "[]") || sp_streq(name, "fetch")) {
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -1522,16 +1522,16 @@ int infer_hash_params(Compiler *c) {
       const char *kty = argv ? nt_type(nt, argv[0]) : NULL;
       if (!kty) continue;
       TyKind want = TY_UNKNOWN;
-      if (!strcmp(kty, "StringNode") || !strcmp(kty, "InterpolatedStringNode"))
+      if (sp_streq(kty, "StringNode") || sp_streq(kty, "InterpolatedStringNode"))
         want = TY_STR_POLY_HASH;
-      else if (!strcmp(kty, "SymbolNode"))
+      else if (sp_streq(kty, "SymbolNode"))
         want = TY_SYM_POLY_HASH;
       if (want == TY_UNKNOWN) continue;
       lv->type = want; changed = 1;
       continue;
     }
     /* []=: infer hash variant from key + value types */
-    if (!strcmp(name, "[]=")) {
+    if (sp_streq(name, "[]=")) {
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -1550,7 +1550,7 @@ int infer_hash_params(Compiler *c) {
     }
     /* Hash-only methods: widen to str_poly_hash (most common variant) */
     for (int k = 0; hash_only_meths[k]; k++) {
-      if (!strcmp(name, hash_only_meths[k])) { lv->type = TY_STR_POLY_HASH; changed = 1; break; }
+      if (sp_streq(name, hash_only_meths[k])) { lv->type = TY_STR_POLY_HASH; changed = 1; break; }
     }
   }
   return changed;
@@ -1569,16 +1569,16 @@ int infer_array_params(Compiler *c) {
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
     int is_arr = 0;
-    for (int k = 0; arr_meths[k]; k++) if (!strcmp(name, arr_meths[k])) { is_arr = 1; break; }
+    for (int k = 0; arr_meths[k]; k++) if (sp_streq(name, arr_meths[k])) { is_arr = 1; break; }
     if (!is_arr) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     const char *rty = nt_type(nt, recv);
-    if (!rty || strcmp(rty, "LocalVariableReadNode")) continue;
+    if (!rty || !sp_streq(rty, "LocalVariableReadNode")) continue;
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
     /* If caller-side [] read already widened this param to a hash type,
@@ -1595,12 +1595,12 @@ int infer_string_params(Compiler *c) {
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
     if (!name || recv < 0 || !is_string_only_method(name)) continue;
     const char *rty = nt_type(nt, recv);
-    if (!rty || strcmp(rty, "LocalVariableReadNode")) continue;
+    if (!rty || !sp_streq(rty, "LocalVariableReadNode")) continue;
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
     if (lv && lv->is_param && lv->type == TY_UNKNOWN) { lv->type = TY_STRING; changed = 1; }
@@ -1614,14 +1614,14 @@ int infer_param_types(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
-    if (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode")) {
+    if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {
       Scope *s = comp_scope_of(c, id);
       if (s->class_id < 0 || !s->name) continue;
       int p = c->classes[s->class_id].parent;
       if (p < 0) continue;
       int pmi = comp_method_in_chain(c, p, s->name, NULL);
       if (pmi < 0) continue;
-      if (!strcmp(ty, "ForwardingSuperNode")) {
+      if (sp_streq(ty, "ForwardingSuperNode")) {
         /* bare `super` forwards all current params to parent */
         Scope *pm = &c->scopes[pmi];
         int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
@@ -1643,14 +1643,14 @@ int infer_param_types(Compiler *c) {
     }
     /* op-assign on an object slot: `lv OP= rhs` / `@iv OP= rhs` is an
        implicit call to `lv.OP(rhs)` -- bind the RHS type to the method param. */
-    if (!strcmp(ty, "LocalVariableOperatorWriteNode") ||
-        !strcmp(ty, "InstanceVariableOperatorWriteNode")) {
+    if (sp_streq(ty, "LocalVariableOperatorWriteNode") ||
+        sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
       const char *nm  = nt_str(nt, id, "name");
       const char *op  = nt_str(nt, id, "binary_operator");
       int val         = nt_ref(nt, id, "value");
       if (!op || val < 0) continue;
       TyKind slot_t = TY_UNKNOWN;
-      if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
+      if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
         Scope *s2 = comp_scope_of(c, id);
         LocalVar *lv2 = nm ? scope_local(s2, nm) : NULL;
         slot_t = lv2 ? lv2->type : TY_UNKNOWN;
@@ -1681,7 +1681,7 @@ int infer_param_types(Compiler *c) {
       if (mg2 != pp->type) { pp->type = mg2; changed = 1; }
       continue;
     }
-    if (strcmp(ty, "CallNode")) continue;
+    if (!sp_streq(ty, "CallNode")) continue;
     const char *name = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
 
@@ -1689,11 +1689,11 @@ int infer_param_types(Compiler *c) {
        subclass, so seed Cls#initialize's first param from arg's type --
        without this the param stays TY_UNKNOWN and the constructor gets
        marked unreachable, dropping the initialize call (#1415). */
-    if (recv < 0 && name && !strcmp(name, "raise")) {
+    if (recv < 0 && name && sp_streq(name, "raise")) {
       int rargs = nt_ref(nt, id, "arguments");
       int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
       if (ran >= 2 && nt_type(nt, rav[0]) &&
-          (!strcmp(nt_type(nt, rav[0]), "ConstantReadNode") || !strcmp(nt_type(nt, rav[0]), "ConstantPathNode"))) {
+          (sp_streq(nt_type(nt, rav[0]), "ConstantReadNode") || sp_streq(nt_type(nt, rav[0]), "ConstantPathNode"))) {
         const char *rcn = nt_str(nt, rav[0], "name");
         int rci = rcn ? comp_class_index(c, rcn) : -1;
         if (rci >= 0 && class_is_exc_subclass(c, rci)) {
@@ -1713,7 +1713,7 @@ int infer_param_types(Compiler *c) {
     /* <method>.call(args): bind the call-site arg types to the target
        method's params (the Method ABI is the only call site for a method
        reached solely via method(:sym)). */
-    if (recv >= 0 && name && (!strcmp(name, "call") || !strcmp(name, "[]") || !strcmp(name, "()")) &&
+    if (recv >= 0 && name && (sp_streq(name, "call") || sp_streq(name, "[]") || sp_streq(name, "()")) &&
         infer_type(c, recv) == TY_METHOD) {
       int mn = method_recv_node(c, recv);
       int tmi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
@@ -1725,7 +1725,7 @@ int infer_param_types(Compiler *c) {
       /* bare `new(args)` inside a class method constructs the enclosing
          (possibly specialized) class -> bind args to that class's
          initialize, so the subclass constructor's params get typed. */
-      if (name && !strcmp(name, "new")) {
+      if (name && sp_streq(name, "new")) {
         Scope *s = comp_scope_of(c, id);
         if (s && s->is_cmethod && s->class_id >= 0) {
           int initmi = comp_method_in_chain(c, s->class_id, "initialize", NULL);
@@ -1802,10 +1802,10 @@ int infer_param_types(Compiler *c) {
     {
       const char *rty = nt_type(nt, recv);
       /* M::Sub.new(...) — resolve by the final path component */
-      if (rty && !strcmp(rty, "ConstantPathNode")) {
+      if (rty && sp_streq(rty, "ConstantPathNode")) {
         const char *cn = nt_str(nt, recv, "name");
         int ci = cn ? comp_class_index(c, cn) : -1;
-        if (ci >= 0 && !strcmp(name, "new")) {
+        if (ci >= 0 && sp_streq(name, "new")) {
           int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
           if (ucnew >= 0)
             changed |= bind_call_params(c, id, ucnew);
@@ -1815,16 +1815,16 @@ int infer_param_types(Compiler *c) {
         else if (ci >= 0)
           changed |= bind_call_params(c, id, comp_cmethod_in_chain(c, ci, name, NULL));
       }
-      if (rty && !strcmp(rty, "ConstantReadNode")) {
+      if (rty && sp_streq(rty, "ConstantReadNode")) {
         int ci = comp_class_index(c, nt_str(nt, recv, "name"));
         if (ci >= 0) {
-          if (!strcmp(name, "new") && c->classes[ci].is_struct) {
+          if (sp_streq(name, "new") && c->classes[ci].is_struct) {
             /* Struct construction: positional args set member ivars in order. */
             ClassInfo *cls = &c->classes[ci];
             int args = nt_ref(nt, id, "arguments");
             int an = 0;
             const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-            int kwh = (an == 1 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
+            int kwh = (an == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
             for (int a = 0; a < cls->nivars; a++) {
               /* a member not supplied at this construction can be nil */
               const char *mname = cls->ivars[a] + 1;
@@ -1834,8 +1834,8 @@ int infer_param_types(Compiler *c) {
               if (kwh >= 0) {
                 for (int e = 0; e < kn; e++) {
                   int key = nt_ref(nt, ke[e], "key");
-                  if (key >= 0 && nt_type(nt, key) && !strcmp(nt_type(nt, key), "SymbolNode") &&
-                      nt_str(nt, key, "value") && !strcmp(nt_str(nt, key, "value"), mname)) { vnode = nt_ref(nt, ke[e], "value"); break; }
+                  if (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode") &&
+                      nt_str(nt, key, "value") && sp_streq(nt_str(nt, key, "value"), mname)) { vnode = nt_ref(nt, ke[e], "value"); break; }
                 }
               }
               else if (a < an) vnode = argv[a];
@@ -1846,7 +1846,7 @@ int infer_param_types(Compiler *c) {
             }
             continue;
           }
-          if (!strcmp(name, "new")) {
+          if (sp_streq(name, "new")) {
             int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
             if (ucnew >= 0)
               changed |= bind_call_params(c, id, ucnew);
@@ -1858,7 +1858,7 @@ int infer_param_types(Compiler *c) {
           continue;
         }
       }
-      if (!strcmp(name, "new")) continue;
+      if (sp_streq(name, "new")) continue;
     }
     /* obj.method -> instance method params */
     TyKind rt = infer_type(c, recv);
@@ -1867,8 +1867,8 @@ int infer_param_types(Compiler *c) {
       int mi3 = comp_method_in_chain(c, cid3, name, NULL);
       /* Comparable: `a < b` etc. on an object with `<=>` but no direct `<`
          bind the argument to `<=>` param instead. */
-      if (mi3 < 0 && (!strcmp(name, "<") || !strcmp(name, ">") ||
-                      !strcmp(name, "<=") || !strcmp(name, ">=")))
+      if (mi3 < 0 && (sp_streq(name, "<") || sp_streq(name, ">") ||
+                      sp_streq(name, "<=") || sp_streq(name, ">=")))
         mi3 = comp_method_in_chain(c, cid3, "<=>", NULL);
       changed |= bind_call_params(c, id, mi3);
       /* Also propagate to descendant overrides: codegen will emit a cls_id
@@ -1901,13 +1901,13 @@ int infer_for_index(Compiler *c) {
   int changed = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "ForNode")) continue;
+    if (!ty || !sp_streq(ty, "ForNode")) continue;
     int idx = nt_ref(nt, id, "index");
     int coll = nt_ref(nt, id, "collection");
     if (idx < 0 || coll < 0) continue;
     const char *idx_ty = nt_type(nt, idx);
     /* for a, b in coll: MultiTargetNode with LocalVariableTargetNode children */
-    if (idx_ty && !strcmp(idx_ty, "MultiTargetNode")) {
+    if (idx_ty && sp_streq(idx_ty, "MultiTargetNode")) {
       int ln = 0;
       const int *lefts = nt_arr(nt, idx, "lefts", &ln);
       TyKind ct2 = infer_type(c, coll);
@@ -1946,7 +1946,7 @@ const char *block_param_name(Compiler *c, int block, int idx) {
   if (bp < 0) return NULL;
   /* numbered block params: `{ _1 }`, `{ it }` → NumberedParametersNode */
   const char *bpty = nt_type(c->nt, bp);
-  if (bpty && !strcmp(bpty, "NumberedParametersNode")) {
+  if (bpty && sp_streq(bpty, "NumberedParametersNode")) {
     int max = (int)nt_int(c->nt, bp, "maximum", 0);
     if (idx >= max) return NULL;
     static const char *names[] = {"_1","_2","_3","_4","_5","_6","_7","_8","_9"};
@@ -1967,13 +1967,13 @@ const char *block_rest_name(Compiler *c, int block) {
   int bp = nt_ref(c->nt, block, "parameters");      /* BlockParametersNode */
   if (bp < 0) return NULL;
   const char *bpty = nt_type(c->nt, bp);
-  if (bpty && !strcmp(bpty, "NumberedParametersNode")) return NULL;
+  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
   int pn = nt_ref(c->nt, bp, "parameters");          /* ParametersNode */
   if (pn < 0) return NULL;
   int rest = nt_ref(c->nt, pn, "rest");
   if (rest < 0) return NULL;
   const char *rty = nt_type(c->nt, rest);
-  if (!rty || strcmp(rty, "RestParameterNode")) return NULL;  /* must be `*name` */
+  if (!rty || !sp_streq(rty, "RestParameterNode")) return NULL;  /* must be `*name` */
   return nt_str(c->nt, rest, "name");
 }
 
@@ -1986,7 +1986,7 @@ int block_param_is_multi(Compiler *c, int block, int idx) {
   const int *reqs = nt_arr(c->nt, pn, "requireds", &n);
   if (idx >= n) return 0;
   const char *ty = nt_type(c->nt, reqs[idx]);
-  return (ty && !strcmp(ty, "MultiTargetNode"));
+  return (ty && sp_streq(ty, "MultiTargetNode"));
 }
 
 int block_param_multi_count(Compiler *c, int block, int idx) {
@@ -2020,7 +2020,7 @@ const char *block_param_multi_leaf(Compiler *c, int block, int idx, int leaf_idx
 int first_yield(Compiler *c, int si) {
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
-    if (ty && !strcmp(ty, "YieldNode") && c->nscope[id] == si) return id;
+    if (ty && sp_streq(ty, "YieldNode") && c->nscope[id] == si) return id;
   }
   return -1;
 }
@@ -2032,13 +2032,13 @@ int first_block_call_args(Compiler *c, int si) {
   if (!m->blk_param || !m->blk_param[0]) return -1;
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
-    if (!ty || strcmp(ty, "CallNode") || c->nscope[id] != si) continue;
+    if (!ty || !sp_streq(ty, "CallNode") || c->nscope[id] != si) continue;
     const char *nm = nt_str(c->nt, id, "name");
-    if (!nm || strcmp(nm, "call")) continue;
+    if (!nm || !sp_streq(nm, "call")) continue;
     int recv = nt_ref(c->nt, id, "receiver");
-    if (recv < 0 || !nt_type(c->nt, recv) || strcmp(nt_type(c->nt, recv), "LocalVariableReadNode")) continue;
+    if (recv < 0 || !nt_type(c->nt, recv) || !sp_streq(nt_type(c->nt, recv), "LocalVariableReadNode")) continue;
     const char *rn = nt_str(c->nt, recv, "name");
-    if (rn && !strcmp(rn, m->blk_param)) return nt_ref(c->nt, id, "arguments");
+    if (rn && sp_streq(rn, m->blk_param)) return nt_ref(c->nt, id, "arguments");
   }
   return -1;
 }
@@ -2053,15 +2053,15 @@ int first_ie_exec_args(Compiler *c, int si) {
   for (int id = 0; id < c->nt->count; id++) {
     if (c->nscope[id] != si) continue;
     const char *ty = nt_type(c->nt, id);
-    if (!ty || strcmp(ty, "CallNode") || nt_ref(c->nt, id, "receiver") >= 0) continue;
+    if (!ty || !sp_streq(ty, "CallNode") || nt_ref(c->nt, id, "receiver") >= 0) continue;
     const char *nm = nt_str(c->nt, id, "name");
-    if (!nm || strcmp(nm, "instance_exec")) continue;
+    if (!nm || !sp_streq(nm, "instance_exec")) continue;
     int blk = nt_ref(c->nt, id, "block");
-    if (blk < 0 || !nt_type(c->nt, blk) || strcmp(nt_type(c->nt, blk), "BlockArgumentNode")) continue;
+    if (blk < 0 || !nt_type(c->nt, blk) || !sp_streq(nt_type(c->nt, blk), "BlockArgumentNode")) continue;
     int expr = nt_ref(c->nt, blk, "expression");
-    if (expr < 0 || !nt_type(c->nt, expr) || strcmp(nt_type(c->nt, expr), "LocalVariableReadNode")) continue;
+    if (expr < 0 || !nt_type(c->nt, expr) || !sp_streq(nt_type(c->nt, expr), "LocalVariableReadNode")) continue;
     const char *en = nt_str(c->nt, expr, "name");
-    if (en && !strcmp(en, m->blk_param)) return nt_ref(c->nt, id, "arguments");
+    if (en && sp_streq(en, m->blk_param)) return nt_ref(c->nt, id, "arguments");
   }
   return -1;
 }
@@ -2085,7 +2085,7 @@ static int forwarding_yield_target(Compiler *c, int mi, int depth) {
   int args = nt_ref(c->nt, call, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
   if (ac != 1 || !av || !nt_type(c->nt, av[0]) ||
-      strcmp(nt_type(c->nt, av[0]), "ForwardingArgumentsNode")) return -1;
+      !sp_streq(nt_type(c->nt, av[0]), "ForwardingArgumentsNode")) return -1;
   const char *tn = nt_str(c->nt, call, "name");
   if (!tn) return -1;
   int t = comp_method_index(c, tn);
@@ -2120,15 +2120,15 @@ static int fwd_callable_arity(Compiler *c, int ex) {
   const char *exty = nt_type(nt, ex);
   if (!exty) return -1;
   int create = -1;
-  if (!strcmp(exty, "LambdaNode") || is_proc_create(c, ex)) create = ex;
-  else if (!strcmp(exty, "LocalVariableReadNode")) {
+  if (sp_streq(exty, "LambdaNode") || is_proc_create(c, ex)) create = ex;
+  else if (sp_streq(exty, "LocalVariableReadNode")) {
     const char *vn = nt_str(nt, ex, "name");
     Scope *sc = vn ? comp_scope_of(c, ex) : NULL;
     for (int w = 0; vn && w < nt->count; w++) {
       const char *wty = nt_type(nt, w);
-      if (!wty || strcmp(wty, "LocalVariableWriteNode")) continue;
+      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
       const char *wn = nt_str(nt, w, "name");
-      if (!wn || strcmp(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
       if (val >= 0 && is_proc_create(c, val)) { create = val; break; }
     }
@@ -2152,22 +2152,22 @@ int desugar_implicit_send(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     if (nt_ref(nt, id, "receiver") >= 0) continue;        /* implicit self only */
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || (strcmp(nm, "send") && strcmp(nm, "__send__") &&
-                strcmp(nm, "public_send"))) continue;
+    if (!nm || (!sp_streq(nm, "send") && !sp_streq(nm, "__send__") &&
+                !sp_streq(nm, "public_send"))) continue;
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
     int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
     if (argc < 1 || !argv) continue;
     const char *a0ty = nt_type(nt, argv[0]);
     const char *mname = NULL;
-    if (a0ty && !strcmp(a0ty, "SymbolNode")) mname = nt_str(nt, argv[0], "value");
-    else if (a0ty && !strcmp(a0ty, "StringNode")) mname = nt_str(nt, argv[0], "content");
+    if (a0ty && sp_streq(a0ty, "SymbolNode")) mname = nt_str(nt, argv[0], "value");
+    else if (a0ty && sp_streq(a0ty, "StringNode")) mname = nt_str(nt, argv[0], "content");
     if (!mname || !*mname) continue;                      /* non-literal name: leave it */
-    if (!strcmp(mname, "send") || !strcmp(mname, "__send__") ||
-        !strcmp(mname, "public_send")) continue;          /* don't re-trigger next pass */
+    if (sp_streq(mname, "send") || sp_streq(mname, "__send__") ||
+        sp_streq(mname, "public_send")) continue;          /* don't re-trigger next pass */
     int nrest = argc - 1;
     if (nrest > 64) continue;                             /* absurd arity: leave it */
     int rest[64];
@@ -2196,8 +2196,8 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
   NodeTable *nt = (NodeTable *)c->nt;
   const char *ty = nt_type(nt, ref);
   if (!ty) return 0;
-  if (!strcmp(ty, "CallNode") && nt_str(nt, ref, "name") &&
-      !strcmp(nt_str(nt, ref, "name"), "method")) {
+  if (sp_streq(ty, "CallNode") && nt_str(nt, ref, "name") &&
+      sp_streq(nt_str(nt, ref, "name"), "method")) {
     int mi = method_obj_target_mi(c, ref);
     if (mi < 0) return 0;
     int dn = c->scopes[mi].def_node;
@@ -2206,15 +2206,15 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
     return *out_body >= 0;
   }
   int create = -1;
-  if (!strcmp(ty, "LambdaNode") || is_proc_create(c, ref)) create = ref;
-  else if (!strcmp(ty, "LocalVariableReadNode")) {
+  if (sp_streq(ty, "LambdaNode") || is_proc_create(c, ref)) create = ref;
+  else if (sp_streq(ty, "LocalVariableReadNode")) {
     const char *vn = nt_str(nt, ref, "name");
     Scope *sc = vn ? comp_scope_of(c, ref) : NULL;
     for (int w = 0; vn && w < nt->count; w++) {
       const char *wty = nt_type(nt, w);
-      if (!wty || strcmp(wty, "LocalVariableWriteNode")) continue;
+      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
       const char *wn = nt_str(nt, w, "name");
-      if (!wn || strcmp(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
       if (val >= 0 && is_proc_create(c, val)) { create = val; break; }
     }
@@ -2231,13 +2231,13 @@ static void ewo_scan_pushes(Compiler *c, int id, const char *memo, TyKind *acc) 
   NodeTable *nt = (NodeTable *)c->nt;
   if (id < 0) return;
   const char *ty = nt_type(nt, id);
-  if (ty && !strcmp(ty, "CallNode")) {
+  if (ty && sp_streq(ty, "CallNode")) {
     const char *nm = nt_str(nt, id, "name");
     int rcv = nt_ref(nt, id, "receiver");
     const char *rty = rcv >= 0 ? nt_type(nt, rcv) : NULL;
-    if (nm && rty && !strcmp(rty, "LocalVariableReadNode") &&
-        nt_str(nt, rcv, "name") && !strcmp(nt_str(nt, rcv, "name"), memo) &&
-        (!strcmp(nm, "<<") || !strcmp(nm, "push"))) {
+    if (nm && rty && sp_streq(rty, "LocalVariableReadNode") &&
+        nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), memo) &&
+        (sp_streq(nm, "<<") || sp_streq(nm, "push"))) {
       int args = nt_ref(nt, id, "arguments");
       int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       for (int k = 0; k < an; k++) *acc = ty_unify(*acc, infer_type(c, argv[k]));
@@ -2261,7 +2261,7 @@ TyKind ewo_memo_elem_type(Compiler *c, int callid) {
   NodeTable *nt = (NodeTable *)c->nt;
   int block = nt_ref(nt, callid, "block");
   const char *bty = block >= 0 ? nt_type(nt, block) : NULL;
-  if (!bty || strcmp(bty, "BlockNode")) return TY_UNKNOWN;  /* not yet a literal block */
+  if (!bty || !sp_streq(bty, "BlockNode")) return TY_UNKNOWN;  /* not yet a literal block */
   const char *memo = block_param_name(c, block, 1);
   int body = nt_ref(nt, block, "body");
   if (!memo || body < 0) return TY_UNKNOWN;
@@ -2275,15 +2275,15 @@ TyKind ewo_memo_elem_type(Compiler *c, int callid) {
   int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
   if (bn != 1 || !bb) return TY_UNKNOWN;
   int call = bb[0];
-  if (!nt_type(nt, call) || strcmp(nt_type(nt, call), "CallNode")) return TY_UNKNOWN;
-  if (!nt_str(nt, call, "name") || strcmp(nt_str(nt, call, "name"), "call")) return TY_UNKNOWN;
+  if (!nt_type(nt, call) || !sp_streq(nt_type(nt, call), "CallNode")) return TY_UNKNOWN;
+  if (!nt_str(nt, call, "name") || !sp_streq(nt_str(nt, call, "name"), "call")) return TY_UNKNOWN;
   int rcv = nt_ref(nt, call, "receiver");
   int cargs = nt_ref(nt, call, "arguments");
   int cn = 0; const int *cargv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
   if (rcv < 0 || cn < 1 || !cargv) return TY_UNKNOWN;
   int last = cargv[cn - 1];
-  if (!nt_type(nt, last) || strcmp(nt_type(nt, last), "LocalVariableReadNode")) return TY_UNKNOWN;
-  if (!nt_str(nt, last, "name") || strcmp(nt_str(nt, last, "name"), memo)) return TY_UNKNOWN;
+  if (!nt_type(nt, last) || !sp_streq(nt_type(nt, last), "LocalVariableReadNode")) return TY_UNKNOWN;
+  if (!nt_str(nt, last, "name") || !sp_streq(nt_str(nt, last, "name"), memo)) return TY_UNKNOWN;
 
   int cb_body = -1, cb_pn = -1;
   if (!fwd_callable_def(c, rcv, &cb_body, &cb_pn) || cb_pn < 0) return TY_UNKNOWN;
@@ -2316,29 +2316,29 @@ static int curry_chain(Compiler *c, int node, int *applied, int *arity, TyKind *
   if (depth > 64) return 0;  /* guard against cyclic var assignments (a=b; b=a) */
   const char *ty = nt_type(nt, node);
   if (!ty) return 0;
-  if (!strcmp(ty, "CallNode")) {
+  if (sp_streq(ty, "CallNode")) {
     const char *nm = nt_str(nt, node, "name");
     int recv = nt_ref(nt, node, "receiver");
     if (!nm || recv < 0) return 0;
-    if (!strcmp(nm, "curry")) {
+    if (sp_streq(nm, "curry")) {
       if (!curry_proc_base(c, recv, arity, ret)) return 0;
       *applied = 0;
       return 1;
     }
-    if (!strcmp(nm, "[]") || !strcmp(nm, "call") || !strcmp(nm, "()")) {
+    if (sp_streq(nm, "[]") || sp_streq(nm, "call") || sp_streq(nm, "()")) {
       if (!curry_chain(c, recv, applied, arity, ret, depth + 1)) return 0;
       (*applied)++;
       return 1;
     }
     return 0;
   }
-  if (!strcmp(ty, "LocalVariableReadNode")) {
+  if (sp_streq(ty, "LocalVariableReadNode")) {
     const char *vn = nt_str(nt, node, "name");
     Scope *sc = vn ? comp_scope_of(c, node) : NULL;
     for (int w = 0; vn && w < nt->count; w++) {
-      if (!nt_type(nt, w) || strcmp(nt_type(nt, w), "LocalVariableWriteNode")) continue;
+      if (!nt_type(nt, w) || !sp_streq(nt_type(nt, w), "LocalVariableWriteNode")) continue;
       const char *wn = nt_str(nt, w, "name");
-      if (!wn || strcmp(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
       if (val >= 0) return curry_chain(c, val, applied, arity, ret, depth + 1);
     }
@@ -2363,21 +2363,21 @@ int desugar_value_callable_forwards(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;  /* snapshot: synthetic nodes are appended past here */
   for (int id = 0; id < n0; id++) {
-    if (!nt_type(nt, id) || strcmp(nt_type(nt, id), "CallNode")) continue;
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     int blk = nt_ref(nt, id, "block");
-    if (blk < 0 || !nt_type(nt, blk) || strcmp(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0) continue;  /* anonymous `&`: inline-forward path, not a value */
     const char *exty = nt_type(nt, ex);
     if (!exty) continue;
-    int simple_ref = !strcmp(exty, "LocalVariableReadNode") ||
-                     !strcmp(exty, "InstanceVariableReadNode");
+    int simple_ref = sp_streq(exty, "LocalVariableReadNode") ||
+                     sp_streq(exty, "InstanceVariableReadNode");
     /* `&method(:m)`: a deterministic method-object lookup, safe to re-evaluate */
-    int method_obj = !strcmp(exty, "CallNode") && nt_str(nt, ex, "name") &&
-                     !strcmp(nt_str(nt, ex, "name"), "method");
+    int method_obj = sp_streq(exty, "CallNode") && nt_str(nt, ex, "name") &&
+                     sp_streq(nt_str(nt, ex, "name"), "method");
     /* `&->(x){...}`: an inline lambda literal, equivalent to the block itself;
        building it per element has no observable side effect */
-    int inline_lambda = !strcmp(exty, "LambdaNode");
+    int inline_lambda = sp_streq(exty, "LambdaNode");
     if (!simple_ref && !method_obj && !inline_lambda) continue;
     TyKind ct = infer_type(c, ex);
     if (ct != TY_PROC && ct != TY_METHOD) continue;  /* Proc / Method values */
@@ -2396,7 +2396,7 @@ int desugar_value_callable_forwards(Compiler *c) {
        overrides the bare-int default). */
     TyKind pty[4];
     int arity;
-    if (!strcmp(name, "each_with_object")) {
+    if (sp_streq(name, "each_with_object")) {
       /* each_with_object(init) { |elem, memo| }: two params, the element and the
          accumulator. Array receivers only (a `{}` hash memo is unsupported even
          for a literal block). The memo type is recovered from how the callable
@@ -2511,7 +2511,7 @@ int desugar_enum_chain_to_a(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || strcmp(nm, "to_a")) continue;
+    if (!nm || !sp_streq(nm, "to_a")) continue;
     if (nt_ref(nt, id, "block") >= 0) continue;
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; if (args >= 0) nt_arr(nt, args, "arguments", &ac);
@@ -2519,7 +2519,7 @@ int desugar_enum_chain_to_a(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || (strcmp(rn, "each_slice") && strcmp(rn, "each_cons"))) continue;
+    if (!rn || (!sp_streq(rn, "each_slice") && !sp_streq(rn, "each_cons"))) continue;
     if (nt_ref(nt, recv, "block") >= 0) continue;  /* the blockless enumerator form */
 
     int encl = c->nscope[id];
@@ -2580,7 +2580,7 @@ int infer_block_params(Compiler *c) {
      unifying a premature int default with it into poly (#1372). */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "LambdaNode")) continue;
+    if (!ty || !sp_streq(ty, "LambdaNode")) continue;
     int pn = nt_ref(nt, id, "parameters");      /* ParametersNode (1 level, unlike blocks) */
     if (pn < 0) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
@@ -2595,13 +2595,13 @@ int infer_block_params(Compiler *c) {
   /* Hash.new { |hash, key| } : hash is the StrPolyHash, key the string key. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *cname = nt_str(nt, id, "name");
-    if (!cname || strcmp(cname, "new")) continue;
+    if (!cname || !sp_streq(cname, "new")) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || !nt_type(nt, recv) || strcmp(nt_type(nt, recv), "ConstantReadNode")) continue;
+    if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "ConstantReadNode")) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || strcmp(rn, "Hash")) continue;
+    if (!rn || !sp_streq(rn, "Hash")) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0) continue;
     int pn = nt_ref(nt, blk, "parameters");
@@ -2623,14 +2623,14 @@ int infer_block_params(Compiler *c) {
      (Ruby yields self), typed as the receiver's object type. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *cname = nt_str(nt, id, "name");
     if (!cname) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     TyKind rt = infer_type(c, recv);
     if (!ty_is_object(rt)) continue;
-    if (strcmp(cname, "instance_eval") &&
+    if (!sp_streq(cname, "instance_eval") &&
         comp_trampoline_kind(c, ty_object_class(rt), cname, NULL) != 1) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0) continue;
@@ -2638,7 +2638,7 @@ int infer_block_params(Compiler *c) {
     if (pn < 0) continue;
     Scope *bs = comp_scope_of(c, blk);
     const char *pnty = nt_type(nt, pn);
-    if (pnty && !strcmp(pnty, "NumberedParametersNode")) {
+    if (pnty && sp_streq(pnty, "NumberedParametersNode")) {
       /* `{ _1.method }` : _1.._N all receive self (the receiver). */
       int maxn = (int)nt_int(nt, pn, "maximum", 0);
       for (int k = 1; k <= maxn; k++) {
@@ -2663,16 +2663,16 @@ int infer_block_params(Compiler *c) {
      arg types (strict arity). */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *cname = nt_str(nt, id, "name");
     if (!cname) continue;
     int xrecv = nt_ref(nt, id, "receiver");
     if (xrecv < 0) {
       /* receiverless instance_exec inside an instance method: params still
          take the call-site arg types; the receiver (self) is irrelevant here. */
-      if (strcmp(cname, "instance_exec") || ie_implicit_self_class(c, id) < 0) continue;
+      if (!sp_streq(cname, "instance_exec") || ie_implicit_self_class(c, id) < 0) continue;
     }
-    else if (strcmp(cname, "instance_exec")) {
+    else if (!sp_streq(cname, "instance_exec")) {
       TyKind xrt = infer_type(c, xrecv);
       if (!ty_is_object(xrt) ||
           comp_trampoline_kind(c, ty_object_class(xrt), cname, NULL) != 2) continue;
@@ -2689,7 +2689,7 @@ int infer_block_params(Compiler *c) {
     int kwhash = ie_call_kwhash(c, id);
     if (kwhash >= 0) iac -= 1;
     const char *pnty = nt_type(nt, pn);
-    if (pnty && !strcmp(pnty, "NumberedParametersNode")) {
+    if (pnty && sp_streq(pnty, "NumberedParametersNode")) {
       /* `{ _1 + _2 }` / `{ it ... }` (it normalizes to _1): bind _1.._N to the
          call-site arg types. */
       int maxn = (int)nt_int(nt, pn, "maximum", 0);
@@ -2707,7 +2707,7 @@ int infer_block_params(Compiler *c) {
     /* mixed-args trampoline (`instance_exec(x, @base, 7, &b)`): bind each block
        param to the trampoline body's arg (caller arg substituted for a
        trampoline param read), not the caller's args. */
-    int tramp_argc = strcmp(cname, "instance_exec") ? ie_tramp_effective_argc(c, id) : -1;
+    int tramp_argc = !sp_streq(cname, "instance_exec") ? ie_tramp_effective_argc(c, id) : -1;
     /* auto-splat: a single array arg destructured across N>=2 params binds
        each to the element type. A sole splat (`instance_exec(*arr) { |a, b| }`)
        spreads the same way -- unwrap it to its array operand. A splat also
@@ -2715,7 +2715,7 @@ int infer_block_params(Compiler *c) {
        to `arr[0]`), unlike a directly-passed array (which binds the whole array
        to a lone param), so allow `rnp >= 1` when explicitly splatted. */
     int arg0 = (iac == 1 && iav) ? iav[0] : -1;
-    int is_splat = arg0 >= 0 && nt_type(nt, arg0) && !strcmp(nt_type(nt, arg0), "SplatNode");
+    int is_splat = arg0 >= 0 && nt_type(nt, arg0) && sp_streq(nt_type(nt, arg0), "SplatNode");
     if (is_splat) arg0 = nt_ref(nt, arg0, "expression");
     if (tramp_argc < 0 && iac == 1 && (rnp >= 2 || (rnp >= 1 && is_splat)) && arg0 >= 0) {
       TyKind a0 = infer_type(c, arg0);
@@ -2749,7 +2749,7 @@ int infer_block_params(Compiler *c) {
       int vn = ie_kwhash_value(c, kwhash, kpn);
       TyKind kt = TY_UNKNOWN;
       if (vn >= 0) kt = infer_type(c, vn);
-      else if (kpty && !strcmp(kpty, "OptionalKeywordParameterNode")) {
+      else if (kpty && sp_streq(kpty, "OptionalKeywordParameterNode")) {
         int dv = nt_ref(nt, kws[k], "value");
         if (dv >= 0) kt = infer_type(c, dv);
       }
@@ -2762,17 +2762,17 @@ int infer_block_params(Compiler *c) {
      which is always a poly (boxed) value at the runtime ABI boundary. */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *cname = nt_str(nt, id, "name");
-    if (!cname || strcmp(cname, "new")) continue;
+    if (!cname || !sp_streq(cname, "new")) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || !nt_type(nt, recv)) continue;
     const char *rrty = nt_type(nt, recv);
-    int is_const = !strcmp(rrty, "ConstantReadNode") ||
-                   (!strcmp(rrty, "ConstantPathNode") && nt_ref(nt, recv, "parent") < 0);
+    int is_const = sp_streq(rrty, "ConstantReadNode") ||
+                   (sp_streq(rrty, "ConstantPathNode") && nt_ref(nt, recv, "parent") < 0);
     if (!is_const) continue;
     const char *rn = nt_str(nt, recv, "name");
-    if (!rn || strcmp(rn, "Fiber")) continue;
+    if (!rn || !sp_streq(rn, "Fiber")) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0) continue;
     int pn = nt_ref(nt, blk, "parameters");
@@ -2793,9 +2793,9 @@ int infer_block_params(Compiler *c) {
      to the proc's params (e.g. `t` gets TY_SYMBOL instead of the default TY_INT). */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *cname = nt_str(nt, id, "name");
-    if (!cname || (strcmp(cname, "call") && strcmp(cname, "()") && strcmp(cname, "[]"))) continue;
+    if (!cname || (!sp_streq(cname, "call") && !sp_streq(cname, "()") && !sp_streq(cname, "[]"))) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || infer_type(c, recv) != TY_PROC) continue;
     const char *rty = nt_type(nt, recv);
@@ -2807,20 +2807,20 @@ int infer_block_params(Compiler *c) {
     /* The receiver is itself a proc/lambda literal -- e.g. a desugared inline
        `&->(x){...}` clone, whose params no var write would let us find -- so type
        its own params directly from the call args. */
-    if (!strcmp(rty, "LambdaNode") || is_proc_create(c, recv)) {
+    if (sp_streq(rty, "LambdaNode") || is_proc_create(c, recv)) {
       if (cs_type_params(c, recv, argv, argc)) changed = 1;
       continue;
     }
-    if (strcmp(rty, "LocalVariableReadNode")) continue;
+    if (!sp_streq(rty, "LocalVariableReadNode")) continue;
     const char *varname = nt_str(nt, recv, "name");
     if (!varname) continue;
     Scope *call_scope = comp_scope_of(c, id);
     /* otherwise a local holding a proc: type the proc literal assigned to it */
     for (int w = 0; w < nt->count; w++) {
       const char *wty = nt_type(nt, w);
-      if (!wty || strcmp(wty, "LocalVariableWriteNode")) continue;
+      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
       const char *wname = nt_str(nt, w, "name");
-      if (!wname || strcmp(wname, varname)) continue;
+      if (!wname || !sp_streq(wname, varname)) continue;
       if (comp_scope_of(c, w) != call_scope) continue;
       int val = nt_ref(nt, w, "value");
       if (val < 0 || !is_proc_create(c, val)) continue;
@@ -2833,7 +2833,7 @@ int infer_block_params(Compiler *c) {
      matching the proc-literal default loop below (#1372). */
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "LambdaNode")) continue;
+    if (!ty || !sp_streq(ty, "LambdaNode")) continue;
     int pn = nt_ref(nt, id, "parameters");
     if (pn < 0) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
@@ -2848,7 +2848,7 @@ int infer_block_params(Compiler *c) {
 
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     int block = nt_ref(nt, id, "block");
     if (block < 0) continue;
     const char *name = nt_str(nt, id, "name");
@@ -2871,9 +2871,9 @@ int infer_block_params(Compiler *c) {
     }
 
     /* Array.new(n) { |i| ... }: i is the integer index */
-    if (recv >= 0 && !strcmp(name, "new") && nt_type(nt, recv) &&
-        !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        !strcmp(nt_str(nt, recv, "name"), "Array")) {
+    if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "Array")) {
       const char *p0 = block_param_name(c, block, 0);
       if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
                 if (l->type != TY_INT) { l->type = TY_INT; changed = 1; } }
@@ -2881,10 +2881,10 @@ int infer_block_params(Compiler *c) {
     }
 
     /* File.open(args) { |f| ... }: f is a TY_POLY file handle */
-    if (recv >= 0 && !strcmp(name, "open") && nt_type(nt, recv) &&
-        !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        (!strcmp(nt_str(nt, recv, "name"), "File") ||
-         !strcmp(nt_str(nt, recv, "name"), "IO"))) {
+    if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        (sp_streq(nt_str(nt, recv, "name"), "File") ||
+         sp_streq(nt_str(nt, recv, "name"), "IO"))) {
       const char *p0 = block_param_name(c, block, 0);
       if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
                 if (l->type != TY_POLY) { l->type = TY_POLY; changed = 1; } }
@@ -2892,9 +2892,9 @@ int infer_block_params(Compiler *c) {
     }
 
     /* StringIO.open(args) { |io| ... }: io is a StringIO */
-    if (recv >= 0 && !strcmp(name, "open") && nt_type(nt, recv) &&
-        !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        !strcmp(nt_str(nt, recv, "name"), "StringIO")) {
+    if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "StringIO")) {
       const char *p0 = block_param_name(c, block, 0);
       if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
                 if (l->type != TY_STRINGIO) { l->type = TY_STRINGIO; changed = 1; } }
@@ -2902,7 +2902,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* struct.to_h { |k, v| ... }: k is a member symbol, v its (poly) value */
-    if (recv >= 0 && !strcmp(name, "to_h")) {
+    if (recv >= 0 && sp_streq(name, "to_h")) {
       TyKind rt0 = infer_type(c, recv);
       if (ty_is_object(rt0) && c->classes[ty_object_class(rt0)].is_struct) {
         const char *kp = block_param_name(c, block, 0);
@@ -2928,14 +2928,14 @@ int infer_block_params(Compiler *c) {
         TyKind rt0 = infer_type(c, recv);
         if (ty_is_object(rt0)) mi = comp_method_in_chain(c, ty_object_class(rt0), name, NULL);
         /* Class.new { |...| }: the yielding method is Class#initialize */
-        if (mi < 0 && !strcmp(name, "new") &&
-            nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")) {
+        if (mi < 0 && sp_streq(name, "new") &&
+            nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
           const char *cname = nt_str(nt, recv, "name");
           int cid = cname ? comp_class_index(c, cname) : -1;
           if (cid >= 0) mi = comp_method_in_chain(c, cid, "initialize", NULL);
         }
         /* Class.method { ... }: look up the class method */
-        if (mi < 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode")) {
+        if (mi < 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
           const char *cname = nt_str(nt, recv, "name");
           int cid = cname ? comp_class_index(c, cname) : -1;
           if (cid >= 0) mi = comp_cmethod_in_chain(c, cid, name, NULL);
@@ -2967,7 +2967,7 @@ int infer_block_params(Compiler *c) {
            are other yields with fewer args. Find the min yield arity. */
         int min_yc = yc;
         for (int _yi = 0; _yi < nt->count; _yi++) {
-          if (!nt_type(nt, _yi) || strcmp(nt_type(nt, _yi), "YieldNode")) continue;
+          if (!nt_type(nt, _yi) || !sp_streq(nt_type(nt, _yi), "YieldNode")) continue;
           if (c->nscope[_yi] != yld_mi) continue;
           int _ya = nt_ref(nt, _yi, "arguments");
           int _yc = 0;
@@ -3000,15 +3000,15 @@ int infer_block_params(Compiler *c) {
         Scope *bs = comp_scope_of(c, block);
         for (int bid = 0; bid < nt->count; bid++) {
           const char *bty2 = nt_type(nt, bid);
-          if (!bty2 || strcmp(bty2, "CallNode")) continue;
+          if (!bty2 || !sp_streq(bty2, "CallNode")) continue;
           const char *bcn = nt_str(nt, bid, "name");
-          if (!bcn || strcmp(bcn, "call")) continue;
+          if (!bcn || !sp_streq(bcn, "call")) continue;
           int brecv = nt_ref(nt, bid, "receiver");
           if (brecv < 0) continue;
           const char *brecvty = nt_type(nt, brecv);
-          if (!brecvty || strcmp(brecvty, "LocalVariableReadNode")) continue;
+          if (!brecvty || !sp_streq(brecvty, "LocalVariableReadNode")) continue;
           const char *brecvnm = nt_str(nt, brecv, "name");
-          if (!brecvnm || strcmp(brecvnm, bpname)) continue;
+          if (!brecvnm || !sp_streq(brecvnm, bpname)) continue;
           if (comp_scope_of(c, bid) != &c->scopes[mi]) continue;
           int ba = nt_ref(nt, bid, "arguments");
           int barc = 0; const int *barg = NULL;
@@ -3034,7 +3034,7 @@ int infer_block_params(Compiler *c) {
     if (!p0 && !block_param_is_multi(c, block, 0)) continue;
 
     /* then / yield_self: block param receives the receiver value */
-    if ((!strcmp(name, "then") || !strcmp(name, "yield_self")) && p0) {
+    if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) && p0) {
       Scope *bs = comp_scope_of(c, block);
       LocalVar *lv = scope_local_intern(bs, p0); lv->is_block_param = 1;
       TyKind m = ty_unify(lv->type, rt);
@@ -3043,7 +3043,7 @@ int infer_block_params(Compiler *c) {
     }
 
     TyKind pt = TY_UNKNOWN;
-    if (!strcmp(name, "step") && (rt == TY_INT || rt == TY_FLOAT)) {
+    if (sp_streq(name, "step") && (rt == TY_INT || rt == TY_FLOAT)) {
       /* a float receiver or float limit/step yields floats */
       int args = nt_ref(nt, id, "arguments");
       int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
@@ -3051,21 +3051,21 @@ int infer_block_params(Compiler *c) {
                 (sc >= 2 && infer_type(c, sv[1]) == TY_FLOAT);
       pt = isf ? TY_FLOAT : TY_INT;
     }
-    else if ((!strcmp(name, "times") || !strcmp(name, "upto") ||
-         !strcmp(name, "downto")) && rt == TY_INT)
+    else if ((sp_streq(name, "times") || sp_streq(name, "upto") ||
+         sp_streq(name, "downto")) && rt == TY_INT)
       pt = TY_INT;
-    else if (rt == TY_POLY && !strcmp(name, "each_line"))
+    else if (rt == TY_POLY && sp_streq(name, "each_line"))
       pt = TY_STRING;  /* File/IO object yielding lines */
-    else if (rt == TY_POLY && !strcmp(name, "each_byte"))
+    else if (rt == TY_POLY && sp_streq(name, "each_byte"))
       pt = TY_INT;
-    else if (rt == TY_STRING && (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "upto") ||
-                                 !strcmp(name, "chars") || !strcmp(name, "lines")))
+    else if (rt == TY_STRING && (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "upto") ||
+                                 sp_streq(name, "chars") || sp_streq(name, "lines")))
       pt = TY_STRING;
-    else if (rt == TY_STRING && (!strcmp(name, "gsub") || !strcmp(name, "sub")))
+    else if (rt == TY_STRING && (sp_streq(name, "gsub") || sp_streq(name, "sub")))
       pt = TY_STRING;  /* block receives the matched substring */
-    else if (rt == TY_STRING && (!strcmp(name, "each_byte") || !strcmp(name, "bytes") || !strcmp(name, "codepoints")))
+    else if (rt == TY_STRING && (sp_streq(name, "each_byte") || sp_streq(name, "bytes") || sp_streq(name, "codepoints")))
       pt = TY_INT;
-    else if (rt == TY_STRING && !strcmp(name, "scan")) {
+    else if (rt == TY_STRING && sp_streq(name, "scan")) {
       /* scan { |m| } yields each match; m is string (no captures) or str_array (captures) */
       int scan_args_id = nt_ref(nt, id, "arguments");
       int scan_argc = 0;
@@ -3073,68 +3073,68 @@ int infer_block_params(Compiler *c) {
       int has_cap = 0;
       if (scan_argc == 1 && scan_argv) {
         const char *apty = nt_type(nt, scan_argv[0]);
-        if (apty && !strcmp(apty, "RegularExpressionNode")) {
+        if (apty && sp_streq(apty, "RegularExpressionNode")) {
           const char *src = nt_str(nt, scan_argv[0], "unescaped");
           if (src && an_re_has_captures(src)) has_cap = 1;
         }
       }
       pt = has_cap ? TY_STR_ARRAY : TY_STRING;
     }
-    else if ((!strcmp(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
-              !strcmp(name, "select") || !strcmp(name, "reject") || !strcmp(name, "filter") ||
-              !strcmp(name, "find") || !strcmp(name, "detect") || !strcmp(name, "each_with_index") ||
-              !strcmp(name, "sort_by") || !strcmp(name, "find_all") || !strcmp(name, "count") ||
-              !strcmp(name, "any?") || !strcmp(name, "all?") || !strcmp(name, "none?") ||
-              !strcmp(name, "one?") || !strcmp(name, "sum") || !strcmp(name, "min_by") ||
-              !strcmp(name, "max_by") || !strcmp(name, "bsearch")) && rt == TY_RANGE)
+    else if ((sp_streq(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
+              sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter") ||
+              sp_streq(name, "find") || sp_streq(name, "detect") || sp_streq(name, "each_with_index") ||
+              sp_streq(name, "sort_by") || sp_streq(name, "find_all") || sp_streq(name, "count") ||
+              sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
+              sp_streq(name, "one?") || sp_streq(name, "sum") || sp_streq(name, "min_by") ||
+              sp_streq(name, "max_by") || sp_streq(name, "bsearch")) && rt == TY_RANGE)
       pt = TY_INT;
     /* (range).lazy.select/reject/filter { |x| } : x is an integer range element */
-    else if ((!strcmp(name, "select") || !strcmp(name, "reject") || !strcmp(name, "filter")) &&
+    else if ((sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter")) &&
              rt == TY_UNKNOWN && recv >= 0 &&
-             nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-             nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "lazy")) {
+             nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+             nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "lazy")) {
       int lsrc = nt_ref(nt, recv, "receiver");
       if (lsrc >= 0 && infer_type(c, lsrc) == TY_RANGE) pt = TY_INT;
     }
-    else if ((!strcmp(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
-              !strcmp(name, "select") || !strcmp(name, "reject") || !strcmp(name, "filter") ||
-              !strcmp(name, "find") || !strcmp(name, "detect") ||
-              !strcmp(name, "max_by") || !strcmp(name, "min_by") || !strcmp(name, "sort_by") ||
-              !strcmp(name, "take_while") || !strcmp(name, "drop_while") ||
-              !strcmp(name, "reverse_each") || !strcmp(name, "each_entry") ||
-              !strcmp(name, "sum") || !strcmp(name, "count") ||
-              !strcmp(name, "any?") || !strcmp(name, "all?") || !strcmp(name, "none?") ||
-              !strcmp(name, "one?") || !strcmp(name, "each_with_index") ||
-              !strcmp(name, "bsearch") || !strcmp(name, "find_index") ||
-              !strcmp(name, "map!") || !strcmp(name, "collect!") ||
-              !strcmp(name, "select!") || !strcmp(name, "filter!") || !strcmp(name, "reject!") ||
-              !strcmp(name, "uniq") || !strcmp(name, "uniq!") ||
-              !strcmp(name, "keep_if") || !strcmp(name, "delete_if") ||
-              !strcmp(name, "flat_map") || !strcmp(name, "each_with_object") ||
-              !strcmp(name, "chunk") || !strcmp(name, "group_by") ||
-              !strcmp(name, "tally_by") || !strcmp(name, "min_by_all") ||
-              !strcmp(name, "filter_map") || !strcmp(name, "count_by") ||
-              !strcmp(name, "partition") || !strcmp(name, "each_slice") ||
-              !strcmp(name, "minmax_by") || !strcmp(name, "bsearch_index") ||
-              !strcmp(name, "each_cons") || !strcmp(name, "cycle")) &&
+    else if ((sp_streq(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
+              sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter") ||
+              sp_streq(name, "find") || sp_streq(name, "detect") ||
+              sp_streq(name, "max_by") || sp_streq(name, "min_by") || sp_streq(name, "sort_by") ||
+              sp_streq(name, "take_while") || sp_streq(name, "drop_while") ||
+              sp_streq(name, "reverse_each") || sp_streq(name, "each_entry") ||
+              sp_streq(name, "sum") || sp_streq(name, "count") ||
+              sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
+              sp_streq(name, "one?") || sp_streq(name, "each_with_index") ||
+              sp_streq(name, "bsearch") || sp_streq(name, "find_index") ||
+              sp_streq(name, "map!") || sp_streq(name, "collect!") ||
+              sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!") ||
+              sp_streq(name, "uniq") || sp_streq(name, "uniq!") ||
+              sp_streq(name, "keep_if") || sp_streq(name, "delete_if") ||
+              sp_streq(name, "flat_map") || sp_streq(name, "each_with_object") ||
+              sp_streq(name, "chunk") || sp_streq(name, "group_by") ||
+              sp_streq(name, "tally_by") || sp_streq(name, "min_by_all") ||
+              sp_streq(name, "filter_map") || sp_streq(name, "count_by") ||
+              sp_streq(name, "partition") || sp_streq(name, "each_slice") ||
+              sp_streq(name, "minmax_by") || sp_streq(name, "bsearch_index") ||
+              sp_streq(name, "each_cons") || sp_streq(name, "cycle")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
     /* each_index { |i| } binds the index, not the element: always int. */
-    else if (!strcmp(name, "each_index") && ty_is_array(rt))
+    else if (sp_streq(name, "each_index") && ty_is_array(rt))
       pt = TY_INT;
     /* TY_POLY receiver with iteration methods: element type is TY_POLY */
     else if (rt == TY_POLY &&
-             (!strcmp(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
-              !strcmp(name, "select") || !strcmp(name, "reject") || !strcmp(name, "find") ||
-              !strcmp(name, "detect") || !strcmp(name, "any?") || !strcmp(name, "all?") ||
-              !strcmp(name, "uniq") || !strcmp(name, "uniq!") || !strcmp(name, "sort_by") ||
-              !strcmp(name, "min_by") || !strcmp(name, "max_by")))
+             (sp_streq(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
+              sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "find") ||
+              sp_streq(name, "detect") || sp_streq(name, "any?") || sp_streq(name, "all?") ||
+              sp_streq(name, "uniq") || sp_streq(name, "uniq!") || sp_streq(name, "sort_by") ||
+              sp_streq(name, "min_by") || sp_streq(name, "max_by")))
       pt = TY_POLY;
 
     /* array.each_cons(n) / each_slice(n) { |a, b, ...| } -- a single param
        binds the n-element sub-array; multiple params destructure elements.
        Also handles |(a, b)| destructuring: leaves bind to element type. */
-    if ((!strcmp(name, "each_cons") || !strcmp(name, "each_slice")) && ty_is_array(rt)) {
+    if ((sp_streq(name, "each_cons") || sp_streq(name, "each_slice")) && ty_is_array(rt)) {
       Scope *es = comp_scope_of(c, block);
       int np = 0; while (block_param_name(c, block, np)) np++;
       if (np == 0 && block_param_is_multi(c, block, 0)) {
@@ -3165,9 +3165,9 @@ int infer_block_params(Compiler *c) {
        array.each_cons(n).map { |pair| } chain: block param gets the array type.
        Also handles |(a, b)| destructuring as the first param. */
     if ((ty_iter_shape(name) == TY_ITER_MAP) && rt == TY_UNKNOWN &&
-        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-        nt_str(nt, recv, "name") && (!strcmp(nt_str(nt, recv, "name"), "each_slice") ||
-                                     !strcmp(nt_str(nt, recv, "name"), "each_cons")) &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+        nt_str(nt, recv, "name") && (sp_streq(nt_str(nt, recv, "name"), "each_slice") ||
+                                     sp_streq(nt_str(nt, recv, "name"), "each_cons")) &&
         nt_ref(nt, recv, "block") < 0) {
       int es_recv2 = nt_ref(nt, recv, "receiver");
       TyKind arr_t2 = es_recv2 >= 0 ? infer_type(c, es_recv2) : TY_UNKNOWN;
@@ -3210,12 +3210,12 @@ int infer_block_params(Compiler *c) {
 
     /* array.each_cons(n).with_index(off).map { |pair, i| } or { |(a,b), i| } chain */
     if ((ty_iter_shape(name) == TY_ITER_MAP) && rt == TY_UNKNOWN &&
-        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "with_index") &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "with_index") &&
         nt_ref(nt, recv, "block") < 0) {
       int wi_recv = nt_ref(nt, recv, "receiver");
-      if (wi_recv >= 0 && nt_type(nt, wi_recv) && !strcmp(nt_type(nt, wi_recv), "CallNode") &&
-          nt_str(nt, wi_recv, "name") && !strcmp(nt_str(nt, wi_recv, "name"), "each_cons") &&
+      if (wi_recv >= 0 && nt_type(nt, wi_recv) && sp_streq(nt_type(nt, wi_recv), "CallNode") &&
+          nt_str(nt, wi_recv, "name") && sp_streq(nt_str(nt, wi_recv, "name"), "each_cons") &&
           nt_ref(nt, wi_recv, "block") < 0) {
         int ec_recv = nt_ref(nt, wi_recv, "receiver");
         TyKind ec_arr_t = ec_recv >= 0 ? infer_type(c, ec_recv) : TY_UNKNOWN;
@@ -3257,16 +3257,16 @@ int infer_block_params(Compiler *c) {
     /* arr.each.with_index(off).inject(init) { |acc, (v,i)| } / { |acc, pair| }
        and arr.each_with_index.inject{...}: type the fold's params over the
        [elem, index] pair enumerator. (matz/spinel#1481) */
-    if ((!strcmp(name, "inject") || !strcmp(name, "reduce")) &&
-        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+    if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
         nt_ref(nt, recv, "block") < 0) {
       const char *rn = nt_str(nt, recv, "name");
       int chain_arr = -1;
-      if (rn && !strcmp(rn, "each_with_index")) chain_arr = nt_ref(nt, recv, "receiver");
-      else if (rn && !strcmp(rn, "with_index")) {
+      if (rn && sp_streq(rn, "each_with_index")) chain_arr = nt_ref(nt, recv, "receiver");
+      else if (rn && sp_streq(rn, "with_index")) {
         int wir = nt_ref(nt, recv, "receiver");
-        if (wir >= 0 && nt_type(nt, wir) && !strcmp(nt_type(nt, wir), "CallNode") &&
-            nt_str(nt, wir, "name") && !strcmp(nt_str(nt, wir, "name"), "each") &&
+        if (wir >= 0 && nt_type(nt, wir) && sp_streq(nt_type(nt, wir), "CallNode") &&
+            nt_str(nt, wir, "name") && sp_streq(nt_str(nt, wir, "name"), "each") &&
             nt_ref(nt, wir, "block") < 0)
           chain_arr = nt_ref(nt, wir, "receiver");
       }
@@ -3309,18 +3309,18 @@ int infer_block_params(Compiler *c) {
        [elem, index] pair enumerator). (matz/spinel#1483) */
     if (block >= 0 &&
         (ty_iter_shape(name) == TY_ITER_MAP || ty_iter_shape(name) == TY_ITER_SELECT ||
-         ty_iter_shape(name) == TY_ITER_REJECT || !strcmp(name, "each") ||
-         !strcmp(name, "count") || !strcmp(name, "any?") || !strcmp(name, "all?") ||
-         !strcmp(name, "none?")) &&
-        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+         ty_iter_shape(name) == TY_ITER_REJECT || sp_streq(name, "each") ||
+         sp_streq(name, "count") || sp_streq(name, "any?") || sp_streq(name, "all?") ||
+         sp_streq(name, "none?")) &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
         nt_ref(nt, recv, "block") < 0) {
       const char *rn = nt_str(nt, recv, "name");
       int chain_arr = -1;
-      if (rn && !strcmp(rn, "each_with_index")) chain_arr = nt_ref(nt, recv, "receiver");
-      else if (rn && !strcmp(rn, "with_index")) {
+      if (rn && sp_streq(rn, "each_with_index")) chain_arr = nt_ref(nt, recv, "receiver");
+      else if (rn && sp_streq(rn, "with_index")) {
         int wir = nt_ref(nt, recv, "receiver");
-        if (wir >= 0 && nt_type(nt, wir) && !strcmp(nt_type(nt, wir), "CallNode") &&
-            nt_str(nt, wir, "name") && !strcmp(nt_str(nt, wir, "name"), "each") &&
+        if (wir >= 0 && nt_type(nt, wir) && sp_streq(nt_type(nt, wir), "CallNode") &&
+            nt_str(nt, wir, "name") && sp_streq(nt_str(nt, wir, "name"), "each") &&
             nt_ref(nt, wir, "block") < 0)
           chain_arr = nt_ref(nt, wir, "receiver");
       }
@@ -3343,13 +3343,13 @@ int infer_block_params(Compiler *c) {
 
     /* array.{map,collect,each,select,filter,reject}.with_index(off) { |x, i| }:
        a blockless enumerator over an array, indexed -- element + int index. */
-    if (!strcmp(name, "with_index") &&
-        nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+    if (sp_streq(name, "with_index") &&
+        nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
         nt_ref(nt, recv, "block") < 0) {
       const char *inner = nt_str(nt, recv, "name");
-      if (inner && (!strcmp(inner, "map") || !strcmp(inner, "collect") ||
-                    !strcmp(inner, "each") || !strcmp(inner, "select") ||
-                    !strcmp(inner, "filter") || !strcmp(inner, "reject"))) {
+      if (inner && (sp_streq(inner, "map") || sp_streq(inner, "collect") ||
+                    sp_streq(inner, "each") || sp_streq(inner, "select") ||
+                    sp_streq(inner, "filter") || sp_streq(inner, "reject"))) {
         int arr_recv = nt_ref(nt, recv, "receiver");
         TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
         if (ty_is_array(arr_t)) {
@@ -3371,7 +3371,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* array.combination(k) { |c| } binds the k-element sub-array (same kind) */
-    if (!strcmp(name, "combination") && ty_is_array(rt)) {
+    if (sp_streq(name, "combination") && ty_is_array(rt)) {
       LocalVar *lp = scope_local_intern(comp_scope_of(c, block), p0); lp->is_block_param = 1;
       TyKind m = ty_unify(lp->type, rt);
       if (m != lp->type) { lp->type = m; changed = 1; }
@@ -3380,8 +3380,8 @@ int infer_block_params(Compiler *c) {
 
     /* array.sort/min/max/minmax/slice_when { |a, b| cmp } -- a comparator block
        binds both parameters to the element type */
-    if ((!strcmp(name, "sort") || !strcmp(name, "sort!") || !strcmp(name, "min") || !strcmp(name, "max") ||
-         !strcmp(name, "minmax") || !strcmp(name, "slice_when") || !strcmp(name, "chunk_while")) && ty_is_array(rt)) {
+    if ((sp_streq(name, "sort") || sp_streq(name, "sort!") || sp_streq(name, "min") || sp_streq(name, "max") ||
+         sp_streq(name, "minmax") || sp_streq(name, "slice_when") || sp_streq(name, "chunk_while")) && ty_is_array(rt)) {
       Scope *cs = comp_scope_of(c, block);
       for (int pj = 0; pj < 2; pj++) {
         const char *pn = block_param_name(c, block, pj);
@@ -3394,7 +3394,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* array.reduce(init) { |acc, elem| } or inject: p0=acc type, p1=elem type */
-    if ((!strcmp(name, "reduce") || !strcmp(name, "inject")) && ty_is_array(rt)) {
+    if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && ty_is_array(rt)) {
       if (!p0) continue;
       Scope *rs = comp_scope_of(c, block);
       TyKind et2 = ty_array_elem(rt);
@@ -3421,7 +3421,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* array.each_with_index { |x, i| } binds element + int index */
-    if (!strcmp(name, "each_with_index") && ty_is_array(rt)) {
+    if (sp_streq(name, "each_with_index") && ty_is_array(rt)) {
       Scope *es = comp_scope_of(c, block);
       if (!p0) continue;
       LocalVar *ep = scope_local_intern(es, p0); ep->is_block_param = 1;
@@ -3437,7 +3437,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* array.zip(other) { |a, b| } binds element of recv + element of other */
-    if (!strcmp(name, "zip") && ty_is_array(rt)) {
+    if (sp_streq(name, "zip") && ty_is_array(rt)) {
       Scope *zs = comp_scope_of(c, block);
       LocalVar *ep0 = scope_local_intern(zs, p0); ep0->is_block_param = 1;
       TyKind em0 = ty_unify(ep0->type, ty_array_elem(rt));
@@ -3456,7 +3456,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* array.each_with_object(init) { |x, acc| } binds element + accumulator */
-    if (!strcmp(name, "each_with_object") && ty_is_array(rt)) {
+    if (sp_streq(name, "each_with_object") && ty_is_array(rt)) {
       Scope *es = comp_scope_of(c, block);
       if (p0) {
         TyKind et = ty_array_elem(rt);
@@ -3477,8 +3477,8 @@ int infer_block_params(Compiler *c) {
           if (at == TY_UNKNOWN) {
             const char *a0ty = nt_type(nt, ewobj_argv[0]);
             int an0 = 0;
-            if (a0ty && !strcmp(a0ty, "ArrayNode")) nt_arr(nt, ewobj_argv[0], "elements", &an0);
-            if (a0ty && !strcmp(a0ty, "ArrayNode") && an0 == 0) {
+            if (a0ty && sp_streq(a0ty, "ArrayNode")) nt_arr(nt, ewobj_argv[0], "elements", &an0);
+            if (a0ty && sp_streq(a0ty, "ArrayNode") && an0 == 0) {
               /* empty `[]`: the accumulator element type comes from how the memo
                  is filled (`memo << e`), following a forwarded callable's body. */
               TyKind me = ewo_memo_elem_type(c, id);
@@ -3501,7 +3501,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* hash.merge(other) { |k, v1, v2| } binds key + both conflicting values */
-    if (!strcmp(name, "merge") && ty_is_hash(rt)) {
+    if (sp_streq(name, "merge") && ty_is_hash(rt)) {
       Scope *ms = comp_scope_of(c, block);
       LocalVar *kp = scope_local_intern(ms, p0); kp->is_block_param = 1;
       TyKind km = ty_unify(kp->type, ty_hash_key(rt));
@@ -3519,7 +3519,7 @@ int infer_block_params(Compiler *c) {
     }
 
     /* hash.fetch(key) { |k| } binds the looked-up key */
-    if (!strcmp(name, "fetch") && ty_is_hash(rt)) {
+    if (sp_streq(name, "fetch") && ty_is_hash(rt)) {
       Scope *fs = comp_scope_of(c, block);
       LocalVar *kp = scope_local_intern(fs, p0); kp->is_block_param = 1;
       TyKind km = ty_unify(kp->type, ty_hash_key(rt));
@@ -3528,20 +3528,20 @@ int infer_block_params(Compiler *c) {
     }
 
     /* hash.transform_keys { |k| } binds key; transform_values { |v| } value */
-    if ((!strcmp(name, "transform_keys") || !strcmp(name, "transform_values")) && ty_is_hash(rt)) {
+    if ((sp_streq(name, "transform_keys") || sp_streq(name, "transform_values")) && ty_is_hash(rt)) {
       Scope *hs = comp_scope_of(c, block);
       LocalVar *vp = scope_local_intern(hs, p0); vp->is_block_param = 1;
-      TyKind want = !strcmp(name, "transform_keys") ? ty_hash_key(rt) : ty_hash_val(rt);
+      TyKind want = sp_streq(name, "transform_keys") ? ty_hash_key(rt) : ty_hash_val(rt);
       TyKind vm = ty_unify(vp->type, want);
       if (vm != vp->type) { vp->type = vm; changed = 1; }
       continue;
     }
 
     /* hash.each_value { |v| } binds value; each_key { |k| } binds key */
-    if ((!strcmp(name, "each_value") || !strcmp(name, "each_key")) && ty_is_hash(rt)) {
+    if ((sp_streq(name, "each_value") || sp_streq(name, "each_key")) && ty_is_hash(rt)) {
       Scope *hs = comp_scope_of(c, block);
       LocalVar *vp = scope_local_intern(hs, p0); vp->is_block_param = 1;
-      TyKind want = !strcmp(name, "each_value") ? ty_hash_val(rt) : ty_hash_key(rt);
+      TyKind want = sp_streq(name, "each_value") ? ty_hash_val(rt) : ty_hash_key(rt);
       TyKind vm = ty_unify(vp->type, want);
       if (vm != vp->type) { vp->type = vm; changed = 1; }
       continue;
@@ -3550,17 +3550,17 @@ int infer_block_params(Compiler *c) {
     /* hash.each / each_pair { |k, v| } or { |(k,v)| } binds two params.
        Also handles each_with_object { |(k,v), memo| } and mutating
        iteration (delete_if / select! / reject! / keep_if). */
-    if ((!strcmp(name, "each") || !strcmp(name, "each_pair") || !strcmp(name, "map") ||
-         !strcmp(name, "collect") || !strcmp(name, "flat_map") || !strcmp(name, "select") ||
-         !strcmp(name, "filter") || !strcmp(name, "reject") || !strcmp(name, "find") ||
-         !strcmp(name, "detect") || !strcmp(name, "sort_by") || !strcmp(name, "min_by") ||
-         !strcmp(name, "max_by") || !strcmp(name, "count") || !strcmp(name, "sum") ||
-         !strcmp(name, "filter_map") || !strcmp(name, "partition") || !strcmp(name, "group_by") ||
-         !strcmp(name, "collect_concat") ||
-         !strcmp(name, "any?") || !strcmp(name, "all?") || !strcmp(name, "none?") ||
-         !strcmp(name, "delete_if") || !strcmp(name, "select!") || !strcmp(name, "reject!") ||
-         !strcmp(name, "filter!") || !strcmp(name, "keep_if") ||
-         !strcmp(name, "each_with_index") || !strcmp(name, "each_with_object")) && ty_is_hash(rt)) {
+    if ((sp_streq(name, "each") || sp_streq(name, "each_pair") || sp_streq(name, "map") ||
+         sp_streq(name, "collect") || sp_streq(name, "flat_map") || sp_streq(name, "select") ||
+         sp_streq(name, "filter") || sp_streq(name, "reject") || sp_streq(name, "find") ||
+         sp_streq(name, "detect") || sp_streq(name, "sort_by") || sp_streq(name, "min_by") ||
+         sp_streq(name, "max_by") || sp_streq(name, "count") || sp_streq(name, "sum") ||
+         sp_streq(name, "filter_map") || sp_streq(name, "partition") || sp_streq(name, "group_by") ||
+         sp_streq(name, "collect_concat") ||
+         sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
+         sp_streq(name, "delete_if") || sp_streq(name, "select!") || sp_streq(name, "reject!") ||
+         sp_streq(name, "filter!") || sp_streq(name, "keep_if") ||
+         sp_streq(name, "each_with_index") || sp_streq(name, "each_with_object")) && ty_is_hash(rt)) {
       Scope *hs = comp_scope_of(c, block);
       /* |(k,v)| or |(k,v), memo| destructuring (MultiTargetNode first param) */
       if (block_param_is_multi(c, block, 0)) {
@@ -3582,7 +3582,7 @@ int infer_block_params(Compiler *c) {
           }
         }
         /* for each_with_object: bind the memo param (position 1) */
-        if (!strcmp(name, "each_with_object")) {
+        if (sp_streq(name, "each_with_object")) {
           const char *mp = block_param_name(c, block, 1);
           if (mp) {
             int ewobj_args = nt_ref(nt, id, "arguments");
@@ -3627,7 +3627,7 @@ int infer_block_params(Compiler *c) {
         }
         else if (pt == TY_POLY && recv >= 0) {
           const char *rty2 = nt_type(nt, recv);
-          if (rty2 && !strcmp(rty2, "ArrayNode")) {
+          if (rty2 && sp_streq(rty2, "ArrayNode")) {
             int re_n2 = 0;
             const int *re_els2 = nt_arr(nt, recv, "elements", &re_n2);
             TyKind common_at = TY_UNKNOWN;
@@ -3708,8 +3708,8 @@ static int scope_tail_raises(Compiler *c, int s) {
   if (bn <= 0) return 0;
   int last = bb[bn - 1];
   const char *ty = nt_type(nt, last);
-  return ty && !strcmp(ty, "CallNode") && nt_ref(nt, last, "receiver") < 0 &&
-         nt_str(nt, last, "name") && !strcmp(nt_str(nt, last, "name"), "raise");
+  return ty && sp_streq(ty, "CallNode") && nt_ref(nt, last, "receiver") < 0 &&
+         nt_str(nt, last, "name") && sp_streq(nt_str(nt, last, "name"), "raise");
 }
 
 int infer_return_types(Compiler *c) {
@@ -3770,7 +3770,7 @@ int infer_return_types(Compiler *c) {
       }
       for (int id = 0; id < nt->count; id++) {
         const char *ty = nt_type(nt, id);
-        if (ty && !strcmp(ty, "ReturnNode") && comp_scope_of(c, id) == sc) {
+        if (ty && sp_streq(ty, "ReturnNode") && comp_scope_of(c, id) == sc) {
           int a = nt_ref(nt, id, "arguments"); int an = 0;
           const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
           if (an > 0) pr = ty_unify(pr == TY_UNKNOWN ? TY_UNKNOWN : pr, proc_ret_of(c, av[0]));
@@ -3795,7 +3795,7 @@ int infer_return_types(Compiler *c) {
     TyKind unified = TY_VOID;
     for (int t = 1; t < c->nscopes; t++) {
       Scope *ot = &c->scopes[t];
-      if (t == s || !ot->name || strcmp(ot->name, sc->name)) continue;
+      if (t == s || !ot->name || !sp_streq(ot->name, sc->name)) continue;
       if (ot->is_cmethod != sc->is_cmethod || ot->class_id < 0) continue;
       if (!is_descendant(c, ot->class_id, sc->class_id)) continue;
       if (ot->ret == TY_VOID || ot->ret == TY_UNKNOWN) continue;
@@ -3816,25 +3816,25 @@ void cr_collect_calls(const NodeTable *nt, int id,
   if (id < 0) return;
   const char *ty = nt_type(nt, id);
   if (!ty) return;
-  if (!strcmp(ty, "DefNode")) return;          /* don't enter nested methods */
+  if (sp_streq(ty, "DefNode")) return;          /* don't enter nested methods */
   /* Collect method name from CallNode, or operator name from op-assign nodes
      (e.g. `a += 1` → InstanceVariableOperatorWriteNode with binary_operator "+"). */
   const char *nm = NULL;
-  if (!strcmp(ty, "CallNode")) {
+  if (sp_streq(ty, "CallNode")) {
     nm = nt_str(nt, id, "name");
     /* `method(:foo)` takes a reference to foo without calling it; the target
        must still be emitted, so treat the symbol arg as a called name. */
-    if (nm && !strcmp(nm, "method")) {
+    if (nm && sp_streq(nm, "method")) {
       int margs = nt_ref(nt, id, "arguments");
       int man = 0; const int *mav = margs >= 0 ? nt_arr(nt, margs, "arguments", &man) : NULL;
       if (man >= 1) {
         const char *aty = nt_type(nt, mav[0]);
         const char *msym = NULL;
-        if (aty && !strcmp(aty, "SymbolNode")) msym = nt_str(nt, mav[0], "value");
-        else if (aty && !strcmp(aty, "StringNode")) { msym = nt_str(nt, mav[0], "content"); if (!msym) msym = nt_str(nt, mav[0], "unescaped"); }
+        if (aty && sp_streq(aty, "SymbolNode")) msym = nt_str(nt, mav[0], "value");
+        else if (aty && sp_streq(aty, "StringNode")) { msym = nt_str(nt, mav[0], "content"); if (!msym) msym = nt_str(nt, mav[0], "unescaped"); }
         if (msym) {
           int found = 0;
-          for (int i = 0; i < *n; i++) if (!strcmp((*out)[i], msym)) { found = 1; break; }
+          for (int i = 0; i < *n; i++) if (sp_streq((*out)[i], msym)) { found = 1; break; }
           if (!found) {
             if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
             (*out)[(*n)++] = strdup(msym);
@@ -3845,12 +3845,12 @@ void cr_collect_calls(const NodeTable *nt, int id,
   }
   else {
     size_t tl = strlen(ty);
-    if (tl > 17 && (!strcmp(ty + tl - 17, "OperatorWriteNode")))
+    if (tl > 17 && (sp_streq(ty + tl - 17, "OperatorWriteNode")))
       nm = nt_str(nt, id, "binary_operator");
   }
   if (nm) {
     int found = 0;
-    for (int i = 0; i < *n; i++) if (!strcmp((*out)[i], nm)) { found = 1; break; }
+    for (int i = 0; i < *n; i++) if (sp_streq((*out)[i], nm)) { found = 1; break; }
     if (!found) {
       if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
       (*out)[(*n)++] = strdup(nm);
@@ -3883,7 +3883,7 @@ typedef struct { const char *dst, *src; } BiPair;
 static const char *bi_local_name(const NodeTable *nt, int id) {
   if (id < 0) return NULL;
   const char *ty = nt_type(nt, id);
-  if (!ty || strcmp(ty, "LocalVariableReadNode")) return NULL;
+  if (!ty || !sp_streq(ty, "LocalVariableReadNode")) return NULL;
   return nt_str(nt, id, "name");
 }
 
@@ -3891,23 +3891,23 @@ static const char *bi_local_name(const NodeTable *nt, int id) {
 static void bi_collect_assigns(const NodeTable *nt, int id, BiPair *pairs, int *np) {
   if (id < 0) return;
   const char *ty = nt_type(nt, id);
-  if (!ty || !strcmp(ty, "DefNode") || !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return;
-  if (!strcmp(ty, "LocalVariableWriteNode")) {
+  if (!ty || sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return;
+  if (sp_streq(ty, "LocalVariableWriteNode")) {
     const char *src = bi_local_name(nt, nt_ref(nt, id, "value"));
     const char *dst = nt_str(nt, id, "name");
     if (src && dst && *np < BI_MAX_PAIRS) { pairs[*np].dst = dst; pairs[*np].src = src; (*np)++; }
   }
   /* `a, b = c, d` style multi-writes also carry values between locals. */
-  if (!strcmp(ty, "MultiWriteNode")) {
+  if (sp_streq(ty, "MultiWriteNode")) {
     int ln = 0, rn = 0;
     const int *lhs = nt_arr(nt, id, "lefts", &ln);
     int v = nt_ref(nt, id, "value");
     const int *rhs = NULL;
-    if (v >= 0 && nt_type(nt, v) && !strcmp(nt_type(nt, v), "ArrayNode"))
+    if (v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "ArrayNode"))
       rhs = nt_arr(nt, v, "elements", &rn);
     for (int k = 0; lhs && rhs && k < ln && k < rn; k++) {
       const char *lty = nt_type(nt, lhs[k]);
-      if (!lty || strcmp(lty, "LocalVariableTargetNode")) continue;
+      if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
       const char *src = bi_local_name(nt, rhs[k]);
       const char *dst = nt_str(nt, lhs[k], "name");
       if (src && dst && *np < BI_MAX_PAIRS) { pairs[*np].dst = dst; pairs[*np].src = src; (*np)++; }
@@ -3925,10 +3925,10 @@ static void bi_collect_assigns(const NodeTable *nt, int id, BiPair *pairs, int *
 
 /* Does `var`'s value flow into `target` through the assignment pairs? */
 static int bi_reaches(const BiPair *pairs, int np, const char *var, const char *target, int depth) {
-  if (!strcmp(var, target)) return 1;
+  if (sp_streq(var, target)) return 1;
   if (depth > 10) return 0;
   for (int i = 0; i < np; i++)
-    if (!strcmp(pairs[i].src, var) &&
+    if (sp_streq(pairs[i].src, var) &&
         bi_reaches(pairs, np, pairs[i].dst, target, depth + 1)) return 1;
   return 0;
 }
@@ -3943,24 +3943,24 @@ static void bi_scan_loop_node(Compiler *c, int id, const BiPair *pairs, int np) 
   const NodeTable *nt = c->nt;
   if (id < 0) return;
   const char *ty = nt_type(nt, id);
-  if (!ty || !strcmp(ty, "DefNode") || !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return;
-  if (!strcmp(ty, "LocalVariableWriteNode")) {
+  if (!ty || sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return;
+  if (sp_streq(ty, "LocalVariableWriteNode")) {
     const char *lname = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
-    if (lname && vty && !strcmp(vty, "CallNode")) {
+    if (lname && vty && sp_streq(vty, "CallNode")) {
       const char *op = nt_str(nt, v, "name");
       const char *rname = bi_local_name(nt, nt_ref(nt, v, "receiver"));
       const char *aname = NULL;
       int args = nt_ref(nt, v, "arguments");
       int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
       if (an >= 1) aname = bi_local_name(nt, argv[0]);
-      if (op && (!strcmp(op, "*") || !strcmp(op, "**"))) {
+      if (op && (sp_streq(op, "*") || sp_streq(op, "**"))) {
         if ((rname && bi_reaches(pairs, np, lname, rname, 0)) ||
             (aname && bi_reaches(pairs, np, lname, aname, 0)))
           bi_promote(c, id, lname);
       }
-      else if (op && !strcmp(op, "+")) {
+      else if (op && sp_streq(op, "+")) {
         /* fibonacci shape: BOTH operands flow back from lname; this
            rejects the linear `i = i + 1`. */
         if (rname && aname &&
@@ -3970,10 +3970,10 @@ static void bi_scan_loop_node(Compiler *c, int id, const BiPair *pairs, int np) 
       }
     }
   }
-  if (!strcmp(ty, "LocalVariableOperatorWriteNode")) {
+  if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
     const char *op = nt_str(nt, id, "binary_operator");
     const char *lname = nt_str(nt, id, "name");
-    if (op && lname && (!strcmp(op, "*") || !strcmp(op, "**")))
+    if (op && lname && (sp_streq(op, "*") || sp_streq(op, "**")))
       bi_promote(c, id, lname);
   }
   int nr = nt_num_refs(nt, id);
@@ -4000,10 +4000,10 @@ static void bi_scan_loop_body(Compiler *c, int body) {
    promote mode (the wrap-pinned optcarrot must not pay a block-loop bigint
    widening, which is why the default path stays `while`-only). */
 static int bi_is_block_loop_method(const char *name) {
-  return !strcmp(name, "times") || !strcmp(name, "each") ||
-         !strcmp(name, "upto") || !strcmp(name, "downto") ||
-         !strcmp(name, "step") || !strcmp(name, "loop") ||
-         !strcmp(name, "each_with_index");
+  return sp_streq(name, "times") || sp_streq(name, "each") ||
+         sp_streq(name, "upto") || sp_streq(name, "downto") ||
+         sp_streq(name, "step") || sp_streq(name, "loop") ||
+         sp_streq(name, "each_with_index");
 }
 
 void infer_bigint_loop_locals(Compiler *c) {
@@ -4011,18 +4011,18 @@ void infer_bigint_loop_locals(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
-    if (!strcmp(ty, "WhileNode")) {
+    if (sp_streq(ty, "WhileNode")) {
       bi_scan_loop_body(c, nt_ref(nt, id, "statements"));
       continue;
     }
     /* Promote mode additionally treats block-iteration loops as growth sites:
        `n.times { f = f * x }`, `(a..b).each { ... }`, etc. The block body is a
        BlockNode -> statements; reuse the same self-referential-multiply scan. */
-    if (g_promote_mode && !strcmp(ty, "CallNode")) {
+    if (g_promote_mode && sp_streq(ty, "CallNode")) {
       const char *mname = nt_str(nt, id, "name");
       int block = nt_ref(nt, id, "block");
       if (mname && bi_is_block_loop_method(mname) && block >= 0 &&
-          nt_type(nt, block) && !strcmp(nt_type(nt, block), "BlockNode"))
+          nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockNode"))
         bi_scan_loop_body(c, nt_ref(nt, block, "body"));
     }
   }

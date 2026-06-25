@@ -112,12 +112,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   /* an empty array literal [] has TY_UNKNOWN; box it as an empty PolyArray so
      it can hold any element type when stored into a poly slot */
-  if (t == TY_UNKNOWN && nt_type(c->nt, node) && !strcmp(nt_type(c->nt, node), "ArrayNode")) {
+  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "ArrayNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); return; }
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
-  if (t == TY_UNKNOWN && nt_type(c->nt, node) && !strcmp(nt_type(c->nt, node), "HashNode")) {
+  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "HashNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); return; }
   }
@@ -145,7 +145,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_POLY_ARRAY:  fn = "sp_box_poly_array";  break;
     case TY_NIL: {
       const char *nty = nt_type(c->nt, node);
-      if (nty && !strcmp(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); return; }
+      if (nty && sp_streq(nty, "NilNode")) { buf_puts(b, "sp_box_nil()"); return; }
       /* a nil-typed expression can still have side effects (e.g. a void-valued
          block call): evaluate it for effect, then yield nil */
       buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())");
@@ -215,10 +215,10 @@ void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol) {
 static int is_stopiter_loop(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
-  if (!ty || strcmp(ty, "CallNode")) return 0;
+  if (!ty || !sp_streq(ty, "CallNode")) return 0;
   if (nt_ref(nt, id, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, id, "name");
-  return nm && !strcmp(nm, "loop") && nt_ref(nt, id, "block") >= 0;
+  return nm && sp_streq(nm, "loop") && nt_ref(nt, id, "block") >= 0;
 }
 
 /* Does scope index `si` contain a begin/rescue or a `loop {}` (so its locals
@@ -227,7 +227,7 @@ int scope_has_begin(Compiler *c, int si) {
   for (int id = 0; id < c->nt->count; id++) {
     if (c->nscope[id] != si) continue;
     const char *ty = nt_type(c->nt, id);
-    if (ty && (!strcmp(ty, "BeginNode") || !strcmp(ty, "RescueNode")))
+    if (ty && (sp_streq(ty, "BeginNode") || sp_streq(ty, "RescueNode")))
       return 1;
     if (is_stopiter_loop(c, id)) return 1;
   }
@@ -283,7 +283,7 @@ static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, in
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int dup = 0;
-    for (int j = 0; j < n; j++) if (!strcmp(names[j], nm)) { dup = 1; break; }
+    for (int j = 0; j < n; j++) if (sp_streq(names[j], nm)) { dup = 1; break; }
     if (dup) continue;
     if (n == cap) { cap = cap ? cap * 2 : 8; names = (char **)realloc(names, sizeof(char *) * cap); }
     names[n++] = (char *)nm;
@@ -294,7 +294,7 @@ static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, in
 
 static int name_in(char **names, int n, const char *nm) {
   if (!nm) return 0;
-  for (int i = 0; i < n; i++) if (!strcmp(names[i], nm)) return 1;
+  for (int i = 0; i < n; i++) if (sp_streq(names[i], nm)) return 1;
   return 0;
 }
 
@@ -309,10 +309,10 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
     LocalVar *lv = &s->locals[i];
     /* define_method subst var: replaced inline by the literal, never a C
        local, so neither declare nor root it. */
-    if (s->dm_subst_name && lv->name && !strcmp(lv->name, s->dm_subst_name)) continue;
+    if (s->dm_subst_name && lv->name && sp_streq(lv->name, s->dm_subst_name)) continue;
     /* Virtual &block slot: skip declaration UNLESS it's a lowered __yblk__ that
        needs a cell (so forwarding procs can capture it). */
-    if (s->blk_param && lv->name && !strcmp(lv->name, s->blk_param) && !lv->is_cell) continue;
+    if (s->blk_param && lv->name && sp_streq(lv->name, s->blk_param) && !lv->is_cell) continue;
     /* Captured-by-closure local: lives in a heap cell so the proc and this
        scope share storage. A param's incoming value is copied into the cell;
        a body local starts at 0. Int and proc cells supported. */
@@ -386,7 +386,7 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
 
 int method_is_void(Scope *s) {
   /* initialize is always void (mutates *self); else by return type */
-  if (s->class_id >= 0 && s->name && !strcmp(s->name, "initialize")) return 1;
+  if (s->class_id >= 0 && s->name && sp_streq(s->name, "initialize")) return 1;
   return !is_scalar_ret(s->ret);
 }
 
@@ -414,18 +414,18 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   int wrote = 0;
   if (s->class_id >= 0 && !s->is_cmethod) {
     const char *cn = c->classes[s->class_id].name;
-    if (!strcmp(cn, "String"))       { buf_puts(b, "const char *self"); }
-    else if (!strcmp(cn, "Integer")) { buf_puts(b, "mrb_int self"); }
-    else if (!strcmp(cn, "Float"))   { buf_puts(b, "double self"); }
-    else if (!strcmp(cn, "Symbol"))  { buf_puts(b, "mrb_int self"); }
-    else if (!strcmp(cn, "TrueClass") || !strcmp(cn, "FalseClass") || !strcmp(cn, "NilClass")) { buf_puts(b, "int self"); }
-    else if (!strcmp(cn, "Array"))   { buf_puts(b, "sp_RbVal self"); }
-    else if (!strcmp(cn, "Object") || !strcmp(cn, "Numeric")) { buf_puts(b, "sp_RbVal self"); }
+    if (sp_streq(cn, "String"))       { buf_puts(b, "const char *self"); }
+    else if (sp_streq(cn, "Integer")) { buf_puts(b, "mrb_int self"); }
+    else if (sp_streq(cn, "Float"))   { buf_puts(b, "double self"); }
+    else if (sp_streq(cn, "Symbol"))  { buf_puts(b, "mrb_int self"); }
+    else if (sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass") || sp_streq(cn, "NilClass")) { buf_puts(b, "int self"); }
+    else if (sp_streq(cn, "Array"))   { buf_puts(b, "sp_RbVal self"); }
+    else if (sp_streq(cn, "Object") || sp_streq(cn, "Numeric")) { buf_puts(b, "sp_RbVal self"); }
     else {
       /* value-type reader methods take self by value; initialize keeps a
          pointer so it can populate the fields during construction. */
       int vt = c->classes[s->class_id].is_value_type;
-      int is_init = s->name && !strcmp(s->name, "initialize");
+      int is_init = s->name && sp_streq(s->name, "initialize");
       buf_printf(b, "sp_%s %sself", cn, (vt && !is_init) ? "" : "*");
     }
     wrote = 1;
@@ -464,9 +464,9 @@ static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
     for (int i = 0; i < ci->ncs; i++) {
       const char *nm = ci->cs_names[i], *k = ci->cs_kinds[i];
       buf_printf(b, "  self->iv_%s = ", nm);
-      if (!strcmp(k, "str")) emit_str_literal(b, "");
-      else if (!strcmp(k, "sa")) buf_puts(b, "sp_StrArray_new()");
-      else if (!strcmp(k, "ia")) buf_puts(b, "sp_IntArray_new()");
+      if (sp_streq(k, "str")) emit_str_literal(b, "");
+      else if (sp_streq(k, "sa")) buf_puts(b, "sp_StrArray_new()");
+      else if (sp_streq(k, "ia")) buf_puts(b, "sp_IntArray_new()");
       else buf_puts(b, "0");
       buf_puts(b, ";\n");
     }
@@ -493,7 +493,7 @@ static void emit_compiler_state_method(Compiler *c, Scope *s, Buf *b) {
                        s->cs_synth == CG_CS_SET_STR ? "str" :
                        s->cs_synth == CG_CS_SET_SA  ? "sa"  : "ia";
     for (int i = 0; i < ci->ncs; i++) {
-      if (strcmp(ci->cs_kinds[i], want)) continue;
+      if (!sp_streq(ci->cs_kinds[i], want)) continue;
       const char *nm = ci->cs_names[i];
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
       buf_puts(b, "  if (sp_str_eq(lv_name, ");
@@ -575,7 +575,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   /* value-type reader methods receive self by value, so ivar access uses `.` */
   const char *saved_deref = g_self_deref;
   g_self_deref = (s->class_id >= 0 && !s->is_cmethod && c->classes[s->class_id].is_value_type &&
-                  s->name && strcmp(s->name, "initialize")) ? "." : "->";
+                  s->name && !sp_streq(s->name, "initialize")) ? "." : "->";
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   int is_void = method_is_void(s);
   /* A method that creates a non-lambda proc with a `return` owns a proc-return
@@ -658,7 +658,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
 /* True if `id` starts a nested block/lambda whose locals belong to it, not to
    the proc we're walking -- recursion stops there. */
 int is_nested_block(const char *ty) {
-  return ty && (!strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode"));
+  return ty && (sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode"));
 }
 
 /* Collect the local names WRITTEN in the proc body subtree (the proc's own
@@ -667,9 +667,9 @@ void proc_collect_locals(Compiler *c, int id, NameSet *locals) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return;
-  if (!strcmp(ty, "LocalVariableWriteNode") || !strcmp(ty, "LocalVariableTargetNode") ||
-      !strcmp(ty, "LocalVariableOperatorWriteNode") || !strcmp(ty, "LocalVariableOrWriteNode") ||
-      !strcmp(ty, "LocalVariableAndWriteNode"))
+  if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableTargetNode") ||
+      sp_streq(ty, "LocalVariableOperatorWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
+      sp_streq(ty, "LocalVariableAndWriteNode"))
     nameset_add(locals, nt_str(c->nt, id, "name"));
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
@@ -714,9 +714,9 @@ static void collect_locals_deep(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return;
-  if (!strcmp(ty, "LocalVariableWriteNode") || !strcmp(ty, "LocalVariableTargetNode") ||
-      !strcmp(ty, "LocalVariableOperatorWriteNode") || !strcmp(ty, "LocalVariableOrWriteNode") ||
-      !strcmp(ty, "LocalVariableAndWriteNode"))
+  if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableTargetNode") ||
+      sp_streq(ty, "LocalVariableOperatorWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
+      sp_streq(ty, "LocalVariableAndWriteNode"))
     nameset_add(out, nt_str(c->nt, id, "name"));
   if (is_nested_block(ty)) collect_block_param_names(c, id, out);
   int nr = nt_num_refs(c->nt, id);
@@ -734,9 +734,9 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return;
-  if (!strcmp(ty, "LocalVariableReadNode") || !strcmp(ty, "LocalVariableWriteNode") ||
-      !strcmp(ty, "LocalVariableTargetNode") || !strcmp(ty, "LocalVariableOperatorWriteNode") ||
-      !strcmp(ty, "LocalVariableOrWriteNode") || !strcmp(ty, "LocalVariableAndWriteNode"))
+  if (sp_streq(ty, "LocalVariableReadNode") || sp_streq(ty, "LocalVariableWriteNode") ||
+      sp_streq(ty, "LocalVariableTargetNode") || sp_streq(ty, "LocalVariableOperatorWriteNode") ||
+      sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode"))
     nameset_add(out, nt_str(c->nt, id, "name"));
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) proc_collect_used(c, ch, out); }
@@ -749,9 +749,9 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
    nests it one level deeper (block/BlockNode -> BlockParametersNode -> ParametersNode). */
 int proc_params_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
-  if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
+  if (ty && sp_streq(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
   /* BlockNode used directly as a proc (escaped &block) */
-  if (ty && !strcmp(ty, "BlockNode")) {
+  if (ty && sp_streq(ty, "BlockNode")) {
     int bp = nt_ref(c->nt, create, "parameters");
     if (bp < 0) return -1;
     return nt_ref(c->nt, bp, "parameters");
@@ -772,8 +772,8 @@ const char *proc_param_name(Compiler *c, int create, int idx) {
 /* The StatementsNode body of a proc-creating node. */
 int proc_body_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
-  if (ty && !strcmp(ty, "LambdaNode")) return nt_ref(c->nt, create, "body");
-  if (ty && !strcmp(ty, "BlockNode")) return nt_ref(c->nt, create, "body");
+  if (ty && sp_streq(ty, "LambdaNode")) return nt_ref(c->nt, create, "body");
+  if (ty && sp_streq(ty, "BlockNode")) return nt_ref(c->nt, create, "body");
   int block = nt_ref(c->nt, create, "block");
   return block >= 0 ? nt_ref(c->nt, block, "body") : -1;
 }
@@ -808,8 +808,8 @@ int proc_body_has_yield(Compiler *c, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
-  if (!strcmp(ty, "YieldNode")) return 1;
-  if (!strcmp(ty, "DefNode")) return 0;
+  if (sp_streq(ty, "YieldNode")) return 1;
+  if (sp_streq(ty, "DefNode")) return 0;
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (proc_body_has_yield(c, ch)) return 1; }
   int na = nt_num_arrs(c->nt, id);
@@ -827,7 +827,7 @@ int proc_body_has_yield(Compiler *c, int id) {
 static int proc_return_descend(Compiler *c, int id, int ch) {
   const char *t = nt_type(c->nt, ch);
   if (!t) return 0;
-  if (!strcmp(t, "BlockNode")) return !is_proc_literal(c, id);
+  if (sp_streq(t, "BlockNode")) return !is_proc_literal(c, id);
   return 1;
 }
 
@@ -839,8 +839,8 @@ int proc_body_has_return(Compiler *c, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
-  if (!strcmp(ty, "ReturnNode")) return 1;
-  if (!strcmp(ty, "DefNode") || !strcmp(ty, "LambdaNode")) return 0;
+  if (sp_streq(ty, "ReturnNode")) return 1;
+  if (sp_streq(ty, "DefNode") || sp_streq(ty, "LambdaNode")) return 0;
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0 && proc_return_descend(c, id, ch) && proc_body_has_return(c, ch)) return 1; }
   int na = nt_num_arrs(c->nt, id);
@@ -854,14 +854,14 @@ int proc_body_has_return(Compiler *c, int id) {
    Lambdas and bare blocks are excluded (their `return` is local / inlined). */
 int proc_does_nonlocal_return(Compiler *c, int create) {
   const char *cty = nt_type(c->nt, create);
-  if (!cty || strcmp(cty, "CallNode")) return 0;          /* proc/Proc.new are calls */
+  if (!cty || !sp_streq(cty, "CallNode")) return 0;          /* proc/Proc.new are calls */
   const char *cn = nt_str(c->nt, create, "name");
   if (!cn) return 0;
   int recv = nt_ref(c->nt, create, "receiver");
-  int is_proc = (recv < 0 && !strcmp(cn, "proc"));
-  int is_proc_new = (!strcmp(cn, "new") && recv >= 0 &&
-                     nt_type(c->nt, recv) && !strcmp(nt_type(c->nt, recv), "ConstantReadNode") &&
-                     nt_str(c->nt, recv, "name") && !strcmp(nt_str(c->nt, recv, "name"), "Proc"));
+  int is_proc = (recv < 0 && sp_streq(cn, "proc"));
+  int is_proc_new = (sp_streq(cn, "new") && recv >= 0 &&
+                     nt_type(c->nt, recv) && sp_streq(nt_type(c->nt, recv), "ConstantReadNode") &&
+                     nt_str(c->nt, recv, "name") && sp_streq(nt_str(c->nt, recv, "name"), "Proc"));
   if (!is_proc && !is_proc_new) return 0;
   if (nt_ref(c->nt, create, "block") < 0) return 0;
   return proc_body_has_return(c, proc_body_node(c, create));
@@ -896,11 +896,11 @@ int fiber_body_uses_self(Compiler *c, int id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
-  if (!strcmp(ty, "InstanceVariableReadNode") || !strcmp(ty, "InstanceVariableWriteNode") ||
-      !strcmp(ty, "InstanceVariableOperatorWriteNode") ||
-      !strcmp(ty, "InstanceVariableOrWriteNode") || !strcmp(ty, "InstanceVariableAndWriteNode") ||
-      !strcmp(ty, "SelfNode")) return 1;
-  if (!strcmp(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) return 1;
+  if (sp_streq(ty, "InstanceVariableReadNode") || sp_streq(ty, "InstanceVariableWriteNode") ||
+      sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
+      sp_streq(ty, "InstanceVariableOrWriteNode") || sp_streq(ty, "InstanceVariableAndWriteNode") ||
+      sp_streq(ty, "SelfNode")) return 1;
+  if (sp_streq(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) return 1;
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     int ch = nt_ref_at(c->nt, id, i);
@@ -959,7 +959,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   if (encl) {
     for (int u = 0; u < fib_used.n; u++) {
       const char *nm = fib_used.v[u];
-      if (bp0 && !strcmp(nm, bp0)) continue;
+      if (bp0 && sp_streq(nm, bp0)) continue;
       LocalVar *lv = scope_local(encl, nm);
       if (!lv || lv->type == TY_UNKNOWN) continue;
       /* A name defined in the body (including a nested block's param/local) is
@@ -1085,7 +1085,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
       LocalVar *lv = &encl->locals[i];
       if (lv->is_param || lv->is_cell) continue;
       if (!lv->name) continue;
-      if (bp0 && !strcmp(lv->name, bp0)) continue;
+      if (bp0 && sp_streq(lv->name, bp0)) continue;
       if (nameset_has(&caps, lv->name)) continue;
       if (!nameset_has(&fib_locals, lv->name) && !nameset_has(&fib_decls, lv->name)) continue;
       if (lv->type == TY_UNKNOWN) continue;
@@ -1213,10 +1213,10 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
-  if (!strcmp(ty, "SelfNode")) return 1;
+  if (sp_streq(ty, "SelfNode")) return 1;
   if (!strncmp(ty, "InstanceVariable", 16)) return 1;
-  if (!strcmp(ty, "SuperNode") || !strcmp(ty, "ForwardingSuperNode")) return 1;
-  if (!strcmp(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) {
+  if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) return 1;
+  if (sp_streq(ty, "CallNode") && nt_ref(c->nt, id, "receiver") < 0) {
     const char *nm = nt_str(c->nt, id, "name");
     if (nm && comp_method_in_chain(c, class_id, nm, NULL) >= 0) return 1;
   }
@@ -1238,13 +1238,13 @@ static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
   if (id < 0) return 0;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return 0;
-  if (!strcmp(ty, "InstanceVariableWriteNode") || !strcmp(ty, "InstanceVariableOrWriteNode")) {
+  if (sp_streq(ty, "InstanceVariableWriteNode") || sp_streq(ty, "InstanceVariableOrWriteNode")) {
     int v = nt_ref(c->nt, id, "value");
     if (v >= 0) {
       const char *vt = nt_type(c->nt, v);
-      if (vt && !strcmp(vt, "LocalVariableReadNode")) {
+      if (vt && sp_streq(vt, "LocalVariableReadNode")) {
         const char *vn = nt_str(c->nt, v, "name");
-        if (vn && !strcmp(vn, bp)) return 1;
+        if (vn && sp_streq(vn, bp)) return 1;
       }
     }
   }
@@ -1263,8 +1263,8 @@ static int block_stored_in_ivar(Compiler *c, int id, const char *bp) {
 void emit_proc_literal(Compiler *c, int create, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *cty = nt_type(nt, create);
-  int is_lambda_node = cty && !strcmp(cty, "LambdaNode");
-  int is_block_node = cty && !strcmp(cty, "BlockNode");
+  int is_lambda_node = cty && sp_streq(cty, "LambdaNode");
+  int is_block_node = cty && sp_streq(cty, "BlockNode");
   if (!is_lambda_node && !is_block_node && nt_ref(nt, create, "block") < 0) { unsupported(c, create, "proc literal without a block"); return; }
 
   Scope *bs = comp_scope_of(c, create);  /* enclosing scope: holds params + locals */
@@ -1330,7 +1330,7 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
 
   /* proc {} / Proc.new {} are procs; lambda {} and ->(){} are lambdas */
   const char *cn = nt_str(nt, create, "name");
-  int is_lambda = is_lambda_node || (cn && !strcmp(cn, "lambda"));
+  int is_lambda = is_lambda_node || (cn && sp_streq(cn, "lambda"));
 
   /* The arity reported by Proc#arity (CRuby's "at least this many" encoding).
      `arity` above counts the leading required positionals; a post param (after a
@@ -1354,11 +1354,11 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       int has_req_kw = 0, has_opt_kw = 0;
       for (int i = 0; i < nkw; i++) {
         const char *kt = nt_type(nt, kw[i]);
-        if (kt && !strcmp(kt, "RequiredKeywordParameterNode")) has_req_kw = 1;
-        else if (kt && !strcmp(kt, "OptionalKeywordParameterNode")) has_opt_kw = 1;
+        if (kt && sp_streq(kt, "RequiredKeywordParameterNode")) has_req_kw = 1;
+        else if (kt && sp_streq(kt, "OptionalKeywordParameterNode")) has_opt_kw = 1;
       }
       const char *kwt = kwrest >= 0 ? nt_type(nt, kwrest) : NULL;
-      int has_kwrest = kwt && !strcmp(kwt, "KeywordRestParameterNode");
+      int has_kwrest = kwt && sp_streq(kwt, "KeywordRestParameterNode");
       int mandatory = arity + npost + (has_req_kw ? 1 : 0);
       int neg = rest >= 0 || (nopt > 0 && is_lambda) ||
                 ((has_opt_kw || has_kwrest) && !has_req_kw);
@@ -1377,7 +1377,7 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   { int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     if (bn > 0) {
       const char *tty = nt_type(nt, bb[bn - 1]);
-      if (tty && !strcmp(tty, "ReturnNode")) {
+      if (tty && sp_streq(tty, "ReturnNode")) {
         tail_is_return = 1;
         int rargs = nt_ref(nt, bb[bn - 1], "arguments");
         int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
@@ -1402,7 +1402,7 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   if (ret != TY_POLY && !ret_proc) {
     int owner = -1;
     for (int oid = 0; oid < nt->count; oid++) if (nt_ref(nt, oid, "block") == create) { owner = oid; break; }
-    if (owner >= 0 && nt_type(nt, owner) && !strcmp(nt_type(nt, owner), "CallNode")) {
+    if (owner >= 0 && nt_type(nt, owner) && sp_streq(nt_type(nt, owner), "CallNode")) {
       const char *onm = nt_str(nt, owner, "name");
       int orecv = nt_ref(nt, owner, "receiver");
       int mi = -1;
@@ -1675,12 +1675,12 @@ else if (orecv >= 0 && onm) {
 /* Emit the struct + the constructor (sp_<Class>_new) for one class. */
 /* Returns 1 if the class name shadows a built-in runtime type (no struct/new to emit). */
 int is_builtin_reopen(const char *name) {
-  return !strcmp(name, "Toplevel") ||
-         !strcmp(name, "String")    || !strcmp(name, "Integer") ||
-         !strcmp(name, "Float")     || !strcmp(name, "Symbol")  ||
-         !strcmp(name, "TrueClass") || !strcmp(name, "FalseClass") ||
-         !strcmp(name, "NilClass")  || !strcmp(name, "Array")   ||
-         !strcmp(name, "Object")    || !strcmp(name, "Numeric");
+  return sp_streq(name, "Toplevel") ||
+         sp_streq(name, "String")    || sp_streq(name, "Integer") ||
+         sp_streq(name, "Float")     || sp_streq(name, "Symbol")  ||
+         sp_streq(name, "TrueClass") || sp_streq(name, "FalseClass") ||
+         sp_streq(name, "NilClass")  || sp_streq(name, "Array")   ||
+         sp_streq(name, "Object")    || sp_streq(name, "Numeric");
 }
 
 /* Returns 1 if n is a known built-in exception class name. */
@@ -1695,7 +1695,7 @@ int is_exc_name(const char *n) {
     "LoadError", "RegexpError", "StringScanner_Error", "FiberError",
     "UncaughtThrowError", NULL
   };
-  for (int i = 0; EX[i]; i++) if (!strcmp(n, EX[i])) return 1;
+  for (int i = 0; EX[i]; i++) if (sp_streq(n, EX[i])) return 1;
   return 0;
 }
 
@@ -1706,7 +1706,7 @@ int class_is_exc_subclass(Compiler *c, int ci) {
     if (sc < 0) continue;
     const char *sty = nt_type(c->nt, sc);
     const char *sn = nt_str(c->nt, sc, "name");
-    if (sty && (!strcmp(sty, "ConstantReadNode") || !strcmp(sty, "ConstantPathNode")) &&
+    if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")) &&
         is_exc_name(sn))
       return 1;
   }
@@ -1744,7 +1744,7 @@ const char *exc_builtin_parent(Compiler *c, int ci) {
     if (sc < 0) continue;
     const char *sty = nt_type(c->nt, sc);
     const char *sn = nt_str(c->nt, sc, "name");
-    if (sty && (!strcmp(sty, "ConstantReadNode") || !strcmp(sty, "ConstantPathNode")) && is_exc_name(sn))
+    if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")) && is_exc_name(sn))
       return sn;
   }
   return "StandardError";
@@ -2131,7 +2131,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (g_nren + m->nlocals >= MAX_RENAME) return 0;
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
     if (!is_scalar_ret(lv->type)) return 0;
   }
 
@@ -2150,7 +2150,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   for (int i = 0; i < m->nlocals; i++) {
     LocalVar *lv = &m->locals[i];
-    if (m->blk_param && lv->name && !strcmp(lv->name, m->blk_param)) continue;
+    if (m->blk_param && lv->name && sp_streq(lv->name, m->blk_param)) continue;
     snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", lv->name);
     snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_y%d_%s", tag, lv->name);
     const char *rn = g_ren_to[g_nren];
@@ -2163,7 +2163,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
 
   const char *ty = nt_type(c->nt, id);
-  int is_forwarding = ty && !strcmp(ty, "ForwardingSuperNode");
+  int is_forwarding = ty && sp_streq(ty, "ForwardingSuperNode");
   int args = nt_ref(c->nt, id, "arguments");
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
@@ -2217,14 +2217,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_%s_%s((sp_%s *)%s",
                c->classes[s->class_id].name, mc(shadow),
                c->classes[s->class_id].name, g_self);
-    if (ty && !strcmp(ty, "ForwardingSuperNode")) {
+    if (ty && sp_streq(ty, "ForwardingSuperNode")) {
       for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
     }
     else {
       int smi = -1;
       for (int k = c->nscopes - 1; k >= 1; k--) {
         Scope *sc = &c->scopes[k];
-        if (sc->class_id == s->class_id && sc->name && !strcmp(sc->name, shadow))
+        if (sc->class_id == s->class_id && sc->name && sp_streq(sc->name, shadow))
           { smi = k; break; }
       }
       emit_args_filled(c, smi, nt_ref(c->nt, id, "arguments"), ", ", b);
@@ -2239,7 +2239,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
   int mi = p >= 0 ? comp_method_in_chain(c, p, uname, &defcls) : -1;
   if (mi < 0) {
     /* super(msg) in exception subclass initialize: capture msg into self->msg */
-    if (class_is_exc_subclass(c, s->class_id) && s->name && !strcmp(s->name, "initialize")) {
+    if (class_is_exc_subclass(c, s->class_id) && s->name && sp_streq(s->name, "initialize")) {
       int args_id = nt_ref(c->nt, id, "arguments");
       int argc2 = 0;
       const int *argv2 = NULL;
@@ -2249,7 +2249,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv2[0], b);
         buf_puts(b, "))");
       }
-      else if (ty && !strcmp(ty, "ForwardingSuperNode") && s->nparams > 0)
+      else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0)
         buf_printf(b, "(%s->msg = lv_%s)", g_self, s->pnames[0]);
       else
         buf_puts(b, "((void)0)");
@@ -2266,7 +2266,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
     return;
   }
   buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].name, mc(uname), c->classes[defcls].name, g_self);
-  if (ty && !strcmp(ty, "ForwardingSuperNode")) {
+  if (ty && sp_streq(ty, "ForwardingSuperNode")) {
     Scope *pm = &c->scopes[mi];
     int n = s->nparams < pm->nparams ? s->nparams : pm->nparams;
     for (int i = 0; i < n; i++) {
@@ -2597,14 +2597,14 @@ static char *build_rbs_text(Compiler *c) {
     if (!cls->name || !*cls->name) continue;
     /* Skip the Spinel-injected Method class so the .rbs reflects only the
        user's program (matches the legacy filter). */
-    if (!strcmp(cls->name, "Method")) continue;
+    if (sp_streq(cls->name, "Method")) continue;
     Buf nb; memset(&nb, 0, sizeof nb);
     class_ruby_name_into(&nb, cls->name);
     buf_printf(&b, "class %s", nb.p ? nb.p : "");
     free(nb.p);
     if (cls->parent >= 0 && cls->parent < c->nclasses) {
       const char *pn = c->classes[cls->parent].name;
-      if (pn && *pn && strcmp(pn, "Object") != 0) {
+      if (pn && *pn && !sp_streq(pn, "Object")) {
         Buf pb; memset(&pb, 0, sizeof pb);
         class_ruby_name_into(&pb, pn);
         buf_printf(&b, " < %s", pb.p ? pb.p : "");
@@ -2747,15 +2747,15 @@ static int program_needs_class_machinery(Compiler *c) {
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
     if (!ty) continue;
-    if (!strcmp(ty, "CallNode")) {
+    if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, i, "name");
-      if (nm && (!strcmp(nm, "class") || !strcmp(nm, "is_a?") ||
-                 !strcmp(nm, "kind_of?") || !strcmp(nm, "instance_of?") ||
-                 !strcmp(nm, "ancestors") || !strcmp(nm, "superclass") ||
-                 !strcmp(nm, "===")))
+      if (nm && (sp_streq(nm, "class") || sp_streq(nm, "is_a?") ||
+                 sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?") ||
+                 sp_streq(nm, "ancestors") || sp_streq(nm, "superclass") ||
+                 sp_streq(nm, "===")))
         return 1;
     }
-    else if (!strcmp(ty, "ConstantReadNode") || !strcmp(ty, "ConstantPathNode")) {
+    else if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
       const char *nm = nt_str(nt, i, "name");
       if (nm && is_builtin_class_name(nm)) return 1;
     }
@@ -2775,32 +2775,32 @@ static void scan_prologue_features(Compiler *c) {
   for (int i = 0; i < nt->count; i++) {
     const char *ty = nt_type(nt, i);
     if (!ty) continue;
-    if (!strcmp(ty, "RegularExpressionNode") || !strcmp(ty, "InterpolatedRegularExpressionNode"))
+    if (sp_streq(ty, "RegularExpressionNode") || sp_streq(ty, "InterpolatedRegularExpressionNode"))
       g_uses_regex = 1;
-    else if (!strcmp(ty, "SymbolNode") || !strcmp(ty, "InterpolatedSymbolNode"))
+    else if (sp_streq(ty, "SymbolNode") || sp_streq(ty, "InterpolatedSymbolNode"))
       g_uses_symbols = 1;
-    else if (!strcmp(ty, "ConstantReadNode") || !strcmp(ty, "ConstantPathNode")) {
+    else if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
-      if (!strcmp(nm, "Regexp")) g_uses_regex = 1;
-      else if (!strcmp(nm, "Random")) g_uses_random = 1;
-      else if (!strcmp(nm, "ARGV") || !strcmp(nm, "ARGF")) g_uses_argv = 1;
-      else if (!strcmp(nm, "Symbol")) g_uses_symbols = 1;
+      if (sp_streq(nm, "Regexp")) g_uses_regex = 1;
+      else if (sp_streq(nm, "Random")) g_uses_random = 1;
+      else if (sp_streq(nm, "ARGV") || sp_streq(nm, "ARGF")) g_uses_argv = 1;
+      else if (sp_streq(nm, "Symbol")) g_uses_symbols = 1;
       /* Marshal.load reconstructs symbols at runtime, so it needs the symbol
          table (sp_sym_intern / sp_sym_to_s) emitted even if the program uses no
          symbol literals; it also drives the sp_marshal_v vtable install. */
-      else if (!strcmp(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; }
+      else if (sp_streq(nm, "Marshal")) { g_uses_marshal = 1; g_uses_symbols = 1; }
     }
-    else if (!strcmp(ty, "GlobalVariableReadNode") || !strcmp(ty, "GlobalVariableWriteNode")) {
+    else if (sp_streq(ty, "GlobalVariableReadNode") || sp_streq(ty, "GlobalVariableWriteNode")) {
       const char *nm = nt_str(nt, i, "name");
-      if (nm && !strcmp(nm, "$*")) g_uses_argv = 1;
+      if (nm && sp_streq(nm, "$*")) g_uses_argv = 1;
     }
-    else if (!strcmp(ty, "CallNode")) {
+    else if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
-      if (!strcmp(nm, "to_sym") || !strcmp(nm, "intern")) g_uses_symbols = 1;
-      else if (!strcmp(nm, "rand") || !strcmp(nm, "srand") || !strcmp(nm, "sample") ||
-               !strcmp(nm, "shuffle") || !strcmp(nm, "shuffle!")) g_uses_random = 1;
+      if (sp_streq(nm, "to_sym") || sp_streq(nm, "intern")) g_uses_symbols = 1;
+      else if (sp_streq(nm, "rand") || sp_streq(nm, "srand") || sp_streq(nm, "sample") ||
+               sp_streq(nm, "shuffle") || sp_streq(nm, "shuffle!")) g_uses_random = 1;
     }
   }
 }
@@ -2846,15 +2846,15 @@ static void reject_runtime_send(Compiler *c) {
     const char *sn = c->scopes[s].name;
     if (!sn) continue;
     for (int k = 0; names[k]; k++)
-      if (!strcmp(sn, names[k])) return;  /* user-defined: leave to normal dispatch */
+      if (sp_streq(sn, names[k])) return;  /* user-defined: leave to normal dispatch */
   }
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int is_send = 0;
-    for (int k = 0; names[k]; k++) if (!strcmp(nm, names[k])) { is_send = 1; break; }
+    for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) { is_send = 1; break; }
     if (!is_send) continue;
     int args = nt_ref(nt, id, "arguments");
     if (args < 0) continue;
@@ -2863,7 +2863,7 @@ static void reject_runtime_send(Compiler *c) {
     const char *a0 = nt_type(nt, av[0]);
     /* a literal name should have been rewritten already; only a runtime name
        (a variable, a method result, an interpolated string, ...) reaches here */
-    if (a0 && (!strcmp(a0, "SymbolNode") || !strcmp(a0, "StringNode"))) continue;
+    if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
     /* Only diagnose a send that codegen will actually emit. A send in a dead
        (unreachable) method is pruned before emission, so rejecting it would
        fail otherwise-valid programs that merely contain an unused method.
@@ -2953,7 +2953,7 @@ char *codegen_program(const NodeTable *nt) {
     int any_binstr = 0;
     for (int fi = 0; fi < cf->n_ffi_funcs; fi++) {
       const char *ret = cf->ffi_funcs[fi].ret;
-      if (!strcmp(ret, "binstr")) any_binstr = 1;
+      if (sp_streq(ret, "binstr")) any_binstr = 1;
       buf_puts(&b, "extern ");
       buf_puts(&b, ffi_c_type(ret));
       buf_puts(&b, " ");
@@ -3036,7 +3036,7 @@ char *codegen_program(const NodeTable *nt) {
     for (int i = 0; i < c->nclasses; i++) {
       if (i) buf_puts(&b, ",");
       const char *dt = nt_type(c->nt, c->classes[i].def_node);
-      buf_printf(&b, "%d", (dt && !strcmp(dt, "ModuleNode")) ? 1 : 0);
+      buf_printf(&b, "%d", (dt && sp_streq(dt, "ModuleNode")) ? 1 : 0);
     }
     buf_puts(&b, "};\n");
   }
@@ -3064,7 +3064,7 @@ char *codegen_program(const NodeTable *nt) {
         int builtin_par = -116;  /* Object */
         if (sc_node >= 0) {
           const char *sc_ty = nt_type(c->nt, sc_node);
-          const char *sc_nm = (sc_ty && (!strcmp(sc_ty, "ConstantReadNode") || !strcmp(sc_ty, "ConstantPathNode"))) ? nt_str(c->nt, sc_node, "name") : NULL;
+          const char *sc_nm = (sc_ty && (sp_streq(sc_ty, "ConstantReadNode") || sp_streq(sc_ty, "ConstantPathNode"))) ? nt_str(c->nt, sc_node, "name") : NULL;
           if (sc_nm) { int bid = builtin_class_id(sc_nm); if (bid != 0) builtin_par = bid; }
         }
         buf_printf(&b, "  case %d: return ((sp_Class){%d});\n", i, builtin_par);
@@ -3134,7 +3134,7 @@ char *codegen_program(const NodeTable *nt) {
       /* scan def_node body and all reopenings */
       for (int id = 0; id < c->nt->count; id++) {
         const char *ty2 = nt_type(c->nt, id);
-        if (!ty2 || (strcmp(ty2, "ClassNode") && strcmp(ty2, "ModuleNode"))) continue;
+        if (!ty2 || (!sp_streq(ty2, "ClassNode") && !sp_streq(ty2, "ModuleNode"))) continue;
         int cp2 = nt_ref(c->nt, id, "constant_path");
         const char *cn2 = cp2 >= 0 ? nt_str(c->nt, cp2, "name") : NULL;
         if (!cn2 || comp_class_index(c, cn2) != ci) continue;
@@ -3143,17 +3143,17 @@ char *codegen_program(const NodeTable *nt) {
         const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
         for (int k2 = 0; k2 < bn2; k2++) {
           const char *sty2 = nt_type(c->nt, stmts2[k2]);
-          if (!sty2 || strcmp(sty2, "CallNode")) continue;
+          if (!sty2 || !sp_streq(sty2, "CallNode")) continue;
           const char *nm2 = nt_str(c->nt, stmts2[k2], "name");
-          if (!nm2 || strcmp(nm2, "include")) continue;
+          if (!nm2 || !sp_streq(nm2, "include")) continue;
           if (nt_ref(c->nt, stmts2[k2], "receiver") >= 0) continue;
           int anode2 = nt_ref(c->nt, stmts2[k2], "arguments");
           int an2 = 0;
           const int *aargs = anode2 >= 0 ? nt_arr(c->nt, anode2, "arguments", &an2) : NULL;
           for (int j2 = 0; j2 < an2; j2++) {
             const char *aty2 = nt_type(c->nt, aargs[j2]);
-            const char *mname2 = (aty2 && !strcmp(aty2, "ConstantReadNode")) ? nt_str(c->nt, aargs[j2], "name") : NULL;
-            if (!mname2 && aty2 && !strcmp(aty2, "ConstantPathNode")) mname2 = nt_str(c->nt, aargs[j2], "name");
+            const char *mname2 = (aty2 && sp_streq(aty2, "ConstantReadNode")) ? nt_str(c->nt, aargs[j2], "name") : NULL;
+            if (!mname2 && aty2 && sp_streq(aty2, "ConstantPathNode")) mname2 = nt_str(c->nt, aargs[j2], "name");
             int mid2 = mname2 ? comp_class_index(c, mname2) : -1;
             if (mid2 < 0) continue;
             /* deduplicate */
@@ -3263,7 +3263,7 @@ char *codegen_program(const NodeTable *nt) {
         int sc = nt_ref(c->nt, c->classes[i].def_node, "superclass");
         if (sc >= 0) {
           const char *sty = nt_type(c->nt, sc);
-          if (sty && (!strcmp(sty, "ConstantReadNode") || !strcmp(sty, "ConstantPathNode")))
+          if (sty && (sp_streq(sty, "ConstantReadNode") || sp_streq(sty, "ConstantPathNode")))
             par = nt_str(c->nt, sc, "name");
         }
         if (!par && c->classes[i].parent >= 0)
@@ -3271,7 +3271,7 @@ char *codegen_program(const NodeTable *nt) {
         if (par) {
           buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", cn, par);
           /* also register the leaf name if different from qualified name */
-          if (cn != c->classes[i].name && strcmp(cn, c->classes[i].name))
+          if (cn != c->classes[i].name && !sp_streq(cn, c->classes[i].name))
             buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", c->classes[i].name, par);
         }
       }
@@ -3471,11 +3471,11 @@ char *codegen_program(const NodeTable *nt) {
     if (top_body >= 0) {
       const char *tty = nt_type(c->nt, top_body);
       int tn = 0;
-      const int *tbody = (tty && !strcmp(tty, "StatementsNode"))
+      const int *tbody = (tty && sp_streq(tty, "StatementsNode"))
                          ? nt_arr(c->nt, top_body, "body", &tn) : NULL;
       for (int k = 0; k < tn; k++) {
         const char *sty = nt_type(c->nt, tbody[k]);
-        if (!sty || strcmp(sty, "PostExecutionNode")) continue;
+        if (!sty || !sp_streq(sty, "PostExecutionNode")) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
         end_count++;
         buf_printf(body, "static void sp_end_fn_%d(void) { SP_GC_SAVE();\n", end_count);
@@ -3519,11 +3519,11 @@ char *codegen_program(const NodeTable *nt) {
     if (top_body >= 0) {
       const char *tty = nt_type(c->nt, top_body);
       int tn = 0;
-      const int *tbody = (tty && !strcmp(tty, "StatementsNode"))
+      const int *tbody = (tty && sp_streq(tty, "StatementsNode"))
                          ? nt_arr(c->nt, top_body, "body", &tn) : NULL;
       for (int k = 0; k < tn; k++) {
         const char *sty = nt_type(c->nt, tbody[k]);
-        if (!sty || strcmp(sty, "PreExecutionNode")) continue;
+        if (!sty || !sp_streq(sty, "PreExecutionNode")) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
         EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
       }

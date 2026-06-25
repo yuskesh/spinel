@@ -8,6 +8,19 @@
 #ifndef SPINEL_TYPES_H
 #define SPINEL_TYPES_H
 
+/* Fast equality for short strings. The iterated analysis/codegen passes compare
+   huge numbers of short keys / type names / method names; glibc's strcmp
+   resolves to __strcmp_avx2, whose per-call AVX setup dominates for strings
+   this short (and is paid in full even when the first byte already differs). An
+   inline byte loop is several times cheaper here -- strcmp self-time was ~47% of
+   a profiled optcarrot compile. Returns 1 if equal. */
+static inline int sp_streq(const char *a, const char *b) {
+  for (;; a++, b++) {
+    if (*a != *b) return 0;
+    if (*a == 0) return 1;
+  }
+}
+
 typedef enum {
   TY_UNKNOWN = 0,  /* not yet inferred, or an unsupported construct */
   TY_VOID,         /* a statement with no usable value */

@@ -387,7 +387,7 @@ void nt_node_set_int(NodeTable *nt, int id, const char *key, long long val) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;
   for (int j = 0; j < nd->ni; j++)
-    if (strcmp(nd->i[j].key, key) == 0) { nd->i[j].val = val; return; }
+    if (sp_streq(nd->i[j].key, key)) { nd->i[j].val = val; return; }
   node_add_int(nd, key, strlen(key), val);
 }
 
@@ -395,7 +395,7 @@ void nt_node_set_ref(NodeTable *nt, int id, const char *key, int child) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return;
   for (int j = 0; j < nd->nr; j++)
-    if (strcmp(nd->r[j].key, key) == 0) { nd->r[j].ref = child; return; }
+    if (sp_streq(nd->r[j].key, key)) { nd->r[j].ref = child; return; }
   node_add_ref(nd, key, strlen(key), child);
 }
 
@@ -409,7 +409,7 @@ void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int
     else n = 0;  /* OOM: store an empty array rather than a NULL/count mismatch */
   }
   for (int j = 0; j < nd->na; j++)
-    if (strcmp(nd->a[j].key, key) == 0) { free(nd->a[j].ids); nd->a[j].ids = copy; nd->a[j].n = n; return; }
+    if (sp_streq(nd->a[j].key, key)) { free(nd->a[j].ids); nd->a[j].ids = copy; nd->a[j].n = n; return; }
   node_add_arr(nd, key, strlen(key), copy, n);
 }
 

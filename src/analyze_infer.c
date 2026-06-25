@@ -37,14 +37,14 @@ TyKind ie_block_break_next_ty(Compiler *c, int node) {
   if (node < 0) return TY_UNKNOWN;
   const char *ty = nt_type(nt, node);
   if (!ty) return TY_UNKNOWN;
-  if (!strcmp(ty, "BreakNode") || !strcmp(ty, "NextNode")) {
+  if (sp_streq(ty, "BreakNode") || sp_streq(ty, "NextNode")) {
     int a = nt_ref(nt, node, "arguments"); int an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     return an > 0 ? infer_type(c, av[0]) : TY_UNKNOWN;
   }
-  if (!strcmp(ty, "WhileNode") || !strcmp(ty, "UntilNode") || !strcmp(ty, "ForNode") ||
-      !strcmp(ty, "BlockNode") || !strcmp(ty, "LambdaNode") || !strcmp(ty, "DefNode") ||
-      !strcmp(ty, "ClassNode") || !strcmp(ty, "ModuleNode")) return TY_UNKNOWN;
+  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+      sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
+      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN;
   int nr = nt_num_refs(nt, node);
   for (int i = 0; i < nr; i++) {
@@ -85,15 +85,15 @@ static int ivar_array_elems_int_returning_impl(Compiler *c, int cid, const char 
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     /* element write `@ivar[i] = v` */
-    if (!strcmp(ty, "CallNode")) {
+    if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || strcmp(nm, "[]=")) continue;
+      if (!nm || !sp_streq(nm, "[]=")) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0) continue;
       const char *rty = nt_type(nt, recv);
-      if (!rty || strcmp(rty, "InstanceVariableReadNode")) continue;
+      if (!rty || !sp_streq(rty, "InstanceVariableReadNode")) continue;
       const char *rn = nt_str(nt, recv, "name");
-      if (!rn || strcmp(rn, ivname)) continue;
+      if (!rn || !sp_streq(rn, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->class_id != cid) continue;
       int args = nt_ref(nt, id, "arguments");
@@ -106,20 +106,20 @@ static int ivar_array_elems_int_returning_impl(Compiler *c, int cid, const char 
       continue;
     }
     /* whole-ivar write `@ivar = [..]` / `@ivar = [x] * n` */
-    if (!strcmp(ty, "InstanceVariableWriteNode")) {
+    if (sp_streq(ty, "InstanceVariableWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || strcmp(nm, ivname)) continue;
+      if (!nm || !sp_streq(nm, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->class_id != cid) continue;
       int v = nt_ref(nt, id, "value");
       if (v < 0) continue;
       const char *vty = nt_type(nt, v);
       int arr = -1;   /* the ArrayNode whose elements to inspect */
-      if (vty && !strcmp(vty, "ArrayNode")) arr = v;
-      else if (vty && !strcmp(vty, "CallNode") && nt_str(nt, v, "name") &&
-               !strcmp(nt_str(nt, v, "name"), "*")) {
+      if (vty && sp_streq(vty, "ArrayNode")) arr = v;
+      else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+               sp_streq(nt_str(nt, v, "name"), "*")) {
         int ar = nt_ref(nt, v, "receiver");   /* `[..] * n` */
-        if (ar >= 0 && nt_type(nt, ar) && !strcmp(nt_type(nt, ar), "ArrayNode")) arr = ar;
+        if (ar >= 0 && nt_type(nt, ar) && sp_streq(nt_type(nt, ar), "ArrayNode")) arr = ar;
       }
       if (arr < 0) return 0;   /* non-literal whole write: can't verify */
       int en = 0;
@@ -151,19 +151,19 @@ static int ivar_array_elems_int_returning(Compiler *c, int cid, const char *ivna
 static int poly_double_index_int(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || strcmp(nm, "[]")) return 0;
+  if (!nm || !sp_streq(nm, "[]")) return 0;
   int args = nt_ref(nt, id, "arguments");
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1) return 0;
   const char *aty = nt_type(nt, av[0]);
-  if (aty && !strcmp(aty, "RangeNode")) return 0;   /* slice, not an element */
+  if (aty && sp_streq(aty, "RangeNode")) return 0;   /* slice, not an element */
   int inner = nt_ref(nt, id, "receiver");
   if (inner < 0) return 0;
   const char *ity = nt_type(nt, inner);
-  if (!ity || strcmp(ity, "CallNode")) return 0;
+  if (!ity || !sp_streq(ity, "CallNode")) return 0;
   const char *inm = nt_str(nt, inner, "name");
-  if (!inm || strcmp(inm, "[]")) return 0;
+  if (!inm || !sp_streq(inm, "[]")) return 0;
   int iargs = nt_ref(nt, inner, "arguments");
   int ian = 0;
   const int *iav = iargs >= 0 ? nt_arr(nt, iargs, "arguments", &ian) : NULL;
@@ -172,7 +172,7 @@ static int poly_double_index_int(Compiler *c, int id) {
   int ivnode = nt_ref(nt, inner, "receiver");
   if (ivnode < 0) return 0;
   const char *vty = nt_type(nt, ivnode);
-  if (!vty || strcmp(vty, "InstanceVariableReadNode")) return 0;
+  if (!vty || !sp_streq(vty, "InstanceVariableReadNode")) return 0;
   const char *ivname = nt_str(nt, ivnode, "name");
   Scope *s = comp_scope_of(c, id);
   int cid = s ? s->class_id : -1;
@@ -191,13 +191,13 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
-    if (!strcmp(ty, "CallNode")) {
+    if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || strcmp(nm, "[]=")) continue;
+      if (!nm || !sp_streq(nm, "[]=")) continue;
       int recv = nt_ref(nt, id, "receiver");
-      if (recv < 0 || strcmp(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) continue;
+      if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) continue;
       const char *rn = nt_str(nt, recv, "name");
-      if (!rn || strcmp(rn, ivname)) continue;
+      if (!rn || !sp_streq(rn, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->class_id != cid) continue;
       int args = nt_ref(nt, id, "arguments");
@@ -209,23 +209,23 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
       if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
       return 0;
     }
-    if (!strcmp(ty, "InstanceVariableWriteNode")) {
+    if (sp_streq(ty, "InstanceVariableWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || strcmp(nm, ivname)) continue;
+      if (!nm || !sp_streq(nm, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->class_id != cid) continue;
       int v = nt_ref(nt, id, "value");
       if (v < 0) continue;
       const char *vty = nt_type(nt, v);
       int arr = -1;
-      if (vty && !strcmp(vty, "ArrayNode")) arr = v;
-      else if (vty && !strcmp(vty, "CallNode") && nt_str(nt, v, "name") &&
-               !strcmp(nt_str(nt, v, "name"), "*")) {
+      if (vty && sp_streq(vty, "ArrayNode")) arr = v;
+      else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+               sp_streq(nt_str(nt, v, "name"), "*")) {
         int ar = nt_ref(nt, v, "receiver");
-        if (ar >= 0 && nt_type(nt, ar) && !strcmp(nt_type(nt, ar), "ArrayNode")) arr = ar;
+        if (ar >= 0 && nt_type(nt, ar) && sp_streq(nt_type(nt, ar), "ArrayNode")) arr = ar;
       }
-      else if (vty && !strcmp(vty, "CallNode") && nt_str(nt, v, "name") &&
-               (!strcmp(nt_str(nt, v, "name"), "map") || !strcmp(nt_str(nt, v, "name"), "collect"))) {
+      else if (vty && sp_streq(vty, "CallNode") && nt_str(nt, v, "name") &&
+               (sp_streq(nt_str(nt, v, "name"), "map") || sp_streq(nt_str(nt, v, "name"), "collect"))) {
         /* `@x = src.map { ... }`: elements are the block's result type. */
         int blk = nt_ref(nt, v, "block");
         int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
@@ -266,15 +266,15 @@ static int ivar_array_elems_all_int_array(Compiler *c, int cid, const char *ivna
 static int poly_index_int_array(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm || strcmp(nm, "[]")) return 0;
+  if (!nm || !sp_streq(nm, "[]")) return 0;
   int args = nt_ref(nt, id, "arguments");
   int an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1) return 0;
   const char *aty = nt_type(nt, av[0]);
-  if (aty && !strcmp(aty, "RangeNode")) return 0;
+  if (aty && sp_streq(aty, "RangeNode")) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || strcmp(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) return 0;
+  if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) return 0;
   const char *ivname = nt_str(nt, recv, "name");
   Scope *s = comp_scope_of(c, id);
   int cid = s ? s->class_id : -1;
@@ -287,7 +287,7 @@ static int poly_index_int_array(Compiler *c, int id) {
 /* A plain int literal value (not an out-of-int64 bigint literal). */
 static int infer_const_int_node(const NodeTable *nt, int id, long long *out) {
   const char *ty = nt_type(nt, id);
-  if (!ty || strcmp(ty, "IntegerNode")) return 0;
+  if (!ty || !sp_streq(ty, "IntegerNode")) return 0;
   if (nt_str(nt, id, "bigval")) return 0;
   *out = (long long)nt_int(nt, id, "value", 0);
   return 1;
@@ -321,11 +321,11 @@ static int range_each_is_external(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   for (int n = 0; n < nt->count; n++) {
     const char *ty = nt_type(nt, n);
-    if (!ty || strcmp(ty, "CallNode")) continue;
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
     if (nt_ref(nt, n, "receiver") != id) continue;
     const char *m = nt_str(nt, n, "name");
-    if (m && (!strcmp(m, "next") || !strcmp(m, "peek") ||
-              !strcmp(m, "rewind") || !strcmp(m, "size"))) return 1;
+    if (m && (sp_streq(m, "next") || sp_streq(m, "peek") ||
+              sp_streq(m, "rewind") || sp_streq(m, "size"))) return 1;
     return 0;   /* receiver of a collection method -> materialize to an array */
   }
   return 1;     /* standalone -> enumerator */
@@ -347,7 +347,7 @@ TyKind infer_call(Compiler *c, int id) {
   /* A literal integer power whose result exceeds int64 (`10 ** 30`, `2 ** 70`)
      is a Bignum in every overflow mode (CRuby). Type it bigint so codegen emits
      sp_bigint_pow rather than the saturating float sp_int_pow. */
-  if (!strcmp(name, "**") && recv >= 0 && argc == 1) {
+  if (sp_streq(name, "**") && recv >= 0 && argc == 1) {
     long long base, exp;
     if (infer_const_int_node(nt, recv, &base) && infer_const_int_node(nt, argv[0], &exp) &&
         infer_int_pow_overflows(base, exp))
@@ -356,7 +356,7 @@ TyKind infer_call(Compiler *c, int id) {
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
      is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
      `1LL << 64LL`. */
-  if (!strcmp(name, "<<") && recv >= 0 && argc == 1) {
+  if (sp_streq(name, "<<") && recv >= 0 && argc == 1) {
     long long base, amount;
     if (infer_const_int_node(nt, recv, &base) && infer_const_int_node(nt, argv[0], &amount) &&
         infer_int_shl_overflows(base, amount))
@@ -366,100 +366,100 @@ TyKind infer_call(Compiler *c, int id) {
   /* `@table[i][j]` on a poly-array dispatch table of int-returning entries
      yields an int (a method/peek table). Resolves the optcarrot CPU's
      fetch/peek/store, which would otherwise run boxed-poly. */
-  if (recv >= 0 && !strcmp(name, "[]") && argc == 1 && poly_double_index_int(c, id))
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1 && poly_double_index_int(c, id))
     return TY_INT;
   /* `@nested[i]` on a poly array of int arrays yields an int array (nested
      array of int arrays -- @chr_banks / @nmt_mem). Without this the element
      read is a boxed poly and cascades poly through the PPU. */
-  if (recv >= 0 && !strcmp(name, "[]") && argc == 1 && poly_index_int_array(c, id))
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1 && poly_index_int_array(c, id))
     return TY_INT_ARRAY;
 
   /* Complex / Rational value types. */
-  if (recv < 0 && !strcmp(name, "Complex")) return TY_COMPLEX;
-  if (recv < 0 && !strcmp(name, "Rational") && (argc == 1 || argc == 2)) return TY_RATIONAL;
+  if (recv < 0 && sp_streq(name, "Complex")) return TY_COMPLEX;
+  if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) return TY_RATIONAL;
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
-    if (rrty && !strcmp(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        !strcmp(nt_str(nt, recv, "name"), "Complex") && !strcmp(name, "polar"))
+    if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "Complex") && sp_streq(name, "polar"))
       return TY_COMPLEX;
   }
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
-    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_COMPLEX;
-    if (!strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
+    if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;
+    if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
   }
   if (rt == TY_FLOAT && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
-    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_COMPLEX;
-    if (!strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
+    if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;
+    if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
   }
   if (rt == TY_COMPLEX) {
-    if (!strcmp(name, "real") || !strcmp(name, "imaginary") || !strcmp(name, "imag") ||
-        !strcmp(name, "abs") || !strcmp(name, "magnitude") || !strcmp(name, "abs2")) return TY_FLOAT;
-    if (!strcmp(name, "conjugate") || !strcmp(name, "conj") || !strcmp(name, "to_c") ||
-        !strcmp(name, "-@") || !strcmp(name, "+@") ||
-        !strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_COMPLEX;
-    if (!strcmp(name, "**")) return TY_COMPLEX;
-    if (!strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
-    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
+        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2")) return TY_FLOAT;
+    if (sp_streq(name, "conjugate") || sp_streq(name, "conj") || sp_streq(name, "to_c") ||
+        sp_streq(name, "-@") || sp_streq(name, "+@") ||
+        sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;
+    if (sp_streq(name, "**")) return TY_COMPLEX;
+    if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
   }
   /* Proc#curry and curry application via []. A curried call stays TY_CURRY until
      it reaches the proc's arity, when it realizes to the proc's return type (the
      runtime accumulates int args, so completion typing covers int-returning
      procs; partial applications and other returns remain TY_CURRY). */
-  if (rt == TY_PROC && !strcmp(name, "curry")) return TY_CURRY;
-  if (rt == TY_CURRY && (!strcmp(name, "[]") || !strcmp(name, "call") || !strcmp(name, "()"))) {
+  if (rt == TY_PROC && sp_streq(name, "curry")) return TY_CURRY;
+  if (rt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()"))) {
     int complete = 0; TyKind cret = TY_UNKNOWN;
     if (curry_apply_info(c, id, &complete, &cret) && complete && cret == TY_INT)
       return TY_INT;
     return TY_CURRY;
   }
 
-  if (rt == TY_INT && !strcmp(name, "quo")) return TY_RATIONAL;
+  if (rt == TY_INT && sp_streq(name, "quo")) return TY_RATIONAL;
   /* Integer <op> Rational coerces the Integer to Rational (result Rational for
      arithmetic, Bool/Int for comparisons). */
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
-    if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")) return TY_RATIONAL;
-    if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") || !strcmp(name, ">=") ||
-        !strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
-    if (!strcmp(name, "<=>")) return TY_INT;
+    if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_RATIONAL;
+    if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">=") ||
+        sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
+    if (sp_streq(name, "<=>")) return TY_INT;
   }
   if (rt == TY_RATIONAL) {
-    if (!strcmp(name, "numerator") || !strcmp(name, "denominator")) return TY_INT;
-    if (!strcmp(name, "to_f")) return TY_FLOAT;
-    if (!strcmp(name, "to_i") || !strcmp(name, "to_int") || !strcmp(name, "truncate")) return TY_INT;
-    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
-    if (!strcmp(name, "to_r") || !strcmp(name, "rationalize") ||
-        !strcmp(name, "-@") || !strcmp(name, "+@") || !strcmp(name, "abs")) return TY_RATIONAL;
+    if (sp_streq(name, "numerator") || sp_streq(name, "denominator")) return TY_INT;
+    if (sp_streq(name, "to_f")) return TY_FLOAT;
+    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "truncate")) return TY_INT;
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
+        sp_streq(name, "-@") || sp_streq(name, "+@") || sp_streq(name, "abs")) return TY_RATIONAL;
     TyKind a0r = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-    if (argc == 1 && (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")))
+    if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")))
       return a0r == TY_FLOAT ? TY_FLOAT : TY_RATIONAL;
-    if (argc == 1 && !strcmp(name, "**")) return a0r == TY_INT ? TY_RATIONAL : TY_FLOAT;
-    if (argc == 1 && (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
-                      !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!="))) return TY_BOOL;
-    if (argc == 1 && !strcmp(name, "<=>")) return TY_INT;
+    if (argc == 1 && sp_streq(name, "**")) return a0r == TY_INT ? TY_RATIONAL : TY_FLOAT;
+    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+                      sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!="))) return TY_BOOL;
+    if (argc == 1 && sp_streq(name, "<=>")) return TY_INT;
   }
 
   /* Safe navigation &. : nil receiver always short-circuits to nil */
   {
     const char *call_op = nt_str(nt, id, "call_operator");
-    if (recv >= 0 && call_op && !strcmp(call_op, "&.") && rt == TY_NIL) return TY_NIL;
+    if (recv >= 0 && call_op && sp_streq(call_op, "&.") && rt == TY_NIL) return TY_NIL;
   }
 
   /* nil receiver: type inference for NilClass methods */
   if (recv >= 0 && rt == TY_NIL) {
-    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
-    if (!strcmp(name, "nil?") || !strcmp(name, "is_a?") || !strcmp(name, "kind_of?") ||
-        !strcmp(name, "instance_of?")) return TY_BOOL;
-    if (!strcmp(name, "to_i") || !strcmp(name, "to_int")) return TY_INT;
-    if (!strcmp(name, "to_f") || !strcmp(name, "to_r")) return TY_FLOAT;
-    if (!strcmp(name, "to_a")) return TY_POLY_ARRAY;
-    if (!strcmp(name, "to_h")) return TY_SYM_POLY_HASH;
-    if (!strcmp(name, "respond_to?")) return TY_BOOL;
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+        sp_streq(name, "instance_of?")) return TY_BOOL;
+    if (sp_streq(name, "to_i") || sp_streq(name, "to_int")) return TY_INT;
+    if (sp_streq(name, "to_f") || sp_streq(name, "to_r")) return TY_FLOAT;
+    if (sp_streq(name, "to_a")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "to_h")) return TY_SYM_POLY_HASH;
+    if (sp_streq(name, "respond_to?")) return TY_BOOL;
   }
 
   /* int_array.chunk_while { |a, b| } .to_a -> a poly array of int-array runs */
-  if (recv >= 0 && !strcmp(name, "to_a") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "chunk_while") &&
+  if (recv >= 0 && sp_streq(name, "to_a") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "chunk_while") &&
       nt_ref(nt, recv, "block") >= 0) {
     int pr = nt_ref(nt, recv, "receiver");
     if (pr >= 0 && infer_type(c, pr) == TY_INT_ARRAY) return TY_POLY_ARRAY;
@@ -470,15 +470,15 @@ TyKind infer_call(Compiler *c, int id) {
      array methods dispatch instead of falling through to unresolved. */
   if (rt == TY_UNKNOWN && recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ArrayNode")) {
+    if (rty && sp_streq(rty, "ArrayNode")) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en == 0) {
         /* first/last/min/max/pop/shift/sample of an empty array returns 0
            (the typed slot's zero value); carry it as an int */
-        if ((!strcmp(name, "first") || !strcmp(name, "last") ||
-             !strcmp(name, "min") || !strcmp(name, "max") ||
-             !strcmp(name, "sample") ||
-             !strcmp(name, "pop") || !strcmp(name, "shift")) && argc == 0) return TY_INT;
+        if ((sp_streq(name, "first") || sp_streq(name, "last") ||
+             sp_streq(name, "min") || sp_streq(name, "max") ||
+             sp_streq(name, "sample") ||
+             sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) return TY_INT;
         rt = TY_POLY_ARRAY;
       }
     }
@@ -492,31 +492,31 @@ TyKind infer_call(Compiler *c, int id) {
   }
 
   /* __dir__ -> the source directory (a string) */
-  if (recv < 0 && !strcmp(name, "__dir__") && argc == 0) return TY_STRING;
+  if (recv < 0 && sp_streq(name, "__dir__") && argc == 0) return TY_STRING;
 
   /* Kernel#caller -> the call stack as strings (empty in release builds) */
-  if (recv < 0 && !strcmp(name, "caller") && argc <= 2) return TY_STR_ARRAY;
+  if (recv < 0 && sp_streq(name, "caller") && argc <= 2) return TY_STR_ARRAY;
   /* caller_locations -> an array of Backtrace::Location objects. AOT builds keep
      no runtime frame stack (like `caller`, which is empty in release), so this is
      an empty array. Returning a poly array (not nil) keeps `&.first&.label`,
      `.each`, `.map`, and `.is_a?(Array)` well-typed and nil-safe. */
-  if (recv < 0 && !strcmp(name, "caller_locations") && argc <= 2) return TY_POLY_ARRAY;
+  if (recv < 0 && sp_streq(name, "caller_locations") && argc <= 2) return TY_POLY_ARRAY;
 
   /* bare `name` inside a class method body -> the class name string */
-  if (recv < 0 && !strcmp(name, "name") && argc == 0) {
+  if (recv < 0 && sp_streq(name, "name") && argc == 0) {
     Scope *self = comp_scope_of(c, id);
     if (self && self->is_cmethod && self->class_id >= 0) return TY_STRING;
   }
   /* `self.name` / `self.to_s` inside a class method -> the class name string */
   if (recv >= 0 && argc == 0 &&
-      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode")) {
+      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) {
     Scope *self = comp_scope_of(c, id);
     if (self && self->is_cmethod && self->class_id >= 0) return TY_STRING;
   }
 
   /* loop { break val } -> the type of the break value */
-  if (recv < 0 && !strcmp(name, "loop")) {
+  if (recv < 0 && sp_streq(name, "loop")) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       int body = nt_ref(nt, blk, "body");
@@ -530,7 +530,7 @@ TyKind infer_call(Compiler *c, int id) {
 
   /* catch(:tag) { ... [throw :tag, val] ... } -> unify the block's last
      value with every throw value targeting the tag */
-  if (recv < 0 && !strcmp(name, "catch")) {
+  if (recv < 0 && sp_streq(name, "catch")) {
     int blk = nt_ref(nt, id, "block");
     TyKind result = TY_UNKNOWN;
     if (blk >= 0) {
@@ -548,7 +548,7 @@ TyKind infer_call(Compiler *c, int id) {
   /* recv.instance_eval/exec { ... } -> the block's last-expression type
      (bare calls inside resolve via the ie node->class map). A trampoline
      method `recv.M { ... }` resolves the same way. */
-  int ie_kind = (recv >= 0 && (!strcmp(name, "instance_eval") || !strcmp(name, "instance_exec")) &&
+  int ie_kind = (recv >= 0 && (sp_streq(name, "instance_eval") || sp_streq(name, "instance_exec")) &&
                  ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
   if (!ie_kind && recv >= 0 && ty_is_object(rt) && nt_ref(nt, id, "block") >= 0)
     ie_kind = comp_trampoline_kind(c, ty_object_class(rt), name, NULL) != 0;
@@ -558,7 +558,7 @@ TyKind infer_call(Compiler *c, int id) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       const char *bty = nt_type(nt, blk);
-      if (bty && !strcmp(bty, "BlockArgumentNode")) {
+      if (bty && sp_streq(bty, "BlockArgumentNode")) {
         /* `instance_exec(args, &b)` forwards the enclosing method's block; the
            value it produces is that method's own forwarded-block value across
            call sites (the method inlines per site, splicing the literal). */
@@ -591,11 +591,11 @@ TyKind infer_call(Compiler *c, int id) {
   }
 
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
-  if (name && !strcmp(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
+  if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
   /* <method>.call(args) / [] -> the target method's return type. */
   if (recv >= 0 && rt == TY_METHOD &&
-      (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
     int mn = method_recv_node(c, recv);
     int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
     if (mi >= 0) return c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret;
@@ -606,14 +606,14 @@ TyKind infer_call(Compiler *c, int id) {
   }
   /* <method>.name -> the method name string; .arity -> int */
   if (recv >= 0 && rt == TY_METHOD && argc == 0) {
-    if (!strcmp(name, "name")) return TY_STRING;
-    if (!strcmp(name, "arity")) return TY_INT;
+    if (sp_streq(name, "name")) return TY_STRING;
+    if (sp_streq(name, "arity")) return TY_INT;
   }
   /* <poly>.call(args): a boxed Proc/Method called through the runtime ABI,
      which returns mrb_int. (Skip when a user class defines `call`: that goes
      through normal dispatch and returns the method's own type.) */
   if (recv >= 0 && rt == TY_POLY &&
-      (!strcmp(name, "call") || !strcmp(name, "()"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()"))) {
     int has_user_call = 0;
     for (int k = 0; k < c->nclasses && !has_user_call; k++)
       if (comp_method_in_class(c, k, "call") >= 0) has_user_call = 1;
@@ -625,61 +625,61 @@ TyKind infer_call(Compiler *c, int id) {
 
   /* <proc>.call(args) / .() / [] -> the proc's recorded body return type */
   if (recv >= 0 && rt == TY_PROC &&
-      (!strcmp(name, "call") || !strcmp(name, "()") || !strcmp(name, "[]")))
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
     return proc_call_ret(c, recv);
 
   /* Proc composition: proc << proc / proc >> proc -> a new Proc. */
   if (recv >= 0 && rt == TY_PROC && argc == 1 &&
-      (!strcmp(name, "<<") || !strcmp(name, ">>")) &&
+      (sp_streq(name, "<<") || sp_streq(name, ">>")) &&
       infer_type(c, argv[0]) == TY_PROC)
     return TY_PROC;
 
   /* Proc introspection */
   if (recv >= 0 && rt == TY_PROC && argc == 0) {
-    if (!strcmp(name, "arity")) return TY_INT;
-    if (!strcmp(name, "lambda?")) return TY_BOOL;
-    if (!strcmp(name, "parameters")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "arity")) return TY_INT;
+    if (sp_streq(name, "lambda?")) return TY_BOOL;
+    if (sp_streq(name, "parameters")) return TY_POLY_ARRAY;
   }
 
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
      Exception: self.class.new(...) resolves to the enclosing class statically. */
-  if (recv >= 0 && rt == TY_CLASS && !strcmp(name, "new") &&
-      nt_type(nt, recv) && strcmp(nt_type(nt, recv), "ConstantReadNode") != 0 &&
-      strcmp(nt_type(nt, recv), "ConstantPathNode") != 0) {
-    int _is_self_class = (nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class") &&
+  if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
+      nt_type(nt, recv) && !sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      !sp_streq(nt_type(nt, recv), "ConstantPathNode")) {
+    int _is_self_class = (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class") &&
       nt_ref(nt, recv, "receiver") >= 0 &&
       nt_type(nt, nt_ref(nt, recv, "receiver")) &&
-      !strcmp(nt_type(nt, nt_ref(nt, recv, "receiver")), "SelfNode"));
+      sp_streq(nt_type(nt, nt_ref(nt, recv, "receiver")), "SelfNode"));
     if (!_is_self_class) return TY_POLY;
   }
 
-  if (recv >= 0 && rt == TY_CLASS && strcmp(name, "new") != 0) {
-    if (argc == 0 && (!strcmp(name, "to_s") || !strcmp(name, "name") || !strcmp(name, "inspect")))
+  if (recv >= 0 && rt == TY_CLASS && !sp_streq(name, "new")) {
+    if (argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")))
       return TY_STRING;
-    if (argc == 0 && !strcmp(name, "nil?")) return TY_BOOL;
-    if (argc == 0 && !strcmp(name, "class")) return TY_STRING;
-    if (argc == 0 && !strcmp(name, "superclass")) return TY_CLASS;
-    if (argc == 1 && (!strcmp(name, "==") || !strcmp(name, "eql?") || !strcmp(name, "!="))) return TY_BOOL;
-    if (argc == 1 && (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") || !strcmp(name, ">="))) return TY_BOOL;
-    if (argc == 0 && !strcmp(name, "ancestors")) return TY_POLY_ARRAY;
-    if (argc == 1 && (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?"))) return TY_BOOL;
-    if (argc <= 1 && !strcmp(name, "instance_methods")) return TY_POLY;
+    if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
+    if (argc == 0 && sp_streq(name, "class")) return TY_STRING;
+    if (argc == 0 && sp_streq(name, "superclass")) return TY_CLASS;
+    if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!="))) return TY_BOOL;
+    if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">="))) return TY_BOOL;
+    if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
+    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;
+    if (argc <= 1 && sp_streq(name, "instance_methods")) return TY_POLY;
   }
 
   /* __method__ / __callee__ -> the enclosing method's name (a symbol) */
   if (recv < 0 && argc == 0 &&
-      (!strcmp(name, "__method__") || !strcmp(name, "__callee__")))
+      (sp_streq(name, "__method__") || sp_streq(name, "__callee__")))
     return TY_SYMBOL;
 
   /* identity methods: return the receiver unchanged */
   if (recv >= 0 && argc == 0 &&
-      (!strcmp(name, "freeze") || !strcmp(name, "itself") ||
-       !strcmp(name, "dup") || !strcmp(name, "clone")))
+      (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
+       sp_streq(name, "dup") || sp_streq(name, "clone")))
     return rt;
 
   /* x.class -> a class-name string (for known builtin receivers) or TY_CLASS (user objects) */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "class")) {
+  if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
     if (ty_is_object(rt)) return TY_CLASS;  /* user object: return sp_Class value */
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
@@ -689,26 +689,26 @@ TyKind infer_call(Compiler *c, int id) {
   }
 
   /* X.class.name / .to_s -> the class-name string (X.class is already that) */
-  if (recv >= 0 && argc == 0 && (!strcmp(name, "name") || !strcmp(name, "to_s")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class"))
+  if (recv >= 0 && argc == 0 && (sp_streq(name, "name") || sp_streq(name, "to_s")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class"))
     return TY_STRING;
 
   /* __ENCODING__.name / .to_s / .inspect -> the encoding name string */
   if (recv >= 0 && argc == 0 &&
-      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SourceEncodingNode"))
+      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SourceEncodingNode"))
     return TY_STRING;
   /* <enc>.encoding.name -> the encoding name string */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "name") && rt == TY_POLY &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "encoding"))
+  if (recv >= 0 && argc == 0 && sp_streq(name, "name") && rt == TY_POLY &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
     return TY_STRING;
 
   /* Module.singleton_writer= / Module.singleton_reader */
   if (recv >= 0 && nt_type(nt, recv) &&
-      (!strcmp(nt_type(nt, recv), "ConstantReadNode") ||
-       !strcmp(nt_type(nt, recv), "ConstantPathNode"))) {
+      (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
+       sp_streq(nt_type(nt, recv), "ConstantPathNode"))) {
     const char *cn = nt_str(nt, recv, "name");
     int ci = cn ? comp_class_index(c, cn) : -1;
     if (ci >= 0) {
@@ -729,7 +729,7 @@ else {
   }
   /* self.singleton_writer= / self.singleton_reader: inside a class method
      or directly in a class/module body (g_cbody_class_id). */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "SelfNode")) {
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode")) {
     Scope *_self = comp_scope_of(c, id);
     int _sg_cid = (_self && _self->is_cmethod && _self->class_id >= 0)
                   ? _self->class_id : g_cbody_class_id;
@@ -751,9 +751,9 @@ else {
   if (recv >= 0 && nt_type(nt, recv)) {
     const char *rty_ffi = nt_type(nt, recv);
     const char *rcmod = NULL;
-    if (!strcmp(rty_ffi, "ConstantReadNode"))
+    if (sp_streq(rty_ffi, "ConstantReadNode"))
       rcmod = nt_str(nt, recv, "name");
-    else if (!strcmp(rty_ffi, "ConstantPathNode"))
+    else if (sp_streq(rty_ffi, "ConstantPathNode"))
       rcmod = nt_str(nt, recv, "name");
     if (rcmod) {
       int fi = ffi_find_func(c, rcmod, name);
@@ -764,7 +764,7 @@ else {
       int ri = ffi_find_reader(c, rcmod, name);
       if (ri >= 0) {
         const char *kind = c->ffi_readers[ri].kind;
-        if (kind && !strcmp(kind, "ptr")) return TY_POLY;
+        if (kind && sp_streq(kind, "ptr")) return TY_POLY;
         return TY_INT;
       }
     }
@@ -772,41 +772,41 @@ else {
 
   /* SomeClass.name / .to_s / .inspect -> class name string */
   if (recv >= 0 && argc == 0 &&
-      (!strcmp(name, "name") || !strcmp(name, "to_s") || !strcmp(name, "inspect")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+      (sp_streq(name, "name") || sp_streq(name, "to_s") || sp_streq(name, "inspect")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
     return TY_STRING;
   /* SomeClass.superclass -> sp_Class value for the parent class */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "superclass") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
     return TY_CLASS;
 
   /* SomeClass.ancestors -> PolyArray of class objects */
-  if (recv >= 0 && argc == 0 && !strcmp(name, "ancestors") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
+  if (recv >= 0 && argc == 0 && sp_streq(name, "ancestors") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
     return TY_POLY_ARRAY;
 
   /* SomeClass.instance_methods / .public_instance_methods -> PolyArray of symbols */
   if (recv >= 0 && argc <= 1 &&
-      (!strcmp(name, "instance_methods") || !strcmp(name, "public_instance_methods") ||
-       !strcmp(name, "private_instance_methods") || !strcmp(name, "protected_instance_methods")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode"))
+      (sp_streq(name, "instance_methods") || sp_streq(name, "public_instance_methods") ||
+       sp_streq(name, "private_instance_methods") || sp_streq(name, "protected_instance_methods")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
     return TY_POLY_ARRAY;
 
   /* self.class.new(...) -> an instance of the enclosing class */
-  if (recv >= 0 && !strcmp(name, "new") && nt_type(nt, recv) &&
-      !strcmp(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
-      !strcmp(nt_str(nt, recv, "name"), "class")) {
+  if (recv >= 0 && sp_streq(name, "new") && nt_type(nt, recv) &&
+      sp_streq(nt_type(nt, recv), "CallNode") && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "class")) {
     Scope *self = comp_scope_of(c, id);
     if (self && self->class_id >= 0) return ty_object(self->class_id);
   }
 
   /* Class#allocate -> a bare instance of that class (no initialize run). */
-  if (recv >= 0 && !strcmp(name, "allocate") && argc == 0) {
+  if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       /* Use the same exception-subclass predicate as codegen (class_is_exc_subclass)
          so inference and emission agree on which classes take the allocate path. */
@@ -815,10 +815,10 @@ else {
   }
 
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
-  if (recv >= 0 && !strcmp(name, "new")) {
+  if (recv >= 0 && sp_streq(name, "new")) {
     const char *rty = nt_type(nt, recv);
     /* a namespaced class (M::Sub) or root-qualified builtin (::Array etc) */
-    if (rty && !strcmp(rty, "ConstantPathNode")) {
+    if (rty && sp_streq(rty, "ConstantPathNode")) {
       const char *cn = nt_str(nt, recv, "name");
       int ci = cn ? comp_class_index(c, cn) : -1;
       if (ci >= 0) {
@@ -829,20 +829,20 @@ else {
       }
       if (cn && is_builtin_exception_name(cn)) return TY_EXCEPTION;
       /* ::Array.new / ::String.new / ::StringIO.new etc. */
-      if (cn && !strcmp(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
-      if (cn && !strcmp(cn, "Array")) return TY_POLY_ARRAY;
-      if (cn && !strcmp(cn, "Object")) return TY_POLY;
-      if (cn && !strcmp(cn, "String")) return TY_STRING;
-      if (cn && !strcmp(cn, "StringIO")) return TY_STRINGIO;
-      if (cn && !strcmp(cn, "StringScanner")) return TY_STRINGSCANNER;
-      if (cn && !strcmp(cn, "Hash")) return TY_UNKNOWN;
-      if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
-      if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
-      if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") || !strcmp(cn, "Monitor") ||
-                 !strcmp(cn, "Random") || !strcmp(cn, "IO") || !strcmp(cn, "File") ||
-                 !strcmp(cn, "GzipReader") || !strcmp(cn, "GzipWriter"))) return TY_POLY;
+      if (cn && sp_streq(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
+      if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;
+      if (cn && sp_streq(cn, "Object")) return TY_POLY;
+      if (cn && sp_streq(cn, "String")) return TY_STRING;
+      if (cn && sp_streq(cn, "StringIO")) return TY_STRINGIO;
+      if (cn && sp_streq(cn, "StringScanner")) return TY_STRINGSCANNER;
+      if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN;
+      if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
+      if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
+      if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor") ||
+                 sp_streq(cn, "Random") || sp_streq(cn, "IO") || sp_streq(cn, "File") ||
+                 sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
       const char *cn = nt_str(nt, recv, "name");
       int ci = comp_class_index(c, cn);
       if (ci >= 0) {
@@ -852,8 +852,8 @@ else {
         return ty_object(ci);
       }
       if (cn && is_builtin_exception_name(cn)) return TY_EXCEPTION;
-      if (cn && !strcmp(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
-      if (cn && !strcmp(cn, "Array")) {
+      if (cn && sp_streq(cn, "Array") && argc == 2) return ty_array_of(infer_type(c, argv[1]));
+      if (cn && sp_streq(cn, "Array")) {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0) {
           /* Array.new(n) { body }: element type from last expression of block body */
@@ -866,79 +866,79 @@ else {
         if (argc == 0 && blk < 0) return TY_UNKNOWN;
         return TY_POLY_ARRAY;
       }
-      if (cn && !strcmp(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
-      if (cn && !strcmp(cn, "Object")) return TY_POLY;  /* identity sentinel */
-      if (cn && !strcmp(cn, "String")) return TY_STRING;
-      if (cn && !strcmp(cn, "StringIO")) return TY_STRINGIO;
-      if (cn && !strcmp(cn, "StringScanner")) return TY_STRINGSCANNER;
+      if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
+      if (cn && sp_streq(cn, "Object")) return TY_POLY;  /* identity sentinel */
+      if (cn && sp_streq(cn, "String")) return TY_STRING;
+      if (cn && sp_streq(cn, "StringIO")) return TY_STRINGIO;
+      if (cn && sp_streq(cn, "StringScanner")) return TY_STRINGSCANNER;
       /* Hash.new { |hash, key| default } : a string-keyed poly hash with a
          default-proc (the block computes the missing-key value). */
-      if (cn && !strcmp(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_STR_POLY_HASH;
-      if (cn && !strcmp(cn, "Hash")) return TY_UNKNOWN; /* hash type determined by key usage */
-      if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
+      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_STR_POLY_HASH;
+      if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN; /* hash type determined by key usage */
+      if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */
-      if (cn && !strcmp(cn, "Fiber")) return TY_FIBER;
+      if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
       /* Thread.new { block }: modeled as a Fiber run to completion on #value. */
-      if (cn && !strcmp(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_FIBER;
-      if (cn && !strcmp(cn, "Random")) return TY_RANDOM;
-      if (cn && (!strcmp(cn, "Thread") || !strcmp(cn, "Mutex") || !strcmp(cn, "Monitor") ||
-                 !strcmp(cn, "IO") || !strcmp(cn, "File") ||
-                 !strcmp(cn, "GzipReader") || !strcmp(cn, "GzipWriter"))) return TY_POLY;
+      if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_FIBER;
+      if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
+      if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor") ||
+                 sp_streq(cn, "IO") || sp_streq(cn, "File") ||
+                 sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
   }
 
   /* Regexp.compile is an alias for Regexp.new */
-  if (recv >= 0 && !strcmp(name, "compile")) {
+  if (recv >= 0 && sp_streq(name, "compile")) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
       const char *cn = nt_str(nt, recv, "name");
-      if (cn && !strcmp(cn, "Regexp")) return TY_REGEX;
+      if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
     }
   }
 
   /* StringScanner instance methods */
   if (recv >= 0 && rt == TY_STRINGSCANNER) {
-    if (!strcmp(name, "scan") || !strcmp(name, "check") || !strcmp(name, "scan_until") ||
-        !strcmp(name, "matched") || !strcmp(name, "pre_match") || !strcmp(name, "post_match") ||
-        !strcmp(name, "rest") || !strcmp(name, "string") || !strcmp(name, "getch") ||
-        !strcmp(name, "peek") || !strcmp(name, "[]")) return TY_STRING;  /* nullable via NULL */
-    if (!strcmp(name, "matched?") || !strcmp(name, "eos?") || !strcmp(name, "rest?")) return TY_BOOL;
-    if (!strcmp(name, "pos") || !strcmp(name, "charpos") || !strcmp(name, "rest_size")) return TY_INT;
-    if (!strcmp(name, "reset") || !strcmp(name, "terminate") || !strcmp(name, "unscan")) return TY_STRINGSCANNER;
+    if (sp_streq(name, "scan") || sp_streq(name, "check") || sp_streq(name, "scan_until") ||
+        sp_streq(name, "matched") || sp_streq(name, "pre_match") || sp_streq(name, "post_match") ||
+        sp_streq(name, "rest") || sp_streq(name, "string") || sp_streq(name, "getch") ||
+        sp_streq(name, "peek") || sp_streq(name, "[]")) return TY_STRING;  /* nullable via NULL */
+    if (sp_streq(name, "matched?") || sp_streq(name, "eos?") || sp_streq(name, "rest?")) return TY_BOOL;
+    if (sp_streq(name, "pos") || sp_streq(name, "charpos") || sp_streq(name, "rest_size")) return TY_INT;
+    if (sp_streq(name, "reset") || sp_streq(name, "terminate") || sp_streq(name, "unscan")) return TY_STRINGSCANNER;
   }
 
   /* Regexp class methods */
-  if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Regexp")) {
-    if ((!strcmp(name, "escape") || !strcmp(name, "quote")) && argc >= 1) return TY_STRING;
-    if (!strcmp(name, "union") && argc >= 1) return TY_REGEX;
-    if (!strcmp(name, "last_match") && argc == 0) return TY_POLY;
-    if (!strcmp(name, "last_match") && argc == 1) return TY_STRING;
+  if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
+    if ((sp_streq(name, "escape") || sp_streq(name, "quote")) && argc >= 1) return TY_STRING;
+    if (sp_streq(name, "union") && argc >= 1) return TY_REGEX;
+    if (sp_streq(name, "last_match") && argc == 0) return TY_POLY;
+    if (sp_streq(name, "last_match") && argc == 1) return TY_STRING;
   }
 
   /* Regexp instance methods */
   if (recv >= 0 && rt == TY_REGEX) {
-    if (!strcmp(name, "match?") || !strcmp(name, "===")) return TY_BOOL;
-    if (!strcmp(name, "match")) return TY_MATCHDATA;
-    if (!strcmp(name, "=~")) return TY_POLY;
-    if (!strcmp(name, "source") || !strcmp(name, "inspect") || !strcmp(name, "to_s")) return TY_STRING;
-    if (!strcmp(name, "freeze") || !strcmp(name, "dup") || !strcmp(name, "clone")) return TY_REGEX;
+    if (sp_streq(name, "match?") || sp_streq(name, "===")) return TY_BOOL;
+    if (sp_streq(name, "match")) return TY_MATCHDATA;
+    if (sp_streq(name, "=~")) return TY_POLY;
+    if (sp_streq(name, "source") || sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
+    if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone")) return TY_REGEX;
   }
 
   /* MatchData instance methods */
   if (recv >= 0 && rt == TY_MATCHDATA) {
-    if (!strcmp(name, "[]") && argc == 1) return TY_STRING;
-    if (!strcmp(name, "pre_match") || !strcmp(name, "post_match") || !strcmp(name, "to_s")) return TY_STRING;
-    if (!strcmp(name, "begin") || !strcmp(name, "end") || !strcmp(name, "length") || !strcmp(name, "size")) return TY_INT;
-    if (!strcmp(name, "offset")) return TY_INT_ARRAY;
-    if (!strcmp(name, "captures") || !strcmp(name, "to_a") || !strcmp(name, "named_captures")) return TY_POLY_ARRAY;
-    if (!strcmp(name, "nil?")) return TY_BOOL;
+    if (sp_streq(name, "[]") && argc == 1) return TY_STRING;
+    if (sp_streq(name, "pre_match") || sp_streq(name, "post_match") || sp_streq(name, "to_s")) return TY_STRING;
+    if (sp_streq(name, "begin") || sp_streq(name, "end") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
+    if (sp_streq(name, "offset")) return TY_INT_ARRAY;
+    if (sp_streq(name, "captures") || sp_streq(name, "to_a") || sp_streq(name, "named_captures")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "nil?")) return TY_BOOL;
   }
 
   /* StringIO.open(args) { |io| body } -> the block body's value */
-  if (recv >= 0 && !strcmp(name, "open") && nt_type(nt, recv) &&
-      !strcmp(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
-      !strcmp(nt_str(nt, recv, "name"), "StringIO")) {
+  if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
+      sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
+      sp_streq(nt_str(nt, recv, "name"), "StringIO")) {
     int block = nt_ref(nt, id, "block");
     int bbody = block >= 0 ? nt_ref(nt, block, "body") : -1;
     if (bbody >= 0) {
@@ -950,11 +950,11 @@ else {
 
   /* StringIO instance methods */
   if (recv >= 0 && rt == TY_STRINGIO) {
-    if (!strcmp(name, "string") || !strcmp(name, "read")) return TY_STRING;
-    if (!strcmp(name, "gets") || !strcmp(name, "getc")) return TY_POLY;  /* nil at eof */
-    if (!strcmp(name, "eof?") || !strcmp(name, "eof") || !strcmp(name, "closed?") ||
-        !strcmp(name, "sync") || !strcmp(name, "isatty") || !strcmp(name, "tty?")) return TY_BOOL;
-    if (!strcmp(name, "flush")) return TY_STRINGIO;
+    if (sp_streq(name, "string") || sp_streq(name, "read")) return TY_STRING;
+    if (sp_streq(name, "gets") || sp_streq(name, "getc")) return TY_POLY;  /* nil at eof */
+    if (sp_streq(name, "eof?") || sp_streq(name, "eof") || sp_streq(name, "closed?") ||
+        sp_streq(name, "sync") || sp_streq(name, "isatty") || sp_streq(name, "tty?")) return TY_BOOL;
+    if (sp_streq(name, "flush")) return TY_STRINGIO;
     /* pos/tell/size/length/lineno/write/puts/print/putc/getbyte/seek/... */
     return TY_INT;
   }
@@ -962,84 +962,84 @@ else {
   /* Time.now / at / local / mktime / utc / gm -> a Time value */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Time") &&
-        (!strcmp(name, "now") || !strcmp(name, "at") || !strcmp(name, "local") ||
-         !strcmp(name, "mktime") || !strcmp(name, "utc") || !strcmp(name, "gm") ||
-         !strcmp(name, "new")))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Time") &&
+        (sp_streq(name, "now") || sp_streq(name, "at") || sp_streq(name, "local") ||
+         sp_streq(name, "mktime") || sp_streq(name, "utc") || sp_streq(name, "gm") ||
+         sp_streq(name, "new")))
       return TY_TIME;
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "GC") &&
-        (!strcmp(name, "start") || !strcmp(name, "compact")))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
+        (sp_streq(name, "start") || sp_streq(name, "compact")))
       return TY_NIL;
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "GC") &&
-        !strcmp(name, "stat"))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
+        sp_streq(name, "stat"))
       return TY_STR_INT_HASH;
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Process")) {
-      if (!strcmp(name, "pid") || !strcmp(name, "ppid")) return TY_INT;
-      if (!strcmp(name, "clock_gettime")) return TY_FLOAT;
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Process")) {
+      if (sp_streq(name, "pid") || sp_streq(name, "ppid")) return TY_INT;
+      if (sp_streq(name, "clock_gettime")) return TY_FLOAT;
     }
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Integer") &&
-        !strcmp(name, "sqrt"))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
+        sp_streq(name, "sqrt"))
       return TY_INT;
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Marshal")) {
-      if (!strcmp(name, "dump") && argc == 1) return TY_STRING;
-      if (!strcmp(name, "load") && argc == 1) return TY_POLY;
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Marshal")) {
+      if (sp_streq(name, "dump") && argc == 1) return TY_STRING;
+      if (sp_streq(name, "load") && argc == 1) return TY_POLY;
     }
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Math") &&
-        (!strcmp(name, "sin") || !strcmp(name, "cos") || !strcmp(name, "tan") ||
-         !strcmp(name, "asin") || !strcmp(name, "acos") || !strcmp(name, "atan") ||
-         !strcmp(name, "atan2") || !strcmp(name, "sinh") || !strcmp(name, "cosh") ||
-         !strcmp(name, "tanh") || !strcmp(name, "asinh") || !strcmp(name, "acosh") ||
-         !strcmp(name, "atanh") || !strcmp(name, "exp") || !strcmp(name, "log") ||
-         !strcmp(name, "log2") || !strcmp(name, "log10") || !strcmp(name, "sqrt") ||
-         !strcmp(name, "cbrt") || !strcmp(name, "hypot") || !strcmp(name, "frexp") ||
-         !strcmp(name, "ldexp") || !strcmp(name, "erf") || !strcmp(name, "erfc") ||
-         !strcmp(name, "gamma")))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
+        (sp_streq(name, "sin") || sp_streq(name, "cos") || sp_streq(name, "tan") ||
+         sp_streq(name, "asin") || sp_streq(name, "acos") || sp_streq(name, "atan") ||
+         sp_streq(name, "atan2") || sp_streq(name, "sinh") || sp_streq(name, "cosh") ||
+         sp_streq(name, "tanh") || sp_streq(name, "asinh") || sp_streq(name, "acosh") ||
+         sp_streq(name, "atanh") || sp_streq(name, "exp") || sp_streq(name, "log") ||
+         sp_streq(name, "log2") || sp_streq(name, "log10") || sp_streq(name, "sqrt") ||
+         sp_streq(name, "cbrt") || sp_streq(name, "hypot") || sp_streq(name, "frexp") ||
+         sp_streq(name, "ldexp") || sp_streq(name, "erf") || sp_streq(name, "erfc") ||
+         sp_streq(name, "gamma")))
       return TY_FLOAT;
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Math") &&
-        !strcmp(name, "lgamma") && argc == 1)
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
+        sp_streq(name, "lgamma") && argc == 1)
       return TY_POLY_ARRAY;  /* [log(|gamma|), sign] */
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "JSON") &&
-        (!strcmp(name, "generate") || !strcmp(name, "dump")))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "JSON") &&
+        (sp_streq(name, "generate") || sp_streq(name, "dump")))
       return TY_STRING;
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir") &&
-        (!strcmp(name, "exist?") || !strcmp(name, "exists?")))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
+        (sp_streq(name, "exist?") || sp_streq(name, "exists?")))
       return TY_BOOL;
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "Dir")) {
-      if (!strcmp(name, "pwd") || !strcmp(name, "home")) return TY_STRING;
-      if (!strcmp(name, "glob")) return TY_STR_ARRAY;
-      if (!strcmp(name, "mkdir") || !strcmp(name, "rmdir") || !strcmp(name, "chdir"))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
+      if (sp_streq(name, "pwd") || sp_streq(name, "home")) return TY_STRING;
+      if (sp_streq(name, "glob")) return TY_STR_ARRAY;
+      if (sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir"))
         return TY_INT;
     }
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "File")) {
-      if (!strcmp(name, "basename") || !strcmp(name, "dirname") || !strcmp(name, "extname") ||
-          !strcmp(name, "read") || !strcmp(name, "binread") || !strcmp(name, "expand_path") ||
-          !strcmp(name, "join"))
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "File")) {
+      if (sp_streq(name, "basename") || sp_streq(name, "dirname") || sp_streq(name, "extname") ||
+          sp_streq(name, "read") || sp_streq(name, "binread") || sp_streq(name, "expand_path") ||
+          sp_streq(name, "join"))
         return TY_STRING;
-      if (!strcmp(name, "exist?") || !strcmp(name, "exists?"))
+      if (sp_streq(name, "exist?") || sp_streq(name, "exists?"))
         return TY_BOOL;
-      if (!strcmp(name, "write") || !strcmp(name, "binwrite") || !strcmp(name, "delete") ||
-          !strcmp(name, "size"))
+      if (sp_streq(name, "write") || sp_streq(name, "binwrite") || sp_streq(name, "delete") ||
+          sp_streq(name, "size"))
         return TY_INT;
-      if (!strcmp(name, "readable?") || !strcmp(name, "directory?") || !strcmp(name, "file?") ||
-          !strcmp(name, "zero?") || !strcmp(name, "empty?"))
+      if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
+          sp_streq(name, "zero?") || sp_streq(name, "empty?"))
         return TY_BOOL;
-      if (!strcmp(name, "mtime"))
+      if (sp_streq(name, "mtime"))
         return TY_TIME;
-      if (!strcmp(name, "readlines")) return TY_STR_ARRAY;
+      if (sp_streq(name, "readlines")) return TY_STR_ARRAY;
       /* File.open / File.new without a block -> a typed IO handle */
-      if (!strcmp(name, "open") || !strcmp(name, "new")) {
+      if (sp_streq(name, "open") || sp_streq(name, "new")) {
         int blk = nt_ref(nt, id, "block");
         if (blk < 0) return TY_IO;
         /* Pin block param to TY_IO so body dispatch works (f.write, f.puts, etc.) */
@@ -1050,66 +1050,66 @@ else {
         return TY_POLY;
       }
     }
-    if (rty && !strcmp(rty, "ConstantReadNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "IO")) {
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "IO")) {
       /* IO.pipe -> [r, w] pair; each is TY_POLY; the pair is a str_array */
-      if (!strcmp(name, "pipe")) return TY_STR_ARRAY;
+      if (sp_streq(name, "pipe")) return TY_STR_ARRAY;
     }
     /* Fiber.new {} / Thread.new {} / Fiber.current etc.
        Handles both bare Const and ::Const path forms. */
-    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       const char *cn2 = nt_str(nt, recv, "name");
-      if (cn2 && !strcmp(name, "new") && !strcmp(cn2, "Enumerator") &&
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Enumerator") &&
           nt_ref(nt, id, "block") >= 0) return TY_ENUMERATOR;
-      if (cn2 && !strcmp(name, "new") && !strcmp(cn2, "Fiber")) return TY_FIBER;
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Fiber")) return TY_FIBER;
       /* Thread.new { block } modeled as a Fiber (single-threaded); #value
          resumes it to completion. */
-      if (cn2 && !strcmp(name, "new") && !strcmp(cn2, "Thread") &&
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Thread") &&
           nt_ref(nt, id, "block") >= 0)
         return TY_FIBER;
-      if (cn2 && !strcmp(name, "new") && !strcmp(cn2, "Random")) return TY_RANDOM;
-      if (cn2 && !strcmp(name, "new") &&
-          (!strcmp(cn2, "Thread") || !strcmp(cn2, "Mutex")))
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
+      if (cn2 && sp_streq(name, "new") &&
+          (sp_streq(cn2, "Thread") || sp_streq(cn2, "Mutex")))
         return TY_POLY;
-      if (cn2 && !strcmp(cn2, "Fiber") && !strcmp(name, "current")) return TY_FIBER;
-      if (cn2 && !strcmp(cn2, "Fiber") && !strcmp(name, "yield")) return TY_POLY;
+      if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
+      if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) return TY_POLY;
       /* Random class methods: Random.rand(n)->int / Random.rand->float */
-      if (cn2 && !strcmp(cn2, "Random") && !strcmp(name, "rand"))
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand"))
         return argc >= 1 ? TY_INT : TY_FLOAT;
-      if (cn2 && !strcmp(cn2, "Random") && !strcmp(name, "bytes")) return TY_STRING;
+      if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) return TY_STRING;
     }
   }
 
   /* TY_FIBER instance methods */
   if (recv >= 0 && rt == TY_FIBER) {
-    if (!strcmp(name, "resume") || !strcmp(name, "transfer") || !strcmp(name, "raise")) return TY_POLY;
-    if (!strcmp(name, "alive?")) return TY_BOOL;
-    if (!strcmp(name, "value")) return TY_POLY;
-    if (!strcmp(name, "kill")) return TY_FIBER;   /* returns the receiver */
+    if (sp_streq(name, "resume") || sp_streq(name, "transfer") || sp_streq(name, "raise")) return TY_POLY;
+    if (sp_streq(name, "alive?")) return TY_BOOL;
+    if (sp_streq(name, "value")) return TY_POLY;
+    if (sp_streq(name, "kill")) return TY_FIBER;   /* returns the receiver */
   }
 
   /* TY_ENUMERATOR instance methods */
   if (recv >= 0 && rt == TY_ENUMERATOR) {
-    if (!strcmp(name, "next") || !strcmp(name, "peek")) return TY_POLY;
-    if (!strcmp(name, "rewind")) return TY_ENUMERATOR;
-    if (!strcmp(name, "size")) return TY_INT;
-    if ((!strcmp(name, "take") || !strcmp(name, "first")) && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
+    if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
+    if (sp_streq(name, "size")) return TY_INT;
+    if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
   }
 
   /* TY_RANDOM instance methods */
   if (recv >= 0 && rt == TY_RANDOM) {
-    if (!strcmp(name, "rand")) return argc >= 1 ? TY_INT : TY_FLOAT;
-    if (!strcmp(name, "bytes")) return TY_STRING;
-    if (!strcmp(name, "seed")) return TY_INT;
+    if (sp_streq(name, "rand")) return argc >= 1 ? TY_INT : TY_FLOAT;
+    if (sp_streq(name, "bytes")) return TY_STRING;
+    if (sp_streq(name, "seed")) return TY_INT;
   }
 
   /* ARGF pseudo-IO methods */
   if (recv >= 0 && rt == TY_ARGF) {
-    if (!strcmp(name, "read") || !strcmp(name, "gets") || !strcmp(name, "readline") ||
-        !strcmp(name, "filename") || !strcmp(name, "path") || !strcmp(name, "to_s")) return TY_STRING;
-    if (!strcmp(name, "readlines") || !strcmp(name, "to_a")) return TY_STR_ARRAY;
-    if (!strcmp(name, "eof?") || !strcmp(name, "eof")) return TY_BOOL;
-    if (!strcmp(name, "each_line") || !strcmp(name, "each_string") || !strcmp(name, "each")) {
+    if (sp_streq(name, "read") || sp_streq(name, "gets") || sp_streq(name, "readline") ||
+        sp_streq(name, "filename") || sp_streq(name, "path") || sp_streq(name, "to_s")) return TY_STRING;
+    if (sp_streq(name, "readlines") || sp_streq(name, "to_a")) return TY_STR_ARRAY;
+    if (sp_streq(name, "eof?") || sp_streq(name, "eof")) return TY_BOOL;
+    if (sp_streq(name, "each_line") || sp_streq(name, "each_string") || sp_streq(name, "each")) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
         const char *bp0 = block_param_name(c, blk, 0);
@@ -1123,16 +1123,16 @@ else {
 
   /* TY_IO (File/IO handle) instance methods */
   if (recv >= 0 && rt == TY_IO) {
-    if (!strcmp(name, "read") || !strcmp(name, "gets") || !strcmp(name, "readline") ||
-        !strcmp(name, "path") || !strcmp(name, "to_path")) return TY_STRING;
-    if (!strcmp(name, "read") && nt_ref(nt, id, "arguments") >= 0) return TY_STRING;
-    if (!strcmp(name, "readlines")) return TY_STR_ARRAY;
-    if (!strcmp(name, "write") || !strcmp(name, "syswrite") || !strcmp(name, "pos") ||
-        !strcmp(name, "tell") || !strcmp(name, "seek") || !strcmp(name, "rewind") ||
-        !strcmp(name, "close")) return TY_INT;
-    if (!strcmp(name, "print") || !strcmp(name, "puts") || !strcmp(name, "flush")) return TY_NIL;
-    if (!strcmp(name, "closed?") || !strcmp(name, "eof?") || !strcmp(name, "eof")) return TY_BOOL;
-    if (!strcmp(name, "each_line") || !strcmp(name, "each")) {
+    if (sp_streq(name, "read") || sp_streq(name, "gets") || sp_streq(name, "readline") ||
+        sp_streq(name, "path") || sp_streq(name, "to_path")) return TY_STRING;
+    if (sp_streq(name, "read") && nt_ref(nt, id, "arguments") >= 0) return TY_STRING;
+    if (sp_streq(name, "readlines")) return TY_STR_ARRAY;
+    if (sp_streq(name, "write") || sp_streq(name, "syswrite") || sp_streq(name, "pos") ||
+        sp_streq(name, "tell") || sp_streq(name, "seek") || sp_streq(name, "rewind") ||
+        sp_streq(name, "close")) return TY_INT;
+    if (sp_streq(name, "print") || sp_streq(name, "puts") || sp_streq(name, "flush")) return TY_NIL;
+    if (sp_streq(name, "closed?") || sp_streq(name, "eof?") || sp_streq(name, "eof")) return TY_BOOL;
+    if (sp_streq(name, "each_line") || sp_streq(name, "each")) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
         const char *bp0 = block_param_name(c, blk, 0);
@@ -1147,24 +1147,24 @@ else {
 
   /* Time instance methods */
   if (recv >= 0 && rt == TY_TIME) {
-    if (!strcmp(name, "-") && argc > 0) {
+    if (sp_streq(name, "-") && argc > 0) {
       TyKind at = infer_type(c, argv[0]);
       if (at == TY_TIME) return TY_FLOAT;
     }
-    if (!strcmp(name, "utc") || !strcmp(name, "gmtime") || !strcmp(name, "getutc") ||
-        !strcmp(name, "localtime") || !strcmp(name, "getlocal") || !strcmp(name, "+") ||
-        !strcmp(name, "-")) return TY_TIME;
-    if (!strcmp(name, "to_s") || !strcmp(name, "inspect") || !strcmp(name, "strftime") ||
-        !strcmp(name, "iso8601") || !strcmp(name, "zone") || !strcmp(name, "asctime") ||
-        !strcmp(name, "ctime")) return TY_STRING;
-    if (!strcmp(name, "to_f") || !strcmp(name, "subsec")) return TY_FLOAT;
-    if (!strcmp(name, "utc?") || !strcmp(name, "gmt?") || !strcmp(name, "dst?") ||
-        !strcmp(name, "isdst") ||
-        !strcmp(name, "sunday?") || !strcmp(name, "monday?") ||
-        !strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
-        !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
-    if (!strcmp(name, "<=>")) return TY_INT;
-    if (!strcmp(name, "class")) return TY_STRING;
+    if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
+        sp_streq(name, "localtime") || sp_streq(name, "getlocal") || sp_streq(name, "+") ||
+        sp_streq(name, "-")) return TY_TIME;
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "strftime") ||
+        sp_streq(name, "iso8601") || sp_streq(name, "zone") || sp_streq(name, "asctime") ||
+        sp_streq(name, "ctime")) return TY_STRING;
+    if (sp_streq(name, "to_f") || sp_streq(name, "subsec")) return TY_FLOAT;
+    if (sp_streq(name, "utc?") || sp_streq(name, "gmt?") || sp_streq(name, "dst?") ||
+        sp_streq(name, "isdst") ||
+        sp_streq(name, "sunday?") || sp_streq(name, "monday?") ||
+        sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+        sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
+    if (sp_streq(name, "<=>")) return TY_INT;
+    if (sp_streq(name, "class")) return TY_STRING;
     /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
     return TY_INT;
   }
@@ -1193,7 +1193,7 @@ else {
   /* Class.cmethod(...) / M::Sub.cmethod(...) -> the class method's return type */
   if (recv >= 0) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
       if (ci >= 0) {
         int mi = comp_cmethod_in_chain(c, ci, name, NULL);
@@ -1201,8 +1201,8 @@ else {
       }
     }
     /* obj.class.cmeth(...) -> unify class method return types across hierarchy */
-    if (rty && !strcmp(rty, "CallNode") &&
-        nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "class")) {
+    if (rty && sp_streq(rty, "CallNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
       int robj = nt_ref(nt, recv, "receiver");
       TyKind rrt = robj >= 0 ? infer_type(c, robj) : TY_UNKNOWN;
       if (ty_is_object(rrt)) {
@@ -1227,16 +1227,16 @@ else {
   /* Struct instance methods */
   if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
     ClassInfo *sc = &c->classes[ty_object_class(rt)];
-    if (!strcmp(name, "to_a") || !strcmp(name, "values") ||
-        !strcmp(name, "deconstruct") || !strcmp(name, "members")) return TY_POLY_ARRAY;
-    if (!strcmp(name, "to_h")) {
+    if (sp_streq(name, "to_a") || sp_streq(name, "values") ||
+        sp_streq(name, "deconstruct") || sp_streq(name, "members")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "to_h")) {
       int block = nt_ref(nt, id, "block");
       if (block >= 0) {
         /* to_h { |k,v| [nk, nv] }: hash type from the block's pair */
         int bbody = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
         int last = bn > 0 ? bb[bn - 1] : -1;
-        if (last >= 0 && nt_type(nt, last) && !strcmp(nt_type(nt, last), "ArrayNode")) {
+        if (last >= 0 && nt_type(nt, last) && sp_streq(nt_type(nt, last), "ArrayNode")) {
           int en = 0; const int *els = nt_arr(nt, last, "elements", &en);
           if (en == 2) {
             TyKind kt = infer_type(c, els[0]), vt = infer_type(c, els[1]);
@@ -1250,7 +1250,7 @@ else {
       }
       return TY_SYM_POLY_HASH;
     }
-    if (!strcmp(name, "dig") && argc >= 1) {
+    if (sp_streq(name, "dig") && argc >= 1) {
       int mi = struct_member_idx(c, sc, argv[0]);
       if (mi >= 0) {
         TyKind mt = sc->ivar_types[mi];
@@ -1261,20 +1261,20 @@ else {
         return TY_POLY;
       }
     }
-    if (!strcmp(name, "[]") && argc == 1) {
+    if (sp_streq(name, "[]") && argc == 1) {
       /* struct[:sym] or struct[int]: return specific member type if known */
       int mi = struct_member_idx(c, sc, argv[0]);
       if (mi >= 0) return sc->ivar_types[mi];
       /* integer index: try to resolve literal */
       const char *kty = nt_type(nt, argv[0]);
-      if (kty && !strcmp(kty, "IntegerNode")) {
+      if (kty && sp_streq(kty, "IntegerNode")) {
         long long idx = (long long)nt_int(nt, argv[0], "value", 0);
         if (idx < 0) idx += (long long)sc->nivars;
         if (idx >= 0 && idx < sc->nivars) return sc->ivar_types[(int)idx];
       }
       return TY_POLY;
     }
-    if (!strcmp(name, "[]=") && argc == 2) return sc->nivars > 0 ? sc->ivar_types[0] : TY_POLY;
+    if (sp_streq(name, "[]=") && argc == 2) return sc->nivars > 0 ? sc->ivar_types[0] : TY_POLY;
   }
 
   /* built-in class reopening: look up user-defined methods on scalar built-in types */
@@ -1298,16 +1298,16 @@ else {
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);
     ClassInfo *cls = &c->classes[cid];
-    if (!strcmp(name, "is_a?") || !strcmp(name, "kind_of?") || !strcmp(name, "instance_of?") ||
-        !strcmp(name, "respond_to?") || !strcmp(name, "==") || !strcmp(name, "!=") ||
-        !strcmp(name, "nil?") || !strcmp(name, "equal?") || !strcmp(name, "frozen?")) return TY_BOOL;
+    if (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?") ||
+        sp_streq(name, "respond_to?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+        sp_streq(name, "nil?") || sp_streq(name, "equal?") || sp_streq(name, "frozen?")) return TY_BOOL;
     /* instance_variable_get(:@x) yields @x's declared type; instance_variable_set
        yields the field type too (C `lvalue = v` evaluates to the lvalue). The
        codegen lowers both to a direct iv_ field access on the known layout. */
-    if ((!strcmp(name, "instance_variable_get") || !strcmp(name, "instance_variable_set")) && argc >= 1) {
+    if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set")) && argc >= 1) {
       const char *a0ty = nt_type(nt, argv[0]);
-      if (a0ty && (!strcmp(a0ty, "SymbolNode") || !strcmp(a0ty, "StringNode"))) {
-        const char *sym = !strcmp(a0ty, "SymbolNode")
+      if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
+        const char *sym = sp_streq(a0ty, "SymbolNode")
                             ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
         /* A name in the layout yields its declared type; an undefined-but-valid
            `@`-name reads as nil and a bad name (no `@`) raises NameError -- both poly. */
@@ -1362,7 +1362,7 @@ else {
       }
       return r;
     }
-    if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
   }
 
   /* implicit-self call inside an instance method */
@@ -1380,7 +1380,7 @@ else {
         }
       }
       /* bare `new` inside a class method returns an instance of self's class */
-      if (self->is_cmethod && !strcmp(name, "new"))
+      if (self->is_cmethod && sp_streq(name, "new"))
         return ty_object(self->class_id);
       int mi = comp_method_in_chain(c, self->class_id, name, NULL);
       if (mi < 0 && self->is_cmethod)
@@ -1405,77 +1405,77 @@ else {
       if (mi < 0 && !self->is_cmethod) {
         const char *bcn = c->classes[self->class_id].name;
         TyKind brt = TY_UNKNOWN;
-        if (!strcmp(bcn, "String"))        brt = TY_STRING;
-        else if (!strcmp(bcn, "Integer"))  brt = TY_INT;
-        else if (!strcmp(bcn, "Float"))    brt = TY_FLOAT;
-        else if (!strcmp(bcn, "Symbol"))   brt = TY_SYMBOL;
+        if (sp_streq(bcn, "String"))        brt = TY_STRING;
+        else if (sp_streq(bcn, "Integer"))  brt = TY_INT;
+        else if (sp_streq(bcn, "Float"))    brt = TY_FLOAT;
+        else if (sp_streq(bcn, "Symbol"))   brt = TY_SYMBOL;
         if (brt != TY_UNKNOWN) {
           /* Temporarily set rt to the built-in type and recursively call infer_call
              is not safe. Instead inline key return types for common method names. */
           if (brt == TY_STRING) {
-            if (!strcmp(name, "upcase") || !strcmp(name, "downcase") ||
-                !strcmp(name, "capitalize") || !strcmp(name, "reverse") || !strcmp(name, "strip") ||
-                !strcmp(name, "lstrip") || !strcmp(name, "rstrip") || !strcmp(name, "chomp") ||
-                !strcmp(name, "chop") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
-                !strcmp(name, "to_s") || !strcmp(name, "inspect") || !strcmp(name, "succ") ||
-                !strcmp(name, "next") || !strcmp(name, "chr") || !strcmp(name, "encode") ||
-                !strcmp(name, "b") || !strcmp(name, "force_encoding") || !strcmp(name, "scrub") ||
-                !strcmp(name, "squeeze") || !strcmp(name, "tr") || !strcmp(name, "delete"))
+            if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
+                sp_streq(name, "capitalize") || sp_streq(name, "reverse") || sp_streq(name, "strip") ||
+                sp_streq(name, "lstrip") || sp_streq(name, "rstrip") || sp_streq(name, "chomp") ||
+                sp_streq(name, "chop") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
+                sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "succ") ||
+                sp_streq(name, "next") || sp_streq(name, "chr") || sp_streq(name, "encode") ||
+                sp_streq(name, "b") || sp_streq(name, "force_encoding") || sp_streq(name, "scrub") ||
+                sp_streq(name, "squeeze") || sp_streq(name, "tr") || sp_streq(name, "delete"))
               return TY_STRING;
-            if ((!strcmp(name, "+") || !strcmp(name, "*")) && argc >= 1) return TY_STRING;
-            if (!strcmp(name, "gsub") || !strcmp(name, "sub")) return TY_STRING;
-            if (!strcmp(name, "[]") || !strcmp(name, "slice")) return TY_STRING;
-            if (!strcmp(name, "length") || !strcmp(name, "size") || !strcmp(name, "bytesize") ||
-                !strcmp(name, "to_i") || !strcmp(name, "count") || !strcmp(name, "ord") ||
-                !strcmp(name, "hex") || !strcmp(name, "oct") || !strcmp(name, "rindex") ||
-                !strcmp(name, "index"))
+            if ((sp_streq(name, "+") || sp_streq(name, "*")) && argc >= 1) return TY_STRING;
+            if (sp_streq(name, "gsub") || sp_streq(name, "sub")) return TY_STRING;
+            if (sp_streq(name, "[]") || sp_streq(name, "slice")) return TY_STRING;
+            if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "bytesize") ||
+                sp_streq(name, "to_i") || sp_streq(name, "count") || sp_streq(name, "ord") ||
+                sp_streq(name, "hex") || sp_streq(name, "oct") || sp_streq(name, "rindex") ||
+                sp_streq(name, "index"))
               return TY_INT;
-            if (!strcmp(name, "to_f")) return TY_FLOAT;
-            if (!strcmp(name, "to_sym")) return TY_SYMBOL;
-            if (!strcmp(name, "empty?") || !strcmp(name, "include?") ||
-                !strcmp(name, "start_with?") || !strcmp(name, "end_with?") ||
-                !strcmp(name, "==") || !strcmp(name, "!="))
+            if (sp_streq(name, "to_f")) return TY_FLOAT;
+            if (sp_streq(name, "to_sym")) return TY_SYMBOL;
+            if (sp_streq(name, "empty?") || sp_streq(name, "include?") ||
+                sp_streq(name, "start_with?") || sp_streq(name, "end_with?") ||
+                sp_streq(name, "==") || sp_streq(name, "!="))
               return TY_BOOL;
-            if (!strcmp(name, "split") || !strcmp(name, "chars") || !strcmp(name, "lines") ||
-                !strcmp(name, "bytes"))
+            if (sp_streq(name, "split") || sp_streq(name, "chars") || sp_streq(name, "lines") ||
+                sp_streq(name, "bytes"))
               return TY_STR_ARRAY;
           }
           else if (brt == TY_INT) {
-            if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") ||
-                !strcmp(name, "/") || !strcmp(name, "%") || !strcmp(name, "**") ||
-                !strcmp(name, "abs") || !strcmp(name, "succ") || !strcmp(name, "next") ||
-                !strcmp(name, "pred") || !strcmp(name, "gcd") || !strcmp(name, "lcm") ||
-                !strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
-                !strcmp(name, "<<") || !strcmp(name, ">>"))
+            if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
+                sp_streq(name, "/") || sp_streq(name, "%") || sp_streq(name, "**") ||
+                sp_streq(name, "abs") || sp_streq(name, "succ") || sp_streq(name, "next") ||
+                sp_streq(name, "pred") || sp_streq(name, "gcd") || sp_streq(name, "lcm") ||
+                sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+                sp_streq(name, "<<") || sp_streq(name, ">>"))
               return TY_INT;
-            if (!strcmp(name, "to_f")) return TY_FLOAT;
-            if (!strcmp(name, "to_s")) return TY_STRING;
-            if (!strcmp(name, "to_r")) return TY_POLY;
-            if (!strcmp(name, "odd?") || !strcmp(name, "even?") || !strcmp(name, "zero?") ||
-                !strcmp(name, "==") || !strcmp(name, "!=") || !strcmp(name, "<") ||
-                !strcmp(name, "<=") || !strcmp(name, ">") || !strcmp(name, ">="))
+            if (sp_streq(name, "to_f")) return TY_FLOAT;
+            if (sp_streq(name, "to_s")) return TY_STRING;
+            if (sp_streq(name, "to_r")) return TY_POLY;
+            if (sp_streq(name, "odd?") || sp_streq(name, "even?") || sp_streq(name, "zero?") ||
+                sp_streq(name, "==") || sp_streq(name, "!=") || sp_streq(name, "<") ||
+                sp_streq(name, "<=") || sp_streq(name, ">") || sp_streq(name, ">="))
               return TY_BOOL;
           }
           else if (brt == TY_FLOAT) {
-            if (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") ||
-                !strcmp(name, "/") || !strcmp(name, "**") || !strcmp(name, "abs") ||
-                !strcmp(name, "floor") || !strcmp(name, "ceil") || !strcmp(name, "round") ||
-                !strcmp(name, "truncate"))
+            if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
+                sp_streq(name, "/") || sp_streq(name, "**") || sp_streq(name, "abs") ||
+                sp_streq(name, "floor") || sp_streq(name, "ceil") || sp_streq(name, "round") ||
+                sp_streq(name, "truncate"))
               return TY_FLOAT;
-            if (!strcmp(name, "to_i")) return TY_INT;
-            if (!strcmp(name, "to_s")) return TY_STRING;
-            if (!strcmp(name, "zero?") || !strcmp(name, "nan?") || !strcmp(name, "infinite?") ||
-                !strcmp(name, "finite?") || !strcmp(name, "==") || !strcmp(name, "!=") ||
-                !strcmp(name, "<") || !strcmp(name, "<=") || !strcmp(name, ">") ||
-                !strcmp(name, ">="))
+            if (sp_streq(name, "to_i")) return TY_INT;
+            if (sp_streq(name, "to_s")) return TY_STRING;
+            if (sp_streq(name, "zero?") || sp_streq(name, "nan?") || sp_streq(name, "infinite?") ||
+                sp_streq(name, "finite?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+                sp_streq(name, "<") || sp_streq(name, "<=") || sp_streq(name, ">") ||
+                sp_streq(name, ">="))
               return TY_BOOL;
           }
           else if (brt == TY_SYMBOL) {
-            if (!strcmp(name, "to_s") || !strcmp(name, "id2name") || !strcmp(name, "inspect"))
+            if (sp_streq(name, "to_s") || sp_streq(name, "id2name") || sp_streq(name, "inspect"))
               return TY_STRING;
-            if (!strcmp(name, "to_sym") || !strcmp(name, "itself")) return TY_SYMBOL;
-            if (!strcmp(name, "length") || !strcmp(name, "size")) return TY_INT;
-            if (!strcmp(name, "empty?") || !strcmp(name, "==") || !strcmp(name, "!="))
+            if (sp_streq(name, "to_sym") || sp_streq(name, "itself")) return TY_SYMBOL;
+            if (sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
+            if (sp_streq(name, "empty?") || sp_streq(name, "==") || sp_streq(name, "!="))
               return TY_BOOL;
           }
         }
@@ -1527,10 +1527,10 @@ else {
     if (mi < 0) mi = comp_included_method_index(c, name);
     if (mi >= 0) return method_call_ret(c, mi, id);
     /* Kernel conversions */
-    if (!strcmp(name, "Integer") && (argc == 1 || argc == 2)) return TY_INT;
-    if (!strcmp(name, "Float") && argc == 1) return TY_FLOAT;
-    if (!strcmp(name, "String") && argc == 1) return TY_STRING;
-    if (!strcmp(name, "Array") && argc == 1) {
+    if (sp_streq(name, "Integer") && (argc == 1 || argc == 2)) return TY_INT;
+    if (sp_streq(name, "Float") && argc == 1) return TY_FLOAT;
+    if (sp_streq(name, "String") && argc == 1) return TY_STRING;
+    if (sp_streq(name, "Array") && argc == 1) {
       TyKind at = infer_type(c, argv[0]);
       if (ty_is_array(at)) return at;
       if (at == TY_INT)    return TY_INT_ARRAY;    /* Array(int)   -> [int]   */
@@ -1538,81 +1538,81 @@ else {
       if (at == TY_STRING) return TY_STR_ARRAY;    /* Array(str)   -> [str]   */
       return TY_POLY_ARRAY;
     }
-    if ((!strcmp(name, "format") || !strcmp(name, "sprintf")) && argc >= 1) return TY_STRING;
-    if (!strcmp(name, "system") && argc >= 1) return TY_BOOL;
-    if (!strcmp(name, "trap") && argc >= 1) return TY_STRING;
-    if (!strcmp(name, "rand")) {
+    if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && argc >= 1) return TY_STRING;
+    if (sp_streq(name, "system") && argc >= 1) return TY_BOOL;
+    if (sp_streq(name, "trap") && argc >= 1) return TY_STRING;
+    if (sp_streq(name, "rand")) {
       if (argc == 0) return TY_FLOAT;
       /* rand(float_range) → Float */
       const char *atype = nt_type(nt, argv[0]);
-      if (atype && !strcmp(atype, "RangeNode")) {
+      if (atype && sp_streq(atype, "RangeNode")) {
         int lo = nt_ref(nt, argv[0], "left");
         if (lo >= 0 && infer_type(c, lo) == TY_FLOAT) return TY_FLOAT;
       }
       return TY_INT;
     }
-    if (!strcmp(name, "srand")) return TY_INT;
+    if (sp_streq(name, "srand")) return TY_INT;
   }
   /* Signal.trap / ::Signal.trap */
-  if (recv >= 0 && !strcmp(name, "trap") && argc >= 1) {
+  if (recv >= 0 && sp_streq(name, "trap") && argc >= 1) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (!strcmp(rty, "ConstantReadNode") || !strcmp(rty, "ConstantPathNode"))) {
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       const char *rname = nt_str(nt, recv, "name");
-      if (rname && !strcmp(rname, "Signal")) return TY_STRING;
+      if (rname && sp_streq(rname, "Signal")) return TY_STRING;
     }
   }
 
   /* Fiber storage: Fiber[:k] and Fiber.current[:k] -> poly */
-  if (recv >= 0 && !strcmp(name, "[]") && argc == 1) {
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
-      if (rn && !strcmp(rn, "Fiber")) return TY_POLY;
+      if (rn && sp_streq(rn, "Fiber")) return TY_POLY;
     }
-    if (rty && !strcmp(rty, "CallNode")) {
+    if (rty && sp_streq(rty, "CallNode")) {
       const char *rn = nt_str(nt, recv, "name");
       int rr = nt_ref(nt, recv, "receiver");
-      if (rn && !strcmp(rn, "current") && rr >= 0) {
+      if (rn && sp_streq(rn, "current") && rr >= 0) {
         const char *rrty = nt_type(nt, rr);
         const char *rrn = nt_str(nt, rr, "name");
-        if (rrty && !strcmp(rrty, "ConstantReadNode") && rrn && !strcmp(rrn, "Fiber"))
+        if (rrty && sp_streq(rrty, "ConstantReadNode") && rrn && sp_streq(rrn, "Fiber"))
           return TY_POLY;
       }
     }
   }
   /* Fiber[:k] = v -> returns v's type */
-  if (recv >= 0 && !strcmp(name, "[]=") && argc == 2) {
+  if (recv >= 0 && sp_streq(name, "[]=") && argc == 2) {
     const char *rty = nt_type(nt, recv);
     int is_fiber = 0;
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
-      if (rn && !strcmp(rn, "Fiber")) is_fiber = 1;
+      if (rn && sp_streq(rn, "Fiber")) is_fiber = 1;
     }
-    else if (rty && !strcmp(rty, "CallNode")) {
+    else if (rty && sp_streq(rty, "CallNode")) {
       const char *rn = nt_str(nt, recv, "name");
       int rr = nt_ref(nt, recv, "receiver");
-      if (rn && !strcmp(rn, "current") && rr >= 0) {
+      if (rn && sp_streq(rn, "current") && rr >= 0) {
         const char *rrty = nt_type(nt, rr);
         const char *rrn = nt_str(nt, rr, "name");
-        if (rrty && !strcmp(rrty, "ConstantReadNode") && rrn && !strcmp(rrn, "Fiber"))
+        if (rrty && sp_streq(rrty, "ConstantReadNode") && rrn && sp_streq(rrn, "Fiber"))
           is_fiber = 1;
       }
     }
     if (is_fiber) return infer_type(c, argv[1]);
   }
   /* ENV[key] -> string or nil (use TY_STRING; null means nil) */
-  if (recv >= 0 && argc >= 1 && (!strcmp(name, "[]") || !strcmp(name, "fetch"))) {
+  if (recv >= 0 && argc >= 1 && (sp_streq(name, "[]") || sp_streq(name, "fetch"))) {
     const char *rty = nt_type(nt, recv);
-    if (rty && !strcmp(rty, "ConstantReadNode")) {
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
-      if (rn && !strcmp(rn, "ENV")) return TY_STRING;
+      if (rn && sp_streq(rn, "ENV")) return TY_STRING;
     }
   }
 
   /* each_slice(n).map/collect { |...| } chain: return array of block result type */
   if (recv >= 0 && rt == TY_UNKNOWN && (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "each_slice") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "each_slice") &&
       nt_ref(nt, recv, "block") < 0) {
     int blk_es = nt_ref(nt, id, "block");
     if (blk_es >= 0) {
@@ -1624,8 +1624,8 @@ else {
 
   /* each_cons(n).map/collect { |...| } chain: return array of block result type */
   if (recv >= 0 && rt == TY_UNKNOWN && (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "each_cons") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "each_cons") &&
       nt_ref(nt, recv, "block") < 0) {
     int blk_ec = nt_ref(nt, id, "block");
     if (blk_ec >= 0) {
@@ -1637,12 +1637,12 @@ else {
 
   /* each_cons(n).with_index(off).map/collect { |...| } chain */
   if (recv >= 0 && rt == TY_UNKNOWN && (ty_iter_shape(name) == TY_ITER_MAP) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "with_index") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "with_index") &&
       nt_ref(nt, recv, "block") < 0) {
     int wi_recv = nt_ref(nt, recv, "receiver");
-    if (wi_recv >= 0 && nt_type(nt, wi_recv) && !strcmp(nt_type(nt, wi_recv), "CallNode") &&
-        nt_str(nt, wi_recv, "name") && !strcmp(nt_str(nt, wi_recv, "name"), "each_cons") &&
+    if (wi_recv >= 0 && nt_type(nt, wi_recv) && sp_streq(nt_type(nt, wi_recv), "CallNode") &&
+        nt_str(nt, wi_recv, "name") && sp_streq(nt_str(nt, wi_recv, "name"), "each_cons") &&
         nt_ref(nt, wi_recv, "block") < 0) {
       int blk_wi = nt_ref(nt, id, "block");
       if (blk_wi >= 0) {
@@ -1656,14 +1656,14 @@ else {
   /* array.{map,each,select,...}.with_index(off) { |x, i| } result: map collects
      the block value (array of body type); each yields the receiver; select/reject
      filter, preserving the receiver's array type. */
-  if (recv >= 0 && !strcmp(name, "with_index") &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+  if (recv >= 0 && sp_streq(name, "with_index") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_ref(nt, recv, "block") < 0) {
     const char *inner = nt_str(nt, recv, "name");
     int arr_recv = nt_ref(nt, recv, "receiver");
     TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
     if (inner && ty_is_array(arr_t)) {
-      if (!strcmp(inner, "map") || !strcmp(inner, "collect")) {
+      if (sp_streq(inner, "map") || sp_streq(inner, "collect")) {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0) {
           int body = nt_ref(nt, blk, "body");
@@ -1671,8 +1671,8 @@ else {
           return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
         }
       }
-      else if (!strcmp(inner, "each") || !strcmp(inner, "select") ||
-               !strcmp(inner, "filter") || !strcmp(inner, "reject"))
+      else if (sp_streq(inner, "each") || sp_streq(inner, "select") ||
+               sp_streq(inner, "filter") || sp_streq(inner, "reject"))
         return arr_t;
     }
   }
@@ -1681,24 +1681,24 @@ else {
      a blockless [elem, index]-pair enumerator consumed by the terminal.
      (matz/spinel#1481 inject/reduce result; #1483 others.) */
   if (recv >= 0 &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_ref(nt, recv, "block") < 0) {
     const char *rn = nt_str(nt, recv, "name");
     int chain_arr = -1;
-    if (rn && !strcmp(rn, "each_with_index")) {
+    if (rn && sp_streq(rn, "each_with_index")) {
       chain_arr = nt_ref(nt, recv, "receiver");
     }
-    else if (rn && !strcmp(rn, "with_index")) {
+    else if (rn && sp_streq(rn, "with_index")) {
       int wir = nt_ref(nt, recv, "receiver");
-      if (wir >= 0 && nt_type(nt, wir) && !strcmp(nt_type(nt, wir), "CallNode") &&
-          nt_str(nt, wir, "name") && !strcmp(nt_str(nt, wir, "name"), "each") &&
+      if (wir >= 0 && nt_type(nt, wir) && sp_streq(nt_type(nt, wir), "CallNode") &&
+          nt_str(nt, wir, "name") && sp_streq(nt_str(nt, wir, "name"), "each") &&
           nt_ref(nt, wir, "block") < 0)
         chain_arr = nt_ref(nt, wir, "receiver");
     }
     TyKind chain_at = chain_arr >= 0 ? infer_type(c, chain_arr) : TY_UNKNOWN;
     if (ty_is_array(chain_at)) {
       TyKind elem = ty_array_elem(chain_at);
-      if (!strcmp(name, "inject") || !strcmp(name, "reduce")) {
+      if (sp_streq(name, "inject") || sp_streq(name, "reduce")) {
         int args = nt_ref(nt, id, "arguments");
         int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
         TyKind acc = (argc > 0 && argv) ? infer_type(c, argv[0]) : elem;
@@ -1718,13 +1718,13 @@ else {
          result type on it so single-param forms fall to their normal rules. */
       int two_param = blk >= 0 && !block_param_is_multi(c, blk, 0) &&
                       block_param_name(c, blk, 0) && block_param_name(c, blk, 1);
-      if (two_param && (!strcmp(name, "map") || !strcmp(name, "collect")))
+      if (two_param && (sp_streq(name, "map") || sp_streq(name, "collect")))
         return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
-      if (!strcmp(name, "to_a") || !strcmp(name, "entries") ||
-          (two_param && (!strcmp(name, "select") || !strcmp(name, "filter") || !strcmp(name, "reject"))))
+      if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
+          (two_param && (sp_streq(name, "select") || sp_streq(name, "filter") || sp_streq(name, "reject"))))
         return TY_POLY_ARRAY;   /* an array of [element, index] pairs */
-      if (two_param && !strcmp(name, "count")) return TY_INT;
-      if (two_param && (!strcmp(name, "any?") || !strcmp(name, "all?") || !strcmp(name, "none?")))
+      if (two_param && sp_streq(name, "count")) return TY_INT;
+      if (two_param && (sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?")))
         return TY_BOOL;
     }
   }
@@ -1734,12 +1734,12 @@ else {
      type. Only the ops narrow_object_arrays admits appear here. */
   if (recv >= 0 && ty_is_obj_array(rt)) {
     int ecls = ty_obj_array_class(rt);
-    if ((!strcmp(name, "[]") || !strcmp(name, "at")) && argc == 1) return ty_object(ecls);
-    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 0) return ty_object(ecls);
-    if (!strcmp(name, "[]=") && argc == 2) return ty_object(ecls);
-    if (!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) return rt;
-    if ((!strcmp(name, "length") || !strcmp(name, "size")) && argc == 0) return TY_INT;
-    if (!strcmp(name, "empty?") && argc == 0) return TY_BOOL;
+    if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) return ty_object(ecls);
+    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) return ty_object(ecls);
+    if (sp_streq(name, "[]=") && argc == 2) return ty_object(ecls);
+    if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) return rt;
+    if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0) return TY_INT;
+    if (sp_streq(name, "empty?") && argc == 0) return TY_BOOL;
   }
 
   /* array receiver methods */
@@ -1748,7 +1748,7 @@ else {
     /* arr.each with no block -> an external Enumerator (#next/#peek/#rewind).
        Block-form chains (each.with_index, each.map) are matched as the outer
        call above and never reach this. */
-    if (block < 0 && argc == 0 && !strcmp(name, "each")) return TY_ENUMERATOR;
+    if (block < 0 && argc == 0 && sp_streq(name, "each")) return TY_ENUMERATOR;
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP) {
         int body = nt_ref(nt, block, "body");
@@ -1762,7 +1762,7 @@ else {
         if (bnt != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
         return ty_array_of(bt);
       }
-      if (!strcmp(name, "flat_map") || !strcmp(name, "collect_concat")) {
+      if (sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) {
         int body = nt_ref(nt, block, "body");
         int bn = 0;
         const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -1771,40 +1771,40 @@ else {
            a scalar block return behaves like map (each wrapped element). */
         return ty_is_array(bret) ? bret : ty_array_of(bret);
       }
-      if (!strcmp(name, "select") || !strcmp(name, "reject") ||
-          !strcmp(name, "filter") || !strcmp(name, "sort_by") ||
-          !strcmp(name, "take_while") || !strcmp(name, "drop_while"))
+      if (sp_streq(name, "select") || sp_streq(name, "reject") ||
+          sp_streq(name, "filter") || sp_streq(name, "sort_by") ||
+          sp_streq(name, "take_while") || sp_streq(name, "drop_while"))
         return rt;
-      if (!strcmp(name, "max_by") || !strcmp(name, "min_by") ||
-          !strcmp(name, "find") || !strcmp(name, "detect"))
+      if (sp_streq(name, "max_by") || sp_streq(name, "min_by") ||
+          sp_streq(name, "find") || sp_streq(name, "detect"))
         return ty_array_elem(rt);  /* returns an element */
-      if (!strcmp(name, "minmax_by")) return TY_POLY_ARRAY;  /* [min, max], or [nil, nil] when empty */
-      if (!strcmp(name, "partition")) return TY_POLY_ARRAY;  /* [[truthy...],[falsy...]] */
-      if (!strcmp(name, "filter_map")) return TY_POLY_ARRAY;  /* map then drop falsy */
+      if (sp_streq(name, "minmax_by")) return TY_POLY_ARRAY;  /* [min, max], or [nil, nil] when empty */
+      if (sp_streq(name, "partition")) return TY_POLY_ARRAY;  /* [[truthy...],[falsy...]] */
+      if (sp_streq(name, "filter_map")) return TY_POLY_ARRAY;  /* map then drop falsy */
     }
     /* grep/grep_v without a block filter by `pattern === e`, preserving the
        receiver's array type. */
-    if ((!strcmp(name, "grep") || !strcmp(name, "grep_v")) &&
+    if ((sp_streq(name, "grep") || sp_streq(name, "grep_v")) &&
         nt_ref(nt, id, "block") < 0 && argc == 1)
       return rt;
-    if (!strcmp(name, "[]")) {
+    if (sp_streq(name, "[]")) {
       /* arr[range] / arr[start, len] -> a subarray; arr[i] -> an element */
       if (argc == 2) return rt;
-      if (argc == 1 && nt_type(nt, argv[0]) && !strcmp(nt_type(nt, argv[0]), "RangeNode")) return rt;
+      if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) return rt;
       return ty_array_elem(rt);
     }
-    if (!strcmp(name, "at") && argc == 1) return ty_array_elem(rt);  /* like [i] */
-    if (!strcmp(name, "fetch") && (argc == 1 || argc == 2)) return ty_array_elem(rt);
-    if (!strcmp(name, "dig") && argc >= 1) {
+    if (sp_streq(name, "at") && argc == 1) return ty_array_elem(rt);  /* like [i] */
+    if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) return ty_array_elem(rt);
+    if (sp_streq(name, "dig") && argc >= 1) {
       if (argc == 1) return ty_array_elem(rt);
       return TY_POLY;
     }
     /* index returns nil on a miss -> poly (int-or-nil) */
-    if ((!strcmp(name, "index") || !strcmp(name, "find_index") || !strcmp(name, "rindex")) &&
+    if ((sp_streq(name, "index") || sp_streq(name, "find_index") || sp_streq(name, "rindex")) &&
         (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) return TY_POLY;
-    if (!strcmp(name, "length") || !strcmp(name, "size") ||
-        !strcmp(name, "count") || !strcmp(name, "index") || !strcmp(name, "find_index")) return TY_INT;
-    if (!strcmp(name, "sum")) {
+    if (sp_streq(name, "length") || sp_streq(name, "size") ||
+        sp_streq(name, "count") || sp_streq(name, "index") || sp_streq(name, "find_index")) return TY_INT;
+    if (sp_streq(name, "sum")) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
         int body = nt_ref(nt, blk, "body");
@@ -1813,24 +1813,24 @@ else {
       }
       return ty_array_elem(rt);
     }
-    if (!strcmp(name, "inject") || !strcmp(name, "reduce")) {
+    if (sp_streq(name, "inject") || sp_streq(name, "reduce")) {
       /* inject(&:&|:||:-) over a literal array of int arrays: set operation
          folding the inner arrays -> an int array. */
       if (rt == TY_POLY_ARRAY && comp_is_nested_int_array_literal(c, recv)) {
         int blk = nt_ref(nt, id, "block");
         const char *sop = NULL;
-        if (blk >= 0 && nt_type(nt, blk) && !strcmp(nt_type(nt, blk), "BlockArgumentNode")) {
+        if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode")) {
           int ex = nt_ref(nt, blk, "expression");
-          if (ex >= 0 && nt_type(nt, ex) && !strcmp(nt_type(nt, ex), "SymbolNode")) sop = nt_str(nt, ex, "value");
+          if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode")) sop = nt_str(nt, ex, "value");
         }
-        if (sop && (!strcmp(sop, "&") || !strcmp(sop, "|") || !strcmp(sop, "-"))) return TY_INT_ARRAY;
+        if (sop && (sp_streq(sop, "&") || sp_streq(sop, "|") || sp_streq(sop, "-"))) return TY_INT_ARRAY;
       }
       /* When an init argument is provided, the return type matches the init type.
          inject(:op) is the no-init operator form — the sole symbol arg is the
          operator, NOT an init value, so skip the "return argv[0] type" path. */
       if (argc > 0 && argv) {
         const char *a0ty = nt_type(nt, argv[0]);
-        int is_sym_op = a0ty && !strcmp(a0ty, "SymbolNode") && argc == 1;
+        int is_sym_op = a0ty && sp_streq(a0ty, "SymbolNode") && argc == 1;
         if (!is_sym_op) {
           TyKind it = infer_type(c, argv[0]);
           if (it != TY_UNKNOWN) {
@@ -1845,7 +1845,7 @@ else {
         }
       }
       /* empty array literal `[]` with sym op: codegen treats as int_array → returns int */
-      if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode")) {
+      if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
         int en = 0; nt_arr(nt, recv, "elements", &en);
         if (en == 0) return TY_INT;
       }
@@ -1858,13 +1858,13 @@ else {
       }
       return ty_array_elem(rt);
     }
-    if (!strcmp(name, "each_with_object") && argc > 0 && argv) {
+    if (sp_streq(name, "each_with_object") && argc > 0 && argv) {
       TyKind at = infer_type(c, argv[0]);
       if (at == TY_UNKNOWN) {
         const char *a0ty = nt_type(nt, argv[0]);
         int an0 = 0;
-        if (a0ty && !strcmp(a0ty, "ArrayNode")) nt_arr(nt, argv[0], "elements", &an0);
-        if (a0ty && !strcmp(a0ty, "ArrayNode") && an0 == 0) {
+        if (a0ty && sp_streq(a0ty, "ArrayNode")) nt_arr(nt, argv[0], "elements", &an0);
+        if (a0ty && sp_streq(a0ty, "ArrayNode") && an0 == 0) {
           /* empty `[]`: element type from how the memo is filled, else int. */
           TyKind me = ewo_memo_elem_type(c, id);
           return (me != TY_UNKNOWN) ? ty_array_of(me) : TY_INT_ARRAY;
@@ -1872,38 +1872,38 @@ else {
       }
       return at;
     }
-    if (!strcmp(name, "tally") && argc == 0) {
+    if (sp_streq(name, "tally") && argc == 0) {
       if (rt == TY_INT_ARRAY) return TY_INT_INT_HASH;
       if (rt == TY_STR_ARRAY) return TY_STR_INT_HASH;
       if (rt == TY_POLY_ARRAY) return TY_SYM_POLY_HASH;
     }
-    if (!strcmp(name, "group_by") && block >= 0 && ty_is_array(rt))
+    if (sp_streq(name, "group_by") && block >= 0 && ty_is_array(rt))
       return TY_POLY_POLY_HASH;
-    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 1) return rt;  /* first(n)/last(n) -> subarray */
-    if ((!strcmp(name, "drop") || !strcmp(name, "take")) && argc == 1) return rt;  /* subarray */
+    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) return rt;  /* first(n)/last(n) -> subarray */
+    if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1) return rt;  /* subarray */
     /* min(n)/max(n) (no comparator block) take the n extreme elements -> a
        subarray; sample(n) likewise. With a comparator block the n-arg form is
        not lowered, so don't type it as an array (that would mis-drive codegen
        into returning a scalar through an array type) -- leave it to reject. */
-    if (((!strcmp(name, "min") || !strcmp(name, "max")) && block < 0 && argc == 1) ||
-        (!strcmp(name, "sample") && argc == 1))
+    if (((sp_streq(name, "min") || sp_streq(name, "max")) && block < 0 && argc == 1) ||
+        (sp_streq(name, "sample") && argc == 1))
       return rt;  /* n-arg form -> subarray */
-    if (!strcmp(name, "slice") && argc == 2) return rt;
-    if (!strcmp(name, "first") || !strcmp(name, "last") ||
-        !strcmp(name, "min") || !strcmp(name, "max") ||
-        !strcmp(name, "sample") ||
-        !strcmp(name, "pop") || !strcmp(name, "shift")) return ty_array_elem(rt);
-    if (!strcmp(name, "minmax")) return rt;  /* [min, max], same element kind */
-    if (!strcmp(name, "join"))                        return TY_STRING;
-    if (!strcmp(name, "pack") && argc == 1)           return TY_STRING;
-    if (!strcmp(name, "inspect") || !strcmp(name, "to_s")) return TY_STRING;
-    if (!strcmp(name, "empty?") || !strcmp(name, "include?")) return TY_BOOL;
-    if ((!strcmp(name, "all?") || !strcmp(name, "any?") ||
-         !strcmp(name, "none?") || !strcmp(name, "one?")) && argc == 0) return TY_BOOL;
-    if ((!strcmp(name, "bsearch") || !strcmp(name, "find") || !strcmp(name, "detect")) && block >= 0)
+    if (sp_streq(name, "slice") && argc == 2) return rt;
+    if (sp_streq(name, "first") || sp_streq(name, "last") ||
+        sp_streq(name, "min") || sp_streq(name, "max") ||
+        sp_streq(name, "sample") ||
+        sp_streq(name, "pop") || sp_streq(name, "shift")) return ty_array_elem(rt);
+    if (sp_streq(name, "minmax")) return rt;  /* [min, max], same element kind */
+    if (sp_streq(name, "join"))                        return TY_STRING;
+    if (sp_streq(name, "pack") && argc == 1)           return TY_STRING;
+    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
+    if (sp_streq(name, "empty?") || sp_streq(name, "include?")) return TY_BOOL;
+    if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
+         sp_streq(name, "none?") || sp_streq(name, "one?")) && argc == 0) return TY_BOOL;
+    if ((sp_streq(name, "bsearch") || sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0)
       return ty_array_elem(rt);  /* element or nil */
-    if (!strcmp(name, "bsearch_index") && block >= 0) return TY_INT;  /* index, or nil */
-    if ((!strcmp(name, "map!") || !strcmp(name, "collect!")) && block >= 0) {
+    if (sp_streq(name, "bsearch_index") && block >= 0) return TY_INT;  /* index, or nil */
+    if ((sp_streq(name, "map!") || sp_streq(name, "collect!")) && block >= 0) {
       /* Typed arrays (int/str/float): in-place mutation preserves element type.
          The block param may be widened to TY_POLY when shared with other blocks,
          but the array type is determined by the receiver, not the block body. */
@@ -1914,16 +1914,16 @@ else {
       TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
       return bt != TY_UNKNOWN ? ty_array_of(bt) : rt;
     }
-    if ((!strcmp(name, "select!") || !strcmp(name, "filter!") || !strcmp(name, "reject!") ||
-         !strcmp(name, "keep_if") || !strcmp(name, "delete_if")) && block >= 0) return rt;
-    if (!strcmp(name, "find_index") || !strcmp(name, "index")) return TY_INT;  /* int or nil */
-    if (!strcmp(name, "each_index")) return rt;
-    if ((!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append")) &&
+    if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!") ||
+         sp_streq(name, "keep_if") || sp_streq(name, "delete_if")) && block >= 0) return rt;
+    if (sp_streq(name, "find_index") || sp_streq(name, "index")) return TY_INT;  /* int or nil */
+    if (sp_streq(name, "each_index")) return rt;
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) &&
         argc >= 1 && argv && rt != TY_POLY_ARRAY && ty_array_elem(rt) != TY_UNKNOWN) {
       /* Heterogeneous push on a typed-array literal: lift to poly. */
       TyKind elem_t = ty_array_elem(rt);
       const char *rty = nt_type(nt, recv);
-      if (rty && !strcmp(rty, "ArrayNode")) {
+      if (rty && sp_streq(rty, "ArrayNode")) {
         for (int ai = 0; ai < argc; ai++) {
           TyKind at = infer_type(c, argv[ai]);
           if (at != TY_UNKNOWN && at != elem_t) return TY_POLY_ARRAY;
@@ -1931,36 +1931,36 @@ else {
       }
       return rt;
     }
-    if (!strcmp(name, "push") || !strcmp(name, "<<") || !strcmp(name, "append") ||
-        !strcmp(name, "reverse") || !strcmp(name, "sort") || !strcmp(name, "uniq") ||
-        !strcmp(name, "to_a") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
-        !strcmp(name, "compact") || !strcmp(name, "compact!") || !strcmp(name, "flatten") || !strcmp(name, "clear") ||
-        !strcmp(name, "transpose") ||
-        !strcmp(name, "shuffle") ||
-        (!strcmp(name, "union") && argc == 0) ||
-        !strcmp(name, "reverse!") || !strcmp(name, "sort!") || !strcmp(name, "shuffle!") ||
-        !strcmp(name, "uniq!") ||
-        !strcmp(name, "rotate!") || !strcmp(name, "rotate") || !strcmp(name, "insert") || !strcmp(name, "unshift") || !strcmp(name, "freeze") ||
-        (!strcmp(name, "fill") && argc >= 1 && argc <= 3) ||
-        !strcmp(name, "replace") ||
-        !strcmp(name, "values_at")) return rt;
-    if (!strcmp(name, "zip") && block < 0) return TY_POLY_ARRAY;
-    if (!strcmp(name, "product") && argc == 1) return TY_POLY_ARRAY;
-    if (!strcmp(name, "repeated_combination") && argc == 1) return TY_POLY_ARRAY;
-    if (!strcmp(name, "frozen?")) return TY_BOOL;
-    if ((!strcmp(name, "delete_at") || !strcmp(name, "delete")) && argc == 1)
+    if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append") ||
+        sp_streq(name, "reverse") || sp_streq(name, "sort") || sp_streq(name, "uniq") ||
+        sp_streq(name, "to_a") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
+        sp_streq(name, "compact") || sp_streq(name, "compact!") || sp_streq(name, "flatten") || sp_streq(name, "clear") ||
+        sp_streq(name, "transpose") ||
+        sp_streq(name, "shuffle") ||
+        (sp_streq(name, "union") && argc == 0) ||
+        sp_streq(name, "reverse!") || sp_streq(name, "sort!") || sp_streq(name, "shuffle!") ||
+        sp_streq(name, "uniq!") ||
+        sp_streq(name, "rotate!") || sp_streq(name, "rotate") || sp_streq(name, "insert") || sp_streq(name, "unshift") || sp_streq(name, "freeze") ||
+        (sp_streq(name, "fill") && argc >= 1 && argc <= 3) ||
+        sp_streq(name, "replace") ||
+        sp_streq(name, "values_at")) return rt;
+    if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;
+    if (sp_streq(name, "product") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "repeated_combination") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "frozen?")) return TY_BOOL;
+    if ((sp_streq(name, "delete_at") || sp_streq(name, "delete")) && argc == 1)
       return ty_array_elem(rt);
-    if (!strcmp(name, "shift") && argc == 0) return ty_array_elem(rt);
-    if (!strcmp(name, "slice!") && argc == 2) return rt;  /* removed subarray */
-    if (!strcmp(name, "[]=") && argc == 2)            return ty_array_elem(rt);
-    if (!strcmp(name, "[]=") && argc == 3)            return infer_type(c, argv[2]);
-    if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && rt == TY_POLY_ARRAY)
+    if (sp_streq(name, "shift") && argc == 0) return ty_array_elem(rt);
+    if (sp_streq(name, "slice!") && argc == 2) return rt;  /* removed subarray */
+    if (sp_streq(name, "[]=") && argc == 2)            return ty_array_elem(rt);
+    if (sp_streq(name, "[]=") && argc == 3)            return infer_type(c, argv[2]);
+    if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && rt == TY_POLY_ARRAY)
       return TY_POLY_ARRAY;  /* the matching sub-array, or nil (NULL ptr) */
-    if (!strcmp(name, "to_h") && argc == 0 && block < 0) {
+    if (sp_streq(name, "to_h") && argc == 0 && block < 0) {
       /* Infer hash type from the first pair element of an array literal */
-      if (recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ArrayNode")) {
+      if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
         int en = 0; const int *els = nt_arr(nt, recv, "elements", &en);
-        if (en > 0 && nt_type(nt, els[0]) && !strcmp(nt_type(nt, els[0]), "ArrayNode")) {
+        if (en > 0 && nt_type(nt, els[0]) && sp_streq(nt_type(nt, els[0]), "ArrayNode")) {
           int en2 = 0; const int *els2 = nt_arr(nt, els[0], "elements", &en2);
           if (en2 >= 2) {
             TyKind kt = infer_type(c, els2[0]);
@@ -1990,52 +1990,52 @@ else {
                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
                     comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
   if (recv >= 0 && exc_shaped) {
-    if (!strcmp(name, "message") || !strcmp(name, "to_s") ||
-        !strcmp(name, "to_str") || !strcmp(name, "inspect") ||
-        !strcmp(name, "full_message") || !strcmp(name, "class")) return TY_STRING;
-    if (!strcmp(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
+    if (sp_streq(name, "message") || sp_streq(name, "to_s") ||
+        sp_streq(name, "to_str") || sp_streq(name, "inspect") ||
+        sp_streq(name, "full_message") || sp_streq(name, "class")) return TY_STRING;
+    if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
   }
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */
   if (recv >= 0 && (rt == TY_POLY || a0 == TY_POLY)) {
     /* array * n is repetition (yielding the same array type), not poly
        arithmetic, even when the count `n` widened to poly under promote. */
-    if ((ty_is_array(rt) || rt == TY_POLY_ARRAY) && !strcmp(name, "*") && argc == 1)
+    if ((ty_is_array(rt) || rt == TY_POLY_ARRAY) && sp_streq(name, "*") && argc == 1)
       return rt;
     /* String operators with a poly operand are NOT poly arithmetic: `str % x`
        is printf formatting, `str + x` is concatenation, `str * n` is repeat --
        all yield a string. Defer them to the rt==TY_STRING path below. */
-    if (!(rt == TY_STRING && (!strcmp(name, "%") || !strcmp(name, "+") || !strcmp(name, "*"))) &&
-        (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") ||
-         !strcmp(name, "/") || !strcmp(name, "%") || !strcmp(name, "**")))
+    if (!(rt == TY_STRING && (sp_streq(name, "%") || sp_streq(name, "+") || sp_streq(name, "*"))) &&
+        (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
+         sp_streq(name, "/") || sp_streq(name, "%") || sp_streq(name, "**")))
       return TY_POLY;
     /* unary numeric operators on a poly receiver: negation/unary-plus stay
        poly, bitwise complement yields int. Resolve them here so the poly
        method-dispatch below does not bind `-@`/`+@` to a user class that
        happens to define one (e.g. `-@cents` with @cents widened to poly must
        not infer the enclosing Money type). */
-    if (argc == 0 && (!strcmp(name, "-@") || !strcmp(name, "+@"))) return TY_POLY;
-    if (argc == 0 && !strcmp(name, "~")) return TY_INT;
-    if (!strcmp(name, "<") || !strcmp(name, ">") || !strcmp(name, "<=") ||
-        !strcmp(name, ">=") || !strcmp(name, "==") || !strcmp(name, "!=") ||
-        !strcmp(name, "nil?") || !strcmp(name, "is_a?") || !strcmp(name, "kind_of?") ||
-        !strcmp(name, "include?"))
+    if (argc == 0 && (sp_streq(name, "-@") || sp_streq(name, "+@"))) return TY_POLY;
+    if (argc == 0 && sp_streq(name, "~")) return TY_INT;
+    if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
+        sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+        sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+        sp_streq(name, "include?"))
       return TY_BOOL;
     if (rt == TY_POLY) {
       /* &. on a poly receiver may short-circuit to nil at runtime → always poly */
       {
         const char *call_op = nt_str(nt, id, "call_operator");
-        if (recv >= 0 && call_op && !strcmp(call_op, "&.")) return TY_POLY;
+        if (recv >= 0 && call_op && sp_streq(call_op, "&.")) return TY_POLY;
       }
-      if (!strcmp(name, "to_s") || !strcmp(name, "inspect")) return TY_STRING;
-      if ((!strcmp(name, "gsub") || !strcmp(name, "sub")) && argc == 2) return TY_STRING;
-      if (!strcmp(name, "join")) return TY_STRING;
-      if (!strcmp(name, "to_i") || !strcmp(name, "length") || !strcmp(name, "size")) return TY_INT;
-      if (!strcmp(name, "to_f")) return TY_FLOAT;
-      if (!strcmp(name, "clamp")) return TY_POLY;  /* boxed numeric clamp -> poly */
-      if (!strcmp(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
-      if (!strcmp(name, "[]") && argc == 2) return TY_POLY;  /* 2-arg poly slice */
-      if (!strcmp(name, "dig") && argc >= 1) return TY_POLY;
+      if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
+      if ((sp_streq(name, "gsub") || sp_streq(name, "sub")) && argc == 2) return TY_STRING;
+      if (sp_streq(name, "join")) return TY_STRING;
+      if (sp_streq(name, "to_i") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
+      if (sp_streq(name, "to_f")) return TY_FLOAT;
+      if (sp_streq(name, "clamp")) return TY_POLY;  /* boxed numeric clamp -> poly */
+      if (sp_streq(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
+      if (sp_streq(name, "[]") && argc == 2) return TY_POLY;  /* 2-arg poly slice */
+      if (sp_streq(name, "dig") && argc >= 1) return TY_POLY;
       {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
@@ -2064,19 +2064,19 @@ else {
          chunk_while etc.): the concrete element type is erased to poly, so the
          result is a boxed poly value resolved at runtime by cls_id. */
       if (argc == 0 &&
-          (!strcmp(name, "sum") || !strcmp(name, "min") || !strcmp(name, "max") ||
-           !strcmp(name, "first") || !strcmp(name, "last")))
+          (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
+           sp_streq(name, "first") || sp_streq(name, "last")))
         return TY_POLY;
       /* Fiber/Thread/IO/File instance methods: fallback when no user class defines `name`. */
-      if (!strcmp(name, "resume") || !strcmp(name, "value") || !strcmp(name, "join"))
+      if (sp_streq(name, "resume") || sp_streq(name, "value") || sp_streq(name, "join"))
         return TY_POLY;
-      if (!strcmp(name, "alive?") || !strcmp(name, "dead?") || !strcmp(name, "closed?") ||
-          !strcmp(name, "eof?")) return TY_BOOL;
-      if (!strcmp(name, "write") || !strcmp(name, "read") || !strcmp(name, "gets") ||
-          !strcmp(name, "readline")) return TY_STRING;
-      if (!strcmp(name, "close") || !strcmp(name, "flush")) return TY_NIL;
-      if (!strcmp(name, "fileno")) return TY_INT;
-      if (!strcmp(name, "synchronize")) {
+      if (sp_streq(name, "alive?") || sp_streq(name, "dead?") || sp_streq(name, "closed?") ||
+          sp_streq(name, "eof?")) return TY_BOOL;
+      if (sp_streq(name, "write") || sp_streq(name, "read") || sp_streq(name, "gets") ||
+          sp_streq(name, "readline")) return TY_STRING;
+      if (sp_streq(name, "close") || sp_streq(name, "flush")) return TY_NIL;
+      if (sp_streq(name, "fileno")) return TY_INT;
+      if (sp_streq(name, "synchronize")) {
         int blk_id = nt_ref(nt, id, "block");
         if (blk_id >= 0) {
           int bdy = nt_ref(nt, blk_id, "body");
@@ -2090,55 +2090,55 @@ else {
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
-    if (!strcmp(name, "to_s") || !strcmp(name, "id2name") || !strcmp(name, "name")) return TY_STRING;
-    if (!strcmp(name, "inspect")) return TY_STRING;
-    if (!strcmp(name, "upcase") || !strcmp(name, "downcase") ||
-        !strcmp(name, "capitalize") || !strcmp(name, "swapcase") ||
-        !strcmp(name, "to_sym") || !strcmp(name, "itself")) return TY_SYMBOL;
-    if (!strcmp(name, "length") || !strcmp(name, "size")) return TY_INT;
-    if (!strcmp(name, "empty?") || !strcmp(name, "==") || !strcmp(name, "!=")) return TY_BOOL;
-    if (!strcmp(name, "succ") || !strcmp(name, "next")) return TY_SYMBOL;
-    if ((!strcmp(name, "[]") || !strcmp(name, "slice")) && (argc == 1 || argc == 2)) return TY_STRING;
-    if ((!strcmp(name, "start_with?") || !strcmp(name, "end_with?") || !strcmp(name, "match?")) && argc == 1)
+    if (sp_streq(name, "to_s") || sp_streq(name, "id2name") || sp_streq(name, "name")) return TY_STRING;
+    if (sp_streq(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
+        sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
+        sp_streq(name, "to_sym") || sp_streq(name, "itself")) return TY_SYMBOL;
+    if (sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
+    if (sp_streq(name, "empty?") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
+    if (sp_streq(name, "succ") || sp_streq(name, "next")) return TY_SYMBOL;
+    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && (argc == 1 || argc == 2)) return TY_STRING;
+    if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?") || sp_streq(name, "match?")) && argc == 1)
       return TY_BOOL;
   }
 
   /* range receiver methods */
   if (recv >= 0 && rt == TY_RANGE) {
     /* a literal string range ("a".."z") yields strings, not ints */
-    if (!strcmp(name, "to_a")) {
+    if (sp_streq(name, "to_a")) {
       int rn = recv;
-      while (rn >= 0 && nt_type(nt, rn) && !strcmp(nt_type(nt, rn), "ParenthesesNode")) {
+      while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
         int body = nt_ref(nt, rn, "body"); int bn = 0;
         const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         rn = bn == 1 ? bd[0] : -1;
       }
-      if (rn >= 0 && nt_type(nt, rn) && !strcmp(nt_type(nt, rn), "RangeNode")) {
+      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
         int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
         if (lo >= 0 && hi >= 0 && infer_type(c, lo) == TY_STRING && infer_type(c, hi) == TY_STRING)
           return TY_STR_ARRAY;
       }
     }
-    if (!strcmp(name, "to_a") || !strcmp(name, "minmax")) return TY_INT_ARRAY;
-    if (!strcmp(name, "include?") || !strcmp(name, "member?") ||
-        !strcmp(name, "cover?") || !strcmp(name, "exclude_end?") ||
-        !strcmp(name, "eql?") || !strcmp(name, "==") || !strcmp(name, "!=") ||
-        !strcmp(name, "overlap?")) return TY_BOOL;
-    if (!strcmp(name, "step")) return TY_INT_ARRAY;
-    if (!strcmp(name, "all?") || !strcmp(name, "any?") ||
-        !strcmp(name, "none?") || !strcmp(name, "one?")) return TY_BOOL;
-    if (!strcmp(name, "each") && nt_ref(nt, id, "block") < 0)
+    if (sp_streq(name, "to_a") || sp_streq(name, "minmax")) return TY_INT_ARRAY;
+    if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
+        sp_streq(name, "cover?") || sp_streq(name, "exclude_end?") ||
+        sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
+        sp_streq(name, "overlap?")) return TY_BOOL;
+    if (sp_streq(name, "step")) return TY_INT_ARRAY;
+    if (sp_streq(name, "all?") || sp_streq(name, "any?") ||
+        sp_streq(name, "none?") || sp_streq(name, "one?")) return TY_BOOL;
+    if (sp_streq(name, "each") && nt_ref(nt, id, "block") < 0)
       return range_each_is_external(c, id) ? TY_ENUMERATOR : TY_INT_ARRAY;
-    if ((!strcmp(name, "first") || !strcmp(name, "last")) && argc == 1) return TY_INT_ARRAY;
-    if (!strcmp(name, "sum") || !strcmp(name, "min") || !strcmp(name, "max") ||
-        !strcmp(name, "first") || !strcmp(name, "last") ||
-        !strcmp(name, "size") || !strcmp(name, "count") ||
-        !strcmp(name, "begin") || !strcmp(name, "end"))  return TY_INT;
-    if (!strcmp(name, "bsearch")) return TY_INT;  /* a member, or nil (nullable int) */
+    if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) return TY_INT_ARRAY;
+    if (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
+        sp_streq(name, "first") || sp_streq(name, "last") ||
+        sp_streq(name, "size") || sp_streq(name, "count") ||
+        sp_streq(name, "begin") || sp_streq(name, "end"))  return TY_INT;
+    if (sp_streq(name, "bsearch")) return TY_INT;  /* a member, or nil (nullable int) */
     int block = nt_ref(nt, id, "block");
     /* finite-range Enumerable methods that materialize to an int array in
        codegen: select/reject/filter (fused loop) and min_by/max_by. */
-    if ((!strcmp(name, "min_by") || !strcmp(name, "max_by")) && block >= 0) return TY_INT;
+    if ((sp_streq(name, "min_by") || sp_streq(name, "max_by")) && block >= 0) return TY_INT;
     if ((ty_iter_shape(name) == TY_ITER_SELECT || ty_iter_shape(name) == TY_ITER_REJECT) &&
         block >= 0) return TY_INT_ARRAY;
     if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
@@ -2150,18 +2150,18 @@ else {
   }
 
   /* (range).lazy[.select/reject{blk}].first(n) / .first */
-  if ((!strcmp(name, "first") || !strcmp(name, "last")) &&
-      recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode")) {
+  if ((sp_streq(name, "first") || sp_streq(name, "last")) &&
+      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
     const char *rname = nt_str(nt, recv, "name");
     int lazy_src = -1;
-    if (rname && !strcmp(rname, "lazy")) {
+    if (rname && sp_streq(rname, "lazy")) {
       lazy_src = nt_ref(nt, recv, "receiver");
     }
-    else if (rname && (!strcmp(rname, "select") || !strcmp(rname, "reject") || !strcmp(rname, "filter"))) {
+    else if (rname && (sp_streq(rname, "select") || sp_streq(rname, "reject") || sp_streq(rname, "filter"))) {
       int inner = nt_ref(nt, recv, "receiver");
-      if (inner >= 0 && nt_type(nt, inner) && !strcmp(nt_type(nt, inner), "CallNode")) {
+      if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "CallNode")) {
         const char *iname = nt_str(nt, inner, "name");
-        if (iname && !strcmp(iname, "lazy")) lazy_src = nt_ref(nt, inner, "receiver");
+        if (iname && sp_streq(iname, "lazy")) lazy_src = nt_ref(nt, inner, "receiver");
       }
     }
     if (lazy_src >= 0 && infer_type(c, lazy_src) == TY_RANGE)
@@ -2170,20 +2170,20 @@ else {
 
   /* General lazy pipeline: <int range | int array>.lazy.<map/select/reject/
      filter/take_while...>.{first(n) | take(n) | to_a | force} -> an int array. */
-  if ((!strcmp(name, "first") ||
-       !strcmp(name, "to_a") || !strcmp(name, "force")) &&
-      recv >= 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
+  if ((sp_streq(name, "first") ||
+       sp_streq(name, "to_a") || sp_streq(name, "force")) &&
+      recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_ref(nt, id, "block") < 0 &&
-      !(!strcmp(name, "first") && argc != 1) &&
-      !((!strcmp(name, "to_a") || !strcmp(name, "force")) && argc != 0)) {
+      !(sp_streq(name, "first") && argc != 1) &&
+      !((sp_streq(name, "to_a") || sp_streq(name, "force")) && argc != 0)) {
     int cur = recv, lazy_src = -1, ok = 1, saw_op = 0;
-    while (cur >= 0 && nt_type(nt, cur) && !strcmp(nt_type(nt, cur), "CallNode")) {
+    while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
       const char *nm = nt_str(nt, cur, "name");
       if (!nm) { ok = 0; break; }
-      if (!strcmp(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
+      if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
       if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
-      if (strcmp(nm, "map") && strcmp(nm, "collect") && strcmp(nm, "select") &&
-          strcmp(nm, "filter") && strcmp(nm, "reject") && strcmp(nm, "take_while")) { ok = 0; break; }
+      if (!sp_streq(nm, "map") && !sp_streq(nm, "collect") && !sp_streq(nm, "select") &&
+          !sp_streq(nm, "filter") && !sp_streq(nm, "reject") && !sp_streq(nm, "take_while")) { ok = 0; break; }
       saw_op = 1;
       cur = nt_ref(nt, cur, "receiver");
     }
@@ -2194,23 +2194,23 @@ else {
   }
 
   /* hash receiver methods */
-  if (recv >= 0 && !strcmp(name, "default") && argc == 0 &&
-      nt_type(nt, recv) && (!strcmp(nt_type(nt, recv), "HashNode") ||
-                             !strcmp(nt_type(nt, recv), "KeywordHashNode"))) {
+  if (recv >= 0 && sp_streq(name, "default") && argc == 0 &&
+      nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "HashNode") ||
+                             sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
     return TY_POLY; /* {}.default -> nil (poly nil) */
   }
   /* fetch(key, default) on an unknown/empty hash: return the default type */
-  if (recv >= 0 && !strcmp(name, "fetch") && argc >= 2 && !ty_is_hash(rt)) {
+  if (recv >= 0 && sp_streq(name, "fetch") && argc >= 2 && !ty_is_hash(rt)) {
     TyKind dt = infer_type(c, argv[1]);
     if (dt != TY_UNKNOWN) return dt;
   }
   if (recv >= 0 && ty_is_hash(rt)) {
-    if (!strcmp(name, "to_proc")) return TY_PROC;
-    if (!strcmp(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
-    if (!strcmp(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */
-    if (!strcmp(name, "[]"))     return ty_hash_val(rt);
-    if (!strcmp(name, "[]="))    return argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt);
-    if (!strcmp(name, "fetch")) {
+    if (sp_streq(name, "to_proc")) return TY_PROC;
+    if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
+    if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */
+    if (sp_streq(name, "[]"))     return ty_hash_val(rt);
+    if (sp_streq(name, "[]="))    return argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt);
+    if (sp_streq(name, "fetch")) {
       TyKind vt = ty_hash_val(rt);
       if (argc == 2) {
         TyKind dt = infer_type(c, argv[1]);
@@ -2218,7 +2218,7 @@ else {
            — incompatible with a non-hash hash-val type like TY_INT. */
         if (dt == TY_UNKNOWN) {
           const char *atn = nt_type(nt, argv[1]);
-          if (atn && (!strcmp(atn, "HashNode") || !strcmp(atn, "KeywordHashNode")))
+          if (atn && (sp_streq(atn, "HashNode") || sp_streq(atn, "KeywordHashNode")))
             dt = TY_POLY_POLY_HASH;
         }
         if (ty_unify(vt, dt) == TY_POLY) return TY_POLY;
@@ -2232,35 +2232,35 @@ else {
       }
       return vt;
     }
-    if (!strcmp(name, "delete")) return ty_hash_val(rt);
-    if (!strcmp(name, "dig") && argc >= 1) {
+    if (sp_streq(name, "delete")) return ty_hash_val(rt);
+    if (sp_streq(name, "dig") && argc >= 1) {
       if (argc == 1) return ty_hash_val(rt);
       return TY_POLY;
     }
-    if (!strcmp(name, "default") && argc == 0) return TY_POLY;
-    if (!strcmp(name, "length") || !strcmp(name, "size") ||
-        !strcmp(name, "count")) return TY_INT;
-    if (!strcmp(name, "keys"))   return ty_array_of(ty_hash_key(rt));
-    if (!strcmp(name, "values")) return ty_array_of(ty_hash_val(rt));
-    if (!strcmp(name, "values_at") || !strcmp(name, "fetch_values")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "default") && argc == 0) return TY_POLY;
+    if (sp_streq(name, "length") || sp_streq(name, "size") ||
+        sp_streq(name, "count")) return TY_INT;
+    if (sp_streq(name, "keys"))   return ty_array_of(ty_hash_key(rt));
+    if (sp_streq(name, "values")) return ty_array_of(ty_hash_val(rt));
+    if (sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) return TY_POLY_ARRAY;
     int block = nt_ref(nt, id, "block");
-    if ((!strcmp(name, "to_a") || !strcmp(name, "entries") || !strcmp(name, "sort")) && block < 0)
+    if ((sp_streq(name, "to_a") || sp_streq(name, "entries") || sp_streq(name, "sort")) && block < 0)
       return TY_POLY_ARRAY;
     if (block >= 0 &&
-        (!strcmp(name, "min_by") || !strcmp(name, "max_by") ||
-         !strcmp(name, "find") || !strcmp(name, "detect")))
+        (sp_streq(name, "min_by") || sp_streq(name, "max_by") ||
+         sp_streq(name, "find") || sp_streq(name, "detect")))
       return TY_POLY_ARRAY;   /* the winning [k, v] pair, or nil */
-    if (nt_ref(nt, id, "block") >= 0 && !strcmp(name, "sort_by"))
+    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "sort_by"))
       return TY_POLY_ARRAY;   /* [k, v] pairs ordered by the block value */
-    if (nt_ref(nt, id, "block") >= 0 && (!strcmp(name, "all?") || !strcmp(name, "any?")))
+    if (nt_ref(nt, id, "block") >= 0 && (sp_streq(name, "all?") || sp_streq(name, "any?")))
       return TY_BOOL;
-    if (nt_ref(nt, id, "block") >= 0 && !strcmp(name, "sum"))
+    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "sum"))
       return TY_POLY;   /* boxed accumulation via sp_poly_add */
     if (nt_ref(nt, id, "block") >= 0 &&
-        (!strcmp(name, "flat_map") || !strcmp(name, "collect_concat") ||
-         !strcmp(name, "filter_map") || !strcmp(name, "partition")))
+        (sp_streq(name, "flat_map") || sp_streq(name, "collect_concat") ||
+         sp_streq(name, "filter_map") || sp_streq(name, "partition")))
       return TY_POLY_ARRAY;
-    if (nt_ref(nt, id, "block") >= 0 && !strcmp(name, "group_by"))
+    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "group_by"))
       return TY_POLY_POLY_HASH;
     {
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
@@ -2272,15 +2272,15 @@ else {
         if (bnt != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
         return ty_array_of(bt);
       }
-      if (block >= 0 && (ty_iter_shape(name) == TY_ITER_SELECT || !strcmp(name, "reject"))) return rt;
-      if (block >= 0 && !strcmp(name, "transform_keys")) {
+      if (block >= 0 && (ty_iter_shape(name) == TY_ITER_SELECT || sp_streq(name, "reject"))) return rt;
+      if (block >= 0 && sp_streq(name, "transform_keys")) {
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         TyKind nkt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
         TyKind r = ty_hash_of(nkt, ty_hash_val(rt));
         return r != TY_UNKNOWN ? r : rt;
       }
-      if (block >= 0 && !strcmp(name, "transform_values")) {
+      if (block >= 0 && sp_streq(name, "transform_values")) {
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         TyKind nvt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
@@ -2288,7 +2288,7 @@ else {
         return r != TY_UNKNOWN ? r : rt;
       }
     }
-    if (!strcmp(name, "merge") && argc == 1) {
+    if (sp_streq(name, "merge") && argc == 1) {
       TyKind at = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
       if (at == rt) return rt;  /* same type: trivial */
       /* cross-variant str-keyed merge: promote to str_poly_hash */
@@ -2299,19 +2299,19 @@ else {
         return TY_SYM_POLY_HASH;
       return rt;
     }
-    if (!strcmp(name, "dup") || !strcmp(name, "clone") || !strcmp(name, "replace") ||
-        !strcmp(name, "merge")) return rt;
-    if (!strcmp(name, "has_key?") || !strcmp(name, "key?") ||
-        !strcmp(name, "include?") || !strcmp(name, "member?") ||
-        !strcmp(name, "has_value?") || !strcmp(name, "value?") ||
-        !strcmp(name, "empty?")) return TY_BOOL;
-    if (!strcmp(name, "each_with_object") && argc > 0 && argv) {
+    if (sp_streq(name, "dup") || sp_streq(name, "clone") || sp_streq(name, "replace") ||
+        sp_streq(name, "merge")) return rt;
+    if (sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
+        sp_streq(name, "include?") || sp_streq(name, "member?") ||
+        sp_streq(name, "has_value?") || sp_streq(name, "value?") ||
+        sp_streq(name, "empty?")) return TY_BOOL;
+    if (sp_streq(name, "each_with_object") && argc > 0 && argv) {
       TyKind at = infer_type(c, argv[0]);
       if (at == TY_UNKNOWN) {
         const char *a0ty = nt_type(nt, argv[0]);
         int an0 = 0;
-        if (a0ty && !strcmp(a0ty, "ArrayNode")) nt_arr(nt, argv[0], "elements", &an0);
-        if (a0ty && !strcmp(a0ty, "ArrayNode") && an0 == 0) {
+        if (a0ty && sp_streq(a0ty, "ArrayNode")) nt_arr(nt, argv[0], "elements", &an0);
+        if (a0ty && sp_streq(a0ty, "ArrayNode") && an0 == 0) {
           /* When hash values are poly the block pushes poly values, so the
              accumulator widens to poly_array */
           return ty_hash_val(rt) == TY_POLY ? TY_POLY_ARRAY : TY_INT_ARRAY;
@@ -2319,92 +2319,92 @@ else {
       }
       return at;
     }
-    if (!strcmp(name, "flatten") && argc <= 1) return TY_POLY_ARRAY;
-    if (!strcmp(name, "invert") && argc == 0) {
+    if (sp_streq(name, "flatten") && argc <= 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "invert") && argc == 0) {
       /* swap key/value types where we have a typed variant */
       if (rt == TY_STR_STR_HASH) return TY_STR_STR_HASH;
       return TY_POLY_POLY_HASH;
     }
-    if ((!strcmp(name, "assoc") || !strcmp(name, "rassoc")) && argc == 1) return TY_POLY_ARRAY;
-    if (!strcmp(name, "compact") && argc == 0) return rt;
+    if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "compact") && argc == 0) return rt;
   }
 
   /* <str>.encoding.name -> the encoding name string */
-  if (!strcmp(name, "name") && argc == 0 && recv >= 0 &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && !strcmp(nt_str(nt, recv, "name"), "encoding"))
+  if (sp_streq(name, "name") && argc == 0 && recv >= 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "encoding"))
     return TY_STRING;
 
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
-    if (!strcmp(name, "encoding") && argc == 0) return TY_POLY;  /* an Encoding value */
-    if (!strcmp(name, "upcase") || !strcmp(name, "downcase") ||
-        !strcmp(name, "capitalize") || !strcmp(name, "reverse") ||
-        !strcmp(name, "strip") || !strcmp(name, "lstrip") ||
-        !strcmp(name, "rstrip") || !strcmp(name, "chomp") ||
-        !strcmp(name, "chop") || !strcmp(name, "chr") || !strcmp(name, "clamp") ||
-        !strcmp(name, "squeeze") || !strcmp(name, "tr") || !strcmp(name, "tr_s") ||
-        !strcmp(name, "succ") || !strcmp(name, "next") ||
-        !strcmp(name, "delete")) return TY_STRING;
-    if (!strcmp(name, "[]") || !strcmp(name, "slice") || !strcmp(name, "byteslice") ||
-        !strcmp(name, "force_encoding") || !strcmp(name, "b") || !strcmp(name, "encode")) return TY_STRING;
-    if ((!strcmp(name, "dump") || !strcmp(name, "undump")) && argc == 0) return TY_STRING;
-    if (!strcmp(name, "index") && argc == 1) {
+    if (sp_streq(name, "encoding") && argc == 0) return TY_POLY;  /* an Encoding value */
+    if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
+        sp_streq(name, "capitalize") || sp_streq(name, "reverse") ||
+        sp_streq(name, "strip") || sp_streq(name, "lstrip") ||
+        sp_streq(name, "rstrip") || sp_streq(name, "chomp") ||
+        sp_streq(name, "chop") || sp_streq(name, "chr") || sp_streq(name, "clamp") ||
+        sp_streq(name, "squeeze") || sp_streq(name, "tr") || sp_streq(name, "tr_s") ||
+        sp_streq(name, "succ") || sp_streq(name, "next") ||
+        sp_streq(name, "delete")) return TY_STRING;
+    if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "byteslice") ||
+        sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) return TY_STRING;
+    if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;
+    if (sp_streq(name, "index") && argc == 1) {
       const char *aty = nt_type(nt, argv[0]);
-      if (aty && !strcmp(aty, "RegularExpressionNode")) return TY_POLY;  /* nil on no match */
+      if (aty && sp_streq(aty, "RegularExpressionNode")) return TY_POLY;  /* nil on no match */
     }
-    if (!strcmp(name, "index") || !strcmp(name, "to_i") || !strcmp(name, "count") ||
-        !strcmp(name, "oct") || !strcmp(name, "hex") || !strcmp(name, "ord") ||
-        !strcmp(name, "casecmp") ||
-        !strcmp(name, "bytesize") || !strcmp(name, "setbyte") || !strcmp(name, "getbyte")) return TY_INT;
-    if (!strcmp(name, "scrub") || !strcmp(name, "crypt")) return TY_STRING;
-    if (!strcmp(name, "sum") && argc == 0) return TY_INT;
-    if (!strcmp(name, "unpack1") && argc == 1) return TY_POLY;
-    if (!strcmp(name, "rindex")) return TY_INT;
-    if (!strcmp(name, "partition") || !strcmp(name, "rpartition")) return TY_STR_ARRAY;
-    if (!strcmp(name, "casecmp?") || !strcmp(name, "ascii_only?") || !strcmp(name, "valid_encoding?")) return TY_BOOL;
-    if (!strcmp(name, "to_f"))  return TY_FLOAT;
-    if (!strcmp(name, "each_char") || !strcmp(name, "each_line") || !strcmp(name, "each_byte")) return TY_STRING;
+    if (sp_streq(name, "index") || sp_streq(name, "to_i") || sp_streq(name, "count") ||
+        sp_streq(name, "oct") || sp_streq(name, "hex") || sp_streq(name, "ord") ||
+        sp_streq(name, "casecmp") ||
+        sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
+    if (sp_streq(name, "scrub") || sp_streq(name, "crypt")) return TY_STRING;
+    if (sp_streq(name, "sum") && argc == 0) return TY_INT;
+    if (sp_streq(name, "unpack1") && argc == 1) return TY_POLY;
+    if (sp_streq(name, "rindex")) return TY_INT;
+    if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
+    if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
+    if (sp_streq(name, "to_f"))  return TY_FLOAT;
+    if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
-      if (blk >= 0 && (!strcmp(name, "chars") || !strcmp(name, "lines"))) return TY_STRING;
-      if (blk >= 0 && (!strcmp(name, "bytes") || !strcmp(name, "codepoints"))) return TY_STRING; }
-    if (!strcmp(name, "split") || !strcmp(name, "lines")) return TY_STR_ARRAY;
-    if (!strcmp(name, "scan") && argc == 1) {
+      if (blk >= 0 && (sp_streq(name, "chars") || sp_streq(name, "lines"))) return TY_STRING;
+      if (blk >= 0 && (sp_streq(name, "bytes") || sp_streq(name, "codepoints"))) return TY_STRING; }
+    if (sp_streq(name, "split") || sp_streq(name, "lines")) return TY_STR_ARRAY;
+    if (sp_streq(name, "scan") && argc == 1) {
       /* scan with capture groups returns poly_array (array of arrays or strings) */
       const char *aty = nt_type(nt, argv[0]);
-      if (aty && !strcmp(aty, "RegularExpressionNode")) {
+      if (aty && sp_streq(aty, "RegularExpressionNode")) {
         const char *src = nt_str(nt, argv[0], "unescaped");
         if (src && an_re_has_captures(src)) return TY_POLY_ARRAY;
       }
       return TY_STR_ARRAY;
     }
-    if (!strcmp(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
-    if (!strcmp(name, "bytes") || !strcmp(name, "codepoints")) return TY_INT_ARRAY;
-    if (!strcmp(name, "unpack") && argc == 1) return TY_POLY_ARRAY;
-    if (!strcmp(name, "chars")) return TY_STR_ARRAY;
-    if (!strcmp(name, "gsub") || !strcmp(name, "sub") || !strcmp(name, "tr") ||
-        !strcmp(name, "center") || !strcmp(name, "ljust") || !strcmp(name, "rjust"))
+    if (sp_streq(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
+    if (sp_streq(name, "bytes") || sp_streq(name, "codepoints")) return TY_INT_ARRAY;
+    if (sp_streq(name, "unpack") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "chars")) return TY_STR_ARRAY;
+    if (sp_streq(name, "gsub") || sp_streq(name, "sub") || sp_streq(name, "tr") ||
+        sp_streq(name, "center") || sp_streq(name, "ljust") || sp_streq(name, "rjust"))
       return TY_STRING;
-    if (!strcmp(name, "*")) return TY_STRING;
+    if (sp_streq(name, "*")) return TY_STRING;
     /* in-place append / concat reassign the receiver and evaluate to it */
-    if ((!strcmp(name, "<<") || !strcmp(name, "concat") || !strcmp(name, "prepend")) && argc == 1)
+    if ((sp_streq(name, "<<") || sp_streq(name, "concat") || sp_streq(name, "prepend")) && argc == 1)
       return TY_STRING;
   }
   /* <int_array>.product(<int_array>)[.to_a].inspect -> a string */
-  if (!strcmp(name, "inspect") && argc == 0 && recv >= 0) {
+  if (sp_streq(name, "inspect") && argc == 0 && recv >= 0) {
     int pr = recv;
-    if (nt_type(nt, pr) && !strcmp(nt_type(nt, pr), "CallNode") &&
-        nt_str(nt, pr, "name") && !strcmp(nt_str(nt, pr, "name"), "to_a"))
+    if (nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "CallNode") &&
+        nt_str(nt, pr, "name") && sp_streq(nt_str(nt, pr, "name"), "to_a"))
       pr = nt_ref(nt, pr, "receiver");
-    if (pr >= 0 && nt_type(nt, pr) && !strcmp(nt_type(nt, pr), "CallNode") && nt_str(nt, pr, "name") &&
-        (!strcmp(nt_str(nt, pr, "name"), "product") || !strcmp(nt_str(nt, pr, "name"), "slice_before") ||
-         !strcmp(nt_str(nt, pr, "name"), "slice_after") || !strcmp(nt_str(nt, pr, "name"), "slice_when") ||
-         !strcmp(nt_str(nt, pr, "name"), "chunk")))
+    if (pr >= 0 && nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "CallNode") && nt_str(nt, pr, "name") &&
+        (sp_streq(nt_str(nt, pr, "name"), "product") || sp_streq(nt_str(nt, pr, "name"), "slice_before") ||
+         sp_streq(nt_str(nt, pr, "name"), "slice_after") || sp_streq(nt_str(nt, pr, "name"), "slice_when") ||
+         sp_streq(nt_str(nt, pr, "name"), "chunk")))
       return TY_STRING;
   }
 
   /* numeric.step(...) without a block materializes the sequence as an array */
-  if (recv >= 0 && ty_is_numeric(rt) && !strcmp(name, "step") && nt_ref(nt, id, "block") < 0) {
+  if (recv >= 0 && ty_is_numeric(rt) && sp_streq(name, "step") && nt_ref(nt, id, "block") < 0) {
     int args = nt_ref(nt, id, "arguments");
     int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
     int isf = (rt == TY_FLOAT) || (sc >= 1 && infer_type(c, sv[0]) == TY_FLOAT) ||
@@ -2413,58 +2413,58 @@ else {
   }
   /* integer receiver methods */
   if (recv >= 0 && rt == TY_INT) {
-    if (!strcmp(name, "ceil") || !strcmp(name, "floor") ||
-        !strcmp(name, "round") || !strcmp(name, "truncate")) return TY_INT;  /* no precision arg -> self */
-    if (!strcmp(name, "divmod") && argc == 1) return TY_INT_ARRAY;  /* [quotient, remainder] */
-    if ((!strcmp(name, "allbits?") || !strcmp(name, "anybits?") || !strcmp(name, "nobits?")) && argc == 1) return TY_BOOL;
-    if (!strcmp(name, "even?") || !strcmp(name, "odd?") || !strcmp(name, "zero?") ||
-        !strcmp(name, "positive?") || !strcmp(name, "negative?")) return TY_BOOL;
-    if ((!strcmp(name, "ceildiv") || !strcmp(name, "pow")) && argc >= 1) return TY_INT;
-    if ((!strcmp(name, "pred") || !strcmp(name, "succ") || !strcmp(name, "next")) && argc == 0) return TY_INT;
-    if (!strcmp(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
+    if (sp_streq(name, "ceil") || sp_streq(name, "floor") ||
+        sp_streq(name, "round") || sp_streq(name, "truncate")) return TY_INT;  /* no precision arg -> self */
+    if (sp_streq(name, "divmod") && argc == 1) return TY_INT_ARRAY;  /* [quotient, remainder] */
+    if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "even?") || sp_streq(name, "odd?") || sp_streq(name, "zero?") ||
+        sp_streq(name, "positive?") || sp_streq(name, "negative?")) return TY_BOOL;
+    if ((sp_streq(name, "ceildiv") || sp_streq(name, "pow")) && argc >= 1) return TY_INT;
+    if ((sp_streq(name, "pred") || sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) return TY_INT;
+    if (sp_streq(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
     /* times/upto/downto/step with a block return the receiver (self) */
-    if ((!strcmp(name, "times") || !strcmp(name, "upto") || !strcmp(name, "downto") ||
-         !strcmp(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;
+    if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto") ||
+         sp_streq(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;
     /* times/upto/downto without a block return a range-like enumerator */
-    if ((!strcmp(name, "times") || !strcmp(name, "upto") || !strcmp(name, "downto")) &&
+    if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto")) &&
         nt_ref(nt, id, "block") < 0) return TY_RANGE;
-    if (!strcmp(name, "chr")) return TY_STRING;
-    if (!strcmp(name, "[]") && argc == 1) return TY_INT;  /* bit access */
-    if (!strcmp(name, "bit_length") && argc == 0) return TY_INT;
-    if (!strcmp(name, "fdiv") && argc == 1) return TY_FLOAT;
-    if (!strcmp(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;  /* bit access / bit-range field */
-    if (!strcmp(name, "div") && argc == 1) return TY_INT;  /* floor division */
-    if (!strcmp(name, "gcd") || !strcmp(name, "lcm") || !strcmp(name, "clamp")) return TY_INT;
-    if (!strcmp(name, "magnitude") && argc == 0) return TY_INT;  /* alias for abs */
-    if ((!strcmp(name, "modulo") || !strcmp(name, "remainder")) && argc == 1) return TY_INT;
-    if (!strcmp(name, "gcdlcm") && argc == 1) return TY_INT_ARRAY;  /* [gcd, lcm] */
-    if (!strcmp(name, "digits")) return TY_INT_ARRAY;
-    if (!strcmp(name, "to_s") && argc == 1) return TY_STRING;
-    if (!strcmp(name, "coerce") && argc == 1) {
+    if (sp_streq(name, "chr")) return TY_STRING;
+    if (sp_streq(name, "[]") && argc == 1) return TY_INT;  /* bit access */
+    if (sp_streq(name, "bit_length") && argc == 0) return TY_INT;
+    if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
+    if (sp_streq(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;  /* bit access / bit-range field */
+    if (sp_streq(name, "div") && argc == 1) return TY_INT;  /* floor division */
+    if (sp_streq(name, "gcd") || sp_streq(name, "lcm") || sp_streq(name, "clamp")) return TY_INT;
+    if (sp_streq(name, "magnitude") && argc == 0) return TY_INT;  /* alias for abs */
+    if ((sp_streq(name, "modulo") || sp_streq(name, "remainder")) && argc == 1) return TY_INT;
+    if (sp_streq(name, "gcdlcm") && argc == 1) return TY_INT_ARRAY;  /* [gcd, lcm] */
+    if (sp_streq(name, "digits")) return TY_INT_ARRAY;
+    if (sp_streq(name, "to_s") && argc == 1) return TY_STRING;
+    if (sp_streq(name, "coerce") && argc == 1) {
       TyKind a0 = infer_type(c, argv[0]);
       return (a0 == TY_FLOAT) ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
     }
   }
   /* float receiver methods */
   if (recv >= 0 && rt == TY_FLOAT) {
-    if (!strcmp(name, "coerce") && argc == 1) return TY_FLOAT_ARRAY;  /* [Float(other), self] */
-    if (!strcmp(name, "divmod") && argc == 1) return TY_POLY_ARRAY;  /* [Integer, Float] */
-    if (!strcmp(name, "infinite?")) return TY_INT;   /* nil / 1 / -1 (nullable int) */
-    if (!strcmp(name, "nan?") || !strcmp(name, "finite?") ||
-        !strcmp(name, "positive?") || !strcmp(name, "negative?") ||
-        !strcmp(name, "zero?")) return TY_BOOL;
-    if (!strcmp(name, "next_float") || !strcmp(name, "prev_float") ||
-        !strcmp(name, "abs") || !strcmp(name, "magnitude") ||
-        !strcmp(name, "modulo") || !strcmp(name, "to_f") ||
-        (!strcmp(name, "fdiv") && argc == 1)) return TY_FLOAT;
-    if (!strcmp(name, "eql?") && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "coerce") && argc == 1) return TY_FLOAT_ARRAY;  /* [Float(other), self] */
+    if (sp_streq(name, "divmod") && argc == 1) return TY_POLY_ARRAY;  /* [Integer, Float] */
+    if (sp_streq(name, "infinite?")) return TY_INT;   /* nil / 1 / -1 (nullable int) */
+    if (sp_streq(name, "nan?") || sp_streq(name, "finite?") ||
+        sp_streq(name, "positive?") || sp_streq(name, "negative?") ||
+        sp_streq(name, "zero?")) return TY_BOOL;
+    if (sp_streq(name, "next_float") || sp_streq(name, "prev_float") ||
+        sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
+        sp_streq(name, "modulo") || sp_streq(name, "to_f") ||
+        (sp_streq(name, "fdiv") && argc == 1)) return TY_FLOAT;
+    if (sp_streq(name, "eql?") && argc == 1) return TY_BOOL;
     /* clamp with float bounds returns a float (matches codegen in codegen_call.c);
        a mixed/int bound can return the Integer bound, so leave that poly. */
-    if (!strcmp(name, "clamp") && argc == 2 &&
+    if (sp_streq(name, "clamp") && argc == 2 &&
         infer_type(c, argv[0]) == TY_FLOAT && infer_type(c, argv[1]) == TY_FLOAT)
       return TY_FLOAT;
-    if (!strcmp(name, "floor") || !strcmp(name, "ceil") ||
-        !strcmp(name, "round") || !strcmp(name, "truncate")) {
+    if (sp_streq(name, "floor") || sp_streq(name, "ceil") ||
+        sp_streq(name, "round") || sp_streq(name, "truncate")) {
       /* CRuby chooses the return class from the runtime ndigits value: Integer
          when ndigits <= 0, Float when ndigits > 0. With a literal ndigits we
          match it exactly. A NON-literal ndigits can't be classified statically,
@@ -2473,7 +2473,7 @@ else {
          <= 0 -- the documented residual divergence (docs/FLOAT-ROUNDING.md). */
       if (argc == 1) {
         const char *aty = nt_type(nt, argv[0]);
-        if (!aty || strcmp(aty, "IntegerNode")) return TY_FLOAT;  /* non-literal */
+        if (!aty || !sp_streq(aty, "IntegerNode")) return TY_FLOAT;  /* non-literal */
         return nt_int(nt, argv[0], "value", 0) > 0 ? TY_FLOAT : TY_INT;
       }
       return TY_INT;  /* no arg -> self truncated to Integer */
@@ -2481,63 +2481,63 @@ else {
   }
 
   /* /re/ === str -> match boolean */
-  if (!strcmp(name, "===") && argc == 1 && recv >= 0 &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "RegularExpressionNode"))
+  if (sp_streq(name, "===") && argc == 1 && recv >= 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "RegularExpressionNode"))
     return TY_BOOL;
   /* Class.===(obj) is always bool */
-  if (!strcmp(name, "===") && argc == 1 && recv >= 0 &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "ConstantReadNode"))
+  if (sp_streq(name, "===") && argc == 1 && recv >= 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
     return TY_BOOL;
 
-  if ((!strcmp(name, "-@") || !strcmp(name, "+@")) && recv >= 0 && argc == 0)
+  if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0)
     return ty_is_numeric(rt) ? rt : rt == TY_POLY ? TY_POLY : TY_UNKNOWN;
   /* unary bitwise complement: ~int / ~poly -> int (poly value coerced via to_i) */
-  if (!strcmp(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY))
+  if (sp_streq(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY))
     return TY_INT;
-  if (!strcmp(name, "!")) return TY_BOOL;
-  if (!strcmp(name, "respond_to?") && recv >= 0) return TY_BOOL;
-  if ((!strcmp(name, "method_defined?") || !strcmp(name, "const_defined?")) && recv >= 0) return TY_BOOL;
+  if (sp_streq(name, "!")) return TY_BOOL;
+  if (sp_streq(name, "respond_to?") && recv >= 0) return TY_BOOL;
+  if ((sp_streq(name, "method_defined?") || sp_streq(name, "const_defined?")) && recv >= 0) return TY_BOOL;
   /* const_get(:K) with a literal name resolves to the constant's type (codegen
      emits cst_<K>); a literal name that does not resolve raises NameError at
      runtime, so its value type is poly. A dynamic name is left unresolved. */
-  if (!strcmp(name, "const_get") && recv >= 0 && argc >= 1) {
+  if (sp_streq(name, "const_get") && recv >= 0 && argc >= 1) {
     const char *cgt = nt_type(nt, argv[0]);
     const char *cgn = NULL;
-    if (cgt && !strcmp(cgt, "SymbolNode")) cgn = nt_str(nt, argv[0], "value");
-    else if (cgt && !strcmp(cgt, "StringNode")) cgn = nt_str(nt, argv[0], "content");
+    if (cgt && sp_streq(cgt, "SymbolNode")) cgn = nt_str(nt, argv[0], "value");
+    else if (cgt && sp_streq(cgt, "StringNode")) cgn = nt_str(nt, argv[0], "content");
     if (cgn) { LocalVar *cv = comp_const(c, cgn); if (cv && cv->type != TY_UNKNOWN) return cv->type; return TY_POLY; }
   }
-  if (!strcmp(name, "nil?") && recv >= 0 && argc == 0) return TY_BOOL;
-  if (!strcmp(name, "object_id") && recv >= 0 && argc == 0) return TY_INT;
-  if (!strcmp(name, "between?") && argc == 2 && (rt == TY_STRING || ty_is_numeric(rt))) return TY_BOOL;
-  if ((!strcmp(name, "match?") || !strcmp(name, "!~")) && recv >= 0) return TY_BOOL;
-  if (!strcmp(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
+  if (sp_streq(name, "nil?") && recv >= 0 && argc == 0) return TY_BOOL;
+  if (sp_streq(name, "object_id") && recv >= 0 && argc == 0) return TY_INT;
+  if (sp_streq(name, "between?") && argc == 2 && (rt == TY_STRING || ty_is_numeric(rt))) return TY_BOOL;
+  if ((sp_streq(name, "match?") || sp_streq(name, "!~")) && recv >= 0) return TY_BOOL;
+  if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
     const char *rrt = nt_type(nt, recv), *art = argc > 0 ? nt_type(nt, argv[0]) : NULL;
-    if ((rrt && !strcmp(rrt, "RegularExpressionNode")) ||
-        (art && !strcmp(art, "RegularExpressionNode"))) return TY_MATCHDATA;
+    if ((rrt && sp_streq(rrt, "RegularExpressionNode")) ||
+        (art && sp_streq(art, "RegularExpressionNode"))) return TY_MATCHDATA;
   }
-  if (!strcmp(name, "=~") && recv >= 0 && argc == 1) {
+  if (sp_streq(name, "=~") && recv >= 0 && argc == 1) {
     const char *rrt = nt_type(nt, recv), *art = nt_type(nt, argv[0]);
     TyKind a0t = argc > 0 ? infer_type(c, argv[0]) : TY_UNKNOWN;
-    if ((rrt && !strcmp(rrt, "RegularExpressionNode")) ||
-        (art && !strcmp(art, "RegularExpressionNode")) ||
+    if ((rrt && sp_streq(rrt, "RegularExpressionNode")) ||
+        (art && sp_streq(art, "RegularExpressionNode")) ||
         rt == TY_REGEX || a0t == TY_REGEX) return TY_POLY;
   }
-  if (!strcmp(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
+  if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
     TyKind a0t = argc > 0 ? infer_type(c, argv[0]) : TY_UNKNOWN;
     if (rt == TY_REGEX || a0t == TY_REGEX) return TY_MATCHDATA;
   }
   /* /re/.source -> String, /re/.options -> Integer (compile-time constants) */
-  if (recv >= 0 && argc == 0 && nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "RegularExpressionNode")) {
-    if (!strcmp(name, "source")) return TY_STRING;
-    if (!strcmp(name, "options")) return TY_INT;
+  if (recv >= 0 && argc == 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "RegularExpressionNode")) {
+    if (sp_streq(name, "source")) return TY_STRING;
+    if (sp_streq(name, "options")) return TY_INT;
   }
 
   /* array set operations: &, intersection, |, union(1-arg), -, difference */
   if (recv >= 0 && argc == 1 &&
-      (!strcmp(name, "&") || !strcmp(name, "intersection") ||
-       !strcmp(name, "|") || !strcmp(name, "union") ||
-       !strcmp(name, "-") || !strcmp(name, "difference"))) {
+      (sp_streq(name, "&") || sp_streq(name, "intersection") ||
+       sp_streq(name, "|") || sp_streq(name, "union") ||
+       sp_streq(name, "-") || sp_streq(name, "difference"))) {
     if (ty_is_array(rt) && a0 == rt) return rt;
     if (ty_is_array(rt) && a0 == TY_POLY_ARRAY) return rt;
     if (ty_is_array(a0) && rt == TY_POLY_ARRAY) return a0;
@@ -2546,8 +2546,8 @@ else {
   }
   if (recv >= 0 && argc == 1 && is_arith_op(name)) {
     if (rt == TY_STRING) {
-      if (!strcmp(name, "%")) return TY_STRING;  /* sprintf (array or single value) */
-      if (!strcmp(name, "+") || !strcmp(name, "*")) {
+      if (sp_streq(name, "%")) return TY_STRING;  /* sprintf (array or single value) */
+      if (sp_streq(name, "+") || sp_streq(name, "*")) {
         /* `str + x` / `str * n` always yield a String; a poly operand (which
            holds a string at runtime) is coerced via sp_poly_to_s in codegen. */
         return TY_STRING;
@@ -2555,11 +2555,11 @@ else {
       return TY_UNKNOWN;
     }
     /* array + same-kind -> same kind; different-kind -> poly_array */
-    if (!strcmp(name, "+") && ty_is_array(rt) && a0 == rt) return rt;
-    if (!strcmp(name, "+") && ty_is_array(rt) && ty_is_array(a0) && a0 != rt) return TY_POLY_ARRAY;
+    if (sp_streq(name, "+") && ty_is_array(rt) && a0 == rt) return rt;
+    if (sp_streq(name, "+") && ty_is_array(rt) && ty_is_array(a0) && a0 != rt) return TY_POLY_ARRAY;
     /* array * int -> same array type (repeat); array * string -> join string */
-    if (!strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) return rt;
-    if (!strcmp(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) return TY_STRING;
+    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) return rt;
+    if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) return TY_STRING;
     if (ty_is_numeric(rt) && ty_is_numeric(a0)) {
       if (rt == TY_FLOAT || a0 == TY_FLOAT) return TY_FLOAT;
       if (rt == TY_BIGINT || a0 == TY_BIGINT) return TY_BIGINT;
@@ -2568,66 +2568,66 @@ else {
     /* a poly operand makes the +,-,*,/ result poly: codegen lowers these to
        sp_poly_<op>, which returns a (boxed) poly, so the static type must agree. */
     if ((rt == TY_POLY || a0 == TY_POLY) &&
-        (!strcmp(name, "+") || !strcmp(name, "-") || !strcmp(name, "*") || !strcmp(name, "/")))
+        (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")))
       return TY_POLY;
     return TY_UNKNOWN;
   }
-  if (recv >= 0 && argc == 1 && !strcmp(name, "<=>")) return TY_INT;
+  if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) return TY_INT;
   if (recv >= 0 && argc == 1 && is_cmp_op(name)) return TY_BOOL;
   if (argc == 1 && is_eq_op(name)) return TY_BOOL;
 
   /* integer bitwise operators */
   if (recv >= 0 && argc == 1 && rt == TY_INT &&
-      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
-       !strcmp(name, "<<") || !strcmp(name, ">>")))
+      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+       sp_streq(name, "<<") || sp_streq(name, ">>")))
     return TY_INT;
   /* bigint bitwise ops keep arbitrary precision (a `<<` widening that overflows
      int is exactly why the receiver was promoted to bigint; and `bignum & MASK`
      can still exceed int64, e.g. 0x9e37…c16 & ((1<<64)-1)). */
   if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
-      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^") ||
-       !strcmp(name, "<<") || !strcmp(name, ">>")))
+      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+       sp_streq(name, "<<") || sp_streq(name, ">>")))
     return TY_BIGINT;
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&
-      (!strcmp(name, ">>") || !strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^")))
+      (sp_streq(name, ">>") || sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
     return TY_INT;
   /* poly recv `<<` is ambiguous (Integer#<< shift vs Array#push append); the
      runtime sp_poly_shl dispatches on the tag and returns a boxed result either
      way, so the static type is poly. A downstream bitwise op coerces it back to
      int, and an append keeps its (boxed) array -- both stay consistent. */
-  if (recv >= 0 && argc == 1 && rt == TY_POLY && !strcmp(name, "<<"))
+  if (recv >= 0 && argc == 1 && rt == TY_POLY && sp_streq(name, "<<"))
     return TY_POLY;
   /* boolean &/|/^ */
   if (recv >= 0 && argc == 1 && rt == TY_BOOL &&
-      (!strcmp(name, "&") || !strcmp(name, "|") || !strcmp(name, "^")))
+      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
     return TY_BOOL;
 
   size_t nl = strlen(name);
   if (nl > 0 && name[nl - 1] == '?') return TY_BOOL;
 
-  if (!strcmp(name, "to_s") || !strcmp(name, "inspect") ||
-      !strcmp(name, "chr") || !strcmp(name, "to_str")) return TY_STRING;
-  if (!strcmp(name, "to_i") || !strcmp(name, "to_int") ||
-      !strcmp(name, "length") || !strcmp(name, "size") ||
-      !strcmp(name, "ord") || !strcmp(name, "abs")) return TY_INT;
-  if (!strcmp(name, "to_f")) return TY_FLOAT;
-  if (!strcmp(name, "to_sym")) return TY_SYMBOL;
+  if (sp_streq(name, "to_s") || sp_streq(name, "inspect") ||
+      sp_streq(name, "chr") || sp_streq(name, "to_str")) return TY_STRING;
+  if (sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
+      sp_streq(name, "length") || sp_streq(name, "size") ||
+      sp_streq(name, "ord") || sp_streq(name, "abs")) return TY_INT;
+  if (sp_streq(name, "to_f")) return TY_FLOAT;
+  if (sp_streq(name, "to_sym")) return TY_SYMBOL;
 
   if (is_void_call(name) && recv < 0) return TY_VOID;
 
   /* $stdout/$stderr.puts/print/write return nil (so a value-position use --
      an if/else arm or assignment -- unifies and boxes as nil). */
-  if (recv >= 0 && (!strcmp(name, "puts") || !strcmp(name, "print") || !strcmp(name, "write")) &&
-      nt_type(nt, recv) && !strcmp(nt_type(nt, recv), "GlobalVariableReadNode")) {
+  if (recv >= 0 && (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "write")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
     const char *gv = nt_str(nt, recv, "name");
-    if (gv && (!strcmp(gv, "$stdout") || !strcmp(gv, "$stderr"))) return TY_NIL;
+    if (gv && (sp_streq(gv, "$stdout") || sp_streq(gv, "$stderr"))) return TY_NIL;
   }
 
   /* tap: run block, return self */
-  if (!strcmp(name, "tap") && recv >= 0) return rt;
+  if (sp_streq(name, "tap") && recv >= 0) return rt;
   /* then / yield_self: run block, return block result */
-  if (!strcmp(name, "then") || !strcmp(name, "yield_self")) {
+  if (sp_streq(name, "then") || sp_streq(name, "yield_self")) {
     int blk_id = nt_ref(nt, id, "block");
     if (blk_id >= 0) {
       int bdy = nt_ref(nt, blk_id, "body");
@@ -2644,7 +2644,7 @@ else {
       return result;
     }
   }
-  if (!strcmp(name, "instance_eval")) {
+  if (sp_streq(name, "instance_eval")) {
     int blk_id = nt_ref(nt, id, "block");
     if (blk_id >= 0 && ty_is_object(rt) &&
         comp_method_in_chain(c, ty_object_class(rt), "instance_eval", NULL) < 0) {
@@ -2663,7 +2663,7 @@ else {
   /* safe navigation &. with unresolved type: return poly (receiver may be nil at runtime) */
   {
     const char *call_op = nt_str(nt, id, "call_operator");
-    if (recv >= 0 && call_op && !strcmp(call_op, "&.")) return TY_POLY;
+    if (recv >= 0 && call_op && sp_streq(call_op, "&.")) return TY_POLY;
   }
 
   /* Builtin class reopening: look up user-defined methods on Array/Numeric/Object
@@ -2746,7 +2746,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     int inner = nt_ref(nt, id, "expression");
     if (inner < 0) return TY_UNKNOWN;
     const char *ity = nt_type(nt, inner);
-    if (ity && !strcmp(ity, "RangeNode")) {
+    if (ity && sp_streq(ity, "RangeNode")) {
       int lo = nt_ref(nt, inner, "left");
       return (lo >= 0 && infer_type(c, lo) == TY_STRING) ? TY_STRING : TY_INT;
     }
@@ -2808,7 +2808,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* &block param that escapes (not yield-inlined): the LocalVar slot type is
        TY_UNKNOWN, but the value is a Proc object when the method does not inline
        the block (yields==0). Return TY_PROC so callers can type the return value. */
-    if (nm && s && s->blk_param && s->blk_param[0] && !strcmp(nm, s->blk_param)
+    if (nm && s && s->blk_param && s->blk_param[0] && sp_streq(nm, s->blk_param)
         && !s->yields)
       return TY_PROC;
     LocalVar *lv = nm ? scope_local(s, nm) : NULL;
@@ -2818,13 +2818,13 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_GlobalVariableReadNode) {
     const char *nm = nt_str(nt, id, "name");
     /* predefined punctuation globals: $/ defaults to "\n"; $! / $; / $, read nil */
-    if (nm && !strcmp(nm, "$/")) return TY_STRING;
-    if (nm && !strcmp(nm, "$?")) return TY_INT;  /* last child exit status */
-    if (nm && (!strcmp(nm, "$PROGRAM_NAME") || !strcmp(nm, "$0"))) return TY_STRING;
-    if (nm && (!strcmp(nm, "$!") || !strcmp(nm, "$;") || !strcmp(nm, "$,"))) return TY_NIL;
+    if (nm && sp_streq(nm, "$/")) return TY_STRING;
+    if (nm && sp_streq(nm, "$?")) return TY_INT;  /* last child exit status */
+    if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) return TY_STRING;
+    if (nm && (sp_streq(nm, "$!") || sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
     /* regex match globals: nullable strings ($~ == $&, $`, $', $+) */
-    if (nm && (!strcmp(nm, "$~") || !strcmp(nm, "$&") || !strcmp(nm, "$`") ||
-               !strcmp(nm, "$'") || !strcmp(nm, "$+"))) return TY_STRING;
+    if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&") || sp_streq(nm, "$`") ||
+               sp_streq(nm, "$'") || sp_streq(nm, "$+"))) return TY_STRING;
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
     return lv ? lv->type : TY_UNKNOWN;
@@ -2833,12 +2833,12 @@ TyKind infer_uncached(Compiler *c, int id) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
     if (lv) return lv->type;
-    if (nm && (!strcmp(nm, "RUBY_DESCRIPTION") || !strcmp(nm, "RUBY_VERSION") ||
-               !strcmp(nm, "RUBY_PLATFORM") || !strcmp(nm, "RUBY_ENGINE") ||
-               !strcmp(nm, "RUBY_ENGINE_VERSION") || !strcmp(nm, "RUBY_RELEASE_DATE") ||
-               !strcmp(nm, "RUBY_REVISION") || !strcmp(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
-    if (nm && !strcmp(nm, "ARGV")) return TY_STR_ARRAY;
-    if (nm && !strcmp(nm, "ARGF")) return TY_ARGF;
+    if (nm && (sp_streq(nm, "RUBY_DESCRIPTION") || sp_streq(nm, "RUBY_VERSION") ||
+               sp_streq(nm, "RUBY_PLATFORM") || sp_streq(nm, "RUBY_ENGINE") ||
+               sp_streq(nm, "RUBY_ENGINE_VERSION") || sp_streq(nm, "RUBY_RELEASE_DATE") ||
+               sp_streq(nm, "RUBY_REVISION") || sp_streq(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
+    if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
+    if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
     return TY_UNKNOWN;
@@ -2852,34 +2852,34 @@ TyKind infer_uncached(Compiler *c, int id) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
     if (lv) return lv->type;
-    if (nm && !strcmp(nm, "ARGV")) return TY_STR_ARRAY;
-    if (nm && !strcmp(nm, "ARGF")) return TY_ARGF;
+    if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
+    if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
     /* well-known module constants */
     int par_id = nt_ref(nt, id, "parent");
     const char *par_ty = par_id >= 0 ? nt_type(nt, par_id) : NULL;
-    const char *par_nm = (par_ty && !strcmp(par_ty, "ConstantReadNode")) ? nt_str(nt, par_id, "name") : NULL;
-    if (par_nm && !strcmp(par_nm, "Float")) {
-      if (nm && (!strcmp(nm, "MAX") || !strcmp(nm, "MIN") || !strcmp(nm, "EPSILON") ||
-                 !strcmp(nm, "INFINITY") || !strcmp(nm, "NAN") || !strcmp(nm, "DIG") ||
-                 !strcmp(nm, "MANT_DIG") || !strcmp(nm, "RADIX"))) return TY_FLOAT;
+    const char *par_nm = (par_ty && sp_streq(par_ty, "ConstantReadNode")) ? nt_str(nt, par_id, "name") : NULL;
+    if (par_nm && sp_streq(par_nm, "Float")) {
+      if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN") || sp_streq(nm, "EPSILON") ||
+                 sp_streq(nm, "INFINITY") || sp_streq(nm, "NAN") || sp_streq(nm, "DIG") ||
+                 sp_streq(nm, "MANT_DIG") || sp_streq(nm, "RADIX"))) return TY_FLOAT;
     }
-    if (par_nm && !strcmp(par_nm, "Math")) {
-      if (nm && (!strcmp(nm, "PI") || !strcmp(nm, "E"))) return TY_FLOAT;
+    if (par_nm && sp_streq(par_nm, "Math")) {
+      if (nm && (sp_streq(nm, "PI") || sp_streq(nm, "E"))) return TY_FLOAT;
     }
-    if (par_nm && !strcmp(par_nm, "File")) {
-      if (nm && (!strcmp(nm, "SEPARATOR") || !strcmp(nm, "PATH_SEPARATOR") ||
-                 !strcmp(nm, "ALT_SEPARATOR"))) return TY_STRING;
+    if (par_nm && sp_streq(par_nm, "File")) {
+      if (nm && (sp_streq(nm, "SEPARATOR") || sp_streq(nm, "PATH_SEPARATOR") ||
+                 sp_streq(nm, "ALT_SEPARATOR"))) return TY_STRING;
     }
-    if (par_nm && !strcmp(par_nm, "Integer")) {
-      if (nm && (!strcmp(nm, "MAX") || !strcmp(nm, "MIN"))) return TY_UNKNOWN; /* raises NameError */
+    if (par_nm && sp_streq(par_nm, "Integer")) {
+      if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) return TY_UNKNOWN; /* raises NameError */
     }
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
     /* FFI const: Module::NAME -> int */
     if (par_nm && nm) {
       for (int fci = 0; fci < c->n_ffi_consts; fci++) {
-        if (!strcmp(c->ffi_consts[fci].mod, par_nm) &&
-            !strcmp(c->ffi_consts[fci].name, nm))
+        if (sp_streq(c->ffi_consts[fci].mod, par_nm) &&
+            sp_streq(c->ffi_consts[fci].name, nm))
           return TY_INT;
       }
     }
@@ -2892,13 +2892,13 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (self_cls < 0) self_cls = (an_ie_class_id >= 0) ? an_ie_class_id : ie_class_of(c, id);
     if (self_cls < 0) return TY_UNKNOWN;
     const char *cn = c->classes[self_cls].name;
-    if (!strcmp(cn, "String"))  return TY_STRING;
-    if (!strcmp(cn, "Integer")) return TY_INT;
-    if (!strcmp(cn, "Float"))   return TY_FLOAT;
-    if (!strcmp(cn, "Symbol"))  return TY_SYMBOL;
-    if (!strcmp(cn, "TrueClass") || !strcmp(cn, "FalseClass") || !strcmp(cn, "NilClass")) return TY_BOOL;
-    if (!strcmp(cn, "Array"))   return TY_POLY_ARRAY;
-    if (!strcmp(cn, "Object"))  return TY_POLY;  /* dynamic: called on any receiver type */
+    if (sp_streq(cn, "String"))  return TY_STRING;
+    if (sp_streq(cn, "Integer")) return TY_INT;
+    if (sp_streq(cn, "Float"))   return TY_FLOAT;
+    if (sp_streq(cn, "Symbol"))  return TY_SYMBOL;
+    if (sp_streq(cn, "TrueClass") || sp_streq(cn, "FalseClass") || sp_streq(cn, "NilClass")) return TY_BOOL;
+    if (sp_streq(cn, "Array"))   return TY_POLY_ARRAY;
+    if (sp_streq(cn, "Object"))  return TY_POLY;  /* dynamic: called on any receiver type */
     return ty_object(self_cls);
   }
   if (nk == NK_InstanceVariableReadNode) {
@@ -3009,7 +3009,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
     for (int k = 0; k < n; k++) {
       const char *aty = nt_type(nt, els[k]);
-      if (!aty || strcmp(aty, "AssocNode")) return TY_UNKNOWN;
+      if (!aty || !sp_streq(aty, "AssocNode")) return TY_UNKNOWN;
       kt = ty_unify(kt, infer_type(c, nt_ref(nt, els[k], "key")));
       int vnode = nt_ref(nt, els[k], "value");
       TyKind vt_elem = infer_type(c, vnode);
@@ -3017,7 +3017,7 @@ TyKind infer_uncached(Compiler *c, int id) {
          it as poly so the outer hash promotes to a poly-valued variant. */
       if (vt_elem == TY_UNKNOWN) {
         const char *vnode_ty = nt_type(nt, vnode);
-        if (vnode_ty && (!strcmp(vnode_ty, "HashNode") || !strcmp(vnode_ty, "KeywordHashNode")))
+        if (vnode_ty && (sp_streq(vnode_ty, "HashNode") || sp_streq(vnode_ty, "KeywordHashNode")))
           vt_elem = TY_POLY;
       }
       vt = ty_unify(vt, vt_elem);

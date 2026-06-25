@@ -16,19 +16,7 @@
 #define SPINEL_NODE_TABLE_H
 
 #include <stddef.h>
-
-/* Fast equality for short strings. The iterated analysis passes compare huge
-   numbers of short keys / type names / method names; glibc's strcmp resolves to
-   __strcmp_avx2, whose per-call AVX setup dominates for strings this short (and
-   is paid in full even when the first byte already differs). An inline byte
-   loop is several times cheaper here -- strcmp self-time was ~47% of a profiled
-   optcarrot compile. Returns 1 if equal. */
-static inline int sp_streq(const char *a, const char *b) {
-  for (;; a++, b++) {
-    if (*a != *b) return 0;
-    if (*a == 0) return 1;
-  }
-}
+#include "types.h"   /* sp_streq -- used by the node-table accessors below */
 
 typedef struct { char *key; char *val; size_t val_len; } SpStrField;
 typedef struct { char *key; long long val; }    SpIntField;
