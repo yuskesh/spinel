@@ -342,20 +342,28 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
         else buf_printf(b, "    *_cell_%s = sp_box_nil();\n", lv->name);
         continue;
       }
-      /* A pointer (string / array / hash / heap object) capture is laundered
-         through the int cell as (uintptr_t)<ptr>, with a cell scan that marks
-         the referent. Int / bool stay direct. Float / poly / by-value structs
-         don't fit a single int cell -- still deferred. */
-      int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
-      /* TY_FLOAT is handled by the native mrb_float-cell branch above. */
+      /* A pointer (string / array / hash / heap object) capture rides a real
+         typed-pointer cell (`T *_cell_x`): deref is an ordinary lvalue, so both
+         reads and reassignments work with no (mrb_int)(uintptr_t) cast, and the
+         existing cell scan marks the referent. Int / bool stay direct in an
+         mrb_int cell; float / poly have native cells above. */
+      int ptr_cell = cell_is_typed_ptr(c, lv);
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN && !ptr_cell)
         unsupported(c, s->def_node, "closure capturing a non-integer variable (later slice)");
-      const char *cell_scan = !ptr_cell ? "NULL"
-                            : (lv->type == TY_STRING ? "sp_cell_scan_str" : "sp_cell_scan_ptr");
-      buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, %s);\n", lv->name, cell_scan);
+      if (ptr_cell) {
+        const char *cell_scan = (lv->type == TY_STRING) ? "sp_cell_scan_str" : "sp_cell_scan_ptr";
+        buf_puts(b, "    "); emit_ctype(c, lv->type, b);
+        buf_printf(b, " *_cell_%s = (", lv->name); emit_ctype(c, lv->type, b);
+        buf_puts(b, " *)sp_gc_alloc(sizeof("); emit_ctype(c, lv->type, b);
+        buf_printf(b, "), NULL, %s);\n", cell_scan);
+        buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
+        if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
+        else buf_printf(b, "    *_cell_%s = NULL;\n", lv->name);
+        continue;
+      }
+      buf_printf(b, "    mrb_int *_cell_%s = (mrb_int *)sp_gc_alloc(sizeof(mrb_int), NULL, NULL);\n", lv->name);
       buf_printf(b, "    SP_GC_ROOT(_cell_%s);\n", lv->name);
-      if (lv->is_param && ptr_cell) buf_printf(b, "    *_cell_%s = (mrb_int)(uintptr_t)lv_%s;\n", lv->name, lv->name);
-      else if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
+      if (lv->is_param) buf_printf(b, "    *_cell_%s = lv_%s;\n", lv->name, lv->name);
       else buf_printf(b, "    *_cell_%s = 0;\n", lv->name);
       continue;
     }
@@ -725,6 +733,24 @@ int proc_body_node(Compiler *c, int create) {
 int proc_slot_is_direct(TyKind t) { return t == TY_INT || t == TY_BOOL || t == TY_SYMBOL || t == TY_NIL || t == TY_UNKNOWN; }
 int proc_slot_is_ptr(TyKind t) { return t == TY_STRING || ty_is_array(t) || ty_is_hash(t) || ty_is_object(t); }
 
+/* True if a closure cell for `lv` carries the variable's real typed pointer
+   (string / array / hash / object), as opposed to a laundered or scalar slot.
+   A typed-pointer cell is a plain `T *_cell_x` whose deref is an ordinary
+   lvalue, so reads and (re)assignments need no (mrb_int)(uintptr_t) cast. */
+int cell_is_typed_ptr(Compiler *c, LocalVar *lv) {
+  return lv && proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
+}
+
+/* Emit the C element type of `lv`'s closure cell (the cell itself is a pointer
+   to this). Proc cells launder sp_Proc* through mrb_int; int/bool ride mrb_int;
+   float/poly have native cells; a heap object uses its real pointer type. */
+void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b) {
+  if (lv && lv->type == TY_FLOAT) { buf_puts(b, "mrb_float"); return; }
+  if (lv && lv->type == TY_POLY) { buf_puts(b, "sp_RbVal"); return; }
+  if (cell_is_typed_ptr(c, lv)) { emit_ctype(c, lv->type, b); return; }
+  buf_puts(b, "mrb_int");
+}
+
 /* True if the AST subtree at `id` has a YieldNode, not crossing DefNode. */
 int proc_body_has_yield(Compiler *c, int id) {
   if (id < 0) return 0;
@@ -848,11 +874,10 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
     for (int i = 0; i < ncap; i++) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
       if (lv && lv->is_cell) {
-        /* a shared heap-cell pointer (see emit_scope_decls): float -> mrb_float*,
-           poly -> sp_RbVal*, everything else laundered through mrb_int*. */
-        const char *cty = (lv->type == TY_FLOAT) ? "mrb_float"
-                        : (lv->type == TY_POLY) ? "sp_RbVal" : "mrb_int";
-        buf_printf(&g_proc_protos, " %s *%s;", cty, caps.v[i]);
+        /* a shared cell pointer (see emit_scope_decls): float -> mrb_float*,
+           poly -> sp_RbVal*, heap object -> its typed pointer, else mrb_int*. */
+        buf_puts(&g_proc_protos, " "); emit_cell_elem_type(c, lv, &g_proc_protos);
+        buf_printf(&g_proc_protos, " *%s;", caps.v[i]);
       }
       else {
         TyKind ct = lv ? lv->type : TY_POLY;
@@ -917,9 +942,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
       if (lv && lv->is_cell) {
         /* unpack the shared cell pointer; reads/writes go through (*_cell_<name>)
            (emit_local_ref), so the write reaches the enclosing scope. */
-        const char *cty = (lv->type == TY_FLOAT) ? "mrb_float"
-                        : (lv->type == TY_POLY) ? "sp_RbVal" : "mrb_int";
-        buf_printf(pb, "    %s *_cell_%s = _fc->%s;\n", cty, caps.v[i], caps.v[i]);
+        buf_puts(pb, "    "); emit_cell_elem_type(c, lv, pb);
+        buf_printf(pb, " *_cell_%s = _fc->%s;\n", caps.v[i], caps.v[i]);
         buf_printf(pb, "    SP_GC_ROOT(_cell_%s);\n", caps.v[i]);
         continue;
       }
@@ -1329,10 +1353,9 @@ else if (orecv >= 0 && onm) {
     for (int i = 0; i < ncap; i++) {
       LocalVar *clv = scope_local(bs, caps.v[i]);
       /* a float capture rides a native mrb_float cell, a poly capture an
-         sp_RbVal cell (see emit_scope_decls). */
-      const char *cty = (clv && clv->type == TY_FLOAT) ? "mrb_float"
-                      : (clv && clv->type == TY_POLY) ? "sp_RbVal" : "mrb_int";
-      buf_printf(&g_procs, " %s *%s;", cty, caps.v[i]);
+         sp_RbVal cell, a heap object its typed pointer (see emit_scope_decls). */
+      buf_puts(&g_procs, " "); emit_cell_elem_type(c, clv, &g_procs);
+      buf_printf(&g_procs, " *%s;", caps.v[i]);
     }
     if (cap_self) buf_puts(&g_procs, " void *__self;");
     buf_printf(&g_procs, " } _proc_cap_%d;\n", pid);

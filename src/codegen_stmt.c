@@ -437,9 +437,10 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   /* A TY_PROC value lives in an int cell as (mrb_int)(uintptr_t)sp_Proc*. The
      write target must be the raw cell deref (an lvalue) with the pointer
      re-encoded as int; emit_local_ref's read form casts to sp_Proc* and is not
-     assignable (self-recursive `f = proc { f.call(...) }`). */
-  int laundered_cell = lv && (lv->type == TY_PROC ||
-                              (proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type)));
+     assignable (self-recursive `f = proc { f.call(...) }`). A heap-object cell
+     is a typed pointer whose deref is already assignable, so it takes the
+     ordinary `emit_local_ref = value` path below. */
+  int laundered_cell = lv && lv->type == TY_PROC;
   if (laundered_cell &&
       (lv->is_cell || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm)))) {
     if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm))

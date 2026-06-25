@@ -290,6 +290,8 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 void emit_proc_literal(Compiler *c, int create, Buf *b);
 int proc_slot_is_direct(TyKind t);
 int proc_slot_is_ptr(TyKind t);
+int cell_is_typed_ptr(Compiler *c, LocalVar *lv);
+void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b);
 void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int force_poly);
 void emit_case_expr(Compiler *c, int id, Buf *b);
 

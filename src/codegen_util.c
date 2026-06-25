@@ -261,14 +261,11 @@ int g_re_init_needed = 0;
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
   if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, name)) {
     /* A TY_PROC capture is stored as (mrb_int)(uintptr_t)sp_Proc* in the cell.
-       Cast it back to sp_Proc* so call sites work. */
+       Cast it back to sp_Proc* so call sites work. A heap-object cell is a real
+       typed pointer, so its deref is already the right lvalue (no cast). */
     LocalVar *clv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
     if (clv && clv->type == TY_PROC)
       buf_printf(b, "(sp_Proc *)(uintptr_t)(*((%s *)_cap)->%s)", g_cap_struct, name);
-    else if (clv && proc_slot_is_ptr(clv->type) && !comp_ty_value_obj(c, clv->type)) {
-      buf_puts(b, "("); emit_ctype(c, clv->type, b);
-      buf_printf(b, ")(uintptr_t)(*((%s *)_cap)->%s)", g_cap_struct, name);
-    }
     else
       buf_printf(b, "(*((%s *)_cap)->%s)", g_cap_struct, name);
     return;
@@ -276,9 +273,6 @@ void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
   LocalVar *lv = scope_node >= 0 ? scope_local(comp_scope_of(c, scope_node), name) : NULL;
   if (lv && lv->is_cell) {
     if (lv->type == TY_PROC) buf_printf(b, "(sp_Proc *)(uintptr_t)(*_cell_%s)", name);
-    else if (proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type)) {
-      buf_puts(b, "("); emit_ctype(c, lv->type, b); buf_printf(b, ")(uintptr_t)(*_cell_%s)", name);
-    }
     else buf_printf(b, "(*_cell_%s)", name);
     return;
   }

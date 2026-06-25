@@ -323,9 +323,17 @@ void mark_proc_captures(Compiler *c) {
         if (wn && !strcmp(wn, nm)) owned = 1;
       }
       if (owned) {
+        /* A fiber/generator now cells a captured heap object too (string /
+           array / hash / object), via a typed-pointer cell, so a reassignment
+           in the body reaches the enclosing scope. In-place mutation of a
+           non-reassigned capture stays by pointer (the var isn't `owned`, so it
+           never reaches here). Value-type objects have no stable pointer. */
+        int heap_ptr = (lv->type == TY_STRING || ty_is_array(lv->type) ||
+                        ty_is_hash(lv->type) || ty_is_object(lv->type)) &&
+                       !comp_ty_value_obj(c, lv->type);
         if (fib_create && lv->type != TY_INT && lv->type != TY_BOOL &&
-            lv->type != TY_FLOAT && lv->type != TY_POLY)
-          continue;   /* fiber capture of a heap object: shared by pointer, no cell */
+            lv->type != TY_FLOAT && lv->type != TY_POLY && !heap_ptr)
+          continue;   /* capture type without a usable cell: leave by value */
         lv->is_cell = 1;
       }
     }
@@ -2953,6 +2961,11 @@ void analyze_program(Compiler *c) {
     Scope *s = vn ? comp_scope_of(c, recv) : NULL;
     LocalVar *lv = s ? scope_local(s, vn) : NULL;
     if (!lv || lv->is_param || lv->type != TY_STRING) continue;
+    /* A captured-and-celled string stays TY_STRING so it rides a typed-pointer
+       cell: `<<` then reassigns through the cell (*_cell = concat(...)), which
+       propagates to the enclosing scope. A STRBUF's in-place buffer + read-time
+       demotion don't fit the cell's stable-pointer model. */
+    if (lv->is_cell) continue;
     /* Only promote when every write to this local is a bare string literal:
        such a value is a fresh mutable string. A `.freeze`/`.dup`/method-result
        write may carry runtime frozen state that sp_String_new would discard,
