@@ -655,12 +655,13 @@ static void collect_block_param_names(Compiler *c, int blk, NameSet *out) {
   if (rest >= 0) { const char *nm = nt_str(nt, rest, "name"); if (nm) nameset_add(out, nm); }
 }
 
-/* Collect every local name defined inside a fiber/generator body INCLUDING
-   nested blocks: local-variable writes plus the parameters of nested blocks.
-   A nested block (`3.times { |i| ... }`) is inlined into the fiber body's flat
-   C function, so its param `i` and any locals it writes must be declared
-   there. Unlike proc_collect_locals this descends through nested blocks. */
-static void fiber_collect_nested_locals(Compiler *c, int id, NameSet *out) {
+/* Collect every local name DEFINED inside a proc/fiber body INCLUDING nested
+   blocks: local-variable writes plus the parameters of nested blocks. A nested
+   block (`3.times { |i| ... }`) is inlined into the body's flat C function, so
+   its param `i` and any locals it writes must be declared there and must be
+   classified as body-local (not as a captured enclosing var). Unlike
+   proc_collect_locals this descends through nested blocks. */
+static void collect_locals_deep(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return;
@@ -670,14 +671,16 @@ static void fiber_collect_nested_locals(Compiler *c, int id, NameSet *out) {
     nameset_add(out, nt_str(c->nt, id, "name"));
   if (is_nested_block(ty)) collect_block_param_names(c, id, out);
   int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) fiber_collect_nested_locals(c, ch, out); }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) collect_locals_deep(c, ch, out); }
   int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) fiber_collect_nested_locals(c, ids[k], out); }
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) collect_locals_deep(c, ids[k], out); }
 }
 
-/* Collect all local names used (read or written) directly in the proc body,
-   not crossing nested blocks. The caller classifies each as the proc's own
-   param/local or a captured enclosing var (is_cell). */
+/* Collect all local names used (read or written) anywhere in the proc/fiber
+   body, INCLUDING nested blocks (which are inlined into the same flat C
+   function). The caller classifies each as the proc's own param/local, a
+   nested block's local, or a captured enclosing var (is_cell). Mirrors the
+   analyze-side a_collect_used so codegen captures match the is_cell marking. */
 void proc_collect_used(Compiler *c, int id, NameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
@@ -687,9 +690,9 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
       !strcmp(ty, "LocalVariableOrWriteNode") || !strcmp(ty, "LocalVariableAndWriteNode"))
     nameset_add(out, nt_str(c->nt, id, "name"));
   int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0 && !is_nested_block(nt_type(c->nt, ch))) proc_collect_used(c, ch, out); }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) proc_collect_used(c, ch, out); }
   int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0 && !is_nested_block(nt_type(c->nt, ids[k]))) proc_collect_used(c, ids[k], out); }
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) proc_collect_used(c, ids[k], out); }
 }
 
 /* The ParametersNode of a proc-creating node. A `->{}` LambdaNode carries it
@@ -833,7 +836,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
      locals PLUS the params/locals of any nested blocks inlined into it
      (a nested `3.times { |i| ... }` needs `i` declared here). */
   NameSet fib_decls = {0};
-  if (body >= 0) fiber_collect_nested_locals(c, body, &fib_decls);
+  if (body >= 0) collect_locals_deep(c, body, &fib_decls);
 
   /* Compute captures: names used in the body that belong to the enclosing scope
      but are NOT defined by the fiber body itself and NOT the block param. */
@@ -851,7 +854,10 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
       if (bp0 && !strcmp(nm, bp0)) continue;
       LocalVar *lv = scope_local(encl, nm);
       if (!lv || lv->type == TY_UNKNOWN) continue;
-      if (nameset_has(&fib_locals, nm) && !lv->is_cell) continue;
+      /* A name defined in the body (including a nested block's param/local) is
+         a body-local, not a capture -- unless it's a celled enclosing local
+         (then the write must reach the outer scope through the cell). */
+      if (nameset_has(&fib_decls, nm) && !lv->is_cell) continue;
       nameset_add(&caps, nm);
     }
   }
@@ -1166,7 +1172,10 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   NameSet params = {0}, used = {0}, locals = {0}, caps = {0};
   for (int k = 0; k < arity; k++) nameset_add(&params, proc_param_name(c, create, k));
   proc_collect_used(c, body, &used);
-  proc_collect_locals(c, body, &locals);
+  /* deep: include nested blocks' params/locals so a name used only inside a
+     nested block in the proc is classified as body-local, not flagged as an
+     uncaptured outer variable. */
+  collect_locals_deep(c, body, &locals);
   /* A float proc parameter still rides the truncating mrb_int arg slot, so a
      proc that takes one can't safely also enable float captures: keep the clean
      reject rather than emit a silently-wrong double. (Float args through the

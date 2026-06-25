@@ -202,17 +202,22 @@ void a_mark_subtree(Compiler *c, int id, char *inproc) {
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) a_mark_subtree(c, ids[k], inproc); }
 }
-/* Names used (read or written) directly in the proc body, not crossing nested
-   blocks. */
+/* Names used (read or written) anywhere in the proc/fiber body, INCLUDING
+   nested blocks. A nested block (`Fiber.new { 3.times { |i| acc += i } }`) is
+   inlined into the same flat C function as the body, so a use of an enclosing
+   local there must still be seen as a capture. A nested block's own params /
+   locals are collected too, but the caller's `owned` test (which requires a
+   non-proc write in the enclosing scope) classifies them as block-local, not
+   captures, so they are harmless. */
 void a_collect_used(Compiler *c, int id, ANameSet *out) {
   if (id < 0) return;
   const char *ty = nt_type(c->nt, id);
   if (!ty) return;
   if (a_is_local_node(ty)) aname_add(out, nt_str(c->nt, id, "name"));
   int nr = nt_num_refs(c->nt, id);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0 && !a_nested_block(nt_type(c->nt, ch))) a_collect_used(c, ch, out); }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0) a_collect_used(c, ch, out); }
   int na = nt_num_arrs(c->nt, id);
-  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0 && !a_nested_block(nt_type(c->nt, ids[k]))) a_collect_used(c, ids[k], out); }
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) a_collect_used(c, ids[k], out); }
 }
 int a_proc_params_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
