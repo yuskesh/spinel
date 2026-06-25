@@ -1,0 +1,10 @@
+["1", nil]
+[nil, "b", nil]
+[nil, nil, "c"]
+"baz"
+[[nil, "a"], ["1", nil], [nil, "b"], ["2", nil]]
+1
+2
+false
+true
+["a", "b"]

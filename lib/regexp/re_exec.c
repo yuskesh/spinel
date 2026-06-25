@@ -158,7 +158,9 @@ add_thread(pike_state *s, re_threadlist *list,
     string and after any '\n', independent of the /m flag (which in
     Ruby only makes `.` match '\n', i.e. DOTALL). `\A` (RE_BOT) is the
     absolute-start anchor. */
-      if (sp == s->str || (sp > s->str && sp[-1] == '\n')) {
+      /* A '\n' at the very end of the string does not start a new line, so
+         `^` must not match there (`"a\n".scan(/^/).size == 1`). */
+      if (sp == s->str || (sp > s->str && sp < s->str_end && sp[-1] == '\n')) {
         pc++; continue;
       }
       return;
@@ -331,15 +333,24 @@ pike_vm(const mrb_regexp_pattern *pat,
 
     if (sp >= str_end) break;
 
-    if (!match_only) {
-      /* Compact: copy live thread captures to the front of the pool. */
+    if (!match_only && curr.count > 0) {
+      /* Renumber each live thread's capture slot to its list index so the
+         pool can be reset to curr.count. Stage the copies through freshly
+         allocated tail slots first: writing straight to CAP(i) would clobber
+         a low slot that a later thread (index j > i) still needs to read
+         whenever the slot assignment is a non-identity permutation -- which
+         happens once alternation reorders threads relative to their slot
+         numbers. Tail slots are disjoint from every source slot, and the
+         final block copy to the front is disjoint because base >= count. */
+      int base = s.pool_next;
       for (int i = 0; i < curr.count; i++) {
-        if (curr.threads[i].cap_slot != i) {
-          memcpy(CAP(&s, i), CAP(&s, curr.threads[i].cap_slot),
-                 sizeof(int) * ncap);
-          curr.threads[i].cap_slot = i;
-        }
+        int dst = pool_alloc(&s);
+        memcpy(CAP(&s, dst), CAP(&s, curr.threads[i].cap_slot),
+               sizeof(int) * ncap);
+        curr.threads[i].cap_slot = i;
       }
+      memcpy(&s.cap_pool[0], &s.cap_pool[base * ncap],
+             sizeof(int) * ncap * curr.count);
       s.pool_next = curr.count;
     }
 
@@ -546,7 +557,7 @@ bt_match_depth(const mrb_regexp_pattern *pat, const char *str, const char *str_e
     case RE_BOL:
  /* Ruby `^`: always line-anchored (start of string or after '\n'),
     independent of /m. See the RE_BOL note in the NFA loop above. */
-      if (sp != str && !(sp > str && sp[-1] == '\n')) return FALSE;
+      if (sp != str && !(sp > str && sp < str_end && sp[-1] == '\n')) return FALSE;
       pc++;
       break;
 
