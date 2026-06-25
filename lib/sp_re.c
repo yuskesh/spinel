@@ -252,35 +252,85 @@ sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str) {
   }
   return arr;
 }
-sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str) {
+/* Forward decl from the regexp engine (lib/regexp/re_utf8.c). */
+int re_utf8_charlen(const char *s, const char *end);
+
+/* String#split(regexp[, limit]). Mirrors CRuby / upstream mruby-regexp
+   string_regexp.rb#split: a zero-width match steps past one whole (multibyte-
+   aware) character and never emits an empty leading field; capture groups are
+   spliced between the surrounding fields (unmatched optional groups are
+   omitted, like md[i].nil?); and with the default limit (0) trailing empty
+   fields are stripped. limit > 0 caps the field count (the last field is the
+   unsplit remainder); limit < 0 keeps trailing empties. An empty subject is
+   always []. */
+static void split_push_slice(sp_StrArray *arr, const char *str, int64_t from, int64_t to) {
+  int len = (int)(to - from);
+  char *m = sp_str_alloc_raw(len + 1);
+  memcpy(m, str + from, len); m[len] = 0;
+  sp_StrArray_push(arr, m);
+}
+
+sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, mrb_int limit) {
   sp_StrArray *arr = sp_StrArray_new();
-  int64_t slen = (int64_t)strlen(str); int64_t pos = 0; int caps[64];
-  while (pos <= slen) {
-    int n = re_exec(pat, str, slen, pos, caps, 64);
-    if (n <= 0 || caps[0] < 0) {
-      int len = slen - pos; char *m = sp_str_alloc_raw(len+1);
-      memcpy(m, str+pos, len); m[len] = 0; sp_StrArray_push(arr, m); break;
+  int64_t slen = (int64_t)strlen(str);
+
+  /* limit == 1: the whole string is the single field; "" splits to []. */
+  if (limit == 1) {
+    if (slen > 0) split_push_slice(arr, str, 0, slen);
+    return arr;
+  }
+
+  int64_t field_start = 0, search_pos = 0, count = 0;
+  int caps[64];
+  while (search_pos <= slen) {
+    if (limit > 0 && count >= limit - 1) {
+      split_push_slice(arr, str, field_start, slen);
+      return arr;
     }
-    int len = caps[0] - pos; char *m = sp_str_alloc_raw(len+1);
-    memcpy(m, str+pos, len); m[len] = 0; sp_StrArray_push(arr, m);
-    /* Issue #856: when the splitter regex has capture groups,
-       Ruby splices each captured substring into the result
-       between the surrounding segments (caps[2..n-1] hold groups
-       1..(n/2-1); group 0 is the whole match). */
+    int n = re_exec(pat, str, slen, search_pos, caps, 64);
+    if (n <= 0 || caps[0] < 0) break;
+    int64_t match_start = caps[0], match_end = caps[1];
+
+    if (match_start == match_end) {
+      /* zero-width: advance past one whole character so multibyte text is
+         not split between bytes. */
+      if (match_end < slen) {
+        search_pos = match_end + re_utf8_charlen(str + match_end, str + slen);
+      }
+      else {
+        search_pos = match_end + 1;
+      }
+      if (match_start == field_start) continue;  /* nothing to emit yet */
+    }
+
+    split_push_slice(arr, str, field_start, match_start);
+    count++;
+    field_start = match_end;
+    if (match_start != match_end) search_pos = match_end;
+
+    /* Splice captured groups (caps[0] is the whole match; groups 1.. follow).
+       Unmatched optional groups are skipped, matching CRuby. */
     for (int gi = 1; (gi * 2) + 1 < n; gi++) {
       if (caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
-        int glen = caps[(gi*2)+1] - caps[gi*2];
-        char *gm = sp_str_alloc_raw(glen+1);
-        memcpy(gm, str + caps[gi*2], glen); gm[glen] = 0;
-        sp_StrArray_push(arr, gm);
-      }
-else {
-        sp_StrArray_push(arr, sp_str_empty);
+        split_push_slice(arr, str, caps[gi*2], caps[(gi*2)+1]);
       }
     }
-    pos = caps[1]; if (caps[0] == caps[1]) pos++;
+  }
+
+  /* Trailing field (omitted for an empty subject, or when stripped below). */
+  if (slen > 0 && field_start <= slen && (field_start < slen || limit != 0)) {
+    split_push_slice(arr, str, field_start, slen);
+  }
+
+  /* Default limit strips trailing empty fields. */
+  if (limit == 0) {
+    while (arr->len > 0 && arr->data[arr->len - 1][0] == '\0') arr->len--;
   }
   return arr;
+}
+
+sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str) {
+  return sp_re_split_limit(pat, str, 0);
 }
 mrb_int sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str)  { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? SP_INT_NIL : n; }
 sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }

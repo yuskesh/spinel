@@ -2367,6 +2367,10 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "split") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         buf_printf(b, "sp_re_split(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
+      else if (sp_streq(name, "split") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_split_limit(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
+        emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                !re_has_captures(re_lit_src(c, argv[0]))) {
         buf_printf(b, "sp_re_scan(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);

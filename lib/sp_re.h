@@ -48,6 +48,7 @@ const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep
 const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep);
 sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str);
 sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str);
+sp_StrArray *sp_re_split_limit(mrb_regexp_pattern *pat, const char *str, mrb_int limit);
 mrb_int sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str);
 sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str);
 sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str);
