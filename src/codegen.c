@@ -577,8 +577,55 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_self_deref = (s->class_id >= 0 && !s->is_cmethod && c->classes[s->class_id].is_value_type &&
                   s->name && strcmp(s->name, "initialize")) ? "." : "->";
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
-  if (method_is_void(s)) {
+  int is_void = method_is_void(s);
+  /* A method that creates a non-lambda proc with a `return` owns a proc-return
+     frame: a setjmp target the proc longjmps to. All returns funnel through a
+     single exit (_pr_done) that pops the frame, so the setjmp buffer is never
+     left live past the method. */
+  int si = (int)(s - c->scopes);
+  int pr_frame = !s->is_lowered_yield && scope_creates_returning_proc(c, si);
+  /* The setjmp catch returns directly (no goto) so it never jumps over a later
+     GC-root cleanup local; the body runs inside a `{ }` block so a funnel
+     `goto _pr_done` only ever exits that block (running its cleanups). On the
+     longjmp path SP_GC_SAVE's cleanup restores the GC roots when the catch
+     returns. */
+  if (pr_frame) {
+    /* Push a home node onto the per-fiber proc-return chain (CRuby tag-chain
+       style): the node lives on this method's C stack, its fresh id is captured
+       by the returning procs it creates, and every exit (setjmp catch + _pr_done)
+       unlinks it. val starts nil so a GC before any return marks nothing. */
+    buf_puts(b, "    sp_proc_home _h;\n");
+    buf_puts(b, "    _h.val = sp_box_nil(); _h.id = sp_proc_home_seq++;\n");
+    buf_puts(b, "    _h.exc_top = sp_exc_top; _h.catch_top = sp_catch_top;\n");
+    buf_puts(b, "    _h.prev = sp_proc_ret_head; sp_proc_ret_head = &_h;\n");
+    if (!is_void) {
+      buf_puts(b, "    "); emit_ctype(c, s->ret, b); buf_puts(b, " _prret = ");
+      if (ty_is_object(s->ret) && !comp_ty_value_obj(c, s->ret)) buf_puts(b, "NULL");
+      else buf_puts(b, default_value(s->ret));
+      buf_puts(b, ";\n");
+      /* the longjmp-home delivery also restores sp_catch_top: a return out of a
+         catch block inside the home (or a callee) must not leak its catch slot. */
+      buf_puts(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; return ");
+      emit_unbox_text(c, s->ret, "_h.val", b);
+      buf_puts(b, "; }\n");
+    }
+    else {
+      buf_puts(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; return; }\n");
+    }
+    buf_puts(b, "    {\n");
+    g_method_pr_label = "_pr_done"; g_method_pr_var = is_void ? NULL : "_prret";
+  }
+  const char *sv_rv2 = g_result_var; int sv_rp2 = g_result_poly;
+  if (pr_frame && !is_void) { g_result_var = "_prret"; g_result_poly = (s->ret == TY_POLY); }
+
+  if (is_void) {
     emit_stmts(c, s->body, b, 1);
+    if (pr_frame) { buf_puts(b, "    }\n  _pr_done: ;\n  sp_proc_ret_head = _h.prev;\n"); }
+  }
+  else if (pr_frame) {
+    emit_stmts_tail(c, s->body, b, 1);
+    g_result_var = sv_rv2; g_result_poly = sv_rp2;
+    buf_puts(b, "    }\n  _pr_done: ;\n  sp_proc_ret_head = _h.prev;\n  return _prret;\n");
   }
   else {
     emit_stmts_tail(c, s->body, b, 1);
@@ -589,6 +636,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     }
     else buf_printf(b, "%s;\n", default_value(s->ret));
   }
+  g_result_var = sv_rv2; g_result_poly = sv_rp2;
+  g_method_pr_label = NULL; g_method_pr_var = NULL;
   g_self_deref = saved_deref;
   g_ret_type = saved_rt; g_ensure_depth = saved_ed;
   g_emitting_class_id = saved_emcls;
@@ -765,6 +814,65 @@ int proc_body_has_yield(Compiler *c, int id) {
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (proc_body_has_yield(c, ch)) return 1; }
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (proc_body_has_yield(c, ids[k])) return 1; }
+  return 0;
+}
+
+/* When walking a proc body for a `return`, recurse from `id` into child `ch`?
+   Descend into an INLINED iteration block (a BlockNode owned by an ordinary
+   method call) so a `return` there is seen as non-local to the home method --
+   but NOT into a nested proc/lambda literal (whose `return` is its own). A
+   BlockNode is only ever the `block` ref of its owner, so `id` is that owner;
+   skip the block when the owner is a proc/lambda literal. LambdaNode/DefNode
+   children are stopped by proc_body_has_return's own type checks. */
+static int proc_return_descend(Compiler *c, int id, int ch) {
+  const char *t = nt_type(c->nt, ch);
+  if (!t) return 0;
+  if (!strcmp(t, "BlockNode")) return !is_proc_literal(c, id);
+  return 1;
+}
+
+/* True if the proc body subtree contains a `return` that belongs to this proc:
+   its own returns, plus returns inside inlined iteration blocks (those are also
+   non-local to the home method). Does not descend into a nested proc/lambda
+   literal or a def, whose returns are their own. */
+int proc_body_has_return(Compiler *c, int id) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(c->nt, id);
+  if (!ty) return 0;
+  if (!strcmp(ty, "ReturnNode")) return 1;
+  if (!strcmp(ty, "DefNode") || !strcmp(ty, "LambdaNode")) return 0;
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(c->nt, id, i); if (ch >= 0 && proc_return_descend(c, id, ch) && proc_body_has_return(c, ch)) return 1; }
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0 && proc_return_descend(c, id, ids[k]) && proc_body_has_return(c, ids[k])) return 1; }
+  return 0;
+}
+
+/* A `proc {}` / `Proc.new {}` literal (non-lambda) whose body does a `return`:
+   that `return` must return from the method that created the proc, so the proc
+   longjmps to the home method's proc-return frame instead of returning locally.
+   Lambdas and bare blocks are excluded (their `return` is local / inlined). */
+int proc_does_nonlocal_return(Compiler *c, int create) {
+  const char *cty = nt_type(c->nt, create);
+  if (!cty || strcmp(cty, "CallNode")) return 0;          /* proc/Proc.new are calls */
+  const char *cn = nt_str(c->nt, create, "name");
+  if (!cn) return 0;
+  int recv = nt_ref(c->nt, create, "receiver");
+  int is_proc = (recv < 0 && !strcmp(cn, "proc"));
+  int is_proc_new = (!strcmp(cn, "new") && recv >= 0 &&
+                     nt_type(c->nt, recv) && !strcmp(nt_type(c->nt, recv), "ConstantReadNode") &&
+                     nt_str(c->nt, recv, "name") && !strcmp(nt_str(c->nt, recv, "name"), "Proc"));
+  if (!is_proc && !is_proc_new) return 0;
+  if (nt_ref(c->nt, create, "block") < 0) return 0;
+  return proc_body_has_return(c, proc_body_node(c, create));
+}
+
+/* True if scope `si` (a method) lexically creates a returning proc, so the
+   method must set up a proc-return frame. Blocks/procs share their method's
+   scope, so a returning proc's create node is nscope == si. */
+int scope_creates_returning_proc(Compiler *c, int si) {
+  for (int id = 0; id < c->nt->count; id++)
+    if (c->nscope[id] == si && proc_does_nonlocal_return(c, id)) return 1;
   return 0;
 }
 
@@ -1264,11 +1372,13 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
      so the value is not lost. (tail_ret_arg stays -1 when the tail is not a
      single-value return.) The body return type is that effective tail's type. */
   int tail_ret_arg = -1;
+  int tail_is_return = 0;
   TyKind ret = TY_NIL;
   { int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     if (bn > 0) {
       const char *tty = nt_type(nt, bb[bn - 1]);
       if (tty && !strcmp(tty, "ReturnNode")) {
+        tail_is_return = 1;
         int rargs = nt_ref(nt, bb[bn - 1], "arguments");
         int ran = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &ran) : NULL;
         if (ran == 1) tail_ret_arg = rav[0];
@@ -1276,10 +1386,20 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       ret = comp_ntype(c, tail_ret_arg >= 0 ? tail_ret_arg : bb[bn - 1]);
     }
   }
+  /* A non-lambda proc whose body does `return` returns non-locally to the method
+     that created it (only meaningful inside a method that set up a proc-return
+     frame). Every `return` becomes a longjmp to that frame. When the tail
+     statement is itself a `return`, the proc always longjmps -- the trampoline's
+     own (fall-through) value is dead, so carry no value (return 0) and let
+     emit_return throw. But when the tail is a plain expression, that expression
+     IS the proc's value on the fall-through path (no `return` fired): keep the
+     analyzed `ret` and emit it normally, so the value is not lost. */
+  int ret_proc = (g_method_pr_label != NULL) && proc_does_nonlocal_return(c, create);
+  if (ret_proc && tail_is_return) { tail_ret_arg = -1; ret = TY_NIL; }
   /* A block passed as a method's &block argument must return the value type the
      method expects across all its call sites (its blk_ret): if that unified type
      is poly, return poly here so the sp_proc_call ABI is consistent. */
-  if (ret != TY_POLY) {
+  if (ret != TY_POLY && !ret_proc) {
     int owner = -1;
     for (int oid = 0; oid < nt->count; oid++) if (nt_ref(nt, oid, "block") == create) { owner = oid; break; }
     if (owner >= 0 && nt_type(nt, owner) && !strcmp(nt_type(nt, owner), "CallNode")) {
@@ -1357,7 +1477,7 @@ else if (orecv >= 0 && onm) {
      the cap struct itself first (sp_Proc_scan does not), then each cell --
      matching the sp_hashproc convention; marking only the cells would leave
      the cap struct unreachable and free it out from under the proc. */
-  if (ncap > 0 || cap_self) {
+  if (ncap > 0 || cap_self || ret_proc) {
     buf_printf(&g_procs, "typedef struct {");
     for (int i = 0; i < ncap; i++) {
       LocalVar *clv = scope_local(bs, caps.v[i]);
@@ -1367,6 +1487,7 @@ else if (orecv >= 0 && onm) {
       buf_printf(&g_procs, " *%s;", caps.v[i]);
     }
     if (cap_self) buf_puts(&g_procs, " void *__self;");
+    if (ret_proc) buf_puts(&g_procs, " mrb_int _home;");  /* home method's proc-return id (sp_proc_home.id) */
     buf_printf(&g_procs, " } _proc_cap_%d;\n", pid);
     buf_printf(&g_procs, "static void _proc_cap_scan_%d(void *p) {\n", pid);
     buf_printf(&g_procs, "  sp_gc_mark(p);\n");
@@ -1384,6 +1505,14 @@ else if (orecv >= 0 && onm) {
   TyKind sv_rt = g_ret_type; int sv_rp = g_result_poly;
   const char *sv_cap_struct = g_cap_struct; NameSet *sv_cap_names = g_cap_names;
   int sv_ensure_depth = g_ensure_depth;
+  /* The proc body is a fresh function: the method's proc-return funnel does not
+     apply, but a non-local `return` longjmps to the home frame read from the
+     capture. Save/clear the method funnel and set the proc-return home accessor. */
+  const char *sv_pr_label = g_method_pr_label, *sv_pr_var = g_method_pr_var, *sv_prh = g_proc_return_home;
+  g_method_pr_label = NULL; g_method_pr_var = NULL;
+  char home_acc[48] = "";
+  if (ret_proc) { snprintf(home_acc, sizeof home_acc, "((_proc_cap_%d *)_cap)->_home", pid); g_proc_return_home = home_acc; }
+  else g_proc_return_home = NULL;
   g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
   char cap_struct_name[32] = "";
@@ -1393,7 +1522,7 @@ else if (orecv >= 0 && onm) {
   Buf *pb = &g_procs;
   buf_printf(pb, "static mrb_int _proc_%d(void *_cap, mrb_int argc, mrb_int *args) {\n", pid);
   buf_puts(pb, "    SP_GC_SAVE();\n");
-  if (ncap == 0 && !cap_self) buf_puts(pb, "    (void)_cap;\n");
+  if (ncap == 0 && !cap_self && !ret_proc) buf_puts(pb, "    (void)_cap;\n");
   buf_puts(pb, "    (void)args;\n");
   buf_puts(pb, "    (void)argc;\n");
   /* Captured instance self, read back from _cap (#1436). (void) guards the
@@ -1512,8 +1641,9 @@ else if (orecv >= 0 && onm) {
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
   g_result_poly = sv_rp;
+  g_method_pr_label = sv_pr_label; g_method_pr_var = sv_pr_var; g_proc_return_home = sv_prh;
 
-  if (ncap == 0 && !cap_self) {
+  if (ncap == 0 && !cap_self && !ret_proc) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",
                pid, meta_arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
   }
@@ -1531,6 +1661,9 @@ else if (orecv >= 0 && onm) {
       for (int i = 0; i < ncap; i++) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->%s = _cell_%s;\n", pid, caps.v[i], caps.v[i]); }
       /* Capture the enclosing instance self by pointer (#1436). */
       if (cap_self) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->__self = (void *)%s;\n", pid, sv_self ? sv_self : "self"); }
+      /* Capture the home method's proc-return frame so the proc's `return`
+         longjmps to it (the creating method declared `_pr`). */
+      if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = _h.id;\n", pid); }
     }
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
                pid, pid, pid, meta_arity, is_lambda ? "TRUE" : "FALSE", arity, meta_args);
@@ -1559,7 +1692,8 @@ int is_exc_name(const char *n) {
     "KeyError", "RangeError", "IOError", "EOFError",
     "ZeroDivisionError", "NotImplementedError", "StopIteration",
     "FloatDomainError", "Math_DomainError", "FrozenError", "EncodingError",
-    "LoadError", "RegexpError", "StringScanner_Error", "FiberError", NULL
+    "LoadError", "RegexpError", "StringScanner_Error", "FiberError",
+    "UncaughtThrowError", NULL
   };
   for (int i = 0; EX[i]; i++) if (!strcmp(n, EX[i])) return 1;
   return 0;

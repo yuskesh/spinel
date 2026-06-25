@@ -1,0 +1,3 @@
+  inner ensure
+ensure ran (10)
+outer-value

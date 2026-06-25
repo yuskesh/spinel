@@ -113,6 +113,13 @@ extern const char *g_result_var;
 /* When g_result_var is set, whether that result slot is poly (so a scalar
    tail value must be boxed into it). */
 extern int g_result_poly;
+/* Non-lambda proc `return`: a method owning a proc-return frame routes every
+   `return` to a single exit (g_method_pr_label) that pops the frame, storing
+   the value in g_method_pr_var; a returning proc's body longjmps to the home
+   frame named by g_proc_return_home (a C expr reading the proc's capture). */
+extern const char *g_method_pr_label;
+extern const char *g_method_pr_var;
+extern const char *g_proc_return_home;
 /* Return type of the method currently being emitted, so a tail/return value
    can be boxed when the method returns poly but the value is concrete. */
 extern TyKind g_ret_type;
@@ -488,6 +495,9 @@ int proc_body_node(Compiler *c, int create);
 int proc_slot_is_direct(TyKind t);
 int proc_slot_is_ptr(TyKind t);
 int proc_body_has_yield(Compiler *c, int id);
+int proc_body_has_return(Compiler *c, int id);
+int proc_does_nonlocal_return(Compiler *c, int create);
+int scope_creates_returning_proc(Compiler *c, int si);
 int fiber_cap_needs_root(TyKind t);
 int fiber_body_uses_self(Compiler *c, int id);
 void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen);

@@ -1429,7 +1429,9 @@ else {
       /* diverging expression like raise: emit as stmt (no assignment) */
       emit_expr(c, e, b); buf_puts(b, ";");
     }
-    buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  ");
+    buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  "
+                "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n  "
+                "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n  ");
     /* rescue arm */
     if (r >= 0) {
       buf_printf(b, "_t%d = ", t);

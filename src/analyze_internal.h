@@ -119,8 +119,7 @@ TyKind scan_break_type(Compiler *c, int id, int depth);
 TyKind scan_throw_type(Compiler *c, int id, int depth);
 TyKind yield_value_type(Compiler *c, int mi);
 TyKind method_call_ret(Compiler *c, int mi, int call_id);
-int is_proc_constant(const NodeTable *nt, int n);
-int is_proc_literal(Compiler *c, int id);
+/* is_proc_constant / is_proc_literal are declared in analyze.h (codegen needs them). */
 int is_proc_create(Compiler *c, int id);
 TyKind proc_node_ret(Compiler *c, int create);
 TyKind proc_ret_of(Compiler *c, int node);
