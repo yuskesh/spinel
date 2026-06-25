@@ -1770,6 +1770,34 @@ static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_in
 static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp <= 0) : FALSE; }
 static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp > 0) : FALSE; }
 static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp >= 0) : FALSE; }
+/* Stable ascending sort of idx[0..n) by the poly key keys[idx[k]], leaving equal
+   (or incomparable) keys in their original relative order. Backs sort_by's
+   Schwartzian lowering: keys are precomputed once per element, so the comparator
+   never re-runs the block. Bottom-up merge sort -- stable by construction, O(n log
+   n), and (unlike qsort) carries the key array without a non-portable qsort_r. */
+static void sp_sort_idx_by_poly(mrb_int *idx, const sp_RbVal *keys, mrb_int n) {
+  if (n < 2) return;
+  mrb_int *tmp = (mrb_int *)malloc(sizeof(mrb_int) * (size_t)n);
+  if (!tmp) sp_oom_die();
+  mrb_int *src = idx, *dst = tmp;
+  for (mrb_int width = 1; width < n; width *= 2) {
+    for (mrb_int lo = 0; lo < n; lo += 2 * width) {
+      mrb_int mid = lo + width < n ? lo + width : n;
+      mrb_int hi = lo + 2 * width < n ? lo + 2 * width : n;
+      mrb_int i = lo, j = mid, k = lo;
+      while (i < mid && j < hi) {
+        mrb_bool ok; mrb_int c = sp_poly_cmp(keys[src[i]], keys[src[j]], &ok);
+        if (!ok || c <= 0) dst[k++] = src[i++];   /* left wins ties -> stable */
+        else dst[k++] = src[j++];
+      }
+      while (i < mid) dst[k++] = src[i++];
+      while (j < hi) dst[k++] = src[j++];
+    }
+    mrb_int *t = src; src = dst; dst = t;   /* ping-pong buffers; no per-level copy */
+  }
+  if (src != idx) for (mrb_int x = 0; x < n; x++) idx[x] = src[x];   /* odd #levels: result is in tmp */
+  free(tmp);
+}
 static sp_RbVal sp_poly_div(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_poly_to_f(a) / sp_poly_to_f(b)); return sp_box_int(sp_idiv(sp_poly_to_i(a), sp_poly_to_i(b))); }
 static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(fmod(sp_poly_to_f(a), sp_poly_to_f(b))); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }
 /* clamp on a boxed numeric: float path when any operand is a float (NaN/order

@@ -2098,46 +2098,52 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   if (!ty_is_array(rt)) return 0;
   const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
-  TyKind et = ty_array_elem(rt);
-  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  const char *p0_orig = block_param_name(c, block, 0);
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
   TyKind kt = comp_ntype(c, bb[bn - 1]);
   if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING && kt != TY_POLY) return 0;  /* scalar or poly key */
-  int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp, tka = ++g_tmp, tkb = ++g_tmp;
+
+  /* Schwartzian transform: compute each element's sort key exactly once (CRuby
+     semantics -- the old bubble sort re-ran the block per comparison), stable-sort
+     the indices by key, then gather the elements in sorted order. Non-mutating:
+     the receiver is read by sorted index into a fresh result, never reordered. */
+  int trv = ++g_tmp, tn = ++g_tmp, tkeys = ++g_tmp, tidx = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tg = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv);
-  buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-  /* copy so the receiver is left unsorted (sort_by is non-mutating) */
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-  buf_printf(g_pre, " _t%d = sp_%sArray_slice(_t%d, 0, sp_%sArray_length(_t%d));\n", tr, k, trv, k, trv);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, tr);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d - 1; _t%d++)\n", ti, ti, tn, ti);
-  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d - 1 - _t%d; _t%d++) {\n", tj, tj, tn, ti, tj);
-  emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d);\n", ta, k, tr, tj);
-  emit_indent(g_pre, g_indent + 2); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = sp_%sArray_get(_t%d, _t%d + 1);\n", tb, k, tr, tj);
-  int save = g_indent; g_indent += 2;
-  /* key of _ta */
-  if (p0) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, ta); }
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
-  Buf ka; memset(&ka, 0, sizeof ka); emit_expr(c, bb[bn - 1], &ka);
-  emit_indent(g_pre, g_indent); emit_ctype(c, kt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tka, ka.p ? ka.p : "0"); free(ka.p);
-  /* key of _tb */
-  if (p0) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "lv_%s = _t%d;\n", p0, tb); }
-  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+  buf_printf(g_pre, " _t%d = %s;\n", trv, rb.p ? rb.p : ""); free(rb.p);
+  /* root the receiver: the key loop allocates (boxing keys, growing the key/index
+     arrays), so a freshly-built receiver held only here must survive a mid-build GC */
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trv);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, trv);
+  /* boxed keys (rooted so they survive later iterations' allocations) + indices */
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tkeys, tkeys);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);\n", tidx, tidx);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+  if (p0) {
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trv, ti);
+  }
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  int save = g_indent; g_indent += 1;
   Buf kb; memset(&kb, 0, sizeof kb); emit_expr(c, bb[bn - 1], &kb);
-  emit_indent(g_pre, g_indent); emit_ctype(c, kt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tkb, kb.p ? kb.p : "0"); free(kb.p);
   g_indent = save;
-  emit_indent(g_pre, g_indent + 2);
-  if (kt == TY_STRING) buf_printf(g_pre, "if (strcmp(_t%d, _t%d) > 0) {", tka, tkb);
-  else if (kt == TY_POLY) { int tcmp = ++g_tmp; buf_printf(g_pre, "{ mrb_bool _tcmp%d = 0; if (sp_poly_cmp(_t%d, _t%d, &_tcmp%d) > 0 && _tcmp%d) {", tcmp, tka, tkb, tcmp, tcmp); }
-  else buf_printf(g_pre, "if (_t%d > _t%d) {", tka, tkb);
-  buf_printf(g_pre, " sp_%sArray_set(_t%d, _t%d, _t%d); sp_%sArray_set(_t%d, _t%d + 1, _t%d); }%s\n",
-             k, tr, tj, tb, k, tr, tj, ta, kt == TY_POLY ? " }" : "");
-  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
-  buf_printf(b, "_t%d", tr);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tkeys);
+  if (kt == TY_POLY) buf_puts(g_pre, kb.p ? kb.p : "sp_box_nil()");
+  else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, kt, kb.p ? kb.p : "0", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+  buf_puts(g_pre, ");\n"); free(kb.p);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_IntArray_push(_t%d, _t%d);\n", tidx, ti);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_sort_idx_by_poly(_t%d->data + _t%d->start, _t%d->data, _t%d);\n", tidx, tidx, tkeys, tn);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+  buf_printf(g_pre, " _t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", tres, k, tres);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, tn, tg);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, sp_IntArray_get(_t%d, _t%d)));\n", k, tres, k, trv, tidx, tg);
+  buf_printf(b, "_t%d", tres);
   return 1;
 }
 
