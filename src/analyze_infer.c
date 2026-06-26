@@ -1992,7 +1992,8 @@ else {
   if (recv >= 0 && exc_shaped) {
     if (sp_streq(name, "message") || sp_streq(name, "to_s") ||
         sp_streq(name, "to_str") || sp_streq(name, "inspect") ||
-        sp_streq(name, "full_message") || sp_streq(name, "class")) return TY_STRING;
+        sp_streq(name, "full_message") || sp_streq(name, "detailed_message") ||
+        sp_streq(name, "class")) return TY_STRING;
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
   }
 
