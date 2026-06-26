@@ -101,6 +101,13 @@ static inline mrb_int sp_imod(mrb_int a, mrb_int b) {
   if ((r != 0) && ((r ^ b) < 0)) r += b;
   return r;
 }
+/* Float#% (and Integer % Float): floored modulo whose result takes the sign of
+   the divisor, unlike C fmod which follows the dividend (-5.5 % 2 == 0.5). */
+static inline double sp_fmod(double a, double b) {
+  double r = fmod(a, b);
+  if (r != 0.0 && ((r < 0.0) != (b < 0.0))) r += b;
+  return r;
+}
 /* Integer#remainder: truncated remainder (sign follows the dividend, i.e. plain
    C `%`), unlike the floored sp_imod. Zero divisor raises like sp_imod/sp_idiv. */
 static inline mrb_int sp_iremainder(mrb_int a, mrb_int b) {
