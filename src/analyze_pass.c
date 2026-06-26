@@ -2188,6 +2188,56 @@ int desugar_implicit_send(Compiler *c) {
   return changed;
 }
 
+/* `:sym.to_proc.call(recv, *args)` -> `recv.sym(*args)`. An explicit Symbol#to_proc
+   followed by a call applies the named method to the first argument; with both the
+   symbol and the call site statically known, it rewrites to an ordinary method call
+   and the normal dispatch handles it. (The `&:sym` block form lowers separately; a
+   to_proc whose receiver isn't a literal symbol, or that isn't immediately called,
+   is left alone.) Mirrors desugar_implicit_send's node-retarget model. */
+int desugar_symbol_to_proc_call(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;  /* snapshot: synthetic nodes are appended past here */
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "call")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) continue;
+    const char *rnm = nt_str(nt, recv, "name");
+    if (!rnm || !sp_streq(rnm, "to_proc")) continue;
+    int rargs = nt_ref(nt, recv, "arguments");
+    if (rargs >= 0) { int rc = 0; nt_arr(nt, rargs, "arguments", &rc); if (rc != 0) continue; }
+    int sym = nt_ref(nt, recv, "receiver");
+    if (sym < 0 || !nt_type(nt, sym) || !sp_streq(nt_type(nt, sym), "SymbolNode")) continue;
+    const char *mname = nt_str(nt, sym, "value");
+    if (!mname || !*mname) continue;
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || !argv) continue;            /* needs the receiver argument */
+    int newrecv = argv[0];
+    int nrest = argc - 1;
+    if (nrest > 64) continue;
+    int rest[64];
+    for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];  /* copy before realloc */
+    char namebuf[256];
+    snprintf(namebuf, sizeof namebuf, "%s", mname);         /* copy before realloc */
+    int base = nt->count;
+    int newargs = nt_new_node(nt, "ArgumentsNode");
+    if (newargs < 0) continue;
+    nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
+    nt_node_set_ref(nt, id, "receiver", newrecv);           /* receiver = first arg */
+    nt_node_set_str(nt, id, "name", namebuf);               /* call the named method */
+    nt_node_set_ref(nt, id, "arguments", newargs);          /* drop the receiver arg */
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Resolve a forwarded callable reference (`&inline_lambda` / `&proc_var` /
    `&method(:m)`) to the body statements and parameters of its definition.
    Returns 1 with *out_body / *out_pn set, else 0. Mirrors fwd_callable_arity's
