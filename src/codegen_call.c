@@ -5500,6 +5500,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_sprintf(\"%%s: %%s\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
       return;
     }
+    /* detailed_message -> "message (ClassName)" (kwargs like highlight: ignored) */
+    if (sp_streq(name, "detailed_message")) {
+      int t = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
+      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      buf_printf(b, "sp_sprintf(\"%%s (%%s)\", sp_exc_message(_t%d), sp_exc_class_name(_t%d))", t, t);
+      return;
+    }
     if (sp_streq(name, "inspect")) {
       /* #<ClassName: message> */
       int t = ++g_tmp;
