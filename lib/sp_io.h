@@ -28,6 +28,12 @@ void sp_File_print(sp_File *f, const char *s);
 mrb_int sp_File_flush(sp_File *f);
 mrb_bool sp_File_eof_p(sp_File *f);
 
+/* STDOUT / STDERR as shared IO handles wrapping the C stdout/stderr streams.
+   The handle is a function-local static (stdout/stderr are not constant
+   initializers) and is never closed. */
+sp_File *sp_io_stdout(void);
+sp_File *sp_io_stderr(void);
+
 /* File metadata predicates (libc/WinAPI only; defined in sp_io.c). */
 mrb_bool sp_file_directory(const char *path);
 mrb_bool sp_file_file(const char *path);

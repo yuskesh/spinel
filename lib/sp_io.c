@@ -51,8 +51,23 @@ mrb_int sp_File_write(sp_File *f, const char *s) {
   return (mrb_int)fwrite(s, 1, n, f->fp);
 }
 
+sp_File *sp_io_stdout(void) {
+  static sp_File f = { NULL, "<STDOUT>", "w" };
+  if (!f.fp) f.fp = stdout;
+  return &f;
+}
+
+sp_File *sp_io_stderr(void) {
+  static sp_File f = { NULL, "<STDERR>", "w" };
+  if (!f.fp) f.fp = stderr;
+  return &f;
+}
+
 mrb_int sp_File_close(sp_File *f) {
-  if (f && f->fp) { fclose(f->fp); f->fp = NULL; }
+  /* never fclose the shared stdout/stderr handles (sp_io_stdout/sp_io_stderr):
+     closing the process's standard streams would corrupt the singleton and any
+     later write through it. Closing them is a no-op. */
+  if (f && f->fp && f->fp != stdout && f->fp != stderr) { fclose(f->fp); f->fp = NULL; }
   return 0;
 }
 

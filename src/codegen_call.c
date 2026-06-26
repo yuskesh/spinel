@@ -5079,17 +5079,27 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_File_readlines(%s)", r); free(rb.p); return;
     }
     if (sp_streq(name, "write") || sp_streq(name, "syswrite")) {
-      if (argc >= 1) { buf_printf(b, "sp_File_write(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (argc >= 1) {
+        buf_printf(b, "sp_File_write(%s, ", r);
+        if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+        else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+        buf_puts(b, ")");
+      }
       else buf_puts(b, "0");
       free(rb.p); return;
     }
     if (sp_streq(name, "print") || sp_streq(name, "puts")) {
-      /* emit as a statement-like expression: print each arg, return nil */
+      /* emit as a statement-like expression: print each arg, return nil.
+         Non-string args are stringified via sp_poly_to_s (sp_File_write wants
+         a char *), matching Kernel#puts/#print coercion. */
       int t = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "({ ");
       for (int k = 0; k < argc; k++) {
-        buf_printf(g_pre, "sp_File_write(%s, ", r); emit_expr(c, argv[k], g_pre); buf_puts(g_pre, "); ");
+        buf_printf(g_pre, "sp_File_write(%s, ", r);
+        if (comp_ntype(c, argv[k]) == TY_STRING) emit_expr(c, argv[k], g_pre);
+        else { buf_puts(g_pre, "sp_poly_to_s("); emit_boxed(c, argv[k], g_pre); buf_puts(g_pre, ")"); }
+        buf_puts(g_pre, "); ");
       }
       if (sp_streq(name, "puts")) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
       buf_puts(g_pre, "});\n");
@@ -10023,6 +10033,18 @@ else {
         return;
       }
       if (sp_streq(name, "flush")) { buf_printf(b, "fflush(%s)", fd); return; }
+      if (sp_streq(name, "write") || sp_streq(name, "syswrite")) {
+        /* IO#write: write each arg (stringified), return total bytes written. */
+        buf_puts(b, "({ mrb_int _w = 0; ");
+        for (int k = 0; k < argc; k++) {
+          buf_puts(b, "{ const char *_s = ");
+          if (comp_ntype(c, argv[k]) == TY_STRING) emit_expr(c, argv[k], b);
+          else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[k], b); buf_puts(b, ")"); }
+          buf_printf(b, "; _w += _s ? (mrb_int)fwrite(_s, 1, strlen(_s), %s) : 0; } ", fd);
+        }
+        buf_puts(b, "_w; })");
+        return;
+      }
     }
   }
   /* Last-resort fallbacks for inspect/to_s on unresolved receivers.

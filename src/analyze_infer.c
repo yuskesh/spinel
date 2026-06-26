@@ -2636,10 +2636,12 @@ else {
 
   /* $stdout/$stderr.puts/print/write return nil (so a value-position use --
      an if/else arm or assignment -- unifies and boxes as nil). */
-  if (recv >= 0 && (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "write")) &&
+  if (recv >= 0 && (sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "write") ||
+                    sp_streq(name, "syswrite")) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
     const char *gv = nt_str(nt, recv, "name");
-    if (gv && (sp_streq(gv, "$stdout") || sp_streq(gv, "$stderr"))) return TY_NIL;
+    if (gv && (sp_streq(gv, "$stdout") || sp_streq(gv, "$stderr")))
+      return (sp_streq(name, "write") || sp_streq(name, "syswrite")) ? TY_INT : TY_NIL;
   }
 
   /* tap: run block, return self */
@@ -2857,6 +2859,9 @@ TyKind infer_uncached(Compiler *c, int id) {
                sp_streq(nm, "RUBY_REVISION") || sp_streq(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
     if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
     if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
+    /* STDOUT/STDERR are IO handles wrapping the C stdout/stderr streams, so
+       puts/print/write/flush route through the existing TY_IO dispatch. */
+    if (nm && (sp_streq(nm, "STDOUT") || sp_streq(nm, "STDERR"))) return TY_IO;
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
     return TY_UNKNOWN;
