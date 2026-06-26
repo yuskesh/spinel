@@ -1125,6 +1125,31 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     emit_pm_eq(c, t, pt, ex, b);
     return 1;
   }
+  /* range pattern `lo..hi` / `lo...hi` (and beginless/endless): membership via
+     `===`, i.e. lo <= v (&& v <= hi, or v < hi when exclusive). */
+  if (sp_streq(pty, "RangeNode")) {
+    int lo = nt_ref(nt, pat, "left"), hi = nt_ref(nt, pat, "right");
+    int excl = (int)(nt_int(nt, pat, "flags", 0) & 4) ? 1 : 0;
+    const char *cmp = excl ? "<" : "<=";
+    if (pt == TY_INT || pt == TY_FLOAT) {
+      buf_puts(b, "(");
+      int wrote = 0;
+      if (lo >= 0) { buf_printf(b, "_t%d >= ", t); emit_expr(c, lo, b); wrote = 1; }
+      if (hi >= 0) { if (wrote) buf_puts(b, " && "); buf_printf(b, "_t%d %s ", t, cmp); emit_expr(c, hi, b); wrote = 1; }
+      if (!wrote) buf_puts(b, "1");
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (pt == TY_POLY) {
+      /* numeric membership only: the scrutinee must be an int in range. */
+      buf_printf(b, "(_t%d.tag == SP_TAG_INT", t);
+      if (lo >= 0) { buf_printf(b, " && _t%d.v.i >= ", t); emit_int_expr(c, lo, b); }
+      if (hi >= 0) { buf_printf(b, " && _t%d.v.i %s ", t, cmp); emit_int_expr(c, hi, b); }
+      buf_puts(b, ")");
+      return 1;
+    }
+    return 0;
+  }
   if (sp_streq(pty, "ArrayPatternNode")) {
     /* Length check */
     int apn = 0;
