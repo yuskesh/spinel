@@ -2551,8 +2551,9 @@ else {
     if (sp_streq(name, "options")) return TY_INT;
   }
 
-  /* array set operations: &, intersection, |, union(1-arg), -, difference */
-  if (recv >= 0 && argc == 1 &&
+  /* array set operations: &, intersection, |, union, -, difference. The named
+     forms are variadic (fold over each argument); the operators are binary. */
+  if (recv >= 0 && argc >= 1 &&
       (sp_streq(name, "&") || sp_streq(name, "intersection") ||
        sp_streq(name, "|") || sp_streq(name, "union") ||
        sp_streq(name, "-") || sp_streq(name, "difference"))) {
@@ -2562,6 +2563,9 @@ else {
     /* empty array [] arg (TY_UNKNOWN): result is same kind as receiver */
     if (ty_is_array(rt) && a0 == TY_UNKNOWN) return rt;
   }
+  /* Array#intersect?(other) -> bool */
+  if (recv >= 0 && argc == 1 && sp_streq(name, "intersect?") && ty_is_array(rt))
+    return TY_BOOL;
   if (recv >= 0 && argc == 1 && is_arith_op(name)) {
     if (rt == TY_STRING) {
       if (sp_streq(name, "%")) return TY_STRING;  /* sprintf (array or single value) */

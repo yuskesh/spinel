@@ -1251,6 +1251,37 @@ else {
         else { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         return 1;
       }
+      /* variadic named set ops: union/intersection/difference(*others) fold the
+         binary operator over each argument, accumulating in a rooted temp. */
+      if ((sp_streq(name, "intersection") || sp_streq(name, "union") ||
+           sp_streq(name, "difference")) && argc >= 2) {
+        int ok = 1;
+        for (int j = 0; j < argc; j++) {
+          TyKind atj = comp_ntype(c, argv[j]);
+          if (atj != rt && atj != TY_UNKNOWN) { ok = 0; break; }
+        }
+        if (ok) {
+          const char *fn = sp_streq(name, "intersection") ? "intersect" :
+                           sp_streq(name, "union") ? "union" : "difference";
+          int t = ++g_tmp;
+          buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+          buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
+          for (int j = 0; j < argc; j++) {
+            buf_printf(b, " _t%d = sp_%sArray_%s(_t%d, ", t, k, fn, t);
+            if (comp_ntype(c, argv[j]) == TY_UNKNOWN) buf_puts(b, "NULL");
+            else emit_expr(c, argv[j], b);
+            buf_puts(b, ");");
+          }
+          buf_printf(b, " _t%d; })", t);
+          return 1;
+        }
+      }
+      if (sp_streq(name, "intersect?") && argc == 1 && (a0 == rt || a0 == TY_UNKNOWN)) {
+        buf_printf(b, "sp_%sArray_intersect_p(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (a0 == TY_UNKNOWN) buf_puts(b, "NULL"); else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
       if (sp_streq(name, "union") && argc == 0) {
         buf_printf(b, "sp_%sArray_union(", k); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
         return 1;
@@ -1316,6 +1347,36 @@ else {
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (a0 == TY_UNKNOWN) buf_puts(b, "NULL"); else emit_expr(c, argv[0], b);
         buf_puts(b, ")"); return 1;
+      }
+      /* variadic named set ops on a poly array: fold over each argument */
+      if ((sp_streq(name, "intersection") || sp_streq(name, "union") ||
+           sp_streq(name, "difference")) && argc >= 2) {
+        int ok = 1;
+        for (int j = 0; j < argc; j++) {
+          TyKind atj = comp_ntype(c, argv[j]);
+          if (atj != TY_POLY_ARRAY && atj != TY_UNKNOWN) { ok = 0; break; }
+        }
+        if (ok) {
+          const char *fn = sp_streq(name, "intersection") ? "intersect" :
+                           sp_streq(name, "union") ? "union" : "difference";
+          int t = ++g_tmp;
+          buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+          buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
+          for (int j = 0; j < argc; j++) {
+            buf_printf(b, " _t%d = sp_PolyArray_%s(_t%d, ", t, fn, t);
+            if (comp_ntype(c, argv[j]) == TY_UNKNOWN) buf_puts(b, "NULL");
+            else emit_expr(c, argv[j], b);
+            buf_puts(b, ");");
+          }
+          buf_printf(b, " _t%d; })", t);
+          return 1;
+        }
+      }
+      if (sp_streq(name, "intersect?") && argc == 1 && (a0 == TY_POLY_ARRAY || a0 == TY_UNKNOWN)) {
+        buf_puts(b, "sp_PolyArray_intersect_p("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (a0 == TY_UNKNOWN) buf_puts(b, "NULL"); else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
       }
       if (sp_streq(name, "union") && argc == 0) {
         buf_puts(b, "sp_PolyArray_union("); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
