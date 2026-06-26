@@ -2749,6 +2749,9 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_TrueNode)                return TY_BOOL;
   if (nk == NK_FalseNode)               return TY_BOOL;
   if (nk == NK_NilNode)                 return TY_NIL;
+  /* A while/until loop in value position evaluates to nil (a valued `break`
+     is a separate gap); type it as poly so the slot holds a boxed nil. */
+  if (nk == NK_WhileNode || nk == NK_UntilNode) return TY_POLY;
   if (nk == NK_RangeNode) {
     /* infer the bounds so codegen can tell an int range from a string range */
     int lo = nt_ref(nt, id, "left"), hi = nt_ref(nt, id, "right");

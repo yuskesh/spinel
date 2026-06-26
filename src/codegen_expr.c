@@ -286,6 +286,38 @@ void emit_int_divisor(Compiler *c, int node, Buf *b) {
   emit_expr(c, node, b);
 }
 
+/* True if `root` contains a `break <value>` that binds to the enclosing loop
+   (not one inside a nested loop, block, lambda, or def/class/module scope, which
+   capture their own break — but a break in a block-bearing call's receiver or
+   arguments does bind to the loop, so those are still traversed). A valued break
+   makes the loop's value the break value rather than nil; detect it so a loop in
+   value position rejects instead of silently yielding nil. */
+static int loop_has_valued_break(Compiler *c, int root) {
+  if (root < 0) return 0;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty) {
+    if (sp_streq(ty, "BreakNode")) {
+      int a = nt_ref(nt, root, "arguments");
+      int an = 0;
+      if (a >= 0) nt_arr(nt, a, "arguments", &an);
+      return an > 0;
+    }
+    if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+        sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
+        sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") || sp_streq(ty, "SingletonClassNode"))
+      return 0;
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) if (loop_has_valued_break(c, nt_ref_at(nt, root, i))) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *el = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++) if (loop_has_valued_break(c, el[j])) return 1;
+  }
+  return 0;
+}
+
 void emit_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -578,6 +610,19 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     else {
       buf_printf(b, "lv_%s", en);
     }
+    return;
+  }
+  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) {
+    /* A loop in value position runs for its side effects and evaluates to nil.
+       A valued `break` would instead make the loop yield that value; that is a
+       separate gap, so reject it here rather than silently producing nil. */
+    if (loop_has_valued_break(c, nt_ref(nt, id, "statements")))
+      unsupported(c, id, "valued break in loop used as a value");
+    /* Run the loop as a statement inside a GCC statement-expression, then
+       yield the boxed nil. */
+    buf_puts(b, "({ ");
+    emit_while(c, id, b, 0, sp_streq(ty, "UntilNode"));
+    buf_puts(b, "sp_box_nil(); })");
     return;
   }
   if (sp_streq(ty, "IndexOrWriteNode") || sp_streq(ty, "IndexAndWriteNode")) {
