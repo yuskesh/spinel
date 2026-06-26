@@ -2124,7 +2124,25 @@ else {
         sp_streq(name, "cover?") || sp_streq(name, "exclude_end?") ||
         sp_streq(name, "eql?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "overlap?")) return TY_BOOL;
-    if (sp_streq(name, "step")) return TY_INT_ARRAY;
+    if (sp_streq(name, "step")) {
+      /* step with a block walks the range and returns self */
+      if (nt_ref(nt, id, "block") >= 0) return rt;
+      /* a float step, or a literal range with float bounds, yields floats */
+      int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
+      int rn = recv;
+      while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
+        int body = nt_ref(nt, rn, "body"); int bn = 0;
+        const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        rn = bn == 1 ? bd[0] : -1;
+      }
+      int bfloat = 0;
+      if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        bfloat = (lo >= 0 && infer_type(c, lo) == TY_FLOAT) ||
+                 (hi >= 0 && infer_type(c, hi) == TY_FLOAT);
+      }
+      return (sfloat || bfloat) ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
+    }
     if (sp_streq(name, "all?") || sp_streq(name, "any?") ||
         sp_streq(name, "none?") || sp_streq(name, "one?")) return TY_BOOL;
     if (sp_streq(name, "each") && nt_ref(nt, id, "block") < 0)

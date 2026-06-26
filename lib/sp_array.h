@@ -47,7 +47,7 @@ static inline void sp_IntArray_set(sp_IntArray*a,mrb_int i,mrb_int v){if(!a)retu
 
 /* ---- sp_IntArray cold ops (compiled in lib/sp_array.c) ---- */
 sp_IntArray *sp_IntArray_from_range(mrb_int s, mrb_int e);
-sp_IntArray *sp_IntArray_from_range_step(mrb_int s, mrb_int e, mrb_int k);
+sp_IntArray *sp_IntArray_from_range_step(mrb_int beg, mrb_int end, mrb_int step, mrb_int excl);
 sp_IntArray *sp_IntArray_dup(sp_IntArray *a);
 sp_IntArray *sp_IntArray_slice(sp_IntArray *a, mrb_int start, mrb_int len);
 sp_IntArray *sp_IntArray_slice_range(sp_IntArray *a, mrb_int start, mrb_int end_, mrb_int excl);
@@ -99,7 +99,7 @@ static inline void sp_FloatArray_set(sp_FloatArray*a,mrb_int i,mrb_float v){if(!
 
 /* ---- sp_FloatArray cold ops (compiled in lib/sp_array.c) ---- */
 void sp_FloatArray_unshift(sp_FloatArray *a, mrb_float v);
-sp_FloatArray *sp_FloatArray_from_step(mrb_float s, mrb_float e, mrb_float k);
+sp_FloatArray *sp_FloatArray_from_step(mrb_float beg, mrb_float end, mrb_float step, mrb_int excl);
 mrb_float sp_FloatArray_min(sp_FloatArray *a);
 mrb_float sp_FloatArray_max(sp_FloatArray *a);
 mrb_float sp_FloatArray_sum(sp_FloatArray *a, mrb_float init);

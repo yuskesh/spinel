@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+#include <float.h>
+#include <stdint.h>
 #include "sp_array.h"
 #include "sp_string.h"   /* sp_String builder for join/to_poly */
 #include "sp_inspect.h"  /* sp_inspect_container for the #inspect wrappers */
@@ -22,9 +25,29 @@
    `(1..MRB_INT_MAX).to_a` overflows the realloc size_t to a tiny number,
    then writes past the allocation. */
 sp_IntArray*sp_IntArray_from_range(mrb_int s,mrb_int e){sp_IntArray*a=sp_IntArray_new();mrb_int n=e-s+1;if(n<0)n=0;if(n>(mrb_int)(1LL<<30))n=(mrb_int)(1LL<<30);if(n>a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*a->cap;h->size-=sizeof(mrb_int)*a->cap;a->cap=n;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);h->size+=sizeof(mrb_int)*a->cap;sp_gc_bytes+=sizeof(mrb_int)*a->cap;}for(mrb_int i=0;i<n;i++)a->data[i]=s+i;a->len=n;return a;}
-/* `(a..b).step(k)` -- emit a, a+k, a+2k, ... up to b. k must be > 0;
-   k <= 0 returns empty. Issue #731. */
-sp_IntArray*sp_IntArray_from_range_step(mrb_int s,mrb_int e,mrb_int k){sp_IntArray*a=sp_IntArray_new();if(k<=0)return a;mrb_int v=s;while(v<=e){sp_IntArray_push(a,v);v+=k;}return a;}
+/* (beg..end).step(step) materialised as an IntArray. step==0 raises like
+   CRuby; a negative step descends; exclusive ranges drop the endpoint. The
+   loop tests the bound directly and guards v+=step, so a range near the
+   mrb_int limits (e.g. an endless range's INTPTR_MAX end) cannot overflow --
+   signed integer overflow is undefined behaviour in C. */
+sp_IntArray*sp_IntArray_from_range_step(mrb_int beg,mrb_int end,mrb_int step,mrb_int excl){
+  if(step==0)sp_raise_cls("ArgumentError","step can't be 0");
+  sp_IntArray*a=sp_IntArray_new();
+  if(step>0){
+    for(mrb_int v=beg;v<end||(!excl&&v==end);){
+      sp_IntArray_push(a,v);
+      if(v>0&&step>INTPTR_MAX-v)break;
+      v+=step;
+    }
+  }else{
+    for(mrb_int v=beg;v>end||(!excl&&v==end);){
+      sp_IntArray_push(a,v);
+      if(v<0&&step<INTPTR_MIN-v)break;
+      v+=step;
+    }
+  }
+  return a;
+}
 sp_IntArray*sp_IntArray_dup(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_new();if(a->len>b->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)b-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*b->cap;h->size-=sizeof(mrb_int)*b->cap;b->cap=a->len;void*nd=realloc(b->data,sizeof(mrb_int)*b->cap);if(!nd)sp_oom_die();b->data=(mrb_int*)nd;h->size+=sizeof(mrb_int)*b->cap;sp_gc_bytes+=sizeof(mrb_int)*b->cap;}memcpy(b->data,a->data+a->start,sizeof(mrb_int)*a->len);b->len=a->len;return b;}
 /* a[start, len] / a[start..end] for IntArray. Negative start counts from
    the end. start past the array length yields an empty result; len is
@@ -79,9 +102,46 @@ mrb_int sp_IntArray_cmp(sp_IntArray*a,sp_IntArray*b){if(!a||!b)return a==b?0:(a?
 
 /* ============================ sp_FloatArray ============================ */
 void sp_FloatArray_unshift(sp_FloatArray*a,mrb_float v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}sp_FloatArray_push(a,0.0);if(a->len>1)memmove(&a->data[1],&a->data[0],(size_t)(a->len-1)*sizeof(mrb_float));a->data[0]=v;}
-/* Float#step materialised as a FloatArray. Direction follows the sign of
-   k; k==0 yields an empty array to avoid an infinite loop. */
-sp_FloatArray*sp_FloatArray_from_step(mrb_float s,mrb_float e,mrb_float k){sp_FloatArray*a=sp_FloatArray_new();if(k==0.0)return a;mrb_float v=s;if(k>0){while(v<=e){sp_FloatArray_push(a,v);v+=k;}}else{while(v>=e){sp_FloatArray_push(a,v);v+=k;}}return a;}
+/* (beg..end).step(step) / Float#step materialised as a FloatArray, following
+   CRuby's ruby_float_step: an epsilon-corrected element count (so float drift
+   never drops or adds a value) with each value computed as beg + i*step rather
+   than by repeated addition. Honours range exclusivity; step==0 raises
+   ArgumentError like CRuby; the final value is clamped to end on overshoot. */
+sp_FloatArray*sp_FloatArray_from_step(mrb_float beg,mrb_float end,mrb_float step,mrb_int excl){
+  if(step==0.0)sp_raise_cls("ArgumentError","step can't be 0");
+  /* CRuby rejects a NaN range bound at construction with this message; a NaN
+     step is just as degenerate. Guard before any arithmetic so the count never
+     becomes NaN (whose cast to mrb_int is undefined behaviour). */
+  if(isnan(beg)||isnan(end)||isnan(step))sp_raise_cls("ArgumentError","bad value for range");
+  sp_FloatArray*a=sp_FloatArray_new();
+  if(isinf(step)){if(step>0?beg<=end:beg>=end)sp_FloatArray_push(a,beg);return a;}
+  mrb_float n=(end-beg)/step;
+  mrb_float err=(fabs(beg)+fabs(end)+fabs(end-beg))/fabs(step)*DBL_EPSILON;
+  if(err>0.5)err=0.5;
+  if(excl){
+    if(n<=0)return a;
+    n=(n<1)?0:floor(n-err);
+    mrb_float d=((n+1)*step)+beg;
+    if(beg<end){if(d<end)n++;}else if(beg>end){if(d>end)n++;}
+  }else{
+    if(n<0)return a;
+    n=floor(n+err);
+    mrb_float d=((n+1)*step)+beg;
+    if(beg<end){if(d<=end)n++;}else if(beg>end){if(d>=end)n++;}
+  }
+  /* An infinite end (or an enormous span) drives n to infinity or past what can
+     be materialised; CRuby loops forever there. Raise rather than cast a
+     non-finite/huge double to mrb_int (undefined behaviour) and exhaust memory.
+     The 1<<30 cap matches sp_IntArray_from_range's sanity bound. */
+  if(isinf(n)||n>=(mrb_float)(1LL<<30))sp_raise_cls("RangeError","range too large to materialize");
+  mrb_int count=(mrb_int)n+1;
+  for(mrb_int i=0;i<count;i++){
+    mrb_float d=((mrb_float)i*step)+beg;
+    if(step>=0?end<d:d<end)d=end;
+    sp_FloatArray_push(a,d);
+  }
+  return a;
+}
 mrb_float sp_FloatArray_min(sp_FloatArray*a){if(a->len==0)return 0;mrb_float m=a->data[0];for(mrb_int i=1;i<a->len;i++)if(a->data[i]<m)m=a->data[i];return m;}
 mrb_float sp_FloatArray_max(sp_FloatArray*a){if(a->len==0)return 0;mrb_float m=a->data[0];for(mrb_int i=1;i<a->len;i++)if(a->data[i]>m)m=a->data[i];return m;}
 mrb_float sp_FloatArray_sum(sp_FloatArray*a,mrb_float init){mrb_float s=init;for(mrb_int i=0;i<a->len;i++)s+=a->data[i];return s;}

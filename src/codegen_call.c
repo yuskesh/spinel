@@ -3345,6 +3345,49 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Emit the expression that materialises (range).step(k) as a typed array,
+   returning its array TyKind. A float step -- or a literal range with float
+   bounds -- yields a FloatArray; sp_Range stores mrb_int bounds, so a literal
+   float-bounded range reads begin/end from the AST to keep the float values.
+   Integer steps use the faithful int helper (step 0 raises ArgumentError, a
+   negative step descends, an exclusive range drops the endpoint). Shared by the
+   no-block materialisation and the block walk so both yield identical values. */
+static TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc < 1) { buf_puts(b, "sp_IntArray_new()"); return TY_INT_ARRAY; }
+  int rn = unwrap_parens(c, recv);
+  int is_lit = rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode");
+  int lo = is_lit ? nt_ref(nt, rn, "left") : -1;
+  int hi = is_lit ? nt_ref(nt, rn, "right") : -1;
+  int excl = (is_lit && (nt_int(nt, rn, "flags", 0) & 4)) ? 1 : 0;
+  int is_float = comp_ntype(c, argv[0]) == TY_FLOAT ||
+                 (lo >= 0 && comp_ntype(c, lo) == TY_FLOAT) ||
+                 (hi >= 0 && comp_ntype(c, hi) == TY_FLOAT);
+  if (is_float && is_lit && lo >= 0 && hi >= 0) {
+    buf_puts(b, "sp_FloatArray_from_step(");
+    emit_float_expr(c, lo, b); buf_puts(b, ", ");
+    emit_float_expr(c, hi, b); buf_puts(b, ", ");
+    emit_float_expr(c, argv[0], b); buf_printf(b, ", %d)", excl);
+    return TY_FLOAT_ARRAY;
+  }
+  int t = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  if (is_float)
+    buf_printf(b, "({ sp_Range _t%d = %s; sp_FloatArray_from_step((mrb_float)_t%d.first, (mrb_float)_t%d.last, ",
+               t, rb.p ? rb.p : "", t, t);
+  else
+    buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range_step(_t%d.first, _t%d.last, ",
+               t, rb.p ? rb.p : "", t, t);
+  if (is_float) emit_float_expr(c, argv[0], b); else emit_int_expr(c, argv[0], b);
+  buf_printf(b, ", _t%d.excl); })", t);
+  free(rb.p);
+  return is_float ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
+}
+
 static int emit_range_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -3357,16 +3400,8 @@ static int emit_range_call(Compiler *c, int id, Buf *b) {
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {
     int block = nt_ref(nt, id, "block");
-    if (sp_streq(name, "step") && argc == 1) {
-      int t = ++g_tmp, ar = ++g_tmp, ii = ++g_tmp, st = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-      Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, argv[0], &sb);
-      buf_printf(b, "({ sp_Range _t%d = %s; mrb_int _t%d = %s; sp_IntArray *_t%d = sp_IntArray_new();"
-                    " for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d += _t%d)"
-                    " sp_IntArray_push(_t%d, _t%d); _t%d; })",
-                 t, rb.p ? rb.p : "", st, sb.p ? sb.p : "", ar,
-                 ii, t, ii, t, t, ii, st, ar, ii, ar);
-      free(rb.p); free(sb.p);
+    if (sp_streq(name, "step") && argc == 1 && block < 0) {
+      emit_range_step_array(c, id, b);
       return 1;
     }
     if (sp_streq(name, "each") && block < 0) {  /* external enumerator, or to_a materialize */
@@ -11352,6 +11387,32 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const char *p0_orig = block_param_name(c, block, 0);
   const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   TyKind rt = comp_ntype(c, recv);
+
+  /* (range).step(k) { |x| ... } -- materialise the stepped values (shared with
+     the no-block path so they match exactly) and walk them; the element type
+     follows the array, int or float. */
+  if (sp_streq(name, "step") && rt == TY_RANGE) {
+    int args = nt_ref(nt, id, "arguments"); int sargc = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &sargc);
+    if (sargc < 1) return 0;
+    int t = ++g_tmp, ti = ++g_tmp;
+    Buf ab; memset(&ab, 0, sizeof ab);
+    TyKind at = emit_range_step_array(c, id, &ab);
+    const char *aty = at == TY_FLOAT_ARRAY ? "sp_FloatArray" : "sp_IntArray";
+    TyKind et = at == TY_FLOAT_ARRAY ? TY_FLOAT : TY_INT;
+    emit_indent(b, indent);
+    buf_printf(b, "%s *_t%d = %s; SP_GC_ROOT(_t%d);\n", aty, t, ab.p ? ab.p : "", t);
+    free(ab.p);
+    emit_indent(b, indent);
+    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, t, ti);
+    if (p0) {
+      char elem[64]; snprintf(elem, sizeof elem, "_t%d->data[_t%d]", t, ti);
+      emit_iter_param_assign(c, block, p0_orig, p0, et, elem, b, indent + 1);
+    }
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
 
   /* n.times { |i| ... } */
   if (sp_streq(name, "times") && rt == TY_INT) {
