@@ -1,0 +1,12 @@
+nil
+{a: 1}
+nil
+{b: 2}
+{a: 1}
+{}
+{}
+{"x" => 10}
+nil
+{a: 1, c: 3}
+nil
+FrozenError
