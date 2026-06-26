@@ -1,2 +1,4 @@
 1
 before
+rescued: ArgumentError
+after

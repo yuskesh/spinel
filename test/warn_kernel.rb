@@ -3,9 +3,8 @@
 # call warning and drop the IO silently.
 #
 # at_exit + warn -- both used to fall through to the unresolved-call
-# warning. The test runner only captures stdout, so warn's stderr
-# output isn't part of the expected diff. at_exit now runs in LIFO
-# after main returns (#990).
+# warning. warn's stderr output is asserted via the .err.expected file
+# alongside this test. at_exit now runs in LIFO after main returns (#990).
 at_exit { puts "from at_exit" }
 warn "hello stderr"
 puts "after warn"
