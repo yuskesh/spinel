@@ -2469,6 +2469,23 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
   if (block < 0) return 0;
+  /* `arr.map(&blk)` inside `def m(&blk)`: a BlockArgumentNode that forwards
+     the current method's block param maps over the caller's (already-inlined)
+     literal block rather than treating it as an empty (nil-producing) block.
+     Only a forward of the active block param is redirected — `&:sym` and
+     `&proc_value` are left to their own handlers. */
+  if (nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
+    int fwd_expr = nt_ref(nt, block, "expression");
+    int forwards_param = 0;
+    if (fwd_expr < 0) forwards_param = 1;  /* anonymous `&` */
+    else if (g_block_param_name && nt_type(nt, fwd_expr) &&
+             sp_streq(nt_type(nt, fwd_expr), "LocalVariableReadNode")) {
+      const char *en = nt_str(nt, fwd_expr, "name");
+      forwards_param = en && sp_streq(en, g_block_param_name);
+    }
+    if (!forwards_param || g_block_id < 0) return 0;
+    block = g_block_id;
+  }
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
