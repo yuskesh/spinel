@@ -2082,7 +2082,9 @@ else {
     /* arr.each with no block -> an external Enumerator (#next/#peek/#rewind).
        Block-form chains (each.with_index, each.map) are matched as the outer
        call above and never reach this. */
-    if (block < 0 && argc == 0 && (sp_streq(name, "each") || sp_streq(name, "reverse_each"))) return TY_ENUMERATOR;
+    if (block < 0 && argc == 0 &&
+        (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
+         sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) return TY_ENUMERATOR;
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP) {
         int body = nt_ref(nt, block, "body");
@@ -2689,6 +2691,13 @@ else {
     if (dt != TY_UNKNOWN) return dt;
   }
   if (recv >= 0 && ty_is_hash(rt)) {
+    /* a blockless each/each_pair/each_key/each_value/each_with_index is an
+       external Enumerator (the block forms iterate and are handled below). */
+    if (nt_ref(nt, id, "block") < 0 && argc == 0 &&
+        (sp_streq(name, "each") || sp_streq(name, "each_pair") ||
+         sp_streq(name, "each_key") || sp_streq(name, "each_value") ||
+         sp_streq(name, "each_with_index")))
+      return TY_ENUMERATOR;
     if (sp_streq(name, "to_proc")) return TY_PROC;
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
     if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */

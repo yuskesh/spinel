@@ -6857,7 +6857,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
-    else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "unescaped");
+    else if (aty && sp_streq(aty, "StringNode")) {
+      qm = nt_str(nt, argv[0], "content");
+      if (!qm) qm = nt_str(nt, argv[0], "unescaped");
+    }
     if (qm) {
       /* respond_to?(sym, include_all=false): by default only public methods
          answer true; a literal `true` 2nd arg includes private+protected. A
@@ -6938,9 +6941,26 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             }
           }
         }
-        /* a primitive/poly/unknown receiver with a non-universal method: we
-           lack a per-type method table, so leave it to the fall-through
-           rather than answer a possibly-wrong false. */
+        else {
+          /* primitive/builtin receiver (String/Integer/Array/...): consult the
+             analyze-time probe -- a synthesized `recv.<qm>` call whose inferred
+             type says whether spinel can actually dispatch the method. This
+             derives the answer from the same resolver that types a real call,
+             so it never drifts from what a real `recv.qm` would compile to. A
+             poly/unknown receiver gets no probe and stays unresolved (falls
+             through) rather than answering a possibly-wrong false. */
+          int pn = 0; const int *probes = nt_arr(nt, id, "rt_probes", &pn);
+          if (probes && pn > 0) {
+            resolved = 1; yes = 0;
+            /* Each probe is a synthesized `recv.m(...)` call the analyze fixpoint
+               already typed with the real resolver; a recognized method infers a
+               concrete type, an unrecognized one stays UNKNOWN. Reading the
+               cached inferred type is side-effect free (unlike emitting, which
+               mutates g_pre/g_tmp), so it is safe inside the live fold. */
+            for (int p = 0; p < pn; p++)
+              if (comp_ntype(c, probes[p]) != TY_UNKNOWN) { yes = 1; break; }
+          }
+        }
       }
       if (resolved) { buf_printf(b, "%d", yes); return; }
     }

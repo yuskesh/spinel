@@ -2691,6 +2691,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
+    ch |= desugar_respond_to_probe(c);         /* recv.respond_to?(:m) -> probe recv.m type */
     ch |= desugar_symbol_to_proc_call(c);      /* :sym.to_proc.call(x) -> x.sym */
     ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
     ch |= infer_block_params(c);

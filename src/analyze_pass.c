@@ -2652,6 +2652,109 @@ int desugar_dynamic_send(Compiler *c) {
   return changed;
 }
 
+/* `recv.respond_to?(:m)` with an explicit receiver and a literal method name:
+   synthesize a probe `recv.m` call. The analyze fixpoint types the probe with
+   the ordinary resolver, so its inferred type tells codegen whether spinel can
+   actually dispatch `m` on that receiver (UNKNOWN = it cannot). The probe id is
+   stashed on the respond_to? node under "rt_probes" and is analysis-only -- it is
+   never emitted. The codegen fold reads it for primitive/builtin receivers,
+   deriving the answer from the real dispatch instead of a hand-maintained method
+   list; user-object receivers keep their visibility-aware chain resolution. The
+   probe carries no arguments: builtin method inference keys on the receiver type
+   and name (not arity), so an arg-taking method like `+`/`[]` still types. */
+int desugar_respond_to_probe(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  /* a user-defined respond_to? resolves normally; don't intercept */
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn && sp_streq(sn, "respond_to?")) return 0; }
+  int n0 = nt->count;
+  int changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "respond_to?")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;                         /* implicit self handled in the fold */
+    { int pn = 0; nt_arr(nt, id, "rt_probes", &pn); if (pn > 0) continue; }  /* already probed */
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || !argv) continue;
+    const char *aty = nt_type(nt, argv[0]);
+    const char *qm = NULL;
+    if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
+    else if (aty && sp_streq(aty, "StringNode")) {
+      qm = nt_str(nt, argv[0], "content");
+      if (!qm) qm = nt_str(nt, argv[0], "unescaped");
+    }
+    if (!qm || !*qm) continue;                      /* non-literal name: not foldable */
+    int base = nt->count;
+    /* Probe two call shapes and let codegen answer true if EITHER types, since a
+       single shape cannot satisfy every method: a block method (`each`, `map`)
+       rejects a positional argument but needs a block, while an operator (`+`,
+       `[]`) needs an argument. One probe carries an empty block (no arg), the
+       other one dummy argument (the receiver, always type-available). A plain
+       no-arg method (`upcase`) types under either. Builtin method inference keys
+       on the receiver type and name, so a recognized method types by name; an
+       unrecognized one is UNKNOWN under both. */
+    int probes[3]; int np = 0;
+    /* shape 0: recv.m  -- no argument, no block. Resolves the blockless
+       enumerator forms (`each`, `reverse_each` infer TY_ENUMERATOR) and plain
+       no-arg methods, using only codegen-safe inference. */
+    {
+      int na = nt_new_node(nt, "ArgumentsNode");
+      int probe = nt_new_node(nt, "CallNode");
+      if (na >= 0 && probe >= 0) {
+        nt_node_set_ref(nt, probe, "receiver", recv);
+        nt_node_set_str(nt, probe, "name", qm);
+        nt_node_set_ref(nt, probe, "arguments", na);
+        probes[np++] = probe;
+      }
+    }
+    /* shape 1: recv.m { }  -- block, no argument */
+    {
+      int na = nt_new_node(nt, "ArgumentsNode");
+      int blkbody = nt_new_node(nt, "StatementsNode");
+      int blk = nt_new_node(nt, "BlockNode");
+      int probe = nt_new_node(nt, "CallNode");
+      if (na >= 0 && blkbody >= 0 && blk >= 0 && probe >= 0) {
+        nt_node_set_ref(nt, blk, "body", blkbody);
+        nt_node_set_ref(nt, probe, "receiver", recv);
+        nt_node_set_str(nt, probe, "name", qm);
+        nt_node_set_ref(nt, probe, "arguments", na);
+        nt_node_set_ref(nt, probe, "block", blk);
+        probes[np++] = probe;
+      }
+    }
+    /* shape 2: recv.m(recv)  -- one dummy argument, no block */
+    {
+      int dummy_args[1] = { recv };
+      int na = nt_new_node(nt, "ArgumentsNode");
+      int probe = nt_new_node(nt, "CallNode");
+      if (na >= 0 && probe >= 0) {
+        nt_node_set_arr(nt, na, "arguments", dummy_args, 1);
+        nt_node_set_ref(nt, probe, "receiver", recv);
+        nt_node_set_str(nt, probe, "name", qm);
+        nt_node_set_ref(nt, probe, "arguments", na);
+        probes[np++] = probe;
+      }
+    }
+    /* Sync the parallel arrays for every node allocated in this iteration --
+       even a partial shape (an allocation failed mid-shape, so no probe was
+       added) leaves nodes past `base` whose c->nscope would otherwise stay
+       uninitialized, desyncing the arrays from nt->count for later passes. */
+    if (nt->count > base) {
+      comp_grow_node_arrays(c);
+      int encl = c->nscope[id];
+      for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    }
+    if (np == 0) continue;
+    nt_node_set_arr(nt, id, "rt_probes", probes, np);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `:sym.to_proc.call(recv, *args)` -> `recv.sym(*args)`. An explicit Symbol#to_proc
    followed by a call applies the named method to the first argument; with both the
    symbol and the call site statically known, it rewrites to an ordinary method call
