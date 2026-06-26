@@ -5425,7 +5425,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* raise */
-  if (recv < 0 && sp_streq(name, "raise")) {
+  /* `fail` is an exact alias of `Kernel#raise`. */
+  if (recv < 0 && (sp_streq(name, "raise") || sp_streq(name, "fail"))) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (ac == 0) {
