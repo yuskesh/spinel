@@ -848,6 +848,24 @@ static void flatmap_coerce_from_poly(TyKind dst, const char *src, Buf *out) {
   else buf_puts(out, src);  /* poly (or other): pass through */
 }
 
+/* CRuby proc auto-splat: bind each of the block's params to a positional element
+   of the poly sub-array held in temp `_t<elem_temp>` (an sp_RbVal), coerced to
+   each param's pinned type. Used where a multi-param block iterates a poly array
+   whose elements are themselves arrays (map/select/reject/sort_by). */
+static void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int indent) {
+  Scope *asc = comp_scope_of(c, block);
+  for (int pj = 0; pj < np; pj++) {
+    const char *pn = block_param_name(c, block, pj); if (!pn) continue;
+    const char *pnr = rename_local(pn);
+    LocalVar *lvp = asc ? scope_local(asc, pn) : NULL;
+    TyKind pty = lvp ? lvp->type : TY_POLY;
+    char src[96]; snprintf(src, sizeof src, "sp_poly_index_poly(_t%d, sp_box_int(%d))", elem_temp, pj);
+    emit_indent(g_pre, indent); buf_printf(g_pre, "lv_%s = ", pnr);
+    Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(pty, src, &cv);
+    buf_puts(g_pre, cv.p ? cv.p : src); free(cv.p); buf_puts(g_pre, ";\n");
+  }
+}
+
 /* `array.flat_map { |params| block-returning-array }` as an expression: map each
    element through the block and concatenate the returned arrays (flatten one
    level). Handles a single block param (bound to the element) and a flat
@@ -2122,7 +2140,15 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tkeys, tkeys);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);\n", tidx, tidx);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
-  if (p0) {
+  int np_sb = 0; while (block_param_name(c, block, np_sb)) np_sb++;
+  if (np_sb >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0)) {
+    /* 2-param auto-splat: |name, age| over a poly array of sub-arrays. */
+    int te = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", te, trv, ti);
+    emit_autosplat_params(c, block, np_sb, te, g_indent + 1);
+  }
+  else if (p0) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trv, ti);
   }
@@ -2915,10 +2941,17 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
 
   TyKind et_elem = ty_array_elem(rt);
+  /* 2-param auto-splat: |a, b| over a poly array whose elements are sub-arrays
+     binds each param to a positional element of the sub-array, matching CRuby's
+     proc auto-splat. The per-param types were pinned by infer_block_params, so
+     bind directly (no shadow). select/reject still push the whole element. */
+  int np_cl = 0; while (block_param_name(c, block, np_cl)) np_cl++;
+  int autosplat = (np_cl >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0));
+
   /* If the block param's scope type was widened (e.g. TY_POLY), pin it to
      the element type and use a C shadow declaration so body emission sees the
      right type. */
-  Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+  Scope *csc = (p0 && !autosplat) ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
   int use_shadow = clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
@@ -2929,12 +2962,19 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
 
   int bodyIndent = g_indent + 1;
   int innerIndent = use_shadow ? bodyIndent + 1 : bodyIndent;
-  if (use_shadow) {
+  int te_split = -1;
+  if (autosplat) {
+    te_split = ++g_tmp;
+    emit_indent(g_pre, bodyIndent);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", te_split, trecv, ti);
+    emit_autosplat_params(c, block, np_cl, te_split, bodyIndent);
+  }
+  else if (use_shadow) {
     emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "{\n");
     emit_indent(g_pre, innerIndent); emit_ctype(c, et_elem, g_pre);
     buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
-else if (p0) {
+  else if (p0) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
@@ -2974,7 +3014,10 @@ else if (p0) {
     else if (cty == TY_INT)   buf_printf(g_pre, "if (%s(_t%d != SP_INT_NIL)) ", is_rej ? "!" : "", tv);
     else if (cty == TY_FLOAT) buf_printf(g_pre, "if (%s(!sp_float_is_nil(_t%d))) ", is_rej ? "!" : "", tv);
     else                   buf_printf(g_pre, "if (%s(_t%d)) ", is_rej ? "!" : "", tv);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
+    if (autosplat)
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk, tres, te_split);
+    else
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
   }
   if (use_shadow) { emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "}\n"); }
   if (use_shadow && clv0) clv0->type = csaved0;
