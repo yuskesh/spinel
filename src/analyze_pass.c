@@ -3051,6 +3051,25 @@ int infer_block_params(Compiler *c) {
                 (sc >= 2 && infer_type(c, sv[1]) == TY_FLOAT);
       pt = isf ? TY_FLOAT : TY_INT;
     }
+    else if (sp_streq(name, "step") && rt == TY_RANGE) {
+      /* (range).step(k) { |x| }: float when the step or a literal range bound
+         is float; mirrors emit_range_step_array's element type. */
+      int args = nt_ref(nt, id, "arguments");
+      int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
+      int isf = sc >= 1 && infer_type(c, sv[0]) == TY_FLOAT;
+      int rnn = recv;
+      while (rnn >= 0 && nt_type(nt, rnn) && sp_streq(nt_type(nt, rnn), "ParenthesesNode")) {
+        int rbody = nt_ref(nt, rnn, "body"); int rbn = 0;
+        const int *rbd = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
+        rnn = rbn == 1 ? rbd[0] : -1;
+      }
+      if (rnn >= 0 && nt_type(nt, rnn) && sp_streq(nt_type(nt, rnn), "RangeNode")) {
+        int lo = nt_ref(nt, rnn, "left"), hi = nt_ref(nt, rnn, "right");
+        if ((lo >= 0 && infer_type(c, lo) == TY_FLOAT) ||
+            (hi >= 0 && infer_type(c, hi) == TY_FLOAT)) isf = 1;
+      }
+      pt = isf ? TY_FLOAT : TY_INT;
+    }
     else if ((sp_streq(name, "times") || sp_streq(name, "upto") ||
          sp_streq(name, "downto")) && rt == TY_INT)
       pt = TY_INT;
