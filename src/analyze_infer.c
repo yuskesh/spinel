@@ -2101,6 +2101,8 @@ else {
     if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && (argc == 1 || argc == 2)) return TY_STRING;
     if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?") || sp_streq(name, "match?")) && argc == 1)
       return TY_BOOL;
+    if (sp_streq(name, "casecmp") && argc == 1) return TY_INT;
+    if (sp_streq(name, "casecmp?") && argc == 1) return TY_BOOL;
   }
 
   /* range receiver methods */

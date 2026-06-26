@@ -9762,6 +9762,17 @@ else {
       buf_puts(b, name[0] == '=' ? ")" : "))");
       return;
     }
+    /* case-insensitive compare over the symbols' names; a symbol argument only
+       (a non-symbol arg yields nil in Ruby and is left to the unsupported path) */
+    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
+        comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      int q = sp_streq(name, "casecmp?");
+      if (q) buf_puts(b, "(");
+      buf_puts(b, "sp_str_casecmp(sp_sym_to_s("); emit_expr(c, recv, b);
+      buf_puts(b, "), sp_sym_to_s("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      if (q) buf_puts(b, " == 0)");
+      return;
+    }
     /* string-surface methods over the symbol's name; succ re-interns a symbol,
        index/slice yield a substring (or nil), the predicates yield a bool. */
     if (sp_streq(name, "succ") || sp_streq(name, "next")) {
