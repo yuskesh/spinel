@@ -1,0 +1,5 @@
+RuntimeError: boom
+MyError: bad input
+MyError: MyError
+RuntimeError: original
+ArgumentError: still works
