@@ -1,5 +1,44 @@
 #include "codegen_internal.h"
 
+/* Rewrite a printf format that uses named references into a positional one.
+   `%<name>SPEC` -> `%SPEC`, `%{name}` -> `%s` (Ruby's to_s of the value), `%%`
+   stays. The referenced names (in order) are collected into names[]/name_len[]
+   (capacity maxn). Returns the ref count, or -1 (caller falls through) when the
+   format has no named reference, more than maxn of them, a name too long for
+   the caller's buffer, or a mix of named and positional specifiers (which Ruby
+   rejects). */
+static int parse_named_format(const char *fmt, Buf *rew, const char **names,
+                              int *name_len, int maxn) {
+  int n = 0, has_named = 0, has_positional = 0;
+  for (const char *p = fmt; *p; ) {
+    if (*p != '%') { buf_putn(rew, p, 1); p++; continue; }
+    if (p[1] == '%') { buf_puts(rew, "%%"); p += 2; continue; }
+    if (p[1] == '<' || p[1] == '{') {
+      char close = p[1] == '<' ? '>' : '}';
+      const char *e = strchr(p + 2, close);
+      if (!e) { buf_putn(rew, p, 1); p++; continue; }
+      int len = (int)(e - (p + 2));
+      /* the caller copies the name into a fixed char[128]; reject a longer name
+         rather than silently truncating it to the wrong symbol. */
+      if (n >= maxn || len >= 128) return -1;
+      names[n] = p + 2; name_len[n] = len; n++;
+      has_named = 1;
+      p = e + 1;
+      if (close == '}') { buf_puts(rew, "%s"); continue; }  /* %{name} -> to_s */
+      buf_puts(rew, "%");
+      while (*p && !strchr("diouxXeEfgGscbB", *p)) { buf_putn(rew, p, 1); p++; }  /* flags/width/prec */
+      if (*p) { buf_putn(rew, p, 1); p++; }  /* conversion char */
+      continue;
+    }
+    has_positional = 1;
+    buf_putn(rew, p, 1); p++;
+  }
+  /* Ruby raises ArgumentError on a mix of named and positional specifiers; bail
+     so the caller falls back rather than emitting misaligned arguments. */
+  if (has_named && has_positional) return -1;
+  return has_named ? n : -1;
+}
+
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -8066,6 +8105,35 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ", sp_typed_to_poly((void *)("); emit_expr(c, argv[0], b);
       buf_printf(b, "), %s))", kind);
       return;
+    }
+    /* named references ("%<name>spec" / "%{name}") reading from a symbol-keyed
+       hash. Handled when the format is a string literal, so each name resolves
+       to a compile-time symbol id; the looked-up values are pushed in order and
+       the rewritten positional format reuses sp_str_format_polyarr. */
+    const char *recv_ntype = nt_type(nt, recv);
+    if (ty_is_hash(at) && recv_ntype && sp_streq(recv_ntype, "StringNode")) {
+      const char *fmt = nt_str(nt, recv, "content");
+      const char *names[64]; int name_len[64];
+      Buf rew; memset(&rew, 0, sizeof rew);
+      int nref = fmt ? parse_named_format(fmt, &rew, names, name_len, 64) : -1;
+      if (nref >= 0) {
+        int th = ++g_tmp, ta = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", th); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " SP_GC_ROOT(_t%d); ", th, ta, ta);
+        for (int k = 0; k < nref; k++) {
+          char nm[128];   /* parse_named_format guarantees name_len[k] < 128 */
+          memcpy(nm, names[k], (size_t)name_len[k]); nm[name_len[k]] = 0;
+          buf_printf(b, "sp_PolyArray_push(_t%d, sp_poly_get_sym(_t%d, (sp_sym)%d)); ",
+                     ta, th, comp_sym_intern(c, nm));
+        }
+        buf_puts(b, "sp_str_format_polyarr(");
+        emit_str_literal(b, rew.p ? rew.p : "");
+        buf_printf(b, ", _t%d); })", ta);
+        free(rew.p);
+        return;
+      }
+      free(rew.p);
     }
     /* a single non-array argument formats as a one-element array */
     if (at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL || at == TY_POLY) {
