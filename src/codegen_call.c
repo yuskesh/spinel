@@ -9780,7 +9780,25 @@ else {
       buf_puts(b, "sp_sym_intern(sp_str_succ(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))");
       return;
     }
-    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1) {
+    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
+        nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
+      /* :s[a..b] / :s[a...b] over the name; a beginless/endless bound is 0 /
+         the name length. The name is materialized once to avoid re-evaluating
+         the receiver for an endless range. */
+      int rn = argv[0];
+      int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+      int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
+      int t = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = sp_sym_to_s(", t); emit_expr(c, recv, b);
+      buf_printf(b, "); sp_str_sub_range_r(_t%d, ", t);
+      if (lo >= 0) emit_int_expr(c, lo, b); else buf_puts(b, "0");
+      buf_puts(b, ", ");
+      if (hi >= 0) { emit_int_expr(c, hi, b); buf_printf(b, ", %d); })", excl); }
+      else buf_printf(b, "(mrb_int)sp_str_length(_t%d), 0); })", t);
+      return;
+    }
+    if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
+        (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
       buf_puts(b, "sp_str_char_at_or_nil(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "), ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       return;
@@ -9790,7 +9808,8 @@ else {
       emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
-    if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc == 1) {
+    if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc == 1 &&
+        (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_POLY)) {
       buf_printf(b, "sp_str_%s(sp_sym_to_s(", sp_streq(name, "start_with?") ? "start_with" : "end_with");
       emit_expr(c, recv, b); buf_puts(b, "), "); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
       return;
