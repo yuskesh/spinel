@@ -605,6 +605,14 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       emit_expr(c, iv, b);
       buf_printf(b, "; sp_IntArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
     }
+    else if (irt == TY_FLOAT_ARRAY) {
+      buf_printf(b, "({ sp_FloatArray *_t%d = ", ta2); emit_expr(c, ir, b);
+      buf_printf(b, "; mrb_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);
+      buf_printf(b, "; mrb_float _t%d = sp_FloatArray_get(_t%d, _t%d);", tc2, ta2, tb2);
+      buf_printf(b, " if (%ssp_float_is_nil(_t%d)) { _t%d = ", is_or2 ? "" : "!", tc2, tc2);
+      emit_expr(c, iv, b);
+      buf_printf(b, "; sp_FloatArray_set(_t%d, _t%d, _t%d); } _t%d; })", ta2, tb2, tc2, tc2);
+    }
     else if (irt == TY_STR_ARRAY) {
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta2); emit_expr(c, ir, b);
       buf_printf(b, "; mrb_int _t%d = ", tb2); emit_int_expr(c, iav[0], b);

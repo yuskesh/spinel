@@ -10818,15 +10818,23 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
   }
 
   if (ty_is_array(rt)) {
-    const char *k = array_kind(rt);
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) { unsupported(c, id, "index and/or write (array kind)"); return; }
     emit_indent(b, indent);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
     buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
     buf_puts(b, "; ");
     if (rt == TY_INT_ARRAY) {
-      buf_printf(b, "if (%ssp_IntArray_get(_t%d, _t%d) != SP_INT_NIL) sp_IntArray_set(_t%d, _t%d, ",
-                 is_or ? "!" : "", ta, tb, ta, tb);
+      /* int slots are nil only out of bounds (0 is truthy); ||= writes when
+         nil, &&= when present. Compare with == / != to avoid `!x != NIL`. */
+      buf_printf(b, "if (sp_IntArray_get(_t%d, _t%d) %s SP_INT_NIL) sp_IntArray_set(_t%d, _t%d, ",
+                 ta, tb, is_or ? "==" : "!=", ta, tb);
+      emit_expr(c, v, b);
+      buf_puts(b, ")");
+    }
+    else if (rt == TY_FLOAT_ARRAY) {
+      buf_printf(b, "if (%ssp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))) sp_FloatArray_set(_t%d, _t%d, ",
+                 is_or ? "" : "!", ta, tb, ta, tb);
       emit_expr(c, v, b);
       buf_puts(b, ")");
     }
