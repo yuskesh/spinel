@@ -2319,6 +2319,8 @@ else {
     }
     if (sp_streq(name, "dup") || sp_streq(name, "clone") || sp_streq(name, "replace") ||
         sp_streq(name, "merge")) return rt;
+    /* in-place merge mutates and returns the receiver (its variant is fixed) */
+    if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 1) return rt;
     if (sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
         sp_streq(name, "include?") || sp_streq(name, "member?") ||
         sp_streq(name, "has_value?") || sp_streq(name, "value?") ||

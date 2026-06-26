@@ -1468,7 +1468,7 @@ int infer_hash_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   static const char *const hash_only_meths[] = {
-    "keys","values","each_pair","merge","has_key?","key?","fetch","store",
+    "keys","values","each_pair","merge","merge!","update","has_key?","key?","fetch","store",
     "delete","transform_values","transform_keys","to_h","each_with_object",NULL
   };
   for (int id = 0; id < nt->count; id++) {
@@ -3519,8 +3519,9 @@ int infer_block_params(Compiler *c) {
       continue;
     }
 
-    /* hash.merge(other) { |k, v1, v2| } binds key + both conflicting values */
-    if (sp_streq(name, "merge") && ty_is_hash(rt)) {
+    /* hash.merge/merge!/update(other) { |k, v1, v2| } binds key + both values */
+    if ((sp_streq(name, "merge") || sp_streq(name, "merge!") || sp_streq(name, "update")) &&
+        ty_is_hash(rt)) {
       Scope *ms = comp_scope_of(c, block);
       LocalVar *kp = scope_local_intern(ms, p0); kp->is_block_param = 1;
       TyKind km = ty_unify(kp->type, ty_hash_key(rt));

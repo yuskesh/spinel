@@ -2057,6 +2057,60 @@ else {
         buf_printf(b, "sp_%sHash_inspect(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 1) {
+        /* In-place merge: insert each key of `other` into the receiver (a
+           conflict-resolution block, if present, picks the kept value), then
+           yield the receiver. A typed receiver can't change variant in place,
+           so only a same-variant argument is accepted; any other argument
+           (including a poly-boxed hash, which can't be variant-checked here
+           without risking type confusion) falls through to the unsupported
+           path rather than silently dropping or mistyping. */
+        TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
+        /* merging an empty hash literal is a no-op; yield the receiver. (An
+           empty `{}` has no inferable variant, so it can't take the loop.) */
+        const char *aty0 = nt_type(nt, argv[0]);
+        if (aty0 && (sp_streq(aty0, "HashNode") || sp_streq(aty0, "KeywordHashNode"))) {
+          int en = 0; nt_arr(nt, argv[0], "elements", &en);
+          if (en == 0) { emit_expr(c, recv, b); return 1; }
+        }
+        TyKind at = comp_ntype(c, argv[0]);
+        if (at != rt) return 0;
+        int blk = nt_ref(nt, id, "block");
+        int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[0], b); buf_puts(b, ";");
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
+        buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
+        if (blk >= 0) {
+          const char *bp0 = block_param_name(c, blk, 0);
+          const char *bp1 = block_param_name(c, blk, 1);
+          const char *bp2 = block_param_name(c, blk, 2);
+          buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) {", hn, tr, tk);
+          if (bp0) buf_printf(b, " lv_%s = _t%d;", rename_local(bp0), tk);
+          if (bp1) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp1), hn, tr, tk);
+          if (bp2) buf_printf(b, " lv_%s = sp_%sHash_get(_t%d, _t%d);", rename_local(bp2), hn, to, tk);
+          buf_printf(b, " sp_%sHash_set(_t%d, _t%d, ", hn, tr, tk);
+          {
+            int bbody = nt_ref(nt, blk, "body");
+            int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+            int bval = bn > 0 ? bb[bn - 1] : -1;
+            buf_puts(b, "({ ");
+            for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], b, 0);
+            if (bval >= 0) {
+              if (vt == TY_POLY && comp_ntype(c, bval) != TY_POLY) emit_boxed(c, bval, b);
+              else emit_expr(c, bval, b);
+            }
+            else buf_puts(b, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+            buf_puts(b, "; })");
+          }
+          buf_printf(b, "); } else { sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
+        }
+        else {
+          buf_printf(b, " sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d));", hn, tr, tk, hn, to, tk);
+        }
+        buf_printf(b, " } _t%d; })", tr);
+        return 1;
+      }
       if (sp_streq(name, "merge") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
         /* merge(other) { |k, v1, v2| } -- conflict-resolution block. The
            result starts as a copy of the receiver, then each key of `other`
