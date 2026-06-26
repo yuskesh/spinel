@@ -236,13 +236,22 @@ static int warn_unresolved_pos(Compiler *c, int id) {
    reopened Integer/Float/String/Symbol/nil method still dispatches), else to a
    sentinel matching no case -- this keeps a plain scalar (cls_id 0) from
    aliasing a regular user class that happens to occupy index 0. */
-static void emit_poly_dispatch_key(Compiler *c, int tv, Buf *b) {
-  /* The scalar-cls_id-0 vs user-class-0 collision this guards only surfaces
-     under --int-overflow=promote (an int ivar widened to poly, then dispatched
-     -- the attr SIGSEGV). In default/wrap mode the guard is pure overhead on a
-     hot per-dispatch path (optcarrot's per-frame tick), so emit the plain
-     cls_id there, matching the pre-promote codegen. */
-  if (!g_promote_mode) { buf_printf(b, "_t%d.cls_id", tv); return; }
+static void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, Buf *b) {
+  /* Every boxed scalar (int/float/str/sym/nil/bool) carries cls_id 0, which
+     aliases the first user class (index 0). When class 0 is a candidate of this
+     dispatch -- it defines/inherits the method, so it emits a `case 0:` arm --
+     a scalar receiver would wrongly enter that arm and deref its v.p (issue
+     #1576: `value.to_s` on a poly int, with a user class 0 defining `to_s`,
+     segfaulted). Guard the key so a non-object value maps to a sentinel that
+     matches no case and falls through to the default/poly arm. When class 0 is
+     not a candidate (no `case 0:` arm), a scalar's cls_id 0 already matches
+     nothing, so the plain key is correct -- and cheaper on the hot per-dispatch
+     path (optcarrot's per-frame tick), so keep it there. */
+  if (!g_promote_mode) {
+    if (cls0_cand) buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff)", tv, tv);
+    else buf_printf(b, "_t%d.cls_id", tv);
+    return;
+  }
   static const struct { const char *tag, *cls; } P[] = {
     {"SP_TAG_INT", "Integer"}, {"SP_TAG_FLT", "Float"},
     {"SP_TAG_STR", "String"},  {"SP_TAG_SYM", "Symbol"},
@@ -9372,11 +9381,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %ssp_str_length(_t%d.v.s) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
         buf_printf(b, "if (_t%d.tag == SP_TAG_SYM) _t%d = %sstrlen(sp_sym_to_s((sp_sym)_t%d.v.i)) == 0%s; else ", tv, tr, ebopen, tv, ebclose);
       }
-      /* A boxed scalar's cls_id is 0, which would otherwise alias the first user
-         class (class id 0) and mis-dispatch (e.g. a poly int's `to_s` recursing
-         into that class's to_s). Key the switch on the tag-aware dispatch id. */
+      /* class 0 emits a `case 0:` arm here when it defines/inherits the method
+         (nrequired 0) or exposes it as a reader; the dispatch key is then guarded
+         so a boxed scalar (cls_id 0) does not alias it (issue #1576). */
+      int cls0_d = -1, cls0_rd = -1;
+      int cls0_mi = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, &cls0_d) : -1;
+      int cls0_cand = (cls0_mi >= 0 && c->scopes[cls0_mi].nrequired == 0) ||
+                      (c->nclasses > 0 && comp_reader_in_chain(c, 0, name, &cls0_rd));
       buf_puts(b, "switch (");
-      emit_poly_dispatch_key(c, tv, b);
+      emit_poly_dispatch_key(c, tv, cls0_cand, b);
       buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
@@ -9530,11 +9543,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else
           buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = (_t%d.v.i >> %s) & 1; } else ", tv, tr, tv, idxref);
       }
-      /* A boxed scalar's cls_id is 0, which would otherwise alias the first user
-         class (class id 0) and mis-dispatch (e.g. a poly int's `to_s` recursing
-         into that class's to_s). Key the switch on the tag-aware dispatch id. */
+      /* class 0 emits a `case 0:` arm here when it defines/inherits the method
+         with its arity satisfied; guard the key so a boxed scalar (cls_id 0)
+         cannot alias it (issue #1576). */
+      int cls0_mi2 = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, NULL) : -1;
+      int cls0_cand2 = cls0_mi2 >= 0 && argc >= c->scopes[cls0_mi2].nrequired;
       buf_puts(b, "switch (");
-      emit_poly_dispatch_key(c, tv, b);
+      emit_poly_dispatch_key(c, tv, cls0_cand2, b);
       buf_puts(b, ") {");
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
