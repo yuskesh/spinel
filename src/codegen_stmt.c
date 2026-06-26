@@ -3364,6 +3364,38 @@ else {
     }
     return;
   }
+  if (sp_streq(ty, "ConstantPathWriteNode")) {
+    /* `Mod::X = v`: resolve the constant on the path target and assign. The
+       constant must already be typed (registered by analysis), like the
+       operator/or/and path-write forms. */
+    int tgt = nt_ref(nt, id, "target");
+    const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (!cv || cv->type == TY_UNKNOWN) { unsupported(c, id, "constant path write"); return; }
+    int v = nt_ref(nt, id, "value");
+    const char *vty = nt_type(nt, v);
+    int v_empty_arr = 0, v_empty_hash = 0;
+    if (vty && sp_streq(vty, "ArrayNode")) {
+      int ac = 0; nt_arr(nt, v, "elements", &ac); v_empty_arr = (ac == 0);
+    }
+    if (vty && (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))) {
+      int hec = 0; nt_arr(nt, v, "elements", &hec); v_empty_hash = (hec == 0);
+    }
+    emit_indent(b, indent);
+    buf_printf(b, "cst_%s = ", nm);
+    if (vty && sp_streq(vty, "NilNode"))
+      buf_puts(b, cv->type == TY_RANGE ? "(sp_Range){0}" : default_value(cv->type));
+    else if (v_empty_arr && cv->type == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
+    else if (v_empty_arr && array_kind(cv->type)) buf_printf(b, "sp_%sArray_new()", array_kind(cv->type));
+    else if (v_empty_hash && ty_is_hash(cv->type)) {
+      const char *hcn = ty_hash_cname(cv->type);
+      if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
+      else emit_expr(c, v, b);
+    }
+    else emit_expr(c, v, b);
+    buf_puts(b, ";\n");
+    return;
+  }
   if (sp_streq(ty, "ConstantPathOperatorWriteNode")) {
     int tgt = nt_ref(nt, id, "target");
     const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
