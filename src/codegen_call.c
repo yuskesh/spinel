@@ -5434,7 +5434,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else if (ac == 1 && nt_type(nt, av[0]) &&
              (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"))) {
-      buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", nt_str(nt, av[0], "name"));
+      /* `raise E` with a user-defined E#initialize is `raise E.new`: construct
+         the object (filling initialize's defaults) so its custom initialize and
+         any `super`/message run. Without a custom initialize the message
+         defaults to the class name, so the (cls, "") fast path is correct. */
+      const char *cn = nt_str(nt, av[0], "name");
+      int xc = cn ? comp_class_index(c, cn) : -1;
+      int ic = (xc >= 0 && class_is_exc_subclass(c, xc))
+                 ? comp_method_in_chain(c, xc, "initialize", NULL) : -1;
+      if (xc >= 0 && ic >= 0 && c->scopes[ic].reachable) {
+        buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].name);
+        emit_args_filled(c, ic, -1, "", b);
+        buf_puts(b, "))");
+      }
+      else buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", cn ? cn : "");
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
              (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"))) {
