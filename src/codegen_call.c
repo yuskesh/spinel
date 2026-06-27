@@ -966,8 +966,9 @@ else {
           buf_printf(b, "_t%d", tres); return 1;
         }
       }
-      /* find_index { |x| cond } on typed arrays - returns index or SP_INT_NIL */
-      if (sp_streq(name, "find_index") && block >= 0) {
+      /* find_index { |x| cond } / index { |x| cond } on typed arrays - returns
+         the index or nil (`index` is an alias for `find_index` in this form). */
+      if ((sp_streq(name, "find_index") || sp_streq(name, "index")) && block >= 0) {
         const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
