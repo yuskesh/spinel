@@ -676,6 +676,18 @@ int scope_is_shadowed(Compiler *c, int s) {
   }
   return 0;
 }
+/* True when scope `s` is emitted as a standalone `sp_Class_method` function, so
+   a poly-dispatch `case` arm may call it without dangling at link. Mirrors the
+   emission gate in codegen.c exactly: a yielding method is inlined at each call
+   site (no symbol exists), and a pruned/shadowed/transplanted method is never
+   defined. A dispatch arm that targets a scope failing this test references an
+   undefined symbol (issues #1583 yields, #1576 pruned). */
+int scope_has_callable_symbol(Compiler *c, int s) {
+  if (s < 0 || s >= c->nscopes) return 0;
+  Scope *sc = &c->scopes[s];
+  return sc->reachable && !sc->yields && !sc->is_transplanted_source &&
+         !scope_is_shadowed(c, s);
+}
 int struct_kwarg_value(Compiler *c, int kwh, const char *name) {
   const NodeTable *nt = c->nt;
   int n = 0;
