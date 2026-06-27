@@ -9394,7 +9394,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       for (int k = 0; k < c->nclasses; k++) {
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
-        if (mi >= 0 && c->scopes[mi].nrequired == 0) {
+        /* Skip a method the reachability/DCE pass pruned (e.g. a user class that
+           is never actually the receiver, so its params stayed TY_UNKNOWN and it
+           was marked unreachable): emitting a `case` arm that calls it would
+           dangle at link, since the body is never defined (issue #1583). The
+           class can never be the receiver of this poly value anyway. */
+        if (mi >= 0 && c->scopes[mi].nrequired == 0 && c->scopes[mi].reachable) {
           /* Build the call; append default values for any optional params
              not provided by the (zero-arg) call site. */
           Buf cb; memset(&cb, 0, sizeof cb);
@@ -9555,6 +9560,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int defcls = -1;
         int mi = comp_method_in_chain(c, k, name, &defcls);
         if (mi < 0 || argc < c->scopes[mi].nrequired) continue;
+        /* Skip a DCE-pruned method: a `case` arm calling its (never-defined)
+           body would dangle at link. The class can't be this poly value's
+           receiver anyway -- that is why it was pruned (issue #1583). */
+        if (!c->scopes[mi].reachable) continue;
         TyKind mret = c->scopes[mi].ret;
         int mnp = c->scopes[mi].nparams;
         Buf cb; memset(&cb, 0, sizeof cb);

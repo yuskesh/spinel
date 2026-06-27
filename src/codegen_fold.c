@@ -4001,6 +4001,10 @@ else {
     int kd = -1;
     int kmi = comp_method_in_chain(c, k, name, &kd);
     if (kmi < 0) continue;
+    /* A `case` arm calling a DCE-pruned override would dangle at link (its body
+       is never emitted); the class can't be the receiver here anyway. Same
+       guard as the poly-dispatch loops in codegen_call.c (issue #1583). */
+    if (!c->scopes[kmi].reachable) continue;
     TyKind arm_ret = (TyKind)c->scopes[kmi].ret;
     const char *kfn = mc(c->scopes[kmi].name);
     if (method_is_void(&c->scopes[kmi])) {
