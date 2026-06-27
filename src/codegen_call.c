@@ -5458,6 +5458,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
       buf_puts(b, "sp_Queue_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
+    if (sp_streq(name, "max") && argc == 0) {
+      buf_puts(b, "sp_Queue_max("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
     if (sp_streq(name, "empty?") && argc == 0) {
       buf_puts(b, "sp_Queue_empty("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
@@ -7489,6 +7492,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
       if (cn && sp_streq(cn, "Queue")) { buf_puts(b, "sp_Queue_new()"); return; }
+      if (cn && sp_streq(cn, "SizedQueue") && argc == 1) {
+        buf_puts(b, "sp_SizedQueue_new("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return;
+      }
       if (cn && sp_streq(cn, "Random")) {
         buf_puts(b, "sp_Random_new(");
         if (argc >= 1) emit_expr(c, argv[0], b);

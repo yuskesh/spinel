@@ -245,15 +245,32 @@ sp_queue *sp_Queue_new(void) {
   sp_queue *q = (sp_queue *)sp_gc_alloc(sizeof(sp_queue), sp_queue_fin, sp_queue_scan);
   q->cap = 8;
   q->head = q->len = 0;
+  q->max = 0;
   q->pop_waiters = NULL;
+  q->push_waiters = NULL;
   q->closed = 0;
   q->buf = (sp_RbVal *)malloc(sizeof(sp_RbVal) * q->cap);
   if (!q->buf) sp_raise_cls("NoMemoryError", "failed to allocate queue");
   return q;
 }
 
+sp_queue *sp_SizedQueue_new(mrb_int max) {
+  if (max <= 0) sp_raise_cls("ArgumentError", "queue size must be positive");
+  sp_queue *q = sp_Queue_new();
+  q->max = max;
+  return q;
+}
+
 void sp_Queue_push(sp_queue *q, sp_RbVal v) {
-  if (q->closed) sp_raise_cls("ClosedQueueError", "queue closed");
+  /* On a full SizedQueue, block until a #pop frees a slot. Root v across the
+     block: it lives in this (possibly suspended) frame, and the parking
+     thread's saved roots only cover the shadow stack. */
+  SP_GC_ROOT_RBVAL(v);
+  for (;;) {
+    if (q->closed) sp_raise_cls("ClosedQueueError", "queue closed");
+    if (q->max <= 0 || q->len < q->max) break;
+    sp_sched_block(&q->push_waiters);
+  }
   if (q->len == q->cap) {
     mrb_int nc = q->cap * 2;
     sp_RbVal *nb = (sp_RbVal *)malloc(sizeof(sp_RbVal) * nc);
@@ -277,18 +294,24 @@ sp_RbVal sp_Queue_pop(sp_queue *q) {
   sp_RbVal v = q->buf[q->head];
   q->head = (q->head + 1) % q->cap;
   q->len--;
+  if (q->max > 0) sp_sched_wake_one(&q->push_waiters);   /* a slot freed up */
   return v;
 }
 
 mrb_int  sp_Queue_size(sp_queue *q)   { return q->len; }
 mrb_bool sp_Queue_empty(sp_queue *q)  { return q->len == 0; }
+mrb_int  sp_Queue_max(sp_queue *q)    { return q->max; }
 mrb_bool sp_Queue_closed(sp_queue *q) { return q->closed != 0; }
-void     sp_Queue_clear(sp_queue *q)  { q->head = q->len = 0; }
+void     sp_Queue_clear(sp_queue *q)  {
+  q->head = q->len = 0;
+  if (q->max > 0) while (sp_sched_wake_one(&q->push_waiters)) { }   /* all slots free */
+}
 
 void sp_Queue_close(sp_queue *q) {
   q->closed = 1;
-  /* wake every blocked popper so they observe the close and return nil */
+  /* wake every blocked popper (they return nil) and pusher (they raise) */
   while (sp_sched_wake_one(&q->pop_waiters)) { }
+  while (sp_sched_wake_one(&q->push_waiters)) { }
 }
 
 /* ---- Mutex ----

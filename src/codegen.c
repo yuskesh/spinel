@@ -2901,7 +2901,7 @@ static void scan_prologue_features(Compiler *c) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
       if (sp_streq(nm, "Regexp")) g_uses_regex = 1;
-      else if (sp_streq(nm, "Thread") || sp_streq(nm, "Queue") ||
+      else if (sp_streq(nm, "Thread") || sp_streq(nm, "Queue") || sp_streq(nm, "SizedQueue") ||
                sp_streq(nm, "Mutex") || sp_streq(nm, "Monitor") ||
                sp_streq(nm, "ConditionVariable")) g_uses_threads = 1;
       else if (sp_streq(nm, "Random")) g_uses_random = 1;

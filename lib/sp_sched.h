@@ -72,15 +72,19 @@ void       sp_sched_drain(void);
 typedef struct sp_queue {
   sp_RbVal         *buf;          /* ring buffer of queued values */
   mrb_int           head, len, cap;
+  mrb_int           max;          /* SizedQueue capacity; 0 = unbounded Queue */
   struct sp_thread *pop_waiters;  /* threads blocked in #pop on an empty queue */
+  struct sp_thread *push_waiters; /* threads blocked in #push on a full SizedQueue */
   int               closed;
 } sp_queue;
 
 sp_queue  *sp_Queue_new(void);
-void       sp_Queue_push(sp_queue *q, sp_RbVal v);  /* #push / #<< / #enq */
+sp_queue  *sp_SizedQueue_new(mrb_int max);          /* SizedQueue.new(max) */
+void       sp_Queue_push(sp_queue *q, sp_RbVal v);  /* #push / #<< / #enq (blocks when full) */
 sp_RbVal   sp_Queue_pop(sp_queue *q);               /* #pop / #shift / #deq (blocks when empty) */
 mrb_int    sp_Queue_size(sp_queue *q);              /* #size / #length */
 mrb_bool   sp_Queue_empty(sp_queue *q);             /* #empty? */
+mrb_int    sp_Queue_max(sp_queue *q);               /* SizedQueue#max */
 void       sp_Queue_close(sp_queue *q);             /* #close */
 mrb_bool   sp_Queue_closed(sp_queue *q);            /* #closed? */
 void       sp_Queue_clear(sp_queue *q);             /* #clear */
