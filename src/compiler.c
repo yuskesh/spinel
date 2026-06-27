@@ -154,9 +154,44 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   return ci;
 }
 
+/* name -> class index, frozen index (shares the scope-index freeze signal; see
+   comp_scope_index_set_frozen). comp_class_index is a linear scan over classes
+   called per node during the fixpoint -- O(lookups * classes). Built descending
+   so the chain head is the lowest class index (first definition wins, matching
+   the forward scan). While unfrozen (walk_scope / register passes add and rename
+   classes with the count unchanged), fall back to the linear scan. */
+static int ci_frozen = 0, ci_nclasses = -1, ci_buckets = 0;
+static int *ci_next = NULL, *ci_head = NULL;
+static unsigned ci_hash(const char *s) {
+  unsigned h = 2166136261u;
+  for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
+  return h;
+}
+static void ci_build(Compiler *c) {
+  int nc = c->nclasses;
+  free(ci_next); free(ci_head);
+  ci_buckets = nc > 0 ? nc : 1;
+  ci_next = malloc((size_t)(nc > 0 ? nc : 1) * sizeof(int));
+  ci_head = malloc((size_t)ci_buckets * sizeof(int));
+  ci_nclasses = nc;
+  if (!ci_next || !ci_head) { ci_buckets = 0; return; }
+  for (int i = 0; i < ci_buckets; i++) ci_head[i] = -1;
+  for (int i = nc - 1; i >= 0; i--) {
+    if (!c->classes[i].name) continue;
+    unsigned b = ci_hash(c->classes[i].name) % (unsigned)ci_buckets;
+    ci_next[i] = ci_head[b]; ci_head[b] = i;
+  }
+}
 int comp_class_index(Compiler *c, const char *name) {
   if (!name) return -1;
-  for (int i = 0; i < c->nclasses; i++)
+  if (!ci_frozen) {
+    for (int i = 0; i < c->nclasses; i++)
+      if (c->classes[i].name && sp_streq(c->classes[i].name, name)) return i;
+    return -1;
+  }
+  if (ci_nclasses != c->nclasses) ci_build(c);
+  if (!ci_buckets) return -1;
+  for (int i = ci_head[ci_hash(name) % (unsigned)ci_buckets]; i >= 0; i = ci_next[i])
     if (c->classes[i].name && sp_streq(c->classes[i].name, name)) return i;
   return -1;
 }
@@ -225,7 +260,7 @@ static int *tm_next = NULL, *tm_head = NULL;
    count-keyed cache would go stale. analyze_program freezes the index just
    before the inference fixpoint (where lookups are hottest and scope shape is
    fixed) and unfreezes at entry. While unfrozen, fall back to the linear scan. */
-void comp_scope_index_set_frozen(int f) { sm_frozen = f; sm_nscopes = -1; }
+void comp_scope_index_set_frozen(int f) { sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
 static void sm_build(Compiler *c) {
   int ns = c->nscopes;
   free(sm_next); free(sm_head); free(tm_next); free(tm_head);
