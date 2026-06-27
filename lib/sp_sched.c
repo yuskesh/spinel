@@ -20,6 +20,7 @@ static sp_thread *g_current = NULL;      /* the green thread running right now *
 static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
 static sp_thread *g_all = NULL;          /* registry of live threads, for GC rooting */
 static unsigned   g_next_id = 1;
+static unsigned char g_report_default = 1;  /* Thread.report_on_exception default */
 
 static void rq_push(sp_thread *t) {
   t->state = SP_TH_RUNNABLE;
@@ -130,7 +131,7 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f) {
   memset(t, 0, sizeof *t);
   t->fiber = f;
   t->retval = sp_box_nil();
-  t->report_on_exception = 1;
+  t->report_on_exception = g_report_default;
   t->id = g_next_id++;
   reg_add(t);
   rq_push(t);
@@ -185,6 +186,14 @@ void sp_Thread_pass(void) {
 sp_thread *sp_Thread_current(void) { return g_current; }
 
 mrb_bool sp_Thread_alive(sp_thread *t) { return t->state != SP_TH_DEAD; }
+
+/* Thread.report_on_exception=(v): set the default for threads spawned after.
+   Thread.report_on_exception: read the default. Per-thread #report_on_exception
+   reads/sets the thread's own flag. */
+mrb_bool sp_Thread_set_report_default(mrb_bool v) { g_report_default = v ? 1 : 0; return v; }
+mrb_bool sp_Thread_get_report_default(void) { return g_report_default; }
+mrb_bool sp_Thread_set_report(sp_thread *t, mrb_bool v) { t->report_on_exception = v ? 1 : 0; return v; }
+mrb_bool sp_Thread_get_report(sp_thread *t) { return t->report_on_exception; }
 
 void sp_sched_drain(void) {
   /* main() is finishing: run remaining runnable threads so fire-and-forget

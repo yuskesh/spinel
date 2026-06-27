@@ -23,7 +23,9 @@ puts log.inspect                              # [:ran]
 threads = (1..3).map { |i| Thread.new { i * i } }
 puts threads.map { |th| th.value }.inspect    # [1, 4, 9]
 
-# an unhandled exception is re-raised in the joining thread
+# an unhandled exception is re-raised in the joining thread (silence the
+# at-termination report so the test asserts no stderr)
+Thread.report_on_exception = false
 begin
   Thread.new { raise "boom" }.value
 rescue => e

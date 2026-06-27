@@ -56,6 +56,10 @@ sp_RbVal   sp_Thread_value(sp_thread *t);
 void       sp_Thread_pass(void);          /* Thread.pass: cooperative yield */
 sp_thread *sp_Thread_current(void);       /* Thread.current */
 mrb_bool   sp_Thread_alive(sp_thread *t); /* #alive? */
+mrb_bool   sp_Thread_set_report_default(mrb_bool v);  /* Thread.report_on_exception= */
+mrb_bool   sp_Thread_get_report_default(void);        /* Thread.report_on_exception */
+mrb_bool   sp_Thread_set_report(sp_thread *t, mrb_bool v); /* #report_on_exception= */
+mrb_bool   sp_Thread_get_report(sp_thread *t);            /* #report_on_exception */
 
 /* Run any remaining runnable threads to completion. Emitted at the end of
    main() so a fire-and-forget Thread still runs its body. */

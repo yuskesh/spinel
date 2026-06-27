@@ -5393,6 +5393,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "alive?") && argc == 0) {
       buf_puts(b, "sp_Thread_alive("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
+    if (sp_streq(name, "report_on_exception") && argc == 0) {
+      buf_puts(b, "sp_Thread_get_report("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "report_on_exception=") && argc == 1) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_thread *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Thread_set_report(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, "); })");
+      return;
+    }
   }
 
   /* Mutex instance methods. synchronize is handled by the generic block handler
@@ -7356,6 +7365,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "pass") && argc == 0) {
       /* Thread.pass yields the scheduler and evaluates to nil. */
       buf_puts(b, "(sp_Thread_pass(), sp_box_nil())"); return;
+    }
+    if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "report_on_exception=") && argc == 1) {
+      buf_puts(b, "sp_Thread_set_report_default("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "report_on_exception") && argc == 0) {
+      buf_puts(b, "sp_Thread_get_report_default()"); return;
     }
   }
 

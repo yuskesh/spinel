@@ -1083,6 +1083,8 @@ else {
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "pass")) return TY_NIL;
+      if (cn2 && sp_streq(cn2, "Thread") &&
+          (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception="))) return TY_BOOL;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) return TY_POLY;
       /* Random class methods: Random.rand(n)->int / Random.rand->float */
@@ -1105,6 +1107,7 @@ else {
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "join")) return TY_THREAD;      /* returns the thread */
     if (sp_streq(name, "alive?")) return TY_BOOL;
+    if (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception=")) return TY_BOOL;
   }
 
   /* TY_QUEUE instance methods */
