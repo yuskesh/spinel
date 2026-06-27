@@ -9887,6 +9887,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            this poly value's receiver anyway -- that is why it was pruned, and a
            yielding method's value-position dispatch is moot here (issue #1583). */
         if (!scope_has_callable_symbol(c, mi)) continue;
+        /* A candidate whose concrete key parameter type is incompatible with the
+           concrete call-site key cannot be this poly value's receiver for that
+           key -- e.g. a Symbol-keyed user `[]` reached by a String key, where the
+           value's real class is a string-keyed Hash. Passing the key raw would be
+           a C pointer/integer type error (const char * into an sp_sym slot), so
+           skip the arm. Mirrors the key-type-mismatch handling for typed hashes. */
+        int arm_key_incompat = 0;
+        for (int a = 0; a < c->scopes[mi].nparams && a < argc; a++) {
+          LocalVar *pv0 = (c->scopes[mi].pnames && c->scopes[mi].pnames[a])
+                            ? scope_local(&c->scopes[mi], c->scopes[mi].pnames[a]) : NULL;
+          TyKind pt0 = pv0 ? pv0->type : TY_UNKNOWN;
+          TyKind at0 = atmp_ty[a];
+          int pc = pt0 != TY_POLY && pt0 != TY_UNKNOWN && pt0 != TY_NIL && pt0 != TY_VOID;
+          int ac = at0 != TY_POLY && at0 != TY_UNKNOWN && at0 != TY_NIL && at0 != TY_VOID;
+          if (pc && ac && pt0 != at0 && (pt0 == TY_STRING || at0 == TY_STRING)) {
+            arm_key_incompat = 1; break;
+          }
+        }
+        if (arm_key_incompat) continue;
         TyKind mret = c->scopes[mi].ret;
         int mnp = c->scopes[mi].nparams;
         Buf cb; memset(&cb, 0, sizeof cb);
