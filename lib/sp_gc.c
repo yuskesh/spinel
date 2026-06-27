@@ -17,8 +17,8 @@
 #include "sp_marshal.h"   /* sp_marshal_vt -- the instance lives here (always linked) */
 
 /* ---- Globals shared with the generated TU (declared extern in sp_gc.h) ---- */
-void **sp_gc_roots[SP_GC_STACK_MAX];
-int sp_gc_nroots = 0;
+SP_TLS void **sp_gc_roots[SP_GC_STACK_MAX];   /* per-worker (SP_TLS); see sp_gc.h */
+SP_TLS int sp_gc_nroots = 0;
 sp_gc_hdr *sp_gc_heap = NULL;
 size_t sp_gc_bytes = 0;
 size_t sp_gc_old_bytes = 0;

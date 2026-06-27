@@ -53,8 +53,11 @@ typedef struct { int tag; int cls_id; union { mrb_int i; const char *s; mrb_floa
 #define SP_GC_STACK_MAX 65536
 #endif
 #define SP_GC_FULL_INTERVAL 8
-extern void **sp_gc_roots[SP_GC_STACK_MAX];
-extern int sp_gc_nroots;
+/* Per-worker root stack (SP_TLS): each OS worker carries the active roots of
+   the green thread it runs, swapped with the fiber's saved_roots on a context
+   switch. Plain globals in the single-threaded build. */
+extern SP_TLS void **sp_gc_roots[SP_GC_STACK_MAX];
+extern SP_TLS int sp_gc_nroots;
 
 /* GC root tracking. SP_GC_ROOT registers a stack-resident root with a
    cleanup-attribute sentinel so it auto-pops when its declaring scope ends.

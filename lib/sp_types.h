@@ -32,6 +32,19 @@
 #include <stddef.h>
 #include <float.h>   /* DBL_MAX / DBL_MIN / DBL_EPSILON for Float::* constants */
 
+/* Per-worker storage under true parallelism. In the -DSP_THREADS runtime
+   variant (and the generated TU when the program uses threads, compiled with
+   the same define) the per-thread execution state -- the GC root stack, the
+   current fiber, the match registers -- is thread-local so each OS worker keeps
+   its own. The single-threaded build leaves these plain globals, byte-identical
+   to before. Both sides must agree on the storage class, so SP_TLS lives in
+   this shared base header. */
+#ifdef SP_THREADS
+# define SP_TLS __thread
+#else
+# define SP_TLS
+#endif
+
 /* Branch-hint / hot-cold attributes. Static approximation of PGO: marking
    rare paths (raise, dispatch fallbacks) cold lets the C compiler split
    them out of the hot path's i-cache footprint. No-op on non-GCC/clang. */

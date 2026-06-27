@@ -428,6 +428,11 @@ int main(int argc, char **argv) {
   snprintf(tmp, sizeof tmp, "-O%s ", opt_level); s_add(&cmd, tmp);
   s_add(&cmd, "-Wno-all -ffunction-sections -fdata-sections ");
   snprintf(tmp, sizeof tmp, "-I\"%s\" -I\"%s%cregexp\" ", lib_dir, lib_dir, PATH_SEP); s_add(&cmd, tmp);
+  /* Compile the generated TU with the same threading define as the mt runtime
+     archive it links, so the per-worker SP_TLS globals (sp_gc_roots, ...) it
+     references through the runtime headers get the matching thread-local
+     storage class. initial-exec keeps those reads a single segment load. */
+  if (uses_threads) s_add(&cmd, "-DSP_THREADS -ftls-model=initial-exec ");
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   s_add_arg(&cmd, c_path);
   snprintf(tmp, sizeof tmp, "\"%s%c%s\" ", lib_dir, PATH_SEP, rt_lib); s_add(&cmd, tmp);
