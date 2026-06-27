@@ -751,6 +751,17 @@ void blkp_mark_subtree(const NodeTable *nt, int node, char *marks) {
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(nt, node, i, &n); for (int k = 0; k < n; k++) blkp_mark_subtree(nt, ids[k], marks); }
 }
+/* Generation-stamping variant: writes `gen` instead of 1, so the membership
+   array can be reused across blocks without an O(n) memset per block (a node is
+   "in body" iff stamp[node] == gen). */
+static void blkp_stamp_subtree(const NodeTable *nt, int node, int *stamp, int gen) {
+  if (node < 0) return;
+  stamp[node] = gen;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) blkp_stamp_subtree(nt, nt_ref_at(nt, node, i), stamp, gen);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(nt, node, i, &n); for (int k = 0; k < n; k++) blkp_stamp_subtree(nt, ids[k], stamp, gen); }
+}
 
 /* A block/lambda parameter is interned into the enclosing (flat) scope, so two
    blocks reusing a name -- or a block param sharing a name with an enclosing
@@ -849,6 +860,35 @@ void qc_qualified_name(char *out, size_t cap, const QCWrite *w) {
   strncat(out, w->name, cap - strlen(out) - 1);
 }
 
+/* Reverse-reference flags for qc_rewrite_reads, built once per top-level call
+   (not rescanned per constant node, which made the pass O(constants * nodes) on
+   a flattened runtime). qc_cpath_parent[id]: some ConstantPathNode has parent
+   == id. qc_def_cpath[id]: some Class/ModuleNode has constant_path == id. */
+static unsigned char *qc_cpath_parent = NULL;
+static unsigned char *qc_def_cpath = NULL;
+static void qc_build_reverse_flags(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  qc_cpath_parent = calloc((size_t)n, 1);
+  qc_def_cpath = calloc((size_t)n, 1);
+  if (!qc_cpath_parent || !qc_def_cpath) return;
+  for (int q = 0; q < n; q++) {
+    const char *qt = nt_type(nt, q);
+    if (!qt) continue;
+    if (sp_streq(qt, "ConstantPathNode")) {
+      int p = nt_ref(nt, q, "parent");
+      if (p >= 0 && p < n) qc_cpath_parent[p] = 1;
+    }
+    else if (sp_streq(qt, "ClassNode") || sp_streq(qt, "ModuleNode")) {
+      int cp = nt_ref(nt, q, "constant_path");
+      if (cp >= 0 && cp < n) qc_def_cpath[cp] = 1;
+    }
+  }
+}
+static void qc_free_reverse_flags(void) {
+  free(qc_cpath_parent); qc_cpath_parent = NULL;
+  free(qc_def_cpath); qc_def_cpath = NULL;
+}
 void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
                              QCWrite *ws, int wn) {
   const NodeTable *nt = c->nt;
@@ -867,14 +907,8 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
        first against the colliding writes. Skip reads that are a path's parent
        (handled via the chain) or a class/module definition name. */
     const char *nm = nt_str(nt, node, "name");
-    int part_of_other = 0;
-    for (int q = 0; q < nt->count && !part_of_other; q++) {
-      const char *qt = nt_type(nt, q);
-      if (!qt) continue;
-      if (sp_streq(qt, "ConstantPathNode") && nt_ref(nt, q, "parent") == node) part_of_other = 1;
-      if ((sp_streq(qt, "ClassNode") || sp_streq(qt, "ModuleNode")) &&
-          nt_ref(nt, q, "constant_path") == node) part_of_other = 1;
-    }
+    int part_of_other = (qc_cpath_parent && qc_cpath_parent[node]) ||
+                        (qc_def_cpath && qc_def_cpath[node]);
     if (nm && !part_of_other) {
       int involved = 0;
       for (int i = 0; i < wn; i++) if (sp_streq(ws[i].name, nm)) { involved = 1; break; }
@@ -900,11 +934,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
   }
   else if (sp_streq(ty, "ConstantPathNode")) {
     /* only process path heads: skip if this node is some other path's parent */
-    int is_parent = 0;
-    for (int q = 0; q < nt->count && !is_parent; q++) {
-      const char *qt = nt_type(nt, q);
-      if (qt && sp_streq(qt, "ConstantPathNode") && nt_ref(nt, q, "parent") == node) is_parent = 1;
-    }
+    int is_parent = qc_cpath_parent && qc_cpath_parent[node];
     if (!is_parent) {
       char chain[QC_MAXDEPTH + 1][64];
       int abs_anchor = 0;
@@ -965,7 +995,9 @@ void qualify_colliding_consts(Compiler *c) {
   if (any) {
     /* rewrite reads first (they match against the original write names) */
     char mods[QC_MAXDEPTH][64];
+    qc_build_reverse_flags(c);
     qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
+    qc_free_reverse_flags();
     /* then qualify the nested writes themselves */
     for (int i = 0; i < wn; i++) {
       if (ws[i].depth == 0) continue;
@@ -1041,7 +1073,9 @@ void qualify_colliding_classes(Compiler *c) {
     /* rewrite references first (they match against the original leaf names),
        then qualify the nested definitions themselves */
     char mods[QC_MAXDEPTH][64];
+    qc_build_reverse_flags(c);
     qc_rewrite_reads(c, nt->root_id, mods, 0, ws, wn);
+    qc_free_reverse_flags();
     for (int i = 0; i < wn; i++) {
       if (ws[i].depth == 0) continue;
       char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[i]);
@@ -1054,12 +1088,43 @@ void qualify_colliding_classes(Compiler *c) {
 void rename_shadowing_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
-  char *inbody = malloc((size_t)n);
-  if (!inbody) return;
+  /* Reverse map block-node -> owning node (the node whose "block" ref is it),
+     built in one O(n) pass. blkp_needs_rename otherwise rescans all n nodes per
+     block, making this whole pass O(blocks*n) on large inputs (a flattened
+     runtime is ~500k nodes). */
+  int *owner = malloc((size_t)n * sizeof(int));
+  if (!owner) return;
+  for (int i = 0; i < n; i++) owner[i] = -1;
+  for (int id = 0; id < n; id++) {
+    int b = nt_ref(nt, id, "block");
+    if (b >= 0 && b < n) owner[b] = id;
+  }
+  /* inbody membership via generation stamp (avoids an O(n) memset per block). */
+  int *inbody = calloc((size_t)n, sizeof(int));
+  if (!inbody) { free(owner); return; }
+  /* All local-variable-write and required-block-param nodes, collected once;
+     the per-param collision scan iterates this set rather than all n nodes (it
+     re-reads each name fresh, so a rename made earlier in this pass is still
+     reflected). */
+  int *wp = malloc((size_t)n * sizeof(int));
+  int wpn = 0;
+  if (!wp) { free(owner); free(inbody); return; }
+  for (int w = 0; w < n; w++) {
+    const char *wty = nt_type(nt, w);
+    if (lv_node_is_write(wty) || (wty && sp_streq(wty, "RequiredParameterNode"))) wp[wpn++] = w;
+  }
+  int gen = 0;
   for (int L = 0; L < n; L++) {
     const char *ty = nt_type(nt, L);
-    if (!ty || (!sp_streq(ty, "BlockNode") && !sp_streq(ty, "LambdaNode"))) continue;
-    if (!blkp_needs_rename(c, L)) continue;
+    if (!ty) continue;
+    int is_lambda = sp_streq(ty, "LambdaNode");
+    if (!is_lambda && !sp_streq(ty, "BlockNode")) continue;
+    /* renameable: a lambda, or a block owned by a named call (see
+       blkp_needs_rename) -- resolved in O(1) through the owner index. */
+    if (!is_lambda) {
+      int o = owner[L];
+      if (o < 0 || nt_str(nt, o, "name") == NULL) continue;
+    }
     int pn = blkp_params_node(c, L);
     if (pn < 0) continue;
     const char *pty = nt_type(nt, pn);
@@ -1068,8 +1133,8 @@ void rename_shadowing_block_params(Compiler *c) {
     if (rn == 0) continue;
     int body = nt_ref(nt, L, "body");
     if (body < 0) continue;
-    memset(inbody, 0, (size_t)n);
-    blkp_mark_subtree(nt, body, inbody);
+    gen++;
+    blkp_stamp_subtree(nt, body, inbody, gen);
     for (int i = 0; i < rn; i++) {
       const char *p = nt_str(nt, reqs[i], "name");
       if (!p) continue;
@@ -1078,11 +1143,11 @@ void rename_shadowing_block_params(Compiler *c) {
          inject folds sharing `|a, b|` with different element types). Both pollute
          the shared LocalVar's type. */
       int collide = 0;
-      for (int w = 0; w < n && !collide; w++) {
-        if (inbody[w]) continue;
+      for (int wi = 0; wi < wpn && !collide; wi++) {
+        int w = wp[wi];
+        if (inbody[w] == gen) continue;
         const char *wty = nt_type(nt, w);
         int is_param_node = wty && sp_streq(wty, "RequiredParameterNode");
-        if (!lv_node_is_write(wty) && !is_param_node) continue;
         /* don't let this block's own parameter nodes count as a collision */
         if (is_param_node) {
           int own = 0;
@@ -1100,7 +1165,9 @@ void rename_shadowing_block_params(Compiler *c) {
       blkp_rewrite_refs(c, body, oldn, newn);
     }
   }
+  free(wp);
   free(inbody);
+  free(owner);
 }
 
 /* ---- --rbs advisory type seeds ----

@@ -369,11 +369,33 @@ const char *builtin_class_of_type(TyKind t) {
 /* If `cname` is a constant assigned a class value (`CONST = SomeClass` or
    `CONST = <expr>.class`), return the underlying class name so `class CONST`
    reopens that class. Returns NULL if `cname` is a plain new class name. */
+/* Index of every ConstantWriteNode id, cached per node table. resolve_class_alias
+   is called once per class/module definition during walk_scope; scanning all
+   nodes each time made it O(class_defs * nodes) on a flattened runtime. Which
+   nodes are ConstantWriteNodes is stable across the pass (only their names may
+   have been rewritten earlier, and we re-read those fresh), so the id list can
+   be built once and reused. Rebuilt if the node table (pointer or count)
+   changes, e.g. a second compile in the same process. */
+static const NodeTable *rca_nt = NULL;
+static int *rca_ids = NULL;
+static int rca_n = 0, rca_ntcount = -1;
 const char *resolve_class_alias(Compiler *c, const char *cname) {
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "ConstantWriteNode")) continue;
+  if (rca_nt != nt || rca_ntcount != nt->count) {
+    free(rca_ids);
+    rca_ids = malloc((size_t)nt->count * sizeof(int));
+    rca_n = 0;
+    if (rca_ids) {
+      for (int id = 0; id < nt->count; id++) {
+        const char *ty = nt_type(nt, id);
+        if (ty && sp_streq(ty, "ConstantWriteNode")) rca_ids[rca_n++] = id;
+      }
+    }
+    rca_nt = nt;
+    rca_ntcount = nt->count;
+  }
+  for (int ii = 0; ii < rca_n; ii++) {
+    int id = rca_ids[ii];
     const char *n = nt_str(nt, id, "name");
     if (!n || !sp_streq(n, cname)) continue;
     int v = nt_ref(nt, id, "value");
