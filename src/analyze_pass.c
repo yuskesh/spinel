@@ -3894,6 +3894,27 @@ static int scope_tail_raises(Compiler *c, int s) {
          nt_str(nt, last, "name") && sp_streq(nt_str(nt, last, "name"), "raise");
 }
 
+/* name -> named class-method scopes, cached per scope count. The abstract-base
+   widening below otherwise rescans every scope per void-returning raising base
+   (O(bases * scopes)). Built once per fixpoint run (scope shape is fixed). */
+static int rn_nscopes = -1, rn_buckets = 0;
+static int *rn_next = NULL, *rn_head = NULL;
+static void rn_build(Compiler *c) {
+  int ns = c->nscopes;
+  free(rn_next); free(rn_head);
+  rn_buckets = ns > 0 ? ns : 1;
+  rn_next = malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
+  rn_head = malloc((size_t)rn_buckets * sizeof(int));
+  rn_nscopes = ns;
+  if (!rn_next || !rn_head) { rn_buckets = 0; return; }
+  for (int i = 0; i < rn_buckets; i++) rn_head[i] = -1;
+  for (int s = 0; s < ns; s++) {
+    if (c->scopes[s].class_id < 0 || !c->scopes[s].name) continue;
+    unsigned b = wrn_hash(c->scopes[s].name) % (unsigned)rn_buckets;
+    rn_next[s] = rn_head[b]; rn_head[b] = s;
+  }
+}
+
 int infer_return_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -3904,6 +3925,12 @@ int infer_return_types(Compiler *c) {
      once instead. */
   TyKind *ret_acc = (TyKind *)malloc(sizeof(TyKind) * (size_t)ns);
   char *has_ret = (char *)calloc((size_t)ns, 1);
+  /* Also chain each scope's ReturnNodes (ret_head[scope] -> id -> ret_next[id]),
+     so the proc-return block below walks a scope's returns instead of rescanning
+     every node per proc-returning scope. */
+  int *ret_head = (int *)malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
+  int *ret_next = (int *)malloc((size_t)(nt->count > 0 ? nt->count : 1) * sizeof(int));
+  if (ret_head) for (int i = 0; i < ns; i++) ret_head[i] = -1;
   if (ret_acc && has_ret) {
     for (int id = 0; id < nt->count; id++) {
       if (nt_kind(nt, id) != NK_ReturnNode) continue;
@@ -3914,6 +3941,7 @@ int infer_return_types(Compiler *c) {
       TyKind rt = return_node_type(c, id);
       ret_acc[si] = has_ret[si] ? ty_unify(ret_acc[si], rt) : rt;
       has_ret[si] = 1;
+      if (ret_head && ret_next) { ret_next[id] = ret_head[si]; ret_head[si] = id; }
     }
   }
   /* implicit return: the body's value */
@@ -3950,7 +3978,14 @@ int infer_return_types(Compiler *c) {
         int bn = 0; const int *bb = nt_arr(nt, sc->body, "body", &bn);
         if (bn > 0) pr = proc_ret_of(c, bb[bn - 1]);
       }
-      for (int id = 0; id < nt->count; id++) {
+      if (ret_head && ret_next) {
+        for (int id = ret_head[s]; id >= 0; id = ret_next[id]) {
+          int a = nt_ref(nt, id, "arguments"); int an = 0;
+          const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+          if (an > 0) pr = ty_unify(pr == TY_UNKNOWN ? TY_UNKNOWN : pr, proc_ret_of(c, av[0]));
+        }
+      }
+      else for (int id = 0; id < nt->count; id++) {
         const char *ty = nt_type(nt, id);
         if (ty && sp_streq(ty, "ReturnNode") && comp_scope_of(c, id) == sc) {
           int a = nt_ref(nt, id, "arguments"); int an = 0;
@@ -3974,8 +4009,11 @@ int infer_return_types(Compiler *c) {
     if (sc->ret != TY_VOID || sc->class_id < 0 || !sc->name) continue;
     if (sc->ret_specialized || sc->ret_rbs_seeded || sc->cs_synth) continue;
     if (!scope_tail_raises(c, s)) continue;
+    if (rn_nscopes != c->nscopes) rn_build(c);
     TyKind unified = TY_VOID;
-    for (int t = 1; t < c->nscopes; t++) {
+    int use_idx = rn_buckets > 0;
+    int t = use_idx ? rn_head[wrn_hash(sc->name) % (unsigned)rn_buckets] : 1;
+    for (; use_idx ? (t >= 0) : (t < c->nscopes); t = use_idx ? rn_next[t] : t + 1) {
       Scope *ot = &c->scopes[t];
       if (t == s || !ot->name || !sp_streq(ot->name, sc->name)) continue;
       if (ot->is_cmethod != sc->is_cmethod || ot->class_id < 0) continue;
@@ -3986,7 +4024,7 @@ int infer_return_types(Compiler *c) {
     if (unified != TY_VOID) { sc->ret = unified; changed = 1; }
   }
 
-  free(ret_acc); free(has_ret);
+  free(ret_acc); free(has_ret); free(ret_head); free(ret_next);
   return changed;
 }
 
