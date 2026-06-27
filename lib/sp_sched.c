@@ -127,6 +127,7 @@ static void sp_thread_scan(void *p) {
   sp_mark_rbval(t->arg);
   sp_mark_rbval(t->retval);
   if (t->exc_obj) sp_gc_mark(t->exc_obj);
+  if (t->tls) sp_gc_mark(t->tls);
 }
 
 sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
@@ -200,6 +201,58 @@ mrb_bool sp_Thread_set_report_default(mrb_bool v) { g_report_default = v ? 1 : 0
 mrb_bool sp_Thread_get_report_default(void) { return g_report_default; }
 mrb_bool sp_Thread_set_report(sp_thread *t, mrb_bool v) { t->report_on_exception = v ? 1 : 0; return v; }
 mrb_bool sp_Thread_get_report(sp_thread *t) { return t->report_on_exception; }
+
+sp_thread *sp_Thread_main(void) { return &g_main_thread; }
+
+/* #status: "run" while runnable/running, "sleep" while blocked, false when it
+   finished normally, nil when it died with an unhandled exception. */
+sp_RbVal sp_Thread_status(sp_thread *t) {
+  switch (t->state) {
+    case SP_TH_RUNNING: case SP_TH_RUNNABLE: return sp_box_str(&("\xff" "run")[1]);
+    case SP_TH_BLOCKED:                       return sp_box_str(&("\xff" "sleep")[1]);
+    default:                                  return t->has_exc ? sp_box_nil() : sp_box_bool(0);
+  }
+}
+
+/* ---- thread-local storage (Thread#[] / #[]=), a small sym->value map ---- */
+typedef struct { sp_sym *keys; sp_RbVal *vals; mrb_int len, cap; } sp_tls_map;
+static void sp_tls_scan(void *p) { sp_tls_map *m = (sp_tls_map *)p; for (mrb_int i = 0; i < m->len; i++) sp_mark_rbval(m->vals[i]); }
+static void sp_tls_fin(void *p)  { sp_tls_map *m = (sp_tls_map *)p; free(m->keys); free(m->vals); }
+
+sp_RbVal sp_Thread_tls_get(sp_thread *t, sp_sym k) {
+  sp_tls_map *m = (sp_tls_map *)t->tls;
+  if (m) for (mrb_int i = 0; i < m->len; i++) if (m->keys[i] == k) return m->vals[i];
+  return sp_box_nil();
+}
+mrb_bool sp_Thread_tls_key(sp_thread *t, sp_sym k) {
+  sp_tls_map *m = (sp_tls_map *)t->tls;
+  if (m) for (mrb_int i = 0; i < m->len; i++) if (m->keys[i] == k) return 1;
+  return 0;
+}
+sp_RbVal sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v) {
+  sp_tls_map *m = (sp_tls_map *)t->tls;
+  if (m) for (mrb_int i = 0; i < m->len; i++) if (m->keys[i] == k) { m->vals[i] = v; return v; }
+  if (!m) {
+    SP_GC_ROOT(t); SP_GC_ROOT_RBVAL(v);
+    m = (sp_tls_map *)sp_gc_alloc(sizeof(sp_tls_map), sp_tls_fin, sp_tls_scan);
+    m->cap = 4; m->len = 0;
+    m->keys = (sp_sym *)malloc(sizeof(sp_sym) * m->cap);
+    m->vals = (sp_RbVal *)malloc(sizeof(sp_RbVal) * m->cap);
+    if (!m->keys || !m->vals) sp_raise_cls("NoMemoryError", "failed to allocate thread storage");
+    t->tls = m;
+  }
+  if (m->len == m->cap) {
+    mrb_int nc = m->cap * 2;
+    sp_sym *nk = (sp_sym *)realloc(m->keys, sizeof(sp_sym) * nc);
+    if (!nk) sp_raise_cls("NoMemoryError", "failed to grow thread storage");
+    m->keys = nk;
+    sp_RbVal *nv = (sp_RbVal *)realloc(m->vals, sizeof(sp_RbVal) * nc);
+    if (!nv) sp_raise_cls("NoMemoryError", "failed to grow thread storage");
+    m->vals = nv; m->cap = nc;
+  }
+  m->keys[m->len] = k; m->vals[m->len] = v; m->len++;
+  return v;
+}
 
 void sp_sched_drain(void) {
   /* main() is finishing: run remaining runnable threads so fire-and-forget

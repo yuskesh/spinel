@@ -36,6 +36,7 @@ typedef struct sp_thread {
   struct sp_thread *join_next;   /* link within another thread's joiners list */
   struct sp_thread *wait_next;   /* link within a primitive's wait list (Queue/Mutex) */
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
+  void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
   unsigned          id;
 } sp_thread;
 
@@ -61,6 +62,11 @@ mrb_bool   sp_Thread_set_report_default(mrb_bool v);  /* Thread.report_on_except
 mrb_bool   sp_Thread_get_report_default(void);        /* Thread.report_on_exception */
 mrb_bool   sp_Thread_set_report(sp_thread *t, mrb_bool v); /* #report_on_exception= */
 mrb_bool   sp_Thread_get_report(sp_thread *t);            /* #report_on_exception */
+sp_thread *sp_Thread_main(void);          /* Thread.main */
+sp_RbVal   sp_Thread_status(sp_thread *t); /* #status: "run"/"sleep"/false/nil */
+sp_RbVal   sp_Thread_tls_get(sp_thread *t, sp_sym k);              /* Thread#[] */
+sp_RbVal   sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v);  /* Thread#[]= */
+mrb_bool   sp_Thread_tls_key(sp_thread *t, sp_sym k);             /* Thread#key? */
 
 /* Run any remaining runnable threads to completion. Emitted at the end of
    main() so a fire-and-forget Thread still runs its body. */

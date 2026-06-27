@@ -5402,6 +5402,22 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "; sp_Thread_set_report(_t%d, ", t); emit_expr(c, argv[0], b); buf_puts(b, "); })");
       return;
     }
+    if (sp_streq(name, "status") && argc == 0) {
+      buf_puts(b, "sp_Thread_status("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    /* thread-local storage: t[:key] / t[:key]=v / t.key?(:key) (symbol keys) */
+    if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Thread_tls_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Thread_tls_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "key?") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
+      buf_puts(b, "sp_Thread_tls_key("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
   }
 
   /* Mutex instance methods. synchronize is handled by the generic block handler
@@ -7364,6 +7380,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     const char *tcn = nt_str(nt, recv, "name");
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "current") && argc == 0) {
       buf_puts(b, "sp_Thread_current()"); return;
+    }
+    if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "main") && argc == 0) {
+      buf_puts(b, "sp_Thread_main()"); return;
     }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "pass") && argc == 0) {
       /* Thread.pass yields the scheduler and evaluates to nil. */
@@ -10012,6 +10031,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, ") %s (void *)(", eq ? "==" : "!=");
       emit_expr(c, argv[0], b);
       buf_puts(b, "))");
+      return;
+    }
+    /* identity types (Thread/Queue/Mutex/ConditionVariable) compare by address,
+       like Object#== -- two are equal only if they are the same instance. */
+    if (recv >= 0 && rt == a0 &&
+        (rt == TY_THREAD || rt == TY_QUEUE || rt == TY_MUTEX || rt == TY_CONDVAR)) {
+      buf_puts(b, "((void *)("); emit_expr(c, recv, b);
+      buf_printf(b, ") %s (void *)(", eq ? "==" : "!=");
+      emit_expr(c, argv[0], b); buf_puts(b, "))");
       return;
     }
     unsupported(c, id, "equality");
