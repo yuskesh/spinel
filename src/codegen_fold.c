@@ -2684,18 +2684,13 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             }
             for (int j = 0; j < bn_ec - 1; j++) emit_stmt(c, bb_ec[j], g_pre, g_indent + 1);
             int saveInd_ec = g_indent; g_indent = g_indent + 1;
-            Buf vb_ec; memset(&vb_ec, 0, sizeof vb_ec); emit_expr(c, bb_ec[bn_ec - 1], &vb_ec);
+            Buf vb_ec; memset(&vb_ec, 0, sizeof vb_ec);
+            if (res_poly_ec) emit_boxed(c, bb_ec[bn_ec - 1], &vb_ec);
+            else emit_expr(c, bb_ec[bn_ec - 1], &vb_ec);
             g_indent = saveInd_ec;
-            TyKind bty_ec = comp_ntype(c, bb_ec[bn_ec - 1]);
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk_ec, tres_ec);
-            if (res_poly_ec && bty_ec != TY_POLY) {
-              Buf bx_ec; memset(&bx_ec, 0, sizeof bx_ec);
-              emit_boxed_text(c, bty_ec, vb_ec.p ? vb_ec.p : "", &bx_ec);
-              buf_puts(g_pre, bx_ec.p ? bx_ec.p : ""); free(bx_ec.p);
-            }
-            else buf_puts(g_pre, vb_ec.p ? vb_ec.p : "");
-            buf_puts(g_pre, ");\n"); free(vb_ec.p);
+            buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", rk_ec, tres_ec, vb_ec.p ? vb_ec.p : "");
+            free(vb_ec.p);
             emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
             buf_printf(b, "_t%d", tres_ec);
             return 1;
@@ -2790,18 +2785,13 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               }
               for (int j = 0; j < bn_wi - 1; j++) emit_stmt(c, bb_wi[j], g_pre, g_indent + 1);
               int saveInd_wi = g_indent; g_indent = g_indent + 1;
-              Buf vb_wi; memset(&vb_wi, 0, sizeof vb_wi); emit_expr(c, bb_wi[bn_wi - 1], &vb_wi);
+              Buf vb_wi; memset(&vb_wi, 0, sizeof vb_wi);
+              if (res_poly_wi) emit_boxed(c, bb_wi[bn_wi - 1], &vb_wi);
+              else emit_expr(c, bb_wi[bn_wi - 1], &vb_wi);
               g_indent = saveInd_wi;
-              TyKind bty_wi = comp_ntype(c, bb_wi[bn_wi - 1]);
               emit_indent(g_pre, g_indent + 1);
-              buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk_wi, tres_wi);
-              if (res_poly_wi && bty_wi != TY_POLY) {
-                Buf bx_wi; memset(&bx_wi, 0, sizeof bx_wi);
-                emit_boxed_text(c, bty_wi, vb_wi.p ? vb_wi.p : "", &bx_wi);
-                buf_puts(g_pre, bx_wi.p ? bx_wi.p : ""); free(bx_wi.p);
-              }
-              else buf_puts(g_pre, vb_wi.p ? vb_wi.p : "");
-              buf_puts(g_pre, ");\n"); free(vb_wi.p);
+              buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", rk_wi, tres_wi, vb_wi.p ? vb_wi.p : "");
+              free(vb_wi.p);
               emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
               buf_printf(b, "_t%d", tres_wi);
               return 1;
@@ -2865,20 +2855,12 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                p0p ? p0p : "_dummy", trecv2, ti2);
     for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
     int saveIndent2 = g_indent; g_indent = g_indent + 2;
-    Buf vb2; memset(&vb2, 0, sizeof vb2); emit_expr(c, bb2[bn2 - 1], &vb2);
+    Buf vb2; memset(&vb2, 0, sizeof vb2);
+    if (res_poly2) emit_boxed(c, bb2[bn2 - 1], &vb2);
+    else emit_expr(c, bb2[bn2 - 1], &vb2);
     g_indent = saveIndent2;
-    TyKind bty2 = comp_ntype(c, bb2[bn2 - 1]);
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk2, tres2);
-    if (res_poly2 && bty2 != TY_POLY) {
-      Buf bx2; memset(&bx2, 0, sizeof bx2);
-      emit_boxed_text(c, bty2, vb2.p ? vb2.p : "", &bx2);
-      buf_puts(g_pre, bx2.p ? bx2.p : ""); free(bx2.p);
-    }
-    else {
-      buf_puts(g_pre, vb2.p ? vb2.p : "");
-    }
-    buf_puts(g_pre, ");\n");
+    buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", rk2, tres2, vb2.p ? vb2.p : "");
     free(vb2.p);
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "}\n");

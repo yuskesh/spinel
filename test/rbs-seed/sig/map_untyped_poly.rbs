@@ -1,0 +1,7 @@
+module DB
+  def self.adapter: () -> Adapter
+
+  class Adapter
+    def select_rows: (String sql) -> Array[Hash[String, untyped]]
+  end
+end

@@ -2,6 +2,12 @@
 
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, expr); return; }
+  /* An untyped or void value is already emitted as a boxed sp_RbVal (a nil
+     sentinel or poly call result) -- or carries side effects to preserve. Box
+     it by evaluating for effect and yielding nil, mirroring emit_boxed. Without
+     this, the int-boxing fallback below produced sp_box_int(<sp_RbVal>) -- an
+     mrb_int slot fed a boxed value (the recurring poly-box bug family). */
+  if (t == TY_UNKNOWN || t == TY_VOID || t == TY_REGEX) { buf_printf(b, "(%s, sp_box_nil())", expr); return; }
   if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
   if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
   if (t == TY_ENUMERATOR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_ENUMERATOR)", expr); return; }
@@ -27,7 +33,13 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     default: break;
   }
   if (fn) buf_printf(b, "%s(%s)", fn, expr);
-  else buf_printf(b, "sp_box_int(%s)", expr);  /* fallback */
+  else {
+    /* Never silently int-box an unexpected type (the root of the poly-box bug
+       family): fail loudly so a missing case is caught at compile time rather
+       than emitting wrong C. The known poly-context types are handled above. */
+    fprintf(stderr, "spinel: emit_boxed_text: cannot box type %d into a poly value\n", (int)t);
+    exit(1);
+  }
 }
 
 /* Emit `expr` (a poly value) unboxed to its concrete C representation. */
@@ -104,8 +116,9 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (hid) { buf_printf(b, "sp_box_obj("); emit_expr(c, node, b); buf_printf(b, ", %s)", hid); return; }
     unsupported(c, node, "boxing value into poly"); return;
   }
-  /* regex values can appear in poly context (multi-typed local); box as nil */
-  if (t == TY_REGEX) { buf_puts(b, "sp_box_nil()"); return; }
+  /* regex values can appear in poly context (multi-typed local); evaluate for
+     side effects (e.g. Regexp.new(str)) and yield nil */
+  if (t == TY_REGEX) { buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); return; }
   /* class/module value: box into poly */
   if (t == TY_CLASS) {
     buf_puts(b, "sp_box_class("); emit_expr(c, node, b); buf_puts(b, ")"); return;

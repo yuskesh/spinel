@@ -426,6 +426,12 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
 	  "$$tmp/v" > "$$tmp/v.out" 2>/dev/null; \
 	  cmp -s "$$tmp/v.out" test/rbs-seed/void_block_tail.expected || { echo "rbs-seed-test: FAIL (void block tail output mismatch)"; diff -u test/rbs-seed/void_block_tail.expected "$$tmp/v.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (void-returning call as proc tail: C did not compile)"; ok=0; fi; \
+	$(SPINEL) test/rbs-seed/map_untyped_poly.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/mu.c" 2>/dev/null; \
+	if $(CC) -O0 -Ilib "$$tmp/mu.c" $(SP_RT_LIB) -lm -o "$$tmp/mu" 2>"$$tmp/mu.err"; then \
+	  "$$tmp/mu" > "$$tmp/mu.out" 2>/dev/null; \
+	  cmp -s "$$tmp/mu.out" test/rbs-seed/map_untyped_poly.expected || { echo "rbs-seed-test: FAIL (untyped map-into-poly output mismatch)"; diff -u test/rbs-seed/map_untyped_poly.expected "$$tmp/mu.out" || true; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (untyped map result boxed as sp_box_int: C did not compile)"; ok=0; fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "rbs-seed-test: pass"; else exit 1; fi
 endif
