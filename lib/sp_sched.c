@@ -101,7 +101,10 @@ static void sp_sched_pump(sp_thread *target) {
     int raised = 0;
     const char *ec = NULL, *em = NULL;
     void *eo = NULL;
-    sp_Fiber_transfer_catch(t->fiber, sp_box_nil(), &raised, &ec, &em, &eo);
+    /* On the body's first entry the block's param reads the fiber's resumed
+       value, so hand it Thread.new's argument then; later resumes pass nil. */
+    sp_RbVal in = (t->fiber->state == 0) ? t->arg : sp_box_nil();
+    sp_Fiber_transfer_catch(t->fiber, in, &raised, &ec, &em, &eo);
     g_current = saved;
     if (t->fiber->state == 3) {   /* the body returned (terminated) */
       t->retval = t->fiber->yielded_value;
@@ -121,15 +124,18 @@ static void sp_sched_pump(sp_thread *target) {
 static void sp_thread_scan(void *p) {
   sp_thread *t = (sp_thread *)p;
   if (t->fiber) sp_gc_mark(t->fiber);
+  sp_mark_rbval(t->arg);
   sp_mark_rbval(t->retval);
   if (t->exc_obj) sp_gc_mark(t->exc_obj);
 }
 
-sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f) {
+sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   SP_GC_ROOT(f);   /* root the freshly-built fiber across the allocation below */
+  SP_GC_ROOT_RBVAL(arg);
   sp_thread *volatile t = (sp_thread *)sp_gc_alloc(sizeof(sp_thread), NULL, sp_thread_scan);
   memset(t, 0, sizeof *t);
   t->fiber = f;
+  t->arg = arg;
   t->retval = sp_box_nil();
   t->report_on_exception = g_report_default;
   t->id = g_next_id++;

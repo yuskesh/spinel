@@ -24,6 +24,7 @@ typedef enum { SP_TH_RUNNABLE, SP_TH_RUNNING, SP_TH_BLOCKED, SP_TH_DEAD } sp_thr
 
 typedef struct sp_thread {
   sp_Fiber         *fiber;       /* the green thread's coroutine; NULL for the main thread (root) */
+  sp_RbVal          arg;         /* Thread.new(arg) -> the block's first param, on first run */
   sp_RbVal          retval;      /* block result (copied from fiber->yielded_value at death) */
   sp_thread_state   state;
   int               has_exc;     /* body left an unhandled exception (re-raised at #join/#value) */
@@ -46,7 +47,7 @@ void       sp_sched_init(void);
 /* Thread.new { ... }: wrap a fiber (built by the codegen via emit_fiber_new) in
    a green thread and enqueue it RUNNABLE. It runs the next time the current
    thread yields, or at drain. Returns the thread (boxed SP_BUILTIN_THREAD). */
-sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f);
+sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg);
 
 /* #join: block until the thread has finished, re-raise its unhandled exception
    in the caller, then return the thread. #value: same, but return its result. */

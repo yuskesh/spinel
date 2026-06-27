@@ -7479,11 +7479,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) {
-        /* Thread.new: an eager green thread wrapping a fiber built exactly like
-           a Fiber.new block, enqueued on the scheduler (the block result lands
-           in fiber->yielded_value, read back by #value). */
+        /* Thread.new(arg): an eager green thread wrapping a fiber built exactly
+           like a Fiber.new block (the block result lands in fiber->yielded_value,
+           read back by #value). Thread.new's first argument becomes the block's
+           first param on entry; it is handed to the scheduler as the thread arg. */
         buf_puts(b, "sp_Thread_spawn_fiber(");
         emit_fiber_new(c, id, b, 0);
+        buf_puts(b, ", ");
+        if (argc >= 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
         buf_puts(b, ")");
         return;
       }
