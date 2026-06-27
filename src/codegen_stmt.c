@@ -1083,6 +1083,39 @@ void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b) {
   }
 }
 
+/* Recursive match condition for a (possibly nested) array pattern over the
+   boxed value `arr` (an sp_RbVal C-expression): `arr` is an array of the right
+   length, and each nested-array element is itself a correctly-shaped array.
+   Element value/type checks beyond shape are left to the flat path. */
+static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int apn = 0;
+  const int *reqs = nt_arr(nt, pat, "requireds", &apn);
+  int rest_nid = nt_ref(nt, pat, "rest");
+  int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
+                  sp_streq(nt_type(nt, rest_nid), "SplatNode"));
+  buf_printf(b, "((%s).tag == SP_TAG_OBJ && sp_poly_length(%s) %s %dLL",
+             arr, arr, has_rest ? ">=" : "==", apn);
+  for (int i = 0; i < apn; i++) {
+    int sub = -1;
+    const char *rty = nt_type(nt, reqs[i]);
+    if (rty && sp_streq(rty, "ArrayPatternNode")) sub = reqs[i];
+    else if (rty && sp_streq(rty, "CapturePatternNode")) {
+      int val = nt_ref(nt, reqs[i], "value");
+      if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) sub = val;
+    }
+    if (sub >= 0) {
+      /* the element accessor nests one level per recursion (arr grows), so build
+         it in a Buf rather than a fixed buffer that would truncate. */
+      Buf e; memset(&e, 0, sizeof e);
+      buf_printf(&e, "sp_poly_index_poly(%s, sp_box_int(%dLL))", arr, i);
+      buf_puts(b, " && "); emit_pm_array_cond(c, sub, e.p, b);
+      free(e.p);
+    }
+  }
+  buf_puts(b, ")");
+}
+
 int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *pty = nt_type(nt, pat);
@@ -1141,10 +1174,59 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     emit_pm_eq(c, t, pt, ex, b);
     return 1;
   }
+  /* range pattern `lo..hi` / `lo...hi` (and beginless/endless): membership via
+     `===`, i.e. lo <= v (&& v <= hi, or v < hi when exclusive). */
+  if (sp_streq(pty, "RangeNode")) {
+    int lo = nt_ref(nt, pat, "left"), hi = nt_ref(nt, pat, "right");
+    int excl = (int)(nt_int(nt, pat, "flags", 0) & 4) ? 1 : 0;
+    const char *cmp = excl ? "<" : "<=";
+    if (pt == TY_INT || pt == TY_FLOAT) {
+      buf_puts(b, "(");
+      int wrote = 0;
+      if (lo >= 0) { buf_printf(b, "_t%d >= ", t); emit_expr(c, lo, b); wrote = 1; }
+      if (hi >= 0) { if (wrote) buf_puts(b, " && "); buf_printf(b, "_t%d %s ", t, cmp); emit_expr(c, hi, b); wrote = 1; }
+      if (!wrote) buf_puts(b, "1");
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (pt == TY_POLY) {
+      /* numeric membership only: the scrutinee must be an int in range. */
+      buf_printf(b, "(_t%d.tag == SP_TAG_INT", t);
+      if (lo >= 0) { buf_printf(b, " && _t%d.v.i >= ", t); emit_int_expr(c, lo, b); }
+      if (hi >= 0) { buf_printf(b, " && _t%d.v.i %s ", t, cmp); emit_int_expr(c, hi, b); }
+      buf_puts(b, ")");
+      return 1;
+    }
+    return 0;
+  }
   if (sp_streq(pty, "ArrayPatternNode")) {
-    /* Length check */
     int apn = 0;
-    nt_arr(nt, pat, "requireds", &apn);
+    const int *reqs = nt_arr(nt, pat, "requireds", &apn);
+    /* a nested array element needs a recursive shape check; route a poly array
+       through the boxed recursive condition so `[1,5,4]` does not match
+       `[a,[b,c],d]` on outer length alone. */
+    int has_nested = 0;
+    for (int i = 0; i < apn && !has_nested; i++) {
+      const char *rty = nt_type(nt, reqs[i]);
+      if (!rty) continue;
+      if (sp_streq(rty, "ArrayPatternNode")) has_nested = 1;
+      else if (sp_streq(rty, "CapturePatternNode")) {
+        int val = nt_ref(nt, reqs[i], "value");
+        if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) has_nested = 1;
+      }
+    }
+    if (has_nested) {
+      if (pt == TY_POLY_ARRAY) {
+        char box[48]; snprintf(box, sizeof box, "sp_box_poly_array(_t%d)", t);
+        emit_pm_array_cond(c, pat, box, b);
+        return 1;
+      }
+      /* a typed (int/float/str) array can't hold a sub-array element, so a
+         pattern with a nested array can never match it. */
+      buf_puts(b, "0");
+      return 1;
+    }
+    /* Length check */
     int rest_nid = nt_ref(nt, pat, "rest");
     int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
                     sp_streq(nt_type(nt, rest_nid), "SplatNode"));
@@ -1201,6 +1283,89 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
   buf_puts(b, le.p ? le.p : default_value(rt));
   buf_puts(b, ";\n");
   free(le.p);
+}
+
+/* Assign the boxed value `boxed` (an sp_RbVal C-expression) into local `lnm`,
+   coercing to the local's declared C type: scalars are unboxed, typed-array and
+   string locals get the pointer/cstr out of the box, a poly local takes it
+   directly. Keeps a pattern binding compatible with however inference typed the
+   target (e.g. a `*rest` typed as a concrete array pointer vs. a poly value). */
+static void emit_pm_typed_assign(Scope *sc, const char *lnm,
+                                 const char *boxed, Buf *b, int indent) {
+  LocalVar *lv = sc ? scope_local(sc, lnm) : NULL;
+  TyKind ty = lv ? lv->type : TY_POLY;
+  emit_indent(b, indent); buf_printf(b, "lv_%s = ", lnm);
+  if (ty == TY_INT || ty == TY_BOOL)      buf_printf(b, "sp_poly_to_i(%s)", boxed);
+  else if (ty == TY_FLOAT)                buf_printf(b, "sp_poly_to_f(%s)", boxed);
+  else if (ty == TY_INT_ARRAY)            buf_printf(b, "(sp_IntArray *)(%s).v.p", boxed);
+  else if (ty == TY_FLOAT_ARRAY)          buf_printf(b, "(sp_FloatArray *)(%s).v.p", boxed);
+  else if (ty == TY_STR_ARRAY)            buf_printf(b, "(sp_StrArray *)(%s).v.p", boxed);
+  else if (ty == TY_POLY_ARRAY)           buf_printf(b, "(sp_PolyArray *)(%s).v.p", boxed);
+  else if (ty == TY_STRING)               buf_printf(b, "(%s).v.s", boxed);
+  else                                    buf_puts(b, boxed);  /* poly: direct */
+  buf_puts(b, ";\n");
+}
+
+/* Recursively bind the LocalVariableTargetNode leaves of a (possibly nested)
+   array pattern from the boxed array `arr` (an sp_RbVal C-expression). Element
+   access goes through the kind-dispatching sp_poly_index_poly / sp_poly_slice
+   so a nested element of any array kind (typed IntArray as well as PolyArray)
+   is read correctly. A nested array pattern recurses into the element; a
+   CapturePatternNode binds the whole element and recurses if its inner pattern
+   is an array; a trailing `*rest` slices the tail. `sc` is the case scope, used
+   to type each bound local. */
+static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr, int indent, Buf *b, Scope *sc) {
+  const NodeTable *nt = c->nt;
+  int apn = 0;
+  const int *reqs = nt_arr(nt, pat, "requireds", &apn);
+  for (int i = 0; i < apn; i++) {
+    const char *rty = nt_type(nt, reqs[i]);
+    if (!rty) continue;
+    /* the element accessor nests one level per recursion (arr grows), so build
+       it in a Buf rather than a fixed-size stack buffer that would truncate. */
+    Buf src; memset(&src, 0, sizeof src);
+    buf_printf(&src, "sp_poly_index_poly(%s, sp_box_int(%dLL))", arr, i);
+    if (sp_streq(rty, "LocalVariableTargetNode")) {
+      const char *lnm = nt_str(nt, reqs[i], "name");
+      if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+    }
+    else if (sp_streq(rty, "ArrayPatternNode")) {
+      int sub = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "sp_RbVal _t%d = %s;\n", sub, src.p);
+      char se[24]; snprintf(se, sizeof se, "_t%d", sub);
+      emit_pm_bind_poly(c, reqs[i], se, indent, b, sc);
+    }
+    else if (sp_streq(rty, "CapturePatternNode")) {
+      int tgt = nt_ref(nt, reqs[i], "target");
+      if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
+        const char *lnm = nt_str(nt, tgt, "name");
+        if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+      }
+      int val = nt_ref(nt, reqs[i], "value");
+      if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) {
+        int sub = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_RbVal _t%d = %s;\n", sub, src.p);
+        char se[24]; snprintf(se, sizeof se, "_t%d", sub);
+        emit_pm_bind_poly(c, val, se, indent, b, sc);
+      }
+    }
+    free(src.p);
+  }
+  int rest_nid = nt_ref(nt, pat, "rest");
+  if (rest_nid >= 0 && nt_type(nt, rest_nid) && sp_streq(nt_type(nt, rest_nid), "SplatNode")) {
+    int inner = nt_ref(nt, rest_nid, "expression");
+    if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
+      const char *rnm = nt_str(nt, inner, "name");
+      if (rnm) {
+        Buf rsrc; memset(&rsrc, 0, sizeof rsrc);
+        buf_printf(&rsrc, "sp_poly_slice(%s, %dLL, sp_poly_length(%s) - %dLL)", arr, apn, arr, apn);
+        emit_pm_typed_assign(sc, rnm, rsrc.p, b, indent);
+        free(rsrc.p);
+      }
+    }
+  }
 }
 
 /* case/in pattern match. tail=1: each arm's body is in method-return position
@@ -1287,6 +1452,57 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       buf_printf(&cond_buf, "_t%d >= 0", find_pos);
       has_cond = 1;
     }
+    else if (sp_streq(pty, "HashPatternNode")) {
+      /* hash pattern `in {k: subpat, ...}`: matches when the scrutinee is a hash
+         that has every key and each value matches its sub-pattern. Compute the
+         result into a bool temp (like the find pattern), then bind below. */
+      int hcond = ++g_tmp;
+      const char *hn = ty_is_hash(pt) ? ty_hash_cname(pt) : NULL;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "int _t%d = %s;\n", hcond, hn ? "1" : "0");
+      if (hn) {
+        TyKind hvt = ty_hash_val(pt);
+        int en = 0;
+        const int *elms = nt_arr(nt, pat, "elements", &en);
+        for (int i = 0; i < en; i++) {
+          if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+          int key = nt_ref(nt, elms[i], "key");
+          int vpat = nt_ref(nt, elms[i], "value");
+          if (key < 0) continue;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, t);
+          emit_expr(c, key, b); buf_puts(b, ");\n");
+          /* value class check: `k: Class` or `k: Class => v` */
+          int classpat = -1;
+          if (vpat >= 0 && nt_type(nt, vpat)) {
+            if (sp_streq(nt_type(nt, vpat), "CapturePatternNode")) classpat = nt_ref(nt, vpat, "value");
+            else if (sp_streq(nt_type(nt, vpat), "ConstantReadNode")) classpat = vpat;
+          }
+          if (classpat >= 0 && nt_type(nt, classpat) && sp_streq(nt_type(nt, classpat), "ConstantReadNode")) {
+            if (hvt == TY_POLY) {
+              int vtmp = ++g_tmp;
+              emit_indent(b, indent + 1);
+              buf_printf(b, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+              emit_expr(c, key, b); buf_puts(b, "); ");
+              char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
+              Buf cw; memset(&cw, 0, sizeof cw);
+              if (emit_poly_class_when(c, classpat, vn, &cw))
+                buf_printf(b, "_t%d = _t%d && (%s);", hcond, hcond, cw.p ? cw.p : "1");
+              free(cw.p);
+              buf_puts(b, " }\n");
+            }
+            else {
+              const char *cn = nt_str(nt, classpat, "name");
+              if (cn && ty_matches_class(hvt, cn, 0) <= 0) {
+                emit_indent(b, indent + 1); buf_printf(b, "_t%d = 0;\n", hcond);
+              }
+            }
+          }
+        }
+      }
+      buf_printf(&cond_buf, "_t%d", hcond);
+      has_cond = 1;
+    }
     else {
       has_cond = emit_pm_cond(c, pat, t, pt, &cond_buf);
     }
@@ -1338,6 +1554,59 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     else if (sp_streq(pty, "ArrayPatternNode")) {
       array_pat = pat;
     }
+    else if (sp_streq(pty, "HashPatternNode")) {
+      /* bind each value target from the hash: `{k:}` (shorthand) and `{k: v}`
+         bind the value to a local; `{k: Class => v}` binds the capture target.
+         The value is assigned through the local's declared C type. */
+      const char *hn = ty_is_hash(pt) ? ty_hash_cname(pt) : NULL;
+      if (hn) {
+        TyKind hvt = ty_hash_val(pt);
+        Scope *hsc = comp_scope_of(c, id);
+        int en = 0;
+        const int *elms = nt_arr(nt, pat, "elements", &en);
+        for (int i = 0; i < en; i++) {
+          if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) continue;
+          int key = nt_ref(nt, elms[i], "key");
+          int vpat = nt_ref(nt, elms[i], "value");
+          if (key < 0) continue;
+          /* resolve the bound local name: shorthand uses the key symbol */
+          const char *lnm = NULL;
+          if (vpat < 0 || (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "ImplicitNode"))) {
+            if (nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode")) lnm = nt_str(nt, key, "value");
+          }
+          else if (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "LocalVariableTargetNode")) {
+            lnm = nt_str(nt, vpat, "name");
+          }
+          else if (nt_type(nt, vpat) && sp_streq(nt_type(nt, vpat), "CapturePatternNode")) {
+            int tgt = nt_ref(nt, vpat, "target");
+            if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+              lnm = nt_str(nt, tgt, "name");
+          }
+          if (!lnm) continue;
+          LocalVar *hlv = hsc ? scope_local(hsc, lnm) : NULL;
+          TyKind ltype = hlv ? hlv->type : TY_UNKNOWN;
+          if (hvt == TY_POLY && ltype != TY_UNKNOWN && ltype != TY_POLY) {
+            /* unbox the poly hash value into the concrete local type via the
+               shared typed-assign helper, which coerces arrays / string / scalars
+               correctly (the old inline chain fell through to assigning an
+               sp_RbVal into a pointer-typed local such as an array). */
+            int vtmp = ++g_tmp;
+            emit_indent(b, body_indent); buf_puts(b, "{\n");
+            emit_indent(b, body_indent + 1);
+            buf_printf(b, "sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+            emit_expr(c, key, b); buf_puts(b, ");\n");
+            char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
+            emit_pm_typed_assign(hsc, lnm, vn, b, body_indent + 1);
+            emit_indent(b, body_indent); buf_puts(b, "}\n");
+          }
+          else {
+            emit_indent(b, body_indent);
+            buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", lnm, hn, t);
+            emit_expr(c, key, b); buf_puts(b, ");\n");
+          }
+        }
+      }
+    }
     /* IntegerNode/StringNode/SymbolNode/ConstantReadNode: value-only, no binding */
 
     /* --- ArrayPatternNode destructuring --- */
@@ -1345,6 +1614,13 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       TyKind arr_t = ty_is_array(pt) ? pt : TY_INT_ARRAY;
       const char *k = (arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(arr_t);
       if (!k) k = "Int";
+      if (sp_streq(k, "Poly")) {
+        /* poly array: bind (possibly nested) targets recursively, indexing
+           through the boxed receiver so nested typed sub-arrays read correctly */
+        char te[48]; snprintf(te, sizeof te, "sp_box_poly_array(_t%d)", t);
+        emit_pm_bind_poly(c, array_pat, te, body_indent, b, comp_scope_of(c, id));
+      }
+      else {
       int apn = 0;
       const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
       int rest_nid = nt_ref(nt, array_pat, "rest");
@@ -1377,6 +1653,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
                        rnm, k, t, (long long)apn, t, (long long)apn);
           }
         }
+      }
       }
     }
 
