@@ -29,6 +29,7 @@
 /perf.data.old
 /lib/regexp/libspre.a
 lib/libspinel_rt.a
+lib/libspinel_rt_mt.a
 lib/libspbi.a
 HANDOFF.md
 
