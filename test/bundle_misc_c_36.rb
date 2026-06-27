@@ -132,9 +132,6 @@ def t_stdlib
   # ARGV.length
   puts ARGV.length
 
-  # $stderr.puts
-  $stderr.puts("stderr msg")
-
   puts "done"
 end
 t_stdlib

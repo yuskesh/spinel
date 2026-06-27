@@ -43,7 +43,7 @@ RBS_LIB      = build/librbs.a
 
 .PHONY: all parse legacy bootstrap codegen regexp rbs_extract rbs-test rbs-seed-test \
         analyze-fail-test test test-run clean-test-results regen-rbs-expected \
-        regen-expected bench optcarrot gate check gate-legs gate-test gate-bench \
+        regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench \
         gate-optcarrot clean install uninstall deps tools
 
 # `make all` includes the RBS extractor when vendor/rbs has been fetched
@@ -446,6 +446,8 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) | $(SPINEL)
 	bin=$$tmpdir/test_bin; \
 	exp=$$tmpdir/expected; \
 	act=$$tmpdir/actual; \
+	experr=$$tmpdir/experr; \
+	acterr=$$tmpdir/acterr; \
 	args=""; \
 	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
 	rm -f "$@.diff"; \
@@ -462,14 +464,21 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) | $(SPINEL)
 	    fi; \
 	    LC_ALL=C sed 's/\r$$//' "$$exp" >"$$exp.n"; \
 	  fi; \
-	  $(TIMEOUT10) "$$bin" $$args >"$$act" 2>/dev/null; \
+	  $(TIMEOUT10) "$$bin" $$args >"$$act" 2>"$$acterr"; \
 	  LC_ALL=C sed 's/\r$$//' "$$act" >"$$act.n"; \
-	  if cmp -s "$$exp.n" "$$act.n"; then \
+	  LC_ALL=C sed 's/\r$$//' "$$acterr" >"$$acterr.n"; \
+	  if [ -f "$<.err.expected" ]; then \
+	    LC_ALL=C sed 's/\r$$//' "$<.err.expected" >"$$experr.n"; \
+	  else \
+	    : > "$$experr.n"; \
+	  fi; \
+	  if cmp -s "$$exp.n" "$$act.n" && cmp -s "$$experr.n" "$$acterr.n"; then \
 	    echo PASS > "$@"; \
 	    if [ -t 1 ]; then printf .; fi; \
 	  else \
 	    echo FAIL > "$@"; \
-	    diff -u "$$exp.n" "$$act.n" > "$@.diff" 2>&1 || true; \
+	    { echo "=== stdout diff (expected vs actual) ==="; diff -u "$$exp.n" "$$act.n" || true; \
+	      echo "=== stderr diff (expected vs actual) ==="; diff -u "$$experr.n" "$$acterr.n" || true; } > "$@.diff" 2>&1; \
 	    if [ -t 1 ]; then printf F; fi; \
 	  fi; \
 	else \
@@ -482,28 +491,40 @@ clean-test-results:
 	@rm -rf build/test-results build/analyze-fail-results
 
 # ---- Expected-output regeneration ----
-# Capture each test's reference Ruby output into test/<name>.rb.expected;
-# once committed the test target uses it directly and skips per-test ruby.
-EXPECTED_FILES := $(patsubst test/%.rb,test/%.rb.expected,$(TESTS))
+# Snapshot each test's reference Ruby output so the test target uses the file
+# directly and skips per-test ruby. .expected is stdout; .err.expected is stderr
+# and is refreshed only where it already exists (a missing one means "stderr
+# must be empty" and is left untouched).
+EXPECTED_FILES     := $(patsubst test/%.rb,test/%.rb.expected,$(TESTS))
+ERR_EXPECTED_FILES := $(wildcard test/*.rb.err.expected)
 
 regen-expected: $(EXPECTED_FILES)
+# Separate from regen-expected so a routine stdout refresh never rewrites the
+# stderr sidecars (e.g. while a developer is using stderr for debugging).
+regen-expected-err: $(ERR_EXPECTED_FILES)
+
+# Regenerate $@ from the reference Ruby (falling back to a system ruby); $1 is
+# the redirection selecting which stream to capture into $@.tmp. A failing
+# oracle is skipped so a stale snapshot is kept rather than clobbered.
+define regen-snapshot
+@args=""; \
+if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
+rc=0; $(TIMEOUT10) $(REF_RUBY) $< $$args $1 || rc=$$?; \
+if [ $$rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
+  rc=0; $(TIMEOUT10) ruby $< $$args $1 || rc=$$?; \
+fi; \
+if [ $$rc -ne 0 ]; then \
+  echo "regen-expected: $< failed (rc=$$rc); skipping $@" >&2; rm -f $@.tmp; \
+else \
+  LC_ALL=C sed 's/\r$$//' $@.tmp > $@; rm -f $@.tmp; \
+fi
+endef
 
 test/%.rb.expected: test/%.rb
-	@args=""; \
-	if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
-	$(TIMEOUT10) $(REF_RUBY) $< $$args >$@.tmp 2>/dev/null; \
-	rc=$$?; \
-	if [ $$rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
-	  $(TIMEOUT10) ruby $< $$args >$@.tmp 2>/dev/null; \
-	  rc=$$?; \
-	fi; \
-	if [ $$rc -ne 0 ]; then \
-	  echo "regen-expected: $< failed (rc=$$rc); skipping" >&2; \
-	  rm -f $@.tmp; \
-	else \
-	  LC_ALL=C sed 's/\r$$//' $@.tmp > $@; \
-	  rm -f $@.tmp; \
-	fi
+	$(call regen-snapshot,>$@.tmp 2>/dev/null)
+
+test/%.rb.err.expected: test/%.rb
+	$(call regen-snapshot,2>$@.tmp >/dev/null)
 
 bench: $(SPINEL) $(SP_RT_LIB)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi

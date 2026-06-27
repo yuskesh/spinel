@@ -2,10 +2,14 @@
 pr = proc { |x| x }
 puts pr.call(1, 2)
 
-# A lambda raises ArgumentError on the wrong argument count and aborts,
-# so "after" is never printed (matching CRuby). stderr differs but the
-# suite compares stdout only.
+# A lambda is strict: the wrong argument count raises ArgumentError
+# (matching CRuby). Rescue it so the program completes normally and
+# "after" still prints.
 puts "before"
 f = ->(x) { x }
-f.call(1, 2)
+begin
+  f.call(1, 2)
+rescue ArgumentError => e
+  puts "rescued: #{e.class}"
+end
 puts "after"

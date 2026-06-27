@@ -24,6 +24,6 @@ t = $stdout.write("a", "b", "c")
 $stdout.write("\n")
 p t                       # 3
 
-# STDERR goes to stderr (merged into output under 2>&1 in the harness).
+# STDERR goes to stderr (asserted against the .err.expected sidecar).
 STDERR.write("err\n")     # err
 $stderr.puts "gerr"       # gerr
