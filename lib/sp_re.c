@@ -16,12 +16,12 @@
 const char *sp_sprintf(const char *fmt, ...);  /* defined in the generated TU */
 
 /* match-register state (declared extern in sp_re.h). */
-const char *sp_re_captures[10] = {0};
-int sp_re_caps[64];
-const char *sp_re_last_str = NULL;
-const char *sp_re_match_str = NULL;
-const char *sp_re_match_pre = NULL;
-const char *sp_re_match_post = NULL;
+SP_TLS const char *sp_re_captures[10] = {0};   /* per-worker (SP_TLS); see sp_re.h */
+SP_TLS int sp_re_caps[64];
+SP_TLS const char *sp_re_last_str = NULL;
+SP_TLS const char *sp_re_match_str = NULL;
+SP_TLS const char *sp_re_match_pre = NULL;
+SP_TLS const char *sp_re_match_post = NULL;
 const char *sp_re_startup_err = NULL;
 
 const char *sp_re_last_paren_match(void) {

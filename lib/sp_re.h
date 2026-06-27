@@ -29,14 +29,18 @@ int re_named_group(const mrb_regexp_pattern *pat, const char *name);
 
 typedef struct { const char *source; int caps[64]; int ncap; const mrb_regexp_pattern *pat; } sp_MatchData;
 
-/* ---- match-register state (per-process; read by the generated TU and
-   marked by its GC root hook) ---- */
-extern const char *sp_re_captures[10];
-extern int sp_re_caps[64];
-extern const char *sp_re_last_str;
-extern const char *sp_re_match_str;
-extern const char *sp_re_match_pre;
-extern const char *sp_re_match_post;
+/* ---- match-register state (read by the generated TU and marked by its GC root
+   hook). Per-thread in Ruby, so SP_TLS in the threaded build: each worker keeps
+   the registers of the green thread it runs. The generated TU is compiled with
+   the matching -DSP_THREADS so the storage class agrees. Plain globals
+   otherwise. (The GC hook marking only the current worker's registers is
+   generalized to all workers when N>1 lands.) ---- */
+extern SP_TLS const char *sp_re_captures[10];
+extern SP_TLS int sp_re_caps[64];
+extern SP_TLS const char *sp_re_last_str;
+extern SP_TLS const char *sp_re_match_str;
+extern SP_TLS const char *sp_re_match_pre;
+extern SP_TLS const char *sp_re_match_post;
 extern const char *sp_re_startup_err;
 
 /* ---- wrappers (lib/sp_re.c) ---- */

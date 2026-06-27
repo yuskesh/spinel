@@ -169,7 +169,11 @@ static sp_FiberStore *sp_FiberStore_dup(sp_FiberStore *o) {
 static struct { char guard[_Alignof(sp_Fiber)]; sp_Fiber root; } sp_fiber_root_box
     = { .guard = { [_Alignof(sp_Fiber) - 1] = (char)0xfd }, .root = {0} };
 #define sp_fiber_root (sp_fiber_root_box.root)
-sp_Fiber *sp_fiber_current = &sp_fiber_root;   /* extern: read by the generated TU */
+/* Per-worker (SP_TLS) in the threaded build; the static init still works because
+   sp_fiber_root_box stays a shared static (a constant address), so each worker's
+   sp_fiber_current starts at the shared root. Per-worker root fibers (and the
+   matching runtime init) land with the workers. */
+SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;   /* extern: read by the generated TU */
 static sp_Fiber *sp_fiber_list_head = NULL;
 
 static void sp_fiber_save_roots(sp_Fiber*f){if(f->saved_roots_cap<sp_gc_nroots){int nc=sp_gc_nroots>64?sp_gc_nroots*2:64;void***nx=(void***)realloc(f->saved_roots,sizeof(void**)*nc);if(!nx)return;f->saved_roots=nx;f->saved_roots_cap=nc;}if(sp_gc_nroots>0)memcpy(f->saved_roots,sp_gc_roots,sizeof(void**)*sp_gc_nroots);f->saved_nroots=sp_gc_nroots;}

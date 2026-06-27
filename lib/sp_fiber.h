@@ -17,8 +17,12 @@
 typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;}sp_Fiber;
 
 /* The currently-running fiber; the generated TU reads it directly for
-   `Fiber.current` and as the implicit receiver of Fiber operations. */
-extern sp_Fiber *sp_fiber_current;
+   `Fiber.current` and as the implicit receiver of Fiber operations. Per-worker
+   (SP_TLS) in the threaded build so each worker tracks the green thread it runs;
+   the generated TU is compiled with the matching -DSP_THREADS. (The scheduler
+   root fiber it is initialized to stays a shared static until per-worker root
+   fibers land with the workers.) */
+extern SP_TLS sp_Fiber *sp_fiber_current;
 
 /* Public Fiber API (called from the generated TU). */
 sp_Fiber *sp_Fiber_new(void (*body)(sp_Fiber *));
