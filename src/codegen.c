@@ -11,6 +11,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
   if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
   if (t == TY_THREAD) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_THREAD)", expr); return; }
+  if (t == TY_QUEUE) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_QUEUE)", expr); return; }
   if (t == TY_ENUMERATOR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_ENUMERATOR)", expr); return; }
   if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
   if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
@@ -100,6 +101,10 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   if (t == TY_THREAD) {
     buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_THREAD)");
+    return;
+  }
+  if (t == TY_QUEUE) {
+    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_QUEUE)");
     return;
   }
   if (t == TY_IO) {
@@ -928,7 +933,7 @@ int scope_creates_returning_proc(Compiler *c, int si) {
 /* Returns 1 if a type needs a GC root when stored in a fiber capture struct. */
 int fiber_cap_needs_root(TyKind t) {
   return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) ||
-         ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER || t == TY_THREAD ||
+         ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE ||
          t == TY_EXCEPTION || t == TY_STRINGIO || t == TY_STRINGSCANNER ||
          t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
 }
@@ -2613,6 +2618,7 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_PROC: case TY_CURRY:   buf_puts(b, "Proc"); break;
     case TY_FIBER:                 buf_puts(b, "Fiber"); break;
     case TY_THREAD:                buf_puts(b, "Thread"); break;
+    case TY_QUEUE:                 buf_puts(b, "Thread::Queue"); break;
     case TY_RANDOM:                buf_puts(b, "Random"); break;
     case TY_METHOD:                buf_puts(b, "Method"); break;
     case TY_IO:                    buf_puts(b, "IO"); break;
@@ -2883,7 +2889,7 @@ static void scan_prologue_features(Compiler *c) {
       const char *nm = nt_str(nt, i, "name");
       if (!nm) continue;
       if (sp_streq(nm, "Regexp")) g_uses_regex = 1;
-      else if (sp_streq(nm, "Thread")) g_uses_threads = 1;
+      else if (sp_streq(nm, "Thread") || sp_streq(nm, "Queue")) g_uses_threads = 1;
       else if (sp_streq(nm, "Random")) g_uses_random = 1;
       else if (sp_streq(nm, "ARGV") || sp_streq(nm, "ARGF")) g_uses_argv = 1;
       else if (sp_streq(nm, "Symbol")) g_uses_symbols = 1;

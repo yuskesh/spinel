@@ -33,6 +33,7 @@ typedef struct sp_thread {
   struct sp_thread *rq_next;     /* run-queue link while RUNNABLE */
   struct sp_thread *joiners;     /* threads parked in #join/#value on this one */
   struct sp_thread *join_next;   /* link within another thread's joiners list */
+  struct sp_thread *wait_next;   /* link within a primitive's wait list (Queue/Mutex) */
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   unsigned          id;
 } sp_thread;
@@ -59,5 +60,25 @@ mrb_bool   sp_Thread_alive(sp_thread *t); /* #alive? */
 /* Run any remaining runnable threads to completion. Emitted at the end of
    main() so a fire-and-forget Thread still runs its body. */
 void       sp_sched_drain(void);
+
+/* ---- Queue (thread-safe FIFO) ----
+ * A producer/consumer hand-off. #pop on an empty queue blocks the calling green
+ * thread (parking it, yielding to the scheduler) until a #push wakes it; this is
+ * the coordination the lazy Thread model could not express. */
+typedef struct sp_queue {
+  sp_RbVal         *buf;          /* ring buffer of queued values */
+  mrb_int           head, len, cap;
+  struct sp_thread *pop_waiters;  /* threads blocked in #pop on an empty queue */
+  int               closed;
+} sp_queue;
+
+sp_queue  *sp_Queue_new(void);
+void       sp_Queue_push(sp_queue *q, sp_RbVal v);  /* #push / #<< / #enq */
+sp_RbVal   sp_Queue_pop(sp_queue *q);               /* #pop / #shift / #deq (blocks when empty) */
+mrb_int    sp_Queue_size(sp_queue *q);              /* #size / #length */
+mrb_bool   sp_Queue_empty(sp_queue *q);             /* #empty? */
+void       sp_Queue_close(sp_queue *q);             /* #close */
+mrb_bool   sp_Queue_closed(sp_queue *q);            /* #closed? */
+void       sp_Queue_clear(sp_queue *q);             /* #clear */
 
 #endif /* SP_SCHED_H */

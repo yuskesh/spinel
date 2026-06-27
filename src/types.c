@@ -38,6 +38,7 @@ const char *ty_name(TyKind t) {
     case TY_CURRY:   return "curry";
     case TY_FIBER:   return "fiber";
     case TY_THREAD:  return "thread";
+    case TY_QUEUE:   return "queue";
     case TY_RANDOM:  return "random";
     case TY_METHOD:  return "method";
     case TY_IO:      return "io";

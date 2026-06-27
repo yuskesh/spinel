@@ -620,7 +620,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
        `if (@x) @x = v`. Falling through to a bare read dropped the init when
        this or-write was the RHS of a poly-receiver setter switch (#1447). */
     else if (ty_is_object(ivt3) || ty_is_array(ivt3) || ty_is_hash(ivt3) ||
-             ivt3 == TY_FIBER || ivt3 == TY_THREAD || ivt3 == TY_PROC || ivt3 == TY_IO ||
+             ivt3 == TY_FIBER || ivt3 == TY_THREAD || ivt3 == TY_QUEUE || ivt3 == TY_PROC || ivt3 == TY_IO ||
              ivt3 == TY_STRINGIO || ivt3 == TY_STRINGSCANNER ||
              ivt3 == TY_MATCHDATA || ivt3 == TY_EXCEPTION || ivt3 == TY_REGEX) {
       buf_printf(b, "({ if (%s%s) %s = ", is_or ? "!" : "", ref3, ref3);

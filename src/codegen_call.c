@@ -5395,6 +5395,35 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Queue instance methods (a thread-safe FIFO on the scheduler) */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_QUEUE) {
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq")) && argc == 1) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Queue_push(_t%d, ", t); emit_boxed(c, argv[0], b);
+      buf_printf(b, "); _t%d; })", t);
+      return;
+    }
+    if ((sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) && argc == 0) {
+      buf_puts(b, "sp_Queue_pop("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
+      buf_puts(b, "sp_Queue_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "empty?") && argc == 0) {
+      buf_puts(b, "sp_Queue_empty("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "closed?") && argc == 0) {
+      buf_puts(b, "sp_Queue_closed("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if ((sp_streq(name, "close") || sp_streq(name, "clear")) && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_queue *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Queue_%s(_t%d); _t%d; })", sp_streq(name, "close") ? "close" : "clear", t, t);
+      return;
+    }
+  }
+
   /* Fiber instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_FIBER) {
     if (sp_streq(name, "resume")) {
@@ -7403,6 +7432,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_fiber_new(c, id, b, 0);
         return;
       }
+      if (cn && sp_streq(cn, "Queue")) { buf_puts(b, "sp_Queue_new()"); return; }
       if (cn && sp_streq(cn, "Random")) {
         buf_puts(b, "sp_Random_new(");
         if (argc >= 1) emit_expr(c, argv[0], b);

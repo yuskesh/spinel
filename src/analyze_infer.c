@@ -881,6 +881,7 @@ else {
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
       /* Thread.new { block }: an eager green thread (sp_thread) on the scheduler. */
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_THREAD;
+      if (cn && sp_streq(cn, "Queue")) return TY_QUEUE;
       if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
       if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
                  sp_streq(cn, "IO") || sp_streq(cn, "File") ||
@@ -1074,6 +1075,7 @@ else {
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Thread") &&
           nt_ref(nt, id, "block") >= 0)
         return TY_THREAD;
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Queue")) return TY_QUEUE;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Mutex"))
         return TY_POLY;
@@ -1101,6 +1103,15 @@ else {
     if (sp_streq(name, "value")) return TY_POLY;
     if (sp_streq(name, "join")) return TY_THREAD;      /* returns the thread */
     if (sp_streq(name, "alive?")) return TY_BOOL;
+  }
+
+  /* TY_QUEUE instance methods */
+  if (recv >= 0 && rt == TY_QUEUE) {
+    if (sp_streq(name, "pop") || sp_streq(name, "shift") || sp_streq(name, "deq")) return TY_POLY;
+    if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq") ||
+        sp_streq(name, "close") || sp_streq(name, "clear")) return TY_QUEUE;   /* return self */
+    if (sp_streq(name, "size") || sp_streq(name, "length")) return TY_INT;
+    if (sp_streq(name, "empty?") || sp_streq(name, "closed?")) return TY_BOOL;
   }
 
   /* TY_ENUMERATOR instance methods */

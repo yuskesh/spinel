@@ -84,11 +84,14 @@ static void sp_thread_wake_joiners(sp_thread *t) {
   }
 }
 
-/* Run runnable green threads until `target` is DEAD, or (target == NULL) until
-   the run queue drains. Runs on the root fiber (the main thread). */
+/* Run runnable green threads until `target` is DEAD, until the main thread is
+   woken back to RUNNABLE (it had blocked on a primitive), or until the run queue
+   drains. Runs on the root fiber (the main thread). */
 static void sp_sched_pump(sp_thread *target) {
   for (;;) {
     if (target && target->state == SP_TH_DEAD) return;
+    /* main blocked on a Queue/Mutex and a runnable thread just woke it */
+    if (g_main_thread.state == SP_TH_RUNNABLE) { g_main_thread.state = SP_TH_RUNNING; return; }
     sp_thread *t = rq_pop();
     if (!t) return;   /* nothing runnable: drained, or a deadlock the caller observes */
     sp_thread *saved = g_current;
@@ -187,4 +190,94 @@ void sp_sched_drain(void) {
   /* main() is finishing: run remaining runnable threads so fire-and-forget
      side effects happen. Only meaningful when called from the main thread. */
   if (g_current == &g_main_thread) sp_sched_pump(NULL);
+}
+
+/* ---- generic park / wake on a primitive wait list ---- */
+
+/* Block the current green thread on `*waitlist` until a wake moves it back to
+   runnable. The main thread pumps the scheduler (it cannot transfer away from
+   root); a spawned thread transfers back to the scheduler hub. */
+static void sp_sched_block(sp_thread **waitlist) {
+  sp_thread *self = g_current;
+  self->state = SP_TH_BLOCKED;
+  self->wait_next = *waitlist;
+  *waitlist = self;
+  if (self == &g_main_thread) {
+    sp_sched_pump(NULL);   /* returns once a waker marks main RUNNABLE */
+    if (self->state != SP_TH_RUNNING)
+      sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+  } else {
+    sp_Fiber_transfer(g_root_fiber, sp_box_nil());
+  }
+}
+
+/* Move one thread off `*waitlist` back onto the run queue (or mark the main
+   thread runnable so its pump returns). Returns 1 if a thread was woken. */
+static int sp_sched_wake_one(sp_thread **waitlist) {
+  sp_thread *t = *waitlist;
+  if (!t) return 0;
+  *waitlist = t->wait_next;
+  t->wait_next = NULL;
+  if (t == &g_main_thread) t->state = SP_TH_RUNNABLE;   /* the pump observes this */
+  else rq_push(t);
+  return 1;
+}
+
+/* ---- Queue ---- */
+
+static void sp_queue_scan(void *p) {
+  sp_queue *q = (sp_queue *)p;
+  for (mrb_int i = 0; i < q->len; i++)
+    sp_mark_rbval(q->buf[(q->head + i) % q->cap]);
+}
+static void sp_queue_fin(void *p) { sp_queue *q = (sp_queue *)p; free(q->buf); }
+
+sp_queue *sp_Queue_new(void) {
+  sp_queue *q = (sp_queue *)sp_gc_alloc(sizeof(sp_queue), sp_queue_fin, sp_queue_scan);
+  q->cap = 8;
+  q->head = q->len = 0;
+  q->pop_waiters = NULL;
+  q->closed = 0;
+  q->buf = (sp_RbVal *)malloc(sizeof(sp_RbVal) * q->cap);
+  if (!q->buf) sp_raise_cls("NoMemoryError", "failed to allocate queue");
+  return q;
+}
+
+void sp_Queue_push(sp_queue *q, sp_RbVal v) {
+  if (q->closed) sp_raise_cls("ClosedQueueError", "queue closed");
+  if (q->len == q->cap) {
+    mrb_int nc = q->cap * 2;
+    sp_RbVal *nb = (sp_RbVal *)malloc(sizeof(sp_RbVal) * nc);
+    if (!nb) sp_raise_cls("NoMemoryError", "failed to grow queue");
+    for (mrb_int i = 0; i < q->len; i++) nb[i] = q->buf[(q->head + i) % q->cap];
+    free(q->buf);
+    q->buf = nb; q->cap = nc; q->head = 0;
+  }
+  q->buf[(q->head + q->len) % q->cap] = v;
+  q->len++;
+  sp_sched_wake_one(&q->pop_waiters);   /* hand the new value to a waiting popper */
+}
+
+sp_RbVal sp_Queue_pop(sp_queue *q) {
+  /* Block until an element is available. A closed, drained queue returns nil
+     rather than blocking forever (CRuby behaviour). */
+  while (q->len == 0) {
+    if (q->closed) return sp_box_nil();
+    sp_sched_block(&q->pop_waiters);
+  }
+  sp_RbVal v = q->buf[q->head];
+  q->head = (q->head + 1) % q->cap;
+  q->len--;
+  return v;
+}
+
+mrb_int  sp_Queue_size(sp_queue *q)   { return q->len; }
+mrb_bool sp_Queue_empty(sp_queue *q)  { return q->len == 0; }
+mrb_bool sp_Queue_closed(sp_queue *q) { return q->closed != 0; }
+void     sp_Queue_clear(sp_queue *q)  { q->head = q->len = 0; }
+
+void sp_Queue_close(sp_queue *q) {
+  q->closed = 1;
+  /* wake every blocked popper so they observe the close and return nil */
+  while (sp_sched_wake_one(&q->pop_waiters)) { }
 }
