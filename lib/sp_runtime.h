@@ -2127,6 +2127,94 @@ static sp_PolyArray *sp_PolyArray_flatten(sp_PolyArray *a) { SP_GC_ROOT(a); sp_P
    array element. Width / flag chars between `%` and the conv
    letter (`-+0 #`, digits, `.`) are copied verbatim so printf
    does the substitution work. */
+/* Ruby-style %b / %B binary conversion (C printf has no binary conversion).
+   Handles the -, +, space, #, 0 flags, width, and precision. A negative value
+   uses Ruby's two's-complement ".." notation: the leading run of 1 bits is
+   collapsed to a single 1 (e.g. -5 -> "..1011"), and precision/`#`/width apply
+   around that body. Writes into out (osz bytes) and returns the length. */
+static int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
+                         char *out, size_t osz) {
+  /* parse "%<flags><width>.<prec>b" out of spec[0..sl-1] (spec[sl-1] == conv) */
+  int f_minus = 0, f_plus = 0, f_space = 0, f_hash = 0, f_zero = 0;
+  size_t i = 1;
+  for (; i < sl; i++) {
+    if (spec[i] == '-') f_minus = 1;
+    else if (spec[i] == '+') f_plus = 1;
+    else if (spec[i] == ' ') f_space = 1;
+    else if (spec[i] == '#') f_hash = 1;
+    else if (spec[i] == '0') f_zero = 1;
+    else break;
+  }
+  int width = 0;
+  for (; i < sl && spec[i] >= '0' && spec[i] <= '9'; i++) width = (width * 10) + (spec[i] - '0');
+  int prec = -1;
+  if (i < sl && spec[i] == '.') {
+    i++; prec = 0;
+    for (; i < sl && spec[i] >= '0' && spec[i] <= '9'; i++) prec = (prec * 10) + (spec[i] - '0');
+  }
+
+  int neg = val < 0;
+  /* Ruby shows the two's-complement ".." body only for a negative value with no
+     sign flag; a + or space flag switches to signed magnitude ("-101"). */
+  int twos = neg && !f_plus && !f_space;
+  char digits[256]; int dn = 0;
+  if (twos) {
+    unsigned long long uv = (unsigned long long)val;
+    int p = -1;  /* highest 0-bit position; -1 means val == -1 (all ones) */
+    for (int bit = 62; bit >= 0; bit--) if (!((uv >> bit) & 1ULL)) { p = bit; break; }
+    int ndig = p + 2; if (ndig < 1) ndig = 1;
+    for (int bit = ndig - 1; bit >= 0; bit--) digits[dn++] = (char)('0' + (int)((uv >> bit) & 1ULL));
+  } else {
+    /* signed magnitude: |val| in binary. 0 has no significant digits, so it
+       contributes a single '0' only when precision is not 0. */
+    unsigned long long mag = neg ? (unsigned long long)(-(val + 1)) + 1 : (unsigned long long)val;
+    if (mag == 0) { if (prec != 0) digits[dn++] = '0'; }
+    else { char t[80]; int tn = 0; while (mag) { t[tn++] = (char)('0' + (int)(mag & 1ULL)); mag >>= 1; }
+           while (tn) digits[dn++] = t[--tn]; }
+  }
+  /* precision: minimum digit count. The ".." body counts as 2 toward it and pads
+     with the sign bit (1); signed magnitude pads with 0. */
+  if (prec >= 0) {
+    int target = twos ? (prec - 2) : prec;
+    char padc = twos ? '1' : '0';
+    int t2 = target - dn;
+    if (t2 > 0) {
+      /* clamp to the digits buffer (output is capped at osz anyway) */
+      if (t2 + dn >= (int)sizeof(digits)) t2 = (int)sizeof(digits) - dn - 1;
+      memmove(digits + t2, digits, (size_t)dn);  /* shift body right */
+      memset(digits, padc, (size_t)t2);           /* leading padding */
+      dn += t2;
+    }
+    f_zero = 0;  /* precision disables 0-flag for integer conversions */
+  }
+  /* assemble sign/prefix + body, then apply width padding */
+  char body[300]; int bn = 0;
+  char sign = twos ? 0 : (neg ? '-' : (f_plus ? '+' : (f_space ? ' ' : 0)));
+  char prefix0 = 0, prefix1 = 0;
+  if (f_hash && val != 0) { prefix0 = '0'; prefix1 = (conv == 'B') ? 'B' : 'b'; }
+  if (sign) body[bn++] = sign;
+  if (prefix0) { body[bn++] = prefix0; body[bn++] = prefix1; }
+  if (twos) { body[bn++] = '.'; body[bn++] = '.'; }
+  for (int k = 0; k < dn; k++) body[bn++] = digits[k];
+
+  int o = 0;
+  int pad = width - bn;
+  if (pad > 0 && !f_minus && f_zero) {
+    /* zero-pad: emit sign/prefix/".." first, then fill, then the rest. A two's-
+       complement body fills with the sign bit (1); signed magnitude with 0. */
+    int head = (sign ? 1 : 0) + (prefix0 ? 2 : 0) + (twos ? 2 : 0);
+    char fillc = twos ? '1' : '0';
+    for (int k = 0; k < head && o < (int)osz; k++) out[o++] = body[k];
+    for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = fillc;
+    for (int k = head; k < bn && o < (int)osz; k++) out[o++] = body[k];
+  } else {
+    if (pad > 0 && !f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+    for (int k = 0; k < bn && o < (int)osz; k++) out[o++] = body[k];
+    if (pad > 0 && f_minus) for (int k = 0; k < pad && o < (int)osz; k++) out[o++] = ' ';
+  }
+  return o;
+}
+
 static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
   size_t cap = strlen(fmt) + 64;
   char *buf = (char *)malloc(cap);
@@ -2176,6 +2264,13 @@ else {
       else if (v.tag == SP_TAG_FLT) lv = (long long)v.v.f;
       else if (v.tag == SP_TAG_STR && v.v.s) lv = strtoll(v.v.s, NULL, 10);
       wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
+    }
+else if (conv == 'b' || conv == 'B') {
+      long long lv = 0;
+      if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
+      else if (v.tag == SP_TAG_FLT) lv = (long long)v.v.f;
+      else if (v.tag == SP_TAG_STR && v.v.s) lv = strtoll(v.v.s, NULL, 10);
+      wn = sp_fmt_binary(spec, sl, conv, lv, tmp, sizeof(tmp));
     }
 else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G') {
       double dv = 0;
