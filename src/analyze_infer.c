@@ -1919,8 +1919,10 @@ else {
       TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
       return bt != TY_UNKNOWN ? ty_array_of(bt) : rt;
     }
-    if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!") ||
-         sp_streq(name, "keep_if") || sp_streq(name, "delete_if")) && block >= 0) return rt;
+    if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!")) &&
+        block >= 0) return TY_POLY;  /* self, or nil when nothing was removed */
+    if ((sp_streq(name, "keep_if") || sp_streq(name, "delete_if")) && block >= 0)
+      return rt;  /* always self */
     if (sp_streq(name, "find_index") || sp_streq(name, "index")) return TY_INT;  /* int or nil */
     if (sp_streq(name, "each_index")) return rt;
     if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) &&
@@ -2298,6 +2300,11 @@ else {
         if (bnt != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
         return ty_array_of(bt);
       }
+      if (block >= 0 &&
+          (sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!")))
+        return TY_POLY;  /* self, or nil when nothing was removed */
+      if (block >= 0 && (sp_streq(name, "keep_if") || sp_streq(name, "delete_if")))
+        return rt;  /* always self */
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_SELECT || sp_streq(name, "reject"))) return rt;
       if (block >= 0 && sp_streq(name, "transform_keys")) {
         int body = nt_ref(nt, block, "body");
