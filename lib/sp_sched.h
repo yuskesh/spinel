@@ -63,6 +63,8 @@ mrb_bool   sp_Thread_get_report_default(void);        /* Thread.report_on_except
 mrb_bool   sp_Thread_set_report(sp_thread *t, mrb_bool v); /* #report_on_exception= */
 mrb_bool   sp_Thread_get_report(sp_thread *t);            /* #report_on_exception */
 sp_thread *sp_Thread_main(void);          /* Thread.main */
+mrb_int    sp_Thread_list_count(void);     /* Thread.list (built by the TU) */
+sp_thread *sp_Thread_list_at(mrb_int i);
 sp_RbVal   sp_Thread_status(sp_thread *t); /* #status: "run"/"sleep"/false/nil */
 sp_RbVal   sp_Thread_tls_get(sp_thread *t, sp_sym k);              /* Thread#[] */
 sp_RbVal   sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v);  /* Thread#[]= */

@@ -7384,6 +7384,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "main") && argc == 0) {
       buf_puts(b, "sp_Thread_main()"); return;
     }
+    if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "list") && argc == 0) {
+      /* build a poly array of the live threads (the TU owns sp_PolyArray) */
+      int ta = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+      buf_printf(b, " mrb_int _t%d = sp_Thread_list_count();", tn);
+      buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                    " sp_PolyArray_push(_t%d, sp_box_obj((void *)sp_Thread_list_at(_t%d), SP_BUILTIN_THREAD));",
+                 ti, ti, tn, ti, ta, ti);
+      buf_printf(b, " _t%d; })", ta);
+      return;
+    }
     if (tcn && sp_streq(tcn, "Thread") && sp_streq(name, "pass") && argc == 0) {
       /* Thread.pass yields the scheduler and evaluates to nil. */
       buf_puts(b, "(sp_Thread_pass(), sp_box_nil())"); return;

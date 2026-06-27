@@ -204,6 +204,21 @@ mrb_bool sp_Thread_get_report(sp_thread *t) { return t->report_on_exception; }
 
 sp_thread *sp_Thread_main(void) { return &g_main_thread; }
 
+/* Thread.list enumeration: the main thread followed by every live spawned
+   thread (dead ones are off the registry). The generated TU builds the array
+   over these accessors since it owns sp_PolyArray. */
+mrb_int sp_Thread_list_count(void) {
+  mrb_int n = 1;   /* the main thread */
+  for (sp_thread *t = g_all; t; t = t->all_next) n++;
+  return n;
+}
+sp_thread *sp_Thread_list_at(mrb_int i) {
+  if (i <= 0) return &g_main_thread;
+  sp_thread *t = g_all;
+  for (mrb_int k = 1; t && k < i; k++) t = t->all_next;
+  return t ? t : &g_main_thread;
+}
+
 /* #status: "run" while runnable/running, "sleep" while blocked, false when it
    finished normally, nil when it died with an unhandled exception. */
 sp_RbVal sp_Thread_status(sp_thread *t) {
