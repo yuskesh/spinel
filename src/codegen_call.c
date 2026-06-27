@@ -39,6 +39,36 @@ static int parse_named_format(const char *fmt, Buf *rew, const char **names,
   return has_named ? n : -1;
 }
 
+/* A regexp's encoding is US-ASCII when its source is 7-bit clean (the common
+   case), else UTF-8. Spinel is ASCII/UTF-8 only, so this covers the supported
+   domain; fixed_encoding? is true exactly when the encoding is not US-ASCII. */
+static int re_src_all_ascii(const char *s) {
+  if (!s) return 1;
+  for (; *s; s++) if ((unsigned char)*s >= 0x80) return 0;
+  return 1;
+}
+
+/* A backreference (\1..\9, \k<name>, \g<name>) defeats the linear-time matcher,
+   so Regexp.linear_time? is false for such a pattern and true otherwise. */
+static int re_src_has_backref(const char *s) {
+  if (!s) return 0;
+  /* Inside a [...] character class a `\1` is an octal escape and `\k`/`\g` are
+     literal, none of them backreferences. Track class membership (classes do
+     not nest; the first `]` closes) so those don't false-positive. */
+  int in_class = 0;
+  for (; *s; s++) {
+    if (*s == '\\' && s[1]) {
+      char n = s[1];
+      if (!in_class && ((n >= '1' && n <= '9') || n == 'k' || n == 'g')) return 1;
+      s++;  /* skip the escaped char (in or out of a class) */
+      continue;
+    }
+    if (in_class) { if (*s == ']') in_class = 0; }
+    else if (*s == '[') in_class = 1;
+  }
+  return 0;
+}
+
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -5988,6 +6018,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else { buf_puts(b, "sp_re_escape("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     return;
   }
+  /* Regexp.linear_time?(re) -> whether re matches in linear time. A literal arg
+     is inspected for a backreference (the construct that defeats it); a
+     non-literal regexp value defaults to true (the answer for backref-free
+     patterns, which is the supported domain). */
+  if (recv >= 0 && argc == 1 && sp_streq(name, "linear_time?") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
+    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
+      buf_puts(b, re_src_has_backref(nt_str(nt, argv[0], "unescaped")) ? "FALSE" : "TRUE");
+    else { buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), TRUE)"); }
+    return;
+  }
   /* Regexp.compile is an alias for Regexp.new */
   if (recv >= 0 && argc >= 1 && sp_streq(name, "compile") &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
@@ -7933,6 +7975,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int pf = (int)nt_int(nt, recv, "flags", 0);
       int opt = ((pf & 4) ? 1 : 0) | ((pf & 8) ? 2 : 0) | ((pf & 16) ? 4 : 0);
       buf_printf(b, "%d", opt); return;
+    }
+    if (rre >= 0 && sp_streq(name, "encoding") && argc == 0) {
+      int ascii = re_src_all_ascii(nt_str(nt, recv, "unescaped"));
+      buf_printf(b, "sp_box_encoding(%s)", ascii ? "sp_encoding_us_ascii()" : "sp_encoding_utf8()");
+      return;
+    }
+    if (rre >= 0 && sp_streq(name, "fixed_encoding?") && argc == 0) {
+      buf_puts(b, re_src_all_ascii(nt_str(nt, recv, "unescaped")) ? "FALSE" : "TRUE");
+      return;
+    }
+  }
+  /* encoding/fixed_encoding? on a non-literal regexp value: the source is not
+     visible at compile time, so default to US-ASCII (the answer for any 7-bit
+     pattern, which is the supported domain). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 0) {
+    if (sp_streq(name, "encoding")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), sp_box_encoding(sp_encoding_us_ascii()))"); return;
+    }
+    if (sp_streq(name, "fixed_encoding?")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)"); return;
     }
   }
   if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL &&
