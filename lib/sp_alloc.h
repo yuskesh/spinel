@@ -19,6 +19,29 @@
 #include <stdio.h>      /* snprintf for the int/float formatters below */
 #include <math.h>       /* HUGE_VAL / signbit for sp_float_to_s */
 
+/* Global heap lock (Phase 1, design 6.1). Under SP_THREADS one mutex serializes
+   the object- and string-heap mutations -- the trigger+collect, the calloc/
+   malloc, and the list link -- so N>1 workers cannot corrupt the shared heap
+   lists or byte counters. It wraps the hot allocators here (sp_str_alloc, in
+   this header so the generated TU's inlined copy locks too) and in sp_alloc.c
+   (sp_gc_alloc). The internal collect/sweep run under the held lock and never
+   re-acquire it (no allocator re-enters from a scan/finalize callback). A single
+   non-recursive mutex covers both heaps since a collection from either path
+   sweeps the other under the same held lock. No-op (and no pthread dependency)
+   in the single-threaded build, so that path is byte-identical.
+   NOTE: at N>1 this alone is not sufficient -- a worker doing pure computation
+   never reaches the lock, so stop-the-world via safepoints (added with the
+   workers) is still required before the collector may run. */
+#ifdef SP_THREADS
+#include <pthread.h>
+extern pthread_mutex_t sp_heap_lock;
+#define SP_HEAP_LOCK()   pthread_mutex_lock(&sp_heap_lock)
+#define SP_HEAP_UNLOCK() pthread_mutex_unlock(&sp_heap_lock)
+#else
+#define SP_HEAP_LOCK()   ((void)0)
+#define SP_HEAP_UNLOCK() ((void)0)
+#endif
+
 /* ---- shared string-heap state (defined in sp_alloc.c) ---- */
 extern sp_str_hdr *sp_str_heap;          /* live-string singly-linked list head */
 extern size_t sp_str_heap_bytes;         /* live string-heap bytes */
@@ -50,6 +73,7 @@ void sp_str_lcache_clear(void);
 
 static inline char *sp_str_alloc(size_t len) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
+  SP_HEAP_LOCK();
   /* String-heap pressure drives its own collection (see sp_str_heap_bytes).
      Collect BEFORE the new allocation, like sp_gc_alloc, so the string being
      built isn't yet live during the sweep. Operands of the calling op (e.g. the
@@ -73,6 +97,7 @@ static inline char *sp_str_alloc(size_t len) {
   h->hash = 0;
   sp_str_heap = h;
   sp_str_heap_bytes += total;
+  SP_HEAP_UNLOCK();
   /* Don't fold string-heap pressure into sp_gc_bytes: the threshold heuristic
      in sp_gc_alloc is keyed on object-heap survivors, and the str-heap sweep
      that runs alongside (sp_str_sweep, from sp_gc_collect) doesn't add surviving

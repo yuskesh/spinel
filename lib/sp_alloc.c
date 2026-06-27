@@ -19,7 +19,12 @@ size_t sp_gc_threshold = 256 * 1024;
 size_t sp_gc_threshold_init = 256 * 1024;
 int sp_gc_stress_checked = 0;
 
+#ifdef SP_THREADS
+pthread_mutex_t sp_heap_lock = PTHREAD_MUTEX_INITIALIZER;   /* see sp_alloc.h */
+#endif
+
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
+  SP_HEAP_LOCK();
   if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_gc_threshold = 2048; sp_gc_threshold_init = 2048; } }
   if (sp_gc_bytes > sp_gc_threshold) {
     size_t before = sp_gc_bytes;
@@ -35,6 +40,7 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
   h->next = sp_gc_heap; sp_gc_heap = h; sp_gc_bytes += need;
+  SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
@@ -42,7 +48,9 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
+  SP_HEAP_LOCK();
   h->next = sp_gc_heap; sp_gc_heap = h; sp_gc_bytes += need;
+  SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }
 
