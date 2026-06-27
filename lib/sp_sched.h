@@ -26,6 +26,7 @@ typedef struct sp_thread {
   sp_Fiber         *fiber;       /* the green thread's coroutine; NULL for the main thread (root) */
   sp_RbVal          arg;         /* Thread.new(arg) -> the block's first param, on first run */
   sp_RbVal          retval;      /* block result (copied from fiber->yielded_value at death) */
+  sp_RbVal          name;        /* #name / #name= (a string or nil) */
   sp_thread_state   state;
   int               has_exc;     /* body left an unhandled exception (re-raised at #join/#value) */
   const char       *exc_cls, *exc_msg;
@@ -65,6 +66,8 @@ mrb_bool   sp_Thread_get_report(sp_thread *t);            /* #report_on_exceptio
 sp_thread *sp_Thread_main(void);          /* Thread.main */
 mrb_int    sp_Thread_list_count(void);     /* Thread.list (built by the TU) */
 sp_thread *sp_Thread_list_at(mrb_int i);
+sp_RbVal   sp_Thread_get_name(sp_thread *t);                       /* #name */
+sp_RbVal   sp_Thread_set_name(sp_thread *t, sp_RbVal v);           /* #name= */
 sp_RbVal   sp_Thread_status(sp_thread *t); /* #status: "run"/"sleep"/false/nil */
 sp_RbVal   sp_Thread_tls_get(sp_thread *t, sp_sym k);              /* Thread#[] */
 sp_RbVal   sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v);  /* Thread#[]= */

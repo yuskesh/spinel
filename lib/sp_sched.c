@@ -62,6 +62,9 @@ void sp_sched_init(void) {
   g_main_thread.fiber = NULL;
   g_main_thread.state = SP_TH_RUNNING;
   g_main_thread.report_on_exception = 1;
+  g_main_thread.arg = sp_box_nil();
+  g_main_thread.retval = sp_box_nil();
+  g_main_thread.name = sp_box_nil();
   g_current = &g_main_thread;
   g_prev_globals_hook = sp_gc_mark_globals_hook;
   sp_gc_mark_globals_hook = sp_sched_globals_mark;
@@ -126,6 +129,7 @@ static void sp_thread_scan(void *p) {
   if (t->fiber) sp_gc_mark(t->fiber);
   sp_mark_rbval(t->arg);
   sp_mark_rbval(t->retval);
+  sp_mark_rbval(t->name);
   if (t->exc_obj) sp_gc_mark(t->exc_obj);
   if (t->tls) sp_gc_mark(t->tls);
 }
@@ -138,6 +142,7 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   t->fiber = f;
   t->arg = arg;
   t->retval = sp_box_nil();
+  t->name = sp_box_nil();
   t->report_on_exception = g_report_default;
   t->id = g_next_id++;
   reg_add(t);
@@ -203,6 +208,9 @@ mrb_bool sp_Thread_set_report(sp_thread *t, mrb_bool v) { t->report_on_exception
 mrb_bool sp_Thread_get_report(sp_thread *t) { return t->report_on_exception; }
 
 sp_thread *sp_Thread_main(void) { return &g_main_thread; }
+
+sp_RbVal sp_Thread_get_name(sp_thread *t) { return t->name; }
+sp_RbVal sp_Thread_set_name(sp_thread *t, sp_RbVal v) { t->name = v; return v; }
 
 /* Thread.list enumeration: the main thread followed by every live spawned
    thread (dead ones are off the registry). The generated TU builds the array

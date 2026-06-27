@@ -5405,6 +5405,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "status") && argc == 0) {
       buf_puts(b, "sp_Thread_status("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
+    if (sp_streq(name, "name") && argc == 0) {
+      buf_puts(b, "sp_Thread_get_name("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "name=") && argc == 1) {
+      buf_puts(b, "sp_Thread_set_name("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b); buf_puts(b, ")"); return;
+    }
     /* thread-local storage: t[:key] / t[:key]=v / t.key?(:key) (symbol keys) */
     if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_SYMBOL) {
       buf_puts(b, "sp_Thread_tls_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
