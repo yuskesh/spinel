@@ -848,6 +848,24 @@ static void flatmap_coerce_from_poly(TyKind dst, const char *src, Buf *out) {
   else buf_puts(out, src);  /* poly (or other): pass through */
 }
 
+/* CRuby proc auto-splat: bind each of the block's params to a positional element
+   of the poly sub-array held in temp `_t<elem_temp>` (an sp_RbVal), coerced to
+   each param's pinned type. Used where a multi-param block iterates a poly array
+   whose elements are themselves arrays (map/select/reject/sort_by). */
+static void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int indent) {
+  Scope *asc = comp_scope_of(c, block);
+  for (int pj = 0; pj < np; pj++) {
+    const char *pn = block_param_name(c, block, pj); if (!pn) continue;
+    const char *pnr = rename_local(pn);
+    LocalVar *lvp = asc ? scope_local(asc, pn) : NULL;
+    TyKind pty = lvp ? lvp->type : TY_POLY;
+    char src[96]; snprintf(src, sizeof src, "sp_poly_index_poly(_t%d, sp_box_int(%d))", elem_temp, pj);
+    emit_indent(g_pre, indent); buf_printf(g_pre, "lv_%s = ", pnr);
+    Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(pty, src, &cv);
+    buf_puts(g_pre, cv.p ? cv.p : src); free(cv.p); buf_puts(g_pre, ";\n");
+  }
+}
+
 /* `array.flat_map { |params| block-returning-array }` as an expression: map each
    element through the block and concatenate the returned arrays (flatten one
    level). Handles a single block param (bound to the element) and a flat
@@ -1022,6 +1040,11 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   if (bn < 1) return 0;
   TyKind bvt = infer_type(c, bb[bn - 1]);
   if (bvt != TY_INT && bvt != TY_FLOAT && bvt != TY_POLY) return 0;
+  /* 2+-param block over a poly array of sub-arrays: auto-splat each element
+     across the params. The winning element is stored from an element temp
+     rather than the (now per-position) block param. */
+  int np_mb = 0; while (block_param_name(c, block, np_mb)) np_mb++;
+  int autosplat = (np_mb >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0));
   if (is_minmax) {
     /* track the min-keyed and max-keyed elements in one pass; yield a fresh
        same-kind [min, max] array. Strict comparisons keep the first occurrence
@@ -1037,9 +1060,19 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbvmax, default_value(bvt));
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = 1;\n", tf);
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
-    if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
+    char mmelem[24];
+    if (autosplat) {
+      int telem = ++g_tmp;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, trecv, ti);
+      emit_autosplat_params(c, block, np_mb, telem, g_indent + 1);
+      snprintf(mmelem, sizeof mmelem, "_t%d", telem);
+    } else {
+      if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
+      snprintf(mmelem, sizeof mmelem, "lv_%s", p0 ? p0 : "");
+    }
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-    Scope *mmsc = p0 ? comp_scope_of(c, block) : NULL;
+    Scope *mmsc = (p0 && !autosplat) ? comp_scope_of(c, block) : NULL;
     LocalVar *mmlv = (mmsc && p0) ? scope_local(mmsc, p0) : NULL;
     TyKind mmpt = mmlv ? mmlv->type : TY_UNKNOWN;
     if (mmlv) mmlv->type = et;
@@ -1047,16 +1080,16 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
     Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
     if (mmlv) mmlv->type = mmpt;
     emit_indent(g_pre, g_indent + 1); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tcur, vb.p ? vb.p : default_value(bvt)); free(vb.p);
-    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d) { _t%d = lv_%s; _t%d = lv_%s; _t%d = _t%d; _t%d = _t%d; _t%d = 0; }\n",
-               tf, tmin, p0 ? p0 : "", tmax, p0 ? p0 : "", tbvmin, tcur, tbvmax, tcur, tf);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d) { _t%d = %s; _t%d = %s; _t%d = _t%d; _t%d = _t%d; _t%d = 0; }\n",
+               tf, tmin, mmelem, tmax, mmelem, tbvmin, tcur, tbvmax, tcur, tf);
     emit_indent(g_pre, g_indent + 1);
     if (bvt == TY_POLY) {
-      buf_printf(g_pre, "else { if (sp_poly_lt(_t%d, _t%d)) { _t%d = lv_%s; _t%d = _t%d; } if (sp_poly_gt(_t%d, _t%d)) { _t%d = lv_%s; _t%d = _t%d; } }\n",
-                 tcur, tbvmin, tmin, p0 ? p0 : "", tbvmin, tcur, tcur, tbvmax, tmax, p0 ? p0 : "", tbvmax, tcur);
+      buf_printf(g_pre, "else { if (sp_poly_lt(_t%d, _t%d)) { _t%d = %s; _t%d = _t%d; } if (sp_poly_gt(_t%d, _t%d)) { _t%d = %s; _t%d = _t%d; } }\n",
+                 tcur, tbvmin, tmin, mmelem, tbvmin, tcur, tcur, tbvmax, tmax, mmelem, tbvmax, tcur);
     }
     else {
-      buf_printf(g_pre, "else { if (_t%d < _t%d) { _t%d = lv_%s; _t%d = _t%d; } if (_t%d > _t%d) { _t%d = lv_%s; _t%d = _t%d; } }\n",
-                 tcur, tbvmin, tmin, p0 ? p0 : "", tbvmin, tcur, tcur, tbvmax, tmax, p0 ? p0 : "", tbvmax, tcur);
+      buf_printf(g_pre, "else { if (_t%d < _t%d) { _t%d = %s; _t%d = _t%d; } if (_t%d > _t%d) { _t%d = %s; _t%d = _t%d; } }\n",
+                 tcur, tbvmin, tmin, mmelem, tbvmin, tcur, tcur, tbvmax, tmax, mmelem, tbvmax, tcur);
     }
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     /* Yield a poly [min, max] (CRuby returns a generic Array). An empty receiver
@@ -1094,9 +1127,19 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbest, et == TY_RANGE ? "(sp_Range){0}" : default_value(et));
   emit_indent(g_pre, g_indent); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s; int _t%d = 1;\n", tbv, default_value(bvt), tf);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
-  if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
+  char mmelem[24];
+  if (autosplat) {
+    int telem = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, trecv, ti);
+    emit_autosplat_params(c, block, np_mb, telem, g_indent + 1);
+    snprintf(mmelem, sizeof mmelem, "_t%d", telem);
+  } else {
+    if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti); }
+    snprintf(mmelem, sizeof mmelem, "lv_%s", p0 ? p0 : "");
+  }
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
-  Scope *mbsc = p0 ? comp_scope_of(c, block) : NULL;
+  Scope *mbsc = (p0 && !autosplat) ? comp_scope_of(c, block) : NULL;
   LocalVar *mlv0 = (mbsc && p0) ? scope_local(mbsc, p0) : NULL;
   TyKind mpt0 = mlv0 ? mlv0->type : TY_UNKNOWN;
   if (mlv0) mlv0->type = et;
@@ -1106,11 +1149,11 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tcur, vb.p ? vb.p : default_value(bvt)); free(vb.p);
   emit_indent(g_pre, g_indent + 1);
   if (bvt == TY_POLY)
-    buf_printf(g_pre, "if (_t%d || sp_poly_%s(_t%d, _t%d)) { _t%d = lv_%s; _t%d = _t%d; _t%d = 0; }\n",
-               tf, is_max ? "gt" : "lt", tcur, tbv, tbest, p0 ? p0 : "", tbv, tcur, tf);
+    buf_printf(g_pre, "if (_t%d || sp_poly_%s(_t%d, _t%d)) { _t%d = %s; _t%d = _t%d; _t%d = 0; }\n",
+               tf, is_max ? "gt" : "lt", tcur, tbv, tbest, mmelem, tbv, tcur, tf);
   else
-    buf_printf(g_pre, "if (_t%d || _t%d %s _t%d) { _t%d = lv_%s; _t%d = _t%d; _t%d = 0; }\n",
-               tf, tcur, is_max ? ">" : "<", tbv, tbest, p0 ? p0 : "", tbv, tcur, tf);
+    buf_printf(g_pre, "if (_t%d || _t%d %s _t%d) { _t%d = %s; _t%d = _t%d; _t%d = 0; }\n",
+               tf, tcur, is_max ? ">" : "<", tbv, tbest, mmelem, tbv, tcur, tf);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   buf_printf(b, "_t%d", tbest);
   return 1;
@@ -2122,7 +2165,15 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tkeys, tkeys);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);\n", tidx, tidx);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
-  if (p0) {
+  int np_sb = 0; while (block_param_name(c, block, np_sb)) np_sb++;
+  if (np_sb >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0)) {
+    /* 2-param auto-splat: |name, age| over a poly array of sub-arrays. */
+    int te = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", te, trv, ti);
+    emit_autosplat_params(c, block, np_sb, te, g_indent + 1);
+  }
+  else if (p0) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trv, ti);
   }
@@ -2915,10 +2966,17 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
 
   TyKind et_elem = ty_array_elem(rt);
+  /* 2-param auto-splat: |a, b| over a poly array whose elements are sub-arrays
+     binds each param to a positional element of the sub-array, matching CRuby's
+     proc auto-splat. The per-param types were pinned by infer_block_params, so
+     bind directly (no shadow). select/reject still push the whole element. */
+  int np_cl = 0; while (block_param_name(c, block, np_cl)) np_cl++;
+  int autosplat = (np_cl >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0));
+
   /* If the block param's scope type was widened (e.g. TY_POLY), pin it to
      the element type and use a C shadow declaration so body emission sees the
      right type. */
-  Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+  Scope *csc = (p0 && !autosplat) ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
   int use_shadow = clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
@@ -2929,12 +2987,19 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
 
   int bodyIndent = g_indent + 1;
   int innerIndent = use_shadow ? bodyIndent + 1 : bodyIndent;
-  if (use_shadow) {
+  int te_split = -1;
+  if (autosplat) {
+    te_split = ++g_tmp;
+    emit_indent(g_pre, bodyIndent);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", te_split, trecv, ti);
+    emit_autosplat_params(c, block, np_cl, te_split, bodyIndent);
+  }
+  else if (use_shadow) {
     emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "{\n");
     emit_indent(g_pre, innerIndent); emit_ctype(c, et_elem, g_pre);
     buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
-else if (p0) {
+  else if (p0) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
@@ -2974,7 +3039,10 @@ else if (p0) {
     else if (cty == TY_INT)   buf_printf(g_pre, "if (%s(_t%d != SP_INT_NIL)) ", is_rej ? "!" : "", tv);
     else if (cty == TY_FLOAT) buf_printf(g_pre, "if (%s(!sp_float_is_nil(_t%d))) ", is_rej ? "!" : "", tv);
     else                   buf_printf(g_pre, "if (%s(_t%d)) ", is_rej ? "!" : "", tv);
-    buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
+    if (autosplat)
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk, tres, te_split);
+    else
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
   }
   if (use_shadow) { emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "}\n"); }
   if (use_shadow && clv0) clv0->type = csaved0;
@@ -4108,8 +4176,17 @@ int emit_group_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
              ti, ti, k, trecv, ti);
-  /* assign element to block param */
-  if (p0) {
+  /* assign element to block param(s). A 2+-param block over a poly array of
+     sub-arrays auto-splats each element across the params (the bucket push below
+     re-reads and stores the whole element regardless). */
+  int np_gb = 0; while (block_param_name(c, block, np_gb)) np_gb++;
+  if (np_gb >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0)) {
+    int telem = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", telem, trecv, ti);
+    emit_autosplat_params(c, block, np_gb, telem, g_indent + 1);
+  }
+  else if (p0) {
     Scope *cs = comp_scope_of(c, id);
     LocalVar *outer_p0 = cs ? scope_local(cs, p0) : NULL;
     TyKind p0_type = outer_p0 ? outer_p0->type : et;
