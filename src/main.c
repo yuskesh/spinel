@@ -400,6 +400,12 @@ int main(int argc, char **argv) {
   Str ffi_links = {0}, ffi_cflags = {0};
   scrape_ffi_markers(csrc, "/* SPINEL_LINK: ", &ffi_links);
   scrape_ffi_markers(csrc, "/* SPINEL_CFLAGS: ", &ffi_cflags);
+  /* A program that uses Thread/Mutex/Queue/... links the -DSP_THREADS runtime
+     variant (libspinel_rt_mt.a) plus -lpthread; everything else links the
+     byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
+     marker and the two-variant build in the Makefile. */
+  int uses_threads = strstr(csrc, "/* SPINEL_USES_THREADS */") != NULL;
+  const char *rt_lib = uses_threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
   free(csrc);
 
   /* Output binary path: -E uses a temp so the cwd stays clean. */
@@ -424,11 +430,12 @@ int main(int argc, char **argv) {
   snprintf(tmp, sizeof tmp, "-I\"%s\" -I\"%s%cregexp\" ", lib_dir, lib_dir, PATH_SEP); s_add(&cmd, tmp);
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   s_add_arg(&cmd, c_path);
-  snprintf(tmp, sizeof tmp, "\"%s%clibspinel_rt.a\" ", lib_dir, PATH_SEP); s_add(&cmd, tmp);
+  snprintf(tmp, sizeof tmp, "\"%s%c%s\" ", lib_dir, PATH_SEP, rt_lib); s_add(&cmd, tmp);
   /* -lm AFTER the archive: ld processes inputs left to right and (with the
      GNU default --as-needed) drops a DSO no preceding input references.
      sp_format.o pulls in sqrt/sin/cos, so libm must follow libspinel_rt.a. */
   s_add(&cmd, "-lm ");
+  if (uses_threads) s_add(&cmd, "-lpthread ");
   s_add(&cmd, ov_define); s_add(&cmd, " ");
   if (want_g) s_add(&cmd, "-g ");
 #if !defined(__APPLE__)

@@ -3157,6 +3157,11 @@ char *codegen_program(const NodeTable *nt) {
   }
   g_needs_class_machinery = program_needs_class_machinery(c);
   scan_prologue_features(c);
+  /* Threaded-runtime marker: the driver greps for this and links the
+     -DSP_THREADS runtime variant (libspinel_rt_mt.a) plus -lpthread instead of
+     the byte-identical single-threaded archive. Emitted only when the program
+     references Thread/Mutex/Queue/... -- so it must follow the feature scan. */
+  if (g_uses_threads) buf_puts(&b, "/* SPINEL_USES_THREADS */\n");
   if (g_needs_class_machinery) {
   /* sp_cls_is_module[i]: 1 if user class i was defined as a module, 0 if class */
   if (c->nclasses > 0) {

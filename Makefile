@@ -288,10 +288,37 @@ build/sp_io.o: lib/sp_io.c lib/sp_io.h lib/sp_gc.h lib/sp_types.h
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o build/sp_net.o build/sp_system.o build/sp_gc.o build/sp_alloc.o build/sp_json.o build/sp_marshal.o build/sp_format.o build/sp_stringio.o build/sp_string.o build/sp_inspect.o build/sp_array.o build/sp_str.o build/sp_re.o build/sp_fiber.o build/sp_sched.o build/sp_io.o
+RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_strscan sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_json sp_marshal sp_format sp_stringio sp_string sp_inspect sp_array sp_str sp_re sp_fiber sp_sched sp_io
+
+$(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^
 
-regexp: $(SP_RT_LIB)
+# ---- Threaded runtime variant (-DSP_THREADS) ----
+# Same sources, compiled with -DSP_THREADS, linked when the program uses
+# Thread/Mutex/Queue/... (see codegen's SPINEL_USES_THREADS marker and the
+# archive selection in src/main.c). Phase 0 has no SP_THREADS #ifdefs yet, so it
+# is functionally identical today; it is the linchpin for Phase 1 parallelism
+# (per-worker __thread GC state, locks, real OS workers) without touching the
+# byte-identical single-threaded path. -ftls-model=initial-exec keeps the
+# eventual per-worker TLS reads a single segment-relative load.
+SP_RT_MT_LIB = lib/libspinel_rt_mt.a
+MT_DEF = -DSP_THREADS -ftls-model=initial-exec
+RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h)
+
+build/mt/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p build/mt
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) $(MT_DEF) -Ilib -Ilib/regexp $< -o $@
+
+build/mt/regexp/%.o: lib/regexp/%.c lib/regexp/re_internal.h
+	@mkdir -p build/mt/regexp
+	$(CC) -c -O2 $(SEC_FLAGS) $(MT_DEF) -Ilib/regexp $< -o $@
+
+RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
+
+$(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)))
+	ar rcs $@ $^
+
+regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
 
 # ---- In-tree developer tools ----
 
@@ -447,7 +474,7 @@ analyze-fail-test:
 
 # The .ok target is the test's stamp. Order-only $(SPINEL) keeps a
 # compiler relink from invalidating every test.
-build/test-results/%.ok: test/%.rb $(SP_RT_LIB) | $(SPINEL)
+build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) | $(SPINEL)
 	@mkdir -p build/test-results
 	@tmpdir=$$(mktemp -d /tmp/spinel-test.XXXXXX); \
 	ast=$$tmpdir/test.ast; \
@@ -647,6 +674,7 @@ install: all
 	install -d $(SPNLDIR)/lib
 	install -m 755 $(SPINEL)            $(SPNLDIR)/spinel
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
+	install -m 644 lib/libspinel_rt_mt.a $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
 	install -m 644 lib/sp_types.h        $(SPNLDIR)/lib/
 	install -m 644 lib/sp_core.h         $(SPNLDIR)/lib/
