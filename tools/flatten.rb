@@ -24,12 +24,35 @@ def require_target(line)
   rest[0, j]
 end
 
+# Collapse "." and ".." segments so the same file always resolves to the same
+# string. Without this, a file reached via two non-canonical paths (e.g.
+# `a/../b.rb` and `b.rb`) compares unequal in `seen` and is inlined twice; with
+# a require cycle that compounds into runaway re-inlining (the path keeps
+# growing) and a flattened file many times larger than the program.
+def canonicalize(path)
+  stack = []
+  path.split("/").each { |p|
+    if p == "" || p == "."
+      next
+    elsif p == ".."
+      if stack.length > 0 && stack[stack.length - 1] != ".."
+        stack.pop
+      else
+        stack.push(p)
+      end
+    else
+      stack.push(p)
+    end
+  }
+  stack.join("/")
+end
+
 # Resolve a require_relative target against the requiring file's directory,
 # adding ".rb" when absent.
 def resolve(from_file, target)
   base = dir_name(from_file) + "/" + target
-  return base if base.end_with?(".rb")
-  base + ".rb"
+  base = base + ".rb" if !base.end_with?(".rb")
+  canonicalize(base)
 end
 
 def inline(real, out, seen)
