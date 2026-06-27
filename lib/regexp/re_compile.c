@@ -1442,3 +1442,32 @@ re_free(mrb_regexp_pattern *pat)
     free(pat);
   }
 }
+
+/* ---- named-capture introspection (engine ABI) ----
+   The compiled pattern retains every `(?<name>...)` group's name and 1-based
+   group index; these expose that table so the MatchData layer can resolve a
+   name to a capture group without reaching into the internal struct. */
+int re_num_named(const mrb_regexp_pattern *pat) {
+  return pat ? (int)pat->num_named : 0;
+}
+const char *re_named_name(const mrb_regexp_pattern *pat, int i, int *group_out) {
+  if (!pat || i < 0 || i >= (int)pat->num_named) return NULL;
+  if (group_out) *group_out = (int)pat->named_captures[i].group;
+  return pat->named_captures[i].name;
+}
+int re_named_group(const mrb_regexp_pattern *pat, const char *name) {
+  if (!pat || !name) return -1;
+  size_t nlen = strlen(name);
+  int group = -1;
+  /* A name may repeat across alternation branches; CRuby resolves to the last
+     declared group, so keep scanning and take the final match. */
+  for (uint16_t i = 0; i < pat->num_named; i++) {
+    const re_named_capture *nc = &pat->named_captures[i];
+    /* compare name_len (uint16_t, promoted to size_t) against nlen directly: a
+       name >= 65536 chars must never spuriously match a truncated 16-bit length
+       and then memcmp past the stored name. */
+    if (nc->name_len == nlen && memcmp(nc->name, name, nlen) == 0)
+      group = (int)nc->group;
+  }
+  return group;
+}

@@ -460,6 +460,7 @@ sp_MatchData *sp_re_matchdata(mrb_regexp_pattern *pat, const char *str) {
   sp_MatchData *m = (sp_MatchData *)sp_gc_alloc(sizeof(sp_MatchData), NULL, sp_MatchData_scan);
   m->source = str;
   m->ncap = pairs;
+  m->pat = pat;
   for (int i = 0; i < pairs * 2; i++) m->caps[i] = caps[i];
   return m;
 }
@@ -483,6 +484,7 @@ sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, mrb_i
   sp_MatchData *m = (sp_MatchData *)sp_gc_alloc(sizeof(sp_MatchData), NULL, sp_MatchData_scan);
   m->source = str;
   m->ncap = pairs;
+  m->pat = pat;
   for (int i = 0; i < pairs * 2; i++) m->caps[i] = caps[i];
   return m;
 }
@@ -497,6 +499,26 @@ const char *sp_MatchData_aref(sp_MatchData *m, mrb_int i) {
   b[len] = 0;
   sp_str_set_len(b, (size_t)len);
   return b;
+}
+/* group by name (`md[:name]` / `md["name"]`): resolve the name to its capture
+   group via the pattern, then return that group's substring (NULL if the name
+   is unknown or the group did not participate). */
+const char *sp_MatchData_aref_name(sp_MatchData *m, const char *name) {
+  if (!m || !name) return NULL;
+  int g = re_named_group(m->pat, name);
+  if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
+  return sp_MatchData_aref(m, g);
+}
+/* `md.names`: the capture names in declaration order. */
+sp_StrArray *sp_MatchData_names(sp_MatchData *m) {
+  sp_StrArray *a = sp_StrArray_new();
+  if (!m) return a;
+  int n = re_num_named(m->pat);
+  for (int i = 0; i < n; i++) {
+    const char *nm = re_named_name(m->pat, i, NULL);
+    if (nm) sp_StrArray_push(a, sp_str_dup(nm));
+  }
+  return a;
 }
 mrb_int sp_MatchData_length(sp_MatchData *m) { return m ? m->ncap : 0; }
 /* char offset of a byte position within source */

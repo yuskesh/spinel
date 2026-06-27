@@ -3484,8 +3484,15 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
     const char *r = rs.p ? rs.p : "";
     if (sp_streq(name, "[]") && argc == 1) {
-      buf_printf(b, "sp_MatchData_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      /* A Symbol/String key selects a named capture group; an Integer key is a
+         positional group (the existing path). */
+      TyKind kt = comp_ntype(c, argv[0]);
+      if (kt == TY_SYMBOL) { buf_printf(b, "sp_MatchData_aref_name(%s, sp_sym_to_s(", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+      else if (kt == TY_STRING) { buf_printf(b, "sp_MatchData_aref_name(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else { buf_printf(b, "sp_MatchData_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     }
+    else if (sp_streq(name, "named_captures") && argc == 0) buf_printf(b, "sp_md_named_captures(%s)", r);
+    else if (sp_streq(name, "names") && argc == 0) buf_printf(b, "sp_MatchData_names(%s)", r);
     else if (sp_streq(name, "pre_match"))  buf_printf(b, "sp_MatchData_pre_match(%s)", r);
     else if (sp_streq(name, "post_match")) buf_printf(b, "sp_MatchData_post_match(%s)", r);
     else if (sp_streq(name, "to_s"))       buf_printf(b, "sp_MatchData_to_s(%s)", r);

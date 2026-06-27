@@ -1,0 +1,14 @@
+"06"
+"2026"
+"06"
+{"y" => "2026", "mo" => "06"}
+["y", "mo"]
+"2026-06"
+"2026"
+"06"
+"x"
+nil
+{"a" => "x", "b" => nil}
+{}
+[]
+IndexError: undefined group name reference: nope

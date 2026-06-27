@@ -2794,6 +2794,20 @@ static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){return h?sp_inspect_c
    raw pointer assignment would mix incompatible struct layouts
    (vals[] of const char** vs sp_RbVal*). See issue #614. */
 static sp_StrPolyHash*sp_StrPolyHash_from_str_str_hash(sp_StrStrHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;if(h->default_v)r->default_v=sp_box_str(h->default_v);for(mrb_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_str(sp_StrStrHash_get(h,k)));}return r;}
+/* MatchData#named_captures: {String name => group substring | nil}. A
+   non-participating named group maps to nil, so the value side is poly. Lives
+   here (not sp_re.c) because the typed-hash machinery is TU-coupled. */
+static sp_StrPolyHash *sp_md_named_captures(sp_MatchData *m) {
+  sp_StrPolyHash *h = sp_StrPolyHash_new();
+  if (!m) return h;
+  int n = re_num_named(m->pat);
+  for (int i = 0; i < n; i++) {
+    int g = -1;
+    const char *nm = re_named_name(m->pat, i, &g);
+    if (nm) sp_StrPolyHash_set(h, sp_str_dup(nm), sp_box_nullable_str(sp_MatchData_aref(m, g)));
+  }
+  return h;
+}
 static sp_StrPolyHash*sp_StrPolyHash_from_str_int_hash(sp_StrIntHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();if(!h)return r;r->default_v=sp_box_int(h->default_v);for(mrb_int i=0;i<h->len;i++){const char*k=h->order[i];sp_StrPolyHash_set(r,k,sp_box_int(sp_StrIntHash_get(h,k)));}return r;}
 
 /* SymPolyHash: symbol keys, sp_RbVal values — same shape as SymStrHash but with poly values. */

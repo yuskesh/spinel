@@ -22,8 +22,12 @@ typedef struct mrb_regexp_pattern mrb_regexp_pattern;
 mrb_regexp_pattern* re_compile(const char *pattern, int64_t len, uint32_t flags);
 void re_free(mrb_regexp_pattern *pat);
 int re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size);
+/* named-capture introspection (lib/regexp/re_compile.c) */
+int re_num_named(const mrb_regexp_pattern *pat);
+const char *re_named_name(const mrb_regexp_pattern *pat, int i, int *group_out);
+int re_named_group(const mrb_regexp_pattern *pat, const char *name);
 
-typedef struct { const char *source; int caps[64]; int ncap; } sp_MatchData;
+typedef struct { const char *source; int caps[64]; int ncap; const mrb_regexp_pattern *pat; } sp_MatchData;
 
 /* ---- match-register state (per-process; read by the generated TU and
    marked by its GC root hook) ---- */
@@ -60,6 +64,8 @@ void sp_MatchData_scan(void *p);
 sp_MatchData *sp_re_matchdata(mrb_regexp_pattern *pat, const char *str);
 sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos);
 const char *sp_MatchData_aref(sp_MatchData *m, mrb_int i);
+const char *sp_MatchData_aref_name(sp_MatchData *m, const char *name);
+sp_StrArray *sp_MatchData_names(sp_MatchData *m);
 mrb_int sp_MatchData_length(sp_MatchData *m);
 mrb_int sp_md_char_off(sp_MatchData *m, int byteoff);
 mrb_int sp_MatchData_begin(sp_MatchData *m, mrb_int i);
