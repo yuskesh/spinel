@@ -504,12 +504,16 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
-    /* c += 3 used as expression: ({ lv_c += 3; lv_c; }) */
+    /* c += 3 used as expression: ({ <op-assign>; <c>; }). The value-yielding
+       read goes through emit_local_ref so a celled (captured) local derefs its
+       shared cell (*_cell_c) instead of a bare lv_c -- the latter is undeclared
+       inside a block that captured c by cell (e.g. `mutex.synchronize { c += 1 }`
+       in a thread). */
     const char *nm = nt_str(nt, id, "name");
-    const char *en = rename_local(nm);
     buf_puts(b, "({ ");
     emit_op_assign(c, id, b, 0);
-    buf_printf(b, "lv_%s; })", en);
+    emit_local_ref(c, id, nm, b);
+    buf_puts(b, "; })");
     return;
   }
   if (sp_streq(ty, "InstanceVariableWriteNode")) {
@@ -620,7 +624,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
        `if (@x) @x = v`. Falling through to a bare read dropped the init when
        this or-write was the RHS of a poly-receiver setter switch (#1447). */
     else if (ty_is_object(ivt3) || ty_is_array(ivt3) || ty_is_hash(ivt3) ||
-             ivt3 == TY_FIBER || ivt3 == TY_THREAD || ivt3 == TY_QUEUE || ivt3 == TY_PROC || ivt3 == TY_IO ||
+             ivt3 == TY_FIBER || ivt3 == TY_THREAD || ivt3 == TY_QUEUE || ivt3 == TY_MUTEX || ivt3 == TY_CONDVAR || ivt3 == TY_PROC || ivt3 == TY_IO ||
              ivt3 == TY_STRINGIO || ivt3 == TY_STRINGSCANNER ||
              ivt3 == TY_MATCHDATA || ivt3 == TY_EXCEPTION || ivt3 == TY_REGEX) {
       buf_printf(b, "({ if (%s%s) %s = ", is_or ? "!" : "", ref3, ref3);

@@ -81,4 +81,29 @@ void       sp_Queue_close(sp_queue *q);             /* #close */
 mrb_bool   sp_Queue_closed(sp_queue *q);            /* #closed? */
 void       sp_Queue_clear(sp_queue *q);             /* #clear */
 
+/* ---- Mutex (non-recursive lock; owner + wait list) ----
+ * Threads are kept alive by the scheduler registry, so neither struct needs a
+ * GC scan over its owner/waiter pointers. */
+typedef struct sp_mutex {
+  struct sp_thread *owner;     /* NULL = unlocked */
+  struct sp_thread *waiters;   /* threads blocked in #lock */
+} sp_mutex;
+
+sp_mutex  *sp_Mutex_new(void);
+void       sp_Mutex_lock(sp_mutex *m);
+void       sp_Mutex_unlock(sp_mutex *m);
+mrb_bool   sp_Mutex_try_lock(sp_mutex *m);   /* #try_lock: true if acquired */
+mrb_bool   sp_Mutex_locked(sp_mutex *m);     /* #locked? */
+mrb_bool   sp_Mutex_owned(sp_mutex *m);      /* #owned? */
+
+/* ---- ConditionVariable (wait/signal/broadcast over a Mutex) ---- */
+typedef struct sp_condvar {
+  struct sp_thread *waiters;   /* threads blocked in #wait */
+} sp_condvar;
+
+sp_condvar *sp_CondVar_new(void);
+void        sp_CondVar_wait(sp_condvar *cv, sp_mutex *m);  /* release m, park, re-acquire m */
+void        sp_CondVar_signal(sp_condvar *cv);             /* #signal */
+void        sp_CondVar_broadcast(sp_condvar *cv);          /* #broadcast */
+
 #endif /* SP_SCHED_H */

@@ -2709,6 +2709,11 @@ static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
 /* join on a boxed array (poly value holding any array kind) */
 static const char *sp_poly_join(sp_RbVal a, const char *sep) {
   if (a.tag != SP_TAG_OBJ) return sp_poly_to_s(a);
+  /* `.join` on a poly value is Array#join here, but a Thread carried in a poly
+     slot (e.g. `threads.each(&:join)`, where the thread array boxed to poly)
+     means Thread#join: run it to completion. Its result (the thread) is almost
+     always discarded, so yield the empty string for the const char* surface. */
+  if (a.cls_id == SP_BUILTIN_THREAD) { sp_Thread_join((sp_thread *)a.v.p); return sp_str_empty; }
   switch (a.cls_id) {
     case SP_BUILTIN_STR_ARRAY: return sp_StrArray_join((sp_StrArray *)a.v.p, sep);
     case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_join((sp_PolyArray *)a.v.p, sep);

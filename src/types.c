@@ -39,6 +39,8 @@ const char *ty_name(TyKind t) {
     case TY_FIBER:   return "fiber";
     case TY_THREAD:  return "thread";
     case TY_QUEUE:   return "queue";
+    case TY_MUTEX:   return "mutex";
+    case TY_CONDVAR: return "condvar";
     case TY_RANDOM:  return "random";
     case TY_METHOD:  return "method";
     case TY_IO:      return "io";

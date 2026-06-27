@@ -5395,6 +5395,45 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* Mutex instance methods. synchronize is handled by the generic block handler
+     below (it wraps the block in lock/unlock for a TY_MUTEX receiver). */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_MUTEX) {
+    if ((sp_streq(name, "lock") || sp_streq(name, "unlock")) && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_mutex *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Mutex_%s(_t%d); _t%d; })", sp_streq(name, "lock") ? "lock" : "unlock", t, t);
+      return;
+    }
+    if (sp_streq(name, "try_lock") && argc == 0) {
+      buf_puts(b, "sp_Mutex_try_lock("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "locked?") && argc == 0) {
+      buf_puts(b, "sp_Mutex_locked("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if (sp_streq(name, "owned?") && argc == 0) {
+      buf_puts(b, "sp_Mutex_owned("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+  }
+
+  /* ConditionVariable instance methods */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_CONDVAR) {
+    if (sp_streq(name, "wait") && argc >= 1) {
+      /* wait(mutex): release the mutex, park, re-acquire. A timeout arg (argc==2)
+         is accepted but ignored at N=1 (no real clock blocking). */
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_CondVar_wait(_t%d, ", t); emit_expr(c, argv[0], b);
+      buf_printf(b, "); _t%d; })", t);
+      return;
+    }
+    if ((sp_streq(name, "signal") || sp_streq(name, "broadcast")) && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_condvar *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_CondVar_%s(_t%d); _t%d; })", sp_streq(name, "signal") ? "signal" : "broadcast", t, t);
+      return;
+    }
+  }
+
   /* Queue instance methods (a thread-safe FIFO on the scheduler) */
   if (recv >= 0 && comp_ntype(c, recv) == TY_QUEUE) {
     if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "enq")) && argc == 1) {
@@ -7403,9 +7442,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, "sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT)");
         return;
       }
-      /* Mutex/Monitor.new: no-op sentinel (single-threaded; synchronize runs block inline) */
-      if (cn && (sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")))) {
-        buf_puts(b, "sp_box_nil()"); return;
+      if (cn && (sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor"))) {
+        buf_puts(b, "sp_Mutex_new()"); return;
+      }
+      if (cn && sp_streq(cn, "ConditionVariable")) {
+        buf_puts(b, "sp_CondVar_new()"); return;
       }
       if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) {
         if (argc == 0) buf_puts(b, "sp_StringIO_new()");
@@ -11075,7 +11116,16 @@ else {
     TyKind res = comp_ntype(c, id);
     int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
     int rv = ++g_tmp;
+    /* A real Mutex#synchronize takes the lock around the block (Phase 0: no
+       ensure, so an exception inside the block leaves the lock held -- rare and
+       tracked). A Monitor/other receiver keeps the inline no-op behaviour. */
+    int is_mx = recv >= 0 && comp_ntype(c, recv) == TY_MUTEX, mtmp = 0;
     buf_puts(b, "({ ");
+    if (is_mx) {
+      mtmp = ++g_tmp;
+      buf_printf(b, "sp_mutex *_t%d = ", mtmp); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_Mutex_lock(_t%d); ", mtmp);
+    }
     for (int k = 0; k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
     if (bbn > 0) {
       TyKind lty = comp_ntype(c, bbb[bbn-1]);
@@ -11098,6 +11148,7 @@ else {
         }
       }
     }
+    if (is_mx) buf_printf(b, "sp_Mutex_unlock(_t%d); ", mtmp);
     if (scalar) buf_printf(b, "_t%d; })", rv);
     else buf_puts(b, "0; })");
     return;

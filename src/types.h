@@ -59,6 +59,8 @@ typedef enum {
   TY_FIBER,        /* a cooperative Fiber (sp_Fiber *) */
   TY_THREAD,       /* a green Thread (sp_thread *) */
   TY_QUEUE,        /* a thread-safe Queue (sp_queue *) */
+  TY_MUTEX,        /* a Mutex (sp_mutex *) */
+  TY_CONDVAR,      /* a ConditionVariable (sp_condvar *) */
   TY_RANDOM,       /* a per-instance PRNG (sp_Random *) */
   TY_METHOD,       /* a bound Method object (sp_BoundMethod *) */
   TY_IO,           /* a File/IO handle (sp_File *) */

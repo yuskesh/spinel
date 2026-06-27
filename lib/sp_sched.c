@@ -212,15 +212,15 @@ static void sp_sched_block(sp_thread **waitlist) {
 }
 
 /* Move one thread off `*waitlist` back onto the run queue (or mark the main
-   thread runnable so its pump returns). Returns 1 if a thread was woken. */
-static int sp_sched_wake_one(sp_thread **waitlist) {
+   thread runnable so its pump returns). Returns the woken thread, or NULL. */
+static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   sp_thread *t = *waitlist;
-  if (!t) return 0;
+  if (!t) return NULL;
   *waitlist = t->wait_next;
   t->wait_next = NULL;
   if (t == &g_main_thread) t->state = SP_TH_RUNNABLE;   /* the pump observes this */
   else rq_push(t);
-  return 1;
+  return t;
 }
 
 /* ---- Queue ---- */
@@ -281,3 +281,57 @@ void sp_Queue_close(sp_queue *q) {
   /* wake every blocked popper so they observe the close and return nil */
   while (sp_sched_wake_one(&q->pop_waiters)) { }
 }
+
+/* ---- Mutex ----
+ * A non-recursive lock. At N=1 there is no preemption, so a Mutex only matters
+ * across a yield: a green thread holding the lock blocks (Queue/CondVar/IO) and
+ * another tries to acquire it. unlock hands ownership directly to the next
+ * waiter, so the wakeup is a clean transfer (no re-contention). */
+
+sp_mutex *sp_Mutex_new(void) {
+  sp_mutex *m = (sp_mutex *)sp_gc_alloc(sizeof(sp_mutex), NULL, NULL);
+  m->owner = NULL;
+  m->waiters = NULL;
+  return m;
+}
+
+void sp_Mutex_lock(sp_mutex *m) {
+  sp_thread *self = g_current;
+  if (m->owner == self) sp_raise_cls("ThreadError", "deadlock; recursive locking");
+  if (m->owner == NULL) { m->owner = self; return; }
+  /* unlock hands ownership to us (sets m->owner) before waking us. */
+  sp_sched_block(&m->waiters);
+}
+
+void sp_Mutex_unlock(sp_mutex *m) {
+  if (m->owner != g_current)
+    sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
+  m->owner = sp_sched_wake_one(&m->waiters);   /* hand off, or NULL => unlocked */
+}
+
+mrb_bool sp_Mutex_try_lock(sp_mutex *m) {
+  if (m->owner != NULL) return 0;
+  m->owner = g_current;
+  return 1;
+}
+mrb_bool sp_Mutex_locked(sp_mutex *m) { return m->owner != NULL; }
+mrb_bool sp_Mutex_owned(sp_mutex *m)  { return m->owner == g_current; }
+
+/* ---- ConditionVariable ----
+ * #wait releases the mutex, parks on the CV, and re-acquires the mutex on
+ * wake; #signal wakes one waiter, #broadcast wakes all. */
+
+sp_condvar *sp_CondVar_new(void) {
+  sp_condvar *cv = (sp_condvar *)sp_gc_alloc(sizeof(sp_condvar), NULL, NULL);
+  cv->waiters = NULL;
+  return cv;
+}
+
+void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
+  sp_Mutex_unlock(m);
+  sp_sched_block(&cv->waiters);
+  sp_Mutex_lock(m);   /* re-acquire (may block again on the mutex) */
+}
+
+void sp_CondVar_signal(sp_condvar *cv)    { sp_sched_wake_one(&cv->waiters); }
+void sp_CondVar_broadcast(sp_condvar *cv) { while (sp_sched_wake_one(&cv->waiters)) { } }

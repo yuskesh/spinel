@@ -191,6 +191,8 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_EXCEPTION     (-28)
 #define SP_BUILTIN_THREAD        (-29)
 #define SP_BUILTIN_QUEUE         (-30)
+#define SP_BUILTIN_MUTEX         (-31)
+#define SP_BUILTIN_CONDVAR       (-32)
 
 static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
 static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }

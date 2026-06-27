@@ -882,8 +882,10 @@ else {
       /* Thread.new { block }: an eager green thread (sp_thread) on the scheduler. */
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_THREAD;
       if (cn && sp_streq(cn, "Queue")) return TY_QUEUE;
+      if (cn && (sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor"))) return TY_MUTEX;
+      if (cn && sp_streq(cn, "ConditionVariable")) return TY_CONDVAR;
       if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
-      if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
+      if (cn && (sp_streq(cn, "Thread") ||
                  sp_streq(cn, "IO") || sp_streq(cn, "File") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
@@ -1076,9 +1078,9 @@ else {
           nt_ref(nt, id, "block") >= 0)
         return TY_THREAD;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Queue")) return TY_QUEUE;
+      if (cn2 && sp_streq(name, "new") && (sp_streq(cn2, "Mutex") || sp_streq(cn2, "Monitor"))) return TY_MUTEX;
+      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "ConditionVariable")) return TY_CONDVAR;
       if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Random")) return TY_RANDOM;
-      if (cn2 && sp_streq(name, "new") && sp_streq(cn2, "Mutex"))
-        return TY_POLY;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "current")) return TY_THREAD;
       if (cn2 && sp_streq(cn2, "Thread") && sp_streq(name, "pass")) return TY_NIL;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
@@ -1112,6 +1114,18 @@ else {
         sp_streq(name, "close") || sp_streq(name, "clear")) return TY_QUEUE;   /* return self */
     if (sp_streq(name, "size") || sp_streq(name, "length")) return TY_INT;
     if (sp_streq(name, "empty?") || sp_streq(name, "closed?")) return TY_BOOL;
+  }
+
+  /* TY_MUTEX instance methods */
+  if (recv >= 0 && rt == TY_MUTEX) {
+    if (sp_streq(name, "lock") || sp_streq(name, "unlock")) return TY_MUTEX;   /* return self */
+    if (sp_streq(name, "try_lock") || sp_streq(name, "locked?") || sp_streq(name, "owned?")) return TY_BOOL;
+    if (sp_streq(name, "synchronize")) return TY_POLY;   /* the block's result */
+  }
+
+  /* TY_CONDVAR instance methods */
+  if (recv >= 0 && rt == TY_CONDVAR) {
+    if (sp_streq(name, "wait") || sp_streq(name, "signal") || sp_streq(name, "broadcast")) return TY_CONDVAR;
   }
 
   /* TY_ENUMERATOR instance methods */
