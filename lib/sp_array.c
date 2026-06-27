@@ -198,6 +198,10 @@ sp_StrArray*sp_StrArray_intersect(sp_StrArray*a,sp_StrArray*b){sp_StrArray*r=sp_
 mrb_bool sp_StrArray_intersect_p(sp_StrArray*a,sp_StrArray*b){if(!a||!b)return 0;for(mrb_int i=0;i<a->len;i++)if(sp_StrArray_include(b,a->data[i]))return 1;return 0;}
 sp_StrArray*sp_StrArray_union(sp_StrArray*a,sp_StrArray*b){sp_StrArray*r=sp_StrArray_new();if(a)for(mrb_int i=0;i<a->len;i++){const char*v=a->data[i];if(!sp_StrArray_include(r,v))sp_StrArray_push(r,v);}if(b){for(mrb_int i=0;i<b->len;i++){const char*v=b->data[i];if(!sp_StrArray_include(r,v))sp_StrArray_push(r,v);}}return r;}
 sp_StrArray*sp_StrArray_difference(sp_StrArray*a,sp_StrArray*b){sp_StrArray*r=sp_StrArray_new();for(mrb_int i=0;i<a->len;i++){const char*v=a->data[i];if(!sp_StrArray_include(b,v))sp_StrArray_push(r,v);}return r;}
+/* min/max by String#<=> (byte comparison via strcmp); NULL (nil) when empty.
+   nil (NULL) elements are skipped so a holey/sparse array can't crash strcmp. */
+const char*sp_StrArray_min(sp_StrArray*a){if(!a||a->len<=0)return NULL;const char*m=NULL;for(mrb_int i=0;i<a->len;i++){const char*x=a->data[i];if(x&&(!m||strcmp(x,m)<0))m=x;}return m;}
+const char*sp_StrArray_max(sp_StrArray*a){if(!a||a->len<=0)return NULL;const char*m=NULL;for(mrb_int i=0;i<a->len;i++){const char*x=a->data[i];if(x&&(!m||strcmp(x,m)>0))m=x;}return m;}
 mrb_int sp_StrArray_index(sp_StrArray*a,const char*v){for(mrb_int i=0;i<a->len;i++)if(strcmp(a->data[i],v)==0)return i;return -1;}
 mrb_int sp_StrArray_rindex(sp_StrArray*a,const char*v){for(mrb_int i=a->len-1;i>=0;i--)if(strcmp(a->data[i],v)==0)return i;return -1;}
 sp_StrArray*sp_StrArray_compact(sp_StrArray*a){sp_StrArray*r=sp_StrArray_new();for(mrb_int i=0;i<a->len;i++)if(a->data[i]!=NULL)sp_StrArray_push(r,a->data[i]);return r;}

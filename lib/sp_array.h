@@ -62,6 +62,8 @@ sp_IntArray *sp_IntArray_shuffle(sp_IntArray *a);
 mrb_int sp_IntArray_sample(sp_IntArray *a);
 mrb_int sp_IntArray_min(sp_IntArray *a);
 mrb_int sp_IntArray_max(sp_IntArray *a);
+const char *sp_StrArray_min(sp_StrArray *a);
+const char *sp_StrArray_max(sp_StrArray *a);
 mrb_int sp_IntArray_sum(sp_IntArray *a, mrb_int init);
 mrb_bool sp_IntArray_include(sp_IntArray *a, mrb_int v);
 mrb_int sp_IntArray_index(sp_IntArray *a, mrb_int v);

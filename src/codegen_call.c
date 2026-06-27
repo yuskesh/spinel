@@ -1260,11 +1260,11 @@ else {
         buf_printf(b, "sp_%sArray_pop(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 && rt != TY_STR_ARRAY) {
+      if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) {
         buf_printf(b, "sp_%sArray_%s(", k, name); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "minmax") && argc == 0 && rt != TY_STR_ARRAY && block < 0) {
+      if (sp_streq(name, "minmax") && argc == 0 && block < 0) {
         int t = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); sp_%sArray_push(_t%d, sp_%sArray_min(_t%d));"
