@@ -12503,6 +12503,12 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
     else has_redo = 0;
   }
   if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
+  /* Safepoint poll at the loop back-edge: a threaded program's worker checks
+     here whether a GC stop-the-world wants it to park, so a long-running loop
+     cannot starve the collector. Emitted only when the program uses threads
+     (sp_safepoint_flag is a threaded-runtime symbol); a non-threaded program is
+     byte-identical. At N=1 the flag is never set -- a predicted-not-taken load. */
+  if (g_uses_threads) { emit_indent(b, indent); buf_puts(b, "if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();\n"); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
 }

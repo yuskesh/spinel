@@ -18,6 +18,17 @@ void  sp_exc_ctx_save(void *p);
 void  sp_exc_ctx_load(void *p);
 void  sp_exc_ctx_free(void *p);
 
+/* Safepoint (design 5.1). Set while a collector wants the world stopped; polled
+   at loop back-edges (codegen) and at blocking points. Defined unconditionally
+   (see sp_sched.h) so a threaded program's poll links against either archive;
+   the flag is only ever set in the threaded build. sp_safepoint() parks the
+   worker at the GC barrier -- a no-op stub until the workers + stop-the-world
+   protocol land. At N=1 the flag is never set, so neither path runs. */
+volatile int sp_safepoint_flag = 0;
+void sp_safepoint(void) {
+  /* STW barrier park: implemented with the worker pool + stop-the-world. */
+}
+
 /* ---- scheduler state (single OS worker, so plain globals) ---- */
 static sp_Fiber  *g_root_fiber = NULL;   /* the main thread's context, captured at init */
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */

@@ -79,6 +79,19 @@ mrb_bool   sp_Thread_tls_key(sp_thread *t, sp_sym k);             /* Thread#key?
    main() so a fire-and-forget Thread still runs its body. */
 void       sp_sched_drain(void);
 
+/* Safepoint (design 5.1). codegen emits, at loop back-edges of a threaded
+   program, `if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();` so a worker in
+   a long-running loop periodically checks whether a stop-the-world (GC) wants it
+   to park. The flag is set only in the threaded runtime while a collector has
+   requested STW; at N=1 it is never set, so the poll is a single
+   predicted-not-taken load. Declared unconditionally (not under SP_THREADS) so
+   the emitted poll also compiles when a threaded program's generated C is built
+   against the single-threaded archive (e.g. the test harness's manual cc path),
+   where it is an inert no-op. sp_safepoint() parks the worker at the GC barrier
+   (the real body lands with the workers + STW). */
+extern volatile int sp_safepoint_flag;
+void sp_safepoint(void);
+
 /* ---- Queue (thread-safe FIFO) ----
  * A producer/consumer hand-off. #pop on an empty queue blocks the calling green
  * thread (parking it, yielding to the scheduler) until a #push wakes it; this is
