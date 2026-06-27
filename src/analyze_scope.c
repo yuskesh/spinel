@@ -2301,9 +2301,32 @@ int infer_cvar_types(Compiler *c) {
   return changed;
 }
 
+/* def_node -> scopes sharing it (transplanted module copies), cached per scope
+   count. infer_ivar_types propagates each ivar write to copies of its method in
+   other classes; without this it rescanned every scope per ivar write
+   (O(ivar_writes * scopes)). Built once per fixpoint run (scope shape is fixed
+   there); dn_head is indexed by node id, dn_next chains scopes. */
+static int dn_nscopes = -1, dn_count = -1;
+static int *dn_head = NULL, *dn_next = NULL;
+static void dn_build(Compiler *c) {
+  int nc = c->nt->count, ns = c->nscopes;
+  free(dn_head); free(dn_next);
+  dn_head = malloc((size_t)(nc > 0 ? nc : 1) * sizeof(int));
+  dn_next = malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
+  dn_count = nc; dn_nscopes = ns;
+  if (!dn_head || !dn_next) { dn_nscopes = -1; return; }
+  for (int i = 0; i < nc; i++) dn_head[i] = -1;
+  for (int s = 0; s < ns; s++) {
+    int d = c->scopes[s].def_node;
+    if (d >= 0 && d < nc) { dn_next[s] = dn_head[d]; dn_head[d] = s; }
+    else dn_next[s] = -1;
+  }
+}
+
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  if (dn_nscopes != c->nscopes || dn_count != nt->count) dn_build(c);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
@@ -2355,7 +2378,9 @@ int infer_ivar_types(Compiler *c) {
       if (s->class_id >= 0 && s->def_node >= 0) {
         int sdef = s->def_node;
         int orig_cid = s->class_id;
-        for (int si = 0; si < c->nscopes; si++) {
+        int use_idx = dn_head && dn_nscopes == c->nscopes && sdef < dn_count;
+        int si = use_idx ? dn_head[sdef] : 0;
+        for (; use_idx ? (si >= 0) : (si < c->nscopes); si = use_idx ? dn_next[si] : si + 1) {
           Scope *ts = &c->scopes[si];
           if (ts->def_node != sdef || ts->class_id == orig_cid || ts->class_id < 0) continue;
           ClassInfo *tc = &c->classes[ts->class_id];
