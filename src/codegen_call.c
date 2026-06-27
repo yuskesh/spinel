@@ -2926,7 +2926,7 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "next_float")) buf_printf(b, "nextafter(%s, INFINITY)", r);
       else if (sp_streq(name, "prev_float")) buf_printf(b, "nextafter(%s, -INFINITY)", r);
       else if (sp_streq(name, "magnitude")) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
-      else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       /* Float#clamp with float bounds always yields a float (the returned bound
          is itself a float), so emit only when both bounds are float-typed; the
          mixed-bound case (int bound returned as Integer) is poly and left alone.
@@ -8516,6 +8516,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (eff_res == TY_FLOAT && sp_streq(name, "**") && rt != TY_TIME) {
       TyKind at0 = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       buf_puts(b, "pow(");
+      if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+      buf_puts(b, ", ");
+      if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return;
+    }
+    if (eff_res == TY_FLOAT && sp_streq(name, "%") && rt != TY_TIME && argc == 1) {
+      TyKind at0 = comp_ntype(c, argv[0]);
+      buf_puts(b, "sp_fmod(");
       if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);
       buf_puts(b, ", ");
