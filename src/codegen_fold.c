@@ -3657,11 +3657,36 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
         splat_at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
         if (ty_is_array(splat_at) || splat_at == TY_POLY_ARRAY) {
           splat_tmp = ++g_tmp;
+          /* Evaluate the splat operand into a side buffer: a literal array or a
+             call result emits its own setup (a fresh `_tN = ..._new()` decl)
+             into g_pre, which must land before this temp's declaration line --
+             a bare local read has no setup, which is why those already worked. */
+          Buf sb; memset(&sb, 0, sizeof sb);
+          emit_expr(c, inner, &sb);
           emit_indent(g_pre, g_indent);
           emit_ctype(c, splat_at, g_pre);
-          buf_printf(g_pre, " _t%d = ", splat_tmp);
-          emit_expr(c, inner, g_pre);
-          buf_puts(g_pre, ";\n");
+          buf_printf(g_pre, " _t%d = %s;\n", splat_tmp, sb.p ? sb.p : "");
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp);
+          free(sb.p);
+          /* Arity check: splatting into a fixed-arity (no-rest) method must
+             supply a valid element count, else CRuby raises ArgumentError.
+             Only emit when the splat is the last positional group, so the
+             total given count is `splat_idx + array length`. */
+          if (m->rest_idx < 0 && k == pos_argc - 1) {
+            char expbuf[48];
+            if (m->nrequired == m->nparams)
+              snprintf(expbuf, sizeof expbuf, "expected %d", m->nparams);
+            else
+              snprintf(expbuf, sizeof expbuf, "expected %d..%d", m->nrequired, m->nparams);
+            int gv = ++g_tmp;
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "mrb_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv, splat_idx, splat_tmp, splat_tmp);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre,
+                       "if (_t%d < %d || _t%d > %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, %s)\", (long long)_t%d));\n",
+                       gv, m->nrequired, gv, m->nparams, expbuf, gv);
+          }
         }
       }
       break;
@@ -3737,15 +3762,30 @@ else if (m->rest_idx >= 0 && m->npost_rest > 0 && i > m->rest_idx) {
     }
 else if (splat_tmp >= 0 && i >= splat_idx) {
       /* this param comes from the splatted array at offset (i - splat_idx) */
-      LocalVar *sp = m ? scope_local(m, m->pnames[i]) : NULL;
+      int off = i - splat_idx;
+      LocalVar *sp = (m && m->pnames[i]) ? scope_local(m, m->pnames[i]) : NULL;
       TyKind set = ty_array_elem(splat_at);
+      Buf eb; memset(&eb, 0, sizeof eb);
       if (sp && sp->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
         /* a scalar splat element into a poly-widened param: box it */
-        Buf eb; memset(&eb, 0, sizeof eb);
-        emit_array_elem_at(splat_at, splat_tmp, i - splat_idx, &eb);
-        emit_boxed_text(c, set, eb.p ? eb.p : "0", out); free(eb.p);
+        Buf raw; memset(&raw, 0, sizeof raw);
+        emit_array_elem_at(splat_at, splat_tmp, off, &raw);
+        emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
       }
-      else emit_array_elem_at(splat_at, splat_tmp, i - splat_idx, out);
+      else emit_array_elem_at(splat_at, splat_tmp, off, &eb);
+      /* An optional param may fall past the end of a (runtime-sized) splat
+         array; the arity check guarantees the required params are present, so
+         guard only the optionals and fall back to their default. */
+      if (i >= m->nrequired) {
+        Buf db; memset(&db, 0, sizeof db);
+        emit_arg_or_default(c, m, i, -1, &db);
+        TyKind pt = sp ? sp->type : TY_INT;
+        buf_printf(out, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, splat_tmp, splat_tmp,
+                   eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
+        free(db.p);
+      }
+      else buf_puts(out, eb.p ? eb.p : "");
+      free(eb.p);
     }
 else {
       /* Check if this param has a keyword match (lookup by param name in kwh). */
