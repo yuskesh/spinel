@@ -189,6 +189,7 @@ static inline const char*sp_float_to_s(mrb_float f){
    misdispatch through the Exception inspect path. Give it a distinct id below
    the hash block so the two no longer collide. */
 #define SP_BUILTIN_EXCEPTION     (-28)
+#define SP_BUILTIN_THREAD        (-29)
 
 static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
 static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }

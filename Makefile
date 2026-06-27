@@ -274,6 +274,10 @@ build/sp_fiber.o: lib/sp_fiber.c lib/sp_fiber.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_fiber.c -o build/sp_fiber.o
 
+build/sp_sched.o: lib/sp_sched.c lib/sp_sched.h lib/sp_fiber.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+	@mkdir -p build
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_sched.c -o build/sp_sched.o
+
 build/sp_net.o: lib/sp_net.c lib/sp_net.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_net.c -o build/sp_net.o
@@ -284,7 +288,7 @@ build/sp_io.o: lib/sp_io.c lib/sp_io.h lib/sp_gc.h lib/sp_types.h
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o build/sp_net.o build/sp_system.o build/sp_gc.o build/sp_alloc.o build/sp_json.o build/sp_marshal.o build/sp_format.o build/sp_stringio.o build/sp_string.o build/sp_inspect.o build/sp_array.o build/sp_str.o build/sp_re.o build/sp_fiber.o build/sp_io.o
+$(SP_RT_LIB): $(RE_OBJ) build/sp_bigint.o build/sp_crypto.o build/sp_pack.o build/sp_strscan.o build/sp_time.o build/sp_core.o build/sp_net.o build/sp_system.o build/sp_gc.o build/sp_alloc.o build/sp_json.o build/sp_marshal.o build/sp_format.o build/sp_stringio.o build/sp_string.o build/sp_inspect.o build/sp_array.o build/sp_str.o build/sp_re.o build/sp_fiber.o build/sp_sched.o build/sp_io.o
 	ar rcs $@ $^
 
 regexp: $(SP_RT_LIB)

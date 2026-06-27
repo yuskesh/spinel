@@ -224,9 +224,19 @@ sp_Fiber*sp_Fiber_kill(sp_Fiber*f){
   sp_Fiber_resume(f,sp_box_nil());     /* runs ensures; the trampoline terminates it */
   return f;
 }
-sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;if(f->state==0&&f!=&sp_fiber_root){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}else{/* the root fiber is the implicit running coroutine: it has no mmap'd
+/* Core of #transfer: switch to f and do all the save/restore, but leave f's
+   unhandled termination exception PENDING in f->raised for the caller to
+   consume. sp_Fiber_transfer re-raises it (Fiber semantics); the thread
+   scheduler captures it instead (sp_Fiber_transfer_catch). */
+static sp_RbVal sp_Fiber_transfer_core(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;if(f->state==0&&f!=&sp_fiber_root){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}else{/* the root fiber is the implicit running coroutine: it has no mmap'd
    stack/body, so it must never be ctx_make'd. Its context was already
    saved into root.ctx by the first transfer away from it, so transferring
-   back just swaps to that saved context. */f->state=1;sp_ctx_swap(&prev->ctx,&f->ctx);}sp_exc_ctx_save(f->exc_ctx);sp_exc_ctx_load(prev->exc_ctx);sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return prev->resumed_value;}
+   back just swaps to that saved context. */f->state=1;sp_ctx_swap(&prev->ctx,&f->ctx);}sp_exc_ctx_save(f->exc_ctx);sp_exc_ctx_load(prev->exc_ctx);sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return prev->resumed_value;}
+sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){sp_RbVal r=sp_Fiber_transfer_core(f,val);if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return r;}
+/* Thread scheduler transfer: on f's unhandled termination exception, hand the
+   (cls,msg,obj) back through *out_* and set *out_raised, rather than re-raising
+   in the caller (the scheduler stores it on the green thread for #join/#value).
+   A non-terminating transfer (f yielded back) leaves *out_raised 0. */
+sp_RbVal sp_Fiber_transfer_catch(sp_Fiber*f,sp_RbVal val,int*out_raised,const char**out_cls,const char**out_msg,void**out_obj){sp_RbVal r=sp_Fiber_transfer_core(f,val);*out_raised=f->raised;if(f->raised){f->raised=0;*out_cls=f->raised_cls;*out_msg=f->raised_msg;*out_obj=f->raised_obj;f->raised_obj=NULL;}return r;}
 
 void sp_mark_fiber_root_storage(void){if(sp_fiber_root.storage)sp_gc_mark(sp_fiber_root.storage);}
