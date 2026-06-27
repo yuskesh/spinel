@@ -1938,6 +1938,7 @@ static void narrow_poly_int_locals(Compiler *c) {
 }
 
 void analyze_program(Compiler *c) {
+  comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
@@ -2171,6 +2172,12 @@ void analyze_program(Compiler *c) {
     const char *seed = getenv("SPINEL_RBS_SEED");
     if (seed && *seed) apply_rbs_seeds(c, seed);
   }
+
+  /* Scope shape (count, class_id, name, is_cmethod) is fixed from here on, so
+     the method-lookup index can be used; it is rebuilt if the scope count ever
+     grows. This is where comp_method_in_class / comp_cmethod_in_class are
+     hottest (called per node, every fixpoint iteration). */
+  comp_scope_index_set_frozen(1);
 
   for (int iter = 0; iter < 128; iter++) {
     int ch = 0;

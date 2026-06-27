@@ -238,6 +238,9 @@ int        comp_cvar_index(ClassInfo *ci, const char *name);  /* class var; -1 i
 int        comp_cvar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 /* Find the instance-method scope index for class_id + method name, or -1. */
 int        comp_method_in_class(Compiler *c, int class_id, const char *name);
+/* Freeze/unfreeze the (class_id,name,is_cmethod)->scope lookup index. Frozen
+   only while scope shape is fixed (the inference fixpoint); see compiler.c. */
+void       comp_scope_index_set_frozen(int frozen);
 /* Find the class (singleton) method scope for class_id + name, or -1 (no chain). */
 int        comp_cmethod_in_class(Compiler *c, int class_id, const char *name);
 /* Find the class (singleton) method scope, walking the superclass chain. */

@@ -199,21 +199,69 @@ int comp_cvar_intern(ClassInfo *ci, const char *name) {
   return ci->ncvars++;
 }
 
-int comp_method_in_class(Compiler *c, int class_id, const char *name) {
+/* (class_id, name, is_cmethod) -> scope index, cached per scope count. Both
+   lookups below otherwise scan all scopes in reverse, and they are called many
+   times per node during the inference fixpoint (O(lookups * scopes)). The chain
+   is head-inserted in ascending scope order, so it is in descending order and
+   the first matching entry is the highest scope index -- the same "later
+   definition wins" semantics as the reverse linear scan. Rebuilt when the scope
+   count changes (no scopes are added during the fixpoint). */
+static unsigned sm_hash(int class_id, const char *name, int is_cm) {
+  unsigned h = 2166136261u;
+  for (const char *p = name; *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+  h ^= (unsigned)class_id * 2654435761u;
+  h ^= (unsigned)(is_cm ? 0x9e3779b9u : 0);
+  return h;
+}
+static int sm_nscopes = -1, sm_buckets = 0, sm_frozen = 0;
+static int *sm_next = NULL, *sm_head = NULL;
+/* The index is only safe once scope shape (count + each scope's class_id/name/
+   is_cmethod) stops changing: walk_scope and the register_* / prepend passes
+   create and *rename* scopes, and a rename leaves the count unchanged, so a
+   count-keyed cache would go stale. analyze_program freezes the index just
+   before the inference fixpoint (where lookups are hottest and scope shape is
+   fixed) and unfreezes at entry. While unfrozen, fall back to the linear scan. */
+void comp_scope_index_set_frozen(int f) { sm_frozen = f; sm_nscopes = -1; }
+static void sm_build(Compiler *c) {
+  int ns = c->nscopes;
+  free(sm_next); free(sm_head);
+  sm_buckets = ns > 0 ? ns : 1;
+  sm_next = malloc((size_t)(ns > 0 ? ns : 1) * sizeof(int));
+  sm_head = malloc((size_t)sm_buckets * sizeof(int));
+  sm_nscopes = ns;
+  if (!sm_next || !sm_head) { sm_buckets = 0; return; }
+  for (int i = 0; i < sm_buckets; i++) sm_head[i] = -1;
+  for (int s = 0; s < ns; s++) {
+    if (c->scopes[s].class_id < 0 || !c->scopes[s].name) continue;
+    unsigned b = sm_hash(c->scopes[s].class_id, c->scopes[s].name, c->scopes[s].is_cmethod) % (unsigned)sm_buckets;
+    sm_next[s] = sm_head[b]; sm_head[b] = s;
+  }
+}
+static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
   if (!name) return -1;
-  /* iterate in reverse so a reopened class's later definition wins */
-  for (int s = c->nscopes - 1; s >= 0; s--)
-    if (c->scopes[s].class_id == class_id && !c->scopes[s].is_cmethod &&
+  if (!sm_frozen) {
+    /* scope shape may still change: scan in reverse so a later (reopened /
+       transplanted) definition wins, matching the frozen index's ordering. */
+    for (int s = c->nscopes - 1; s >= 0; s--)
+      if (c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
+          c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+    return -1;
+  }
+  if (sm_nscopes != c->nscopes) sm_build(c);
+  if (!sm_buckets) return -1;
+  unsigned b = sm_hash(class_id, name, is_cm) % (unsigned)sm_buckets;
+  for (int s = sm_head[b]; s >= 0; s = sm_next[s])
+    if (c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
         c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
   return -1;
 }
 
+int comp_method_in_class(Compiler *c, int class_id, const char *name) {
+  return sm_lookup(c, class_id, name, 0);
+}
+
 int comp_cmethod_in_class(Compiler *c, int class_id, const char *name) {
-  if (!name) return -1;
-  for (int s = c->nscopes - 1; s >= 0; s--)
-    if (c->scopes[s].class_id == class_id && c->scopes[s].is_cmethod &&
-        c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
-  return -1;
+  return sm_lookup(c, class_id, name, 1);
 }
 int comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   name = comp_resolve_alias(c, class_id, name);
@@ -275,22 +323,50 @@ int comp_trampoline_kind(Compiler *c, int class_id, const char *name, int *def_c
 /* Collect the distinct constant class indices assigned to `Class.base = Const`
    across the whole program (deduped, in first-seen order). Returns the count, or
    -1 if any write's RHS is not a constant-resolvable class. */
+/* Index of constant-setter CallNodes (`name` ends in '=', constant receiver),
+   cached per node table. comp_sg_const_candidates is called once per singleton
+   accessor read during the inference fixpoint; scanning every node each time
+   made it O(reads * nodes * iterations). The structural shape indexed here is
+   stable across the pass; per-call filters (base, receiver class, arg) still
+   run fresh. */
+static const NodeTable *sgc_nt = NULL;
+static int *sgc_ids = NULL;
+static int sgc_n = 0, sgc_ntc = -1;
 int comp_sg_const_candidates(Compiler *c, int class_id, const char *base, int *out, int max) {
   const NodeTable *nt = c->nt;
   const char *cls_name = c->classes[class_id].name;
   size_t blen = strlen(base);
   int count = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CallNode")) continue;
+  if (sgc_nt != nt || sgc_ntc != nt->count) {
+    free(sgc_ids);
+    sgc_ids = malloc((size_t)nt->count * sizeof(int));
+    sgc_n = 0;
+    if (sgc_ids) {
+      for (int id = 0; id < nt->count; id++) {
+        const char *ty = nt_type(nt, id);
+        if (!ty || !sp_streq(ty, "CallNode")) continue;
+        const char *nm = nt_str(nt, id, "name");
+        if (!nm) continue;
+        size_t nl = strlen(nm);
+        if (nl == 0 || nm[nl - 1] != '=') continue;
+        int recv = nt_ref(nt, id, "receiver");
+        if (recv < 0) continue;
+        const char *rty = nt_type(nt, recv);
+        if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+          sgc_ids[sgc_n++] = id;
+      }
+    }
+    sgc_nt = nt;
+    sgc_ntc = nt->count;
+  }
+  for (int ii = 0; ii < sgc_n; ii++) {
+    int id = sgc_ids[ii];
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     size_t nl = strlen(nm);
     if (nl != blen + 1 || nm[nl - 1] != '=' || strncmp(nm, base, blen)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
-    const char *rty = nt_type(nt, recv);
-    if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
     const char *rn = nt_str(nt, recv, "name");
     if (!rn || !sp_streq(rn, cls_name)) continue;
     int args = nt_ref(nt, id, "arguments");

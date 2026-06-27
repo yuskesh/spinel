@@ -10,6 +10,38 @@
    fixpoint iterations, which keeps an early push pass from corrupting the slot
    to an array before the numeric assignment has been folded in (after which the
    array would unify with the int writes to poly and break every later shift). */
+/* Name-keyed index of ivar/local write nodes, cached per node table. Several
+   inference helpers look up "writes to the same name as this receiver"; during
+   the fixpoint that runs many times per node, so a full rescan each call is
+   O(recvs * nodes * iterations). The index is built once and reused across all
+   fixpoint iterations (rebuilt if the table changes). */
+static unsigned wrn_hash(const char *s) {
+  unsigned h = 2166136261u;
+  for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
+  return h;
+}
+static const NodeTable *wrn_nt = NULL;
+static int wrn_ntc = -1, wrn_buckets = 0;
+static int *wrn_next = NULL, *wrn_head = NULL;
+static void wrn_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  free(wrn_next); free(wrn_head);
+  wrn_buckets = n > 0 ? n : 1;
+  wrn_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+  wrn_head = malloc((size_t)wrn_buckets * sizeof(int));
+  wrn_nt = nt; wrn_ntc = n;
+  if (!wrn_next || !wrn_head) { wrn_buckets = 0; return; }
+  for (int i = 0; i < wrn_buckets; i++) wrn_head[i] = -1;
+  for (int id = 0; id < n; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || (!sp_streq(ty, "InstanceVariableWriteNode") && !sp_streq(ty, "LocalVariableWriteNode"))) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    unsigned b = wrn_hash(nm) % (unsigned)wrn_buckets;
+    wrn_next[id] = wrn_head[b]; wrn_head[b] = id;
+  }
+}
 static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
@@ -21,7 +53,10 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   if (!rnm) return 0;
   Scope *rscope = is_local ? comp_scope_of(c, recv) : NULL;
   const char *wkind = is_ivar ? "InstanceVariableWriteNode" : "LocalVariableWriteNode";
-  for (int id = 0; id < nt->count; id++) {
+  if (wrn_nt != nt || wrn_ntc != nt->count) wrn_build(c);
+  if (!wrn_buckets) return 0;
+  unsigned b = wrn_hash(rnm) % (unsigned)wrn_buckets;
+  for (int id = wrn_head[b]; id >= 0; id = wrn_next[id]) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, wkind)) continue;
     const char *wnm = nt_str(nt, id, "name");
