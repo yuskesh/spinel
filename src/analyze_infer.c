@@ -2460,7 +2460,16 @@ else {
     if (sp_streq(name, "fdiv") && argc == 1) return TY_FLOAT;
     if (sp_streq(name, "[]") && (argc == 1 || argc == 2)) return TY_INT;  /* bit access / bit-range field */
     if (sp_streq(name, "div") && argc == 1) return TY_INT;  /* floor division */
-    if (sp_streq(name, "gcd") || sp_streq(name, "lcm") || sp_streq(name, "clamp")) return TY_INT;
+    if (sp_streq(name, "gcd") || sp_streq(name, "lcm")) return TY_INT;
+    /* clamp keeps the applied operand's class: a Float bound can be returned, so
+       the mixed int-receiver/float-bound form is poly; pure-int stays Integer. */
+    if (sp_streq(name, "clamp")) {
+      if (argc == 2) {
+        TyKind b0 = infer_type(c, argv[0]), b1 = infer_type(c, argv[1]);
+        if (b0 == TY_FLOAT || b1 == TY_FLOAT || b0 == TY_POLY || b1 == TY_POLY) return TY_POLY;
+      }
+      return TY_INT;
+    }
     if (sp_streq(name, "magnitude") && argc == 0) return TY_INT;  /* alias for abs */
     if ((sp_streq(name, "modulo") || sp_streq(name, "remainder")) && argc == 1) return TY_INT;
     if (sp_streq(name, "gcdlcm") && argc == 1) return TY_INT_ARRAY;  /* [gcd, lcm] */

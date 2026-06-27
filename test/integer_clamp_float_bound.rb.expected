@@ -1,0 +1,16 @@
+3.0
+1.0
+5
+3.0
+2
+3.5
+5
+0
+Float
+Integer
+Integer
+ArgumentError: min argument must be less than or equal to max argument
+ArgumentError: comparison of Float with 2.0 failed
+ArgumentError: comparison of Float with NaN failed
+ArgumentError: comparison of Integer with NaN failed
+ArgumentError: comparison of Float with 2 failed

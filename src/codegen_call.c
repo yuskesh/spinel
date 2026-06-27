@@ -2890,6 +2890,14 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_gcd(%s, _t%d));"
                       " sp_IntArray_push(_t%d, sp_lcm(%s, _t%d)); _t%d; })", o, o, r, ta, o, r, ta, o);
       }
+      /* A Float (or runtime-typed poly) bound makes the applied bound or the
+         in-range receiver decide the result class at runtime, so box the
+         operands and return whichever is chosen unchanged via sp_num_clamp. */
+      else if (sp_streq(name, "clamp") && argc == 2 &&
+               (comp_ntype(c, argv[0]) == TY_FLOAT || comp_ntype(c, argv[1]) == TY_FLOAT ||
+                comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY)) {
+        buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "clamp") && argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
         int rn = argv[0]; int tcr = ++g_tmp;
