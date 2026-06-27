@@ -11222,15 +11222,34 @@ else {
     TyKind res = comp_ntype(c, id);
     int scalar = is_scalar_ret(res) && res != TY_VOID && res != TY_NIL && res != TY_UNKNOWN;
     int rv = ++g_tmp;
-    /* A real Mutex#synchronize takes the lock around the block (Phase 0: no
-       ensure, so an exception inside the block leaves the lock held -- rare and
-       tracked). A Monitor/other receiver keeps the inline no-op behaviour. */
-    int is_mx = recv >= 0 && comp_ntype(c, recv) == TY_MUTEX, mtmp = 0;
+    /* A real Mutex#synchronize takes the lock around the block and releases it
+       with ensure semantics: the unlock runs on normal completion, on an
+       exception in the block (then re-raised), and on a non-local unwind passing
+       through it (proc-return / throw, then resumed). A Monitor/other receiver
+       keeps the inline no-op behaviour. (A bare `return` -- a C return out of the
+       inlined body -- is not yet covered; it would need deferred-return plumbing
+       like begin..ensure.) */
+    /* Full ensure semantics for a Mutex receiver: the unlock runs on normal
+       completion, on a `return` out of the block (deferred via the begin..ensure
+       g_ensure_stack mechanism), on an exception (then re-raised), and on a
+       non-local unwind passing through (proc-return / throw, then resumed). The
+       eid names the deferred-return/exception slots that emit_return targets. */
+    int is_mx = recv >= 0 && comp_ntype(c, recv) == TY_MUTEX && g_ensure_depth < MAX_ENSURE_DEPTH;
+    int mtmp = 0, eid = 0, has_retval = 0;
     buf_puts(b, "({ ");
+    /* result temp is declared before the setjmp so it survives the block scope;
+       the body assigns into it. */
+    if (scalar) { emit_ctype(c, res, b); buf_printf(b, " _t%d = %s; ", rv, default_value(res)); }
     if (is_mx) {
-      mtmp = ++g_tmp;
+      mtmp = ++g_tmp; eid = ++g_tmp;
+      has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
       buf_printf(b, "sp_mutex *_t%d = ", mtmp); emit_expr(c, recv, b);
       buf_printf(b, "; sp_Mutex_lock(_t%d); ", mtmp);
+      buf_printf(b, "int _retf%d = 0; int _excf%d = 0; const char *_excmsg%d = NULL, *_exccls%d = NULL; ",
+                 eid, eid, eid, eid);
+      if (has_retval) { emit_ctype(c, g_ret_type, b); buf_printf(b, " _retv%d = %s; ", eid, default_value(g_ret_type)); }
+      g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval };
+      buf_puts(b, "sp_exc_top++; if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) { ");
     }
     for (int k = 0; k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
     if (bbn > 0) {
@@ -11239,22 +11258,41 @@ else {
       int nil_lit = (lty == TY_NIL && lnty && sp_streq(lnty, "NilNode"));
       int can_expr = (lty != TY_VOID && lty != TY_UNKNOWN && (lty != TY_NIL || nil_lit));
       if (scalar && can_expr) {
-        emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
+        buf_printf(b, "_t%d = ", rv);
         if (res == TY_POLY && lty != TY_POLY) emit_boxed(c, bbb[bbn-1], b);
         else emit_expr(c, bbb[bbn-1], b);
         buf_puts(b, "; ");
       }
       else {
-        emit_stmt(c, bbb[bbn-1], b, 0);
-        if (scalar) {
-          emit_ctype(c, res, b); buf_printf(b, " _t%d = ", rv);
-          if (res == TY_POLY) buf_puts(b, "sp_box_nil()");
-          else buf_puts(b, default_value(res));
-          buf_puts(b, "; ");
-        }
+        emit_stmt(c, bbb[bbn-1], b, 0);  /* scalar default already set at rv decl */
       }
     }
-    if (is_mx) buf_printf(b, "sp_Mutex_unlock(_t%d); ", mtmp);
+    if (is_mx) {
+      g_ensure_depth--;
+      buf_printf(b, "sp_exc_top--; } else { sp_exc_top--; if (sp_unwind_kind == SP_UNWIND_NONE) { sp_proc_homes_unwind(); _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; } } ",
+                 eid, eid, eid);
+      buf_printf(b, "_ensure%d: ; sp_Mutex_unlock(_t%d); ", eid, mtmp);
+      buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume(); ");
+      if (g_ensure_depth > 0) {
+        /* nested inside another begin..ensure / synchronize: hand the deferred
+           return and unhandled exception to the enclosing ensure. */
+        EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
+        if (has_retval && outer->has_retval)
+          buf_printf(b, "if (_retf%d) { _retv%d = _retv%d; _retf%d = 1; sp_exc_top--; goto _ensure%d; } ",
+                     eid, outer->lid, eid, outer->lid, outer->lid);
+        else
+          buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; } ", eid, outer->lid, outer->lid);
+        buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; sp_exc_top--; goto _ensure%d; } ",
+                   eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid);
+      }
+      else {
+        if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d; ", eid, eid);
+        else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil(); ", eid);
+        else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0; ", eid);
+        else buf_printf(b, "if (_retf%d) return; ", eid);
+        buf_printf(b, "if (_excf%d) sp_raise_cls(_exccls%d, _excmsg%d); ", eid, eid, eid);
+      }
+    }
     if (scalar) buf_printf(b, "_t%d; })", rv);
     else buf_puts(b, "0; })");
     return;
