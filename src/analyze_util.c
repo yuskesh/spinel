@@ -174,6 +174,35 @@ TyKind scan_throw_type(Compiler *c, int id, int depth) {
   }
   return result;
 }
+/* Call sites that pass a block (an explicit block node, or a `...` forward that
+   carries one implicitly), cached per node table. yield_value_type scans for
+   these once per method during the fixpoint; without the index that is
+   O(methods * nodes * iterations). The structural shape is stable across the
+   pass; the callee resolution below still runs fresh. */
+static const NodeTable *yvt_nt = NULL;
+static int yvt_ntc = -1, yvt_n = 0;
+static int *yvt_ids = NULL;
+static int yvt_call_forwards_block(const NodeTable *nt, int cid) {
+  int a = nt_ref(nt, cid, "arguments");
+  int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  return an == 1 && av && nt_type(nt, av[0]) &&
+         sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode");
+}
+static void yvt_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  free(yvt_ids);
+  yvt_ids = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+  yvt_n = 0;
+  yvt_nt = nt; yvt_ntc = n;
+  if (!yvt_ids) return;
+  for (int cid = 0; cid < n; cid++) {
+    const char *cty = nt_type(nt, cid);
+    if (!cty || !sp_streq(cty, "CallNode")) continue;
+    if (nt_ref(nt, cid, "block") < 0 && !yvt_call_forwards_block(nt, cid)) continue;
+    yvt_ids[yvt_n++] = cid;
+  }
+}
 TyKind yield_value_type(Compiler *c, int mi) {
   for (int i = 0; i < g_yvt_depth; i++)
     if (g_yvt_mi[i] == mi) return TY_UNKNOWN;
@@ -182,20 +211,13 @@ TyKind yield_value_type(Compiler *c, int mi) {
 
   const NodeTable *nt = c->nt;
   TyKind result = TY_UNKNOWN;
-  for (int cid = 0; cid < nt->count; cid++) {
-    const char *cty = nt_type(nt, cid);
-    if (!cty || !sp_streq(cty, "CallNode")) continue;
+  if (yvt_nt != nt || yvt_ntc != nt->count) yvt_build(c);
+  for (int ii = 0; ii < yvt_n; ii++) {
+    int cid = yvt_ids[ii];
     int blk = nt_ref(nt, cid, "block");
     /* A `callee(...)` forward carries its block implicitly inside the `...`
        (no explicit block node); treat it as a forwarded block too. */
-    int fwd_args = 0;
-    {
-      int a = nt_ref(nt, cid, "arguments");
-      int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-      fwd_args = (an == 1 && av && nt_type(nt, av[0]) &&
-                  sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode"));
-    }
-    if (blk < 0 && !fwd_args) continue;
+    int fwd_args = yvt_call_forwards_block(nt, cid);
     /* skip calls that live inside method mi itself (recursive self-calls);
        only external call sites provide a concrete block value type */
     if ((int)(comp_scope_of(c, cid) - c->scopes) == mi) continue;
