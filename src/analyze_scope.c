@@ -553,35 +553,59 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
 
   /* `class << self; def X; ...; end; end` — treat body defs as class methods. */
   if (ty && sp_streq(ty, "SingletonClassNode")) {
-    int sbody = nt_ref(c->nt, id, "body");
-    if (sbody >= 0) {
-      int n = 0;
-      const int *stmts = nt_arr(c->nt, sbody, "body", &n);
-      for (int k = 0; k < n; k++) {
-        int s = stmts[k];
-        const char *sty = nt_type(c->nt, s);
-        if (!sty) continue;
-        if (sp_streq(sty, "DefNode")) {
-          const char *name = nt_str(c->nt, s, "name");
-          if (!name) continue;
-          Scope *sc = comp_scope_new(c, name, s);
-          int new_idx = c->nscopes - 1;
-          sc->body = nt_ref(c->nt, s, "body");
-          sc->class_id = class_id;
-          sc->is_cmethod = 1;
-          collect_def_params(c, s, sc);
-          /* Assign scope to the def node and its body */
-          c->nscope[s] = new_idx;
-          if (sc->body >= 0) walk_scope(c, sc->body, new_idx, class_id);
-        }
-        else {
-          walk_scope(c, s, scope_idx, class_id);
-        }
-      }
-      c->nscope[id] = scope_idx;
-      c->nscope[sbody] = scope_idx;
+    /* `class << self` inside a class body defines class methods on the
+       enclosing class; `class << Const` (a constant naming a class/module)
+       defines them on that named class instead. A singleton-class block on an
+       arbitrary object (`class << obj`) has no per-object dispatch here, so
+       only the resolvable receivers are special-cased; anything else falls
+       through to the generic walk and is rejected loudly during codegen. */
+    int target_class = class_id;
+    int supported = 0;
+    int sexpr = nt_ref(c->nt, id, "expression");
+    const char *exty = sexpr >= 0 ? nt_type(c->nt, sexpr) : NULL;
+    if (exty && sp_streq(exty, "SelfNode")) {
+      supported = 1;
     }
-    return;
+    else if (exty && sp_streq(exty, "ConstantReadNode")) {
+      const char *cn = nt_str(c->nt, sexpr, "name");
+      int ci = cn ? comp_class_index(c, cn) : -1;
+      if (ci >= 0) {
+        target_class = ci;
+        supported = 1;
+      }
+    }
+    if (supported) {
+      int sbody = nt_ref(c->nt, id, "body");
+      if (sbody >= 0) {
+        int n = 0;
+        const int *stmts = nt_arr(c->nt, sbody, "body", &n);
+        for (int k = 0; k < n; k++) {
+          int s = stmts[k];
+          const char *sty = nt_type(c->nt, s);
+          if (!sty) continue;
+          if (sp_streq(sty, "DefNode")) {
+            const char *name = nt_str(c->nt, s, "name");
+            if (!name) continue;
+            Scope *sc = comp_scope_new(c, name, s);
+            int new_idx = c->nscopes - 1;
+            sc->body = nt_ref(c->nt, s, "body");
+            sc->class_id = target_class;
+            sc->is_cmethod = 1;
+            collect_def_params(c, s, sc);
+            /* Assign scope to the def node and its body */
+            c->nscope[s] = new_idx;
+            if (sc->body >= 0) walk_scope(c, sc->body, new_idx, target_class);
+          }
+          else {
+            walk_scope(c, s, scope_idx, target_class);
+          }
+        }
+        c->nscope[id] = scope_idx;
+        c->nscope[sbody] = scope_idx;
+      }
+      return;
+    }
+    /* Unsupported receiver: fall through to the generic walk below. */
   }
 
   if (ty && (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode"))) {
