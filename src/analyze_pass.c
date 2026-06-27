@@ -1206,18 +1206,26 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
   if (m->rest_idx >= 0 && max_bind > m->rest_idx) max_bind = m->rest_idx;
   int n = pos_argc < max_bind ? pos_argc : max_bind;
   for (int k = 0; k < n; k++) {
-    /* When the call has a single SplatNode covering this fixed param,
-       infer the element type of the splatted array instead. */
-    TyKind at;
     const char *apty = argv ? nt_type(nt, argv[k]) : NULL;
+    /* A single SplatNode spreads its array across every remaining fixed param,
+       not just this position. Bind each from the array's element type so a
+       splat-only call site (`f(*args)`) still types — and therefore emits —
+       the callee, then stop (the splat consumes the rest of the positionals). */
     if (apty && sp_streq(apty, "SplatNode")) {
       int inner = nt_ref(nt, argv[k], "expression");
       TyKind arr = inner >= 0 ? infer_type(c, inner) : TY_UNKNOWN;
-      at = ty_is_array(arr) ? ty_array_elem(arr) : TY_POLY;
+      TyKind at = ty_is_array(arr) ? ty_array_elem(arr) : TY_POLY;
+      if (at == TY_VOID || at == TY_NIL) at = TY_POLY;
+      for (int pk = k; pk < max_bind; pk++) {
+        if (!m->pnames[pk]) continue;
+        LocalVar *p = scope_local(m, m->pnames[pk]);
+        if (!p || p->rbs_seeded) continue;
+        TyKind merged = ty_unify(p->type, at);
+        if (merged != p->type) { p->type = merged; changed = 1; }
+      }
+      break;
     }
-else {
-      at = infer_type(c, argv[k]);
-    }
+    TyKind at = infer_type(c, argv[k]);
     LocalVar *p = scope_local(m, m->pnames[k]);
     if (!p || p->rbs_seeded) continue;
     /* A void arg (`sink(always_raising_method)`) is nil-ish in value position:
