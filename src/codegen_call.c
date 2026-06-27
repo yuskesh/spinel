@@ -114,7 +114,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     emit_indent(b, din);
     emit_ctype(c, lv->type, b);
     buf_printf(b, " lv_%s = %s;\n", rn, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
-    if (needs_root(lv->type)) { emit_indent(b, din); buf_printf(b, "SP_GC_ROOT(lv_%s);\n", rn); }
+    if (needs_root(lv->type)) { emit_indent(b, din); buf_printf(b, lv->type == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", rn); }
   }
 
   /* bind params to the call args (call-site scope: renames off) */
@@ -11356,7 +11356,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     emit_indent(b, din);
     emit_ctype(c, lv->type, b);
     buf_printf(b, " lv_%s = %s;\n", rn, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
-    if (needs_root(lv->type)) { emit_indent(b, din); buf_printf(b, "SP_GC_ROOT(lv_%s);\n", rn); }
+    if (needs_root(lv->type)) { emit_indent(b, din); buf_printf(b, lv->type == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", rn); }
   }
 
   /* bind params to call args (args are in the call-site scope: renames off) */
@@ -11470,6 +11470,26 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   int yc = 0;
   const int *yargs = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yc) : NULL;
   Scope *bsc = comp_scope_of(c, blk);
+  /* `yield(*arr)`: a single splat spreads the array across the block params
+     (auto-splat). Evaluate it once into a rooted temp and bind each param (and
+     any rest param) from its elements rather than from the splat AST node. */
+  int splat_tmp = -1; TyKind splat_at = TY_UNKNOWN;
+  if (yc == 1 && yargs && nt_type(nt, yargs[0]) &&
+      sp_streq(nt_type(nt, yargs[0]), "SplatNode")) {
+    int inner = nt_ref(nt, yargs[0], "expression");
+    TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+    if (ty_is_array(at) || at == TY_POLY_ARRAY) {
+      splat_at = at;
+      splat_tmp = ++g_tmp;
+      Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, inner, &sb);
+      emit_indent(g_pre, g_indent);
+      emit_ctype(c, at, g_pre);
+      buf_printf(g_pre, " _t%d = %s;\n", splat_tmp, sb.p ? sb.p : "");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp);
+      free(sb.p);
+    }
+  }
   if (as_expr) buf_puts(b, "({ ");
   for (int k = 0; ; k++) {
     const char *bp = block_param_name(c, blk, k);
@@ -11479,7 +11499,26 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     const char *bpr = rename_local(bp);
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", bpr);
-    if (k < yc) {
+    if (splat_tmp >= 0) {
+      /* element k of the splatted array, guarded: when the array is shorter
+         than the param list the surplus params bind nil (CRuby auto-splat),
+         using the same per-slot default the non-splat under-fill path does. */
+      LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
+      TyKind bt = bl ? bl->type : TY_UNKNOWN;
+      TyKind et = ty_array_elem(splat_at);
+      Buf eb; memset(&eb, 0, sizeof eb);
+      emit_array_elem_at(splat_at, splat_tmp, k, &eb);
+      buf_printf(b, "(%d < (_t%d ? _t%d->len : 0) ? ", k, splat_tmp, splat_tmp);
+      if (bt == TY_POLY && et != TY_POLY && et != TY_UNKNOWN)
+        emit_boxed_text(c, et, eb.p ? eb.p : "0", b);
+      else if (et == TY_POLY && bt != TY_POLY && bt != TY_UNKNOWN)
+        emit_unbox_text(c, bt, eb.p ? eb.p : "", b);
+      else
+        buf_puts(b, eb.p ? eb.p : "");
+      buf_printf(b, " : %s)", bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
+      free(eb.p);
+    }
+    else if (k < yc) {
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       TyKind bt = bl ? bl->type : TY_UNKNOWN;
       TyKind at = comp_ntype(c, yargs[k]);
@@ -11509,7 +11548,21 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     int nreq = 0; while (block_param_name(c, blk, nreq)) nreq++;
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = sp_PolyArray_new();%s", brestr, as_expr ? " " : "\n");
-    for (int j = nreq; j < yc; j++) {
+    if (splat_tmp >= 0) {
+      /* collect splat elements past the required params at runtime */
+      TyKind et = ty_array_elem(splat_at);
+      int jj = ++g_tmp;
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "for (mrb_int _t%d = %d; _t%d && _t%d < _t%d->len; _t%d++) sp_PolyArray_push(lv_%s, ",
+                 jj, nreq, splat_tmp, jj, splat_tmp, jj, brestr);
+      char acc[96];
+      if (splat_at == TY_POLY_ARRAY) snprintf(acc, sizeof acc, "sp_PolyArray_get(_t%d, _t%d)", splat_tmp, jj);
+      else snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d)", array_kind(splat_at) ? array_kind(splat_at) : "Int", splat_tmp, jj);
+      if (splat_at == TY_POLY_ARRAY) buf_puts(b, acc);
+      else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, et, acc, &bx); buf_puts(b, bx.p ? bx.p : acc); free(bx.p); }
+      buf_puts(b, as_expr ? "); " : ");\n");
+    }
+    else for (int j = nreq; j < yc; j++) {
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "sp_PolyArray_push(lv_%s, ", brestr);
       emit_boxed(c, yargs[j], b);
