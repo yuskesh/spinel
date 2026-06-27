@@ -1811,12 +1811,31 @@ static void sp_sort_idx_by_poly(mrb_int *idx, const sp_RbVal *keys, mrb_int n) {
 }
 static sp_RbVal sp_poly_div(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_poly_to_f(a) / sp_poly_to_f(b)); return sp_box_int(sp_idiv(sp_poly_to_i(a), sp_poly_to_i(b))); }
 static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(fmod(sp_poly_to_f(a), sp_poly_to_f(b))); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }
-/* clamp on a boxed numeric: float path when any operand is a float (NaN/order
-   checks via sp_float_clamp_ck), else int path; result keeps the float/int kind. */
+/* Comparable#clamp on boxed numerics, faithful to CRuby: the result is the
+   applied operand returned UNCHANGED, so an in-range Integer receiver stays
+   Integer while a Float bound that clamps stays Float (5.clamp(1.0, 3.0) is
+   3.0 but 5.clamp(1.0, 10.0) is 5). The lo<=>hi then self<=>bound checks
+   mirror CRuby's NaN/ordering ArgumentErrors. The operand class and value in
+   the message go through the generic sp_poly_class_name / sp_poly_to_s helpers
+   (as the sort/min/max comparison errors already do), so a non-numeric poly
+   bound names its real class and renders its value rather than reinterpreting
+   the union as an integer. */
+static sp_RbVal sp_num_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
+  mrb_float dv = sp_poly_to_f(v), dlo = sp_poly_to_f(lo), dhi = sp_poly_to_f(hi);
+  if (dlo != dlo || dhi != dhi)
+    sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(lo), sp_poly_to_s(hi)));
+  if (dlo > dhi)
+    sp_raise_cls("ArgumentError", "min argument must be less than or equal to max argument");
+  if (dv != dv)
+    sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(v), sp_poly_to_s(lo)));
+  if (dv < dlo) return lo;
+  if (dv > dhi) return hi;
+  return v;
+}
+/* clamp on a boxed numeric: routes through sp_num_clamp so the returned operand
+   keeps its own Integer/Float class (was unconditionally floated up before). */
 static sp_RbVal sp_poly_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
-  if (v.tag == SP_TAG_FLT || lo.tag == SP_TAG_FLT || hi.tag == SP_TAG_FLT)
-    return sp_box_float(sp_float_clamp_ck(sp_poly_to_f(v), sp_poly_to_f(lo), sp_poly_to_f(hi)));
-  return sp_box_int(sp_int_clamp_ck(sp_poly_to_i(v), sp_poly_to_i(lo), sp_poly_to_i(hi)));
+  return sp_num_clamp(v, lo, hi);
 }
 /* Integer #** : Spinel has no Rational, so a negative integer exponent --
    which CRuby evaluates to a Rational like (1/2) -- raises RangeError rather
