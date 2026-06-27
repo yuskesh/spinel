@@ -10,8 +10,9 @@
 #include "sp_gc.h"   /* sp_mark_string */
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>   /* pipe */
+#include <unistd.h>   /* pipe, isatty */
 #include <sys/stat.h> /* stat() for the File predicates */
+#include <sys/ioctl.h> /* TIOCGWINSZ for #winsize */
 
 /* Provided by the generated TU / libspinel_rt.a. */
 extern void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
@@ -49,6 +50,29 @@ mrb_int sp_File_write(sp_File *f, const char *s) {
   if (!f || !f->fp || !s) return 0;
   size_t n = strlen(s);
   return (mrb_int)fwrite(s, 1, n, f->fp);
+}
+
+mrb_bool sp_File_tty_p(sp_File *f) {
+  return (f && f->fp && isatty(fileno(f->fp))) ? 1 : 0;
+}
+
+mrb_int sp_File_fileno(sp_File *f) {
+  return (f && f->fp) ? (mrb_int)fileno(f->fp) : -1;
+}
+
+/* IO#winsize -> [rows, cols]. Queries the terminal; a non-tty (pipe/file) has
+   no size, so CRuby raises there, but returning [0, 0] keeps the common
+   "STDOUT.winsize" probe compiling and running without an exception path. */
+sp_IntArray *sp_File_winsize(sp_File *f) {
+  mrb_int rows = 0, cols = 0;
+  if (f && f->fp) {
+    struct winsize ws;
+    if (ioctl(fileno(f->fp), TIOCGWINSZ, &ws) == 0) { rows = ws.ws_row; cols = ws.ws_col; }
+  }
+  sp_IntArray *a = sp_IntArray_new();
+  sp_IntArray_push(a, rows);
+  sp_IntArray_push(a, cols);
+  return a;
 }
 
 sp_File *sp_io_stdout(void) {

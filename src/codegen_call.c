@@ -5412,6 +5412,25 @@ void emit_call(Compiler *c, int id, Buf *b) {
       else buf_puts(b, "0");
       free(rb.p); return;
     }
+    if (sp_streq(name, "<<") && argc == 1) {
+      /* IO#<< writes the (stringified) operand and returns self, so it chains
+         (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; sp_File_write(_t%d, ", t, r, t);
+      if (comp_ntype(c, argv[0]) == TY_STRING) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, "); _t%d; })", t);
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "tty?") || sp_streq(name, "isatty")) {
+      buf_printf(b, "sp_File_tty_p(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "fileno")) {
+      buf_printf(b, "sp_File_fileno(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "winsize")) {
+      buf_printf(b, "sp_File_winsize(%s)", r); free(rb.p); return;
+    }
     if (sp_streq(name, "print") || sp_streq(name, "puts")) {
       /* emit as a statement-like expression: print each arg, return nil.
          Non-string args are stringified via sp_poly_to_s (sp_File_write wants

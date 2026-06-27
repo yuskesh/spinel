@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include "sp_types.h"   /* mrb_int, mrb_bool */
+#include "sp_array.h"   /* sp_IntArray (for #winsize) */
 
 typedef struct { FILE *fp; const char *path; const char *mode; } sp_File;
 
@@ -27,6 +28,9 @@ void sp_File_puts(sp_File *f, const char *s);
 void sp_File_print(sp_File *f, const char *s);
 mrb_int sp_File_flush(sp_File *f);
 mrb_bool sp_File_eof_p(sp_File *f);
+mrb_bool sp_File_tty_p(sp_File *f);     /* #tty? / #isatty -- isatty(fileno) */
+mrb_int sp_File_fileno(sp_File *f);     /* #fileno */
+sp_IntArray *sp_File_winsize(sp_File *f); /* #winsize -> [rows, cols] (ioctl, or [0,0]) */
 
 /* STDOUT / STDERR as shared IO handles wrapping the C stdout/stderr streams.
    The handle is a function-local static (stdout/stderr are not constant

@@ -1134,7 +1134,11 @@ else {
         sp_streq(name, "tell") || sp_streq(name, "seek") || sp_streq(name, "rewind") ||
         sp_streq(name, "close")) return TY_INT;
     if (sp_streq(name, "print") || sp_streq(name, "puts") || sp_streq(name, "flush")) return TY_NIL;
-    if (sp_streq(name, "closed?") || sp_streq(name, "eof?") || sp_streq(name, "eof")) return TY_BOOL;
+    if (sp_streq(name, "closed?") || sp_streq(name, "eof?") || sp_streq(name, "eof") ||
+        sp_streq(name, "tty?") || sp_streq(name, "isatty")) return TY_BOOL;
+    if (sp_streq(name, "fileno")) return TY_INT;
+    if (sp_streq(name, "winsize")) return TY_INT_ARRAY;
+    if (sp_streq(name, "<<")) return TY_IO;   /* writes, returns self (chainable) */
     if (sp_streq(name, "each_line") || sp_streq(name, "each")) {
       int blk = nt_ref(nt, id, "block");
       if (blk >= 0) {
