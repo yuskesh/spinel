@@ -4179,6 +4179,21 @@ else {
     }
     return;
   }
+  if (sp_streq(ty, "SingletonClassNode")) {
+    /* `class << self` / `class << Const`: the inner `def`s were registered as
+       class methods during scope analysis and are emitted from the method
+       list, so a supported node produces no code here (matching the skip used
+       inside a class body). A block on an arbitrary object (`class << obj`) has
+       no per-object singleton dispatch and is rejected loudly. */
+    int sexpr = nt_ref(nt, id, "expression");
+    const char *exty = sexpr >= 0 ? nt_type(nt, sexpr) : NULL;
+    if (exty && sp_streq(exty, "SelfNode")) return;
+    if (exty && sp_streq(exty, "ConstantReadNode")) {
+      const char *cn = nt_str(nt, sexpr, "name");
+      if (cn && comp_class_index(c, cn) >= 0) return;
+    }
+    unsupported(c, id, "singleton class on arbitrary object");
+  }
   if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) {
     /* Run the body's side-effecting statements at the definition site
        (top-to-bottom, like CRuby). Method/attr/alias declarations are
