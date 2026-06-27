@@ -2073,6 +2073,20 @@ void specialize_inherited_cls_new(Compiler *c) {
     specialize_cmethod_for(c, mi, def_cls, ci);
   }
   did_clone = (c->nscopes > snap);
+  /* Index of every CallNode with a constant receiver, built once: the
+     called-direct check below otherwise rescans all nodes per shadowed cmethod
+     (O(cmethods * nodes)). */
+  int *ccall = malloc((size_t)node_count * sizeof(int));
+  int nccall = 0;
+  if (ccall) {
+    for (int id = 0; id < node_count; id++) {
+      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+      int r = nt_ref(nt, id, "receiver");
+      const char *rty = r >= 0 ? nt_type(nt, r) : NULL;
+      if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
+        ccall[nccall++] = id;
+    }
+  }
   /* DCE the now-shadowed source cls methods that are never called on their
      own defining class. */
   for (int s = 0; s < snap; s++) {
@@ -2090,16 +2104,15 @@ void specialize_inherited_cls_new(Compiler *c) {
     if (!specialized) continue;
     /* keep it if called directly as <DefiningClass>.<name> */
     int called_direct = 0;
-    for (int id = 0; id < nt->count && !called_direct; id++) {
-      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    for (int ii = 0; ii < nccall && !called_direct; ii++) {
+      int id = ccall[ii];
       if (!nt_str(nt, id, "name") || !sp_streq(nt_str(nt, id, "name"), src->name)) continue;
       int r = nt_ref(nt, id, "receiver");
-      if (r < 0 || !nt_type(nt, r)) continue;
-      if (!sp_streq(nt_type(nt, r), "ConstantReadNode") && !sp_streq(nt_type(nt, r), "ConstantPathNode")) continue;
       if (comp_class_index(c, nt_str(nt, r, "name")) == src->class_id) called_direct = 1;
     }
     if (!called_direct) src->is_transplanted_source = 1;
   }
+  free(ccall);
   /* The cloned bodies introduced new local/ivar nodes; intern them. */
   if (did_clone) register_locals(c);
 }

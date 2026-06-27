@@ -1966,30 +1966,38 @@ void analyze_program(Compiler *c) {
      interns to one LocalVar, so it may only specialize when every arm binding
      it agrees on the same class -- otherwise the slot would collapse onto one
      of the types and mis-read the others. */
-  for (int id = 0; id < c->nt->count; id++) {
-    const char *ty = nt_type(c->nt, id);
-    if (!ty || !sp_streq(ty, "RescueNode")) continue;
-    int ref = nt_ref(c->nt, id, "reference");
-    if (ref < 0 || !sp_streq(nt_type(c->nt, ref) ? nt_type(c->nt, ref) : "", "LocalVariableTargetNode")) continue;
-    const char *nm = nt_str(c->nt, ref, "name");
-    if (!nm) continue;
-    Scope *vsc = comp_scope_of(c, ref);
-    LocalVar *lv = scope_local_intern(vsc, nm);
-    int mine = rescue_arm_spec_cid(c, id);
-    /* unanimity check across every same-name rescue arm in the same scope */
-    int unanimous = mine;
-    for (int id2 = 0; id2 < c->nt->count && unanimous >= 0; id2++) {
-      if (id2 == id) continue;
-      const char *ty2 = nt_type(c->nt, id2);
-      if (!ty2 || !sp_streq(ty2, "RescueNode")) continue;
-      int ref2 = nt_ref(c->nt, id2, "reference");
-      if (ref2 < 0 || !nt_type(c->nt, ref2) || !sp_streq(nt_type(c->nt, ref2), "LocalVariableTargetNode")) continue;
-      const char *nm2 = nt_str(c->nt, ref2, "name");
-      if (!nm2 || !sp_streq(nm2, nm) || comp_scope_of(c, ref2) != vsc) continue;
-      if (rescue_arm_spec_cid(c, id2) != mine) unanimous = -1;
+  /* Collect the rescue arms that bind a local (`rescue X => e`) once; the
+     unanimity check then compares arms against this small list instead of
+     rescanning the whole node table per arm (was O(rescues * nodes)). */
+  {
+    int cap = 0, rn = 0;
+    struct { int id; const char *nm; Scope *vsc; int spec; } *arms = NULL;
+    for (int id = 0; id < c->nt->count; id++) {
+      const char *ty = nt_type(c->nt, id);
+      if (!ty || !sp_streq(ty, "RescueNode")) continue;
+      int ref = nt_ref(c->nt, id, "reference");
+      if (ref < 0 || !nt_type(c->nt, ref) || !sp_streq(nt_type(c->nt, ref), "LocalVariableTargetNode")) continue;
+      const char *nm = nt_str(c->nt, ref, "name");
+      if (!nm) continue;
+      Scope *vsc = comp_scope_of(c, ref);
+      scope_local_intern(vsc, nm);   /* ensure the LocalVar exists for every arm first */
+      if (rn >= cap) { cap = cap ? cap * 2 : 16; arms = realloc(arms, sizeof(*arms) * (size_t)cap); }
+      arms[rn].id = id; arms[rn].nm = nm; arms[rn].vsc = vsc;
+      arms[rn].spec = rescue_arm_spec_cid(c, id);
+      rn++;
     }
-    lv->type = unanimous >= 0 ? ty_object(unanimous) : TY_EXCEPTION;
-    lv->is_block_param = 1;  /* set externally; don't reset in the fixpoint */
+    for (int i = 0; i < rn; i++) {
+      /* unanimity across every same-name rescue arm in the same scope */
+      int unanimous = arms[i].spec;
+      for (int j = 0; j < rn && unanimous >= 0; j++) {
+        if (j == i || arms[j].vsc != arms[i].vsc || !sp_streq(arms[j].nm, arms[i].nm)) continue;
+        if (arms[j].spec != arms[i].spec) unanimous = -1;
+      }
+      LocalVar *lv = scope_local_intern(arms[i].vsc, arms[i].nm);
+      lv->type = unanimous >= 0 ? ty_object(unanimous) : TY_EXCEPTION;
+      lv->is_block_param = 1;  /* set externally; don't reset in the fixpoint */
+    }
+    free(arms);
   }
 
   resolve_parents(c);
@@ -2053,6 +2061,27 @@ void analyze_program(Compiler *c) {
      (every read is a `.call` receiver or a `&block` forward) is inlined at
      its call sites exactly like a yielding method. The block-param slot is
      then virtual -- the literal block flows in like an implicit yield. */
+  /* Reverse flags built once: blk_call_recv[id] -- a `.call` CallNode has
+     receiver == id; blk_arg_expr[id] -- a `&arg` forwards id. They answer the
+     per-read "approved use?" test below in O(1) instead of an inner whole-table
+     scan (which made the escape analysis O(methods * reads * nodes)). */
+  char *blk_call_recv = (char *)calloc((size_t)c->nt->count, 1);
+  char *blk_arg_expr = (char *)calloc((size_t)c->nt->count, 1);
+  for (int p = 0; (blk_call_recv && blk_arg_expr) && p < c->nt->count; p++) {
+    const char *pty = nt_type(c->nt, p);
+    if (!pty) continue;
+    if (sp_streq(pty, "CallNode")) {
+      const char *cn = nt_str(c->nt, p, "name");
+      if (cn && sp_streq(cn, "call")) {
+        int r = nt_ref(c->nt, p, "receiver");
+        if (r >= 0 && r < c->nt->count) blk_call_recv[r] = 1;
+      }
+    }
+    else if (sp_streq(pty, "BlockArgumentNode")) {
+      int e = nt_ref(c->nt, p, "expression");
+      if (e >= 0 && e < c->nt->count) blk_arg_expr[e] = 1;
+    }
+  }
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
     if (!m->blk_param) continue;
@@ -2087,16 +2116,7 @@ void analyze_program(Compiler *c) {
       if (inproc_m && inproc_m[id]) { escapes = 1; break; }
       uses++;
       /* approved: receiver of a `.call`, or expression of a `&block` arg */
-      int ok = 0;
-      for (int p = 0; p < c->nt->count; p++) {
-        const char *pty = nt_type(c->nt, p);
-        if (!pty) continue;
-        if (sp_streq(pty, "CallNode") && nt_ref(c->nt, p, "receiver") == id) {
-          const char *cn = nt_str(c->nt, p, "name");
-          if (cn && sp_streq(cn, "call")) { ok = 1; break; }
-        }
-        if (sp_streq(pty, "BlockArgumentNode") && nt_ref(c->nt, p, "expression") == id) { ok = 1; break; }
-      }
+      int ok = (blk_call_recv && blk_call_recv[id]) || (blk_arg_expr && blk_arg_expr[id]);
       if (!ok) escapes = 1;
     }
     free(inproc_m);
@@ -2112,6 +2132,8 @@ void analyze_program(Compiler *c) {
       if (!has_ret) m->yields = 1;
     }
   }
+  free(blk_call_recv);
+  free(blk_arg_expr);
 
   /* intern every symbol literal so codegen can emit the id table */
   for (int id = 0; id < c->nt->count; id++) {
