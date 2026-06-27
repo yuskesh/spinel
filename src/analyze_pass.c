@@ -677,6 +677,18 @@ int infer_write_types(Compiler *c) {
         }
       }
     }
+    /* Under-filled literal RHS (`a, b, c = [1, 2]`): targets past the supplied
+       elements land nil, so widen those locals to poly like a plain `x = nil`. */
+    Scope *usc = comp_scope_of(c, id);
+    for (int i = en; i < ln; i++) {
+      const char *lty = nt_type(nt, lefts[i]);
+      if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
+      const char *lnm = nt_str(nt, lefts[i], "name");
+      LocalVar *lv = lnm ? scope_local(usc, lnm) : NULL;
+      if (!lv || lv->is_param || lv->is_block_param) continue;
+      TyKind mg = ty_unify(lv->type, TY_POLY);
+      if (mg != lv->type) { lv->type = mg; changed = 1; }
+    }
     /* rights targets (post-splat fixed targets) */
     int rn = 0;
     const int *rights = nt_arr(nt, id, "rights", &rn);

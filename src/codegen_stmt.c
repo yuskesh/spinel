@@ -4160,7 +4160,18 @@ else {
       }
       unsupported(c, id, "multiple assignment");
     }
-    if (rest_nid < 0 && en < ln + rn) { unsupported(c, id, "multiple assignment"); return; }
+    if (rest_nid < 0 && en < ln + rn) {
+      /* Under-filled literal RHS (`a, b, c = [10, 20]` -> c is nil). The tail
+         loop below nil-fills missing local-variable targets; a non-local target
+         past the supplied count isn't wired for that, so reject those loudly
+         rather than silently skip the assignment. (rn>0 needs trailing elements
+         a short RHS can't provide.) */
+      if (rn > 0) { unsupported(c, id, "multiple assignment"); return; }
+      for (int i = en; i < ln; i++) {
+        const char *lty = nt_type(nt, lefts[i]);
+        if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) { unsupported(c, id, "multiple assignment"); return; }
+      }
+    }
     /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
        Save each temp index separately: emit_expr may consume extra g_tmp
        slots via preludes (e.g. array literals), so base+i is unreliable. */
@@ -4179,8 +4190,13 @@ else {
       if (i >= en) {
         if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
           emit_indent(b, indent);
-          buf_printf(b, "lv_%s = %s;\n", nt_str(nt, lefts[i], "name"),
-                     default_value(comp_ntype(c, lefts[i])));
+          const char *lvn = nt_str(nt, lefts[i], "name");
+          /* Use the local's declared type, not the target node's: an
+             under-filled slot lands nil, so the variable is typically widened
+             to poly and needs a boxed-nil default rather than a scalar zero. */
+          LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
+          TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
+          buf_printf(b, "lv_%s = %s;\n", lvn, default_value(ltt));
         }
         continue;
       }
