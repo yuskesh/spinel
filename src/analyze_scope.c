@@ -928,9 +928,7 @@ void register_structs(Compiler *c) {
    class_id=-1. This pass corrects them after the class is registered. */
 void fix_struct_block_scopes(Compiler *c) {
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "ConstantWriteNode")) continue;
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
     const char *cname = nt_str(nt, id, "name");
     int val = nt_ref(nt, id, "value");
     if (!cname || val < 0 || !is_struct_call(c, val)) continue;
@@ -1195,9 +1193,7 @@ int is_c_ident(const char *s) {
 void register_globals_consts(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* Pass 1: collect alias $copy $orig mappings first so pass 2 can skip them. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "AliasGlobalVariableNode")) continue;
+  NT_FOREACH_KIND(nt, NK_AliasGlobalVariableNode, id) {
     int nw_id  = nt_ref(nt, id, "new_name");
     int old_id = nt_ref(nt, id, "old_name");
     const char *nw  = nw_id  >= 0 ? nt_str(nt, nw_id,  "name") : NULL;
@@ -1306,9 +1302,7 @@ TyKind ffi_spec_to_ty(const char *spec) {
    module bodies. Called during analyze_program before fixpoint. */
 void register_ffi_decls(Compiler *c) {
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "ModuleNode")) continue;
+  NT_FOREACH_KIND(nt, NK_ModuleNode, id) {
     int cp = nt_ref(nt, id, "constant_path");
     const char *mname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     if (!mname) continue;
@@ -1617,9 +1611,7 @@ int infer_global_const_types(Compiler *c) {
 int infer_multiwrite_const_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "MultiWriteNode")) continue;
+  NT_FOREACH_KIND(nt, NK_MultiWriteNode, id) {
     int value = nt_ref(nt, id, "value");
     if (value < 0) continue;
     const char *vty = nt_type(nt, value);
@@ -2265,9 +2257,7 @@ int infer_cvar_types(Compiler *c) {
     }
   }
   /* Pass 2: method-level writes (comp_scope_of has class_id set). */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "ClassVariableWriteNode")) continue;
+  NT_FOREACH_KIND(nt, NK_ClassVariableWriteNode, id) {
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     if (!nm || s->class_id < 0) continue;
@@ -2279,9 +2269,7 @@ int infer_cvar_types(Compiler *c) {
     if (merged != ci->cvar_types[idx]) { ci->cvar_types[idx] = merged; changed = 1; }
   }
   /* Pass 3: top-level writes (class_id == -1 in scope 0) -- use Toplevel pseudo-class. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "ClassVariableWriteNode")) continue;
+  NT_FOREACH_KIND(nt, NK_ClassVariableWriteNode, id) {
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     if (!nm || s->class_id >= 0) continue;

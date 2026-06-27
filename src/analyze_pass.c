@@ -737,9 +737,7 @@ int infer_write_types(Compiler *c) {
   }
 
   /* MatchRequiredNode: `value => pattern` — infer locals from pattern shape. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "MatchRequiredNode")) continue;
+  NT_FOREACH_KIND(nt, NK_MatchRequiredNode, id) {
     int value = nt_ref(nt, id, "value");
     int pattern = nt_ref(nt, id, "pattern");
     if (value < 0 || pattern < 0) continue;
@@ -807,9 +805,7 @@ int infer_write_types(Compiler *c) {
   /* CaseMatchNode: `case X; in PATTERN; ...` — infer locals bound by pattern.
      Handles: bare LV (`in x`), guard (`in x if cond`), capture (`in P => x`),
      and array patterns (`in [first, *rest]` / `in Array(head, *tail)`). */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "CaseMatchNode")) continue;
+  NT_FOREACH_KIND(nt, NK_CaseMatchNode, id) {
     int pred = nt_ref(nt, id, "predicate");
     if (pred < 0) continue;
     TyKind scrutinee_t = infer_type(c, pred);
@@ -1227,9 +1223,7 @@ int infer_write_types(Compiler *c) {
      inside the proc body. Running after the first pass ensures those locals
      have their correct types (e.g. `x = 10` -> TY_INT) before proc_node_ret
      evaluates the body's return type. */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
@@ -2004,9 +1998,7 @@ int infer_param_types(Compiler *c) {
 int infer_for_index(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "ForNode")) continue;
+  NT_FOREACH_KIND(nt, NK_ForNode, id) {
     int idx = nt_ref(nt, id, "index");
     int coll = nt_ref(nt, id, "collection");
     if (idx < 0 || coll < 0) continue;
@@ -2733,9 +2725,7 @@ int infer_block_params(Compiler *c) {
      applied later, AFTER the call-site arg-type seeding below, so a `->(t){...}`
      later called as `f.call("x")` types `t` from the call (string) instead of
      unifying a premature int default with it into poly (#1372). */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "LambdaNode")) continue;
+  NT_FOREACH_KIND(nt, NK_LambdaNode, id) {
     int pn = nt_ref(nt, id, "parameters");      /* ParametersNode (1 level, unlike blocks) */
     if (pn < 0) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
@@ -2976,9 +2966,7 @@ int infer_block_params(Compiler *c) {
   /* Lambda param int default, applied AFTER the call-site seeding above so it
      only fills params no call site typed -- the arithmetic-proc fallback,
      matching the proc-literal default loop below (#1372). */
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "LambdaNode")) continue;
+  NT_FOREACH_KIND(nt, NK_LambdaNode, id) {
     int pn = nt_ref(nt, id, "parameters");
     if (pn < 0) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
