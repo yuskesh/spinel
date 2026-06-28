@@ -2409,7 +2409,8 @@ else {
       }
       if (sp_streq(name, "merge") && argc == 1 &&
           (rt == TY_STR_INT_HASH || rt == TY_STR_POLY_HASH || rt == TY_SYM_POLY_HASH ||
-           rt == TY_STR_STR_HASH)) {
+           rt == TY_STR_STR_HASH || rt == TY_POLY_POLY_HASH || rt == TY_INT_INT_HASH ||
+           rt == TY_INT_STR_HASH)) {
         TyKind at = comp_ntype(c, argv[0]);
         /* cross-variant str merge: promote both sides to str_poly_hash */
         if ((rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH) &&
