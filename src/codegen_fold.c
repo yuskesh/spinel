@@ -3978,6 +3978,47 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      virtual-dispatch cases reuse them without re-evaluating */
   int *atmp = np ? malloc(sizeof(int) * np) : NULL;
   const char *saved_self = g_self;
+  /* A positional SplatNode `obj.f(*args)` expands across the fixed params, the
+     same way emit_args_filled handles it for free-function calls: pre-evaluate
+     the array to a rooted temp and fill each param from it. Scoped to a fixed-
+     arity callee (no rest param). */
+  int splat_idx_d = -1, splat_tmp_d = -1; TyKind splat_at_d = TY_UNKNOWN;
+  for (int k = 0; m && m->rest_idx < 0 && k < pos_argc_d; k++) {
+    if (argv && nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode") &&
+        k < m->nparams) {
+      int inner = nt_ref(nt, argv[k], "expression");
+      splat_at_d = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
+      if (ty_is_array(splat_at_d) || splat_at_d == TY_POLY_ARRAY) {
+        splat_idx_d = k;
+        splat_tmp_d = ++g_tmp;
+        Buf sb; memset(&sb, 0, sizeof sb);
+        emit_expr(c, inner, &sb);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, splat_at_d, g_pre);
+        buf_printf(g_pre, " _t%d = %s;\n", splat_tmp_d, sb.p ? sb.p : "");
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", splat_tmp_d);
+        free(sb.p);
+        /* Arity check when the splat is the last positional group: the total
+           given count is splat_idx + array length. */
+        if (k == pos_argc_d - 1) {
+          char expbuf[48];
+          if (m->nrequired == m->nparams)
+            snprintf(expbuf, sizeof expbuf, "expected %d", m->nparams);
+          else
+            snprintf(expbuf, sizeof expbuf, "expected %d..%d", m->nrequired, m->nparams);
+          int gv = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "mrb_int _t%d = %d + (_t%d ? _t%d->len : 0);\n", gv, splat_idx_d, splat_tmp_d, splat_tmp_d);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre,
+                     "if (_t%d < %d || _t%d > %d) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld, %s)\", (long long)_t%d));\n",
+                     gv, m->nrequired, gv, m->nparams, expbuf, gv);
+        }
+      }
+      break;
+    }
+  }
   for (int k = 0; k < np; k++) {
     atmp[k] = ++g_tmp;
     Buf ab; memset(&ab, 0, sizeof ab);
@@ -4006,21 +4047,48 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
 else {
       int kv = (m && kwh_d >= 0) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
       int provided = kv >= 0 ? kv : (k < pos_argc_d ? argv[k] : -1);
-      /* Default expressions (e.g. `@ivar * 10`) reference the callee's self and
-         callee's class, not the caller's. Temporarily redirect both. A value-
-         type receiver is a by-value struct, so its ivars dereference with `.`,
-         not `->` (without this, `def m(r = @r)` emits `selfval->iv_r`). */
-      int saved_emcls2 = g_emitting_class_id;
-      const char *saved_deref3 = g_self_deref;
-      if (provided < 0) {
-        g_self = selfptr;
-        g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
-        if (m) g_emitting_class_id = m->class_id;
+      if (splat_tmp_d >= 0 && k >= splat_idx_d) {
+        /* fill this fixed param from the splatted array at offset k-splat_idx */
+        int off = k - splat_idx_d;
+        TyKind set = ty_array_elem(splat_at_d);
+        Buf eb; memset(&eb, 0, sizeof eb);
+        if (p && p->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
+          /* a scalar splat element into a poly-widened param: box it */
+          Buf raw; memset(&raw, 0, sizeof raw);
+          emit_array_elem_at(splat_at_d, splat_tmp_d, off, &raw);
+          emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
+        }
+        else emit_array_elem_at(splat_at_d, splat_tmp_d, off, &eb);
+        /* an optional param may fall past the (runtime-sized) array end; the
+           arity check covers required params, so guard only the optionals */
+        if (k >= m->nrequired) {
+          Buf db; memset(&db, 0, sizeof db);
+          emit_arg_or_default(c, m, k, -1, &db);
+          TyKind pt = p ? p->type : TY_INT;
+          buf_printf(&ab, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, splat_tmp_d, splat_tmp_d,
+                     eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
+          free(db.p);
+        }
+        else buf_puts(&ab, eb.p ? eb.p : "");
+        free(eb.p);
       }
-      emit_arg_or_default(c, m, k, provided, &ab);
-      g_self = saved_self;
-      g_self_deref = saved_deref3;
-      g_emitting_class_id = saved_emcls2;
+      else {
+        /* Default expressions (e.g. `@ivar * 10`) reference the callee's self and
+           callee's class, not the caller's. Temporarily redirect both. A value-
+           type receiver is a by-value struct, so its ivars dereference with `.`,
+           not `->` (without this, `def m(r = @r)` emits `selfval->iv_r`). */
+        int saved_emcls2 = g_emitting_class_id;
+        const char *saved_deref3 = g_self_deref;
+        if (provided < 0) {
+          g_self = selfptr;
+          g_self_deref = comp_ty_value_obj(c, ty_object(cid)) ? "." : "->";
+          if (m) g_emitting_class_id = m->class_id;
+        }
+        emit_arg_or_default(c, m, k, provided, &ab);
+        g_self = saved_self;
+        g_self_deref = saved_deref3;
+        g_emitting_class_id = saved_emcls2;
+      }
       TyKind att = p ? p->type : comp_ntype(c, k < argc ? argv[k] : -1);
       if (p && att == TY_UNKNOWN) att = TY_POLY;  /* poly in the callee signature */
       emit_indent(g_pre, g_indent);

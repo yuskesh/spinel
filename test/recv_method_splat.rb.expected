@@ -1,0 +1,9 @@
+6
+6
+6
+x-y
+31
+23
+6
+[1, "two", :three]
+AE: wrong number of arguments (given 2, expected 3)
