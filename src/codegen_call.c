@@ -9842,6 +9842,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        accept poly too (the index is unboxed where it is used below). */
     int is_index = sp_streq(name, "[]") && argc == 1 &&
                    (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY);
+    /* `fetch(key[, default])` on a poly value that is actually a str/sym-keyed
+       hash: without a user `fetch` candidate the dispatch was skipped and the
+       call collapsed to default_value (an empty string), dropping the lookup.
+       The str/sym-keyed hash arms below handle it, so admit it here. */
+    int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) &&
+                   (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_SYMBOL);
     int is_include = (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                       sp_streq(name, "has_key?") || sp_streq(name, "key?")) && argc == 1;
     int ncand = 0;
@@ -9850,7 +9856,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       /* Include if call supplies all required params (pad defaults / truncate extras) */
       if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
     }
-    if (ncand > 0 || is_index || is_include) {
+    if (ncand > 0 || is_index || is_include || is_fetch) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       int *atmp = malloc(sizeof(int) * argc);
@@ -9873,7 +9879,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
       }
       emit_ctype(c, is_scalar_ret(ret) ? ret : TY_INT, b);
-      buf_printf(b, " _t%d = %s; ", tr, is_scalar_ret(ret) ? default_value(ret) : "0");
+      /* Seed the result temp. For `fetch(key, default)` the seed IS the
+         supplied default, so a receiver whose runtime variant matches no switch
+         arm (e.g. an empty `{}` that boxed as PolyPolyHash) still yields the
+         default rather than a bare default_value() (an empty string). */
+      buf_printf(b, " _t%d = ", tr);
+      if (is_fetch && argc == 2) {
+        char dn[40]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
+        if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b);
+        else buf_puts(b, dn);
+      }
+      else buf_puts(b, is_scalar_ret(ret) ? default_value(ret) : "0");
+      buf_puts(b, "; ");
       /* include? on a TAG_STR receiver: check tag before entering cls_id switch */
       if (is_include && infer_type(c, argv[0]) == TY_STRING)
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_include(_t%d.v.s, _t%d); } else ", tv, tr, tv, atmp[0]);
