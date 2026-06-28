@@ -89,6 +89,16 @@ static const char *sp_sym_to_s(sp_sym id);
    (SIGFPE on x86) or silently returning 0. */
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg);
 
+/* The unresolved-call gate (codegen_call.c) raises NoMethodError through this
+   single recognizable token under SPINEL_GATE_RAISE, so coercion sites can
+   detect and coerce it (sp_poly_to_i(sp_raise_nomethod(...)) etc.) rather than
+   parse a comma-expression. Returns sp_RbVal so it composes in a poly slot;
+   NORETURN, so the value is never produced. Unused when the gate stays silent. */
+SP_NORETURN SP_COLD static sp_RbVal sp_raise_nomethod(const char *msg) __attribute__((unused));
+SP_NORETURN SP_COLD static sp_RbVal sp_raise_nomethod(const char *msg) {
+  sp_raise_cls("NoMethodError", msg);
+}
+
 static inline mrb_int sp_idiv(mrb_int a, mrb_int b) {
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
   mrb_int q = a / b; mrb_int r = a % b;

@@ -2919,6 +2919,11 @@ char *codegen_program(const NodeTable *nt) {
      sides so codegen and the AST agree. */
   g_line_map = (getenv("SPINEL_LINE_MAP") || getenv("SPINEL_DEBUG")) ? 1 : 0;
   g_debug = getenv("SPINEL_DEBUG") ? 1 : 0;
+  /* Staged groundwork: raise NoMethodError at the unresolved-call gate. Default
+     off (silent typed default, baseline). On, the gate emits sp_raise_nomethod
+     and the poly->typed-slot coercion sites must keep the side-effect -- used to
+     drive that groundwork to green before the flip becomes the default. */
+  g_gate_raise = getenv("SPINEL_GATE_RAISE") ? 1 : 0;
 
   /* Analyze-only emit modes (legacy --emit-*): write the requested artifact
      from the analysis result and skip codegen. Returns an empty translation

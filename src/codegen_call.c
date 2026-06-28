@@ -2653,6 +2653,13 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
        is compiled but never called -- emits sp_box_nil(); coerce it to a
        const char* (yields "" at runtime) so the string ops below type-check. */
     if (rt == TY_STRING && sp_streq(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
+    /* Same shape, but the unresolved-call gate raised (SPINEL_GATE_RAISE): its
+       sp_raise_nomethod(...) is a side-effecting poly value, so coerce it (the
+       raise diverges before the result is read) rather than feed the raw
+       sp_RbVal into a const char* string op. */
+    else if (rt == TY_STRING && strncmp(r, "sp_raise_nomethod(", 18) == 0) {
+      Buf cb; memset(&cb, 0, sizeof cb); buf_printf(&cb, "sp_poly_to_s(%s)", r); r = cb.p ? cb.p : r;
+    }
     int handled = 1;
 
     if (rt == TY_STRING) {
@@ -10982,13 +10989,27 @@ else {
          representation (it diverges -- bm_micro_lisp), so the coercion must be
          made robust site by site before the gate can flip. Land that groundwork,
          then change this to a sp_raise_cls("NoMethodError", ...) comma-expr. */
+      const char *nm = nt_str(nt, id, "name");
       if (warn_unresolved_pos(c, id)) {
-        const char *nm = nt_str(nt, id, "name");
-        fprintf(stderr, "unresolved call '%s' on %s receiver -> nil "
-                        "(CRuby would raise NoMethodError)\n",
-                nm ? nm : "?", ty_name(grt));
+        fprintf(stderr, "unresolved call '%s' on %s receiver -> %s\n",
+                nm ? nm : "?", ty_name(grt),
+                g_gate_raise ? "NoMethodError (matching CRuby)" : "nil (CRuby would raise NoMethodError)");
       }
-      buf_puts(b, (is_scalar_ret(ret) && ret != TY_UNKNOWN) ? default_value(ret) : "sp_box_nil()");
+      const char *dflt = (is_scalar_ret(ret) && ret != TY_UNKNOWN) ? default_value(ret) : "sp_box_nil()";
+      if (g_gate_raise) {
+        /* Scalar slot: the comma-expr yields a typed default the surrounding C
+           accepts directly. Poly slot: emit the recognizable sp_raise_nomethod
+           token (returns sp_RbVal) so coercion sites keep the raise side-effect
+           rather than text-discarding a bare sp_box_nil(). Both diverge before
+           the value is used. */
+        if (sp_streq(dflt, "sp_box_nil()"))
+          buf_printf(b, "sp_raise_nomethod(\"undefined method '%s' for %s\")", nm ? nm : "?", ty_name(grt));
+        else
+          buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for %s\"), %s)",
+                     nm ? nm : "?", ty_name(grt), dflt);
+        return;
+      }
+      buf_puts(b, dflt);
       return;
     }
   }

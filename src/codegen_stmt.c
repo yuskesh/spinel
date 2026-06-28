@@ -2401,6 +2401,13 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
   emit_expr(c, node, &tmp);
   const char *txt = tmp.p ? tmp.p : "";
   if (sp_streq(txt, "sp_box_nil()")) emit_ret_nil(c, g_ret_type, b);
+  /* The unresolved-call gate's sp_raise_nomethod(...) is a side-effecting poly
+     value (it raises): coerce it to the non-poly slot, keeping the call, rather
+     than passing the sp_RbVal through raw. A text match on the gate's own token
+     is reliable where comp_ntype is not (it can diverge from the emitted C). */
+  else if (strncmp(txt, "sp_raise_nomethod(", 18) == 0 &&
+           g_ret_type != TY_POLY && g_ret_type != TY_UNKNOWN)
+    emit_unbox_text(c, g_ret_type, txt, b);
   else buf_puts(b, txt);
   free(tmp.p);
 }
@@ -2916,6 +2923,7 @@ void emit_with_prelude(Compiler *c, int id, Buf *b, int indent,
 }
 
 int g_line_map = 0;
+int g_gate_raise = 0;
 int g_debug = 0;  /* --debug build: emit user methods with external linkage so
                      -rdynamic names backtrace/caller frames (instance/class
                      methods only; toplevel sp_<name> stays static to avoid
