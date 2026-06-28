@@ -3383,6 +3383,7 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
         const char *ptn = c_type_name(pt);
         if (at == TY_POLY && pt == TY_STRING) { buf_puts(out, "sp_poly_to_s("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && pt == TY_FLOAT) { buf_puts(out, "sp_poly_to_f("); emit_expr(c, provided, out); buf_puts(out, ")"); }
+        else if (at == TY_POLY && pt == TY_SYMBOL) { buf_puts(out, "(sp_sym)sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && (pt == TY_INT || pt == TY_BOOL)) { buf_puts(out, "sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         /* poly arg into an object or other pointer-backed param (array, proc,
            ...): unbox the pointer via emit_unbox_text (a nil box has v.p ==
