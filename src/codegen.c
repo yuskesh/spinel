@@ -2268,6 +2268,17 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_puts(b, "((void)0)");
       return;
     }
+    /* `super` in a copy hook (initialize_copy / initialize_dup /
+       initialize_clone) whose only ancestor is Object: Object provides these
+       as no-ops -- and spinel's dup/clone already memcpy'd the whole struct
+       (cls_id + every ivar) before invoking the user hook, so Object's ivar
+       copy is already done. Emit a no-op rather than raising NoMethodError. */
+    if (uname && (sp_streq(uname, "initialize_copy") ||
+                  sp_streq(uname, "initialize_dup") ||
+                  sp_streq(uname, "initialize_clone"))) {
+      buf_puts(b, "((void)0)");
+      return;
+    }
     /* No superclass method anywhere (parent chain, included-module shadow, and
        the exception-initialize special case all missed). CRuby raises
        NoMethodError at runtime, so emit that rather than rejecting at compile
