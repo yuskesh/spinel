@@ -1841,10 +1841,16 @@ else {
       sp_mark_path_included(canonical);
       content = read_file(full_path);
       if (!content) {
+        /* CRuby raises LoadError for a missing require_relative target. Spinel
+           inlines at parse time, so a missing file means the classes/methods it
+           was meant to define are simply absent -- and because dispatch then
+           silently mis-resolves a call to a same-named method on another class
+           (no missing-file error at the call site), the failure surfaces far
+           from its cause. Halt the compile instead, matching CRuby. */
         fprintf(stderr,
-                "warning: require_relative \"%s\" from %s could not be resolved (no such file: %s); the call is ignored\n",
-                rel_path, source_path, full_path);
-        content = strdup("# require_relative not found");
+                "spinel: %s: cannot load such file -- %s (require_relative \"%s\")\n",
+                source_path, full_path, rel_path);
+        exit(1);
       }
 else {
         /* Recursively resolve */
