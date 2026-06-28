@@ -2778,18 +2778,21 @@ void analyze_program(Compiler *c) {
             "explicitly)\n", file, ln);
   }
 
-  /* Backstop step 2: a reachable method that STILL has TY_UNKNOWN params was
-     never bound by any typed call site -- mark it unreachable so codegen skips
-     it rather than exit(1)ing on the unknown type. */
+  /* Backstop step 2: a reachable method whose parameter STILL has TY_UNKNOWN was
+     never bound by a typed call site -- every call reached it with a poly/untyped
+     argument (e.g. an FFI :pointer return). The method is still genuinely called,
+     so it cannot just be dropped: codegen would still emit the call and dangle on
+     the missing symbol (#1606 -- the direct-call sibling of #1583). Widen the
+     unknown parameter to TY_POLY so the body emits with a poly parameter and the
+     call links. A truly-dead method (no real call) gets the same harmless poly
+     body and is dropped by --gc-sections at link. */
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     if (!sc->reachable || sc->nparams == 0) continue;
-    int has_unknown = 0;
     for (int i = 0; i < sc->nparams; i++) {
       LocalVar *p = sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
-      if (p && p->type == TY_UNKNOWN) { has_unknown = 1; break; }
+      if (p && p->type == TY_UNKNOWN) p->type = TY_POLY;
     }
-    if (has_unknown) sc->reachable = 0;
   }
 
   /* The method-reference backstop and ivar up-propagation above changed param
