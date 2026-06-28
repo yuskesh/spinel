@@ -65,6 +65,23 @@ void emit_interp(Compiler *c, int id, Buf *b) {
       for (int si = 0; si + 1 < bn; si++) emit_stmt(c, body[si], g_pre, g_indent);
       const char *ety = expr >= 0 ? nt_type(nt, expr) : NULL;
       TyKind t = comp_ntype(c, expr);
+      /* A bare implicit-self call inside an included-module method is analyzed
+         generically (self type unknown -> TY_UNKNOWN), but codegen emits the
+         method for a concrete class. Re-resolve the call against the class
+         being emitted so the interpolation dispatches on the real return type
+         (the same self-class lookup codegen uses for implicit-self calls). */
+      if (t == TY_UNKNOWN && ety && sp_streq(ety, "CallNode") &&
+          nt_ref(nt, expr, "receiver") < 0) {
+        const char *cn = nt_str(nt, expr, "name");
+        Scope *cs = comp_scope_of(c, expr);
+        int dcid = g_ie_class_id >= 0 ? g_ie_class_id
+                 : g_emitting_class_id >= 0 ? g_emitting_class_id
+                 : cs->class_id;
+        if (cn && dcid >= 0) {
+          int mi = comp_method_in_chain(c, dcid, cn, NULL);
+          if (mi >= 0) t = c->scopes[mi].ret;
+        }
+      }
       if (ety && (sp_streq(ety, "LocalVariableWriteNode") || sp_streq(ety, "LocalVariableOperatorWriteNode") ||
                   sp_streq(ety, "LocalVariableOrWriteNode") || sp_streq(ety, "LocalVariableAndWriteNode"))) {
         emit_stmt(c, expr, g_pre, g_indent);
@@ -158,6 +175,13 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         int en = 0; nt_arr(nt, expr, "elements", &en);
         if (en == 0) { buf_puts(&fmt, "%s"); buf_puts(&conv, "\"[]\""); }
         else { free(fmt.p); free(argbuf.p); free(decls.p); free(conv.p); free(flat); unsupported(c, pid, "interpolation value"); }
+      }
+      else if (t == TY_UNKNOWN) {
+        /* An untyped value (e.g. a method resolved only through an included
+           module) is already emitted as a boxed sp_RbVal, so stringify it the
+           same way as a poly value rather than rejecting the interpolation. */
+        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_poly_to_s(");
+        EMIT_IV(); buf_puts(&conv, ")");
       }
       else {
         free(fmt.p); free(argbuf.p); free(decls.p); free(conv.p); free(flat);
