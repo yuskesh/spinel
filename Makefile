@@ -318,6 +318,32 @@ RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^
 
+# ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
+# The single-threaded gate links the plain archive even for threaded tests
+# (test-run does its own cc), so it never exercises the mt archive's parallel
+# paths. This TSan-instrumented mt archive is the race-checking gate for the
+# real-parallelism work: build a threaded program against it (see scripts/
+# tsan-run.sh) and run -- TSan flags any data race on the shared GC heap, the
+# thread registry, or the run queue. Not built by default (TSan slows the build
+# and the binary); `make tsan-archive` on demand.
+SP_RT_MT_TSAN_LIB = lib/libspinel_rt_mt_tsan.a
+TSAN_DEF = $(MT_DEF) -fsanitize=thread -g
+
+build/mt-tsan/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p build/mt-tsan
+	$(CC) -c -O1 -Wno-all $(SEC_FLAGS) $(TSAN_DEF) -Ilib -Ilib/regexp $< -o $@
+
+build/mt-tsan/regexp/%.o: lib/regexp/%.c lib/regexp/re_internal.h
+	@mkdir -p build/mt-tsan/regexp
+	$(CC) -c -O1 $(SEC_FLAGS) $(TSAN_DEF) -Ilib/regexp $< -o $@
+
+RE_MT_TSAN_OBJ = $(patsubst lib/regexp/%.c,build/mt-tsan/regexp/%.o,$(RE_SRC))
+
+$(SP_RT_MT_TSAN_LIB): $(RE_MT_TSAN_OBJ) $(addprefix build/mt-tsan/,$(addsuffix .o,$(RT_MEMBERS)))
+	ar rcs $@ $^
+
+tsan-archive: $(SP_RT_MT_TSAN_LIB)
+
 regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
 
 # ---- In-tree developer tools ----

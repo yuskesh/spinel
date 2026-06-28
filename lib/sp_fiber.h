@@ -14,7 +14,26 @@
 
 #define SP_FIBER_STACK_SIZE (64*1024)
 
-typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;}sp_Fiber;
+/* ThreadSanitizer support: the asm context switch swaps stacks without TSan's
+   knowledge, so a fiber program reports spurious "unexpected memory mapping"
+   or false races. Under -fsanitize=thread we give each fiber a TSan fiber
+   handle and call __tsan_switch_to_fiber at every swap so TSan follows the
+   cooperative switch. SP_TSAN is set only in that build (a separate archive),
+   so the fiber struct carries the two extra fields only there -- the archive
+   and the generated TU agree because both are compiled with -fsanitize=thread. */
+#ifndef __has_feature           /* gcc lacks __has_feature; clang has it */
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_THREAD__) || __has_feature(thread_sanitizer)
+#define SP_TSAN 1
+#endif
+
+typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;int state;int transferred;sp_RbVal yielded_value;sp_RbVal resumed_value;void(*body)(struct sp_Fiber*);void*user_data;int saved_exc_top;int saved_catch_top;void*exc_ctx;int raised;const char*raised_cls;const char*raised_msg;void*raised_obj;int inject;const char*inj_cls;const char*inj_msg;void*inj_obj;void*storage;void***saved_roots;int saved_nroots;int saved_roots_cap;struct sp_Fiber*fiber_next;struct sp_Fiber*fiber_prev;
+#ifdef SP_TSAN
+  void *tsan_fiber;                 /* __tsan fiber handle for this coroutine */
+  struct sp_Fiber *caller_fiber;    /* who switched into us (the swap-out target) */
+#endif
+}sp_Fiber;
 
 /* The currently-running fiber; the generated TU reads it directly for
    `Fiber.current` and as the implicit receiver of Fiber operations. Per-worker
