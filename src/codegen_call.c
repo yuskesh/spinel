@@ -1678,7 +1678,7 @@ else {
         buf_puts(b, "sp_PolyArray_include("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "dup") && argc == 0) {
+      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
         buf_puts(b, "sp_PolyArray_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
