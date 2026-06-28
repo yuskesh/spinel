@@ -3918,9 +3918,23 @@ int infer_return_types(Compiler *c) {
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     /* Specialized inherited-cls-new copies keep their fixed subclass return
-       type (the shared body's bare `new` would otherwise infer the base).
-       An --rbs-seeded return is likewise pinned. */
-    if (sc->ret_specialized || sc->ret_rbs_seeded) continue;
+       type (the shared body's bare `new` would otherwise infer the base). */
+    if (sc->ret_specialized) continue;
+    /* An --rbs-seeded return is pinned, with one exception: a scalar-valued
+       str-keyed hash return (Hash[String,String] / Hash[String,Integer]) whose
+       body actually builds a poly-valued StrPolyHash (mixed / non-scalar
+       values -- the RBS value type is too narrow for what the code returns).
+       Emitting the StrPolyHash body through a StrStrHash* signature is a layout
+       mismatch that corrupts every read, so let the body widen the return to
+       its poly-valued sibling. Every other rbs-seeded return stays pinned. */
+    if (sc->ret_rbs_seeded) {
+      if (sc->ret == TY_STR_STR_HASH || sc->ret == TY_STR_INT_HASH) {
+        TyKind br = sc->body >= 0 ? infer_type(c, sc->body) : TY_UNKNOWN;
+        if (has_ret && has_ret[s]) br = ty_unify(br, ret_acc[s]);
+        if (br == TY_STR_POLY_HASH) { sc->ret = TY_STR_POLY_HASH; changed = 1; }
+      }
+      continue;
+    }
     /* synthesized compiler_state methods carry a fixed return type (no AST). */
     if (sc->cs_synth) continue;
     /* An empty method body returns nil; if its value is used at all it must
