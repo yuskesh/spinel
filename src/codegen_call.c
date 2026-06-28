@@ -10970,7 +10970,18 @@ else {
          raise NoMethodError. The degradation is deliberate (a dead poly-dispatch
          arm or an inference gap), but it can also hide a genuine missing method.
          SPINEL_WARN_UNRESOLVED lists every such site so a port can be audited
-         without changing runtime behaviour. */
+         without changing runtime behaviour.
+
+         TODO(staged): the goal is to raise NoMethodError here instead of the
+         silent default (CRuby raises; a silent wrong answer is the worst failure
+         mode). That is blocked on a prerequisite: the gate's value flows into
+         coercion paths (return slots, string/int receiver+arg slots, ...) that
+         assume a side-effect-free poly box and either text-match sp_box_nil() or
+         pass it through by its declared type. A side-effecting raise breaks
+         them, and comp_ntype is not a reliable proxy for the emitted C
+         representation (it diverges -- bm_micro_lisp), so the coercion must be
+         made robust site by site before the gate can flip. Land that groundwork,
+         then change this to a sp_raise_cls("NoMethodError", ...) comma-expr. */
       if (warn_unresolved_pos(c, id)) {
         const char *nm = nt_str(nt, id, "name");
         fprintf(stderr, "unresolved call '%s' on %s receiver -> nil "
