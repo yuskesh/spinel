@@ -3359,6 +3359,17 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
           const char *hn = ty_hash_cname(pt);
           if (hn) { buf_printf(out, "sp_%sHash_new()", hn); return; }
         }
+        /* A concrete str-keyed hash arg (StrStrHash / StrIntHash) into a
+           poly-valued hash param (StrPolyHash): the two structs store values
+           differently (const char* / mrb_int vs sp_RbVal), so a raw pointer
+           pass reinterprets the layout and corrupts every read. Rebuild via the
+           value-boxing converter, mirroring the local-assignment coercion in
+           codegen_stmt.c. */
+        if (pt == TY_STR_POLY_HASH && (at == TY_STR_STR_HASH || at == TY_STR_INT_HASH)) {
+          buf_printf(out, "sp_StrPolyHash_from_%s(", at == TY_STR_STR_HASH ? "str_str_hash" : "str_int_hash");
+          emit_expr(c, provided, out); buf_puts(out, ")");
+          return;
+        }
         /* When the param is a typed hash pointer but the caller passes a poly
            or nil value (e.g. an uninit ivar), extract .v.p from the RbVal.
            sp_box_nil() stores v.i=0 so .v.p is NULL, which hash getters handle
