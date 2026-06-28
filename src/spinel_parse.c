@@ -1765,6 +1765,61 @@ else {
   free(stk_next);
 }
 
+/* Lexically collapse "." and ".." path segments, like File.expand_path,
+   without touching the filesystem. require_relative targets are formed as
+   `dir + "/" + rel_path` and then have ".rb" appended; a rel_path ending in
+   ".." -- e.g. `require_relative ".."`, which Ruby resolves to the parent
+   directory's `<dir>.rb` (it normalizes `a/b/..` -> `a` then appends ".rb")
+   -- would otherwise get ".rb" glued onto the literal ".." to form a bogus
+   "...rb". (A ".." in the middle of a path happened to work only because the
+   OS resolves it when the final file is opened; a trailing ".." cannot,
+   since ".rb" makes it a literal "...rb" name.) Rewrites in place; the
+   result is never longer than the input. */
+static void sp_normalize_dots(char *path) {
+  if (!path || !*path) return;
+  int absolute = (path[0] == '/');
+  size_t len = strlen(path);
+  char *copy = (char *)malloc(len + 1);
+  if (!copy) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  memcpy(copy, path, len + 1);
+
+  const char **seg = (const char **)malloc((len + 1) * sizeof(char *));
+  size_t *seglen = (size_t *)malloc((len + 1) * sizeof(size_t));
+  if (!seg || !seglen) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  size_t n = 0;
+
+  char *p = copy;
+  while (*p) {
+    while (*p == '/') p++;                 /* skip separators */
+    if (!*p) break;
+    char *s = p;
+    while (*p && *p != '/') p++;
+    size_t l = (size_t)(p - s);
+    if (l == 1 && s[0] == '.') continue;   /* "." */
+    if (l == 2 && s[0] == '.' && s[1] == '.') {
+      if (n > 0 && !(seglen[n-1] == 2 && seg[n-1][0] == '.' && seg[n-1][1] == '.')) {
+        n--;                               /* pop a real parent segment */
+        continue;
+      }
+      if (absolute) continue;              /* cannot ascend past root */
+      /* relative with nothing to pop: keep the ".." */
+    }
+    seg[n] = s; seglen[n] = l; n++;
+  }
+
+  char *w = path;
+  if (absolute) *w++ = '/';
+  for (size_t i = 0; i < n; i++) {
+    if (i > 0) *w++ = '/';
+    memcpy(w, seg[i], seglen[i]);
+    w += seglen[i];
+  }
+  if (w == path) *w++ = '.';               /* empty relative result -> "." */
+  *w = '\0';
+
+  free(copy); free(seg); free(seglen);
+}
+
 /* Simple require_relative resolver: replace lines matching
    require_relative "path" with the file content. Files that have
    already been included once are silently skipped on subsequent
@@ -1824,6 +1879,9 @@ else { scan_from = pos + 1; continue; }
     char full_path[1024];
     int fp_n = snprintf(full_path, sizeof(full_path), "%s/%s", dir, rel_path);
     if (fp_n < 0 || (size_t)fp_n >= sizeof(full_path)) { scan_from = pos + 1; continue; }
+    /* Collapse "." / ".." before appending ".rb", so a target ending in
+       ".." resolves to the parent dir's `<dir>.rb` rather than "...rb". */
+    sp_normalize_dots(full_path);
     {
       size_t fl = strlen(full_path);
       if (fl < sizeof(full_path) - 4 && (fl < 3 || strcmp(full_path + fl - 3, ".rb") != 0))
