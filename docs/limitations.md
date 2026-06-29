@@ -36,7 +36,12 @@ registry, or stack reification — none of which exist in a flat compiled binary
 | `Class.new(parent) { ... }` (runtime class) | unsupported | the class graph is baked at compile time |
 | General reflection (`methods`, `instance_variables`) and `instance_variable_get`/`set` with a **non-literal** name | unsupported | ivars are C struct offsets with no name→offset table; DCE strips method names. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported — it resolves to the known struct offset, like `send(:literal)` below. |
 | User-defined `#hash` / `#eql?` for hash *keys* | not dispatched (identity probe) | the hash machinery can't call back into a user method per key |
-| `require` of stdlib `.rb` that leans on metaprogramming / C extensions (e.g. `json/pure`, the `require "time"` parsing extensions like `Time.parse` / `Time.strptime`) | unsupported | such stdlib code runs off the AOT path. A `require` is resolved at parse time by splicing a bundled `lib/X.rb`; the libraries that ship this way — `set`, `forwardable`, `optparse`, `erb`, `stringio`, `strscan` — do work. The built-in `Time` class (`Time.now` / `at` / `local` / `utc`, plus `strftime` / `iso8601` / `zone`) works *without* any `require`; only the `require "time"` string-parsing additions are missing. |
+| `require` of stdlib `.rb` that leans on metaprogramming / C extensions (e.g. `json/pure`, the `require "time"` parsing extensions like `Time.parse` / `Time.strptime`) | unsupported | such stdlib code runs off the AOT path. A `require` is resolved at parse time by splicing a bundled `lib/X.rb`; the libraries that ship this way — `set`, `forwardable`, `optparse`, `erb`, `stringio`, `strscan` — do work. The built-in `Time` class (`Time.now` / `at` / `local` / `utc`, plus `strftime` / `zone`) works *without* any `require`; only the `require "time"` string-parsing additions are missing. |
+
+The require-gated stdlib Spinel *does* provide (`StringIO`, `IO#winsize`,
+`Time#iso8601`, ...) requires its `require`, matching CRuby; an unsatisfiable
+`require` is a compile error. This is opt-in today via `SPINEL_REQUIRE_GATE=1`.
+See [REQUIRE.md](REQUIRE.md) for which stdlib needs which `require`.
 | Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |
 
