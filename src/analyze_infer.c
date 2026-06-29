@@ -1560,6 +1560,15 @@ else {
       return TY_INT;
     }
     if (sp_streq(name, "srand")) return TY_INT;
+    if (sp_streq(name, "sleep") && argc <= 1) return TY_INT;
+  }
+  /* Kernel.sleep(seconds) / ::Kernel.sleep -> Integer seconds slept */
+  if (recv >= 0 && sp_streq(name, "sleep") && argc <= 1) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      const char *rname = nt_str(nt, recv, "name");
+      if (rname && sp_streq(rname, "Kernel")) return TY_INT;
+    }
   }
   /* Signal.trap / ::Signal.trap */
   if (recv >= 0 && sp_streq(name, "trap") && argc >= 1) {
