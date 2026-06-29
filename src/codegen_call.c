@@ -9872,13 +9872,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                    (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_SYMBOL);
     int is_include = (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                       sp_streq(name, "has_key?") || sp_streq(name, "key?")) && argc == 1;
+    /* push/<</append on a poly value that is actually a builtin array: the
+       array-mutate statement path skips it when a user class also defines the
+       name (the value could be that object), so the switch needs a builtin-array
+       arm or the append is silently dropped. sp_poly_shl handles every array
+       kind; the user arms above cover the object case. */
+    int is_push = (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1;
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
       /* Include if call supplies all required params (pad defaults / truncate extras) */
       if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
     }
-    if (ncand > 0 || is_index || is_include || is_fetch) {
+    if (ncand > 0 || is_index || is_include || is_fetch || is_push) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       int *atmp = malloc(sizeof(int) * argc);
@@ -10022,6 +10028,22 @@ else {
         else {
           buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = sp_IntArray_get((sp_IntArray *)_t%d.v.p, %s); break;", tr, tv, idxref);
         }
+      }
+      if (is_push) {
+        /* The value is a builtin array: append each (boxed) arg via sp_poly_shl,
+           which dispatches on the array kind. `push`/`<<`/`append` return the
+           receiver, so yield it when the result is used (chained). */
+        buf_puts(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_POLY_ARRAY:");
+        for (int a = 0; a < argc; a++) {
+          char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[a]);
+          Buf ab; memset(&ab, 0, sizeof ab);
+          if (atmp_ty[a] == TY_POLY) buf_puts(&ab, tn);
+          else emit_boxed_text(c, atmp_ty[a], tn, &ab);
+          buf_printf(b, " sp_poly_shl(_t%d, %s);", tv, ab.p ? ab.p : "sp_box_nil()");
+          free(ab.p);
+        }
+        if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
+        buf_puts(b, " break;");
       }
       if (is_include) {
         TyKind at = infer_type(c, argv[0]);
