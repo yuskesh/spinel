@@ -411,8 +411,53 @@ else {
     return 1;
   }
   if (sp_streq(name, "warn")) {
-    /* Kernel#warn: each argument to stderr with a trailing newline */
+    /* Kernel#warn(*msgs, uplevel:, category:): positional messages go to stderr
+       with a trailing newline. The trailing keyword hash carries options:
+         - a forwarded `**opts` (AssocSplat) is an options bundle: evaluate the
+           splat values for side effects and otherwise ignore them;
+         - `category:` selects a warning category. CRuby suppresses the
+           `:deprecated` category by default (Warning[:deprecated] == false with
+           no -W:deprecated), so a literal `category: :deprecated` prints nothing
+           (messages are still evaluated for side effects); other categories print
+           normally;
+         - `uplevel:` prefixes each line with the caller's source location, which
+           needs a runtime line-granularity call stack spinel does not have.
+           Emitting any prefix would be a wrong location, so it loud-rejects. */
+    int kw_idx = -1, suppress = 0;
+    if (argc > 0) {
+      int last = argv[argc - 1];
+      const char *lt = nt_type(c->nt, last);
+      if (lt && sp_streq(lt, "KeywordHashNode")) {
+        kw_idx = argc - 1;
+        int en = 0; const int *elems = nt_arr(c->nt, last, "elements", &en);
+        for (int e = 0; e < en; e++) {
+          const char *ety = nt_type(c->nt, elems[e]);
+          if (ety && sp_streq(ety, "AssocSplatNode")) {
+            int val = nt_ref(c->nt, elems[e], "value");
+            if (val >= 0) { emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, val, b); buf_puts(b, ");\n"); }
+            continue;
+          }
+          int key = nt_ref(c->nt, elems[e], "key");
+          int val = nt_ref(c->nt, elems[e], "value");
+          const char *kty = key >= 0 ? nt_type(c->nt, key) : NULL;
+          const char *kname = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(c->nt, key, "value") : NULL;
+          if (kname && sp_streq(kname, "uplevel")) {
+            unsupported(c, elems[e], "warn(uplevel:) caller-location prefix (no runtime source-line stack)");
+          }
+          else if (kname && sp_streq(kname, "category")) {
+            const char *vty = val >= 0 ? nt_type(c->nt, val) : NULL;
+            const char *vname = (vty && sp_streq(vty, "SymbolNode")) ? nt_str(c->nt, val, "value") : NULL;
+            if (vname && sp_streq(vname, "deprecated"))
+              suppress = 1;
+            else if (val >= 0) { emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, val, b); buf_puts(b, ");\n"); }
+          }
+          else if (val >= 0) { emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, val, b); buf_puts(b, ");\n"); }
+        }
+      }
+    }
     for (int k = 0; k < argc; k++) {
+      if (k == kw_idx) continue;
+      if (suppress) { emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, ");\n"); continue; }
       TyKind at = comp_ntype(c, argv[k]);
       emit_indent(b, indent); buf_puts(b, "fputs(");
       if (at == TY_STRING) emit_expr(c, argv[k], b);
