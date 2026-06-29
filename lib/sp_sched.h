@@ -36,6 +36,8 @@ typedef struct sp_thread {
                                     stack; a waker may only enqueue it once off_cpu, otherwise it
                                     could be run on a second worker mid-context-switch */
   unsigned char     wake_pending; /* a wake arrived while still on-cpu; the worker enqueues it */
+  unsigned char     preempt_request; /* sysmon set this thread over its timeslice; it yields at its
+                                        next safepoint poll (cooperative preemption, §5) */
   struct sp_thread *rq_next;     /* run-queue link while RUNNABLE */
   struct sp_thread *joiners;     /* threads parked in #join/#value on this one */
   struct sp_thread *wait_next;   /* link within the wait list it is parked on */

@@ -9,6 +9,8 @@
 #include <unistd.h>     /* sysconf (worker count) */
 #include <time.h>       /* clock_gettime (Kernel#sleep) */
 #include <errno.h>      /* EINTR (sleep fallback) */
+#include <signal.h>     /* SIGURG preemption */
+#include <stdint.h>     /* intptr_t (worker id passed via pthread arg) */
 
 /* Reached by name (defined in lib/sp_alloc.c or the generated TU), exactly as
    lib/sp_fiber.c reaches them. */
@@ -77,12 +79,36 @@ static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers
 static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
 static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked workers wait for clear */
 static pthread_cond_t g_sysmon_cv = PTHREAD_COND_INITIALIZER;    /* the monitor thread waits here */
-static pthread_t      g_sysmon;                                  /* monitor: wakes sleeping threads */
+static pthread_t      g_sysmon;                                  /* monitor: wakes sleepers + preempts */
 static int            g_sysmon_started = 0;
+static int            g_sysmon_idle = 0; /* monitor is parked on g_sysmon_cv (signal it to start ticking) */
 static double sp_monotonic_now(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
+
+/* ---- preemption (design §5): timeslice tracking + the one safepoint flag ----
+ * The monitor watches how long each worker has run its current green thread; past
+ * a quantum it sets that thread's preempt_request, raises the safepoint flag, and
+ * SIGURGs the worker. The thread yields at its next safepoint poll -- which the
+ * codegen emits at loop back-edges, i.e. points that hold no runtime lock, so a
+ * preempting thread always parks at a safe point. g_npreempt counts outstanding
+ * requests so the flag (shared with GC stop-the-world) is cleared only when no
+ * reason remains. All of this is touched solely under g_sched_lock. */
+#define SP_PREEMPT_QUANTUM 0.010   /* a green thread runs ~10ms before it must yield */
+#define SP_PREEMPT_TICK    0.005   /* monitor re-checks worker timeslices this often while busy */
+static int g_npreempt = 0;         /* preempt_requests set but not yet consumed */
+typedef struct { pthread_t tid; sp_thread *cur; double since; int active; } sp_wslot;
+static sp_wslot   g_wslot[SP_MAX_WORKERS];   /* per-worker: the green thread it runs + when it started */
+static SP_TLS int g_worker_id = 0;           /* this worker's slot index (0 = main) */
+static void sp_recompute_safepoint_flag(void) {   /* PRE: g_sched_lock held */
+  sp_safepoint_flag = (g_stw_active || g_npreempt > 0);
+}
+/* SIGURG lands on the target worker's own stack. Re-assert the flag so the worker
+   sees it even if it was about to clear the lock-free read; the actual yield
+   happens cooperatively at the next safepoint poll (kept minimal and
+   async-signal-safe -- a lone volatile store). */
+static void sp_sigurg_handler(int sig) { (void)sig; sp_safepoint_flag = 1; }
 #define SCHED_WAKE()    pthread_cond_signal(&g_sched_work)   /* nudge one idle worker after enqueue/wake */
 #define SCHED_WAKE_ALL() pthread_cond_broadcast(&g_sched_work)  /* wake every waiter to re-check state */
 
@@ -130,12 +156,18 @@ static void sp_stw_park_locked(void) {
 #define SCHED_WAKE_ALL() ((void)0)
 #endif
 
+#ifdef SP_THREADS
+static void sp_safepoint_preempt(void);   /* defined after the scheduler state below */
+#endif
+
 /* Safepoint poll body: codegen emits `if (sp_safepoint_flag) sp_safepoint();` at
-   loop back-edges. If a stop-the-world is in progress, park until it clears. */
+   loop back-edges. Park if a stop-the-world is in progress, then yield if the
+   monitor flagged this green thread as over its timeslice (design §5). */
 void sp_safepoint(void) {
 #ifdef SP_THREADS
   SCHED_LOCK();
   if (g_stw_active) sp_stw_park_locked();
+  sp_safepoint_preempt();
   SCHED_UNLOCK();
 #endif
 }
@@ -180,8 +212,8 @@ void sp_stw_collect(void) {
   g_collector_active = 0;
   SCHED_LOCK();
   g_n_parked_fiber = 0;
-  sp_safepoint_flag = 0;
   g_stw_active = 0;
+  sp_recompute_safepoint_flag();   /* keep the flag set if a preempt is still pending */
   pthread_cond_broadcast(&g_stw_release);
   SCHED_UNLOCK();
 #else
@@ -257,6 +289,9 @@ void sp_sched_init(void) {
   g_prev_globals_hook = sp_gc_mark_globals_hook;
   sp_gc_mark_globals_hook = sp_sched_globals_mark;
 #ifdef SP_THREADS
+  g_worker_id = 0;                          /* main is worker 0 */
+  g_wslot[0].tid = pthread_self();
+  g_wslot[0].active = 1;
   sp_sched_start_workers();   /* spawn N-1 helper OS workers (see below) */
 #endif
 }
@@ -297,6 +332,14 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   g_nrunning++;
   t->state = SP_TH_RUNNING;
   t->off_cpu = 0;        /* on-cpu now: no other worker may pick it up */
+#ifdef SP_THREADS
+  /* Publish to the monitor that this worker is now running t, and when -- it uses
+     this to enforce the timeslice. Nudge the monitor if it is idle so it starts
+     ticking. */
+  g_wslot[g_worker_id].cur = t;
+  g_wslot[g_worker_id].since = sp_monotonic_now();
+  if (g_sysmon_idle) pthread_cond_signal(&g_sysmon_cv);
+#endif
   int raised = 0;
   const char *ec = NULL, *em = NULL;
   void *eo = NULL;
@@ -309,6 +352,12 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   sp_Fiber_transfer_catch(t->fiber, in, &raised, &ec, &em, &eo);
   SCHED_LOCK();
   g_current = saved;
+#ifdef SP_THREADS
+  g_wslot[g_worker_id].cur = NULL;   /* no longer timing t on this worker */
+  /* If the monitor flagged t but it yielded/blocked/died before reaching a poll,
+     retire the request here so the flag does not stay stuck set. */
+  if (t->preempt_request) { t->preempt_request = 0; g_npreempt--; sp_recompute_safepoint_flag(); }
+#endif
   if (t->fiber->state == 3) {   /* the body returned (terminated) */
     t->retval = t->fiber->yielded_value;
     t->state = SP_TH_DEAD;
@@ -345,6 +394,27 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   g_nrunning--;
   sp_sched_signal_if_quiescent();   /* this thread blocked/passed; if nothing else runs, wake a waiting main */
 }
+
+#ifdef SP_THREADS
+/* Cooperative preemption point (called from sp_safepoint with the lock held). If
+   the monitor flagged the running green thread as over its timeslice, yield to
+   the worker root exactly as Thread.pass does for a spawned thread: stay RUNNING
+   so run_thread_once requeues us at the tail and the worker runs a sibling. The
+   main thread is never flagged (the monitor only times green threads it runs via
+   run_thread_once), so this only ever preempts a spawned thread. PRE/POST: lock
+   held. */
+static void sp_safepoint_preempt(void) {
+  sp_thread *self = g_current;
+  if (!self || self == &g_main_thread || !self->preempt_request) return;
+  self->preempt_request = 0;
+  g_npreempt--;
+  sp_recompute_safepoint_flag();
+  SCHED_UNLOCK();
+  sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+  sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while we were off-cpu */
+  SCHED_LOCK();
+}
+#endif
 
 /* Run runnable green threads on this (the main) worker. Returns when `target`
    dies, when the main thread is woken back to RUNNABLE, or when the run queue is
@@ -585,13 +655,17 @@ static int sp_worker_count(void) {
   return n;
 }
 
-/* The monitor thread: wakes Kernel#sleep sleepers when their deadline passes, so
-   a sleeping green thread frees its OS worker rather than blocking it. It waits
-   on g_sysmon_cv when nobody is sleeping and is signalled when a thread sleeps;
-   while threads sleep it does timed waits to the nearest deadline. (This is also
-   the foundation for SIGURG preemption later.) */
+/* The monitor thread (sysmon, design §5). Two jobs, both off the workers' backs:
+   (1) wake Kernel#sleep sleepers when their deadline passes, and (2) enforce the
+   timeslice -- when a worker has run the same green thread past the quantum, flag
+   it for preemption and SIGURG the worker so it yields at its next safepoint. It
+   idles on g_sysmon_cv when nothing sleeps and no worker runs a green thread, and
+   otherwise ticks on a short nanosleep. It never participates in GC. */
 static void *sp_sysmon_main(void *arg) {
   (void)arg;
+  /* The monitor must never field a preemption signal itself. */
+  sigset_t blk; sigemptyset(&blk); sigaddset(&blk, SIGURG);
+  pthread_sigmask(SIG_BLOCK, &blk, NULL);
   SCHED_LOCK();
   for (;;) {
     if (g_shutdown) break;
@@ -613,13 +687,30 @@ static void *sp_sysmon_main(void *arg) {
         pp = &t->wait_next;
       }
     }
-    if (nearest == 0.0) {
-      pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);   /* nobody sleeping: wait for one */
+    /* Timeslice enforcement: flag any worker over the quantum, once per slice. */
+    int busy = 0;
+    for (int i = 0; i < g_nworkers; i++) {
+      sp_thread *r = g_wslot[i].active ? g_wslot[i].cur : NULL;
+      if (!r) continue;
+      busy = 1;
+      if (!r->preempt_request && (now - g_wslot[i].since) >= SP_PREEMPT_QUANTUM) {
+        r->preempt_request = 1;
+        g_npreempt++;
+        sp_recompute_safepoint_flag();
+        pthread_kill(g_wslot[i].tid, SIGURG);   /* nudge it to its next safepoint poll */
+      }
+    }
+    if (nearest == 0.0 && !busy) {
+      /* nothing to time: sleep until a thread sleeps or a worker picks one up */
+      g_sysmon_idle = 1;
+      pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);
+      g_sysmon_idle = 0;
     } else {
-      /* Sleepers pending: poll near the next deadline. Drop the lock and
-         nanosleep (rather than a timed cond wait) so the sleep granularity adds
-         at most ~10ms and the monitor is not flagged for a timed wait. */
-      double dt = nearest - now;
+      /* Tick: poll at the quantum granularity while busy, or near the nearest
+         sleeper deadline. Drop the lock and nanosleep (not a timed cond wait, so
+         the monitor is never flagged for one) for at most ~10ms. */
+      double dt = busy ? SP_PREEMPT_TICK : (nearest - now);
+      if (nearest != 0.0 && nearest - now < dt) dt = nearest - now;
       if (dt > 0.01) dt = 0.01;
       if (dt < 0.0005) dt = 0.0005;
       SCHED_UNLOCK();
@@ -669,9 +760,12 @@ void sp_sched_sleep(double seconds) {
    runnable green threads off the GRQ forever. It parks at the GC barrier when a
    collection is in progress and exits when main signals shutdown at drain. */
 static void *sp_worker_main(void *arg) {
-  (void)arg;
+  int wid = (int)(intptr_t)arg;
+  g_worker_id = wid;          /* TLS: read only by this worker */
   sp_fiber_worker_init();
   SCHED_LOCK();
+  g_wslot[wid].tid = pthread_self();   /* publish under the lock; the monitor reads it there */
+  g_wslot[wid].active = 1;
   for (;;) {
     if (g_stw_active) { sp_stw_park_locked(); continue; }
     if (g_shutdown) break;
@@ -689,10 +783,21 @@ static void sp_sched_start_workers(void) {
      its write (pthread_create of the workers is the happens-before edge). The
      monitor idles on g_sysmon_cv until a thread sleeps; if it fails to spawn,
      sleep falls back to a plain blocking nanosleep. */
-  if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
+  /* Fix the worker count before spawning anything, so the monitor and helpers
+     read it through the pthread_create happens-before edge (no lock needed). */
   g_nworkers = sp_worker_count();
+  /* Install the preemption signal handler before any worker can be targeted.
+     SA_RESTART so an in-flight library syscall resumes rather than failing with
+     EINTR -- the yield itself is cooperative (at the next safepoint poll), the
+     signal only nudges the worker there. */
+  struct sigaction sa; memset(&sa, 0, sizeof sa);
+  sa.sa_handler = sp_sigurg_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART;
+  sigaction(SIGURG, &sa, NULL);
+  if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
   for (int i = 1; i < g_nworkers; i++)
-    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, NULL) != 0) { g_nworkers = i; break; }
+    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, (void *)(intptr_t)i) != 0) { g_nworkers = i; break; }
 }
 #endif
 
