@@ -1792,6 +1792,8 @@ else {
           sp_streq(name, "filter") || sp_streq(name, "sort_by") ||
           sp_streq(name, "take_while") || sp_streq(name, "drop_while"))
         return rt;
+      if ((sp_streq(name, "max_by") || sp_streq(name, "min_by")) && argc >= 1)
+        return TY_POLY_ARRAY;  /* count form: n elements as a generic Array */
       if (sp_streq(name, "max_by") || sp_streq(name, "min_by") ||
           sp_streq(name, "find") || sp_streq(name, "detect"))
         return ty_array_elem(rt);  /* returns an element */
@@ -2182,6 +2184,7 @@ else {
     int block = nt_ref(nt, id, "block");
     /* finite-range Enumerable methods that materialize to an int array in
        codegen: select/reject/filter (fused loop) and min_by/max_by. */
+    if ((sp_streq(name, "min_by") || sp_streq(name, "max_by")) && argc >= 1) return TY_POLY_ARRAY;
     if ((sp_streq(name, "min_by") || sp_streq(name, "max_by")) && block >= 0) return TY_INT;
     if ((ty_iter_shape(name) == TY_ITER_SELECT || ty_iter_shape(name) == TY_ITER_REJECT) &&
         block >= 0) return TY_INT_ARRAY;
