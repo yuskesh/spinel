@@ -1174,6 +1174,8 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   /* nil / true / false literal patterns */
   if (sp_streq(pty, "NilNode")) {
     if (pt == TY_POLY) buf_printf(b, "(_t%d.tag == SP_TAG_NIL)", t);
+    /* a no-match MatchData is a NULL pointer; `in nil` matches it */
+    else if (pt == TY_MATCHDATA) buf_printf(b, "(_t%d == NULL)", t);
     else buf_puts(b, (pt == TY_NIL) ? "1" : "0");
     return 1;
   }
@@ -1418,6 +1420,26 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr, int indent,
    needed. tail=0: statement form, arms fall through to a shared end label.
    value_cr >= 0: value form -- each arm assigns its body value to _t<value_cr>
    (boxed to the case's result type) then jumps to the end label. */
+/* Materialize MatchData#deconstruct_keys (the regex's named captures as a
+   symbol-keyed hash) into a fresh GC-rooted SymPolyHash temp, so a hash pattern
+   can match/bind against a MatchData scrutinee. `md` is a C expression naming
+   the sp_MatchData* (it must be side-effect-free; callers pass a plain temp).
+   Returns the temp number of the resulting SymPolyHash. */
+static int emit_md_deconstruct_keys(Buf *b, int indent, const char *md) {
+  int dk = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new();\n", dk);
+  emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", dk);
+  emit_indent(b, indent);
+  buf_printf(b,
+    "if (%s) for (int _di = 0, _dn = re_num_named((%s)->pat); _di < _dn; _di++) {"
+    " int _dg = -1; const char *_dnm = re_named_name((%s)->pat, _di, &_dg);"
+    " if (_dnm) sp_SymPolyHash_set(_t%d, sp_sym_intern(_dnm),"
+    " sp_box_nullable_str(sp_MatchData_aref((%s), _dg))); }\n",
+    md, md, md, dk, md);
+  return dk;
+}
+
 void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int value_cr) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -1465,6 +1487,18 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     }
 
     emit_indent(b, indent); buf_puts(b, "{\n");
+
+    /* A hash pattern against a MatchData scrutinee matches via
+       MatchData#deconstruct_keys: materialize the named captures into a
+       symbol-keyed hash, then run the ordinary hash-pattern match/bind against
+       it. arm_t/arm_pt shadow the scrutinee for just this arm. */
+    int arm_t = t;
+    TyKind arm_pt = pt;
+    if (pt == TY_MATCHDATA && sp_streq(pty, "HashPatternNode")) {
+      char md[24]; snprintf(md, sizeof md, "_t%d", t);
+      arm_t = emit_md_deconstruct_keys(b, indent + 1, md);
+      arm_pt = TY_SYM_POLY_HASH;
+    }
 
     /* --- compute match condition --- */
     Buf cond_buf = {NULL, 0, 0};
@@ -1520,11 +1554,11 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
          that has every key and each value matches its sub-pattern. Compute the
          result into a bool temp (like the find pattern), then bind below. */
       int hcond = ++g_tmp;
-      const char *hn = ty_is_hash(pt) ? ty_hash_cname(pt) : NULL;
+      const char *hn = ty_is_hash(arm_pt) ? ty_hash_cname(arm_pt) : NULL;
       emit_indent(b, indent + 1);
       buf_printf(b, "int _t%d = %s;\n", hcond, hn ? "1" : "0");
       if (hn) {
-        TyKind hvt = ty_hash_val(pt);
+        TyKind hvt = ty_hash_val(arm_pt);
         int en = 0;
         const int *elms = nt_arr(nt, pat, "elements", &en);
         for (int i = 0; i < en; i++) {
@@ -1533,7 +1567,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           int vpat = nt_ref(nt, elms[i], "value");
           if (key < 0) continue;
           emit_indent(b, indent + 1);
-          buf_printf(b, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, t);
+          buf_printf(b, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, arm_t);
           emit_expr(c, key, b); buf_puts(b, ");\n");
           /* value class check: `k: Class` or `k: Class => v` */
           int classpat = -1;
@@ -1545,7 +1579,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             if (hvt == TY_POLY) {
               int vtmp = ++g_tmp;
               emit_indent(b, indent + 1);
-              buf_printf(b, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+              buf_printf(b, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, arm_t);
               emit_expr(c, key, b); buf_puts(b, "); ");
               char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
               Buf cw; memset(&cw, 0, sizeof cw);
@@ -1621,9 +1655,9 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       /* bind each value target from the hash: `{k:}` (shorthand) and `{k: v}`
          bind the value to a local; `{k: Class => v}` binds the capture target.
          The value is assigned through the local's declared C type. */
-      const char *hn = ty_is_hash(pt) ? ty_hash_cname(pt) : NULL;
+      const char *hn = ty_is_hash(arm_pt) ? ty_hash_cname(arm_pt) : NULL;
       if (hn) {
-        TyKind hvt = ty_hash_val(pt);
+        TyKind hvt = ty_hash_val(arm_pt);
         Scope *hsc = comp_scope_of(c, id);
         int en = 0;
         const int *elms = nt_arr(nt, pat, "elements", &en);
@@ -1656,7 +1690,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             int vtmp = ++g_tmp;
             emit_indent(b, body_indent); buf_puts(b, "{\n");
             emit_indent(b, body_indent + 1);
-            buf_printf(b, "sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+            buf_printf(b, "sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, arm_t);
             emit_expr(c, key, b); buf_puts(b, ");\n");
             char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
             emit_pm_typed_assign(hsc, lnm, vn, b, body_indent + 1);
@@ -1664,7 +1698,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           }
           else {
             emit_indent(b, body_indent);
-            buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", lnm, hn, t);
+            buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", lnm, hn, arm_t);
             emit_expr(c, key, b); buf_puts(b, ");\n");
           }
         }
@@ -3914,10 +3948,25 @@ else {
       TyKind vt = comp_ntype(c, value);
       const char *hn = ty_is_hash(vt) ? ty_hash_cname(vt) : NULL;
       int thash = ++g_tmp;
-      emit_indent(b, indent);
-      if (hn) { buf_printf(b, "sp_%sHash *_t%d = ", hn, thash); }
-      else { buf_printf(b, "void *_t%d = (void *)", thash); }
-      emit_expr(c, value, b); buf_puts(b, ";\n");
+      if (vt == TY_MATCHDATA) {
+        /* `matchdata => {name:}`: bind through deconstruct_keys, like case/in. */
+        int mdt = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_MatchData *_t%d = ", mdt); emit_expr(c, value, b); buf_puts(b, ";\n");
+        /* Root the MatchData before deconstruct_keys allocates its hash, so a GC
+           during that allocation can't sweep the still-needed match object. */
+        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", mdt);
+        char md[24]; snprintf(md, sizeof md, "_t%d", mdt);
+        thash = emit_md_deconstruct_keys(b, indent, md);
+        hn = "SymPoly";
+        vt = TY_SYM_POLY_HASH;
+      }
+      else {
+        emit_indent(b, indent);
+        if (hn) { buf_printf(b, "sp_%sHash *_t%d = ", hn, thash); }
+        else { buf_printf(b, "void *_t%d = (void *)", thash); }
+        emit_expr(c, value, b); buf_puts(b, ";\n");
+      }
       for (int i = 0; i < pn; i++) {
         const char *ety = nt_type(nt, pelms[i]);
         if (!ety || !sp_streq(ety, "AssocNode")) continue;
