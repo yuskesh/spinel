@@ -5314,12 +5314,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* arr.each with no block -> an external Enumerator over a snapshot of the
-     array's (boxed) elements. Block-form and chained (each.with_index, each.map)
-     uses are matched earlier and never reach here. */
-  if (recv >= 0 && ty_is_array(comp_ntype(c, recv)) &&
-      sp_streq(name, "each") && argc == 0 && nt_ref(nt, id, "block") < 0) {
-    buf_puts(b, "sp_Enumerator_new_from("); emit_boxed(c, recv, b); buf_puts(b, ")");
+  /* arr.each / arr.reverse_each with no block -> an external Enumerator over a
+     snapshot of the array's (boxed) elements. Block-form and chained
+     (each.with_index, each.map) uses are matched earlier and never reach here. */
+  if (recv >= 0 && ty_is_array(comp_ntype(c, recv)) && argc == 0 &&
+      nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "each") || sp_streq(name, "reverse_each"))) {
+    buf_printf(b, "sp_Enumerator_new_from%s(", sp_streq(name, "reverse_each") ? "_rev" : "");
+    emit_boxed(c, recv, b); buf_puts(b, ")");
+    return;
+  }
+  /* str.each_char with no block -> an Enumerator over the string's characters. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 0 &&
+      nt_ref(nt, id, "block") < 0 && sp_streq(name, "each_char")) {
+    buf_puts(b, "sp_Enumerator_new_from_items(sp_str_chars_poly(");
+    emit_expr(c, recv, b); buf_puts(b, "))");
     return;
   }
 
@@ -5341,6 +5350,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) {
       buf_puts(b, "sp_Enumerator_take("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
+    if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
+      buf_puts(b, "sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
   }
 

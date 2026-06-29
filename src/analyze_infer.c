@@ -1097,6 +1097,7 @@ else {
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
     if (sp_streq(name, "size")) return TY_INT;
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
+    if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
   }
 
   /* TY_RANDOM instance methods */
@@ -1765,7 +1766,7 @@ else {
     /* arr.each with no block -> an external Enumerator (#next/#peek/#rewind).
        Block-form chains (each.with_index, each.map) are matched as the outer
        call above and never reach this. */
-    if (block < 0 && argc == 0 && sp_streq(name, "each")) return TY_ENUMERATOR;
+    if (block < 0 && argc == 0 && (sp_streq(name, "each") || sp_streq(name, "reverse_each"))) return TY_ENUMERATOR;
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP) {
         int body = nt_ref(nt, block, "body");
@@ -2415,6 +2416,7 @@ else {
     if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
+    if (sp_streq(name, "each_char") && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
       if (blk >= 0 && (sp_streq(name, "chars") || sp_streq(name, "lines"))) return TY_STRING;

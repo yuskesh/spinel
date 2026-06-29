@@ -4346,6 +4346,48 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
   return e;
 }
+/* Like sp_Enumerator_new_from but over a reversed snapshot, for a blockless
+   Array#reverse_each. sp_enum_items_from always returns a fresh, owned poly
+   array (every arm allocates a new one), so reversing it in place does not
+   touch the receiver's backing store. (The reverse_each-doesn't-mutate test
+   guards this invariant if sp_enum_items_from is ever changed to share.) */
+static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
+  sp_PolyArray *items = sp_enum_items_from(arr);
+  SP_GC_ROOT(items);
+  if (items) {
+    for (mrb_int i = 0, j = items->len - 1; i < j; i++, j--) {
+      sp_RbVal t = items->data[i]; items->data[i] = items->data[j]; items->data[j] = t;
+    }
+  }
+  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
+  return e;
+}
+/* Wrap an already-built poly array as an Enumerator, taking ownership of it
+   (no re-snapshot). Lets callers that already hold a fresh array skip the
+   sp_enum_items_from copy in sp_Enumerator_new_from. */
+static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
+  SP_GC_ROOT(items);
+  sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
+  return e;
+}
+/* A string's characters as a fresh poly array of one-char Strings, built
+   directly. Used by a blockless String#each_char enumerator, avoiding the
+   intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
+   allocate and then copy. */
+static sp_PolyArray *sp_str_chars_poly(const char *s) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  if (!s) return a;
+  for (const char *p = s; *p; ) {
+    int n = sp_utf8_advance(p);
+    char *c = sp_str_alloc(n); memcpy(c, p, n); c[n] = 0;
+    sp_PolyArray_push(a, sp_box_str(c));
+    p += n;
+  }
+  return a;
+}
 static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap) {
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
   e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE;
@@ -4407,6 +4449,26 @@ static sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n) {
   mrb_int lim = e->items ? e->items->len : 0;
   if (n < lim) lim = n;
   for (mrb_int i = 0; i < lim; i++) sp_PolyArray_push(r, e->items->data[i]);
+  return r;
+}
+/* Enumerator#to_a / #entries: drain the whole source into an array (a fresh run
+   of the generator, independent of the #next cursor), matching CRuby. */
+static sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (!e) return r;
+  if (e->gen) {
+    sp_Fiber *f = sp_Fiber_new(e->gen);
+    SP_GC_ROOT(f);
+    if (e->gen_cap) f->user_data = e->gen_cap;
+    while (sp_Fiber_alive(f)) {
+      sp_RbVal v = sp_Fiber_resume(f, sp_box_nil());
+      if (!sp_Fiber_alive(f)) break;
+      sp_PolyArray_push(r, v);
+    }
+    return r;
+  }
+  if (e->items) for (mrb_int i = 0; i < e->items->len; i++) sp_PolyArray_push(r, e->items->data[i]);
   return r;
 }
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
