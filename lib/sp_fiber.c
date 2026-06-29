@@ -183,14 +183,30 @@ extern void  __tsan_switch_to_fiber(void *fiber, unsigned flags);
    protocol bails out instead of treating .bss as a GC header. The guard
    array is exactly one alignment unit, so its last byte always directly
    precedes `root` (no compiler padding can slip in between). */
-static struct { char guard[_Alignof(sp_Fiber)]; sp_Fiber root; } sp_fiber_root_box
+/* In the threaded build the root fiber is per-worker (SP_TLS): each OS worker's
+   native scheduler stack is its own root coroutine, so the green thread running
+   on a worker transfers back to *that* worker's root. The 0xfd guard byte still
+   directly precedes `root` in each thread's TLS block, so sp_gc_mark's tag-byte
+   protocol skips it there too. sp_fiber_current cannot be statically initialized
+   to &sp_fiber_root once the root is thread-local (that address is not a
+   constant), so each worker sets it via sp_fiber_worker_init before running any
+   fiber; the single-threaded build keeps the constant static init unchanged
+   (byte-identical). */
+static SP_TLS struct { char guard[_Alignof(sp_Fiber)]; sp_Fiber root; } sp_fiber_root_box
     = { .guard = { [_Alignof(sp_Fiber) - 1] = (char)0xfd }, .root = {0} };
 #define sp_fiber_root (sp_fiber_root_box.root)
-/* Per-worker (SP_TLS) in the threaded build; the static init still works because
-   sp_fiber_root_box stays a shared static (a constant address), so each worker's
-   sp_fiber_current starts at the shared root. Per-worker root fibers (and the
-   matching runtime init) land with the workers. */
-SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;   /* extern: read by the generated TU */
+#ifdef SP_THREADS
+SP_TLS sp_Fiber *sp_fiber_current = NULL;              /* set by sp_fiber_worker_init */
+#else
+SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;    /* extern: read by the generated TU */
+#endif
+
+/* Adopt the calling OS thread's root fiber as its current coroutine. Called once
+   per worker before it runs any green thread (worker 0 from sp_sched_init; helper
+   workers from their startup). A no-op-shaped reset in the single-threaded build
+   (sp_fiber_current already equals &sp_fiber_root). */
+void sp_fiber_worker_init(void) { sp_fiber_current = &sp_fiber_root; }
+sp_Fiber *sp_fiber_worker_root(void) { return &sp_fiber_root; }
 static sp_Fiber *sp_fiber_list_head = NULL;
 
 static void sp_fiber_save_roots(sp_Fiber*f){if(f->saved_roots_cap<sp_gc_nroots){int nc=sp_gc_nroots>64?sp_gc_nroots*2:64;void***nx=(void***)realloc(f->saved_roots,sizeof(void**)*nc);if(!nx)return;f->saved_roots=nx;f->saved_roots_cap=nc;}if(sp_gc_nroots>0)memcpy(f->saved_roots,sp_gc_roots,sizeof(void**)*sp_gc_nroots);f->saved_nroots=sp_gc_nroots;}

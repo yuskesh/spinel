@@ -30,7 +30,6 @@ void sp_safepoint(void) {
 }
 
 /* ---- scheduler state (single OS worker, so plain globals) ---- */
-static sp_Fiber  *g_root_fiber = NULL;   /* the main thread's context, captured at init */
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */
 static sp_thread *g_current = NULL;      /* the green thread running right now */
 static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
@@ -72,8 +71,9 @@ static void sp_sched_globals_mark(void) {
 }
 
 void sp_sched_init(void) {
-  /* Called from main() on the root fiber, so sp_fiber_current is the root. */
-  g_root_fiber = sp_fiber_current;
+  /* Called from main() before any fiber/thread op. Adopt this OS thread (worker
+     0) as the main green thread: its native stack is the per-worker root fiber. */
+  sp_fiber_worker_init();
   memset(&g_main_thread, 0, sizeof g_main_thread);
   g_main_thread.fiber = NULL;
   g_main_thread.state = SP_TH_RUNNING;
@@ -225,7 +225,7 @@ void sp_Thread_pass(void) {
     sp_sched_pass();   /* one round-robin sweep, then main resumes (not a drain) */
   } else {
     rq_push(self);
-    sp_Fiber_transfer(g_root_fiber, sp_box_nil());
+    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while paused */
   }
 }
@@ -340,7 +340,7 @@ static void sp_sched_block(sp_thread **waitlist) {
        would find an empty handler stack and escape unhandled. */
     void *exc_snap = sp_exc_ctx_new();
     sp_exc_ctx_save(exc_snap);
-    sp_Fiber_transfer(g_root_fiber, sp_box_nil());
+    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
     /* resumed: a pending #kill/#raise fires here, in this thread's context, so

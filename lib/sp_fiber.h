@@ -43,6 +43,13 @@ typedef struct sp_Fiber{sp_fiber_ctx ctx;sp_fiber_ctx caller_ctx;char*stack;int 
    fibers land with the workers.) */
 extern SP_TLS sp_Fiber *sp_fiber_current;
 
+/* Adopt the calling OS thread's root fiber (its native scheduler stack) as its
+   current coroutine, and read that per-worker root back. Worker 0 calls
+   sp_fiber_worker_init from sp_sched_init; helper workers from their startup. In
+   the single-threaded build the root is a shared static and these are inert. */
+void      sp_fiber_worker_init(void);
+sp_Fiber *sp_fiber_worker_root(void);
+
 /* Public Fiber API (called from the generated TU). */
 sp_Fiber *sp_Fiber_new(void (*body)(sp_Fiber *));
 sp_RbVal sp_Fiber_resume(sp_Fiber *f, sp_RbVal val);
