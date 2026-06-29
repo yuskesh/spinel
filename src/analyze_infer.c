@@ -1236,6 +1236,7 @@ else {
   /* Struct instance methods */
   if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
     ClassInfo *sc = &c->classes[ty_object_class(rt)];
+    if (sp_streq(name, "with") && sc->is_data) return rt;  /* copy-update returns the same type */
     if (sp_streq(name, "to_a") || sp_streq(name, "values") ||
         sp_streq(name, "deconstruct") || sp_streq(name, "members")) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_h")) {

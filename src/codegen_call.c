@@ -3307,6 +3307,51 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", rm);
       return 1;
     }
+    if (sp_streq(name, "with") && sc->is_data) {
+      /* Data#with copy-update: a new instance with the given members
+         overridden, the rest copied from the receiver. Members are passed to
+         the generated constructor in declaration order. */
+      int wargs = nt_ref(nt, id, "arguments");
+      int wargc = 0; const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
+      int wkwh = -1;
+      if (wargv && wargc >= 1) {
+        const char *lty = nt_type(nt, wargv[wargc - 1]);
+        if (lty && sp_streq(lty, "KeywordHashNode")) wkwh = wargv[wargc - 1];
+      }
+      /* Data#with takes keyword arguments only; a positional argument (the only
+         arg, or one alongside the keyword hash) is an ArgumentError in CRuby. */
+      if (wargc > 0 && (wkwh < 0 || wargc > 1)) {
+        unsupported(c, id, "Data#with with a positional argument (keywords only)");
+        return 0;
+      }
+      if (wkwh >= 0) {
+        int en = 0; const int *els = nt_arr(nt, wkwh, "elements", &en);
+        for (int e = 0; e < en; e++) {
+          int key = nt_ref(nt, els[e], "key");
+          const char *kty = key >= 0 ? nt_type(nt, key) : NULL;
+          const char *kn = (kty && sp_streq(kty, "SymbolNode")) ? nt_str(nt, key, "value") : NULL;
+          char ivn[256];
+          if (kn) snprintf(ivn, sizeof ivn, "@%s", kn);
+          if (!kn || comp_ivar_index(sc, ivn) < 0) { unsupported(c, id, "with on a non-member keyword"); return 0; }
+        }
+      }
+      int t = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      buf_printf(b, "({ sp_%s *_t%d = %s; sp_%s_new(", sc->name, t, rb.p ? rb.p : "", sc->name); free(rb.p);
+      for (int i = 0; i < sc->nivars; i++) {
+        if (i) buf_puts(b, ", ");
+        int val = wkwh >= 0 ? kwh_lookup(nt, wkwh, sc->ivars[i] + 1) : -1;
+        if (val >= 0) {
+          TyKind mt = sc->ivar_types[i];
+          if (mt == TY_POLY && comp_ntype(c, val) != TY_POLY) emit_boxed(c, val, b);
+          else emit_expr(c, val, b);
+        } else {
+          buf_printf(b, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+        }
+      }
+      buf_puts(b, "); })");
+      return 1;
+    }
     if (sp_streq(name, "dig") && argc >= 1) {
       /* literal key resolves a member at compile time */
       int mi = -1;

@@ -121,6 +121,8 @@ typedef struct {
   int is_struct;       /* defined via Struct.new(:a, :b): readers[] are the
                           positional members; the constructor takes them in
                           order and there is no user `initialize`. */
+  int is_data;         /* defined via Data.define(...): a Struct-like value class
+                          that additionally supports the `#with` copy-update. */
   int is_value_type;   /* small immutable scalar-ivar class represented by value
                           (sp_X, not sp_X *): no heap alloc / GC. Set by
                           detect_value_types after analysis. */

@@ -884,6 +884,12 @@ int is_struct_call(Compiler *c, int val) {
 void register_struct_members(Compiler *c, ClassInfo *cls, int val) {
   const NodeTable *nt = c->nt;
   cls->is_struct = 1;
+  {
+    int vr = nt_ref(nt, val, "receiver");
+    const char *rn = vr >= 0 && nt_type(nt, vr) && sp_streq(nt_type(nt, vr), "ConstantReadNode")
+                     ? nt_str(nt, vr, "name") : NULL;
+    if (rn && sp_streq(rn, "Data")) cls->is_data = 1;
+  }
   int args = nt_ref(nt, val, "arguments");
   int an = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
