@@ -99,23 +99,37 @@ required — `set`, `forwardable`, `optparse`, `erb`. These already behaved
 correctly (no `require`, no definition), so the gate does not change them; the
 `require` pulls in the file.
 
-## Providing your own feature (planned)
+## Providing your own feature
 
-The mechanism above resolves built-in and bundled features. A planned package
-system lets you *provide a feature yourself*, resolved through the same gate. In
-brief (see [require-gate-design.md](require-gate-design.md) for the full design):
+You can provide a feature yourself and have `require "name"` resolve it, through
+the same mechanism as bundled stdlib. Pass `-I <dir>` (like `ruby -I`) to add a
+feature search root, then a `require` resolves against it:
 
-- A feature name is a path under a `lib/` root: `require "mylib"` →
-  `lib/mylib/`, `require "my/thing"` → `lib/my/thing/`. All of one feature's
-  sources are colocated in that directory.
-- Pure Ruby needs only the `.rb` (Spinel infers types from the source, the same
-  as your own code); an `.rbs` is optional, for pinning the public surface.
-- C is reached through [FFI](FFI.md) when wrapping an existing library; a
-  planned in-TU mode will let a feature's own C be inlined without a link
-  boundary.
-- Feature search roots come from the bundled tree, a `-I <dir>` flag (like
-  `ruby -I`), and a project manifest.
+```sh
+spinel -I mylibs main.rb
+```
 
-This is how Spinel's own require-gated stdlib will eventually be carved out of
-the compiler into ordinary feature packages, resolved exactly like a
-third-party one.
+A feature name is a path, looked up in each `-I` root in two forms:
+
+- **single file** — `require "thing"` → `mylibs/thing.rb` (the CRuby form);
+- **colocated directory** — `require "thing"` → `mylibs/thing/thing.rb`, so a
+  feature's sources (`.rb`, later its `.c`/`.rbs`) share one directory.
+  `require "my/thing"` → `mylibs/my/thing.rb` or `mylibs/my/thing/thing.rb`.
+
+Pure Ruby needs only the `.rb`: it is spliced into the whole-program compile and
+Spinel infers types from it like your own code, so no manifest or `.rbs` is
+required (an `.rbs` is optional, to pin the public surface). A `require` that no
+root satisfies is the compile error from the previous section.
+
+### Planned
+
+- C in a feature is reached through [FFI](FFI.md) today (wrapping an existing
+  library); a planned in-TU mode will let a feature's own C be inlined without a
+  link boundary.
+- A default vendored root and a project manifest will sit on top of `-I`, so
+  packages resolve without passing `-I` by hand.
+- Spinel's own require-gated stdlib will eventually be carved out of the
+  compiler into ordinary feature packages, resolved exactly like a third-party
+  one.
+
+See [require-gate-design.md](require-gate-design.md) for the full design.
