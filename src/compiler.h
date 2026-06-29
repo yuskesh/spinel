@@ -20,6 +20,8 @@
 extern int g_require_gate;
 void sp_feature_mark(const char *name);
 int sp_feature_enabled(const char *name);
+/* Add a `-I <dir>` feature search root (see resolve_plain_requires). */
+void sp_add_feature_root(const char *dir);
 
 typedef struct {
   char *name;       /* Ruby local name (without sigil) */

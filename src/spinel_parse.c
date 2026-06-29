@@ -1636,6 +1636,18 @@ int sp_feature_enabled(const char *name) {
   return 0;
 }
 
+/* Feature search roots from `-I <dir>` (like ruby -I). A plain `require "X"`
+   that is not a bundled lib or native feature is looked up here, in order, as
+   <root>/X.rb (CRuby single-file form) or <root>/X/<last>.rb (the colocated
+   directory form, where one feature's sources share a directory). */
+static char *sp_feature_roots[64];
+static int sp_feature_roots_n = 0;
+
+void sp_add_feature_root(const char *dir) {
+  if (!dir) return;
+  if (sp_feature_roots_n < 64) sp_feature_roots[sp_feature_roots_n++] = strdup(dir);
+}
+
 /* Resolve a path to its canonical form for dedup. realpath() returns NULL
    on missing files; in that case fall back to the literal path. */
 /* Issue #749: realpath/_fullpath + strdup can both fail under OOM,
@@ -2094,6 +2106,21 @@ else {
           strcat(alt_path, ".rb");
         content = read_file(alt_path);
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", alt_path);
+      }
+      if (!content) {
+        /* `-I <dir>` feature roots: <root>/X.rb, else <root>/X/<last>.rb. */
+        char rp[1024];
+        const char *last = strrchr(lib_name, '/');
+        last = last ? last + 1 : lib_name;
+        for (int ri = 0; ri < sp_feature_roots_n && !content; ri++) {
+          snprintf(rp, sizeof(rp), "%s/%s.rb", sp_feature_roots[ri], lib_name);
+          content = read_file(rp);
+          if (!content) {
+            snprintf(rp, sizeof(rp), "%s/%s/%s.rb", sp_feature_roots[ri], lib_name, last);
+            content = read_file(rp);
+          }
+          if (content) snprintf(lib_path, sizeof(lib_path), "%s", rp);
+        }
       }
       if (!content) {
         if (sp_lib_is_native(lib_name)) {

@@ -164,6 +164,7 @@ static void usage(void) {
     "Options:\n"
     "  -o FILE     Output file\n"
     "  -c          C source only (don't compile)\n"
+    "  -I DIR      Add a feature search root for `require \"name\"` (like ruby -I)\n"
     "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary\n"
     "  --emit-types Dump per-position inferred types + diagnostics as JSON\n"
     "  --emit-symbol-map  Dump emitted-symbol -> Ruby-name map as JSON, no binary\n"
@@ -212,6 +213,8 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
     else if (sp_streq(a, "-c"))            { c_only = 1; i++; }
+    else if (sp_streq(a, "-I"))            { if (++i < argc) sp_add_feature_root(argv[i]); i++; }
+    else if (!strncmp(a, "-I", 2) && a[2]) { sp_add_feature_root(a + 2); i++; }
     else if (sp_streq(a, "-S"))            { stdout_mode = 1; i++; }
     else if (sp_streq(a, "-E"))            { run_mode = 1; i++; }
     else if (sp_streq(a, "--emit-rbs"))    { emit_rbs = 1; i++; }
