@@ -311,7 +311,13 @@ sp_Fiber*sp_Fiber_kill(sp_Fiber*f){
 static sp_RbVal sp_Fiber_transfer_core(sp_Fiber*f,sp_RbVal val){f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0&&f!=&sp_fiber_root){f->state=1;f->transferred=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&prev->ctx,&f->ctx);}else{/* the root fiber is the implicit running coroutine: it has no mmap'd
    stack/body, so it must never be ctx_make'd. Its context was already
    saved into root.ctx by the first transfer away from it, so transferring
-   back just swaps to that saved context. */f->state=1;sp_ctx_swap(&prev->ctx,&f->ctx);}sp_exc_ctx_save(f->exc_ctx);sp_exc_ctx_load(prev->exc_ctx);sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return prev->resumed_value;}
+   back just swaps to that saved context. */f->state=1;sp_ctx_swap(&prev->ctx,&f->ctx);}/* Do NOT re-save f's exception context or roots here. When f yielded back it
+   already saved its own (its transfer's pre-swap save); the live TLS now holds
+   prev's, which f restored before switching to us. Re-saving would clobber f's
+   saved state with prev's -- losing a blocked/sleeping thread's roots/handlers
+   and freeing its live locals on the next collection -- and, since f may already
+   be running on another worker (woken between its switch-out and here), that
+   write races that worker's load of f's context. We only restore prev's. */sp_exc_ctx_load(prev->exc_ctx);sp_fiber_restore_roots(prev);sp_fiber_current=prev;return prev->resumed_value;}
 sp_RbVal sp_Fiber_transfer(sp_Fiber*f,sp_RbVal val){sp_RbVal r=sp_Fiber_transfer_core(f,val);if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return r;}
 /* Thread scheduler transfer: on f's unhandled termination exception, hand the
    (cls,msg,obj) back through *out_* and set *out_raised, rather than re-raising
