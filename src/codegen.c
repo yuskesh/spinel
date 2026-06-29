@@ -3441,7 +3441,8 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "static ");
     emit_ctype(c, lv->type, &b);
     buf_printf(&b, " gv_%s = %s;\n", lv->name,
-               (lv->type == TY_RANGE || lv->type == TY_POLY) ? "{0}" : default_value(lv->type));
+               lv->type == TY_RANGE ? "{0}" :
+               lv->type == TY_POLY  ? "{SP_TAG_NIL, 0, {0}}" : default_value(lv->type));
   }
   for (int i = 0; i < c->nconsts; i++) {
     LocalVar *lv = &c->consts[i];
@@ -3449,7 +3450,8 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "static ");
     emit_ctype(c, lv->type, &b);
     buf_printf(&b, " cst_%s = %s;\n", lv->name,
-               (lv->type == TY_RANGE || lv->type == TY_POLY) ? "{0}" : default_value(lv->type));
+               lv->type == TY_RANGE ? "{0}" :
+               lv->type == TY_POLY  ? "{SP_TAG_NIL, 0, {0}}" : default_value(lv->type));
     if (lv->init_guarded) buf_printf(&b, "static int sp_init_in_progress_%s;\n", lv->name);
   }
   if (c->ngvars || c->nconsts) buf_puts(&b, "\n");

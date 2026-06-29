@@ -38,6 +38,9 @@ typedef struct {
                        during the init raise NameError (uninitialized constant) */
   int rbs_seeded;   /* param type pinned from an --rbs advisory seed: the
                        fixpoint must not widen it (see apply_rbs_seeds) */
+  int const_def_write; /* (consts) has a definite (non-or/and) assignment; an
+                          or/and-write-only const is nil-defaulted (poly) so its
+                          `||=` truthiness check fires on first use */
 } LocalVar;
 
 typedef struct {

@@ -1221,10 +1221,22 @@ void register_globals_consts(Compiler *c) {
       /* already handled in pass 1 */
     }
     else if (sp_streq(ty, "ConstantTargetNode")) {
-      /* target in a multi-write: A, B = expr */
+      /* target in a multi-write: A, B = expr (a definite write) */
       const char *nm = nt_str(nt, id, "name");
       if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0)
-        comp_const_intern(c, nm);
+        comp_const_intern(c, nm)->const_def_write = 1;
+    }
+    else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
+             sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
+      /* `Mod::X = v` / `Mod::X ||= v`: register the leaf constant by name so it
+         gets a runtime slot. The module path is not modeled as a namespace; the
+         leaf name is interned flat like a top-level constant. */
+      int tgt = nt_ref(nt, id, "target");
+      const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0) {
+        LocalVar *cv = comp_const_intern(c, nm);
+        if (sp_streq(ty, "ConstantPathWriteNode")) cv->const_def_write = 1;
+      }
     }
     else if (sp_streq(ty, "ConstantWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
@@ -1245,6 +1257,7 @@ void register_globals_consts(Compiler *c) {
          value constant even though top-level `module V` exists. */
       if (nm && is_c_ident(nm) && !is_regex_const) {
         LocalVar *cv = comp_const_intern(c, nm);
+        cv->const_def_write = 1;
         /* `CONST = SomeClass.new(...)`: reads of CONST during the new()
            (i.e. inside initialize or anything it calls) must raise
            NameError, since CONST is not yet bound. */
@@ -1523,6 +1536,19 @@ int infer_global_const_types(Compiler *c) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) lv = comp_const(c, nm);
       vt = infer_type(c, nt_ref(nt, id, "value"));
+    }
+    else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
+             sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
+      int tgt = nt_ref(nt, id, "target");
+      const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+      if (nm) lv = comp_const(c, nm);
+      int is_orand = sp_streq(ty, "ConstantPathOrWriteNode") || sp_streq(ty, "ConstantPathAndWriteNode");
+      /* An or/and-write-only constant has no definite value before its first
+         use, so it must default to nil (poly) for the truthiness check. */
+      if (is_orand && lv && !lv->const_def_write)
+        vt = TY_POLY;
+      else
+        vt = infer_type(c, nt_ref(nt, id, "value"));
     }
     else if (sp_streq(ty, "MultiWriteNode")) {
       int ln = 0;
