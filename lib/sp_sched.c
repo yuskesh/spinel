@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>     /* sysconf (worker count) */
+#include <time.h>       /* clock_gettime (Kernel#sleep) */
+#include <errno.h>      /* EINTR (sleep fallback) */
 
 /* Reached by name (defined in lib/sp_alloc.c or the generated TU), exactly as
    lib/sp_fiber.c reaches them. */
@@ -74,6 +76,13 @@ static int            g_shutdown = 0;   /* set at drain so helper workers exit t
 static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers wait for runnable work */
 static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
 static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked workers wait for clear */
+static pthread_cond_t g_sysmon_cv = PTHREAD_COND_INITIALIZER;    /* the monitor thread waits here */
+static pthread_t      g_sysmon;                                  /* monitor: wakes sleeping threads */
+static int            g_sysmon_started = 0;
+static double sp_monotonic_now(void) {
+  struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
 #define SCHED_WAKE()    pthread_cond_signal(&g_sched_work)   /* nudge one idle worker after enqueue/wake */
 #define SCHED_WAKE_ALL() pthread_cond_broadcast(&g_sched_work)  /* wake every waiter to re-check state */
 
@@ -185,6 +194,7 @@ static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber
 static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread this worker runs now */
 static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
 static int        g_nrunning = 0;        /* workers currently executing a green thread (quiescence) */
+static sp_thread *g_sleepers = NULL;     /* threads parked in Kernel#sleep, woken by deadline */
 static sp_thread *g_all = NULL;          /* registry of live threads, for GC rooting */
 static unsigned   g_next_id = 1;
 static unsigned char g_report_default = 1;  /* Thread.report_on_exception default */
@@ -370,7 +380,7 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
        broadcasts (sp_sched_signal_if_quiescent). Only when nothing runs and the
        queue is empty do we fall through -- drained, or a deadlock the caller
        observes. */
-    if (may_wait && (g_nrunning > 0 || g_rq_head)) {
+    if (may_wait && (g_nrunning > 0 || g_rq_head || g_sleepers)) {
       pthread_cond_wait(&g_sched_work, &g_sched_lock);
       continue;
     }
@@ -575,6 +585,86 @@ static int sp_worker_count(void) {
   return n;
 }
 
+/* The monitor thread: wakes Kernel#sleep sleepers when their deadline passes, so
+   a sleeping green thread frees its OS worker rather than blocking it. It waits
+   on g_sysmon_cv when nobody is sleeping and is signalled when a thread sleeps;
+   while threads sleep it does timed waits to the nearest deadline. (This is also
+   the foundation for SIGURG preemption later.) */
+static void *sp_sysmon_main(void *arg) {
+  (void)arg;
+  SCHED_LOCK();
+  for (;;) {
+    if (g_shutdown) break;
+    /* Stay out of the scheduler state while a collection has the world stopped:
+       the monitor is not a GC participant (it holds no roots) but it must not
+       move threads between lists concurrently with the collector. */
+    if (g_stw_active) { pthread_cond_wait(&g_stw_release, &g_sched_lock); continue; }
+    double now = sp_monotonic_now();
+    double nearest = 0.0;
+    for (sp_thread **pp = &g_sleepers; *pp; ) {
+      sp_thread *t = *pp;
+      if (t->wake_deadline <= now) {
+        *pp = t->wait_next; t->wait_next = NULL; t->wait_head = NULL;
+        if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }  /* must reach main, not a helper */
+        else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); SCHED_WAKE(); }
+        else t->wake_pending = 1;   /* mid-switch; its worker enqueues it (run_thread_once) */
+      } else {
+        if (nearest == 0.0 || t->wake_deadline < nearest) nearest = t->wake_deadline;
+        pp = &t->wait_next;
+      }
+    }
+    if (nearest == 0.0) {
+      pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);   /* nobody sleeping: wait for one */
+    } else {
+      /* Sleepers pending: poll near the next deadline. Drop the lock and
+         nanosleep (rather than a timed cond wait) so the sleep granularity adds
+         at most ~10ms and the monitor is not flagged for a timed wait. */
+      double dt = nearest - now;
+      if (dt > 0.01) dt = 0.01;
+      if (dt < 0.0005) dt = 0.0005;
+      SCHED_UNLOCK();
+      struct timespec req = { (time_t)dt, (long)((dt - (time_t)dt) * 1e9) };
+      nanosleep(&req, NULL);
+      SCHED_LOCK();
+    }
+  }
+  SCHED_UNLOCK();
+  return NULL;
+}
+
+void sp_sched_sleep(double seconds) {
+  if (!(seconds > 0.0)) return;
+  if (!g_sysmon_started) {   /* the monitor was not started: plain blocking sleep */
+    struct timespec req; req.tv_sec = (time_t)seconds;
+    req.tv_nsec = (long)((seconds - (double)req.tv_sec) * 1e9);
+    if (req.tv_nsec < 0) req.tv_nsec = 0; if (req.tv_nsec >= 1000000000L) req.tv_nsec = 999999999L;
+    while (nanosleep(&req, &req) == -1 && errno == EINTR) {}
+    return;
+  }
+  SCHED_LOCK();
+  sp_thread *self = g_current;
+  self->wake_deadline = sp_monotonic_now() + seconds;
+  self->state = SP_TH_BLOCKED;
+  self->off_cpu = 0;
+  self->wake_pending = 0;
+  self->wait_next = g_sleepers; self->wait_head = &g_sleepers; g_sleepers = self;
+  pthread_cond_signal(&g_sysmon_cv);   /* let the monitor recompute its timeout */
+  if (self == &g_main_thread) {
+    sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
+    SCHED_UNLOCK();
+  } else {
+    /* Same exception-context snapshot as sp_sched_block: the symmetric transfer
+       clobbers our handler stack on resume. */
+    void *exc_snap = sp_exc_ctx_new();
+    sp_exc_ctx_save(exc_snap);
+    SCHED_UNLOCK();
+    sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+    sp_exc_ctx_load(exc_snap);
+    sp_exc_ctx_free(exc_snap);
+    sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while sleeping */
+  }
+}
+
 /* A helper worker: adopt its native stack as a per-worker root fiber, then pull
    runnable green threads off the GRQ forever. It parks at the GC barrier when a
    collection is in progress and exits when main signals shutdown at drain. */
@@ -594,13 +684,15 @@ static void *sp_worker_main(void *arg) {
 }
 
 static void sp_sched_start_workers(void) {
+  /* Spawn the monitor thread (Kernel#sleep wakeups) first and set g_sysmon_started
+     before any worker, so a green thread reading the flag in sleep never races
+     its write (pthread_create of the workers is the happens-before edge). The
+     monitor idles on g_sysmon_cv until a thread sleeps; if it fails to spawn,
+     sleep falls back to a plain blocking nanosleep. */
+  if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
   g_nworkers = sp_worker_count();
-  for (int i = 1; i < g_nworkers; i++) {
-    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, NULL) != 0) {
-      g_nworkers = i;   /* spawn failed: run with the workers we have */
-      break;
-    }
-  }
+  for (int i = 1; i < g_nworkers; i++)
+    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, NULL) != 0) { g_nworkers = i; break; }
 }
 #endif
 
@@ -616,8 +708,11 @@ void sp_sched_drain(void) {
 #ifdef SP_THREADS
   g_shutdown = 1;
   pthread_cond_broadcast(&g_sched_work);
+  pthread_cond_signal(&g_sysmon_cv);   /* wake the monitor so it sees shutdown */
+  int sysmon_running = g_sysmon_started;
   SCHED_UNLOCK();
   for (int i = 1; i < g_nworkers; i++) pthread_join(g_worker_threads[i], NULL);
+  if (sysmon_running) pthread_join(g_sysmon, NULL);
   return;
 #endif
   SCHED_UNLOCK();
@@ -669,10 +764,10 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   *waitlist = t->wait_next;
   t->wait_next = NULL;
   t->wait_head = NULL;
-  if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; }   /* the pump observes this */
-  else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); }   /* fully parked: enqueue now */
+  if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); return t; }  /* broadcast: a signal could wake a helper instead of main */
+  if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); }   /* fully parked: enqueue now */
   else { t->wake_pending = 1; }   /* still switching out: its worker enqueues it once off-cpu */
-  SCHED_WAKE();   /* wake an idle worker (or main, waiting in its pump) to run it */
+  SCHED_WAKE();   /* wake an idle worker to run it */
   return t;
 }
 
