@@ -1877,6 +1877,10 @@ else {
           TyKind me = ewo_memo_elem_type(c, id);
           return (me != TY_UNKNOWN) ? ty_array_of(me) : TY_INT_ARRAY;
         }
+        /* empty `{}` memo: a general (boxed key/value) hash builder. */
+        if (a0ty && sp_streq(a0ty, "HashNode") &&
+            (nt_arr(nt, argv[0], "elements", &an0), an0 == 0))
+          return TY_POLY_POLY_HASH;
       }
       return at;
     }

@@ -4463,7 +4463,8 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
   if (!k) return 0;
   TyKind et = ty_array_elem(rt);
   TyKind accT = infer_type(c, argv[0]);
-  int empty_seed = 0;
+  int empty_seed = 0;       /* empty `[]` -> fresh typed array */
+  int empty_hash_seed = 0;  /* empty `{}` -> fresh boxed hash */
   if (accT == TY_UNKNOWN) {
     const char *a0ty = nt_type(nt, argv[0]);
     int an0 = 0;
@@ -4472,6 +4473,11 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
       empty_seed = 1;
       TyKind me = ewo_memo_elem_type(c, id);
       accT = (me != TY_UNKNOWN) ? ty_array_of(me) : TY_INT_ARRAY;
+    }
+    else if (a0ty && sp_streq(a0ty, "HashNode") &&
+             (nt_arr(nt, argv[0], "elements", &an0), an0 == 0)) {
+      empty_hash_seed = 1;
+      accT = TY_POLY_POLY_HASH;
     }
     else return 0;
   }
@@ -4492,7 +4498,11 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
      inferred element type, so a string/poly memo isn't materialized as int
      storage; a non-empty seed is emitted as written. */
   int tacc = ++g_tmp;
-  if (empty_seed) {
+  if (empty_hash_seed) {
+    emit_indent(g_pre, g_indent); emit_ctype(c, accT, g_pre);
+    buf_printf(g_pre, " _t%d = sp_PolyPolyHash_new();\n", tacc);
+  }
+  else if (empty_seed) {
     const char *ak = (accT == TY_POLY_ARRAY) ? "Poly" : array_kind(accT);
     emit_indent(g_pre, g_indent); emit_ctype(c, accT, g_pre);
     buf_printf(g_pre, " _t%d = sp_%sArray_new();\n", tacc, ak ? ak : "Int");

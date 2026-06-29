@@ -2553,6 +2553,18 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 2;
       pty[0] = ty_array_elem(rt);
       pty[1] = TY_UNKNOWN;
+      /* an empty `{}` memo makes the accumulator a general boxed hash, so the
+         memo param is typed accordingly (an empty `[]` stays UNKNOWN and is
+         recovered from its fills by ewo_memo_elem_type). */
+      int ewo_a = nt_ref(nt, id, "arguments");
+      int ewo_ac = 0; const int *ewo_av = ewo_a >= 0 ? nt_arr(nt, ewo_a, "arguments", &ewo_ac) : NULL;
+      if (ewo_ac >= 1 && ewo_av) {
+        const char *seedty = nt_type(nt, ewo_av[0]);
+        int seed_n = 0;
+        if (seedty && sp_streq(seedty, "HashNode") &&
+            (nt_arr(nt, ewo_av[0], "elements", &seed_n), seed_n == 0))
+          pty[1] = TY_POLY_POLY_HASH;
+      }
     }
     else {
       arity = ty_block_yield(rt, name, pty, 4);
