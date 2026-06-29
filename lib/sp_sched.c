@@ -10,6 +10,7 @@
 /* Reached by name (defined in lib/sp_alloc.c or the generated TU), exactly as
    lib/sp_fiber.c reaches them. */
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
+void sp_re_push_match_roots(void);   /* lib/sp_re.c: STW match-register publishing */
 SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);
 void sp_fiber_reraise(const char *cls, const char *msg, void *obj);
 /* Per-context exception handler stack (defined in the generated TU). */
@@ -54,16 +55,26 @@ static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
  * or, if one is already running, parks like everyone else -- there is no
  * separate collector lock to block on, so a worker that crossed the threshold
  * can never stall the collector by being un-parkable. */
-static int            g_nworkers = 1;   /* worker count; C-3 raises it past 1 */
+static int            g_nworkers = 1;   /* worker count; C-3b raises it past 1 */
 static int            g_nparked  = 0;   /* workers parked at the barrier right now */
+static int            g_nidle    = 0;   /* workers idle-waiting on g_sched_work */
 static int            g_stw_active = 0; /* a collection is in progress */
+static int            g_shutdown = 0;   /* set at drain so helper workers exit their loop */
+static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers wait for runnable work */
 static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
 static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked workers wait for clear */
+#define SCHED_WAKE()    pthread_cond_signal(&g_sched_work)   /* nudge one idle worker after enqueue/wake */
 
 /* Park the calling worker at the barrier until the collection finishes,
    publishing its running green thread's roots first. PRE: g_sched_lock held. */
 static void sp_stw_park_locked(void) {
+  /* Publish the shadow-stack roots plus this worker's live match registers (TLS,
+     so the collector's globals hook does not reach them) into the green thread's
+     saved snapshot, then restore our own root depth -- the snapshot keeps them. */
+  int saved_nroots = sp_gc_nroots;
+  sp_re_push_match_roots();
   sp_fiber_publish_current_roots();
+  sp_gc_nroots = saved_nroots;
   g_nparked++;
   if (g_nparked >= g_nworkers - 1) pthread_cond_signal(&g_stw_request);
   while (g_stw_active) pthread_cond_wait(&g_stw_release, &g_sched_lock);
@@ -72,6 +83,7 @@ static void sp_stw_park_locked(void) {
 #else
 #define SCHED_LOCK()    ((void)0)
 #define SCHED_UNLOCK()  ((void)0)
+#define SCHED_WAKE()    ((void)0)
 #endif
 
 /* Safepoint poll body: codegen emits `if (sp_safepoint_flag) sp_safepoint();` at
@@ -114,7 +126,7 @@ void sp_stw_collect(void) {
 
 /* ---- scheduler state (single OS worker, so plain globals) ---- */
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */
-static sp_thread *g_current = NULL;      /* the green thread running right now */
+static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread this worker runs now */
 static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
 static sp_thread *g_all = NULL;          /* registry of live threads, for GC rooting */
 static unsigned   g_next_id = 1;
@@ -222,14 +234,32 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
      itself (Thread.pass) before transferring, so the queue state is correct. */
 }
 
-static void sp_sched_pump(sp_thread *target) {
+/* Run runnable green threads on this (the main) worker. Returns when `target`
+   dies, when the main thread is woken back to RUNNABLE, or when the run queue is
+   empty. When may_wait is set and a helper worker is still busy (so it may yet
+   enqueue work or wake us), block on g_sched_work instead of returning on an
+   empty queue -- otherwise main would falsely declare a deadlock while a helper
+   runs the very thread that will wake it. At N=1 g_nidle>=g_nworkers-1 holds
+   immediately, so this returns on an empty queue exactly as before. PRE/POST:
+   sched lock held. */
+static void sp_sched_pump(sp_thread *target, int may_wait) {
   for (;;) {
     if (target && target->state == SP_TH_DEAD) return;
     /* main blocked on a Queue/Mutex and a runnable thread just woke it */
     if (g_main_thread.state == SP_TH_RUNNABLE) { g_main_thread.state = SP_TH_RUNNING; return; }
     sp_thread *t = rq_pop();
-    if (!t) return;   /* nothing runnable: drained, or a deadlock the caller observes */
-    run_thread_once(t);
+    if (t) { run_thread_once(t); continue; }
+#ifdef SP_THREADS
+    if (may_wait && g_nidle < g_nworkers - 1) {
+      g_nidle++;
+      pthread_cond_wait(&g_sched_work, &g_sched_lock);
+      g_nidle--;
+      continue;
+    }
+#else
+    (void)may_wait;
+#endif
+    return;   /* empty and nobody else can produce: drained, or a deadlock the caller observes */
   }
 }
 
@@ -274,6 +304,7 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   t->id = g_next_id++;
   reg_add(t);
   rq_push(t);
+  SCHED_WAKE();   /* a helper worker may be idle: hand it the new thread */
   SCHED_UNLOCK();
   return t;
 }
@@ -285,7 +316,7 @@ static void sp_thread_await(sp_thread *t) {
   if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); return; }
   sp_thread *self = g_current;
   if (self == &g_main_thread) {
-    sp_sched_pump(t);
+    sp_sched_pump(t, 1);
     int dead = (t->state == SP_TH_DEAD);
     SCHED_UNLOCK();
     if (!dead) sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
@@ -321,6 +352,7 @@ void sp_Thread_pass(void) {
     SCHED_UNLOCK();
   } else {
     rq_push(self);
+    SCHED_WAKE();   /* let an idle helper take self while we yield to our root */
     SCHED_UNLOCK();
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while paused */
@@ -412,7 +444,7 @@ sp_RbVal sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v) {
 void sp_sched_drain(void) {
   /* main() is finishing: run remaining runnable threads so fire-and-forget
      side effects happen. Only meaningful when called from the main thread. */
-  if (g_current == &g_main_thread) { SCHED_LOCK(); sp_sched_pump(NULL); SCHED_UNLOCK(); }
+  if (g_current == &g_main_thread) { SCHED_LOCK(); sp_sched_pump(NULL, 0); SCHED_UNLOCK(); }
 }
 
 /* ---- generic park / wake on a primitive wait list ---- */
@@ -427,7 +459,7 @@ static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock hel
   self->wait_head = waitlist;   /* so #kill/#raise can unlink it */
   *waitlist = self;
   if (self == &g_main_thread) {
-    sp_sched_pump(NULL);   /* returns (lock held) once a waker marks main RUNNABLE */
+    sp_sched_pump(NULL, 1);   /* returns (lock held) once a waker marks main RUNNABLE */
     if (self->state != SP_TH_RUNNING) {
       SCHED_UNLOCK();
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
@@ -461,6 +493,7 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   t->wait_head = NULL;
   if (t == &g_main_thread) t->state = SP_TH_RUNNABLE;   /* the pump observes this */
   else rq_push(t);
+  SCHED_WAKE();   /* wake an idle worker (or main, waiting in its pump) to run it */
   return t;
 }
 

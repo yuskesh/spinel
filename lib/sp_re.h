@@ -43,6 +43,10 @@ extern SP_TLS const char *sp_re_match_pre;
 extern SP_TLS const char *sp_re_match_post;
 extern const char *sp_re_startup_err;
 
+/* Stop-the-world support: push this worker's live match-register strings as GC
+   roots (for the collector to mark while the worker is parked). See sp_re.c. */
+void sp_re_push_match_roots(void);
+
 /* ---- wrappers (lib/sp_re.c) ---- */
 const char *sp_re_last_paren_match(void);
 void sp_re_set_captures(const char *str, int *caps, int ncaps);

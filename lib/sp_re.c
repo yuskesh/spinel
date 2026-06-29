@@ -24,6 +24,25 @@ SP_TLS const char *sp_re_match_pre = NULL;
 SP_TLS const char *sp_re_match_post = NULL;
 const char *sp_re_startup_err = NULL;
 
+/* Stop-the-world support: push this worker's live match-register strings onto its
+   GC root stack so a collector marks them while the worker is parked at a
+   safepoint (the registers are per-worker TLS, so the collector's own globals
+   hook does not reach another worker's copy). Only heap strings still unmarked
+   (leading byte 0xfe) are pushed: frozen literals (0xf1) are immortal and never
+   swept, and sp_gc_mark only understands the 0xfe marker. The caller snapshots
+   the root stack right after and then restores its depth, so these entries live
+   only inside the published snapshot. */
+void sp_re_push_match_roots(void) {
+#define SP_RE_PUSH_LIVE(addr) do { const char *_s = *(addr); \
+    if (_s && (unsigned char)_s[-1] == 0xfe) _sp_gc_root_push((void **)(addr)); } while (0)
+  SP_RE_PUSH_LIVE(&sp_re_last_str);
+  for (int i = 0; i < 10; i++) SP_RE_PUSH_LIVE(&sp_re_captures[i]);
+  SP_RE_PUSH_LIVE(&sp_re_match_str);
+  SP_RE_PUSH_LIVE(&sp_re_match_pre);
+  SP_RE_PUSH_LIVE(&sp_re_match_post);
+#undef SP_RE_PUSH_LIVE
+}
+
 const char *sp_re_last_paren_match(void) {
   for (int i = 9; i >= 1; i--) {
     if (sp_re_captures[i]) return sp_re_captures[i];

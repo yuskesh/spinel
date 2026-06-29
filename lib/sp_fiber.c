@@ -216,8 +216,22 @@ static void sp_fiber_restore_roots(sp_Fiber*f){if(f->saved_nroots>0)memcpy(sp_gc
    parked at a safepoint. The collector reaches them via the suspended-fibers GC
    hook (every fiber but the collector's own current is marked from saved_roots). */
 void sp_fiber_publish_current_roots(void){if(sp_fiber_current)sp_fiber_save_roots(sp_fiber_current);}
-static void sp_fiber_list_add(sp_Fiber*f){f->fiber_prev=NULL;f->fiber_next=sp_fiber_list_head;if(sp_fiber_list_head)sp_fiber_list_head->fiber_prev=f;sp_fiber_list_head=f;}
-static void sp_fiber_list_remove(sp_Fiber*f){if(f->fiber_prev)f->fiber_prev->fiber_next=f->fiber_next;else if(sp_fiber_list_head==f)sp_fiber_list_head=f->fiber_next;if(f->fiber_next)f->fiber_next->fiber_prev=f->fiber_prev;f->fiber_prev=NULL;f->fiber_next=NULL;}
+/* The global fiber list is mutated by Fiber.new from any worker (list_add) and
+   walked by the collector during stop-the-world (all mutators parked, so the
+   walk needs no lock). A small mutex serializes concurrent list_add/remove; the
+   critical section is a few pointer writes with no safepoint poll inside, so a
+   worker never parks holding it and the collector never waits on it. */
+#ifdef SP_THREADS
+#include <pthread.h>
+static pthread_mutex_t sp_fiber_list_lock = PTHREAD_MUTEX_INITIALIZER;
+#define FIBER_LIST_LOCK()   pthread_mutex_lock(&sp_fiber_list_lock)
+#define FIBER_LIST_UNLOCK() pthread_mutex_unlock(&sp_fiber_list_lock)
+#else
+#define FIBER_LIST_LOCK()   ((void)0)
+#define FIBER_LIST_UNLOCK() ((void)0)
+#endif
+static void sp_fiber_list_add(sp_Fiber*f){FIBER_LIST_LOCK();f->fiber_prev=NULL;f->fiber_next=sp_fiber_list_head;if(sp_fiber_list_head)sp_fiber_list_head->fiber_prev=f;sp_fiber_list_head=f;FIBER_LIST_UNLOCK();}
+static void sp_fiber_list_remove(sp_Fiber*f){FIBER_LIST_LOCK();if(f->fiber_prev)f->fiber_prev->fiber_next=f->fiber_next;else if(sp_fiber_list_head==f)sp_fiber_list_head=f->fiber_next;if(f->fiber_next)f->fiber_next->fiber_prev=f->fiber_prev;f->fiber_prev=NULL;f->fiber_next=NULL;FIBER_LIST_UNLOCK();}
 static void sp_mark_fiber_roots(sp_Fiber*f){if(f==sp_fiber_current)return;int i;for(i=0;i<f->saved_nroots;i++){void**e=f->saved_roots[i];if((uintptr_t)e&(uintptr_t)1){sp_gc_mark_root_entry(e);}else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(f->exc_ctx)sp_exc_ctx_mark(f->exc_ctx);if(f->raised_obj)sp_gc_mark(f->raised_obj);if(f->inj_obj)sp_gc_mark(f->inj_obj);}
 static void sp_mark_suspended_fibers(void){sp_mark_fiber_roots(&sp_fiber_root);sp_Fiber*f=sp_fiber_list_head;while(f){sp_mark_fiber_roots(f);f=f->fiber_next;}}
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
