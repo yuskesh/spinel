@@ -129,6 +129,21 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); return; }
   }
+  /* a bare `Array.new` is TY_UNKNOWN like an empty `[]` (so push-promotion can
+     narrow it), and its handler emits a sp_PolyArray *. When it is never pushed
+     and lands in a poly slot, box that array -- otherwise the fallback below
+     evaluates it for side effect and yields nil, dropping the array. */
+  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode")) {
+    const char *nm = nt_str(c->nt, node, "name");
+    int rc = nt_ref(c->nt, node, "receiver");
+    const char *rcn = rc >= 0 ? nt_str(c->nt, rc, "name") : NULL;
+    int an = 0; int aN = nt_ref(c->nt, node, "arguments");
+    if (aN >= 0) nt_arr(c->nt, node, "arguments", &an);
+    if (nm && sp_streq(nm, "new") && rcn && sp_streq(rcn, "Array") &&
+        an == 0 && nt_ref(c->nt, node, "block") < 0) {
+      buf_puts(b, "sp_box_poly_array("); emit_expr(c, node, b); buf_puts(b, ")"); return;
+    }
+  }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
   if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "HashNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
