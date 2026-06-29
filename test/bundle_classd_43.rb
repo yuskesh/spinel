@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 # Bundled tests:
 #   - str_setbyte_frozen_literal
 #   - strip_nullable_int_cast

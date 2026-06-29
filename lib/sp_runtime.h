@@ -898,7 +898,7 @@ static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
     ((char *)s)[i] = (char)v;
     return v;
   }
-  sp_raise_cls("FrozenError", "can't modify frozen String");
+  sp_raise_frozen_str(s);
   return v;
 }
 
@@ -938,9 +938,8 @@ static inline const char *sp_str_clone_val(const char *s) {
   if (r && sp_str_is_frozen_val(s)) ((unsigned char *)r)[-1] = 0xf1;
   return r;
 }
-static void __attribute__((noinline,cold)) sp_raise_frozen_string(void){sp_raise_cls("FrozenError","can't modify frozen String");}
 static inline void sp_str_check_mutable(const char *s) {
-  if (sp_str_is_frozen_val(s)) sp_raise_frozen_string();
+  if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
 }
 
 /* sp_String (mutable-String builder) moved to sp_string.h / lib/sp_string.c:

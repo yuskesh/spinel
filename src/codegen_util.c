@@ -602,22 +602,33 @@ void emit_c_escaped_n(Buf *b, const char *s, size_t len) {
 void emit_c_escaped(Buf *b, const char *s) {
   if (s) emit_c_escaped_n(b, s, strlen(s));
 }
-void emit_str_literal_n(Buf *b, const char *content, size_t len) {
-  if (!content || len == 0) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
-  /* NUL-containing strings: use sp_str_from_bytes with explicit byte count. */
+/* Marker byte before string-literal data: 0xff is an immutable rodata literal
+   (frozen? false, value semantics); `frozen` -- set from the node's `fzl` flag
+   when its file has `# frozen_string_literal: true` -- switches to 0xf1 so
+   `frozen?` is true and mutation raises FrozenError. Synthesized strings
+   (symbol names, ivar names, ...) go through emit_str_literal, which is never
+   frozen: the pragma only affects literals written in the source. */
+void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
+  const char *mk = frozen ? "\\xf1" : "\\xff";
+  if (!content || len == 0) { buf_printf(b, "(&(\"%s\")[1])", mk); return; }
+  /* NUL-containing strings: use sp_str_from_bytes with explicit byte count.
+     The heap string it builds is writable (0xfe), so a frozen literal is
+     sealed with sp_str_freeze_val (flips the heap marker to 0xf1 in place). */
   if (len > strlen(content)) {
+    if (frozen) buf_puts(b, "sp_str_freeze_val(");
     buf_puts(b, "sp_str_from_bytes(\"");
     emit_c_escaped_n(b, content, len);
     buf_printf(b, "\", %zu)", len);
+    if (frozen) buf_puts(b, ")");
     return;
   }
-  buf_puts(b, "(&(\"\\xff\" \"");
+  buf_printf(b, "(&(\"%s\" \"", mk);
   emit_c_escaped_n(b, content, len);
   buf_puts(b, "\")[1])");
 }
 void emit_str_literal(Buf *b, const char *content) {
   if (!content) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
-  emit_str_literal_n(b, content, strlen(content));
+  emit_str_literal_n(b, content, strlen(content), 0);
 }
 void emit_catch_tag(Compiler *c, int id, Buf *b) {
   const char *ty = nt_type(c->nt, id);

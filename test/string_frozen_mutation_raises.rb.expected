@@ -1,4 +1,4 @@
-insert: can't modify frozen String
-prepend: can't modify frozen String
-<<: can't modify frozen String
+insert: can't modify frozen String: "hello"
+prepend: can't modify frozen String: "hello"
+<<: can't modify frozen String: "hello"
 hi!

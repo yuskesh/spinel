@@ -256,6 +256,7 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 
 __attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);  /* lib/sp_core.c */
+__attribute__((noreturn)) void sp_raise_frozen_str(const char *s);              /* lib/sp_str.c */
 static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", "can't modify frozen Array"); }
 
 /* sp_PolyArray: a growable array of boxed values. */

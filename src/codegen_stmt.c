@@ -5129,7 +5129,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     /* `<<` onto a frozen string literal raises FrozenError */
     if (rty && sp_streq(rty, "StringNode")) {
       emit_indent(b, indent);
-      buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
+      buf_puts(b, "sp_raise_frozen_str("); emit_expr(c, cur, b); buf_puts(b, ");\n");
       return 1;
     }
     return 0;
@@ -5169,7 +5169,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
          sp_streq(name, "concat") || sp_streq(name, "replace") || sp_streq(name, "clear") ||
          sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!"))) {
       emit_indent(b, indent);
-      buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
+      buf_puts(b, "sp_raise_frozen_str("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       return 1;
     }
     if (assignable && sp_streq(name, "replace") && argc == 1) {

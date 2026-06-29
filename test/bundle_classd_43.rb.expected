@@ -1,5 +1,5 @@
-literal: can't modify frozen String
-lv-literal: can't modify frozen String
+literal: can't modify frozen String: "abc"
+lv-literal: can't modify frozen String: "abc"
 Cbc
 Zy
 Cb
