@@ -341,7 +341,7 @@ The analyzer's results do **not** live in the `NodeTable`; they live in
 the `Compiler` struct (the per-node type cache plus the class / method /
 scope tables). The `NodeTable` is the immutable parsed program; the
 `Compiler` is the derived analysis. See
-[ANALYZE-IR.md](ANALYZE-IR.md).
+[analyze-ir.md](analyze-ir.md).
 
 ## Limitations
 
@@ -367,7 +367,7 @@ scope tables). The `NodeTable` is the immutable parsed program; the
 
 ## See also
 
-- [docs/ANALYZE-IR.md](ANALYZE-IR.md) -- the in-memory analyze ↔ codegen
+- [docs/analyze-ir.md](analyze-ir.md) -- the in-memory analyze ↔ codegen
   contract (the `Compiler` struct that replaced the old `.ir` file).
 - [docs/FFI.md](../FFI.md) -- direct C-call declarations.
 - `src/spinel_parse.c` -- the C front-end that produces this format.

@@ -118,7 +118,7 @@ Spinel can read RBS files to seed the analyzer. When invoked with
 `*.rbs` files (the same layout `rbs` and Steep use) and feeds the
 resulting seed into the analyzer. Seeds are advisory — inference still runs on top and
 widens on observed contradiction, so a wrong or unrepresentable seed
-is at worst a no-op. See [docs/RBS-EXTRACT.md](docs/RBS-EXTRACT.md)
+is at worst a no-op. See [docs/rbs-extract.md](docs/rbs-extract.md)
 for the supported subset.
 
 ## Self-Hosting (legacy oracle)

@@ -2517,7 +2517,7 @@ else {
          match it exactly. A NON-literal ndigits can't be classified statically,
          so the result stays Float and the value is still computed exactly (x
          rounded to n places); only #class differs from CRuby when n turns out
-         <= 0 -- the documented residual divergence (docs/FLOAT-ROUNDING.md). */
+         <= 0 -- the documented residual divergence (docs/float-rounding.md). */
       if (argc == 1) {
         const char *aty = nt_type(nt, argv[0]);
         if (!aty || !sp_streq(aty, "IntegerNode")) return TY_FLOAT;  /* non-literal */

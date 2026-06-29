@@ -41,7 +41,7 @@ registry, or stack reification — none of which exist in a flat compiled binary
 The require-gated stdlib Spinel *does* provide (`StringIO`, `IO#winsize`,
 `Time#iso8601`, ...) requires its `require`, matching CRuby; an unsatisfiable
 `require` is a compile error. This is opt-in today via `SPINEL_REQUIRE_GATE=1`.
-See [REQUIRE.md](REQUIRE.md) for which stdlib needs which `require`.
+See [require.md](require.md) for which stdlib needs which `require`.
 | Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |
 
