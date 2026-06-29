@@ -69,8 +69,9 @@ Limited today, but additively fixable; listed roughly easiest-first.
 ## By design (deliberate choices)
 
 - **Integer overflow** — pick one mode at compile time: `raise` (default,
-  `RangeError` on overflow) or `--int-overflow=promote` (auto-bignum). Not both
-  in one binary, because the representation is chosen statically.
+  `RangeError` on overflow), `wrap`, or `--int-overflow=promote` (auto-bignum).
+  Not both in one binary, because the representation is chosen statically. See
+  [int-overflow.md](int-overflow.md).
 - **Float `round(ndigits)`** — the value is always correct; the *return class*
   follows CRuby (Integer for `round` with 0 digits, Float otherwise).
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,

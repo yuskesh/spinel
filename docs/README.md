@@ -18,6 +18,8 @@ Start here, then open the topic you need.
 - **[float-rounding.md](float-rounding.md)** — the return type of
   `Float#ceil`/`#floor`/`#round`/`#truncate`, where Spinel's static typing meets
   CRuby's value-dependent rule.
+- **[int-overflow.md](int-overflow.md)** — `--int-overflow=raise|wrap|promote`:
+  what happens when an `Integer` crosses Spinel's 64-bit boundary.
 
 ## Internals
 
@@ -27,6 +29,5 @@ How the compiler is built and where it is going. Not needed to *use* Spinel.
   the rest of the compiler consumes.
 - **[internals/analyze-ir.md](internals/analyze-ir.md)** — the analyze ↔ codegen
   contract (the shared in-memory `Compiler` model).
-- **internals/*-design.md / *-plan.md** — design notes and roadmaps for
-  in-progress work (require-gate, M:N threads, promote-mode). Working documents,
-  not user guarantees.
+- **internals/*-design.md** — design notes for in-progress work (M:N threads).
+  Working documents, not user guarantees.
