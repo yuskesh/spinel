@@ -341,15 +341,26 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
     if (target && target->state == SP_TH_DEAD) return;
     /* main blocked on a Queue/Mutex and a runnable thread just woke it */
     if (g_main_thread.state == SP_TH_RUNNABLE) { g_main_thread.state = SP_TH_RUNNING; return; }
-    sp_thread *t = rq_pop();
-    if (t) { run_thread_once(t); continue; }
+    /* Run a green thread on the main worker only at N=1. With helpers present,
+       main does NOT pump green threads: running one means transferring off the
+       root and back, which leaves the root fiber's published top-level roots a
+       stale snapshot a collector could later mark. Main instead waits and lets a
+       helper run the work. At N=1 there are no helpers, so it must pump. */
 #ifdef SP_THREADS
-    /* Queue empty. If a helper is still running a green thread it may enqueue
-       work or wake us, so wait; the worker that drops g_nrunning to zero with an
-       empty queue broadcasts (sp_sched_signal_if_quiescent). When nothing runs,
-       fall through -- drained, or a deadlock the caller observes. At N=1 there
-       are no helpers, so g_nrunning is 0 here and this returns at once. */
-    if (may_wait && g_nrunning > 0) {
+    if (g_nworkers == 1)
+#endif
+    {
+      sp_thread *t = rq_pop();
+      if (t) { run_thread_once(t); continue; }
+    }
+#ifdef SP_THREADS
+    /* Queue empty for us. Wait while a helper is still running a green thread or
+       work sits in the queue (a helper will pick it up) -- it may enqueue more or
+       wake us; the worker that drops g_nrunning to zero with an empty queue
+       broadcasts (sp_sched_signal_if_quiescent). Only when nothing runs and the
+       queue is empty do we fall through -- drained, or a deadlock the caller
+       observes. */
+    if (may_wait && (g_nrunning > 0 || g_rq_head)) {
       pthread_cond_wait(&g_sched_work, &g_sched_lock);
       continue;
     }
