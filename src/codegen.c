@@ -653,7 +653,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
        by the returning procs it creates, and every exit (setjmp catch + _pr_done)
        unlinks it. val starts nil so a GC before any return marks nothing. */
     buf_puts(b, "    sp_proc_home _h;\n");
-    buf_puts(b, "    _h.val = sp_box_nil(); _h.id = sp_proc_home_seq++;\n");
+    buf_puts(b, "    _h.val = sp_box_nil(); _h.id = sp_proc_home_next();\n");
     buf_puts(b, "    _h.exc_top = sp_exc_top; _h.catch_top = sp_catch_top;\n");
     buf_puts(b, "    _h.prev = sp_proc_ret_head; sp_proc_ret_head = &_h;\n");
     if (!is_void) {

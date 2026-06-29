@@ -96,6 +96,12 @@ void       sp_sched_drain(void);
 extern volatile int sp_safepoint_flag;
 void sp_safepoint(void);
 
+/* Optional hook the generated TU installs so a worker parking at a safepoint
+   also publishes its per-worker in-flight GC roots that live in the TU (pending
+   exception objects, proc-return home values) onto its shadow stack, for the
+   stop-the-world collector to mark. NULL when the program has none. */
+extern void (*sp_safepoint_publish_hook)(void);
+
 /* ---- Queue (thread-safe FIFO) ----
  * A producer/consumer hand-off. #pop on an empty queue blocks the calling green
  * thread (parking it, yielding to the scheduler) until a #push wakes it; this is

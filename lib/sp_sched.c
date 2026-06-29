@@ -27,6 +27,7 @@ void  sp_exc_ctx_free(void *p);
    worker at the GC barrier (defined below, after the lock). At N=1 the flag is
    never set by another worker, so a single worker never parks here. */
 volatile int sp_safepoint_flag = 0;
+void (*sp_safepoint_publish_hook)(void) = NULL;   /* set by the generated TU (sp_sched.h) */
 
 /* ---- scheduler lock (design 3, Appendix B) ----
  * One mutex guards all scheduler/sync metadata: the run queue, the live-thread
@@ -83,6 +84,7 @@ static void sp_stw_park_locked(void) {
      saved snapshot, then restore our own root depth -- the snapshot keeps them. */
   int saved_nroots = sp_gc_nroots;
   sp_re_push_match_roots();
+  if (sp_safepoint_publish_hook) sp_safepoint_publish_hook();   /* TU in-flight exc / proc homes */
   sp_fiber_publish_current_roots();
   sp_gc_nroots = saved_nroots;
   /* The collection about to run may recycle a string's address; drop this

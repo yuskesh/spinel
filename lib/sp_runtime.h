@@ -3819,8 +3819,20 @@ typedef struct sp_proc_home {
   mrb_int id;                 /* fresh id captured by the home's returning procs */
   struct sp_proc_home *prev;  /* enclosing home, forming the per-fiber chain */
 } sp_proc_home;
-static sp_proc_home *sp_proc_ret_head = NULL;
+/* sp_proc_ret_head is the current fiber's chain of in-flight proc-return homes,
+   swapped per fiber by sp_exc_ctx_save/load -- per-worker (SP_TLS) under N>1 like
+   the exception stack. sp_proc_home_seq stays a single shared counter so home ids
+   are globally unique across workers (a lambda may be called on a different
+   worker than it was created on); the bump is atomic in the threaded build. */
+static SP_TLS sp_proc_home *sp_proc_ret_head = NULL;
 static mrb_int sp_proc_home_seq = 0;
+static mrb_int sp_proc_home_next(void) {
+#ifdef SP_THREADS
+  return __atomic_fetch_add(&sp_proc_home_seq, 1, __ATOMIC_RELAXED);
+#else
+  return sp_proc_home_seq++;
+#endif
+}
 static void sp_proc_return(mrb_int id, sp_RbVal v) {
   for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev) {
     if (h->id == id) {
@@ -3849,6 +3861,24 @@ static void sp_proc_homes_unwind(void) {
 static void sp_mark_proc_homes(void) {
   for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev) sp_mark_rbval(h->val);
 }
+
+#ifdef SP_THREADS
+/* Stop-the-world support: push this worker's per-worker in-flight GC roots --
+   pending exception objects and proc-return home values, both thread-local --
+   onto its shadow stack so the collector marks them while the worker is parked
+   (sp_safepoint_publish_hook, sp_sched.c). The caller snapshots and then restores
+   the root-stack depth, exactly as sp_re_push_match_roots does for the regex
+   globals. Only in the threaded build (the single-threaded one never parks). */
+static void sp_publish_worker_roots(void) {
+  for (int i = 0; i < sp_exc_top; i++) if (sp_exc_obj[i]) _sp_gc_root_push((void **)&sp_exc_obj[i]);
+  if (sp_pending_exc_obj) _sp_gc_root_push((void **)&sp_pending_exc_obj);
+  for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev)
+    _sp_gc_root_push((void **)((uintptr_t)&h->val | (uintptr_t)1));   /* sp_RbVal root */
+}
+__attribute__((constructor)) static void sp_install_safepoint_publish(void) {
+  sp_safepoint_publish_hook = sp_publish_worker_roots;
+}
+#endif
 /* Continue a non-local unwind after a handler has run its ensure: if more ensure
    handlers lie between here and the target, longjmp to the next; otherwise
    deliver to the target (the proc-return home node, or the matched catch slot). */
@@ -4576,9 +4606,20 @@ static mrb_float sp_Random_rand_float(sp_Random *r) {
 }
 /* Class-method forms (`Random.rand` / `Random.bytes`) share one
    lazily-seeded default instance, mirroring CRuby's Random::DEFAULT. */
-static sp_Random sp_random_default = { 0 };
+/* Per-worker (SP_TLS) in the threaded build: the default xorshift PRNG has no
+   internal lock, so a shared copy would race across workers (libc rand(), used
+   by the bare rand()/rand(int)/shuffle/sample paths, is glibc-thread-safe and so
+   needs no such treatment). Each worker seeds its own from time + its TLS address
+   so the sequences differ. Byte-identical (single static, unchanged seed) in the
+   single-threaded build. */
+static SP_TLS sp_Random sp_random_default = { 0 };
 static sp_Random *sp_random_default_get(void) {
-  if (sp_random_default.state == 0) sp_random_default.state = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ULL;
+  if (sp_random_default.state == 0) {
+    sp_random_default.state = (uint64_t)time(NULL) ^ 0x9E3779B97F4A7C15ULL;
+#ifdef SP_THREADS
+    sp_random_default.state ^= (uint64_t)(uintptr_t)&sp_random_default;  /* distinct per worker */
+#endif
+  }
   return &sp_random_default;
 }
 /* Random#bytes(n) — n random bytes as a String. Uses sp_str_set_len
