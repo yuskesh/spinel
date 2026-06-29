@@ -43,8 +43,8 @@ Native binary           Standalone, no runtime dependencies
 
 Analyze and codegen run in one process and share the in-memory model:
 codegen reads the types analyze just inferred directly, with no
-serialization step in between. See [docs/AST.md](docs/AST.md) for the
-text AST format the parser emits and the analyzer consumes.
+serialization step in between. See [docs/internals/AST.md](docs/internals/AST.md)
+for the text AST format the parser emits and the analyzer consumes.
 
 ## Quick Start
 
@@ -353,7 +353,7 @@ lib/regexp/           Built-in regexp engine; all linked into libspinel_rt.a
 legacy/               Former self-hosting Ruby backend (regression oracle)
 test/                 886 feature tests
 benchmark/            57 benchmarks
-docs/                 Format specs (AST, FFI, sp_Class design)
+docs/                 User docs (require, FFI, RBS, limitations); internals/ for compiler structure
 Makefile              Build automation
 ```
 

@@ -9,7 +9,8 @@ that forgot the `require` ran under Spinel but raised `NameError` /
 
 This document describes how `require` works today, which stdlib needs which
 `require`, and how features are resolved. For the design rationale and the
-planned package system see [require-gate-design.md](require-gate-design.md).
+planned package system see
+[internals/require-gate-design.md](internals/require-gate-design.md).
 
 ## `require` vs `require_relative`
 
@@ -132,4 +133,5 @@ root satisfies is the compile error from the previous section.
   compiler into ordinary feature packages, resolved exactly like a third-party
   one.
 
-See [require-gate-design.md](require-gate-design.md) for the full design.
+See [internals/require-gate-design.md](internals/require-gate-design.md) for the
+full design.

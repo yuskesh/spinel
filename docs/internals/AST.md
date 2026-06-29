@@ -369,7 +369,7 @@ scope tables). The `NodeTable` is the immutable parsed program; the
 
 - [docs/ANALYZE-IR.md](ANALYZE-IR.md) -- the in-memory analyze ↔ codegen
   contract (the `Compiler` struct that replaced the old `.ir` file).
-- [docs/FFI.md](FFI.md) -- direct C-call declarations.
+- [docs/FFI.md](../FFI.md) -- direct C-call declarations.
 - `src/spinel_parse.c` -- the C front-end that produces this format.
 - `src/node_table.[ch]` -- `nt_load_text` and the `nt_*` accessor API.
 - `src/analyze*.c` -- type inference; fills the `Compiler` node type cache.

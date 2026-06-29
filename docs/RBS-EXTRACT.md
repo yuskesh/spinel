@@ -1,13 +1,14 @@
-# spinel_rbs_extract — supported RBS subset
+# RBS type hints (`spinel --rbs`)
 
-`spinel_rbs_extract` (`tools/spinel_rbs_extract.c`) reads `*.rbs` files
-and emits a line-oriented seed file. When `spinel --rbs DIR` is given,
-the driver runs the extractor over `DIR`, hands the seed file to the
-compiler through the `SPINEL_RBS_SEED` environment variable, and the
-analyzer applies it before the inference fixpoint. The seeded types are
-**advisory**: inference still runs on top, and the analyzer widens on
-observed contradiction, so the seed file is never load-bearing — a wrong
-or unrepresentable seed is at worst a no-op.
+`spinel --rbs DIR` feeds `*.rbs` signatures from `DIR` into the type
+inferencer as hints. Under the hood the driver runs `spinel_rbs_extract`
+(`tools/spinel_rbs_extract.c`) over `DIR` to turn the signatures into a
+line-oriented seed file, passes it to the compiler through the
+`SPINEL_RBS_SEED` environment variable, and the analyzer applies it
+before the inference fixpoint. The seeded types are **advisory**:
+inference still runs on top, and the analyzer widens on observed
+contradiction, so the seed file is never load-bearing — a wrong or
+unrepresentable seed is at worst a no-op.
 
 Anything outside the subset below is silently dropped: the seed line
 isn't emitted, and the analyzer falls back to its normal inference for
