@@ -65,7 +65,7 @@ static int            g_nparked  = 0;   /* workers parked at the barrier right n
    marks these: green-thread fibers are also reached via sp_fiber_list_head, but a
    worker's root fiber is not on that list, so without this a helper collector
    would miss the main thread's top-level roots. */
-static sp_Fiber      *g_parked_fiber[SP_MAX_WORKERS];
+static sp_Fiber      *g_parked_fiber[2 * SP_MAX_WORKERS];   /* up to 2 per worker: current + root */
 static int            g_n_parked_fiber = 0;
 static int            g_stw_active = 0; /* a collection is in progress */
 static SP_TLS int     g_collector_active = 0;  /* this worker is mid-collection (re-entrancy guard) */
@@ -91,8 +91,16 @@ static void sp_stw_park_locked(void) {
      worker's pointer-keyed length cache so it cannot return a stale length for a
      reused address after the sweep (the collector clears its own via the sweep). */
   sp_str_lcache_clear();
-  if (sp_fiber_current && g_n_parked_fiber < SP_MAX_WORKERS)
+  /* Record the fibers the collector must mark for this worker: the green thread
+     it is running (sp_fiber_current) AND its root fiber. The root fiber holds the
+     worker's own suspended context -- for the main thread that is the top-level
+     locals, saved when it transferred into the green thread it is pumping -- and
+     it is not on the global fiber list, so without this it would be missed. */
+  sp_Fiber *root = sp_fiber_worker_root();
+  if (sp_fiber_current && g_n_parked_fiber < 2 * SP_MAX_WORKERS)
     g_parked_fiber[g_n_parked_fiber++] = sp_fiber_current;   /* collector marks these */
+  if (root && root != sp_fiber_current && g_n_parked_fiber < 2 * SP_MAX_WORKERS)
+    g_parked_fiber[g_n_parked_fiber++] = root;
   g_nparked++;
   if (g_nparked >= g_nworkers - 1) pthread_cond_signal(&g_stw_request);
   while (g_stw_active) pthread_cond_wait(&g_stw_release, &g_sched_lock);
@@ -137,6 +145,15 @@ void sp_stw_collect(void) {
      rather than sit through the collection without publishing their roots. */
   pthread_cond_broadcast(&g_sched_work);
   while (g_nparked < g_nworkers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
+  /* Our own root fiber holds this worker's suspended context (the main thread's
+     top-level locals if it triggered the collection while pumping a green
+     thread). We do not park, so record it here for the mark like a parked worker
+     does -- our current fiber's roots are reached directly from our TLS stack. */
+  {
+    sp_Fiber *croot = sp_fiber_worker_root();
+    if (croot && croot != sp_fiber_current && g_n_parked_fiber < 2 * SP_MAX_WORKERS)
+      g_parked_fiber[g_n_parked_fiber++] = croot;
+  }
   SCHED_UNLOCK();
   /* exclusive: every other worker is parked at a safepoint with roots published */
   g_collector_active = 1;
