@@ -3544,7 +3544,7 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "dst?") || sp_streq(name, "isdst")) buf_printf(b, "(sp_time_isdst(%s) != 0)", r);
     else if (sp_streq(name, "utc_offset") || sp_streq(name, "gmt_offset") || sp_streq(name, "gmtoff")) buf_printf(b, "sp_time_utc_offset(%s)", r);
     else if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
-    else if (sp_streq(name, "iso8601")) buf_printf(b, "sp_time_iso8601(%s)", r);
+    else if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) buf_printf(b, "sp_time_iso8601(%s)", r);
     else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
     else if (sp_streq(name, "class")) buf_puts(b, "SPL(\"Time\")");
     else if (sp_streq(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -7133,7 +7133,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
       /* Mutex/Monitor.new: no-op sentinel (single-threaded; synchronize runs block inline) */
-      if (cn && (sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor"))) {
+      if (cn && (sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")))) {
         buf_puts(b, "sp_box_nil()"); return;
       }
       if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) {
@@ -7244,7 +7244,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else buf_printf(b, "sp_StrPolyHash_new_dproc(_sp_hash_dproc_%d, NULL)", dn);
         return;
       }
-      if (cn && sp_streq(cn, "StringScanner") && argc == 1) {
+      if (cn && sp_streq(cn, "StringScanner") && argc == 1 && sp_feature_enabled("strscan")) {
         buf_puts(b, "sp_StringScanner_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return;
       }
@@ -7604,7 +7604,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* JSON.generate(x) / JSON.dump(x) -> serialize a boxed value */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "JSON") &&
-      (sp_streq(name, "generate") || sp_streq(name, "dump")) && argc == 1) {
+      (sp_streq(name, "generate") || sp_streq(name, "dump")) && argc == 1 && sp_feature_enabled("json")) {
     TyKind at = comp_ntype(c, argv[0]);
     /* a Struct serializes as a JSON object of its members */
     if (ty_is_object(at) && c->classes[ty_object_class(at)].is_struct) {

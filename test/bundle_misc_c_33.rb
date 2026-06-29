@@ -3,6 +3,8 @@
 #   - time_accessors
 #   - time_iso8601_strftime
 
+require "time"  # Time#iso8601 is require-gated stdlib (matches CRuby)
+
 # === sym_hash_method_dispatch ===
 def t_sym_hash_method_dispatch
   # #510. `sym_str_hash` and `sym_poly_hash` got the right type

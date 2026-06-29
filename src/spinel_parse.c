@@ -1981,7 +1981,7 @@ else {
    reach the not-found branch, so they don't belong here -- only the
    C-native modules that map to a stdlib require name do. */
 static int sp_lib_is_native(const char *name) {
-  static const char *const natives[] = { "json", "io/console", NULL };
+  static const char *const natives[] = { "json", "io/console", "monitor", "time", NULL };
   for (int i = 0; natives[i]; i++) {
     if (strcmp(name, natives[i]) == 0) return 1;
   }

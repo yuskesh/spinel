@@ -3,6 +3,8 @@
 #   - times_map_nested_array
 #   - toplevel_ivar_array
 
+require "time"  # Time#iso8601 is require-gated stdlib (matches CRuby)
+
 # === time_utc ===
 def t_time_utc
   # Issue #418. `Time#utc` was unresolved on a Time receiver --

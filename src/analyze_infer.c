@@ -832,11 +832,11 @@ else {
       if (cn && sp_streq(cn, "Object")) return TY_POLY;
       if (cn && sp_streq(cn, "String")) return TY_STRING;
       if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) return TY_STRINGIO;
-      if (cn && sp_streq(cn, "StringScanner")) return TY_STRINGSCANNER;
+      if (cn && sp_streq(cn, "StringScanner") && sp_feature_enabled("strscan")) return TY_STRINGSCANNER;
       if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN;
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
-      if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor") ||
+      if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") || sp_streq(cn, "File") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
@@ -868,7 +868,7 @@ else {
       if (cn && sp_streq(cn, "Object")) return TY_POLY;  /* identity sentinel */
       if (cn && sp_streq(cn, "String")) return TY_STRING;
       if (cn && sp_streq(cn, "StringIO") && sp_feature_enabled("stringio")) return TY_STRINGIO;
-      if (cn && sp_streq(cn, "StringScanner")) return TY_STRINGSCANNER;
+      if (cn && sp_streq(cn, "StringScanner") && sp_feature_enabled("strscan")) return TY_STRINGSCANNER;
       /* Hash.new { |hash, key| default } : a string-keyed poly hash with a
          default-proc (the block computes the missing-key value). */
       if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_STR_POLY_HASH;
@@ -879,7 +879,7 @@ else {
       /* Thread.new { block }: modeled as a Fiber run to completion on #value. */
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) return TY_FIBER;
       if (cn && sp_streq(cn, "Random")) return TY_RANDOM;
-      if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || sp_streq(cn, "Monitor") ||
+      if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
                  sp_streq(cn, "IO") || sp_streq(cn, "File") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
@@ -1011,7 +1011,7 @@ else {
       return TY_POLY_ARRAY;  /* [log(|gamma|), sign] */
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "JSON") &&
-        (sp_streq(name, "generate") || sp_streq(name, "dump")))
+        (sp_streq(name, "generate") || sp_streq(name, "dump")) && sp_feature_enabled("json"))
       return TY_STRING;
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") &&
@@ -1161,8 +1161,9 @@ else {
     if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
         sp_streq(name, "localtime") || sp_streq(name, "getlocal") || sp_streq(name, "+") ||
         sp_streq(name, "-")) return TY_TIME;
+    if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) return TY_STRING;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "strftime") ||
-        sp_streq(name, "iso8601") || sp_streq(name, "zone") || sp_streq(name, "asctime") ||
+        sp_streq(name, "zone") || sp_streq(name, "asctime") ||
         sp_streq(name, "ctime")) return TY_STRING;
     if (sp_streq(name, "to_f") || sp_streq(name, "subsec")) return TY_FLOAT;
     if (sp_streq(name, "utc?") || sp_streq(name, "gmt?") || sp_streq(name, "dst?") ||
