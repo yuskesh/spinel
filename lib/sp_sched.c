@@ -29,6 +29,30 @@ void sp_safepoint(void) {
   /* STW barrier park: implemented with the worker pool + stop-the-world. */
 }
 
+/* ---- scheduler lock (design 3, Appendix B) ----
+ * One mutex guards all scheduler/sync metadata: the run queue, the live-thread
+ * registry, every wait list (joiners, Queue/Mutex/ConditionVariable waiters) and
+ * the Queue ring buffers. A worker holds it only while touching that metadata
+ * and ALWAYS drops it across a fiber transfer (running a green thread or parking
+ * itself). The held region therefore never polls a safepoint, allocates from the
+ * GC heap, or runs Ruby -- which is what lets a stop-the-world collector make
+ * progress: a worker blocked on this lock releases it within a bounded critical
+ * section and then reaches its next safepoint. Internal helpers (rq_*, reg_*,
+ * sp_sched_wake_one, sp_sched_unpark, sp_thread_wake_joiners) run with the lock
+ * already held by their caller; sp_sched_block / sp_sched_pump / sp_sched_pass
+ * are entered and left with the lock held, bracketing their transfers. In the
+ * single-threaded archive the macros are no-ops, so that build is byte-identical
+ * and the N=1 path is unchanged save for the (uncontended) lock calls. */
+#ifdef SP_THREADS
+#include <pthread.h>
+static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SCHED_LOCK()    pthread_mutex_lock(&g_sched_lock)
+#define SCHED_UNLOCK()  pthread_mutex_unlock(&g_sched_lock)
+#else
+#define SCHED_LOCK()    ((void)0)
+#define SCHED_UNLOCK()  ((void)0)
+#endif
+
 /* ---- scheduler state (single OS worker, so plain globals) ---- */
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */
 static sp_thread *g_current = NULL;      /* the green thread running right now */
@@ -107,7 +131,7 @@ static void sp_thread_wake_joiners(sp_thread *t) {
 /* Run thread t for one timeslice: transfer into its fiber until it yields back
    (parked on a wait-list, or re-queued itself via Thread.pass) or its body
    returns. On termination, publish the result/exception and wake joiners. */
-static void run_thread_once(sp_thread *t) {
+static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   sp_thread *saved = g_current;
   g_current = t;
   t->state = SP_TH_RUNNING;
@@ -117,17 +141,23 @@ static void run_thread_once(sp_thread *t) {
   /* On the body's first entry the block's param reads the fiber's resumed
      value, so hand it Thread.new's argument then; later resumes pass nil. */
   sp_RbVal in = (t->fiber->state == 0) ? t->arg : sp_box_nil();
+  /* Run the green thread with the lock dropped: it executes Ruby (and may park
+     on, or wake, other threads, which re-take the lock themselves). */
+  SCHED_UNLOCK();
   sp_Fiber_transfer_catch(t->fiber, in, &raised, &ec, &em, &eo);
+  SCHED_LOCK();
   g_current = saved;
   if (t->fiber->state == 3) {   /* the body returned (terminated) */
     t->retval = t->fiber->yielded_value;
     t->state = SP_TH_DEAD;
+    int do_report = 0;
     if (raised) {
       t->has_exc = 1; t->exc_cls = ec; t->exc_msg = em; t->exc_obj = eo;
-      if (t->report_on_exception) sp_thread_report(t);
+      do_report = t->report_on_exception;
     }
     sp_thread_wake_joiners(t);
     reg_remove(t);   /* collectable once no user reference remains */
+    if (do_report) { SCHED_UNLOCK(); sp_thread_report(t); SCHED_LOCK(); }
   }
   /* otherwise t yielded back: it parked itself (joiners list) or re-queued
      itself (Thread.pass) before transferring, so the queue state is correct. */
@@ -181,23 +211,28 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   t->retval = sp_box_nil();
   t->name = sp_box_nil();
   t->report_on_exception = g_report_default;
+  SCHED_LOCK();
   t->id = g_next_id++;
   reg_add(t);
   rq_push(t);
+  SCHED_UNLOCK();
   return t;
 }
 
 /* Block the calling thread until `t` is dead. The main thread pumps the queue;
    a spawned thread parks on t's joiners and yields to the scheduler. */
 static void sp_thread_await(sp_thread *t) {
-  if (t->state == SP_TH_DEAD) return;
+  SCHED_LOCK();
+  if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); return; }
   sp_thread *self = g_current;
   if (self == &g_main_thread) {
     sp_sched_pump(t);
-    if (t->state != SP_TH_DEAD)
-      sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
+    int dead = (t->state == SP_TH_DEAD);
+    SCHED_UNLOCK();
+    if (!dead) sp_raise_cls("ThreadError", "deadlock detected: no runnable thread");
   } else {
     sp_sched_block(&t->joiners);   /* parks on t's joiners; resumes once t is dead */
+    SCHED_UNLOCK();
   }
 }
 
@@ -220,11 +255,14 @@ sp_RbVal sp_Thread_value(sp_thread *t) {
 }
 
 void sp_Thread_pass(void) {
+  SCHED_LOCK();
   sp_thread *self = g_current;
   if (self == &g_main_thread) {
     sp_sched_pass();   /* one round-robin sweep, then main resumes (not a drain) */
+    SCHED_UNLOCK();
   } else {
     rq_push(self);
+    SCHED_UNLOCK();
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while paused */
   }
@@ -315,7 +353,7 @@ sp_RbVal sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v) {
 void sp_sched_drain(void) {
   /* main() is finishing: run remaining runnable threads so fire-and-forget
      side effects happen. Only meaningful when called from the main thread. */
-  if (g_current == &g_main_thread) sp_sched_pump(NULL);
+  if (g_current == &g_main_thread) { SCHED_LOCK(); sp_sched_pump(NULL); SCHED_UNLOCK(); }
 }
 
 /* ---- generic park / wake on a primitive wait list ---- */
@@ -323,16 +361,18 @@ void sp_sched_drain(void) {
 /* Block the current green thread on `*waitlist` until a wake moves it back to
    runnable. The main thread pumps the scheduler (it cannot transfer away from
    root); a spawned thread transfers back to the scheduler hub. */
-static void sp_sched_block(sp_thread **waitlist) {
+static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock held */
   sp_thread *self = g_current;
   self->state = SP_TH_BLOCKED;
   self->wait_next = *waitlist;
   self->wait_head = waitlist;   /* so #kill/#raise can unlink it */
   *waitlist = self;
   if (self == &g_main_thread) {
-    sp_sched_pump(NULL);   /* returns once a waker marks main RUNNABLE */
-    if (self->state != SP_TH_RUNNING)
+    sp_sched_pump(NULL);   /* returns (lock held) once a waker marks main RUNNABLE */
+    if (self->state != SP_TH_RUNNING) {
+      SCHED_UNLOCK();
       sp_raise_cls("ThreadError", "deadlock detected: all threads blocked");
+    }
   } else {
     /* The symmetric fiber transfer's exc bookkeeping clobbers this thread's
        handler stack when root resumes from the block, so snapshot it here and
@@ -340,12 +380,15 @@ static void sp_sched_block(sp_thread **waitlist) {
        would find an empty handler stack and escape unhandled. */
     void *exc_snap = sp_exc_ctx_new();
     sp_exc_ctx_save(exc_snap);
+    SCHED_UNLOCK();   /* drop the lock across the transfer (we run no metadata while parked) */
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_exc_ctx_load(exc_snap);
     sp_exc_ctx_free(exc_snap);
-    /* resumed: a pending #kill/#raise fires here, in this thread's context, so
-       its ensure/rescue blocks unwind on its own stack. */
+    /* resumed: a pending #kill/#raise fires here, in this thread's context (lock
+       not held), so its ensure/rescue blocks unwind on its own stack. On the
+       normal resume we re-take the lock so the caller continues holding it. */
     sp_fiber_fire_inject_if_pending();
+    SCHED_LOCK();
   }
 }
 
@@ -383,10 +426,12 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
     if (is_kill) sp_fiber_raise_kill_self();   /* noreturn */
     sp_fiber_reraise(cls, msg, obj);           /* noreturn */
   }
+  SCHED_LOCK();
   if (is_kill) sp_fiber_set_kill_inject(t->fiber);
   else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
   if (t->state == SP_TH_BLOCKED) { sp_sched_unpark(t); rq_push(t); }
   /* RUNNABLE threads are already queued; the inject fires when they run. */
+  SCHED_UNLOCK();
 }
 
 sp_thread *sp_Thread_kill(sp_thread *t) {
@@ -432,15 +477,16 @@ void sp_Queue_push(sp_queue *q, sp_RbVal v) {
      block: it lives in this (possibly suspended) frame, and the parking
      thread's saved roots only cover the shadow stack. */
   SP_GC_ROOT_RBVAL(v);
+  SCHED_LOCK();
   for (;;) {
-    if (q->closed) sp_raise_cls("ClosedQueueError", "queue closed");
+    if (q->closed) { SCHED_UNLOCK(); sp_raise_cls("ClosedQueueError", "queue closed"); }
     if (q->max <= 0 || q->len < q->max) break;
-    sp_sched_block(&q->push_waiters);
+    sp_sched_block(&q->push_waiters);   /* releases+reacquires the lock around its transfer */
   }
   if (q->len == q->cap) {
     mrb_int nc = q->cap * 2;
     sp_RbVal *nb = (sp_RbVal *)malloc(sizeof(sp_RbVal) * nc);
-    if (!nb) sp_raise_cls("NoMemoryError", "failed to grow queue");
+    if (!nb) { SCHED_UNLOCK(); sp_raise_cls("NoMemoryError", "failed to grow queue"); }
     for (mrb_int i = 0; i < q->len; i++) nb[i] = q->buf[(q->head + i) % q->cap];
     free(q->buf);
     q->buf = nb; q->cap = nc; q->head = 0;
@@ -448,36 +494,43 @@ void sp_Queue_push(sp_queue *q, sp_RbVal v) {
   q->buf[(q->head + q->len) % q->cap] = v;
   q->len++;
   sp_sched_wake_one(&q->pop_waiters);   /* hand the new value to a waiting popper */
+  SCHED_UNLOCK();
 }
 
 sp_RbVal sp_Queue_pop(sp_queue *q) {
   /* Block until an element is available. A closed, drained queue returns nil
      rather than blocking forever (CRuby behaviour). */
+  SCHED_LOCK();
   while (q->len == 0) {
-    if (q->closed) return sp_box_nil();
+    if (q->closed) { SCHED_UNLOCK(); return sp_box_nil(); }
     sp_sched_block(&q->pop_waiters);
   }
   sp_RbVal v = q->buf[q->head];
   q->head = (q->head + 1) % q->cap;
   q->len--;
   if (q->max > 0) sp_sched_wake_one(&q->push_waiters);   /* a slot freed up */
+  SCHED_UNLOCK();
   return v;
 }
 
-mrb_int  sp_Queue_size(sp_queue *q)   { return q->len; }
-mrb_bool sp_Queue_empty(sp_queue *q)  { return q->len == 0; }
-mrb_int  sp_Queue_max(sp_queue *q)    { return q->max; }
-mrb_bool sp_Queue_closed(sp_queue *q) { return q->closed != 0; }
+mrb_int  sp_Queue_size(sp_queue *q)   { SCHED_LOCK(); mrb_int n = q->len;       SCHED_UNLOCK(); return n; }
+mrb_bool sp_Queue_empty(sp_queue *q)  { SCHED_LOCK(); mrb_bool e = q->len == 0;  SCHED_UNLOCK(); return e; }
+mrb_int  sp_Queue_max(sp_queue *q)    { SCHED_LOCK(); mrb_int m = q->max;        SCHED_UNLOCK(); return m; }
+mrb_bool sp_Queue_closed(sp_queue *q) { SCHED_LOCK(); mrb_bool c = q->closed != 0; SCHED_UNLOCK(); return c; }
 void     sp_Queue_clear(sp_queue *q)  {
+  SCHED_LOCK();
   q->head = q->len = 0;
   if (q->max > 0) while (sp_sched_wake_one(&q->push_waiters)) { }   /* all slots free */
+  SCHED_UNLOCK();
 }
 
 void sp_Queue_close(sp_queue *q) {
+  SCHED_LOCK();
   q->closed = 1;
   /* wake every blocked popper (they return nil) and pusher (they raise) */
   while (sp_sched_wake_one(&q->pop_waiters)) { }
   while (sp_sched_wake_one(&q->push_waiters)) { }
+  SCHED_UNLOCK();
 }
 
 /* ---- Mutex ----
@@ -494,26 +547,35 @@ sp_mutex *sp_Mutex_new(void) {
 }
 
 void sp_Mutex_lock(sp_mutex *m) {
+  SCHED_LOCK();
   sp_thread *self = g_current;
-  if (m->owner == self) sp_raise_cls("ThreadError", "deadlock; recursive locking");
-  if (m->owner == NULL) { m->owner = self; return; }
+  if (m->owner == self) { SCHED_UNLOCK(); sp_raise_cls("ThreadError", "deadlock; recursive locking"); }
+  if (m->owner == NULL) { m->owner = self; SCHED_UNLOCK(); return; }
   /* unlock hands ownership to us (sets m->owner) before waking us. */
   sp_sched_block(&m->waiters);
+  SCHED_UNLOCK();
 }
 
 void sp_Mutex_unlock(sp_mutex *m) {
-  if (m->owner != g_current)
+  SCHED_LOCK();
+  if (m->owner != g_current) {
+    SCHED_UNLOCK();
     sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
+  }
   m->owner = sp_sched_wake_one(&m->waiters);   /* hand off, or NULL => unlocked */
+  SCHED_UNLOCK();
 }
 
 mrb_bool sp_Mutex_try_lock(sp_mutex *m) {
-  if (m->owner != NULL) return 0;
-  m->owner = g_current;
-  return 1;
+  SCHED_LOCK();
+  mrb_bool r;
+  if (m->owner != NULL) r = 0;
+  else { m->owner = g_current; r = 1; }
+  SCHED_UNLOCK();
+  return r;
 }
-mrb_bool sp_Mutex_locked(sp_mutex *m) { return m->owner != NULL; }
-mrb_bool sp_Mutex_owned(sp_mutex *m)  { return m->owner == g_current; }
+mrb_bool sp_Mutex_locked(sp_mutex *m) { SCHED_LOCK(); mrb_bool r = m->owner != NULL;      SCHED_UNLOCK(); return r; }
+mrb_bool sp_Mutex_owned(sp_mutex *m)  { SCHED_LOCK(); mrb_bool r = m->owner == g_current;  SCHED_UNLOCK(); return r; }
 
 /* ---- ConditionVariable ----
  * #wait releases the mutex, parks on the CV, and re-acquires the mutex on
@@ -526,10 +588,20 @@ sp_condvar *sp_CondVar_new(void) {
 }
 
 void sp_CondVar_wait(sp_condvar *cv, sp_mutex *m) {
-  sp_Mutex_unlock(m);
-  sp_sched_block(&cv->waiters);
+  /* Release the mutex and park on the CV atomically under the one lock, so a
+     concurrent #signal cannot slip in between and be lost. The mutex unlock is
+     inlined (its hand-off + ownership check) since sp_Mutex_unlock would take
+     the lock again on its own. */
+  SCHED_LOCK();
+  if (m->owner != g_current) {
+    SCHED_UNLOCK();
+    sp_raise_cls("ThreadError", "Attempt to unlock a mutex which is not locked");
+  }
+  m->owner = sp_sched_wake_one(&m->waiters);   /* hand off the mutex, or NULL */
+  sp_sched_block(&cv->waiters);                /* park (drops+retakes the lock) */
+  SCHED_UNLOCK();
   sp_Mutex_lock(m);   /* re-acquire (may block again on the mutex) */
 }
 
-void sp_CondVar_signal(sp_condvar *cv)    { sp_sched_wake_one(&cv->waiters); }
-void sp_CondVar_broadcast(sp_condvar *cv) { while (sp_sched_wake_one(&cv->waiters)) { } }
+void sp_CondVar_signal(sp_condvar *cv)    { SCHED_LOCK(); sp_sched_wake_one(&cv->waiters);            SCHED_UNLOCK(); }
+void sp_CondVar_broadcast(sp_condvar *cv) { SCHED_LOCK(); while (sp_sched_wake_one(&cv->waiters)) { }  SCHED_UNLOCK(); }
