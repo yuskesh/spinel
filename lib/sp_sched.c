@@ -68,6 +68,7 @@ static int            g_nparked  = 0;   /* workers parked at the barrier right n
 static sp_Fiber      *g_parked_fiber[2 * SP_MAX_WORKERS];   /* up to 2 per worker: current + root */
 static int            g_n_parked_fiber = 0;
 static int            g_stw_active = 0; /* a collection is in progress */
+static unsigned       g_stw_epoch = 0;  /* bumped each collection; scopes g_nparked to one */
 static SP_TLS int     g_collector_active = 0;  /* this worker is mid-collection (re-entrancy guard) */
 static int            g_shutdown = 0;   /* set at drain so helper workers exit their loop */
 static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers wait for runnable work */
@@ -101,10 +102,17 @@ static void sp_stw_park_locked(void) {
     g_parked_fiber[g_n_parked_fiber++] = sp_fiber_current;   /* collector marks these */
   if (root && root != sp_fiber_current && g_n_parked_fiber < 2 * SP_MAX_WORKERS)
     g_parked_fiber[g_n_parked_fiber++] = root;
+  /* Park for the current collection (epoch). g_nparked counts only this epoch's
+     parkers: when the next collection starts it bumps the epoch and resets the
+     count, and a straggler from a finished collection (epoch mismatch) must not
+     touch the new count -- otherwise the new collector could see a stale count
+     and proceed before anyone has actually parked, marking an incomplete root
+     set (then sweeping a still-live root). */
+  unsigned my_epoch = g_stw_epoch;
   g_nparked++;
   if (g_nparked >= g_nworkers - 1) pthread_cond_signal(&g_stw_request);
-  while (g_stw_active) pthread_cond_wait(&g_stw_release, &g_sched_lock);
-  g_nparked--;
+  while (g_stw_active && g_stw_epoch == my_epoch) pthread_cond_wait(&g_stw_release, &g_sched_lock);
+  if (g_stw_epoch == my_epoch) g_nparked--;
 }
 #else
 #define SCHED_LOCK()    ((void)0)
@@ -140,6 +148,8 @@ void sp_stw_collect(void) {
   if (g_stw_active) { sp_stw_park_locked(); SCHED_UNLOCK(); return; }
   if (!sp_gc_collection_wanted()) { SCHED_UNLOCK(); return; }  /* another worker just collected */
   g_stw_active = 1;
+  g_stw_epoch++;     /* new epoch; a previous collection's stragglers won't be counted */
+  g_nparked = 0;     /* this collection's park count starts fresh */
   sp_safepoint_flag = 1;
   /* wake idle workers (and main waiting in its pump) so they park at the barrier
      rather than sit through the collection without publishing their roots. */
