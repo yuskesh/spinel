@@ -12468,7 +12468,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array or hash */
-  if (sp_streq(name, "each") && rt == TY_POLY && block >= 0 && p0) {
+  if (sp_streq(name, "each") && rt == TY_POLY && block >= 0) {
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
@@ -12517,10 +12517,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
     }
-    else {
+    else if (p0) {
       emit_indent(b, indent + 1);
       buf_printf(b, "lv_%s = sp_poly_each_elem(_t%d, _t%d);\n", p0, ta, ti);
     }
+    /* a paramless block (`each { ... }`) binds nothing; the loop still runs the
+       body once per element for its side effect. */
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
