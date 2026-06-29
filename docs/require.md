@@ -8,9 +8,8 @@ that forgot the `require` ran under Spinel but raised `NameError` /
 `NoMethodError` under CRuby. The **require-gate** closes that gap.
 
 This document describes how `require` works today, which stdlib needs which
-`require`, and how features are resolved. For the design rationale, the resolved
-decisions, and the planned package system see
-[issue #1616](https://github.com/matz/spinel/issues/1616).
+`require`, and how features are resolved. The planned package system is sketched
+under [Planned](#planned) at the end.
 
 ## `require` vs `require_relative`
 
@@ -132,6 +131,3 @@ root satisfies is the compile error from the previous section.
 - Spinel's own require-gated stdlib will eventually be carved out of the
   compiler into ordinary feature packages, resolved exactly like a third-party
   one.
-
-See [issue #1616](https://github.com/matz/spinel/issues/1616) for the full design
-and the remaining package-system work.
