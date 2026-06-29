@@ -23,18 +23,50 @@ int sp_gc_stress_checked = 0;
 pthread_mutex_t sp_heap_lock = PTHREAD_MUTEX_INITIALIZER;   /* see sp_alloc.h */
 #endif
 
-/* Collect and re-tune the threshold. The caller guarantees exclusive access to
-   the heap: in the single-threaded build sp_gc_alloc holds sp_heap_lock; in the
-   threaded build sp_stw_collect runs this with the world stopped (every other
-   worker parked at a safepoint), so no allocator or mutator races the sweep. */
-void sp_gc_collect_retune(void) {
-  size_t before = sp_gc_bytes;
-  sp_gc_collect();
+/* Re-tune the object / string GC thresholds from the pre-collect live bytes
+   (the heuristic mirrors the original inline code in sp_gc_alloc / sp_str_alloc). */
+static void sp_gc_retune_object(size_t before) {
   size_t freed = before - sp_gc_bytes;
   if (freed < before / 4) { sp_gc_threshold = before * 2; }
   else if (sp_gc_bytes > 0) { sp_gc_threshold = sp_gc_bytes * 4; if (sp_gc_threshold < sp_gc_threshold_init) sp_gc_threshold = sp_gc_threshold_init; }
   else { sp_gc_threshold = sp_gc_threshold_init; }
+}
+static void sp_str_retune(size_t before) {
+  size_t freed = before - sp_str_heap_bytes;
+  if (freed < before / 4) { sp_str_threshold = before * 2; }
+  else if (sp_str_heap_bytes > 0) { sp_str_threshold = sp_str_heap_bytes * 4; if (sp_str_threshold < sp_str_threshold_init) sp_str_threshold = sp_str_threshold_init; }
+  else { sp_str_threshold = sp_str_threshold_init; }
+}
+
+/* Collect and re-tune. The caller guarantees exclusive heap access: the
+   single-threaded allocators hold sp_heap_lock; the threaded build runs the
+   _all variant under stop-the-world (every other worker parked), via
+   sp_stw_collect, so neither heap is mutated during the sweep. The object and
+   string variants retune only their own threshold, matching the original
+   per-heap inline collection so the single-threaded path stays byte-identical;
+   _all retunes both since one stop-the-world sweeps both heaps. */
+void sp_gc_collect_retune(void) {
+  size_t before = sp_gc_bytes;
+  sp_gc_collect();
+  sp_gc_retune_object(before);
   sp_gc_enforce_mem_limit();
+}
+void sp_str_collect_retune(void) {
+  size_t before = sp_str_heap_bytes;
+  sp_gc_collect();
+  sp_str_retune(before);
+}
+void sp_gc_collect_retune_all(void) {
+  size_t ob = sp_gc_bytes, sb = sp_str_heap_bytes;
+  sp_gc_collect();
+  sp_gc_retune_object(ob);
+  sp_str_retune(sb);
+  sp_gc_enforce_mem_limit();
+}
+/* Either heap over its trigger? Used by sp_stw_collect to skip a redundant
+   stop-the-world when another worker just collected. */
+int sp_gc_collection_wanted(void) {
+  return sp_gc_bytes > sp_gc_threshold || sp_str_heap_bytes > sp_str_threshold;
 }
 
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
@@ -70,7 +102,7 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   return (char *)h + sizeof(sp_gc_hdr);
 }
 
-struct sp_str_lcache_entry sp_str_lcache[SP_STR_LCACHE_SIZE];
+SP_TLS struct sp_str_lcache_entry sp_str_lcache[SP_STR_LCACHE_SIZE];
 
 void sp_str_lcache_clear(void) {
   for (unsigned i = 0; i < SP_STR_LCACHE_SIZE; i++) sp_str_lcache[i].s = NULL;

@@ -3347,18 +3347,23 @@ __attribute__((constructor)) static void sp_json_install_hooks(void) {
 
 #include <setjmp.h>
 #define SP_EXC_STACK_MAX 64
-static jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
-static const char *sp_exc_msg[SP_EXC_STACK_MAX];
-static volatile int sp_exc_top = 0;
-static const char *sp_exc_cls[SP_EXC_STACK_MAX];
-static volatile const char *sp_last_exc_cls = sp_str_empty;
+/* Per-worker (SP_TLS) in the threaded build: this is the active exception/ensure
+   handler stack of the thread currently executing. It is swapped per fiber by
+   sp_exc_ctx_save/load, which assumes a single active stack -- true at N=1, but
+   with N>1 every OS worker runs a fiber concurrently, so each needs its own.
+   Empty (plain static, byte-identical) in the single-threaded build. */
+static SP_TLS jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
+static SP_TLS const char *sp_exc_msg[SP_EXC_STACK_MAX];
+static SP_TLS volatile int sp_exc_top = 0;
+static SP_TLS const char *sp_exc_cls[SP_EXC_STACK_MAX];
+static SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
 /* The raised exception OBJECT, carried alongside (cls,msg) so a user
    exception subclass keeps its ivars across raise -> rescue (#1415).
    NULL for a bare string/builtin raise, which reconstructs on catch.
    sp_pending_exc_obj is set by sp_raise_exc just before the longjmp and
    consumed into the per-frame slot by sp_raise_cls. */
-static void *sp_exc_obj[SP_EXC_STACK_MAX];
-static void *sp_pending_exc_obj = NULL;
+static SP_TLS void *sp_exc_obj[SP_EXC_STACK_MAX];
+static SP_TLS void *sp_pending_exc_obj = NULL;
 /* ---- Native backtrace formatting (spinel --debug) ---------------------- */
 /* True for sp_<name> symbols that are runtime helpers, not user Ruby methods.
    A denylist of the lowercase runtime prefixes; user methods are sp_<rubyname>
@@ -3514,8 +3519,8 @@ static sp_StrArray *sp_caller(mrb_int start, mrb_bool have_len, mrb_int len) {
    supersedes that unwind. The machinery that uses it lives further down. */
 enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW };
 struct sp_proc_home;
-static int sp_unwind_kind = SP_UNWIND_NONE, sp_unwind_target = -1, sp_unwind_exc_top = 0;
-static struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (THROW uses sp_unwind_target) */
+static SP_TLS int sp_unwind_kind = SP_UNWIND_NONE, sp_unwind_target = -1, sp_unwind_exc_top = 0;  /* per-worker (see sp_exc_stack) */
+static SP_TLS struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (THROW uses sp_unwind_target) */
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   if (sp_bt_enabled) sp_bt_n = backtrace(sp_bt_buf, 256);
@@ -3766,11 +3771,11 @@ void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError"
    sp_raise_cls, which clears them when a real exception supersedes an unwind). */
 
 #define SP_CATCH_STACK_MAX 64
-static jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];
-static const char *sp_catch_tag[SP_CATCH_STACK_MAX];
-static mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
-static int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
-static volatile int sp_catch_top = 0;
+static SP_TLS jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];   /* per-worker (see sp_exc_stack) */
+static SP_TLS const char *sp_catch_tag[SP_CATCH_STACK_MAX];
+static SP_TLS mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
+static SP_TLS int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
+static SP_TLS volatile int sp_catch_top = 0;
 static void sp_throw(const char *tag, mrb_int val) {
   int i = sp_catch_top - 1;
   while (i >= 0) {

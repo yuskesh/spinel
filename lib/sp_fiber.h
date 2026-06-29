@@ -52,6 +52,9 @@ sp_Fiber *sp_fiber_worker_root(void);
 /* Publish the running worker's shadow-stack roots into its current green thread
    (for a stop-the-world collector to mark while the worker is parked). */
 void      sp_fiber_publish_current_roots(void);
+/* Mark a fiber's published (saved) roots; used by the collector to reach a
+   parked worker's root fiber, which is not on the global fiber list. */
+void      sp_fiber_mark_roots(sp_Fiber *f);
 
 /* Public Fiber API (called from the generated TU). */
 sp_Fiber *sp_Fiber_new(void (*body)(sp_Fiber *));

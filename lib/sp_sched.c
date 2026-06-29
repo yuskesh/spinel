@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>     /* sysconf (worker count) */
 
 /* Reached by name (defined in lib/sp_alloc.c or the generated TU), exactly as
    lib/sp_fiber.c reaches them. */
@@ -55,15 +56,24 @@ static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
  * or, if one is already running, parks like everyone else -- there is no
  * separate collector lock to block on, so a worker that crossed the threshold
  * can never stall the collector by being un-parkable. */
+#define SP_MAX_WORKERS 256
 static int            g_nworkers = 1;   /* worker count; C-3b raises it past 1 */
 static int            g_nparked  = 0;   /* workers parked at the barrier right now */
-static int            g_nidle    = 0;   /* workers idle-waiting on g_sched_work */
+/* The fiber each parked worker was running when it published its roots (a green
+   thread, or the worker's root fiber for an idle/main worker). The collector
+   marks these: green-thread fibers are also reached via sp_fiber_list_head, but a
+   worker's root fiber is not on that list, so without this a helper collector
+   would miss the main thread's top-level roots. */
+static sp_Fiber      *g_parked_fiber[SP_MAX_WORKERS];
+static int            g_n_parked_fiber = 0;
 static int            g_stw_active = 0; /* a collection is in progress */
+static SP_TLS int     g_collector_active = 0;  /* this worker is mid-collection (re-entrancy guard) */
 static int            g_shutdown = 0;   /* set at drain so helper workers exit their loop */
 static pthread_cond_t g_sched_work = PTHREAD_COND_INITIALIZER;   /* idle workers wait for runnable work */
 static pthread_cond_t g_stw_request = PTHREAD_COND_INITIALIZER;  /* collector waits for parks */
 static pthread_cond_t g_stw_release = PTHREAD_COND_INITIALIZER;  /* parked workers wait for clear */
 #define SCHED_WAKE()    pthread_cond_signal(&g_sched_work)   /* nudge one idle worker after enqueue/wake */
+#define SCHED_WAKE_ALL() pthread_cond_broadcast(&g_sched_work)  /* wake every waiter to re-check state */
 
 /* Park the calling worker at the barrier until the collection finishes,
    publishing its running green thread's roots first. PRE: g_sched_lock held. */
@@ -75,6 +85,12 @@ static void sp_stw_park_locked(void) {
   sp_re_push_match_roots();
   sp_fiber_publish_current_roots();
   sp_gc_nroots = saved_nroots;
+  /* The collection about to run may recycle a string's address; drop this
+     worker's pointer-keyed length cache so it cannot return a stale length for a
+     reused address after the sweep (the collector clears its own via the sweep). */
+  sp_str_lcache_clear();
+  if (sp_fiber_current && g_n_parked_fiber < SP_MAX_WORKERS)
+    g_parked_fiber[g_n_parked_fiber++] = sp_fiber_current;   /* collector marks these */
   g_nparked++;
   if (g_nparked >= g_nworkers - 1) pthread_cond_signal(&g_stw_request);
   while (g_stw_active) pthread_cond_wait(&g_stw_release, &g_sched_lock);
@@ -84,6 +100,7 @@ static void sp_stw_park_locked(void) {
 #define SCHED_LOCK()    ((void)0)
 #define SCHED_UNLOCK()  ((void)0)
 #define SCHED_WAKE()    ((void)0)
+#define SCHED_WAKE_ALL() ((void)0)
 #endif
 
 /* Safepoint poll body: codegen emits `if (sp_safepoint_flag) sp_safepoint();` at
@@ -104,17 +121,27 @@ void sp_safepoint(void) {
    today's inline collect, routed through the barrier. */
 void sp_stw_collect(void) {
 #ifdef SP_THREADS
+  /* Re-entrancy guard: a finalizer run during the sweep may allocate and cross
+     the threshold again. We are already the collector with the world stopped
+     (exclusive heap access), so just let that allocation proceed -- re-entering
+     the barrier here would park the collector waiting on itself (deadlock). */
+  if (g_collector_active) return;
   SCHED_LOCK();
   if (g_stw_active) { sp_stw_park_locked(); SCHED_UNLOCK(); return; }
-  extern size_t sp_gc_bytes, sp_gc_threshold;
-  if (sp_gc_bytes <= sp_gc_threshold) { SCHED_UNLOCK(); return; }  /* already collected */
+  if (!sp_gc_collection_wanted()) { SCHED_UNLOCK(); return; }  /* another worker just collected */
   g_stw_active = 1;
   sp_safepoint_flag = 1;
+  /* wake idle workers (and main waiting in its pump) so they park at the barrier
+     rather than sit through the collection without publishing their roots. */
+  pthread_cond_broadcast(&g_sched_work);
   while (g_nparked < g_nworkers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
   SCHED_UNLOCK();
   /* exclusive: every other worker is parked at a safepoint with roots published */
-  sp_gc_collect_retune();
+  g_collector_active = 1;
+  sp_gc_collect_retune_all();   /* sweeps both heaps; marks parked fibers via sp_sched_globals_mark */
+  g_collector_active = 0;
   SCHED_LOCK();
+  g_n_parked_fiber = 0;
   sp_safepoint_flag = 0;
   g_stw_active = 0;
   pthread_cond_broadcast(&g_stw_release);
@@ -128,6 +155,7 @@ void sp_stw_collect(void) {
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */
 static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread this worker runs now */
 static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
+static int        g_nrunning = 0;        /* workers currently executing a green thread (quiescence) */
 static sp_thread *g_all = NULL;          /* registry of live threads, for GC rooting */
 static unsigned   g_next_id = 1;
 static unsigned char g_report_default = 1;  /* Thread.report_on_exception default */
@@ -162,8 +190,18 @@ static void reg_remove(sp_thread *t) {
 static void (*g_prev_globals_hook)(void) = NULL;
 static void sp_sched_globals_mark(void) {
   for (sp_thread *t = g_all; t; t = t->all_next) sp_gc_mark(t);
+#ifdef SP_THREADS
+  /* Mark each parked worker's published roots. Reaches the per-worker root fibers
+     (idle/main workers) that are not on sp_fiber_list_head; green-thread fibers
+     are also covered here (harmless re-mark) and via the suspended-fibers hook. */
+  for (int i = 0; i < g_n_parked_fiber; i++) sp_fiber_mark_roots(g_parked_fiber[i]);
+#endif
   if (g_prev_globals_hook) g_prev_globals_hook();
 }
+
+#ifdef SP_THREADS
+static void sp_sched_start_workers(void);   /* defined after run_thread_once */
+#endif
 
 void sp_sched_init(void) {
   /* Called from main() before any fiber/thread op. Adopt this OS thread (worker
@@ -179,6 +217,9 @@ void sp_sched_init(void) {
   g_current = &g_main_thread;
   g_prev_globals_hook = sp_gc_mark_globals_hook;
   sp_gc_mark_globals_hook = sp_sched_globals_mark;
+#ifdef SP_THREADS
+  sp_sched_start_workers();   /* spawn N-1 helper OS workers (see below) */
+#endif
 }
 
 static void sp_thread_report(sp_thread *t) {
@@ -202,10 +243,21 @@ static void sp_thread_wake_joiners(sp_thread *t) {
 /* Run thread t for one timeslice: transfer into its fiber until it yields back
    (parked on a wait-list, or re-queued itself via Thread.pass) or its body
    returns. On termination, publish the result/exception and wake joiners. */
+/* Quiescence: nothing left to run anywhere. A main thread parked in its pump
+   (#join / drain) waits on exactly this, so the worker that empties the last of
+   the work wakes it. Counting RUNNING workers (not idle ones) makes this robust:
+   a worker that merely wakes spuriously and re-idles never touches g_nrunning,
+   so it cannot momentarily perturb the predicate the way an idle count would. */
+static void sp_sched_signal_if_quiescent(void) {
+  if (g_nrunning == 0 && !g_rq_head) SCHED_WAKE_ALL();
+}
+
 static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   sp_thread *saved = g_current;
   g_current = t;
+  g_nrunning++;
   t->state = SP_TH_RUNNING;
+  t->off_cpu = 0;        /* on-cpu now: no other worker may pick it up */
   int raised = 0;
   const char *ec = NULL, *em = NULL;
   void *eo = NULL;
@@ -228,10 +280,31 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
     }
     sp_thread_wake_joiners(t);
     reg_remove(t);   /* collectable once no user reference remains */
+    g_nrunning--;
+    SCHED_WAKE_ALL();   /* wake a pump-waiting main (joining on this thread) and idle workers */
     if (do_report) { SCHED_UNLOCK(); sp_thread_report(t); SCHED_LOCK(); }
+    return;
   }
-  /* otherwise t yielded back: it parked itself (joiners list) or re-queued
-     itself (Thread.pass) before transferring, so the queue state is correct. */
+  /* t yielded back and is now fully off its stack. Only NOW is it safe for
+     another worker to run it, so this is where it (re-)enters the run queue:
+     - BLOCKED: it parked on a wait list. If a waker raced in while it was still
+       switching out, it deferred the enqueue to us (wake_pending); do it now.
+     - otherwise (still RUNNING): it yielded via Thread.pass and wants to keep
+       running, so requeue it. */
+  t->off_cpu = 1;
+  if (t->state == SP_TH_BLOCKED) {
+    if (t->wake_pending) {
+      t->wake_pending = 0;
+      t->state = SP_TH_RUNNABLE;
+      rq_push(t);
+      SCHED_WAKE();
+    }
+  } else {
+    rq_push(t);
+    SCHED_WAKE();
+  }
+  g_nrunning--;
+  sp_sched_signal_if_quiescent();   /* this thread blocked/passed; if nothing else runs, wake a waiting main */
 }
 
 /* Run runnable green threads on this (the main) worker. Returns when `target`
@@ -239,27 +312,32 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
    empty. When may_wait is set and a helper worker is still busy (so it may yet
    enqueue work or wake us), block on g_sched_work instead of returning on an
    empty queue -- otherwise main would falsely declare a deadlock while a helper
-   runs the very thread that will wake it. At N=1 g_nidle>=g_nworkers-1 holds
-   immediately, so this returns on an empty queue exactly as before. PRE/POST:
-   sched lock held. */
+   runs the very thread that will wake it. At N=1 g_nrunning is 0 between runs, so
+   this returns on an empty queue exactly as before. PRE/POST: sched lock held. */
 static void sp_sched_pump(sp_thread *target, int may_wait) {
   for (;;) {
+#ifdef SP_THREADS
+    if (g_stw_active) { sp_stw_park_locked(); continue; }   /* park main through STW too */
+#endif
     if (target && target->state == SP_TH_DEAD) return;
     /* main blocked on a Queue/Mutex and a runnable thread just woke it */
     if (g_main_thread.state == SP_TH_RUNNABLE) { g_main_thread.state = SP_TH_RUNNING; return; }
     sp_thread *t = rq_pop();
     if (t) { run_thread_once(t); continue; }
 #ifdef SP_THREADS
-    if (may_wait && g_nidle < g_nworkers - 1) {
-      g_nidle++;
+    /* Queue empty. If a helper is still running a green thread it may enqueue
+       work or wake us, so wait; the worker that drops g_nrunning to zero with an
+       empty queue broadcasts (sp_sched_signal_if_quiescent). When nothing runs,
+       fall through -- drained, or a deadlock the caller observes. At N=1 there
+       are no helpers, so g_nrunning is 0 here and this returns at once. */
+    if (may_wait && g_nrunning > 0) {
       pthread_cond_wait(&g_sched_work, &g_sched_lock);
-      g_nidle--;
       continue;
     }
 #else
     (void)may_wait;
 #endif
-    return;   /* empty and nobody else can produce: drained, or a deadlock the caller observes */
+    return;
   }
 }
 
@@ -351,8 +429,10 @@ void sp_Thread_pass(void) {
     sp_sched_pass();   /* one round-robin sweep, then main resumes (not a drain) */
     SCHED_UNLOCK();
   } else {
-    rq_push(self);
-    SCHED_WAKE();   /* let an idle helper take self while we yield to our root */
+    /* Yield but stay runnable. Do NOT enqueue ourselves here: a second worker
+       could pop and run our fiber while we are still mid-context-switch. We keep
+       our state RUNNING and transfer to our worker's root; run_thread_once
+       requeues us once we are fully off-cpu. */
     SCHED_UNLOCK();
     sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while paused */
@@ -441,10 +521,66 @@ sp_RbVal sp_Thread_tls_set(sp_thread *t, sp_sym k, sp_RbVal v) {
   return v;
 }
 
+#ifdef SP_THREADS
+/* ---- helper OS workers (design 3.2, Appendix B) ---- */
+static pthread_t g_worker_threads[SP_MAX_WORKERS];
+
+/* min(online cores, SPINEL_WORKERS); the env var overrides the autodetect. */
+static int sp_worker_count(void) {
+  const char *e = getenv("SPINEL_WORKERS");
+  int n;
+  if (e && *e) { n = atoi(e); if (n < 1) n = 1; }
+  else { long c = sysconf(_SC_NPROCESSORS_ONLN); n = (c > 0) ? (int)c : 1; }
+  if (n > SP_MAX_WORKERS) n = SP_MAX_WORKERS;
+  return n;
+}
+
+/* A helper worker: adopt its native stack as a per-worker root fiber, then pull
+   runnable green threads off the GRQ forever. It parks at the GC barrier when a
+   collection is in progress and exits when main signals shutdown at drain. */
+static void *sp_worker_main(void *arg) {
+  (void)arg;
+  sp_fiber_worker_init();
+  SCHED_LOCK();
+  for (;;) {
+    if (g_stw_active) { sp_stw_park_locked(); continue; }
+    if (g_shutdown) break;
+    sp_thread *t = rq_pop();
+    if (t) { run_thread_once(t); continue; }  /* run_thread_once signals quiescence on the last one */
+    pthread_cond_wait(&g_sched_work, &g_sched_lock);   /* idle; woken by an enqueue (SCHED_WAKE) or shutdown */
+  }
+  SCHED_UNLOCK();
+  return NULL;
+}
+
+static void sp_sched_start_workers(void) {
+  g_nworkers = sp_worker_count();
+  for (int i = 1; i < g_nworkers; i++) {
+    if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, NULL) != 0) {
+      g_nworkers = i;   /* spawn failed: run with the workers we have */
+      break;
+    }
+  }
+}
+#endif
+
 void sp_sched_drain(void) {
-  /* main() is finishing: run remaining runnable threads so fire-and-forget
-     side effects happen. Only meaningful when called from the main thread. */
-  if (g_current == &g_main_thread) { SCHED_LOCK(); sp_sched_pump(NULL, 0); SCHED_UNLOCK(); }
+  /* main() is finishing: run remaining runnable threads so fire-and-forget side
+     effects happen, then shut the helper workers down. Only the main thread
+     drains. pump(NULL, 1) returns once the queue is empty and every helper is
+     idle -- i.e. all runnable work is done (at N=1 it returns on an empty queue
+     exactly as before). */
+  if (g_current != &g_main_thread) return;
+  SCHED_LOCK();
+  sp_sched_pump(NULL, 1);
+#ifdef SP_THREADS
+  g_shutdown = 1;
+  pthread_cond_broadcast(&g_sched_work);
+  SCHED_UNLOCK();
+  for (int i = 1; i < g_nworkers; i++) pthread_join(g_worker_threads[i], NULL);
+  return;
+#endif
+  SCHED_UNLOCK();
 }
 
 /* ---- generic park / wake on a primitive wait list ---- */
@@ -455,6 +591,8 @@ void sp_sched_drain(void) {
 static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock held */
   sp_thread *self = g_current;
   self->state = SP_TH_BLOCKED;
+  self->off_cpu = 0;         /* still on-cpu until our worker confirms the switch-out */
+  self->wake_pending = 0;
   self->wait_next = *waitlist;
   self->wait_head = waitlist;   /* so #kill/#raise can unlink it */
   *waitlist = self;
@@ -491,8 +629,9 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   *waitlist = t->wait_next;
   t->wait_next = NULL;
   t->wait_head = NULL;
-  if (t == &g_main_thread) t->state = SP_TH_RUNNABLE;   /* the pump observes this */
-  else rq_push(t);
+  if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; }   /* the pump observes this */
+  else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); }   /* fully parked: enqueue now */
+  else { t->wake_pending = 1; }   /* still switching out: its worker enqueues it once off-cpu */
   SCHED_WAKE();   /* wake an idle worker (or main, waiting in its pump) to run it */
   return t;
 }
@@ -521,7 +660,11 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
   SCHED_LOCK();
   if (is_kill) sp_fiber_set_kill_inject(t->fiber);
   else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
-  if (t->state == SP_TH_BLOCKED) { sp_sched_unpark(t); rq_push(t); }
+  if (t->state == SP_TH_BLOCKED) {
+    sp_sched_unpark(t);
+    if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); SCHED_WAKE(); }
+    else { t->wake_pending = 1; }   /* mid-switch: its worker enqueues it (see run_thread_once) */
+  }
   /* RUNNABLE threads are already queued; the inject fires when they run. */
   SCHED_UNLOCK();
 }

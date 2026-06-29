@@ -232,7 +232,12 @@ static pthread_mutex_t sp_fiber_list_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 static void sp_fiber_list_add(sp_Fiber*f){FIBER_LIST_LOCK();f->fiber_prev=NULL;f->fiber_next=sp_fiber_list_head;if(sp_fiber_list_head)sp_fiber_list_head->fiber_prev=f;sp_fiber_list_head=f;FIBER_LIST_UNLOCK();}
 static void sp_fiber_list_remove(sp_Fiber*f){FIBER_LIST_LOCK();if(f->fiber_prev)f->fiber_prev->fiber_next=f->fiber_next;else if(sp_fiber_list_head==f)sp_fiber_list_head=f->fiber_next;if(f->fiber_next)f->fiber_next->fiber_prev=f->fiber_prev;f->fiber_prev=NULL;f->fiber_next=NULL;FIBER_LIST_UNLOCK();}
-static void sp_mark_fiber_roots(sp_Fiber*f){if(f==sp_fiber_current)return;int i;for(i=0;i<f->saved_nroots;i++){void**e=f->saved_roots[i];if((uintptr_t)e&(uintptr_t)1){sp_gc_mark_root_entry(e);}else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(f->exc_ctx)sp_exc_ctx_mark(f->exc_ctx);if(f->raised_obj)sp_gc_mark(f->raised_obj);if(f->inj_obj)sp_gc_mark(f->inj_obj);}
+/* Mark a fiber's published (saved) roots and pending-exception objects. Public
+   so the thread scheduler can mark a parked worker's per-worker root fiber, which
+   is not on sp_fiber_list_head (only Fiber.new fibers are) and so would otherwise
+   be missed when a *different* worker is the stop-the-world collector. */
+void sp_fiber_mark_roots(sp_Fiber*f){int i;for(i=0;i<f->saved_nroots;i++){void**e=f->saved_roots[i];if((uintptr_t)e&(uintptr_t)1){sp_gc_mark_root_entry(e);}else{void*obj=*e;if(obj)sp_gc_mark(obj);}}if(f->exc_ctx)sp_exc_ctx_mark(f->exc_ctx);if(f->raised_obj)sp_gc_mark(f->raised_obj);if(f->inj_obj)sp_gc_mark(f->inj_obj);}
+static void sp_mark_fiber_roots(sp_Fiber*f){if(f==sp_fiber_current)return;sp_fiber_mark_roots(f);}
 static void sp_mark_suspended_fibers(void){sp_mark_fiber_roots(&sp_fiber_root);sp_Fiber*f=sp_fiber_list_head;while(f){sp_mark_fiber_roots(f);f=f->fiber_next;}}
 static void sp_fiber_install_gc_hook(void){if(!sp_gc_mark_suspended_fibers_hook)sp_gc_mark_suspended_fibers_hook=sp_mark_suspended_fibers;}
 static void sp_Fiber_fin(void*p){sp_Fiber*f=(sp_Fiber*)p;if(f->stack)munmap(f->stack,sp_fiber_guard()+SP_FIBER_STACK_SIZE);if(f->saved_roots)free(f->saved_roots);if(f->exc_ctx)sp_exc_ctx_free(f->exc_ctx);

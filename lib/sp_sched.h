@@ -32,6 +32,10 @@ typedef struct sp_thread {
   const char       *exc_cls, *exc_msg;
   void             *exc_obj;
   unsigned char     report_on_exception;
+  unsigned char     off_cpu;     /* set by the worker once this thread has fully switched off its
+                                    stack; a waker may only enqueue it once off_cpu, otherwise it
+                                    could be run on a second worker mid-context-switch */
+  unsigned char     wake_pending; /* a wake arrived while still on-cpu; the worker enqueues it */
   struct sp_thread *rq_next;     /* run-queue link while RUNNABLE */
   struct sp_thread *joiners;     /* threads parked in #join/#value on this one */
   struct sp_thread *wait_next;   /* link within the wait list it is parked on */

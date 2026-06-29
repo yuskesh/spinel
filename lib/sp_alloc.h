@@ -63,13 +63,25 @@ struct sp_str_lcache_entry {
   size_t byte_len;
   mrb_int char_len;
 };
-extern struct sp_str_lcache_entry sp_str_lcache[SP_STR_LCACHE_SIZE];
+/* Per-worker (SP_TLS) in the threaded build: this string-length cache is keyed
+   by string pointer and written without the heap lock (sp_str_byte_len is on the
+   hot path), so a shared copy would be a data race across workers -- a torn read
+   yields a wrong length and sp_str_concat's memcpy overruns. Each worker keeps
+   its own; it is cleared at every safepoint park (before a sweep can recycle a
+   cached string's address) and by the string sweep on the collector. */
+extern SP_TLS struct sp_str_lcache_entry sp_str_lcache[SP_STR_LCACHE_SIZE];
 
 /* Cold; single definitions in sp_alloc.c. sp_str_sweep is wired to the GC via a
    constructor so it runs from sp_gc_collect regardless of which TU triggered
    the collection. */
 void sp_str_sweep(void);
 void sp_str_lcache_clear(void);
+/* Collect + retune (see sp_alloc.c). The single-threaded allocators call the
+   per-heap variants directly; sp_stw_collect (threaded) runs _all under STW. */
+void sp_str_collect_retune(void);
+void sp_gc_collect_retune_all(void);
+int  sp_gc_collection_wanted(void);
+void sp_stw_collect(void);   /* lib/sp_sched.c: stop-the-world collect (threaded) */
 
 static inline char *sp_str_alloc(size_t len) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
@@ -82,12 +94,16 @@ static inline char *sp_str_alloc(size_t len) {
      so. Threshold recompute mirrors sp_gc_alloc's. */
   if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_str_threshold = 2048; sp_str_threshold_init = 2048; } }
   if (sp_str_heap_bytes > sp_str_threshold) {
-    size_t before = sp_str_heap_bytes;
-    sp_gc_collect();                 /* runs sp_str_sweep, which decrements sp_str_heap_bytes */
-    size_t freed = before - sp_str_heap_bytes;
-    if (freed < before/4) sp_str_threshold = before*2;
-    else if (sp_str_heap_bytes > 0) { sp_str_threshold = sp_str_heap_bytes*4; if (sp_str_threshold < sp_str_threshold_init) sp_str_threshold = sp_str_threshold_init; }
-    else sp_str_threshold = sp_str_threshold_init;
+#ifdef SP_THREADS
+    /* Same as sp_gc_alloc: a string-heap collection must stop the world too,
+       else a worker still mutating the object/string heap races the sweep.
+       Drop the heap lock before the barrier so we stay parkable. */
+    SP_HEAP_UNLOCK();
+    sp_stw_collect();
+    SP_HEAP_LOCK();
+#else
+    sp_str_collect_retune();         /* sp_gc_collect runs sp_str_sweep */
+#endif
   }
   sp_str_hdr *h = (sp_str_hdr *)malloc(total);
   if (!h) sp_oom_die();
