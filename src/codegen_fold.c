@@ -3644,6 +3644,22 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, Buf *o
   free(ab.p);
 }
 
+/* True if `name` is one of the callee's explicit keyword parameters (`k:` /
+   `k: default`). Only keyword params consume a key from a forwarded `**hash`;
+   positional params with the same name do not. Read from the callee's AST
+   `keywords` array rather than pnames[], which mixes positional and keyword. */
+static int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
+  if (!m || !name || m->def_node < 0) return 0;
+  int pn = nt_ref(c->nt, m->def_node, "parameters");
+  if (pn < 0) return 0;
+  int kn = 0; const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
+  for (int i = 0; i < kn; i++) {
+    const char *kpn = nt_str(c->nt, kws[i], "name");
+    if (kpn && sp_streq(kpn, name)) return 1;
+  }
+  return 0;
+}
+
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
   Scope *m = &c->scopes[callee_idx];
   const NodeTable *nt = c->nt;
@@ -3855,7 +3871,7 @@ else {
       if (kv >= 0) {
         emit_arg_rooted(c, m, i, kv, out);
       }
-      else if (ds_hash_tmp >= 0 && m->pnames[i]) {
+      else if (ds_hash_tmp >= 0 && m->pnames[i] && i != m->kwrest_idx) {
         /* Double-splat: extract param by name from the pre-eval'd hash. */
         const char *hn = ty_hash_cname(ds_hash_type);
         LocalVar *plv = scope_local(m, m->pnames[i]);
@@ -3887,25 +3903,78 @@ else {
         buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new();\n", krhash);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", krhash);
-        if (kwh >= 0 && ds_hash_tmp < 0) {
+        if (kwh >= 0) {
           int en3 = 0; const int *elems3 = nt_arr(nt, kwh, "elements", &en3);
+          int splat_seen = 0;
           for (int e3 = 0; e3 < en3; e3++) {
+            const char *ety3 = nt_type(nt, elems3[e3]);
+            if (ety3 && sp_streq(ety3, "AssocSplatNode")) {
+              /* Forwarded `**hash`: merge its entries into the keyword-rest
+                 (later entries win, so order with literals is preserved). Only
+                 a symbol-keyed hash can flow into a keyword-rest parameter. */
+              int inner3 = nt_ref(nt, elems3[e3], "value");
+              if (inner3 < 0) continue;
+              const char *shn = ty_hash_cname(comp_ntype(c, inner3));
+              if (!shn || !sp_streq(shn, "SymPoly")) {
+                unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
+                continue;
+              }
+              int src;
+              if (!splat_seen && ds_hash_tmp >= 0) {
+                /* Reuse the first splat's materialized temp. It is declared with
+                   ds_hash_type's C type, so it must be SymPoly to flow into
+                   sp_SymPolyHash_update (the inner3 check above guarantees this
+                   for the matching first splat; assert it explicitly so the
+                   type-punned reuse can't silently emit a mismatched pointer). */
+                const char *dshn = ty_hash_cname(ds_hash_type);
+                if (!dshn || !sp_streq(dshn, "SymPoly")) {
+                  unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
+                  continue;
+                }
+                src = ds_hash_tmp;  /* first splat already materialized above */
+              } else {
+                src = ++g_tmp;
+                emit_indent(g_pre, g_indent);
+                buf_printf(g_pre, "sp_SymPolyHash *_t%d = ", src);
+                emit_expr(c, inner3, g_pre);
+                buf_puts(g_pre, ";\n");
+                emit_indent(g_pre, g_indent);
+                buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", src);
+              }
+              splat_seen = 1;
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, _t%d);\n", krhash, src);
+              continue;
+            }
             int key3 = nt_ref(nt, elems3[e3], "key");
             int val3 = nt_ref(nt, elems3[e3], "value");
             if (key3 < 0 || val3 < 0) continue;
             const char *kty3 = nt_type(nt, key3);
             const char *kname3 = (kty3 && sp_streq(kty3, "SymbolNode")) ? nt_str(nt, key3, "value") : NULL;
             if (!kname3) continue;
-            int consumed = 0;
-            for (int jj = 0; jj < m->nparams; jj++) {
-              if (jj == m->kwrest_idx) continue;
-              if (m->pnames[jj] && sp_streq(m->pnames[jj], kname3)) { consumed = 1; break; }
-            }
-            if (consumed) continue;
+            /* A literal `k: v` whose name is an explicit keyword param is bound
+               to that param, not the keyword-rest. A positional param of the
+               same name does not consume it. */
+            if (callee_has_kwarg(c, m, kname3)) continue;
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", krhash, kname3);
             emit_boxed(c, val3, g_pre);
             buf_puts(g_pre, ");\n");
+          }
+          /* Keys merged from a `**hash` that name an explicit keyword param are
+             consumed by that param, so drop them from the keyword-rest. Only
+             keyword params consume keys -- a positional param of the same name
+             leaves its key in the rest. */
+          if (splat_seen && m->def_node >= 0) {
+            int dpn = nt_ref(nt, m->def_node, "parameters");
+            int kpn = 0; const int *kwps = dpn >= 0 ? nt_arr(nt, dpn, "keywords", &kpn) : NULL;
+            for (int kk = 0; kk < kpn; kk++) {
+              const char *kpname = nt_str(nt, kwps[kk], "name");
+              if (!kpname) continue;
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "sp_SymPolyHash_delete(_t%d, sp_sym_intern(\"%s\"));\n",
+                         krhash, kpname);
+            }
           }
         }
         buf_printf(out, "_t%d", krhash);

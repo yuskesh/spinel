@@ -1371,6 +1371,9 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       TyKind at = (ds_val == TY_POLY) ? TY_POLY : ds_val;
       if (at == TY_NIL) at = TY_POLY;
       for (int i = 0; i < m->nparams; i++) {
+        /* The keyword-rest param receives the whole forwarded hash, not the
+           splat's value type -- leave it as its hash type. */
+        if (i == m->kwrest_idx) continue;
         if (!m->pnames[i]) continue;
         LocalVar *p = scope_local(m, m->pnames[i]);
         if (!p || p->rbs_seeded) continue;
