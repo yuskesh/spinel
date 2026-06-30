@@ -218,6 +218,31 @@ const char *re_lit_src(Compiler *c, int nid) {
   }
   return NULL;
 }
+/* Prism flags of a literal/const-bound regexp (-1 if `nid` is not one). Mirrors
+   re_lit_src's resolution so callers can check a regex operand for flags. */
+int re_lit_flags(Compiler *c, int nid) {
+  if (nid < 0) return -1;
+  const char *ty = nt_type(c->nt, nid);
+  if (!ty) return -1;
+  if (sp_streq(ty, "RegularExpressionNode")) return (int)nt_int(c->nt, nid, "flags", 0);
+  if (sp_streq(ty, "ConstantReadNode") || sp_streq(ty, "ConstantPathNode")) {
+    const char *nm = nt_str(c->nt, nid, "name");
+    if (!nm) return -1;
+    for (int k = 0; k < c->nt->count; k++) {
+      const char *kt = nt_type(c->nt, k);
+      if (!kt || (!sp_streq(kt, "ConstantWriteNode") && !sp_streq(kt, "ConstantPathWriteNode"))) continue;
+      const char *kn = nt_str(c->nt, k, "name");
+      if (!kn || !sp_streq(kn, nm)) continue;
+      int v = nt_ref(c->nt, k, "value");
+      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "CallNode") &&
+          nt_str(c->nt, v, "name") && sp_streq(nt_str(c->nt, v, "name"), "freeze"))
+        v = nt_ref(c->nt, v, "receiver");
+      if (v >= 0 && nt_type(c->nt, v) && sp_streq(nt_type(c->nt, v), "RegularExpressionNode"))
+        return (int)nt_int(c->nt, v, "flags", 0);
+    }
+  }
+  return -1;
+}
 void emit_interp(Compiler *c, int id, Buf *b);  /* forward */
 
 /* Emit a regex pattern expression to `b`, handling both static literals and
