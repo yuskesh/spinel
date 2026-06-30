@@ -708,13 +708,21 @@ int infer_write_types(Compiler *c) {
     /* rights targets (post-splat fixed targets) */
     int rn = 0;
     const int *rights = nt_arr(nt, id, "rights", &rn);
+    int blen_r = en - ln - rn; if (blen_r < 0) blen_r = 0;
     for (int j = 0; j < rn; j++) {
-      int ridx = en - rn + j;
-      if (ridx < 0 || ridx >= en) continue;
+      int ridx = ln + blen_r + j;
       const char *rty3 = nt_type(nt, rights[j]);
       if (!rty3) continue;
-      TyKind et = infer_type(c, els[ridx]);
-      if (et == TY_NIL) continue;
+      TyKind et;
+      if (ridx >= en) {
+        /* Underflow (`a, *b, c = [1]`): this post-splat target lands nil, so
+           widen it to poly rather than typing it from a reused leading element. */
+        et = TY_POLY;
+      }
+      else {
+        et = infer_type(c, els[ridx]);
+        if (et == TY_NIL) continue;
+      }
       if (sp_streq(rty3, "LocalVariableTargetNode")) {
         const char *rnm2 = nt_str(nt, rights[j], "name");
         LocalVar *lv = rnm2 ? scope_local(comp_scope_of(c, id), rnm2) : NULL;
