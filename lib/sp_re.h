@@ -47,7 +47,7 @@ mrb_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str);
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str);
 mrb_bool sp_re_match_p(mrb_regexp_pattern *pat, const char *str);
 mrb_bool sp_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int pos);
-void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io, const char *rep, size_t rlen, const char *src, int *caps, int ncaps);
+void sp_re_expand_rep(const mrb_regexp_pattern *pat, char **out_io, size_t *olen_io, size_t *cap_io, const char *rep, size_t rlen, const char *src, int *caps, int ncaps);
 const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep);
 const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep);
 sp_StrArray *sp_re_scan(mrb_regexp_pattern *pat, const char *str);
