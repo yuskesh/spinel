@@ -9,7 +9,8 @@
 #include <unistd.h>     /* sysconf (worker count) */
 #include <time.h>       /* clock_gettime (Kernel#sleep) */
 #include <errno.h>      /* EINTR (sleep fallback) */
-#include <signal.h>     /* SIGURG preemption */
+#include <signal.h>     /* preemption signal (SIGURG by default) */
+#include <strings.h>    /* strcasecmp (SPINEL_PREEMPT_SIGNAL by name) */
 #include <stdint.h>     /* intptr_t (worker id passed via pthread arg) */
 
 /* Reached by name (defined in lib/sp_alloc.c or the generated TU), exactly as
@@ -98,17 +99,18 @@ static double sp_monotonic_now(void) {
 #define SP_PREEMPT_QUANTUM 0.010   /* a green thread runs ~10ms before it must yield */
 #define SP_PREEMPT_TICK    0.005   /* monitor re-checks worker timeslices this often while busy */
 static int g_npreempt = 0;         /* preempt_requests set but not yet consumed */
+static int g_preempt_sig = SIGURG; /* the signal the monitor sends; SPINEL_PREEMPT_SIGNAL overrides */
 typedef struct { pthread_t tid; sp_thread *cur; double since; int active; } sp_wslot;
 static sp_wslot   g_wslot[SP_MAX_WORKERS];   /* per-worker: the green thread it runs + when it started */
 static SP_TLS int g_worker_id = 0;           /* this worker's slot index (0 = main) */
 static void sp_recompute_safepoint_flag(void) {   /* PRE: g_sched_lock held */
   sp_safepoint_flag = (g_stw_active || g_npreempt > 0);
 }
-/* SIGURG lands on the target worker's own stack. Re-assert the flag so the worker
-   sees it even if it was about to clear the lock-free read; the actual yield
-   happens cooperatively at the next safepoint poll (kept minimal and
-   async-signal-safe -- a lone volatile store). */
-static void sp_sigurg_handler(int sig) { (void)sig; sp_safepoint_flag = 1; }
+/* The preemption signal lands on the target worker's own stack. Re-assert the
+   flag so the worker sees it even if it was about to clear the lock-free read;
+   the actual yield happens cooperatively at the next safepoint poll (kept minimal
+   and async-signal-safe -- a lone volatile store). */
+static void sp_preempt_handler(int sig) { (void)sig; sp_safepoint_flag = 1; }
 #define SCHED_WAKE()    pthread_cond_signal(&g_sched_work)   /* nudge one idle worker after enqueue/wake */
 #define SCHED_WAKE_ALL() pthread_cond_broadcast(&g_sched_work)  /* wake every waiter to re-check state */
 
@@ -664,7 +666,7 @@ static int sp_worker_count(void) {
 static void *sp_sysmon_main(void *arg) {
   (void)arg;
   /* The monitor must never field a preemption signal itself. */
-  sigset_t blk; sigemptyset(&blk); sigaddset(&blk, SIGURG);
+  sigset_t blk; sigemptyset(&blk); sigaddset(&blk, g_preempt_sig);
   pthread_sigmask(SIG_BLOCK, &blk, NULL);
   SCHED_LOCK();
   for (;;) {
@@ -697,7 +699,7 @@ static void *sp_sysmon_main(void *arg) {
         r->preempt_request = 1;
         g_npreempt++;
         sp_recompute_safepoint_flag();
-        pthread_kill(g_wslot[i].tid, SIGURG);   /* nudge it to its next safepoint poll */
+        pthread_kill(g_wslot[i].tid, g_preempt_sig);   /* nudge it to its next safepoint poll */
       }
     }
     if (nearest == 0.0 && !busy) {
@@ -777,6 +779,38 @@ static void *sp_worker_main(void *arg) {
   return NULL;
 }
 
+#ifndef NSIG
+#define NSIG 65
+#endif
+
+/* Resolve SPINEL_PREEMPT_SIGNAL to the signal the monitor sends. Accepts a number
+   (so real-time signals work, e.g. `kill -l SIGRTMIN`) or a name with or without
+   the SIG prefix (URG/USR1/USR2/IO/WINCH). The default, SIGURG, is chosen because
+   real programs essentially never use it (its nominal job is TCP out-of-band data)
+   and its default disposition is "ignore", so it is safe to repurpose; override it
+   only if the program itself needs SIGURG, or wants a real-time signal. An
+   unrecognized or uncatchable value warns and falls back to SIGURG. */
+static int sp_resolve_preempt_signal(void) {
+  const char *e = getenv("SPINEL_PREEMPT_SIGNAL");
+  if (!e || !*e) return SIGURG;
+  char *end;
+  long n = strtol(e, &end, 10);
+  if (*end == '\0') {
+    if (n > 0 && n < NSIG) return (int)n;
+  } else {
+    const char *name = e;
+    if (strncasecmp(name, "SIG", 3) == 0) name += 3;
+    static const struct { const char *n; int s; } tab[] = {
+      { "URG", SIGURG }, { "USR1", SIGUSR1 }, { "USR2", SIGUSR2 },
+      { "IO", SIGIO }, { "WINCH", SIGWINCH },
+    };
+    for (size_t i = 0; i < sizeof tab / sizeof tab[0]; i++)
+      if (strcasecmp(name, tab[i].n) == 0) return tab[i].s;
+  }
+  fprintf(stderr, "spinel: ignoring unrecognized SPINEL_PREEMPT_SIGNAL=%s; using SIGURG\n", e);
+  return SIGURG;
+}
+
 static void sp_sched_start_workers(void) {
   /* Spawn the monitor thread (Kernel#sleep wakeups) first and set g_sysmon_started
      before any worker, so a green thread reading the flag in sleep never races
@@ -789,12 +823,18 @@ static void sp_sched_start_workers(void) {
   /* Install the preemption signal handler before any worker can be targeted.
      SA_RESTART so an in-flight library syscall resumes rather than failing with
      EINTR -- the yield itself is cooperative (at the next safepoint poll), the
-     signal only nudges the worker there. */
+     signal only nudges the worker there. Resolve and pin g_preempt_sig here,
+     before the monitor reads it through the pthread_create edge. */
+  g_preempt_sig = sp_resolve_preempt_signal();
   struct sigaction sa; memset(&sa, 0, sizeof sa);
-  sa.sa_handler = sp_sigurg_handler;
+  sa.sa_handler = sp_preempt_handler;
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = SA_RESTART;
-  sigaction(SIGURG, &sa, NULL);
+  if (sigaction(g_preempt_sig, &sa, NULL) != 0) {   /* uncatchable signal: fall back */
+    fprintf(stderr, "spinel: SPINEL_PREEMPT_SIGNAL=%d cannot be caught; using SIGURG\n", g_preempt_sig);
+    g_preempt_sig = SIGURG;
+    sigaction(g_preempt_sig, &sa, NULL);
+  }
   if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
   for (int i = 1; i < g_nworkers; i++)
     if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, (void *)(intptr_t)i) != 0) { g_nworkers = i; break; }
