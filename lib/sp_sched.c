@@ -50,6 +50,7 @@ void (*sp_safepoint_publish_hook)(void) = NULL;   /* set by the generated TU (sp
  * are entered and left with the lock held, bracketing their transfers. In the
  * single-threaded archive the macros are no-ops, so that build is byte-identical
  * and the N=1 path is unchanged save for the (uncontended) lock calls. */
+#define SP_MAX_WORKERS 256   /* both builds: sizes the per-worker run-queue array */
 #ifdef SP_THREADS
 #include <pthread.h>
 static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -64,7 +65,6 @@ static pthread_mutex_t g_sched_lock = PTHREAD_MUTEX_INITIALIZER;
  * or, if one is already running, parks like everyone else -- there is no
  * separate collector lock to block on, so a worker that crossed the threshold
  * can never stall the collector by being un-parkable. */
-#define SP_MAX_WORKERS 256
 static int            g_nworkers = 1;   /* worker count; C-3b raises it past 1 */
 static int            g_nparked  = 0;   /* workers parked at the barrier right now */
 /* The fiber each parked worker was running when it published its roots (a green
@@ -110,7 +110,6 @@ static int g_npreempt = 0;         /* preempt_requests set but not yet consumed 
 static int g_preempt_sig = SIGURG; /* the signal the monitor sends; SPINEL_PREEMPT_SIGNAL overrides */
 typedef struct { pthread_t tid; sp_thread *cur; double since; int active; } sp_wslot;
 static sp_wslot   g_wslot[SP_MAX_WORKERS];   /* per-worker: the green thread it runs + when it started */
-static SP_TLS int g_worker_id = 0;           /* this worker's slot index (0 = main) */
 static void sp_recompute_safepoint_flag(void) {   /* PRE: g_sched_lock held */
   sp_safepoint_flag = (g_stw_active || g_npreempt > 0);
 }
@@ -234,7 +233,20 @@ void sp_stw_collect(void) {
 /* ---- scheduler state (single OS worker, so plain globals) ---- */
 static sp_thread  g_main_thread;         /* the main thread: runs on root, fiber == NULL */
 static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread this worker runs now */
-static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
+/* Run queues (design 3.1). A worker requeues a thread it just ran onto its OWN
+   local queue (g_lrq[wid]) so a yielding thread reruns on the same worker (warm
+   cache); spawns and wakeups, which have no worker affinity, land on the shared
+   global queue (g_grq). A worker picks local-first, then global, then steals one
+   from another worker before parking. All queues are guarded by g_sched_lock --
+   this gives locality and load balancing without a second lock; reducing the
+   lock itself would mean reworking the off-cpu handshake (deferred, see git log).
+   g_runnable is the total parked-runnable count across every queue, for the
+   quiescence/deadlock predicate. */
+static SP_TLS int g_worker_id = 0;       /* this worker's run-queue slot (0 = main); both builds */
+typedef struct { sp_thread *head, *tail; } sp_runq;
+static sp_runq    g_grq;                 /* global run queue: spawned + woken threads */
+static sp_runq    g_lrq[SP_MAX_WORKERS]; /* per-worker local run queues (rerun locality) */
+static int        g_runnable = 0;        /* threads sitting in any run queue right now */
 static int        g_nrunning = 0;        /* workers currently executing a green thread (quiescence) */
 static sp_thread *g_sleepers = NULL;     /* threads parked in Kernel#sleep, woken by deadline */
 static sp_thread *g_io_waiters = NULL;    /* threads parked on a fd, woken by the monitor's poll */
@@ -245,16 +257,40 @@ static sp_thread *g_all = NULL;          /* registry of live threads, for GC roo
 static unsigned   g_next_id = 1;
 static unsigned char g_report_default = 1;  /* Thread.report_on_exception default */
 
-static void rq_push(sp_thread *t) {
-  t->state = SP_TH_RUNNABLE;
-  t->rq_next = NULL;
-  if (g_rq_tail) g_rq_tail->rq_next = t; else g_rq_head = t;
-  g_rq_tail = t;
+static void runq_push(sp_runq *q, sp_thread *t) {
+  t->state = SP_TH_RUNNABLE; t->rq_next = NULL;
+  if (q->tail) q->tail->rq_next = t; else q->head = t;
+  q->tail = t; g_runnable++;
 }
-static sp_thread *rq_pop(void) {
-  sp_thread *t = g_rq_head;
-  if (t) { g_rq_head = t->rq_next; if (!g_rq_head) g_rq_tail = NULL; t->rq_next = NULL; }
+static sp_thread *runq_pop(sp_runq *q) {
+  sp_thread *t = q->head;
+  if (t) { q->head = t->rq_next; if (!q->head) q->tail = NULL; t->rq_next = NULL; g_runnable--; }
   return t;
+}
+/* Spawn / wakeup: the shared global queue (no worker affinity). */
+static void rq_push(sp_thread *t)           { runq_push(&g_grq, t); }
+/* Rerun a thread on the worker that just ran it (locality). */
+static void lrq_push(int wid, sp_thread *t) { runq_push(&g_lrq[wid], t); }
+/* Next thread for worker `wid`: its own queue, then the global queue, then steal
+   one from another worker. Every 61st pick checks the global queue first so a
+   worker that keeps refilling its own queue (e.g. a thread spawning in a loop)
+   cannot starve globally-requeued (preempted / woken) work. */
+static SP_TLS unsigned g_pick_tick = 0;
+static sp_thread *sched_pick(int wid) {
+  sp_thread *t;
+  if ((++g_pick_tick % 61u) == 0) { t = runq_pop(&g_grq); if (t) return t; }
+  t = runq_pop(&g_lrq[wid]);
+  if (t) return t;
+  t = runq_pop(&g_grq);
+  if (t) return t;
+#ifdef SP_THREADS
+  for (int i = 0; i < g_nworkers; i++) {   /* steal one from a busier worker */
+    if (i == wid) continue;
+    t = runq_pop(&g_lrq[i]);
+    if (t) return t;
+  }
+#endif
+  return NULL;
 }
 
 static void reg_add(sp_thread *t) {
@@ -337,7 +373,7 @@ static void sp_thread_wake_joiners(sp_thread *t) {
    a worker that merely wakes spuriously and re-idles never touches g_nrunning,
    so it cannot momentarily perturb the predicate the way an idle count would. */
 static void sp_sched_signal_if_quiescent(void) {
-  if (g_nrunning == 0 && !g_rq_head) SCHED_WAKE_ALL();
+  if (g_nrunning == 0 && g_runnable == 0) SCHED_WAKE_ALL();
 }
 
 static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
@@ -402,6 +438,8 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
       SCHED_WAKE();
     }
   } else {
+    /* Thread.pass / preempt: requeue globally, NOT to our own local queue --
+       picking local-first would rerun us immediately and defeat the yield. */
     rq_push(t);
     SCHED_WAKE();
   }
@@ -454,7 +492,7 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
     if (g_nworkers == 1)
 #endif
     {
-      sp_thread *t = rq_pop();
+      sp_thread *t = sched_pick(g_worker_id);
       if (t) { run_thread_once(t); continue; }
     }
 #ifdef SP_THREADS
@@ -464,7 +502,7 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
        broadcasts (sp_sched_signal_if_quiescent). Only when nothing runs and the
        queue is empty do we fall through -- drained, or a deadlock the caller
        observes. */
-    if (may_wait && (g_nrunning > 0 || g_rq_head || g_sleepers || g_io_waiters)) {
+    if (may_wait && (g_nrunning > 0 || g_runnable > 0 || g_sleepers || g_io_waiters)) {
       pthread_cond_wait(&g_sched_work, &g_sched_lock);
       continue;
     }
@@ -482,13 +520,14 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
    on Thread.pass cannot starve main (which would happen if main drained the
    queue here). */
 static void sp_sched_pass(void) {
-  sp_thread *boundary = g_rq_tail;   /* last thread to get a turn this round */
-  while (boundary) {
-    sp_thread *t = rq_pop();
+  /* Snapshot the runnable count and run exactly that many: a thread that
+     re-queues itself (its own Thread.pass) during the sweep lands beyond the
+     snapshot and waits for the next sweep, so it cannot starve main. */
+  int n = g_runnable;
+  while (n-- > 0) {
+    sp_thread *t = sched_pick(g_worker_id);
     if (!t) return;
-    int last = (t == boundary);
     run_thread_once(t);
-    if (last) return;
   }
 }
 
@@ -515,7 +554,15 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   SCHED_LOCK();
   t->id = g_next_id++;
   reg_add(t);
-  rq_push(t);
+  /* Prefer the spawning worker's local queue (locality) -- but only when that
+     worker actually drains it. Main does not run green threads at N>1, so a
+     thread it spawns would starve in its local queue (stealing only kicks in
+     when the global queue is empty); send those to the global queue. */
+#ifdef SP_THREADS
+  if (g_current == &g_main_thread && g_nworkers > 1) rq_push(t);
+  else
+#endif
+  lrq_push(g_worker_id, t);
   SCHED_WAKE();   /* a helper worker may be idle: hand it the new thread */
   SCHED_UNLOCK();
   return t;
@@ -861,7 +908,7 @@ static void *sp_worker_main(void *arg) {
   for (;;) {
     if (g_stw_active) { sp_stw_park_locked(); continue; }
     if (g_shutdown) break;
-    sp_thread *t = rq_pop();
+    sp_thread *t = sched_pick(wid);   /* own queue, then global, then steal */
     if (t) { run_thread_once(t); continue; }  /* run_thread_once signals quiescence on the last one */
     pthread_cond_wait(&g_sched_work, &g_sched_lock);   /* idle; woken by an enqueue (SCHED_WAKE) or shutdown */
   }
