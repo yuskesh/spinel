@@ -5080,9 +5080,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     return;
   }
-  /* <method>.name -> the stored method name. */
+  /* <method>.name -> the stored method name, interned to a Symbol (CRuby
+     Method#name returns a Symbol, not a String). */
   if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 && sp_streq(name, "name")) {
-    buf_puts(b, "(const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name");
+    buf_puts(b, "sp_sym_intern((const char *)("); emit_expr(c, recv, b); buf_puts(b, ")->name)");
     return;
   }
   /* <method>.arity -> a compile-time constant from the target method's param
