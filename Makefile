@@ -305,13 +305,15 @@ SP_RT_MT_LIB = lib/libspinel_rt_mt.a
 MT_DEF = -DSP_THREADS -ftls-model=initial-exec
 RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h)
 
-build/mt/%.o: lib/%.c $(RT_HDRS)
-	@mkdir -p build/mt
-	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) $(MT_DEF) -Ilib -Ilib/regexp $< -o $@
-
+# Specific rule before generic: GNU Make 3.81 (macOS system make) picks the
+# first matching pattern rule, not the shortest-stem one (3.82+).
 build/mt/regexp/%.o: lib/regexp/%.c lib/regexp/re_internal.h
-	@mkdir -p build/mt/regexp
+	@mkdir -p $(@D)
 	$(CC) -c -O2 $(SEC_FLAGS) $(MT_DEF) -Ilib/regexp $< -o $@
+
+build/mt/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) $(MT_DEF) -Ilib -Ilib/regexp $< -o $@
 
 RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 
@@ -329,13 +331,14 @@ $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)
 SP_RT_MT_TSAN_LIB = lib/libspinel_rt_mt_tsan.a
 TSAN_DEF = $(MT_DEF) -fsanitize=thread -g
 
-build/mt-tsan/%.o: lib/%.c $(RT_HDRS)
-	@mkdir -p build/mt-tsan
-	$(CC) -c -O1 -Wno-all $(SEC_FLAGS) $(TSAN_DEF) -Ilib -Ilib/regexp $< -o $@
-
+# Specific before generic, as in the mt pair above.
 build/mt-tsan/regexp/%.o: lib/regexp/%.c lib/regexp/re_internal.h
-	@mkdir -p build/mt-tsan/regexp
+	@mkdir -p $(@D)
 	$(CC) -c -O1 $(SEC_FLAGS) $(TSAN_DEF) -Ilib/regexp $< -o $@
+
+build/mt-tsan/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c -O1 -Wno-all $(SEC_FLAGS) $(TSAN_DEF) -Ilib -Ilib/regexp $< -o $@
 
 RE_MT_TSAN_OBJ = $(patsubst lib/regexp/%.c,build/mt-tsan/regexp/%.o,$(RE_SRC))
 
