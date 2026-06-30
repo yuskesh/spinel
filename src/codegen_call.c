@@ -5754,10 +5754,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* exit / abort as expressions (noreturn, emit as C statement-expression) */
-  /* sleep(seconds) / Kernel.sleep(seconds) */
+  /* sleep(seconds) / Kernel.sleep(seconds) / ::Kernel.sleep(seconds) */
   if (sp_streq(name, "sleep") && argc <= 1 &&
       (recv < 0 ||
-       (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+       (nt_type(nt, recv) &&
+        (sp_streq(nt_type(nt, recv), "ConstantReadNode") || sp_streq(nt_type(nt, recv), "ConstantPathNode")) &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Kernel")))) {
     if (argc == 0) { buf_puts(b, "((void)sp_sleep(0.0), (mrb_int)0)"); return; }
     TyKind st = comp_ntype(c, argv[0]);
