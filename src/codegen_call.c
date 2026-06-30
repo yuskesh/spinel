@@ -6177,6 +6177,56 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else { buf_puts(b, "sp_re_escape("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     return;
   }
+  /* Regexp.union(pat, ...) -> a pattern matching the alternation of its operands.
+     A String operand is regexp-escaped; a Regexp operand (literal or a constant
+     bound to one) contributes its source wrapped in CRuby's `(?on-off:src)` option
+     group so its flags survive; a single Array argument is expanded into its
+     elements. A runtime Regexp value has no recoverable source (patterns compile
+     to bytecode), so that lone form still loud-rejects. */
+  if (recv >= 0 && argc >= 0 && sp_streq(name, "union") &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
+    /* `Regexp.union([a, b])`: a lone Array argument supplies the operands. */
+    const int *ops = argv; int nops = argc;
+    if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode"))
+      ops = nt_arr(nt, argv[0], "elements", &nops);
+    /* A single Regexp operand is returned unchanged (CRuby keeps its source and
+       flags verbatim, no option-group wrapper). */
+    if (nops == 1 && re_lit_src(c, ops[0]) && emit_regex_pat_to_buf(c, ops[0], b))
+      return;
+    int ts = ++g_tmp, tp = ++g_tmp;
+    for (int i = 0; i < nops; i++) {
+      Buf ab; memset(&ab, 0, sizeof ab);
+      const char *resrc = re_lit_src(c, ops[i]);
+      if (resrc) {
+        /* Regexp operand: splice its bare source. The engine has no inline
+           option group (?on-off:...), so an operand carrying an i/x/m option
+           (re_engine_flags strips the encoding bits, leaving only the
+           matching-relevant options; 0 for a flagless operand) can't have its
+           flags preserved in the joined pattern -- reject rather than drop them. */
+        if (re_engine_flags(re_lit_flags(c, ops[i])) != 0)
+          unsupported(c, id, "Regexp.union with a flagged Regexp operand (engine lacks inline option groups)");
+        emit_str_literal(&ab, resrc);
+      } else {
+        TyKind at = comp_ntype(c, ops[i]);
+        if (at != TY_STRING && at != TY_POLY)
+          unsupported(c, id, "Regexp.union operand without a compile-time source (runtime Regexp or non-String value)");
+        if (at == TY_POLY) { buf_puts(&ab, "sp_re_escape(sp_poly_to_s("); emit_expr(c, ops[i], &ab); buf_puts(&ab, "))"); }
+        else { buf_puts(&ab, "sp_re_escape("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
+      }
+      emit_indent(g_pre, g_indent);
+      if (i == 0) buf_printf(g_pre, "const char *_t%d = %s;\n", ts, ab.p ? ab.p : "\"\"");
+      else buf_printf(g_pre, "_t%d = sp_sprintf(\"%%s|%%s\", _t%d, %s);\n", ts, ts, ab.p ? ab.p : "\"\"");
+      free(ab.p);
+    }
+    /* an empty union (`Regexp.union()` or `Regexp.union([])`) never matches */
+    if (nops == 0) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "const char *_t%d = \"(?!)\";\n", ts); }
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_regexp_pattern *_t%d = re_compile(_t%d, (int64_t)strlen(_t%d ? _t%d : \"\"), 0);\n",
+               tp, ts, ts, ts);
+    buf_printf(b, "_t%d", tp);
+    return;
+  }
   /* Regexp.linear_time?(re) -> whether re matches in linear time. A literal arg
      is inspected for a backreference (the construct that defeats it); a
      non-literal regexp value defaults to true (the answer for backref-free

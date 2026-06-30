@@ -334,6 +334,7 @@ int re_engine_flags(int pf);
 int re_has_captures(const char *src);
 int re_lit_index(Compiler *c, int nid);
 const char *re_lit_src(Compiler *c, int nid);
+int re_lit_flags(Compiler *c, int nid);
 void emit_interp(Compiler *c, int id, Buf *b);
 int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b);
 int nameset_has(NameSet *s, const char *nm);
