@@ -4465,8 +4465,62 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Dynamic `recv.send(name, args)` over a runtime name: desugar_dynamic_send
+   stashed one synthesized `recv.m(args)` arm per candidate method name. Emit a
+   chain `name == :m1 ? recv.m1(args) : ... : raise NoMethodError`, boxing each
+   arm (the result is poly). Arms whose call did not resolve on the receiver
+   (UNKNOWN type -- wrong name or arity for this receiver) are dropped. */
+static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int narm = 0; const int *arms = nt_arr(nt, id, "dyn_send_arms", &narm);
+  if (narm <= 0) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc < 1 || !argv) return 0;
+  int sym = argv[0];
+  TyKind st = comp_ntype(c, sym);
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_sym _t%d = ", t);
+  if (st == TY_SYMBOL) emit_expr(c, sym, b);
+  else if (st == TY_STRING) { buf_puts(b, "sp_sym_intern("); emit_expr(c, sym, b); buf_puts(b, ")"); }
+  else { buf_puts(b, "sp_sym_intern(sp_poly_to_s("); emit_boxed(c, sym, b); buf_puts(b, "))"); }
+  buf_printf(b, "; sp_RbVal _r%d; ", t);
+  Buf *sv_pre = g_pre;
+  for (int k = 0; k < narm; k++) {
+    int arm = arms[k];
+    TyKind at = comp_ntype(c, arm);
+    if (at == TY_UNKNOWN || at == TY_VOID) continue;     /* did not resolve on this receiver/arity */
+    const char *nm = nt_str(nt, arm, "name");
+    if (!nm) continue;
+    /* Emit the arm into private buffers under a silent probe: a method that
+       resolves by type but not by codegen (e.g. wrong arity for a builtin)
+       longjmps out of emit and the arm is simply dropped. Its preludes are
+       captured to `pre` and replayed inside the arm's own branch so they run
+       only when this arm is taken. */
+    Buf pre = {0, 0, 0}, body = {0, 0, 0};
+    g_pre = &pre;
+    int sv_probe = g_unsup_probe; g_unsup_probe = 1;
+    volatile int ok;
+    if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
+    else ok = 0;
+    g_unsup_probe = sv_probe;
+    g_pre = sv_pre;
+    if (ok) {
+      buf_printf(b, "if (_t%d == sp_sym_intern(\"%s\")) { ", t, nm);
+      if (pre.p && pre.len) buf_puts(b, pre.p);
+      buf_printf(b, "_r%d = ", t);
+      emit_boxed_text(c, at, body.p ? body.p : "0", b);
+      buf_puts(b, "; } else ");
+    }
+    free(pre.p); free(body.p);
+  }
+  buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
+  return 1;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
   /* `require` / `require_relative` is a compile-time directive: top-level ones
      are textually spliced away before codegen, and native libs are provided by
      the runtime. One that still reaches codegen -- indented inside an `if`,

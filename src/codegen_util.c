@@ -7,6 +7,7 @@ Buf *g_pre = NULL;
    surfaces every unsupported construct instead of aborting on the first. */
 jmp_buf g_unsup_recover;
 int g_unsup_armed = 0;
+int g_unsup_probe = 0;   /* silent emittability probe: longjmp without printing/exiting */
 int collect_mode(void) {
   static int collect = -1;
   if (collect < 0) collect = getenv("SP_COLLECT_ERRORS") ? 1 : 0;
@@ -330,6 +331,9 @@ const char *rename_local(const char *nm) {
   return nm;
 }
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
+  /* Silent emittability probe (dynamic-send arm selection): unwind without a
+     diagnostic, the caller just drops this arm. */
+  if (g_unsup_probe) longjmp(g_unsup_recover, 1);
   const char *ty = nt_type(c->nt, id);
   /* Ruby-map the diagnostic (#1338): a codegen gap reports against the source
      line the parser stamped (the same position the #line machinery uses), so

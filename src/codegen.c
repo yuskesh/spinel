@@ -2958,6 +2958,8 @@ static void reject_runtime_send(Compiler *c) {
     /* a literal name should have been rewritten already; only a runtime name
        (a variable, a method result, an interpolated string, ...) reaches here */
     if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
+    /* lowered to a static name-dispatch (desugar_dynamic_send): handled, not rejected */
+    { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue; }
     /* Only diagnose a send that codegen will actually emit. A send in a dead
        (unreachable) method is pruned before emission, so rejecting it would
        fail otherwise-valid programs that merely contain an unused method.

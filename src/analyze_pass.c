@@ -2316,6 +2316,100 @@ int desugar_implicit_send(Compiler *c) {
   return changed;
 }
 
+/* `recv.send(name_expr, args)` with a NON-literal name and an explicit receiver:
+   lower it to a static dispatch over the method names that appear as symbol
+   literals in the program. For each candidate name `m` we synthesize an ordinary
+   `recv.m(args)` call; analyze types each (honoring arity), and codegen keeps the
+   ones that resolve on the receiver's type and emits `name == :m1 ? recv.m1(args)
+   : ... : NoMethodError` (result poly). A runtime name that is not one of those
+   literals -- or whose call does not resolve on the receiver -- is not
+   dispatchable and raises NoMethodError. The literal-name forms are rewritten
+   earlier (spinel_parse.c / desugar_implicit_send); this covers a name known only
+   at runtime but drawn from the program's closed set of symbol literals. The arm
+   node ids are stashed on the send under "dyn_send_arms" for codegen. */
+int desugar_dynamic_send(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  static const char *const sends[] = { "send", "__send__", "public_send", NULL };
+  /* a user-defined method named send/etc. resolves normally; don't intercept */
+  for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
+    if (sn) for (int k = 0; sends[k]; k++) if (sp_streq(sn, sends[k])) return 0; }
+  /* quick out: nothing to do unless some not-yet-lowered explicit-receiver send
+     with a runtime name exists (the common case has none, so skip the scans). */
+  { int any = 0;
+    for (int id = 0; id < n0 && !any; id++) {
+      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+      const char *nm = nt_str(nt, id, "name"); if (!nm) continue;
+      int is = 0; for (int k = 0; sends[k]; k++) if (sp_streq(nm, sends[k])) { is = 1; break; }
+      if (!is || nt_ref(nt, id, "receiver") < 0) continue;
+      int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue;
+      int a = nt_ref(nt, id, "arguments"); if (a < 0) continue;
+      int ac = 0; const int *av = nt_arr(nt, a, "arguments", &ac);
+      if (ac < 1 || !av) continue;
+      const char *a0 = nt_type(nt, av[0]);
+      if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
+      any = 1;
+    }
+    if (!any) return 0;
+  }
+  /* collect distinct symbol/string-literal names = candidate method names (send
+     accepts either; a string name interns to the same symbol at the call). */
+  char **cand = NULL; int ncand = 0, candcap = 0;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    const char *v = NULL;
+    if (ty && sp_streq(ty, "SymbolNode")) v = nt_str(nt, id, "value");
+    else if (ty && sp_streq(ty, "StringNode")) v = nt_str(nt, id, "content");
+    if (!v || !*v) continue;
+    int skip = 0;
+    for (int k = 0; sends[k]; k++) if (sp_streq(v, sends[k])) { skip = 1; break; }  /* avoid send-of-send recursion */
+    for (int k = 0; !skip && k < ncand; k++) if (sp_streq(cand[k], v)) skip = 1;
+    if (skip) continue;
+    if (ncand == candcap) { candcap = candcap ? candcap * 2 : 16; cand = (char **)realloc(cand, sizeof(char *) * candcap); }
+    cand[ncand++] = strdup(v);
+  }
+  if (ncand == 0 || ncand > 128) { for (int k = 0; k < ncand; k++) free(cand[k]); free(cand); return 0; }
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int is_send = 0; for (int k = 0; sends[k]; k++) if (sp_streq(nm, sends[k])) { is_send = 1; break; }
+    if (!is_send) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;                            /* implicit self handled elsewhere */
+    { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue; }  /* already lowered */
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || !argv) continue;
+    const char *a0 = nt_type(nt, argv[0]);
+    if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;  /* literal: handled earlier */
+    int nrest = argc - 1;
+    if (nrest > 64) continue;
+    int rest[64]; for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];  /* copy before realloc */
+    int base = nt->count;
+    int arms[128]; int narm = 0;
+    for (int k = 0; k < ncand; k++) {
+      int na = nt_new_node(nt, "ArgumentsNode"); if (na < 0) break;
+      if (nrest) nt_node_set_arr(nt, na, "arguments", rest, nrest);
+      int call = nt_new_node(nt, "CallNode"); if (call < 0) break;
+      nt_node_set_ref(nt, call, "receiver", recv);
+      nt_node_set_str(nt, call, "name", cand[k]);
+      nt_node_set_ref(nt, call, "arguments", na);
+      arms[narm++] = call;
+    }
+    nt_node_set_arr(nt, id, "dyn_send_arms", arms, narm);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  for (int k = 0; k < ncand; k++) free(cand[k]);
+  free(cand);
+  return changed;
+}
+
 /* `:sym.to_proc.call(recv, *args)` -> `recv.sym(*args)`. An explicit Symbol#to_proc
    followed by a call applies the named method to the first argument; with both the
    symbol and the call site statically known, it rewrites to an ordinary method call

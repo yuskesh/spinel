@@ -45,9 +45,15 @@ See [require.md](require.md) for which stdlib needs which `require`.
 | Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |
 
-`send`/`public_send`/`__send__` with a **non-literal** name (`send(meth)`) is in
-this group: the target can't be resolved statically. A **literal** name is
-supported — see below.
+`send`/`public_send`/`__send__` with a **non-literal** name (`send(meth)`) is
+partially supported: an explicit-receiver send lowers to a static dispatch over
+the method names that appear as symbol/string **literals** anywhere in the
+program — `recv.send(name) → name == :a ? recv.a : name == :b ? recv.b : … :
+raise NoMethodError` — with the receiver's type and the argument count selecting
+which arms resolve (the result is `poly`). A name that is not one of those
+literals, or not a method on the receiver, raises `NoMethodError` at runtime. A
+name drawn from outside the program's closed set of literals still can't be
+dispatched. A **literal** name is fully resolved — see below.
 
 ---
 

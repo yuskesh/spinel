@@ -331,6 +331,9 @@ static int range_each_is_external(Compiler *c, int id) {
 
 TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
+  /* a dynamic send lowered to a name-dispatch (desugar_dynamic_send) yields one
+     of several boxed method results -> poly. */
+  { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) return TY_POLY; }
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int args = nt_ref(nt, id, "arguments");

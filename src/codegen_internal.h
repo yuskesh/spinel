@@ -352,6 +352,7 @@ const char *rename_local(const char *nm);
 int collect_mode(void);            /* 1 in SP_COLLECT_ERRORS mode (cached) */
 extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driver */
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
+extern int g_unsup_probe;          /* silent emittability probe (drop a dynamic-send arm) */
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what);
 int builtin_class_id(const char *name);
 int is_builtin_class_name(const char *n);
