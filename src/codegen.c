@@ -2256,7 +2256,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
                c->classes[s->class_id].name, mc(shadow),
                c->classes[s->class_id].name, g_self);
     if (ty && sp_streq(ty, "ForwardingSuperNode")) {
-      for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
+      for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", rename_local(s->pnames[i]));
     }
     else {
       int smi = -1;
@@ -2288,7 +2288,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
         buf_puts(b, "))");
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0)
-        buf_printf(b, "(%s->msg = lv_%s)", g_self, s->pnames[0]);
+        buf_printf(b, "(%s->msg = lv_%s)", g_self, rename_local(s->pnames[0]));
       else
         buf_puts(b, "((void)0)");
       return;
@@ -2323,15 +2323,18 @@ void emit_super(Compiler *c, int id, Buf *b) {
       LocalVar *dst = scope_local(pm, pm->pnames[i]);
       TyKind st = src ? src->type : TY_UNKNOWN;
       TyKind dt = dst ? dst->type : TY_UNKNOWN;
+      /* Use the local's emitted C name: when this method body is inlined at a
+         block call site the params are renamed (e.g. `x` -> `_y5_x`), so bare
+         `super`'s implicit forwarding must reference the renamed identifier. */
       if (dt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) {
         buf_puts(b, ", ");
         Buf _bx; memset(&_bx, 0, sizeof _bx);
-        buf_printf(&_bx, "lv_%s", s->pnames[i]);
+        buf_printf(&_bx, "lv_%s", rename_local(s->pnames[i]));
         emit_boxed_text(c, st, _bx.p, b);
         free(_bx.p);
       }
       else {
-        buf_printf(b, ", lv_%s", s->pnames[i]);
+        buf_printf(b, ", lv_%s", rename_local(s->pnames[i]));
       }
     }
   }
