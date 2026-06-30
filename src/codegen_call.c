@@ -1907,6 +1907,12 @@ static int emit_hash_call(Compiler *c, int id, Buf *b) {
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   if (recv >= 0 && ty_is_hash(rt)) {
+    /* compare_by_identity? is always false for a value-keyed hash; the mutating
+       compare_by_identity cannot be honored (keys are compared by value) and is
+       rejected loudly rather than silently no-op'd. */
+    if (sp_streq(name, "compare_by_identity?") && argc == 0) { buf_puts(b, "0"); return 1; }
+    if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
+      unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
     const char *hn = ty_hash_cname(rt);
     if (hn) {
       /* select! / filter! / reject! / keep_if / delete_if { |k, v| cond } in
@@ -3862,6 +3868,14 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  /* Hash#compare_by_identity switches a hash to identity (equal?/object_id)
+     key comparison. Spinel's hash machinery compares keys by value, so the
+     mutator can't take effect; emitting it as a no-op would silently diverge
+     (subsequent lookups behave as a value-keyed hash). Reject loudly instead.
+     The `compare_by_identity?` predicate is left to report false, which is
+     correct for any hash this mutator never (successfully) ran on. */
+  if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
+    unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
   /* encoding.name -> the encoding name string */
   if (sp_streq(name, "name") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_POLY) {
     const char *rty2 = nt_type(nt, recv);
