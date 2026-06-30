@@ -1,0 +1,16 @@
+"abcd"
+"abcdef"
+"abcdefghi"
+"abcdefghi!"
+"012"
+"HELLO"
+"OLLEH"
+"Xbcde"
+"XbcdZ"
+"XbYYdZ"
+"abcd"
+IndexError: index 5 out of string
+IndexError: index -4 out of string
+"plus"
+"minus"
+"Orig!"

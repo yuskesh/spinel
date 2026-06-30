@@ -2559,8 +2559,10 @@ else {
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode"))
     return TY_BOOL;
 
-  if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0)
+  if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0) {
+    if (rt == TY_STRING) return TY_STRING;  /* +str = mutable copy; -str = frozen self */
     return ty_is_numeric(rt) ? rt : rt == TY_POLY ? TY_POLY : TY_UNKNOWN;
+  }
   /* unary bitwise complement: ~int / ~poly -> int (poly value coerced via to_i) */
   if (sp_streq(name, "~") && recv >= 0 && argc == 0 && (rt == TY_INT || rt == TY_POLY))
     return TY_INT;

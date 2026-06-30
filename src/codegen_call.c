@@ -8724,6 +8724,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (name[0] == '-') { buf_puts(b, "sp_poly_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else { emit_expr(c, recv, b); }  /* +@ is identity on poly */
     }
+    else if (rt == TY_STRING) {
+      /* +str returns a mutable copy (so subsequent <</concat/upcase! mutate a
+         fresh string); -str returns the (already-immutable) string itself. */
+      if (name[0] == '+') { buf_puts(b, "sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+    }
     else { buf_puts(b, name[0] == '-' ? "(-" : "(+"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;
   }
@@ -11310,6 +11316,41 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (assignable && (sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
       const char *base = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
       emit_indent(b, indent); emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ");\n");
+      return 1;
+    }
+    /* concat(a, b, ...): append each argument in order (multi-arg `<<`). An
+       Integer argument appends its codepoint, like `<<`. */
+    if (assignable && sp_streq(name, "concat") && argc >= 1) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      for (int a = 0; a < argc; a++) {
+        TyKind at = comp_ntype(c, argv[a]);
+        emit_indent(b, indent);
+        emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+        else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[a], b);
+        buf_puts(b, ");\n");
+      }
+      return 1;
+    }
+    /* s[i] = str: replace the single character at index i (negative from the
+       end) with the (string) value -> s[0,i] + val + s[i+1..]. Valid range is
+       -len..len (i == len appends, matching CRuby); anything outside raises
+       IndexError with the original index. The (start,len) and Range / Regexp
+       forms remain unsupported (string splice). */
+    if (assignable && sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_INT) {
+      int ti = ++g_tmp;
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent);
+      buf_printf(b, "{ mrb_int _t%d = ", ti); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _len%d = (mrb_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_puts(b, ");");
+      buf_printf(b, " mrb_int _a%d = _t%d < 0 ? _t%d + _len%d : _t%d;", ti, ti, ti, ti, ti);
+      buf_printf(b, " if (_a%d < 0 || _a%d > _len%d) sp_raise_cls(\"IndexError\", sp_sprintf(\"index %%lld out of string\", (long long)_t%d));",
+                 ti, ti, ti, ti);
+      buf_puts(b, " "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat(sp_str_concat(sp_str_sub_range(");
+      emit_expr(c, recv, b); buf_printf(b, ", 0, _a%d), ", ti); emit_str_expr(c, argv[1], b);
+      buf_printf(b, "), sp_str_sub_range("); emit_expr(c, recv, b);
+      buf_printf(b, ", _a%d + 1 < _len%d ? _a%d + 1 : _len%d, _len%d)); }\n", ti, ti, ti, ti, ti);
       return 1;
     }
   }
