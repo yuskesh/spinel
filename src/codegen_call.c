@@ -3647,6 +3647,28 @@ static int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "offset") && argc == 1) {
       buf_printf(b, "sp_MatchData_offset(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
+    else if (sp_streq(name, "bytebegin") && argc == 1) {
+      buf_printf(b, "sp_MatchData_bytebegin(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+    else if (sp_streq(name, "byteend") && argc == 1) {
+      buf_printf(b, "sp_MatchData_byteend(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+    else if (sp_streq(name, "byteoffset") && argc == 1) {
+      buf_printf(b, "sp_MatchData_byteoffset(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    }
+    else if (sp_streq(name, "values_at") && argc >= 1) {
+      /* values_at(i, ...) -> a poly array of the selected groups (nil when a
+         group did not participate), mirroring MatchData#[] per index. */
+      int mt = ++g_tmp, at = ++g_tmp;
+      buf_printf(b, "({ sp_MatchData *_t%d = %s; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
+                 mt, r, mt, at, at);
+      for (int i = 0; i < argc; i++) {
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref(_t%d, ", at, mt);
+        emit_expr(c, argv[i], b);
+        buf_puts(b, ")));");
+      }
+      buf_printf(b, " _t%d; })", at);
+    }
     else if (sp_streq(name, "captures"))  buf_printf(b, "sp_MatchData_captures(%s)", r);
     else if (sp_streq(name, "to_a"))      buf_printf(b, "sp_MatchData_to_a(%s)", r);
     else if (sp_streq(name, "nil?"))      buf_printf(b, "(%s == 0)", r);

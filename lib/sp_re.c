@@ -541,6 +541,22 @@ sp_IntArray *sp_MatchData_offset(sp_MatchData *m, mrb_int i) {
   sp_IntArray_push(a, sp_md_char_off(m, m->caps[(i * 2) + 1]));
   return a;
 }
+/* byte-offset accessors: the raw byte positions in source (no char conversion). */
+mrb_int sp_MatchData_bytebegin(sp_MatchData *m, mrb_int i) {
+  if (!m || i < 0 || i >= m->ncap || m->caps[i * 2] < 0) return SP_INT_NIL;
+  return m->caps[i * 2];
+}
+mrb_int sp_MatchData_byteend(sp_MatchData *m, mrb_int i) {
+  if (!m || i < 0 || i >= m->ncap || m->caps[i * 2] < 0) return SP_INT_NIL;
+  return m->caps[(i * 2) + 1];
+}
+sp_IntArray *sp_MatchData_byteoffset(sp_MatchData *m, mrb_int i) {
+  sp_IntArray *a = sp_IntArray_new();
+  if (!m || i < 0 || i >= m->ncap || m->caps[i * 2] < 0) { sp_IntArray_push(a, SP_INT_NIL); sp_IntArray_push(a, SP_INT_NIL); return a; }
+  sp_IntArray_push(a, m->caps[i * 2]);
+  sp_IntArray_push(a, m->caps[(i * 2) + 1]);
+  return a;
+}
 /* whole-match string (group 0) — also MatchData#to_s */
 const char *sp_MatchData_to_s(sp_MatchData *m) { const char *r = sp_MatchData_aref(m, 0); return r ? r : sp_str_empty; }
 /* captures: groups 1..n-1 as a poly array (nil for non-participating) */
