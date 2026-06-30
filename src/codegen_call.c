@@ -3243,6 +3243,11 @@ static int emit_object_call(Compiler *c, int id, Buf *b) {
   /* Struct instance methods (to_h / to_a / values / members / dig). */
   if (recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct) {
     ClassInfo *sc = &c->classes[ty_object_class(rt)];
+    /* #inspect / #to_s -> the generated (or user-overridden) struct/data stringifier */
+    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+      const char *cn = obj_str_cname(c, ty_object_class(rt), sp_streq(name, "inspect"));
+      if (cn) { buf_printf(b, "sp_%s_%s((sp_%s *)", cn, name, cn); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    }
     int is_to_a = (sp_streq(name, "to_a") || sp_streq(name, "values") || sp_streq(name, "deconstruct"));
     if (is_to_a && argc == 0) {
       int t = ++g_tmp; int rt2 = ++g_tmp;

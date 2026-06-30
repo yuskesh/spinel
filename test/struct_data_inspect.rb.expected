@@ -1,0 +1,10 @@
+#<data P a=1, b=2>
+#<data P a=1, b=2>
+#<data P a=1, b=2>
+#<data P a=1, b=2>
+val=#<data P a=1, b=2>
+#<struct S m=3, n="hi">
+s=#<struct S m=3, n="hi">
+#<data Q inner=#<data P a=9, b=8>>
+Pt(7)
+pt:8

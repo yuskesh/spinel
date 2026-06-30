@@ -1774,6 +1774,19 @@ const char *class_ruby_name(Compiler *c, int ci) {
   return buf;
 }
 
+/* The C function (sp_<Class>_inspect / _to_s) that stringifies an object of
+   class `cid`, or NULL when none applies (a plain object with no inspect/to_s).
+   A user-defined method routes to its defining class; a struct/data routes to
+   the generated one. The caller emits sp_<name>_<meth>((sp_<name> *)expr). */
+const char *obj_str_cname(Compiler *c, int cid, int want_inspect) {
+  if (cid < 0 || cid >= c->nclasses) return NULL;
+  int defcls = cid;
+  if (comp_method_in_chain(c, cid, want_inspect ? "inspect" : "to_s", &defcls) >= 0)
+    return c->classes[defcls].name;
+  if (c->classes[cid].is_struct) return c->classes[cid].name;  /* generated #inspect/#to_s */
+  return NULL;
+}
+
 /* Return the builtin exception parent name for user exc subclass ci,
    walking up the chain until a builtin exception name is found. */
 const char *exc_builtin_parent(Compiler *c, int ci) {
@@ -1912,6 +1925,35 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     for (int i = 0; i < ci->nivars; i++)
       buf_printf(b, "  self->iv_%s = a%d;\n", ci->ivars[i] + 1, i);  /* skip leading '@' */
     buf_puts(b, "  return self;\n}\n");
+    /* Struct/Data #inspect (== #to_s): `#<struct Name m=v, ...>` (Data uses
+       `data`). Generated unless the user redefined the method, so a user
+       override wins. to_s defers to inspect, which always exists here. */
+    if (comp_method_in_chain(c, cid, "inspect", NULL) < 0) {
+      const char *rn = class_ruby_name(c, cid); if (!rn) rn = ci->name;
+      buf_printf(b, "static const char *sp_%s_inspect(sp_%s *self) {\n", ci->name, ci->name);
+      buf_puts(b, "  if (!self) return \"nil\";\n");
+      buf_printf(b, "  sp_String *s = sp_String_new(\"#<%s %s\"); SP_GC_ROOT(s);\n",
+                 ci->is_data ? "data" : "struct", rn);
+      for (int i = 0; i < ci->nivars; i++) {
+        buf_printf(b, "  sp_String_append(s, \"%s%s=\");\n", i ? ", " : " ", ci->ivars[i] + 1);
+        TyKind mt = ci->ivar_types[i];
+        const char *mcn = ty_is_object(mt) ? obj_str_cname(c, ty_object_class(mt), 1) : NULL;
+        if (mcn) {
+          /* a struct/data (or user-#inspect) member recurses into its own inspect */
+          buf_printf(b, "  sp_String_append(s, self->iv_%s ? sp_%s_inspect((sp_%s *)self->iv_%s) : \"nil\");\n",
+                     ci->ivars[i] + 1, mcn, mcn, ci->ivars[i] + 1);
+        } else {
+          Buf ivb; memset(&ivb, 0, sizeof ivb); buf_printf(&ivb, "self->iv_%s", ci->ivars[i] + 1);
+          Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ci->ivar_types[i], ivb.p, &bx);
+          buf_printf(b, "  sp_String_append(s, sp_poly_inspect(%s));\n", bx.p);
+          free(bx.p); free(ivb.p);
+        }
+      }
+      buf_puts(b, "  sp_String_append(s, \">\");\n  return s->data;\n}\n");
+    }
+    if (comp_method_in_chain(c, cid, "to_s", NULL) < 0)
+      buf_printf(b, "static const char *sp_%s_to_s(sp_%s *self) { return sp_%s_inspect(self); }\n",
+                 ci->name, ci->name, ci->name);
     return;
   }
   int initcls = cid;
@@ -3415,6 +3457,12 @@ char *codegen_program(const NodeTable *nt) {
       for (int m = 0; m < ci->nivars; m++) { if (m) buf_puts(&b, ", "); emit_ctype(c, ci->ivar_types[m], &b); }
       if (ci->nivars == 0) buf_puts(&b, "void");
       buf_puts(&b, ");\n");
+      /* forward-declare the generated stringifiers so one struct's #inspect may
+         recurse into a struct-typed member regardless of definition order */
+      if (comp_method_in_chain(c, i, "inspect", NULL) < 0)
+        buf_printf(&b, "static const char *sp_%s_inspect(sp_%s *self);\n", ci->name, ci->name);
+      if (comp_method_in_chain(c, i, "to_s", NULL) < 0)
+        buf_printf(&b, "static const char *sp_%s_to_s(sp_%s *self);\n", ci->name, ci->name);
     }
     else {
       int icid = i;

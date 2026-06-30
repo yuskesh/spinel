@@ -100,10 +100,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
                ti, ti, ta, ti, ta, ti);
     free(ab.p);
   }
-  else if (ty_is_object(t) && comp_method_in_class(c, ty_object_class(t), "to_s") >= 0) {
-    int cid = ty_object_class(t);
+  else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
+    /* an object with #to_s (user-defined or a generated struct/data one) */
+    const char *cn = obj_str_cname(c, ty_object_class(t), 0);
     buf_puts(b, "{ const char *_ps = (const char *)(");
-    buf_printf(b, "sp_%s_to_s(", c->classes[cid].name);
+    buf_printf(b, "sp_%s_to_s((sp_%s *)", cn, cn);
     const char *rty = nt_type(c->nt, arg);
     if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
       emit_expr(c, arg, b);
@@ -289,6 +290,12 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ArrayNode") &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
     buf_puts(b, "fputs(\"[]\\n\", stdout);\n");  /* p [] */
+  }
+  else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 1)) {
+    /* an object with #inspect (user-defined or a generated struct/data one) */
+    const char *cn = obj_str_cname(c, ty_object_class(t), 1);
+    buf_printf(b, "fputs(sp_%s_inspect((sp_%s *)", cn, cn); emit_expr(c, arg, b);
+    buf_puts(b, "), stdout); putchar('\\n');\n");
   }
   else {
     if (!diagnose_eval_call(c, arg))

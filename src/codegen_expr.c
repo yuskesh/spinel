@@ -150,8 +150,9 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         buf_puts(&fmt, "%s"); buf_printf(&conv, "sp_%sArray_inspect(", array_kind(t));
         EMIT_IV(); buf_puts(&conv, ")");
       }
-      else if (ty_is_object(t) && comp_method_in_chain(c, ty_object_class(t), "to_s", NULL) >= 0) {
-        buf_puts(&fmt, "%s"); buf_printf(&conv, "sp_%s_to_s(", c->classes[ty_object_class(t)].name);
+      else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
+        const char *cn = obj_str_cname(c, ty_object_class(t), 0);
+        buf_puts(&fmt, "%s"); buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (ty_is_hash(t) && ty_hash_cname(t)) {
