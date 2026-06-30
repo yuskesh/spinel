@@ -437,6 +437,31 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  if (sp_streq(ty, "MatchWriteNode")) {
+    /* `/(?<n>..)/ =~ str`: run the match (setting the match registers), bind
+       each named group to its local (NULL = nil when it did not participate),
+       and yield the `=~` result (match index, or nil). */
+    int call = nt_ref(nt, id, "call");
+    int recv = call >= 0 ? nt_ref(nt, call, "receiver") : -1;
+    int reidx = re_lit_index(c, recv);
+    int args = call >= 0 ? nt_ref(nt, call, "arguments") : -1;
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (reidx < 0 || ac < 1) { unsupported(c, id, "named-capture =~ (non-literal regexp)"); return; }
+    int tcount = 0; const int *tv = nt_arr(nt, id, "targets", &tcount);
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = sp_re_match_poly(sp_re_pat_%d, ", t, reidx);
+    emit_str_expr(c, av[0], b);
+    buf_puts(b, "); ");
+    for (int ti = 0; ti < tcount; ti++) {
+      const char *tnm = nt_str(nt, tv[ti], "name");
+      if (!tnm) continue;
+      buf_printf(b, "lv_%s = sp_re_named_capture(sp_re_pat_%d, ", rename_local(tnm), reidx);
+      emit_str_literal(b, tnm);
+      buf_puts(b, "); ");
+    }
+    buf_printf(b, "_t%d; })", t);
+    return;
+  }
   if (sp_streq(ty, "RangeNode")) {
     int left = nt_ref(nt, id, "left");
     int right = nt_ref(nt, id, "right");
