@@ -1045,6 +1045,62 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
      rather than the (now per-position) block param. */
   int np_mb = 0; while (block_param_name(c, block, np_mb)) np_mb++;
   int autosplat = (np_mb >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0));
+
+  /* Count form: min_by(n) / max_by(n) { |x| key } -> the n smallest/largest
+     elements by key, as a generic (poly) Array. Sort indices by the boxed key
+     then take the first n (min, ascending) or last n reversed (max,
+     descending). */
+  int mb_args = nt_ref(nt, id, "arguments");
+  int mb_argc = 0; const int *mb_argv = mb_args >= 0 ? nt_arr(nt, mb_args, "arguments", &mb_argc) : NULL;
+  if ((is_min || is_max) && mb_argc == 1 && p0 && !autosplat) {
+    int trv = ++g_tmp, tn = ++g_tmp, tkeys = ++g_tmp, tidx = ++g_tmp, ti = ++g_tmp,
+        tres = ++g_tmp, tcnt = ++g_tmp, ttake = ++g_tmp, tg = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", trv, rb.p ? rb.p : ""); free(rb.p);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trv);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, k, trv);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tkeys, tkeys);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);\n", tidx, tidx);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trv, ti);
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    int save = g_indent; g_indent++;
+    Buf kb; memset(&kb, 0, sizeof kb); emit_expr(c, bb[bn - 1], &kb); g_indent = save;
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tkeys);
+    if (bvt == TY_POLY) buf_puts(g_pre, kb.p ? kb.p : "sp_box_nil()");
+    else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bvt, kb.p ? kb.p : "0", &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
+    buf_puts(g_pre, ");\n"); free(kb.p);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_IntArray_push(_t%d, _t%d);\n", tidx, ti);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_sort_idx_by_poly(_t%d->data + _t%d->start, _t%d->data, _t%d);\n", tidx, tidx, tkeys, tn);
+    /* a negative count is an ArgumentError in CRuby, then clamp to the element count */
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = ", tcnt); emit_int_expr(c, mb_argv[0], g_pre); buf_puts(g_pre, ";\n");
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative size\");\n", tcnt);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = _t%d < _t%d ? _t%d : _t%d;\n", ttake, tcnt, tn, tcnt, tn);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+    if (is_min) {
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, ttake, tg);
+    } else {
+      emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = _t%d - 1; _t%d >= _t%d - _t%d; _t%d--)\n", tg, tn, tg, tn, ttake, tg);
+    }
+    emit_indent(g_pre, g_indent + 1);
+    {
+      Buf eb; memset(&eb, 0, sizeof eb);
+      char getexpr[96];
+      snprintf(getexpr, sizeof getexpr, "sp_%sArray_get(_t%d, sp_IntArray_get(_t%d, _t%d))", k, trv, tidx, tg);
+      if (rt == TY_POLY_ARRAY) buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", tres, getexpr);
+      else { emit_boxed_text(c, et, getexpr, &eb); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", tres, eb.p ? eb.p : "sp_box_nil()"); }
+      free(eb.p);
+    }
+    buf_printf(b, "_t%d", tres);
+    return 1;
+  }
+  /* No other argument shape is supported for min_by/max_by/minmax_by; reject
+     loudly rather than silently returning a single winner. */
+  if (mb_argc != 0) return 0;
+
   if (is_minmax) {
     /* track the min-keyed and max-keyed elements in one pass; yield a fresh
        same-kind [min, max] array. Strict comparisons keep the first occurrence
