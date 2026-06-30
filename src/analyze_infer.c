@@ -2390,7 +2390,9 @@ else {
   if (recv >= 0 && rt == TY_STRING) {
     if (sp_streq(name, "encoding") && argc == 0) return TY_POLY;  /* an Encoding value */
     if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
-        sp_streq(name, "capitalize") || sp_streq(name, "reverse") ||
+        sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
+        sp_streq(name, "reverse") ||
+        ((sp_streq(name, "delete_prefix") || sp_streq(name, "delete_suffix")) && argc == 1) ||
         sp_streq(name, "strip") || sp_streq(name, "lstrip") ||
         sp_streq(name, "rstrip") || sp_streq(name, "chomp") ||
         sp_streq(name, "chop") || sp_streq(name, "chr") || sp_streq(name, "clamp") ||

@@ -2714,6 +2714,9 @@ static int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "upcase"))     buf_printf(b, "sp_str_upcase(%s)", r);
       else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
       else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize(%s)", r);
+      else if (sp_streq(name, "swapcase"))   buf_printf(b, "sp_str_swapcase(%s)", r);
+      else if (sp_streq(name, "delete_prefix") && argc == 1) { buf_printf(b, "sp_str_delete_prefix(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "delete_suffix") && argc == 1) { buf_printf(b, "sp_str_delete_suffix(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "reverse"))    buf_printf(b, "sp_str_reverse(%s)", r);
       else if (sp_streq(name, "strip"))      buf_printf(b, "sp_str_strip(%s)", r);
       else if (sp_streq(name, "lstrip"))     buf_printf(b, "sp_str_lstrip(%s)", r);
@@ -3920,6 +3923,7 @@ static int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_box_str(sp_str_upcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "downcase"))   { buf_puts(b, "sp_box_str(sp_str_downcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "capitalize")) { buf_puts(b, "sp_box_str(sp_str_capitalize(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if (sp_streq(name, "swapcase"))   { buf_puts(b, "sp_box_str(sp_str_swapcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_box_str(sp_str_reverse(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
