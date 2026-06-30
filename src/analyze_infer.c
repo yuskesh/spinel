@@ -931,7 +931,9 @@ else {
     if (sp_streq(name, "[]") && argc == 1) return TY_STRING;
     if (sp_streq(name, "pre_match") || sp_streq(name, "post_match") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "begin") || sp_streq(name, "end") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
-    if (sp_streq(name, "offset")) return TY_INT_ARRAY;
+    if (sp_streq(name, "bytebegin") || sp_streq(name, "byteend")) return TY_INT;
+    if (sp_streq(name, "offset") || sp_streq(name, "byteoffset")) return TY_INT_ARRAY;
+    if (sp_streq(name, "values_at")) return TY_POLY_ARRAY;
     if (sp_streq(name, "captures") || sp_streq(name, "to_a")) return TY_POLY_ARRAY;
     if (sp_streq(name, "named_captures")) return TY_STR_POLY_HASH;  /* {String => String|nil} */
     if (sp_streq(name, "names")) return TY_STR_ARRAY;
