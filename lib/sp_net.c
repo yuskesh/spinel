@@ -117,10 +117,32 @@ int sp_net_listen(int port, int reuseport) {
     return fd;
 }
 
+#ifdef SP_THREADS
+int sp_sched_wait_io(int fd, short events);   /* lib/sp_sched.c: scheduler-aware I/O wait */
+#endif
 int sp_net_accept(int sfd) {
     struct sockaddr_in caddr;
     socklen_t clen = sizeof(caddr);
     int fd;
+#ifdef SP_THREADS
+    /* Scheduler-aware accept: the listen fd is non-blocking, so accept returns
+       EAGAIN when no connection is pending and the green thread parks (freeing
+       its worker) until the monitor's poll reports the fd readable. Idempotent. */
+    sp_net_set_nonblock(sfd);
+    for (;;) {
+        if (sp_net_term_flag) return -1;
+        fd = accept(sfd, (struct sockaddr *)&caddr, &clen);
+        /* The connection fd is non-blocking too, so recv/send on it park the
+           green thread (scheduler-aware) instead of blocking the OS worker. */
+        if (fd >= 0) { sp_net_set_nodelay(fd); sp_net_set_nonblock(fd); return fd; }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (!sp_sched_wait_io(sfd, POLLIN)) return -1;
+            continue;
+        }
+        return -1;
+    }
+#else
     for (;;) {
         if (sp_net_term_flag) return -1;
         /* Wait for an incoming connection OR a term signal (which wakes the
@@ -150,6 +172,7 @@ int sp_net_accept(int sfd) {
         }
         return -1;
     }
+#endif
 }
 
 int sp_net_accept_nb(int sfd) {
@@ -192,6 +215,11 @@ int sp_net_connect(const char *host, int port) {
 
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#ifdef SP_THREADS
+    /* Non-blocking so recv/send park the green thread instead of blocking the
+       worker (the connect itself stays blocking -- it completes promptly). */
+    sp_net_set_nonblock(fd);
+#endif
     return fd;
 }
 
@@ -216,6 +244,12 @@ int sp_net_set_nonblock(int fd) {
    recheck the term flag on the 1s timeout so a shutdown still breaks the wait.
    Returns 1 to retry the syscall, 0 to give up (term requested or poll error). */
 static int sp_net_wait_io(int fd, short events) {
+    if (sp_net_term_flag) return 0;
+#ifdef SP_THREADS
+    /* Scheduler-aware: park this green thread and hand its OS worker to another
+       thread until the fd is ready, rather than blocking the worker in poll. */
+    return sp_sched_wait_io(fd, events);
+#else
     for (;;) {
         if (sp_net_term_flag) return 0;
         struct pollfd pf;
@@ -226,6 +260,7 @@ static int sp_net_wait_io(int fd, short events) {
         if (errno == EINTR) continue;
         return 0;
     }
+#endif
 }
 
 int sp_net_write_str(int fd, const char *s) {

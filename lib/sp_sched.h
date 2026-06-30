@@ -45,6 +45,9 @@ typedef struct sp_thread {
   struct sp_thread *all_next, *all_prev;  /* registry of live threads (GC roots) */
   void             *tls;         /* thread-local storage (Thread#[] / #[]=); lazily allocated */
   double            wake_deadline; /* CLOCK_MONOTONIC time to wake a sleeping thread (Kernel#sleep) */
+  int               io_fd;       /* fd this thread is parked on for I/O (-1 = none, scheduler-aware I/O) */
+  short             io_events;   /* poll events it is waiting for (POLLIN/POLLOUT) */
+  short             io_revents;  /* poll result the monitor delivered when the fd became ready */
   unsigned          id;
 } sp_thread;
 
@@ -70,6 +73,12 @@ void       sp_Thread_pass(void);          /* Thread.pass: cooperative yield */
    green threads; a monitor thread wakes it after the duration. Falls back to a
    plain blocking sleep only in the single-threaded build (sp_runtime.h). */
 void       sp_sched_sleep(double seconds);
+/* Scheduler-aware blocking I/O: park the calling green thread until `fd` is ready
+   for `events` (POLLIN/POLLOUT), freeing its OS worker for other threads; the
+   monitor polls the fd and wakes it. Returns 1 to retry the syscall (fd ready or
+   errored), 0 to give up (shutdown). Falls back to a plain blocking poll in the
+   single-threaded build / before the monitor starts. */
+int        sp_sched_wait_io(int fd, short events);
 sp_thread *sp_Thread_current(void);       /* Thread.current */
 mrb_bool   sp_Thread_alive(sp_thread *t); /* #alive? */
 mrb_bool   sp_Thread_set_report_default(mrb_bool v);  /* Thread.report_on_exception= */

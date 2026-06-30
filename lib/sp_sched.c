@@ -12,6 +12,8 @@
 #include <signal.h>     /* preemption signal (SIGURG by default) */
 #include <strings.h>    /* strcasecmp (SPINEL_PREEMPT_SIGNAL by name) */
 #include <stdint.h>     /* intptr_t (worker id passed via pthread arg) */
+#include <poll.h>       /* poll (scheduler-aware I/O) */
+#include <fcntl.h>      /* fcntl O_NONBLOCK (monitor wake pipe) */
 
 /* Reached by name (defined in lib/sp_alloc.c or the generated TU), exactly as
    lib/sp_fiber.c reaches them. */
@@ -83,6 +85,12 @@ static pthread_cond_t g_sysmon_cv = PTHREAD_COND_INITIALIZER;    /* the monitor 
 static pthread_t      g_sysmon;                                  /* monitor: wakes sleepers + preempts */
 static int            g_sysmon_started = 0;
 static int            g_sysmon_idle = 0; /* monitor is parked on g_sysmon_cv (signal it to start ticking) */
+static int            g_sysmon_pipe[2] = { -1, -1 };  /* self-pipe: wake the monitor out of poll() */
+/* Wake the monitor whether it idles on the condvar or blocks in poll(). PRE: lock held. */
+static void sp_sysmon_wake(void) {
+  if (g_sysmon_idle) pthread_cond_signal(&g_sysmon_cv);
+  else if (g_sysmon_pipe[1] >= 0) { char c = 1; ssize_t r = write(g_sysmon_pipe[1], &c, 1); (void)r; }
+}
 static double sp_monotonic_now(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
@@ -229,6 +237,10 @@ static SP_TLS sp_thread *g_current = NULL;   /* per-worker: the green thread thi
 static sp_thread *g_rq_head = NULL, *g_rq_tail = NULL;  /* FIFO run queue (RUNNABLE) */
 static int        g_nrunning = 0;        /* workers currently executing a green thread (quiescence) */
 static sp_thread *g_sleepers = NULL;     /* threads parked in Kernel#sleep, woken by deadline */
+static sp_thread *g_io_waiters = NULL;    /* threads parked on a fd, woken by the monitor's poll */
+static struct pollfd *g_pfds = NULL;     /* monitor's poll set, rebuilt from g_io_waiters each tick */
+static sp_thread    **g_pths = NULL;     /* parallel to g_pfds: the thread waiting on each fd */
+static int            g_pcap = 0;        /* capacity of g_pfds / g_pths */
 static sp_thread *g_all = NULL;          /* registry of live threads, for GC rooting */
 static unsigned   g_next_id = 1;
 static unsigned char g_report_default = 1;  /* Thread.report_on_exception default */
@@ -340,7 +352,7 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
      ticking. */
   g_wslot[g_worker_id].cur = t;
   g_wslot[g_worker_id].since = sp_monotonic_now();
-  if (g_sysmon_idle) pthread_cond_signal(&g_sysmon_cv);
+  sp_sysmon_wake();
 #endif
   int raised = 0;
   const char *ec = NULL, *em = NULL;
@@ -452,7 +464,7 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
        broadcasts (sp_sched_signal_if_quiescent). Only when nothing runs and the
        queue is empty do we fall through -- drained, or a deadlock the caller
        observes. */
-    if (may_wait && (g_nrunning > 0 || g_rq_head || g_sleepers)) {
+    if (may_wait && (g_nrunning > 0 || g_rq_head || g_sleepers || g_io_waiters)) {
       pthread_cond_wait(&g_sched_work, &g_sched_lock);
       continue;
     }
@@ -702,23 +714,69 @@ static void *sp_sysmon_main(void *arg) {
         pthread_kill(g_wslot[i].tid, g_preempt_sig);   /* nudge it to its next safepoint poll */
       }
     }
-    if (nearest == 0.0 && !busy) {
-      /* nothing to time: sleep until a thread sleeps or a worker picks one up */
+    /* Build the I/O poll set: slot 0 is the wake pipe (a registering thread
+       writes a byte to break us out of poll early), the rest are parked fds. */
+    int npf = 1;
+    for (sp_thread *w = g_io_waiters; w; w = w->wait_next) {
+      if (npf >= g_pcap) {
+        int nc = g_pcap ? g_pcap * 2 : 16;
+        struct pollfd *np = (struct pollfd *)realloc(g_pfds, sizeof(struct pollfd) * nc);
+        sp_thread **nh = (sp_thread **)realloc(g_pths, sizeof(sp_thread *) * nc);
+        if (np) g_pfds = np; if (nh) g_pths = nh;
+        if (!np || !nh) break;
+        g_pcap = nc;
+      }
+      g_pfds[npf].fd = w->io_fd; g_pfds[npf].events = w->io_events; g_pfds[npf].revents = 0;
+      g_pths[npf] = w; npf++;
+    }
+    if (g_pcap < 1) {   /* ensure room for slot 0 even with no I/O waiters */
+      g_pfds = (struct pollfd *)realloc(g_pfds, sizeof(struct pollfd) * 16);
+      g_pths = (sp_thread **)realloc(g_pths, sizeof(sp_thread *) * 16);
+      if (g_pfds && g_pths) g_pcap = 16;
+    }
+    int have_io = (npf > 1);
+    if (nearest == 0.0 && !busy && !have_io) {
+      /* nothing to time or watch: sleep until a thread sleeps / waits on I/O /
+         is picked up by a worker (a registrant signals g_sysmon_cv). */
       g_sysmon_idle = 1;
       pthread_cond_wait(&g_sysmon_cv, &g_sched_lock);
       g_sysmon_idle = 0;
     } else {
-      /* Tick: poll at the quantum granularity while busy, or near the nearest
-         sleeper deadline. Drop the lock and nanosleep (not a timed cond wait, so
-         the monitor is never flagged for one) for at most ~10ms. */
-      double dt = busy ? SP_PREEMPT_TICK : (nearest - now);
+      /* Poll the parked fds, timing out at the quantum (while preempting), near
+         the nearest sleeper deadline, or 50ms otherwise (poll returns earlier on
+         fd activity or a wake-pipe byte). */
+      double dt = busy ? SP_PREEMPT_TICK : (nearest != 0.0 ? nearest - now : 0.05);
       if (nearest != 0.0 && nearest - now < dt) dt = nearest - now;
-      if (dt > 0.01) dt = 0.01;
+      if (dt > 0.05) dt = 0.05;
       if (dt < 0.0005) dt = 0.0005;
+      int tmo = (int)(dt * 1000.0); if (tmo < 1) tmo = 1;
+      if (!g_pfds) {   /* allocation failed: degrade to a plain timed wait */
+        SCHED_UNLOCK();
+        struct timespec req = { (time_t)dt, (long)((dt - (time_t)dt) * 1e9) };
+        nanosleep(&req, NULL);
+        SCHED_LOCK();
+        continue;
+      }
+      g_pfds[0].fd = g_sysmon_pipe[0]; g_pfds[0].events = POLLIN; g_pfds[0].revents = 0;
       SCHED_UNLOCK();
-      struct timespec req = { (time_t)dt, (long)((dt - (time_t)dt) * 1e9) };
-      nanosleep(&req, NULL);
+      int pr = poll(g_pfds, (nfds_t)npf, tmo);
       SCHED_LOCK();
+      if (g_pfds[0].revents & POLLIN) {   /* drain the wake pipe */
+        char buf[64]; while (read(g_sysmon_pipe[0], buf, sizeof buf) > 0) {}
+      }
+      if (pr > 0) {
+        for (int i = 1; i < npf; i++) {
+          if (!g_pfds[i].revents) continue;
+          sp_thread *t = g_pths[i];
+          if (t->wait_head != &g_io_waiters) continue;   /* unparked meanwhile (e.g. #kill) */
+          for (sp_thread **pp = &g_io_waiters; *pp; pp = &(*pp)->wait_next)
+            if (*pp == t) { *pp = t->wait_next; break; }
+          t->wait_next = NULL; t->wait_head = NULL; t->io_revents = g_pfds[i].revents; t->io_fd = -1;
+          if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }
+          else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); SCHED_WAKE(); }
+          else t->wake_pending = 1;
+        }
+      }
     }
   }
   SCHED_UNLOCK();
@@ -741,7 +799,7 @@ void sp_sched_sleep(double seconds) {
   self->off_cpu = 0;
   self->wake_pending = 0;
   self->wait_next = g_sleepers; self->wait_head = &g_sleepers; g_sleepers = self;
-  pthread_cond_signal(&g_sysmon_cv);   /* let the monitor recompute its timeout */
+  sp_sysmon_wake();   /* let the monitor recompute its timeout */
   if (self == &g_main_thread) {
     sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
     SCHED_UNLOCK();
@@ -756,6 +814,38 @@ void sp_sched_sleep(double seconds) {
     sp_exc_ctx_free(exc_snap);
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while sleeping */
   }
+}
+
+int sp_sched_wait_io(int fd, short events) {
+  if (fd < 0 || !g_sysmon_started) {   /* no monitor: plain blocking single-fd poll */
+    struct pollfd pf; pf.fd = fd; pf.events = events; pf.revents = 0;
+    for (;;) { int pr = poll(&pf, 1, 1000); if (pr > 0) return 1; if (pr == 0 || errno == EINTR) continue; return 0; }
+  }
+  SCHED_LOCK();
+  sp_thread *self = g_current;
+  self->io_fd = fd; self->io_events = events; self->io_revents = 0;
+  self->state = SP_TH_BLOCKED;
+  self->off_cpu = 0;
+  self->wake_pending = 0;
+  self->wait_next = g_io_waiters; self->wait_head = &g_io_waiters; g_io_waiters = self;
+  sp_sysmon_wake();   /* let the monitor rebuild its poll set */
+  if (self == &g_main_thread) {
+    sp_sched_pump(NULL, 1);   /* main waits (and pumps at N=1) until the monitor wakes it */
+    int rev = self->io_revents; self->io_revents = 0; self->io_fd = -1;
+    SCHED_UNLOCK();
+    return rev ? 1 : 0;
+  }
+  /* Same exception-context snapshot as sp_sched_block/sleep: the symmetric
+     transfer clobbers our handler stack on resume. */
+  void *exc_snap = sp_exc_ctx_new();
+  sp_exc_ctx_save(exc_snap);
+  SCHED_UNLOCK();
+  sp_Fiber_transfer(sp_fiber_worker_root(), sp_box_nil());
+  sp_exc_ctx_load(exc_snap);
+  sp_exc_ctx_free(exc_snap);
+  sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while waiting on I/O */
+  int rev = self->io_revents; self->io_revents = 0; self->io_fd = -1;
+  return rev ? 1 : 0;
 }
 
 /* A helper worker: adopt its native stack as a per-worker root fiber, then pull
@@ -835,6 +925,13 @@ static void sp_sched_start_workers(void) {
     g_preempt_sig = SIGURG;
     sigaction(g_preempt_sig, &sa, NULL);
   }
+  /* Self-pipe so a thread registering for sleep/I/O can break the monitor out of
+     poll() immediately. Both ends non-blocking: the writer never stalls on a full
+     pipe (the bytes only signal, they are drained wholesale), the reader drains
+     without blocking. Created before the monitor so it sees valid fds. */
+  if (pipe(g_sysmon_pipe) == 0) {
+    for (int e = 0; e < 2; e++) { int fl = fcntl(g_sysmon_pipe[e], F_GETFL, 0); if (fl >= 0) fcntl(g_sysmon_pipe[e], F_SETFL, fl | O_NONBLOCK); }
+  } else { g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1; }
   if (pthread_create(&g_sysmon, NULL, sp_sysmon_main, NULL) == 0) g_sysmon_started = 1;
   for (int i = 1; i < g_nworkers; i++)
     if (pthread_create(&g_worker_threads[i], NULL, sp_worker_main, (void *)(intptr_t)i) != 0) { g_nworkers = i; break; }
@@ -853,7 +950,7 @@ void sp_sched_drain(void) {
 #ifdef SP_THREADS
   g_shutdown = 1;
   pthread_cond_broadcast(&g_sched_work);
-  pthread_cond_signal(&g_sysmon_cv);   /* wake the monitor so it sees shutdown */
+  sp_sysmon_wake();   /* wake the monitor (idle or in poll) so it sees shutdown */
   int sysmon_running = g_sysmon_started;
   SCHED_UNLOCK();
   for (int i = 1; i < g_nworkers; i++) pthread_join(g_worker_threads[i], NULL);
