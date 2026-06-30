@@ -138,7 +138,8 @@ mrb_bool sp_re_match_p_at(mrb_regexp_pattern *pat, const char *str, mrb_int pos)
   int caps[2];
   return re_exec(pat, str, slen, (mrb_int)pos, caps, 2) > 0;
 }
-void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io,
+void sp_re_expand_rep(const mrb_regexp_pattern *pat,
+                             char **out_io, size_t *olen_io, size_t *cap_io,
                              const char *rep, size_t rlen,
                              const char *src, int *caps, int ncaps) {
   size_t olen = *olen_io;
@@ -159,6 +160,48 @@ void sp_re_expand_rep(char **out_io, size_t *olen_io, size_t *cap_io,
         }
         i += 2;
         continue;
+      }
+      else if (d == 'k' && i + 2 < rlen && rep[i+2] == '<') {
+       /* \k<name>: named backreference. The name resolves against the
+          pattern; an unknown or empty name raises IndexError (mirroring
+          md[:name]), and a group that did not participate expands to "".
+          Only the angle-bracket form is a replacement backref -- \k'name'
+          is regex-only syntax, so it is left literal (handled by the
+          default copy below when no closing '>' is found). */
+        size_t j = i + 3;
+        while (j < rlen && rep[j] != '>') j++;
+        if (j < rlen) {
+          size_t nlen = j - (i + 3);
+          /* Group names are short; keep them on the stack and only fall back
+             to malloc for an exceptionally long name. */
+          char name_buf[64];
+          char *name = name_buf;
+          if (nlen >= sizeof(name_buf)) {
+            name = (char*)malloc(nlen + 1);
+            if (!name) { perror("malloc"); exit(1); }
+          }
+          memcpy(name, rep + i + 3, nlen);
+          name[nlen] = '\0';
+          int gi = re_named_group(pat, name);
+          if (gi < 0) {
+           /* Build the message before freeing the name, then release the
+              scratch buffer: sp_raise_cls longjmps, so the caller's free()
+              never runs and `out` (post-realloc) would otherwise leak. */
+            const char *msg = sp_sprintf("undefined group name reference: %s", name);
+            if (name != name_buf) free(name);
+            free(out);
+            sp_raise_cls("IndexError", msg);
+          }
+          if (name != name_buf) free(name);
+          if ((gi*2) + 1 < ncaps && caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
+            int g_len = caps[(gi*2)+1] - caps[gi*2];
+            if (olen + g_len + 1 >= cap) { cap = ((olen + g_len) * 2) + 64; out = (char*)realloc(out, cap); }
+            memcpy(out+olen, src + caps[gi*2], g_len);
+            olen += g_len;
+          }
+          i = j + 1;
+          continue;
+        }
       }
 else if (d == '\\') {
         if (olen + 1 >= cap) { cap = (cap * 2) + 64; out = (char*)realloc(out, cap); }
@@ -188,7 +231,7 @@ const char *sp_re_gsub(mrb_regexp_pattern *pat, const char *str, const char *rep
     size_t before = caps[0] - pos;
     if (olen+before+rlen >= cap) { cap = ((olen+before+rlen)*2)+64; out = (char*)realloc(out, cap); }
     memcpy(out+olen, str+pos, before); olen += before;
-    sp_re_expand_rep(&out, &olen, &cap, rep, rlen, str, caps, n);
+    sp_re_expand_rep(pat, &out, &olen, &cap, rep, rlen, str, caps, n);
     if (caps[0] == caps[1]) {
  /* Zero-width match (/^/, /$/, /\b/, an empty pattern): Ruby inserts
     the replacement before the char at this position, keeps that char,
@@ -230,7 +273,7 @@ const char *sp_re_sub(mrb_regexp_pattern *pat, const char *str, const char *rep)
   char *out = (char *)malloc(cap);
   memcpy(out, str, caps[0]);
   size_t olen = caps[0];
-  sp_re_expand_rep(&out, &olen, &cap, rep, rlen, str, caps, n);
+  sp_re_expand_rep(pat, &out, &olen, &cap, rep, rlen, str, caps, n);
   size_t rest = slen - caps[1];
   if (olen + rest + 1 >= cap) { cap = olen + rest + 64; out = (char*)realloc(out, cap); }
   memcpy(out+olen, str+caps[1], rest); olen += rest;

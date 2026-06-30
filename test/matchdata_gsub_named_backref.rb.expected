@@ -1,0 +1,9 @@
+f[oo]bar
+bacd
+a-ab
+"[y]z"
+"[]z"
+f[oo]bar
+\k'g'
+IndexError: undefined group name reference: y
+IndexError: undefined group name reference: 
