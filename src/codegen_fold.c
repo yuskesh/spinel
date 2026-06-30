@@ -1400,6 +1400,10 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   if (acct != TY_INT && acct != TY_FLOAT) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  /* a float initial value promotes the whole sum to Float, even when the block
+     yields integers (matches analyze and CRuby): accumulate in floating point
+     rather than truncating the init into an integer accumulator. */
+  if (argc == 1 && argv && comp_ntype(c, argv[0]) == TY_FLOAT) acct = TY_FLOAT;
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
   buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d); ", tn, k, ta);

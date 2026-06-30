@@ -1253,6 +1253,14 @@ else {
       }
       if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         TyKind init_t = comp_ntype(c, argv[0]);
+        /* a float initial value promotes an integer-array sum to Float: add the
+           float init to the integer total in floating point (sp_IntArray_sum
+           returns mrb_int, so accumulating the init through it would truncate). */
+        if (rt == TY_INT_ARRAY && init_t == TY_FLOAT) {
+          buf_puts(b, "((mrb_float)("); emit_expr(c, argv[0], b);
+          buf_puts(b, ") + (mrb_float)sp_IntArray_sum("); emit_expr(c, recv, b); buf_puts(b, ", 0))");
+          return 1;
+        }
         buf_printf(b, "sp_%sArray_sum(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (rt == TY_FLOAT_ARRAY && init_t == TY_INT) {
           buf_puts(b, "(mrb_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")");
