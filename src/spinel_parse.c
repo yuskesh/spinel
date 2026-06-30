@@ -1296,6 +1296,7 @@ else if (PM_NODE_TYPE(n->parameters) != PM_NUMBERED_PARAMETERS_NODE) {
     pm_match_write_node_t *n = (pm_match_write_node_t *)node;
     N("MatchWriteNode");
     R("call", n->call);
+    A("targets", &n->targets);  /* LocalVariableTargetNode per named group */
     break;
   }
   case PM_MATCH_REQUIRED_NODE: {

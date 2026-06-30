@@ -438,6 +438,22 @@ int infer_write_types(Compiler *c) {
       TyKind ct = cur ? (TyKind)cur->gc_root : TY_UNKNOWN;
       newt = ty_unify(ct, infer_type(c, nt_ref(nt, id, "value")));
     }
+    else if (sp_streq(ty, "MatchWriteNode")) {
+      /* `/(?<n>..)/ =~ str` binds each named group to a local: a String when
+         the group participated, nil otherwise (NULL-encoded), so type each
+         target as a nilable String. */
+      int tn = 0; const int *tv = nt_arr(nt, id, "targets", &tn);
+      for (int ti = 0; ti < tn; ti++) {
+        const char *tnm = nt_str(nt, tv[ti], "name");
+        if (!tnm) continue;
+        LocalVar *tlv = scope_local(comp_scope_of(c, tv[ti]), tnm);
+        if (tlv && !tlv->is_param && !tlv->is_block_param) {
+          TyKind m = ty_unify(tlv->type, TY_STRING);
+          if (m != tlv->type) { tlv->type = m; changed = 1; }
+        }
+      }
+      continue;
+    }
     else {
       continue;
     }

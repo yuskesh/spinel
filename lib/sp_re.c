@@ -379,6 +379,23 @@ mrb_int sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str)  { mrb_int n 
 sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+/* Value of the named group `name` from the most recent match registers (set by
+   sp_re_match / sp_re_match_poly). NULL (nil) when the last match failed, the
+   name is unknown, or the group did not participate. Used by `/(?<n>..)/ =~ s`
+   named-capture local binding (MatchWriteNode). */
+const char *sp_re_named_capture(const mrb_regexp_pattern *pat, const char *name) {
+  if (!pat || !name || !sp_re_last_str) return NULL;
+  int g = re_named_group(pat, name);
+  if (g < 0 || (g * 2) + 1 >= 64) return NULL;
+  int b = sp_re_caps[g * 2], e = sp_re_caps[(g * 2) + 1];
+  /* e < b also covers e < 0 once b >= 0; guards against a malformed register
+     state yielding a negative len that would cast to a huge size_t. */
+  if (b < 0 || e < b) return NULL;
+  int len = e - b;
+  char *out = sp_str_alloc(len);
+  memcpy(out, sp_re_last_str + b, len);
+  return out;
+}
 const char *sp_re_escape(const char *src) {
   size_t i, in_len = strlen(src);
   size_t out_len = 0;
