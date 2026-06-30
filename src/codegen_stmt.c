@@ -1401,6 +1401,24 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     const char *pty = nt_type(nt, pat);
     if (!pty) continue;
 
+    /* `in PATTERN if GUARD` (or `unless GUARD`) is parsed as an If/UnlessNode
+       wrapping the real pattern. Unwrap it so the pattern flows through the
+       normal match/bind logic, and apply the guard after the bindings are in
+       scope (a guard can reference them). */
+    int arm_guard = -1, arm_guard_negate = 0;
+    if (sp_streq(pty, "IfNode") || sp_streq(pty, "UnlessNode")) {
+      int istmts = nt_ref(nt, pat, "statements");
+      int in = 0; const int *ib = istmts >= 0 ? nt_arr(nt, istmts, "body", &in) : NULL;
+      int gp = nt_ref(nt, pat, "predicate");
+      if (in >= 1 && gp >= 0) {
+        arm_guard = gp;
+        arm_guard_negate = sp_streq(pty, "UnlessNode");
+        pat = ib[0];
+        pty = nt_type(nt, pat);
+        if (!pty) continue;
+      }
+    }
+
     emit_indent(b, indent); buf_puts(b, "{\n");
 
     /* --- compute match condition --- */
@@ -1518,7 +1536,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     free(cond_buf.p);
 
     /* --- bindings --- */
-    int guard = -1;
+    int guard = arm_guard;
     int array_pat = -1;
 
     if (sp_streq(pty, "LocalVariableTargetNode")) {
@@ -1703,9 +1721,9 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
 
     /* --- body with optional guard --- */
     if (guard >= 0) {
-      emit_indent(b, body_indent); buf_puts(b, "if (");
-      emit_expr(c, guard, b);
-      buf_puts(b, ") {\n");
+      emit_indent(b, body_indent); buf_puts(b, arm_guard_negate ? "if (!(" : "if (");
+      emit_cond(c, guard, b);  /* Ruby truthiness for every guard type (0/"" are truthy) */
+      buf_puts(b, arm_guard_negate ? ")) {\n" : ") {\n");
       if (value_cr >= 0) { emit_pm_body_value(c, stmts, rt, value_cr, b, body_indent + 1); emit_indent(b, body_indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl); }
       else if (tail) emit_stmts_tail(c, stmts, b, body_indent + 1);
       else { emit_stmts(c, stmts, b, body_indent + 1); emit_indent(b, body_indent + 1); buf_printf(b, "goto _pm_%d;\n", lbl); }
