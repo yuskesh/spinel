@@ -4465,7 +4465,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_expr(c, recv, b); return;
     }
     if (argc0 == 0 && recv_t == TY_STRING && is_dup_clone) {
-      buf_puts(b, "sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+      /* clone preserves the frozen state; dup always returns an unfrozen copy. */
+      buf_printf(b, "%s(", sp_streq(name, "clone") ? "sp_str_clone_val" : "sp_str_dup_external");
+      emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
   }
 

@@ -927,6 +927,15 @@ static inline const char *sp_str_freeze_val(const char *s) {
   }
   return s;
 }
+/* String#clone: a copy that preserves the frozen state, unlike #dup which always
+   returns an unfrozen copy (CRuby semantics). Carries the 0xf1 heap-frozen marker
+   across to the fresh buffer. */
+static inline const char *sp_str_clone_val(const char *s) {
+  if (!s) return NULL;
+  const char *r = sp_str_dup_external(s);
+  if (r && sp_str_is_frozen_val(s)) ((unsigned char *)r)[-1] = 0xf1;
+  return r;
+}
 static void __attribute__((noinline,cold)) sp_raise_frozen_string(void){sp_raise_cls("FrozenError","can't modify frozen String");}
 static inline void sp_str_check_mutable(const char *s) {
   if (sp_str_is_frozen_val(s)) sp_raise_frozen_string();
