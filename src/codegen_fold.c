@@ -1170,7 +1170,7 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int block = nt_ref(nt, id, "block");
   if (recv < 0 || block < 0) return 0;
-  if (comp_ntype(c, recv) != TY_POLY) return 0;
+  TyKind rt = comp_ntype(c, recv);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   if (argc != 0) return 0;
@@ -1179,6 +1179,65 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (!p0 || bn < 1) return 0;
   int bang = sp_streq(name, "uniq!");
+
+  /* Typed or poly array receiver (sp_<K>Array): dedup keeping the same element
+     type, using the block's return value as the uniqueness key. */
+  const char *rk = array_kind(rt);
+  if (!rk && rt == TY_POLY_ARRAY) rk = "Poly";
+  if (rk) {
+    TyKind et = ty_array_elem(rt);
+    /* If the block param was widened to a wider type than the receiver's
+       element type (e.g. the same name is poly in another block in this scope),
+       its lv_ is declared at the wider C type. Shadow it with an et-typed local
+       inside a fresh C block and re-infer the body, so the typed-array get
+       assigns into a matching lvalue. Mirrors emit_filter_map/emit_partition. */
+    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
+    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
+    int use_shadow = clv0 && clv0->type != et && et != TY_UNKNOWN;
+    int trecv = ++g_tmp, tseen = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    emit_ctype(c, rt, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : "NULL"); free(rb.p);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tseen, tseen);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk, tres, rk, tres);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+    int din = g_indent + 1;
+    if (use_shadow) {
+      clv0->type = et;
+      for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+      emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
+      emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, rk, trecv, ti);
+    }
+    else { emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, rk, trecv, ti); }
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, din);
+    int tkey = ++g_tmp, tdup = ++g_tmp, tj = ++g_tmp;
+    int save = g_indent; g_indent = din;
+    Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
+    emit_indent(g_pre, din); buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tkey, kb.p ? kb.p : "sp_box_nil()"); free(kb.p);
+    emit_indent(g_pre, din);
+    buf_printf(g_pre, "int _t%d = 0; for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) if (sp_poly_eq(_t%d->data[_t%d], _t%d)) { _t%d = 1; break; }\n",
+               tdup, tj, tj, tseen, tj, tseen, tj, tkey, tdup);
+    emit_indent(g_pre, din);
+    buf_printf(g_pre, "if (!_t%d) { sp_PolyArray_push(_t%d, _t%d); sp_%sArray_push(_t%d, lv_%s); }\n", tdup, tseen, tkey, rk, tres, p0);
+    if (use_shadow) { din--; emit_indent(g_pre, din); buf_puts(g_pre, "}\n"); }
+    if (clv0) clv0->type = csaved0;
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    if (bang) {
+      int tm = ++g_tmp, tn = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "mrb_int _t%d = _t%d->len; _t%d->len = 0; for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
+                 tn, tres, trecv, tm, tm, tn, tm, rk, trecv, rk, tres, tm);
+      buf_printf(b, "_t%d", trecv);
+    } else {
+      buf_printf(b, "_t%d", tres);
+    }
+    return 1;
+  }
+
+  if (rt != TY_POLY) return 0;
   int trecv = ++g_tmp, tarr = ++g_tmp, tseen = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", trecv, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
