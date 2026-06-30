@@ -665,7 +665,10 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">="))) return TY_BOOL;
     if (argc == 0 && sp_streq(name, "ancestors")) return TY_POLY_ARRAY;
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) return TY_BOOL;
-    if (argc <= 1 && sp_streq(name, "instance_methods")) return TY_POLY;
+    if (argc <= 1 && (sp_streq(name, "instance_methods") ||
+                      sp_streq(name, "public_instance_methods") ||
+                      sp_streq(name, "private_instance_methods") ||
+                      sp_streq(name, "protected_instance_methods"))) return TY_POLY;
   }
 
   /* __method__ / __callee__ -> the enclosing method's name (a symbol) */
@@ -2621,7 +2624,9 @@ else {
     return TY_INT;
   if (sp_streq(name, "!")) return TY_BOOL;
   if (sp_streq(name, "respond_to?") && recv >= 0) return TY_BOOL;
-  if ((sp_streq(name, "method_defined?") || sp_streq(name, "const_defined?")) && recv >= 0) return TY_BOOL;
+  if ((sp_streq(name, "method_defined?") || sp_streq(name, "const_defined?") ||
+       sp_streq(name, "public_method_defined?") || sp_streq(name, "private_method_defined?") ||
+       sp_streq(name, "protected_method_defined?")) && recv >= 0) return TY_BOOL;
   /* const_get(:K) with a literal name resolves to the constant's type (codegen
      emits cst_<K>); a literal name that does not resolve raises NameError at
      runtime, so its value type is poly. A dynamic name is left unresolved. */

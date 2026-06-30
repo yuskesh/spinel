@@ -136,6 +136,7 @@ const char *builtin_class_of_type(TyKind t);
 const char *resolve_class_alias(Compiler *c, const char *cname);
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
 void register_module_functions(Compiler *c);
+void register_method_visibility(Compiler *c);
 void register_locals(Compiler *c);
 int is_struct_call(Compiler *c, int val);
 void register_struct_members(Compiler *c, ClassInfo *cls, int val);

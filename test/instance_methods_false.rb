@@ -1,8 +1,9 @@
 # `Klass.instance_methods(false)` const-folds to a literal symbol array
 # of the class/module's own (non-inherited) instance methods. The set
 # matches method_defined?(name, false): the method table plus attr
-# readers and `=`-suffixed writers (spinel doesn't model visibility, so
-# private defs are included). The no-arg / `true` forms stay unfolded.
+# readers and `=`-suffixed writers. The set is public + protected;
+# private defs are excluded (matching CRuby). The no-arg / `true` forms
+# stay unfolded.
 class Foo
   attr_reader :r
   attr_writer :w

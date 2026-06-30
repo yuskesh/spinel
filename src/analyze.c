@@ -2014,6 +2014,7 @@ void analyze_program(Compiler *c) {
   register_module_functions(c);
   register_locals(c);
   register_attrs(c);
+  register_method_visibility(c);
   register_aliases(c);
   register_undefs(c);
   register_globals_consts(c);
