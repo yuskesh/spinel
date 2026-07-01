@@ -2022,7 +2022,7 @@ else {
         buf_printf(b, "sp_%sHash_keys(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "values") && argc == 0 && rt != TY_INT_INT_HASH) {
+      if (sp_streq(name, "values") && argc == 0) {
         buf_printf(b, "sp_%sHash_values(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
