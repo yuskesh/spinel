@@ -90,10 +90,7 @@ repo-root `spinel` is a convenience symlink `make` creates) that parses,
 infers types, emits C, invokes `cc` to link it, and can run the result —
 no shell wrapper or chained helper binaries. It supports the full option set, including `--rbs DIR`
 (RBS-seeded inference) and the `--emit-rbs` / `--emit-types` /
-`--emit-symbol-map` analysis modes. The legacy Ruby backend is kept only as
-a headless regression oracle (the self-host fixpoint and analyze-fail
-gates), driven by `make bootstrap` / `make analyze-fail-test`; it no longer
-ships a user-facing driver.
+`--emit-symbol-map` analysis modes.
 
 #### Integer overflow
 
@@ -121,28 +118,14 @@ widens on observed contradiction, so a wrong or unrepresentable seed
 is at worst a no-op. See [docs/rbs-extract.md](docs/rbs-extract.md)
 for the supported subset.
 
-## Self-Hosting (legacy oracle)
+## Self-Hosting (history)
 
 Spinel began as a compiler written in a Ruby subset that compiled
-itself. The C compiler has since replaced that backend, but the
-self-hosting Ruby implementation is kept in-tree (under `legacy/`) as a
-**regression oracle**. `make bootstrap` exercises its 4-way self-host
-fixpoint -- the Ruby backend, compiled by the previous generation,
-must reproduce byte-identical IR and C across two generations of both
-the analyze and codegen sides:
-
-```
-analyze2.ir == analyze3.ir    (analyze: IR fixpoint OK)
-analyze2.c  == analyze3.c     (analyze: C  fixpoint OK)
-codegen2.ir == codegen3.ir    (codegen: IR fixpoint OK)
-codegen2.c  == codegen3.c     (codegen: C  fixpoint OK)
-```
-
-Any change that affects deterministic output -- record order,
-default-value handling, hash iteration -- breaks one of these checks.
-The bootstrap is no longer part of the standard gate (the C build is
-checked by `make test` / `make bench` / `make optcarrot`); it remains
-available for verifying the legacy backend still round-trips.
+itself. The C compiler has since fully replaced that backend, and the C
+build is what `master` ships and what the gate (`make test` / `make
+bench` / `make optcarrot`) checks. The original self-hosting Ruby
+implementation is preserved on the [`self-host`](../../tree/self-host)
+branch for historical reference; it is no longer carried in `master`.
 
 ## Benchmarks
 
@@ -350,7 +333,6 @@ src/main.c            CLI driver: pipeline + cc invocation
 lib/sp_runtime.h      Runtime library header (GC, arrays, hashes, strings)
 lib/sp_*.c            Out-of-line runtime (bigint, GC, fiber, I/O, time, ...)
 lib/regexp/           Built-in regexp engine; all linked into libspinel_rt.a
-legacy/               Former self-hosting Ruby backend (regression oracle)
 test/                 886 feature tests
 benchmark/            57 benchmarks
 docs/                 User docs (require, FFI, RBS, limitations); internals/ for compiler structure
@@ -423,9 +405,9 @@ Generated C includes the header and links the archive; `--gc-sections`
 drops every unused runtime function from the final binary.
 
 The parser is **src/spinel_parse.c**, which links libprism directly (no
-CRuby needed) and emits the text AST that both the C compiler and the
-legacy backend consume. `require_relative` is resolved at parse time by
-inlining the referenced file.
+CRuby needed) and emits the text AST the compiler consumes.
+`require_relative` is resolved at parse time by inlining the referenced
+file.
 
 ## Building
 
@@ -434,17 +416,10 @@ make deps         # fetch libprism into vendor/prism (one-time)
 make              # build the C compiler (parser + regexp library + spinel)
 make test         # run the feature tests (always a fresh run)
 make bench        # run benchmarks vs CRuby
-make legacy       # build the legacy Ruby compiler into legacy/build/
-make bootstrap    # legacy self-host fixpoint check (4-way), in legacy/
+make optcarrot    # end-to-end optcarrot integration test
 sudo make install # install the C compiler to /usr/local (spinel in PATH)
 make clean        # remove build artifacts
 ```
-
-The legacy Ruby backend builds entirely under `legacy/build/` (binaries
-and bootstrap intermediates) and is never installed — it is a headless
-regression oracle for the self-host fixpoint (`make bootstrap`) and the
-analyze-fail diagnostics (`make analyze-fail-test`). The normal C build
-never touches the `legacy/` source tree.
 
 Override install prefix: `make install PREFIX=$HOME/.local`
 
@@ -455,9 +430,8 @@ already have the prism gem installed, the build auto-detects it; you
 can also point at a custom location with `PRISM_DIR=/path/to/prism`.
 
 CRuby is not needed to build or run the C compiler -- only as an
-optional parser fallback (the Prism-gem path), to run the legacy
-self-host oracle, and in the test harness, which compares Spinel's
-output against CRuby on the same source.
+optional parser fallback (the Prism-gem path) and in the test harness,
+which compares Spinel's output against CRuby on the same source.
 
 ## Portability
 
@@ -562,8 +536,8 @@ rewritten in Ruby (branch `ruby-v1`), then rewritten again in a
 self-hosting Ruby subset (preserved on the `self-host` branch). The
 current `master` is a fresh C implementation of the analyze and codegen
 stages, which builds far faster than the self-hosted backend while
-producing equivalent output; the self-hosting Ruby version remains
-in-tree as a regression oracle (see [Self-Hosting](#self-hosting-legacy-oracle)).
+producing equivalent output; the self-hosting Ruby version is preserved
+on the `self-host` branch (see [Self-Hosting](#self-hosting-history)).
 
 ## License
 

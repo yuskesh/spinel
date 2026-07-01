@@ -1,7 +1,9 @@
 # src
 
-This directory is reserved for the C implementation of the compiler.
+The C implementation of the compiler: parser bridge, analyzer, and code
+generator. This is the compiler `master` ships; the earlier self-hosting
+Ruby implementation is preserved on the `self-host` branch.
 
-The plan is to move the compiler frontend/backend from the Ruby files in
-`legacy/` into C sources here, while keeping the Ruby version available as
-the legacy reference and regression oracle.
+See [internals/analyze-ir.md](../docs/internals/analyze-ir.md) for the
+analyze/codegen contract and [internals/AST.md](../docs/internals/AST.md)
+for the text AST the parser emits.

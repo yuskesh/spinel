@@ -2443,9 +2443,8 @@ else {
 /* ---- Main ---- */
 /* Parse `source_file` and append the text AST to `out`. `argv0` is the
    invoking program path (used to locate the stdlib for plain `require`s).
-   Returns 0 on success, 1 on read/parse error. This is the library copy;
-   the standalone CLI's FILE*-streaming variant lives in
-   legacy/spinel_parse.c. */
+   Returns 0 on success, 1 on read/parse error. This is the library copy
+   (the in-process lib API; no standalone CLI main). */
 static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *out) {
   char *source = read_file(source_file);
   if (!source) {
@@ -2573,9 +2572,8 @@ else {
   return 0;
 }
 
-/* This is the library copy of the Prism front-end, linked into the C
-   compiler (build/spinel). The standalone CLI `main` lives in the legacy
-   copy (legacy/spinel_parse.c); here only the in-process lib API is kept. */
+/* The library copy of the Prism front-end, linked into the C compiler
+   (build/spinel): only the in-process lib API, no standalone CLI main. */
 
 /* In-process entry for the single-binary C compiler: parse `source_file`
    and return the text AST as a malloc'd NUL-terminated buffer (caller

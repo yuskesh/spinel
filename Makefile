@@ -5,15 +5,9 @@
 #   make test         Run the feature tests (always a fresh run)
 #   make bench        Run benchmarks vs CRuby
 #   make optcarrot    End-to-end optcarrot integration test
-#   make legacy       Build the legacy Ruby compiler (delegates to legacy/)
-#   make bootstrap    Legacy self-host fixpoint check (delegates to legacy/)
 #   make check        Fast pre-commit: rebuild + tests
 #   make gate         Full pre-push: test || bench || optcarrot
 #   make clean        Remove built binaries
-#
-# The legacy Ruby compiler (legacy/) is built ONLY by the explicit `make legacy`
-# / `make bootstrap` delegators or by `cd legacy && make`; the C compiler is
-# master and a plain `make` / `make gate` never compiles it.
 
 # Shared toolchain configuration (CC wrapping, CFLAGS, stamps, …).
 include common.mk
@@ -41,8 +35,8 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all parse legacy bootstrap codegen regexp rbs_extract rbs-test rbs-seed-test \
-        analyze-fail-test test test-run clean-test-results regen-rbs-expected \
+.PHONY: all regexp rbs_extract rbs-test rbs-seed-test \
+        test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench \
         gate-optcarrot clean install uninstall deps tools
 
@@ -94,7 +88,7 @@ vendor/rbs/include/rbs/parser.h:
 # If PRISM_DIR ended up empty (no vendor/prism, no gem), halt with a clear
 # message before trying to build anything that needs it.
 ifeq ($(PRISM_DIR),)
-parse codegen regexp all: prism-missing
+regexp all: prism-missing
 prism-missing:
 	@echo "Error: Prism not found."; \
 	 echo "  Run 'make deps' to fetch libprism into vendor/prism,"; \
@@ -123,18 +117,10 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c -O2 -Wno-all -I$(RBS_INC) -I$(RBS_DIR)/src $< -o $@
 
-# ---- C Parser ----
-
-parse: legacy/spinel_parse
-
-legacy/spinel_parse: legacy/spinel_parse.c $(PRISM_LIB)
-	$(CC) $(CFLAGS) -I$(PRISM_INC) legacy/spinel_parse.c $(PRISM_LIB) -lm -o $@
-
 # ---- C compiler (src/) ----
 # The single-binary C reimplementation of the analyzer + code generator.
 # Links src/spinel_parse.c, the library copy of the Prism walk (no main();
-# exposes sp_parse_file_to_text). The standalone-with-main copy used by the
-# legacy `parse` target lives in legacy/spinel_parse.c.
+# exposes sp_parse_file_to_text).
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
@@ -160,16 +146,6 @@ $(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o $(PRISM_LIB)
 	@# Dev convenience: a repo-root `./spinel` pointing at the built binary
 	@# (the installed command is `spinel` too). Best-effort; gitignored.
 	@ln -sf $@ spinel 2>/dev/null || cp $@ spinel 2>/dev/null || true
-
-# ---- Legacy Ruby compiler (regression oracle) ----
-# Lives in legacy/ with its own Makefile; these are thin delegators.
-legacy:
-	+@$(MAKE) -C legacy --no-print-directory legacy
-
-bootstrap:
-	+@$(MAKE) -C legacy --no-print-directory bootstrap
-
-codegen: legacy
 
 # ---- RBS extractor ----
 # Reads sig/**/*.rbs, emits the seed-file format spinel_analyze consumes
@@ -400,9 +376,7 @@ test:
 
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
-# classes, #1417). analyze-fail (legacy-analyzer diagnostics) lives in legacy/
-# and runs only via an explicit `make analyze-fail-test` / `cd legacy && make`,
-# not as part of `make gate` or the hot `make test` loop.
+# classes, #1417).
 test-run: rbs-test rbs-seed-test $(TEST_TARGETS)
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
@@ -496,11 +470,6 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
 	if [ $$ok -eq 1 ]; then echo "rbs-seed-test: pass"; else exit 1; fi
 endif
 
-# Analyze-fail fixtures test the legacy analyzer's rejection diagnostics;
-# the recipe lives in legacy/Makefile. Thin delegator for `make gate`.
-analyze-fail-test:
-	+@$(MAKE) -C legacy --no-print-directory analyze-fail-test
-
 # The .ok target is the test's stamp. Order-only $(SPINEL) keeps a
 # compiler relink from invalidating every test.
 build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) | $(SPINEL)
@@ -554,7 +523,7 @@ build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) | $(SPINEL)
 	rm -rf "$$tmpdir"
 
 clean-test-results:
-	@rm -rf build/test-results build/analyze-fail-results
+	@rm -rf build/test-results
 
 # ---- Expected-output regeneration ----
 # Snapshot each test's reference Ruby output so the test target uses the file
@@ -674,10 +643,7 @@ check:
 	+@$(MAKE) --no-print-directory all
 	+@$(MAKE) --no-print-directory test OPT=-O1
 
-# Full pre-push gate: test || bench || optcarrot in parallel. The C compiler is
-# master; the legacy Ruby self-host bootstrap and its analyze-fail diagnostics
-# are NOT part of the gate (run `make bootstrap` / `cd legacy && make` explicitly
-# for those).
+# Full pre-push gate: test || bench || optcarrot in parallel.
 gate:
 	+@$(MAKE) --no-print-directory all
 	+@$(MAKE) --no-print-directory gate-legs
@@ -696,9 +662,7 @@ gate-optcarrot:
 PREFIX   ?= /usr/local
 SPNLDIR   = $(PREFIX)/lib/spinel
 
-# Install the single `spinel` binary only. The legacy Ruby compiler is a
-# headless regression oracle (legacy/, `make legacy`/`bootstrap`/
-# `analyze-fail-test`) and is not shipped.
+# Install the single `spinel` binary only.
 install: all
 	install -d $(SPNLDIR)/lib
 	install -m 755 $(SPINEL)            $(SPNLDIR)/spinel
@@ -737,9 +701,6 @@ uninstall:
 
 # ---- Clean ----
 
-# Wipe the root build tree plus the legacy subtree's own build dir
-# (legacy/build holds the legacy compiler's binaries + bootstrap
-# intermediates). Only the root-level C artifacts need an explicit rm.
 clean:
-	rm -rf build/ bin/ legacy/build/
-	rm -f legacy/spinel_parse spinel
+	rm -rf build/ bin/
+	rm -f spinel

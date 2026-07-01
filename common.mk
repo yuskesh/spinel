@@ -1,13 +1,10 @@
 # Shared build configuration for Spinel.
 #
-# Included by both ./Makefile (the C compiler + test/bench harness) and
-# legacy/Makefile (the legacy Ruby compiler bootstrap / self-host oracle).
-# Keep only toolchain-level knobs here; target rules live in the two
-# Makefiles that include this file.
+# Included by ./Makefile (the C compiler + test/bench harness). Keep only
+# toolchain-level knobs here; target rules live in the Makefile.
 
-# Machine-local overrides (gitignored). Lets a developer point the
-# bootstrap at an alternative Ruby and set OPT/CC/etc. without editing
-# committed defaults. A command-line `make VAR=...` still wins.
+# Machine-local overrides (gitignored). Lets a developer set OPT/CC/etc.
+# without editing committed defaults. A command-line `make VAR=...` still wins.
 -include $(dir $(lastword $(MAKEFILE_LIST)))local.mk
 
 CC       ?= cc
@@ -40,11 +37,8 @@ endif
 OPT     ?= -O2
 CFLAGS   = $(OPT) -Wno-all -Wno-unknown-warning-option -Wno-alloc-size-larger-than -Wno-format-truncation
 
-# Bootstrap-only flags: the legacy compiler is a rarely-built regression
-# oracle (only `make legacy` / `make bootstrap`), so it gets plain -O3.
 # The product build -- bin/spinel, libspinel_rt.a, and the generated
 # programs -- uses CFLAGS and never used LTO, so there is no LTO toggle.
-BOOTSTRAP_CFLAGS = -O3 -Wno-all
 
 # Per-function sections let the linker strip unused bigint/regexp code.
 SEC_FLAGS = -ffunction-sections -fdata-sections
@@ -79,13 +73,3 @@ endif
 # Reference Ruby for test/bench output comparison. Override on the command
 # line to use a freshly-built interpreter, e.g. `REF_RUBY=miniruby make test`.
 REF_RUBY ?= ruby
-
-# Ruby used to run the legacy bootstrap compiler. Long-running hot loops,
-# so `YJIT=1 make` adds --yjit here (opt-in; needs a YJIT-enabled Ruby).
-BOOTSTRAP_RUBY ?= ruby
-ifeq ($(YJIT),1)
-  BOOTSTRAP_RUBY := $(BOOTSTRAP_RUBY) --yjit
-endif
-
-# Content stamps are a legacy-bootstrap concern only; the rule lives in
-# legacy/Makefile now. The normal C build depends on its sources directly.

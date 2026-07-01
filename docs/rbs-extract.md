@@ -120,8 +120,6 @@ ivar <name> <type>
 
 Lines whose first token isn't a keyword are treated as comments.
 
-See `tools/rbs-seed-spike/box.seed` for a worked example.
-
 ## Follow-up
 
 Tracked as out-of-scope for the initial spike (see matz/spinel#7 +

@@ -415,8 +415,8 @@ const char *resolve_class_alias(Compiler *c, const char *cname) {
   return NULL;
 }
 
-/* compiler_state_* class macros (see legacy/compiler_helpers.rb): declare a
-   bag of typed instance variables and auto-synthesize init/dump/set methods.
+/* compiler_state_* class macros: declare a bag of typed instance variables
+   and auto-synthesize init/dump/set methods.
    The CRuby shim that would define these via define_method is dead code under
    RUBY_ENGINE != "ruby"; spinel recognizes the macros natively here. */
 const char *cs_macro_kind(const char *nm) {

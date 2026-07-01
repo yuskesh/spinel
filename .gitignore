@@ -12,19 +12,12 @@
 # Build artifacts
 /build/
 /bin/
-/legacy/build/
 /vendor/
 # Dev convenience symlink to bin/spinel (created by `make`)
 /spinel
 
 # Temp files
 /tmp/
-/spinel_analyze
-/spinel_analyze.exe
-/spinel_codegen
-/spinel_codegen.exe
-/legacy/spinel_parse
-/legacy/spinel_parse.exe
 /perf.data
 /perf.data.old
 /lib/regexp/libspre.a
