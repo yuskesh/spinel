@@ -2275,6 +2275,209 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  TyKind res = comp_ntype(c, id);
+  /* Array#* (repeat): arr * n  ->  new array with elements repeated n times.
+     The count is emitted via emit_int_expr, which unboxes a promote-widened
+     poly count, so accept TY_POLY as well as TY_INT -- otherwise `arr * n`
+     with a poly `n` falls through to sp_poly_mul (arithmetic) and yields 0. */
+  if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
+      (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
+    int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
+    if (rt == TY_POLY_ARRAY) {
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                    " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
+                 tr, tr,
+                 ti, ti, tn, ti,
+                 tj, tj, ta, tj,
+                 tr, ta, tj, tr);
+    }
+    else {
+      const char *k = array_kind(rt);
+      /* Only IntArray has a start offset; Float/StrArray index directly. */
+      int has_start = (rt == TY_INT_ARRAY);
+      buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+      if (has_start) {
+        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
+                      " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                      " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                      " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]); _t%d; })",
+                   k, tr, k, tr,
+                   ti, ti, tn, ti,
+                   tj, tj, ta, tj,
+                   k, tr, ta, ta, tj, tr);
+      }
+      else {
+        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
+                      " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                      " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
+                      " sp_%sArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
+                   k, tr, k, tr,
+                   ti, ti, tn, ti,
+                   tj, tj, ta, tj,
+                   k, tr, ta, tj, tr);
+      }
+    }
+    return 1;
+  }
+
+  if (recv >= 0 && argc == 1 && !ty_is_object(rt) && !ty_is_array(rt) &&
+      (int_arith_fn(name) ||
+       /* bigint shifts aren't "int arith" ops but lower through the same
+          TY_BIGINT branch below (sp_bigint_shl / sp_bigint_shr). */
+       (res == TY_BIGINT && (sp_streq(name, "<<") || sp_streq(name, ">>"))))) {
+    if (rt == TY_STRING && sp_streq(name, "+")) {
+      /* Root both operands when either may allocate: `a + b` evaluates both,
+         and a fresh heap string from one can be swept while the other
+         allocates or forces a GC (chained `a + b + c` with side-effecting
+         operands — concat_chain_operand_gc_root). Recurses naturally: a
+         chain's left operand is itself a `+` and gets its own rooted block.
+         Pure literal / bare-read operands need no rooting. */
+      /* A poly operand (statically typed string here, holds a string at
+         runtime) must be coerced to a C string for sp_str_concat. */
+      int arg_poly = comp_ntype(c, argv[0]) == TY_POLY;
+      if (subtree_may_allocate(nt, recv) || subtree_may_allocate(nt, argv[0])) {
+        int ta = ++g_tmp, tb = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb);
+        if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_concat(_t%d, _t%d); })", tb, ta, tb);
+      }
+      else {
+        buf_puts(b, "sp_str_concat(");
+        emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
+      }
+      return 1;
+    }
+    if (rt == TY_STRING && sp_streq(name, "*")) {
+      buf_puts(b, "sp_str_repeat(");
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (res == TY_BIGINT) {
+      /* **, <<, >> take an int64 second operand (exponent / shift), not a bigint;
+         bigint_arith_fn doesn't map them, so emit them directly. */
+      if (sp_streq(name, "**") || sp_streq(name, "<<") || sp_streq(name, ">>")) {
+        const char *sfn = sp_streq(name, "**") ? "sp_bigint_pow"
+                        : sp_streq(name, "<<") ? "sp_bigint_shl"
+                        : "sp_bigint_shr";
+        buf_printf(b, "%s(", sfn);
+        emit_bigint_operand(c, recv, b);
+        buf_puts(b, ", ");
+        if (comp_ntype(c, argv[0]) == TY_BIGINT) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else { buf_puts(b, "(int64_t)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        buf_puts(b, ")");
+        return 1;
+      }
+      const char *bfn = bigint_arith_fn(name);
+      if (bfn) {
+        buf_printf(b, "%s(", bfn);
+        emit_bigint_operand(c, recv, b);
+        buf_puts(b, ", ");
+        emit_bigint_operand(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+    }
+    /* Re-derive result type when cache may be stale due to block-param widening */
+    TyKind eff_res = res;
+    if (eff_res != TY_INT && eff_res != TY_FLOAT && eff_res != TY_BIGINT) {
+      if (rt == TY_FLOAT || a0 == TY_FLOAT) eff_res = TY_FLOAT;
+      else if (rt == TY_INT && (a0 == TY_INT || a0 == TY_UNKNOWN)) eff_res = TY_INT;
+    }
+    if (eff_res == TY_INT) {
+      int isdivmod = sp_streq(name, "/") || sp_streq(name, "%");
+      buf_printf(b, "%s(", int_arith_fn(name));
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (isdivmod) emit_int_divisor(c, argv[0], b);
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (eff_res == TY_FLOAT && sp_streq(name, "**") && rt != TY_TIME) {
+      TyKind at0 = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      buf_puts(b, "pow(");
+      if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+      buf_puts(b, ", ");
+      if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (eff_res == TY_FLOAT && sp_streq(name, "%") && rt != TY_TIME && argc == 1) {
+      TyKind at0 = comp_ntype(c, argv[0]);
+      buf_puts(b, "sp_fmod(");
+      if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+      buf_puts(b, ", ");
+      if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
+    if (eff_res == TY_FLOAT && rt != TY_TIME && !sp_streq(name, "%") && !sp_streq(name, "**")) {
+      buf_puts(b, "(");
+      emit_expr(c, recv, b);
+      buf_printf(b, " %s ", name);
+      emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
+    /* Time + int/float, Time - int/float, Time - Time */
+    if (rt == TY_TIME && (sp_streq(name, "+") || sp_streq(name, "-"))) {
+      TyKind at = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      int tt = ++g_tmp, tu = ++g_tmp;
+      if (sp_streq(name, "-") && at == TY_TIME) {
+        /* Time - Time -> Float */
+        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_time_sub_t(_t%d, _t%d); })", tt, tu);
+      }
+      else if (at == TY_FLOAT) {
+        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; double _t%d = ", tu); emit_expr(c, argv[0], b);
+        if (sp_streq(name, "+"))
+          buf_printf(b, "; sp_time_add_f(_t%d, _t%d); })", tt, tu);
+        else
+          buf_printf(b, "; sp_time_add_f(_t%d, -_t%d); })", tt, tu);
+      }
+      else {
+        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = ", tu); emit_int_expr(c, argv[0], b);
+        if (sp_streq(name, "+"))
+          buf_printf(b, "; sp_time_add_i(_t%d, _t%d); })", tt, tu);
+        else
+          buf_printf(b, "; sp_time_sub_i(_t%d, _t%d); })", tt, tu);
+      }
+      return 1;
+    }
+    unsupported(c, id, "arithmetic");
+  }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -6136,195 +6339,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
-  /* Array#* (repeat): arr * n  ->  new array with elements repeated n times.
-     The count is emitted via emit_int_expr, which unboxes a promote-widened
-     poly count, so accept TY_POLY as well as TY_INT -- otherwise `arr * n`
-     with a poly `n` falls through to sp_poly_mul (arithmetic) and yields 0. */
-  if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
-      (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_POLY)) {
-    int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
-    if (rt == TY_POLY_ARRAY) {
-      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
-      buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                    " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
-                    " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
-                    " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
-                 tr, tr,
-                 ti, ti, tn, ti,
-                 tj, tj, ta, tj,
-                 tr, ta, tj, tr);
-    }
-    else {
-      const char *k = array_kind(rt);
-      /* Only IntArray has a start offset; Float/StrArray index directly. */
-      int has_start = (rt == TY_INT_ARRAY);
-      buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
-      buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-      if (has_start) {
-        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
-                      " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
-                      " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
-                      " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]); _t%d; })",
-                   k, tr, k, tr,
-                   ti, ti, tn, ti,
-                   tj, tj, ta, tj,
-                   k, tr, ta, ta, tj, tr);
-      }
-      else {
-        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
-                      " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
-                      " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
-                      " sp_%sArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
-                   k, tr, k, tr,
-                   ti, ti, tn, ti,
-                   tj, tj, ta, tj,
-                   k, tr, ta, tj, tr);
-      }
-    }
-    return;
-  }
-
-  if (recv >= 0 && argc == 1 && !ty_is_object(rt) && !ty_is_array(rt) &&
-      (int_arith_fn(name) ||
-       /* bigint shifts aren't "int arith" ops but lower through the same
-          TY_BIGINT branch below (sp_bigint_shl / sp_bigint_shr). */
-       (res == TY_BIGINT && (sp_streq(name, "<<") || sp_streq(name, ">>"))))) {
-    if (rt == TY_STRING && sp_streq(name, "+")) {
-      /* Root both operands when either may allocate: `a + b` evaluates both,
-         and a fresh heap string from one can be swept while the other
-         allocates or forces a GC (chained `a + b + c` with side-effecting
-         operands — concat_chain_operand_gc_root). Recurses naturally: a
-         chain's left operand is itself a `+` and gets its own rooted block.
-         Pure literal / bare-read operands need no rooting. */
-      /* A poly operand (statically typed string here, holds a string at
-         runtime) must be coerced to a C string for sp_str_concat. */
-      int arg_poly = comp_ntype(c, argv[0]) == TY_POLY;
-      if (subtree_may_allocate(nt, recv) || subtree_may_allocate(nt, argv[0])) {
-        int ta = ++g_tmp, tb = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = ", ta); emit_expr(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb);
-        if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[0], b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_concat(_t%d, _t%d); })", tb, ta, tb);
-      }
-      else {
-        buf_puts(b, "sp_str_concat(");
-        emit_expr(c, recv, b); buf_puts(b, ", ");
-        if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[0], b);
-        buf_puts(b, ")");
-      }
-      return;
-    }
-    if (rt == TY_STRING && sp_streq(name, "*")) {
-      buf_puts(b, "sp_str_repeat(");
-      emit_expr(c, recv, b); buf_puts(b, ", ");
-      if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
-      buf_puts(b, ")");
-      return;
-    }
-    if (res == TY_BIGINT) {
-      /* **, <<, >> take an int64 second operand (exponent / shift), not a bigint;
-         bigint_arith_fn doesn't map them, so emit them directly. */
-      if (sp_streq(name, "**") || sp_streq(name, "<<") || sp_streq(name, ">>")) {
-        const char *sfn = sp_streq(name, "**") ? "sp_bigint_pow"
-                        : sp_streq(name, "<<") ? "sp_bigint_shl"
-                        : "sp_bigint_shr";
-        buf_printf(b, "%s(", sfn);
-        emit_bigint_operand(c, recv, b);
-        buf_puts(b, ", ");
-        if (comp_ntype(c, argv[0]) == TY_BIGINT) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        else { buf_puts(b, "(int64_t)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-        buf_puts(b, ")");
-        return;
-      }
-      const char *bfn = bigint_arith_fn(name);
-      if (bfn) {
-        buf_printf(b, "%s(", bfn);
-        emit_bigint_operand(c, recv, b);
-        buf_puts(b, ", ");
-        emit_bigint_operand(c, argv[0], b);
-        buf_puts(b, ")");
-        return;
-      }
-    }
-    /* Re-derive result type when cache may be stale due to block-param widening */
-    TyKind eff_res = res;
-    if (eff_res != TY_INT && eff_res != TY_FLOAT && eff_res != TY_BIGINT) {
-      if (rt == TY_FLOAT || a0 == TY_FLOAT) eff_res = TY_FLOAT;
-      else if (rt == TY_INT && (a0 == TY_INT || a0 == TY_UNKNOWN)) eff_res = TY_INT;
-    }
-    if (eff_res == TY_INT) {
-      int isdivmod = sp_streq(name, "/") || sp_streq(name, "%");
-      buf_printf(b, "%s(", int_arith_fn(name));
-      emit_expr(c, recv, b); buf_puts(b, ", ");
-      if (isdivmod) emit_int_divisor(c, argv[0], b);
-      else emit_expr(c, argv[0], b);
-      buf_puts(b, ")");
-      return;
-    }
-    if (eff_res == TY_FLOAT && sp_streq(name, "**") && rt != TY_TIME) {
-      TyKind at0 = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-      buf_puts(b, "pow(");
-      if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
-      buf_puts(b, ", ");
-      if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
-      buf_puts(b, ")");
-      return;
-    }
-    if (eff_res == TY_FLOAT && sp_streq(name, "%") && rt != TY_TIME && argc == 1) {
-      TyKind at0 = comp_ntype(c, argv[0]);
-      buf_puts(b, "sp_fmod(");
-      if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
-      buf_puts(b, ", ");
-      if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
-      buf_puts(b, ")");
-      return;
-    }
-    if (eff_res == TY_FLOAT && rt != TY_TIME && !sp_streq(name, "%") && !sp_streq(name, "**")) {
-      buf_puts(b, "(");
-      emit_expr(c, recv, b);
-      buf_printf(b, " %s ", name);
-      emit_expr(c, argv[0], b);
-      buf_puts(b, ")");
-      return;
-    }
-    /* Time + int/float, Time - int/float, Time - Time */
-    if (rt == TY_TIME && (sp_streq(name, "+") || sp_streq(name, "-"))) {
-      TyKind at = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-      int tt = ++g_tmp, tu = ++g_tmp;
-      if (sp_streq(name, "-") && at == TY_TIME) {
-        /* Time - Time -> Float */
-        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_time_sub_t(_t%d, _t%d); })", tt, tu);
-      }
-      else if (at == TY_FLOAT) {
-        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
-        buf_printf(b, "; double _t%d = ", tu); emit_expr(c, argv[0], b);
-        if (sp_streq(name, "+"))
-          buf_printf(b, "; sp_time_add_f(_t%d, _t%d); })", tt, tu);
-        else
-          buf_printf(b, "; sp_time_add_f(_t%d, -_t%d); })", tt, tu);
-      }
-      else {
-        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
-        buf_printf(b, "; mrb_int _t%d = ", tu); emit_int_expr(c, argv[0], b);
-        if (sp_streq(name, "+"))
-          buf_printf(b, "; sp_time_add_i(_t%d, _t%d); })", tt, tu);
-        else
-          buf_printf(b, "; sp_time_sub_i(_t%d, _t%d); })", tt, tu);
-      }
-      return;
-    }
-    unsupported(c, id, "arithmetic");
-  }
+  if (emit_array_arith_call(c, id, b)) return;
 
   /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
      bigint, but the int receiver would otherwise emit a UB C `1LL << 64LL`.
