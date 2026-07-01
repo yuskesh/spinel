@@ -1,5 +1,11 @@
 #include "codegen_internal.h"
 
+Buf expr_buf(Compiler *c, int node) {
+  Buf b; memset(&b, 0, sizeof b);
+  emit_expr(c, node, &b);
+  return b;
+}
+
 Buf *g_pre = NULL;
 
 /* SP_COLLECT_ERRORS recovery: in collect mode a codegen gap longjmps back to a

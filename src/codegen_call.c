@@ -404,7 +404,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
       /* render the value into a side buffer first: emit_expr drains the arg's
          own prelude (e.g. a nested proc call) into g_pre, which must land
          before -- not inside -- this temp's declaration line. */
-      Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, argv[k], &vb);
+      Buf vb = expr_buf(c, argv[k]);
       emit_indent(g_pre, g_indent);
       if (storable) emit_ctype(c, at, g_pre); else buf_puts(g_pre, "mrb_int");
       buf_printf(g_pre, " _t%d = %s;\n", atmp[k], vb.p ? vb.p : "");
@@ -551,18 +551,18 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
   int tn = -1;
   if (has_count) {
-    Buf nb; memset(&nb, 0, sizeof nb); emit_expr(c, count_node, &nb);
+    Buf nb = expr_buf(c, count_node);
     tn = ++g_tmp; emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "mrb_int _t%d = %s;\n", tn, nb.p ? nb.p : "0"); free(nb.p);
   }
   int thi = -1, tsrc = -1;
   if (src_is_range && !endless) {
-    Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, right, &hb);
+    Buf hb = expr_buf(c, right);
     thi = ++g_tmp; emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "mrb_int _t%d = %s;\n", thi, hb.p ? hb.p : "0"); free(hb.p);
   }
   if (src_is_intarr) {
-    Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, lazy_src, &sb);
+    Buf sb = expr_buf(c, lazy_src);
     tsrc = ++g_tmp; emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_IntArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", tsrc, sb.p ? sb.p : "0", tsrc); free(sb.p);
   }
@@ -1885,7 +1885,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
              (e.g. `nrows * ncols` where a factor widened to poly -> sp_poly_mul,
              which returns sp_RbVal) through sp_poly_to_i. spinel-dev#24. */
           Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
-          Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, argv[1], &vb);
+          Buf vb = expr_buf(c, argv[1]);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
           emit_indent(g_pre, g_indent);
@@ -2121,13 +2121,13 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") ||
                      sp_streq(rty2, "InstanceVariableReadNode") ||
                      sp_streq(rty2, "SelfNode"))) {
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          Buf rb = expr_buf(c, recv);
           snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
         }
         else {
           int t2 = ++g_tmp;
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent);
           emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", t2, rb.p ? rb.p : "");
@@ -2144,13 +2144,13 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         if (rty2 && (sp_streq(rty2, "LocalVariableReadNode") ||
                      sp_streq(rty2, "InstanceVariableReadNode") ||
                      sp_streq(rty2, "SelfNode"))) {
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          Buf rb = expr_buf(c, recv);
           snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
         }
         else {
           int t3 = ++g_tmp;
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent);
           emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", t3, rb.p ? rb.p : "");
@@ -2171,13 +2171,13 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
           if (rty3 && (sp_streq(rty3, "LocalVariableReadNode") ||
                        sp_streq(rty3, "InstanceVariableReadNode") ||
                        sp_streq(rty3, "SelfNode"))) {
-            Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+            Buf rb = expr_buf(c, recv);
             snprintf(selfptr2, sizeof selfptr2, "%s", rb.p ? rb.p : "");
             free(rb.p);
           }
           else {
             int t4 = ++g_tmp;
-            Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+            Buf rb = expr_buf(c, recv);
             emit_indent(g_pre, g_indent);
             emit_ctype(c, rt, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", t4, rb.p ? rb.p : "");
@@ -2211,7 +2211,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       if (ty_is_numeric(prim_t) && eqm >= 0) {
         Scope *ms = &c->scopes[eqm];
         int to2 = ++g_tmp;
-        Buf ob2; memset(&ob2, 0, sizeof ob2); emit_expr(c, obj_n, &ob2);
+        Buf ob2 = expr_buf(c, obj_n);
         emit_indent(g_pre, g_indent);
         emit_ctype(c, obj_t, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", to2, ob2.p ? ob2.p : ""); free(ob2.p);
@@ -3746,7 +3746,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (sp_streq(name, "full_message")) {
       int t = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
@@ -3756,7 +3756,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* detailed_message -> "message (ClassName)" (kwargs like highlight: ignored) */
     if (sp_streq(name, "detailed_message")) {
       int t = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
@@ -3766,7 +3766,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "inspect")) {
       /* #<ClassName: message> */
       int t = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
@@ -3891,13 +3891,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         char objptr[64];
         const char *rty = nt_type(nt, robj);
         if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, robj, &rb);
+          Buf rb = expr_buf(c, robj);
           snprintf(objptr, sizeof objptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
         }
         else {
           int ot = ++g_tmp;
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, robj, &rb);
+          Buf rb = expr_buf(c, robj);
           emit_indent(g_pre, g_indent);
           emit_ctype(c, rrt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", ot, rb.p ? rb.p : ""); free(rb.p);
@@ -4195,7 +4195,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (comp_ty_value_obj(c, rt)) { buf_printf(b, "((sp_Class){%d})", _cidx); return; }
       int _tobj = ++g_tmp;
       emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _tobj);
-      Buf _rb; memset(&_rb, 0, sizeof _rb); emit_expr(c, recv, &_rb);
+      Buf _rb = expr_buf(c, recv);
       buf_puts(g_pre, _rb.p ? _rb.p : ""); buf_puts(g_pre, ";\n"); free(_rb.p);
       buf_printf(b, "((sp_Class){_t%d ? _t%d->cls_id : %d})", _tobj, _tobj, _cidx);
       return;
@@ -4489,7 +4489,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         TyKind body_ty = infer_type(c, then_bb[then_bn - 1]);
         int tr = ++g_tmp, tres = ++g_tmp;
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        Buf rb = expr_buf(c, recv);
         emit_indent(g_pre, g_indent); emit_ctype(c, rtype, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
         /* Declare tres at outer scope so it is visible after any shadow block */
@@ -4507,7 +4507,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         for (int j = 0; j < then_bn - 1; j++) emit_stmt(c, then_bb[j], g_pre, bodyIndent);
         int save_ind = g_indent; g_indent = bodyIndent;
-        Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, then_bb[then_bn - 1], &vb);
+        Buf vb = expr_buf(c, then_bb[then_bn - 1]);
         g_indent = save_ind;
         emit_indent(g_pre, bodyIndent); buf_printf(g_pre, "_t%d = %s;\n", tres, vb.p ? vb.p : "0"); free(vb.p);
         if (use_shadow_th) { emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n"); }
@@ -4625,7 +4625,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             as_arr = ++g_tmp;
             /* Evaluate the array into a side buffer so its own prelude flushes
                to g_pre before this declaration line (avoid splicing mid-line). */
-            Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, arg0, &ab);
+            Buf ab = expr_buf(c, arg0);
             emit_indent(g_pre, g_indent); emit_ctype(c, a0, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", as_arr, ab.p ? ab.p : "NULL"); free(ab.p);
           }
@@ -4669,7 +4669,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (p < iac) {
               if (ppoly) emit_boxed(c, iav[p], g_pre);
               else if (pscalar && comp_ntype(c, iav[p]) == TY_POLY) {
-                Buf eb; memset(&eb, 0, sizeof eb); emit_expr(c, iav[p], &eb);
+                Buf eb = expr_buf(c, iav[p]);
                 emit_unbox_text(c, plv->type, eb.p ? eb.p : "", g_pre); free(eb.p);
               }
               else emit_expr(c, iav[p], g_pre);
@@ -6501,13 +6501,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         if (rtyp && (sp_streq(rtyp, "LocalVariableReadNode") ||
                      sp_streq(rtyp, "InstanceVariableReadNode") ||
                      sp_streq(rtyp, "SelfNode"))) {
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          Buf rb = expr_buf(c, recv);
           snprintf(selfptr, sizeof selfptr, "%s", rb.p ? rb.p : "");
           free(rb.p);
         }
         else {
           int t4 = ++g_tmp;
-          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent);
           emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", t4, rb.p ? rb.p : "");
@@ -6654,15 +6654,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            hoist temps into g_pre (e.g. an arg `Temp.new(5)` roots its boxed
            int there). Doing that before writing our own `T _tN = ` prefix
            keeps the nested hoist from splitting our declaration line. */
-        Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+        Buf rb = expr_buf(c, recv);
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ts);
         buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-        Buf lb; memset(&lb, 0, sizeof lb); emit_expr(c, argv[0], &lb);
+        Buf lb = expr_buf(c, argv[0]);
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", tlo);
         buf_puts(g_pre, lb.p ? lb.p : ""); buf_puts(g_pre, ";\n"); free(lb.p);
-        Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, argv[1], &hb);
+        Buf hb = expr_buf(c, argv[1]);
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", thi);
         buf_puts(g_pre, hb.p ? hb.p : ""); buf_puts(g_pre, ";\n"); free(hb.p);
@@ -7115,7 +7115,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     int body = nt_ref(nt, block, "body");
     const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
     int ts = ++g_tmp, ti = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    Buf rb = expr_buf(c, recv);
     int is_line = sp_streq(name, "each_line") || sp_streq(name, "lines");
     int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes") || sp_streq(name, "codepoints");
     Scope *cs_ech = p0 ? comp_scope_of(c, id) : NULL;
@@ -7170,7 +7170,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* bigint methods */
   if (recv >= 0 && rt == TY_BIGINT) {
-    Buf rs; memset(&rs, 0, sizeof rs); emit_expr(c, recv, &rs);
+    Buf rs = expr_buf(c, recv);
     const char *r = rs.p ? rs.p : "";
     if ((sp_streq(name, "to_s") || sp_streq(name, "inspect")) && argc == 0) {
       buf_printf(b, "sp_bigint_to_s(%s)", r); free(rs.p); return;
