@@ -1,7 +1,7 @@
 # Float#ceil/floor/round/truncate return type is value-based on a
 # literal ndigits, matching CRuby: Integer when ndigits <= 0 (or
 # absent), Float when > 0. (A non-literal ndigits stays Float.) Values
-# stay numerically correct. See docs/FLOAT-ROUNDING.md.
+# stay numerically correct. See docs/float-rounding.md.
 
 # no-arg -> Integer
 puts 1.9.ceil.class
