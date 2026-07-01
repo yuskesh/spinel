@@ -902,8 +902,12 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
     }
   }
   TyKind bret = comp_ntype(c, bb[bn - 1]);
-  if (!ty_is_array(bret)) return 0;  /* only array-returning blocks */
-  const char *bk = (bret == TY_POLY_ARRAY) ? "Poly" : array_kind(bret);
+  /* A block whose value is not statically an array (a bare poly, or a mix of
+     array and scalar as in `... ? sub_array : scalar`) is handled per CRuby:
+     an array value is spliced one level, a scalar is appended as-is. The result
+     is then a poly array. */
+  int poly_ret = !ty_is_array(bret);
+  const char *bk = poly_ret ? "Poly" : ((bret == TY_POLY_ARRAY) ? "Poly" : array_kind(bret));
   if (!bk) return 0;
   int np = 0; while (block_param_name(c, block, np)) np++;
   if (np > 1 && rt != TY_POLY_ARRAY) return 0;  /* destructure needs poly elements */
@@ -942,16 +946,26 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
       buf_puts(g_pre, cv.p ? cv.p : src); free(cv.p); buf_puts(g_pre, ";\n");
     }
   }
-  int tbv = ++g_tmp, tj = ++g_tmp;
-  /* collect the block's value (next-aware) into the per-iteration array temp,
-     then splat its elements -- so `next [..]` flattens its array like the tail. */
+  int tbv = ++g_tmp;
   char tbvb[24]; snprintf(tbvb, sizeof tbvb, "_t%d", tbv);
-  emit_indent(g_pre, g_indent + 1); emit_ctype(c, bret, g_pre);
-  buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret));
-  emit_block_value_into(c, block, tbvb, bret == TY_POLY, g_indent + 1);
-  emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
-             tj, tj, bk, tbv, tj, bk, tres, bk, tbv, tj);
+  if (poly_ret) {
+    /* collect the block's (boxed) value, then splice one level: an array value
+       has its elements appended, a scalar is pushed as-is (CRuby flat_map). */
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tbv, default_value(TY_POLY));
+    emit_block_value_into(c, block, tbvb, 1, g_indent + 1);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_PolyArray_flatten_into_n(_t%d, _t%d, 1);\n", tres, tbv);
+  } else {
+    int tj = ++g_tmp;
+    /* collect the block's value (next-aware) into the per-iteration array temp,
+       then splat its elements -- so `next [..]` flattens its array like the tail. */
+    emit_indent(g_pre, g_indent + 1); emit_ctype(c, bret, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret));
+    emit_block_value_into(c, block, tbvb, bret == TY_POLY, g_indent + 1);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n",
+               tj, tj, bk, tbv, tj, bk, tres, bk, tbv, tj);
+  }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   buf_printf(b, "_t%d", tres);
   return 1;
