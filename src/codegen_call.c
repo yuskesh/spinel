@@ -6796,6 +6796,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (sp_streq(name, "max")) pm = "sp_poly_max";
     else if (sp_streq(name, "first")) pm = "sp_poly_first";
     else if (sp_streq(name, "last")) pm = "sp_poly_last";
+    else if (sp_streq(name, "sample")) pm = "sp_poly_sample";
     /* a Thread (Fiber-modelled) carried through a poly slot: #value/#resume/#join
        dispatch on the boxed Fiber when no user class defines the name (#1261). */
     else if (sp_streq(name, "value") || sp_streq(name, "resume")) pm = "sp_poly_fiber_value";

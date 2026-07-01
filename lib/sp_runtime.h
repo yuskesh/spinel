@@ -3265,6 +3265,10 @@ static sp_RbVal sp_poly_last(sp_RbVal v) {
   mrb_int n = sp_poly_length(v);
   return n > 0 ? sp_poly_arr_get(v, n - 1) : sp_box_nil();
 }
+static sp_RbVal sp_poly_sample(sp_RbVal v) {
+  mrb_int n = sp_poly_length(v);
+  return n > 0 ? sp_poly_arr_get(v, (mrb_int)(rand() % n)) : sp_box_nil();
+}
 /* Thread#value / #join through a poly slot. A Thread is modelled as a Fiber run
    to completion (single-threaded); when one is carried in a poly value -- e.g.
    an array of Threads, `(1..n).map { Thread.new { ... } }` -- #value/#join must

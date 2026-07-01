@@ -2142,7 +2142,7 @@ else {
          result is a boxed poly value resolved at runtime by cls_id. */
       if (argc == 0 &&
           (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
-           sp_streq(name, "first") || sp_streq(name, "last")))
+           sp_streq(name, "first") || sp_streq(name, "last") || sp_streq(name, "sample")))
         return TY_POLY;
       /* Fiber/Thread/IO/File instance methods: fallback when no user class defines `name`. */
       if (sp_streq(name, "resume") || sp_streq(name, "value") || sp_streq(name, "join"))
