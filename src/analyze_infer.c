@@ -329,6 +329,48 @@ static int range_each_is_external(Compiler *c, int id) {
   return 1;     /* standalone -> enumerator */
 }
 
+int range_enum_redispatch(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int block = nt_ref(nt, id, "block");
+  int args = nt_ref(nt, id, "arguments"); int argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  /* Only an integer range materializes faithfully: sp_Range holds mrb_int
+     bounds, so redispatch only when a literal range receiver has both bounds
+     present and typed TY_INT. A float/string bound would truncate or fail to
+     compile, and a beginless/endless range (`(1..)`, `(..5)`) has no int array
+     to build -- all fall through to the loud `unsupported` reject rather than
+     silently miscompiling. (A non-literal receiver, e.g. `r = (1.0..5.0);
+     r.find`, is the pre-existing int-only-sp_Range limitation, not detectable
+     here.) */
+  int rn = nt_ref(nt, id, "receiver");
+  while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
+    int body = nt_ref(nt, rn, "body"); int bn = 0;
+    const int *bd = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    rn = bn == 1 ? bd[0] : -1;
+  }
+  if (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "RangeNode")) {
+    int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+    if (lo < 0 || hi < 0) return 0;
+    if (infer_type(c, lo) != TY_INT || infer_type(c, hi) != TY_INT) return 0;
+  }
+  /* Non-collecting Enumerable methods: their result does not depend on the
+     block-produced element type, so materializing the range to an int array is
+     transparent. (Array-building block collectors -- flat_map/filter_map/
+     partition/chunk_while -- are NOT redispatched: the int-array receiver flip
+     does not reach the block-param/element typing pass, which still sees a
+     range, so they stay a clean reject rather than miscompile.) */
+  if (sp_streq(name, "group_by") || sp_streq(name, "find") ||
+      sp_streq(name, "detect") || sp_streq(name, "zip") ||
+      sp_streq(name, "tally")) return 1;
+  /* reduce/inject: the explicit symbol / initial-value forms (no block). */
+  if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && argc >= 1 && block < 0) return 1;
+  /* count: the block / argument forms (bare count is size, handled natively). */
+  if (sp_streq(name, "count")) return block >= 0 || argc >= 1;
+  return 0;
+}
+
 TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   /* a dynamic send lowered to a name-dispatch (desugar_dynamic_send) yields one
@@ -343,6 +385,9 @@ TyKind infer_call(Compiler *c, int id) {
   if (!name) return TY_UNKNOWN;
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+  /* A Range Enumerable method spinel serves by materializing to an int array:
+     infer it as the array version (the array arms below key on `rt`). */
+  if (rt == TY_RANGE && range_enum_redispatch(c, id)) rt = TY_INT_ARRAY;
   TyKind a0 = argc >= 1 ? infer_type(c, argv[0]) : TY_UNKNOWN;
 
   /* A literal integer power whose result exceeds int64 (`10 ** 30`, `2 ** 70`)

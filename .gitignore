@@ -40,7 +40,10 @@ file_write_poly_arg
 /ISSUE_TRIAGE.md
 /PR908.md
 /POLY-AS-SET.md
-/t3b.types.json
+# Analyze-only emit artifacts (--emit-types / --emit-symbol-map dev scratch).
+# Not *.rbs: test/rbs/ and test/rbs-seed/ carry tracked .rbs fixtures.
+*.types.json
+*.symbols.json
 *.gem
 
 # Test binaries accidentally produced in repo root

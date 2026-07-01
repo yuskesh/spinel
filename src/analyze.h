@@ -31,6 +31,12 @@ TyKind infer_type(Compiler *c, int id);
    `next <other-type>` is boxed rather than assigned to a mismatched temp. */
 TyKind ie_block_break_next_ty(Compiler *c, int node);
 
+/* True if CallNode `id` is an Enumerable method on a Range that spinel does not
+   handle natively but supports on arrays -- served by materializing the range
+   to an int array (both inference and codegen then treat the receiver as an int
+   array). Excludes range-native methods (each/map/select/sum/min/count-no-arg). */
+int range_enum_redispatch(Compiler *c, int id);
+
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 /* Name of a block's trailing rest parameter (`|*a|`), or NULL. */

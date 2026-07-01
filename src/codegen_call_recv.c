@@ -3541,6 +3541,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       "exclude_end?", "eql?", "minmax", "overlap?", NULL };
     int known = 0;
     for (int i = 0; rmeths[i]; i++) if (sp_streq(name, rmeths[i])) known = 1;
+    /* `count` with a block or argument is Enumerable#count, not Range#size:
+       let it fall through to the int-array redispatch below. */
+    if (sp_streq(name, "count") && (block >= 0 || argc >= 1)) known = 0;
     if (known) {
       /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
       if ((sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) {
@@ -3634,6 +3637,29 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
       return 1;
     }
+  }
+  /* Enumerable method on a Range that arrays support but Range does not handle
+     natively (reduce(:sym), group_by, partition, flat_map, count(&block), ...):
+     materialize the range into an int array once, then re-dispatch the call as
+     an array by overriding the receiver's emission and type. Inference already
+     typed the call as the array version (range_enum_redispatch). */
+  if (recv >= 0 && rt == TY_RANGE && range_enum_redispatch(c, id) &&
+      g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp, tr = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; "
+                      "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); }); SP_GC_ROOT(_t%d);\n",
+               ta, tr, rb.p ? rb.p : "", tr, tr, tr, ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_INT_ARRAY;
+    emit_call(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return 1;
   }
   return 0;
 }
