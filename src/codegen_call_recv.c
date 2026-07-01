@@ -41,10 +41,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
@@ -1617,10 +1615,8 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   if (recv >= 0 && ty_is_hash(rt)) {
     /* compare_by_identity? is always false for a value-keyed hash; the mutating
@@ -2358,10 +2354,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   /* scalar receiver methods: evaluate the receiver once into rs, then
@@ -2902,10 +2896,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
   /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
@@ -3290,10 +3282,8 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   /* Time instance methods: sp_Time is a value -- splice the receiver once. */
   if (recv >= 0 && rt == TY_TIME) {
@@ -3521,10 +3511,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {
@@ -3654,10 +3642,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   /* Hash#compare_by_identity switches a hash to identity (equal?/object_id)
      key comparison. Spinel's hash machinery compares keys by value, so the

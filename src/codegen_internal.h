@@ -430,6 +430,9 @@ int recv_is_const(const NodeTable *nt, int recv, const char *name);
 int sp_is_fiber_storage_recv(const NodeTable *nt, int recv);
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b);
+/* Decode a CallNode's positional arguments: sets *argc and returns the argv
+   array (NULL when the node has no arguments). Shared by the call emitters. */
+const int *call_args(const NodeTable *nt, int id, int *argc);
 /* Receiver-typed method-call emitters (codegen_call_recv.c). Each returns 1 if
    it handled the call and emitted into `b`, else 0 (emit_call falls through). */
 int emit_array_call(Compiler *c, int id, Buf *b);

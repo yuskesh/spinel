@@ -1,5 +1,12 @@
 #include "codegen_internal.h"
 
+const int *call_args(const NodeTable *nt, int id, int *argc) {
+  *argc = 0;
+  int args = nt_ref(nt, id, "arguments");
+  return args >= 0 ? nt_arr(nt, args, "arguments", argc) : NULL;
+}
+
+
 /* Rewrite a printf format that uses named references into a positional one.
    `%<name>SPEC` -> `%SPEC`, `%{name}` -> `%s` (Ruby's to_s of the value), `%%`
    stays. The referenced names (in order) are collected into names[]/name_len[]
@@ -688,10 +695,8 @@ static int emit_concurrency_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   /* Thread instance methods (a green thread on the scheduler) */
   if (recv >= 0 && comp_ntype(c, recv) == TY_THREAD) {
     if (sp_streq(name, "value") && argc == 0) {
@@ -921,10 +926,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   /* ---- Complex / Rational value types ---- */
   /* Kernel#Complex(re[, im]) */
   if (recv < 0 && sp_streq(name, "Complex") && argc >= 1) {
@@ -1105,10 +1108,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   /* poly method dispatch: switch on the boxed object's cls_id and call the
      matching class's method (walking the chain for inherited methods),
@@ -1563,10 +1564,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   /* Class.new(args) -> sp_<Class>_new(args) */
   if (recv >= 0 && sp_streq(name, "new")) {
     const char *rty = nt_type(nt, recv);
@@ -1947,10 +1946,8 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   /* `===` on a scalar comparable (bool/int/float/string/symbol) is case
@@ -2279,10 +2276,8 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
@@ -2553,10 +2548,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_inline_expr(c, id, b)) return;  /* value-returning yield method */
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  int args = nt_ref(nt, id, "arguments");
-  int argc = 0;
-  const int *argv = NULL;
-  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
   if (!name) unsupported(c, id, "call (no name)");
 
   /* `@nested[i]` inferred as an int array (poly array of int arrays): unbox
