@@ -636,6 +636,36 @@ static int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_PolyArray_delete_at("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
+    /* find / detect { |x| cond } on a poly array -> the element or nil. The
+       typed-array forms live inside the `if (k)` block below, but array_kind is
+       NULL for a poly array, so handle it here with the boxed element type. */
+    if (rt == TY_POLY_ARRAY && (sp_streq(name, "find") || sp_streq(name, "detect"))) {
+      int fblock = nt_ref(nt, id, "block");
+      if (fblock >= 0) {
+        const char *bp = block_param_name(c, fblock, 0); if (bp) bp = rename_local(bp);
+        int body = nt_ref(nt, fblock, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        if (bn >= 1) {
+          int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
+          Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+          emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+          buf_printf(g_pre, " _t%d = %s; SP_GC_ROOT(_t%d);\n", trecv, rb.p ? rb.p : "", trecv); free(rb.p);
+          emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tres, default_value(TY_POLY));
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, trecv, ti);
+          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
+          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+          int sv = g_indent; g_indent++;
+          Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
+          emit_indent(g_pre, g_indent + 1);
+          if (bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
+          else buf_printf(g_pre, "if (%s) { _t%d = sp_PolyArray_get(_t%d, _t%d); break; }\n", cb.p ? cb.p : "0", tres, trecv, ti);
+          free(cb.p);
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          buf_printf(b, "_t%d", tres); return 1;
+        }
+      }
+    }
     if (k) {
       if ((sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "entries") ||
            sp_streq(name, "flatten") || sp_streq(name, "compact")) && argc == 0) {
