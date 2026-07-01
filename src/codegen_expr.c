@@ -1192,6 +1192,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
             buf_printf(g_pre, "{ sp_FloatArray *_sa = %s; if (_sa) for (mrb_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_float(_sa->data[_si])); }\n", ep, t);
           else if (it == TY_POLY_ARRAY)
             buf_printf(g_pre, "{ sp_PolyArray *_sa = %s; if (_sa) for (mrb_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, _sa->data[_si]); }\n", ep, t);
+          else if (it == TY_POLY)
+            /* `*poly`: whether it holds an array is only known at runtime, so
+               splice one level if it is an array, drop nil, else push as-is
+               (CRuby splat semantics). */
+            buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
           else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", t, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
           free(el.p);
         }
