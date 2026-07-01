@@ -59,14 +59,16 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   else {
     TyKind rt = comp_ntype(c, recv);
     const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
+    const char *cname = (rty && sp_streq(rty, "ConstantReadNode")) ? nt_str(nt, recv, "name") : NULL;
+    int ci = cname ? comp_class_index(c, cname) : -1;
+    if (ci >= 0) {
       /* Cls.method with a yield block: look up as a class method */
-      const char *cname = nt_str(nt, recv, "name");
-      int ci = cname ? comp_class_index(c, cname) : -1;
-      if (ci < 0) return 0;
       mi = comp_cmethod_in_chain(c, ci, name, NULL);
     }
     else if (ty_is_object(rt)) {
+      /* An instance receiver -- including a constant that holds an instance
+         (e.g. `S = Set.new(...); S.each { }`), which is not a class name so
+         falls through here rather than the class-method lookup above. */
       recv_class = ty_object_class(rt);
       mi = comp_method_in_chain(c, recv_class, name, NULL);
     }
