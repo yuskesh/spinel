@@ -3665,6 +3665,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    /* Hash#keys / #values on a poly value (e.g. an evidence-free empty `{}` that
+       stayed poly). Skip when a user class defines keys/values so its method wins. */
+    if (sp_streq(name, "keys") || sp_streq(name, "values")) {
+      int has_user = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        if (comp_method_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+      if (!has_user) {
+        buf_printf(b, "sp_poly_%s(", name); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+      }
+    }
     if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "empty?")) {
       int has_user_len = 0;
       const char *lcheck = (sp_streq(name, "empty?")) ? "length" : name;

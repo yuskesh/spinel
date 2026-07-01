@@ -3309,6 +3309,36 @@ static sp_RbVal sp_poly_fiber_join(sp_RbVal v) {
 }
 static sp_PolyArray*sp_PolyPolyHash_keys(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(mrb_int i=0;i<h->len;i++)sp_PolyArray_push(a,h->keys[h->order[i]]);return a;}
 static sp_PolyArray*sp_PolyPolyHash_values(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(mrb_int i=0;i<h->len;i++)sp_PolyArray_push(a,h->vals[h->order[i]]);return a;}
+
+/* Hash#keys / #values on a poly receiver -- e.g. an evidence-free empty `{}`
+   that stayed poly, or a hash read back out of a poly slot. Dispatch on the
+   runtime hash variant, returning a poly array of the (boxed) keys or values.
+   A non-hash poly value raises NoMethodError, as CRuby does for keys/values.
+   Each typed intermediate is rooted before the converter allocates. */
+static sp_PolyArray *sp_poly_keys(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ) switch (v.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH:  { sp_StrArray *k = sp_StrIntHash_keys((sp_StrIntHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_str_array(k); }
+    case SP_BUILTIN_STR_STR_HASH:  { sp_StrArray *k = sp_StrStrHash_keys((sp_StrStrHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_str_array(k); }
+    case SP_BUILTIN_INT_STR_HASH:  { sp_IntArray *k = sp_IntStrHash_keys((sp_IntStrHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_int_array(k); }
+    case SP_BUILTIN_STR_POLY_HASH: { sp_StrArray *k = sp_StrPolyHash_keys((sp_StrPolyHash*)v.v.p); SP_GC_ROOT(k); return sp_PolyArray_from_str_array(k); }
+    case SP_BUILTIN_SYM_POLY_HASH: { sp_IntArray *k = sp_SymPolyHash_keys((sp_SymPolyHash*)v.v.p); SP_GC_ROOT(k); sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a); for (mrb_int i = 0; i < k->len; i++) sp_PolyArray_push(a, sp_box_sym((sp_sym)k->data[k->start + i])); return a; }
+    case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_keys((sp_PolyPolyHash*)v.v.p);
+  }
+  sp_raise_cls("NoMethodError", "undefined method 'keys'");
+  return NULL;  /* unreachable: sp_raise_cls is noreturn */
+}
+static sp_PolyArray *sp_poly_values(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ) switch (v.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH:  { sp_IntArray *vv = sp_StrIntHash_values((sp_StrIntHash*)v.v.p); SP_GC_ROOT(vv); return sp_PolyArray_from_int_array(vv); }
+    case SP_BUILTIN_STR_STR_HASH:  { sp_StrArray *vv = sp_StrStrHash_values((sp_StrStrHash*)v.v.p); SP_GC_ROOT(vv); return sp_PolyArray_from_str_array(vv); }
+    case SP_BUILTIN_INT_STR_HASH:  { sp_StrArray *vv = sp_IntStrHash_values((sp_IntStrHash*)v.v.p); SP_GC_ROOT(vv); return sp_PolyArray_from_str_array(vv); }
+    case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_values((sp_StrPolyHash*)v.v.p);
+    case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_values((sp_SymPolyHash*)v.v.p);
+    case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_values((sp_PolyPolyHash*)v.v.p);
+  }
+  sp_raise_cls("NoMethodError", "undefined method 'values'");
+  return NULL;  /* unreachable: sp_raise_cls is noreturn */
+}
 static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();for(mrb_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
 /* Issue #738: poly_poly_hash inspect using sp_poly_inspect on each
    k,v. Output mirrors Ruby's `{k => v, ...}` for non-symbol keys and
