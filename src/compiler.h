@@ -23,6 +23,9 @@ int sp_feature_enabled(const char *name);
 /* Add a `-I <dir>` feature search root (see resolve_plain_requires). */
 void sp_add_feature_root(const char *dir);
 
+/* Method visibility (see ClassInfo.vis_names). Default/absent is public. */
+enum { SP_VIS_PUBLIC = 0, SP_VIS_PRIVATE = 1, SP_VIS_PROTECTED = 2 };
+
 typedef struct {
   char *name;       /* Ruby local name (without sigil) */
   TyKind type;      /* inferred type */
@@ -109,6 +112,13 @@ typedef struct {
   int nwriters, cwriters;
   char **undefs;       /* method names removed via `undef` */
   int nundefs, cundefs;
+  /* Method visibility: parallel name/kind arrays (SP_VIS_*). Covers both
+     def-defined methods and attr readers/writers (writers stored as "x=").
+     A name absent here is public; an explicit entry records private/protected
+     (or an explicit re-`public`). Populated by register_method_visibility. */
+  char **vis_names;
+  int  *vis_kinds;
+  int nvis, cvis;
   /* class << self attr_accessor/reader/writer: singleton-level accessors
      stored in static globals (cst_<Class>_<field>), not in per-instance ivars */
   char **sg_readers;   /* singleton reader names */
@@ -277,6 +287,14 @@ int        comp_cmethod_in_chain(Compiler *c, int class_id, const char *name, in
 /* Like comp_method_in_class but walks the superclass chain. On success,
    *def_class (if non-NULL) is set to the class that defines the method. */
 int        comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_class);
+/* Record method `name`'s visibility on a class (overwrite-or-append). */
+void       comp_method_vis_set(ClassInfo *ci, const char *name, int kind);
+/* Visibility of `name` declared directly on this class (SP_VIS_PUBLIC if none). */
+int        comp_method_vis(ClassInfo *ci, const char *name);
+/* Visibility of `name` as resolved up class_id's ancestor chain: the first
+   class with an explicit entry wins (a subclass may re-`public` an inherited
+   private method), defaulting to SP_VIS_PUBLIC when none records it. */
+int        comp_method_vis_in_chain(Compiler *c, int class_id, const char *name);
 /* Detect an instance_eval/exec trampoline (def m(args,&b); instance_eval/exec(args,&b); end).
    Returns 1 (eval) / 2 (exec) / 0; sets *def_class to the defining class. */
 int        comp_trampoline_kind(Compiler *c, int class_id, const char *name, int *def_class);

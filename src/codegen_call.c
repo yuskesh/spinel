@@ -4238,9 +4238,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; sp_class_ancestors(_cl%d); })", _clt);
       return;
     }
-    /* ClassName.instance_methods(false): compile-time sym array of own methods */
-    if (sp_streq(name, "instance_methods") && argc == 1) {
-      /* check arg is `false` */
+    /* ClassName.{,public_,private_,protected_}instance_methods(false):
+       compile-time sym array of own methods, filtered by visibility. CRuby's
+       `instance_methods` is public+protected; the prefixed forms narrow to a
+       single visibility. Only the own-methods (`false`) form is foldable -- the
+       inherited form needs built-in ancestor method sets (left to reject). */
+    int im_pub = 0, im_prot = 0, im_priv = 0, im_ok = 1;
+    if (sp_streq(name, "instance_methods"))             { im_pub = 1; im_prot = 1; }
+    else if (sp_streq(name, "public_instance_methods")) { im_pub = 1; }
+    else if (sp_streq(name, "protected_instance_methods")) { im_prot = 1; }
+    else if (sp_streq(name, "private_instance_methods")) { im_priv = 1; }
+    else im_ok = 0;
+    if (im_ok && argc == 1) {
       const char *argt = nt_type(nt, argv[0]);
       int is_false_arg = argt && sp_streq(argt, "FalseNode");
       if (is_false_arg) {
@@ -4248,6 +4257,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                           ? nt_str(nt, recv, "name") : NULL;
         int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
         if (ci2 >= 0) {
+          ClassInfo *ci3 = &c->classes[ci2];
           /* Build a real sp_PolyArray of boxed symbols so the declared
              TY_POLY_ARRAY type matches the runtime value -- chained ops like
              `.map(&:to_s).sort` then iterate it correctly (a boxed SYM_ARRAY
@@ -4261,15 +4271,26 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (!s->name || !s->name[0]) continue;
             /* skip shadow methods */
             if (strncmp(s->name, "__prep_", 7) == 0) continue;
+            int v = comp_method_vis(ci3, s->name);
+            if (!((v == SP_VIS_PUBLIC && im_pub) || (v == SP_VIS_PROTECTED && im_prot) ||
+                  (v == SP_VIS_PRIVATE && im_priv))) continue;
             buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, s->name);
           }
           /* attr_readers */
-          ClassInfo *ci3 = &c->classes[ci2];
-          for (int ri = 0; ri < ci3->nreaders; ri++)
+          for (int ri = 0; ri < ci3->nreaders; ri++) {
+            int v = comp_method_vis(ci3, ci3->readers[ri]);
+            if (!((v == SP_VIS_PUBLIC && im_pub) || (v == SP_VIS_PROTECTED && im_prot) ||
+                  (v == SP_VIS_PRIVATE && im_priv))) continue;
             buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, ci3->readers[ri]);
-          /* attr_writers */
-          for (int wi = 0; wi < ci3->nwriters; wi++)
-            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s=\"))); ", ta, ci3->writers[wi]);
+          }
+          /* attr_writers (looked up + emitted as "name=") */
+          for (int wi = 0; wi < ci3->nwriters; wi++) {
+            char wn[256]; snprintf(wn, sizeof wn, "%s=", ci3->writers[wi]);
+            int v = comp_method_vis(ci3, wn);
+            if (!((v == SP_VIS_PUBLIC && im_pub) || (v == SP_VIS_PROTECTED && im_prot) ||
+                  (v == SP_VIS_PRIVATE && im_priv))) continue;
+            buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", ta, wn);
+          }
           buf_printf(b, "sp_box_poly_array(_t%d); })", ta);
           return;
         }
@@ -6055,6 +6076,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
     else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "unescaped");
     if (qm) {
+      /* respond_to?(sym, include_all=false): by default only public methods
+         answer true; a literal `true` 2nd arg includes private+protected. A
+         non-literal 2nd arg can't be folded, so a private/protected match is
+         left unresolved rather than guessed (a public match is true either way). */
+      int include_all = 0, foldable = 1;
+      if (argc >= 2) {
+        const char *a1 = nt_type(nt, argv[1]);
+        if (a1 && sp_streq(a1, "TrueNode")) include_all = 1;
+        else if (a1 && sp_streq(a1, "FalseNode")) include_all = 0;
+        else foldable = 0;
+      }
       static const char *const uni[] = {
         "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze",
         "frozen?", "hash", "==", "!=", "equal?", "eql?", "object_id",
@@ -6108,10 +6140,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         }
         else if (ty_is_object(rt)) {
           int cid = ty_object_class(rt);
-          resolved = 1;
-          yes = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
-                comp_reader_in_chain(c, cid, qm, NULL) ||
-                comp_writer_in_chain(c, cid, qm, NULL);
+          /* a writer query (`m=`) consults the writer table under its base name */
+          size_t ql = strlen(qm);
+          int is_wr = ql > 0 && qm[ql - 1] == '=';
+          char wbase[256]; wbase[0] = '\0';
+          if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+          int found = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
+                      comp_reader_in_chain(c, cid, qm, NULL) ||
+                      (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
+          if (!found) { resolved = 1; yes = 0; }
+          else {
+            int v = comp_method_vis_in_chain(c, cid, qm);
+            if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }       /* public: always */
+            else if (foldable) { resolved = 1; yes = include_all; }  /* private/protected */
+            /* else: private/protected + runtime include_all -> unresolved */
+          }
         }
         /* a primitive/poly/unknown receiver with a non-universal method: we
            lack a per-type method table, so leave it to the fall-through
@@ -6121,10 +6164,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
-  /* Class.method_defined?(:m[, inherit]): compile-time decided from the
-     class's recorded method table (instance methods + attr readers/writers).
-     inherit=false restricts the lookup to the receiver's own definitions. */
-  if (sp_streq(name, "method_defined?") && recv >= 0 && argc >= 1 &&
+  /* Class.{,public_,private_,protected_}method_defined?(:m[, inherit]):
+     compile-time decided from the class's recorded method table (instance
+     methods + attr readers/writers) filtered by visibility. `method_defined?`
+     matches public+protected (not private); the prefixed forms match exactly
+     one visibility. inherit=false restricts the lookup to own definitions. */
+  int md_pub = 0, md_prot = 0, md_priv = 0, md_family = 1;
+  if (sp_streq(name, "method_defined?"))              { md_pub = 1; md_prot = 1; }
+  else if (sp_streq(name, "public_method_defined?"))    { md_pub = 1; }
+  else if (sp_streq(name, "protected_method_defined?")) { md_prot = 1; }
+  else if (sp_streq(name, "private_method_defined?"))   { md_priv = 1; }
+  else md_family = 0;
+  if (md_family && recv >= 0 && argc >= 1 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
@@ -6146,10 +6197,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int parent = c->classes[ci].parent;
       int mc = -1;
       int mi = comp_method_in_chain(c, ci, qm, &mc);
-      int yes;
+      int found;
       if (inherit) {
-        yes = mi >= 0 || comp_reader_in_chain(c, ci, qm, NULL) ||
-              (is_setter && comp_writer_in_chain(c, ci, base, NULL));
+        found = mi >= 0 || comp_reader_in_chain(c, ci, qm, NULL) ||
+                (is_setter && comp_writer_in_chain(c, ci, base, NULL));
       }
       else {
         /* attr readers/writers are flattened into descendants at analyze
@@ -6158,7 +6209,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                      (parent < 0 || !comp_reader_in_chain(c, parent, qm, NULL));
         int wr_own = is_setter && comp_is_writer(&c->classes[ci], base) &&
                      (parent < 0 || !comp_writer_in_chain(c, parent, base, NULL));
-        yes = (mi >= 0 && mc == ci) || rd_own || wr_own;
+        found = (mi >= 0 && mc == ci) || rd_own || wr_own;
+      }
+      int yes = 0;
+      if (found) {
+        int v = inherit ? comp_method_vis_in_chain(c, ci, qm)
+                        : comp_method_vis(&c->classes[ci], qm);
+        yes = (v == SP_VIS_PUBLIC && md_pub) || (v == SP_VIS_PROTECTED && md_prot) ||
+              (v == SP_VIS_PRIVATE && md_priv);
       }
       buf_printf(b, "%d", yes);
       return;
@@ -6170,7 +6228,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      table, and builtin classes have no enumerable method set. Emit a specific
      diagnostic rather than a generic unsupported-call node dump. Covers both an
      explicit receiver and an implicit-self call (recv < 0). */
-  if (sp_streq(name, "method_defined?")) {
+  if (md_family) {
     unsupported(c, id, "method_defined? (needs a compile-time-known class and literal method name)");
     return;
   }

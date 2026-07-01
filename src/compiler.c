@@ -1,5 +1,6 @@
 #include "compiler.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -347,6 +348,39 @@ int comp_method_in_chain(Compiler *c, int class_id, const char *name, int *def_c
     if (mi >= 0) { if (def_class) *def_class = cid; return mi; }
   }
   return -1;
+}
+
+void comp_method_vis_set(ClassInfo *ci, const char *name, int kind) {
+  if (!name) return;
+  for (int i = 0; i < ci->nvis; i++)
+    if (sp_streq(ci->vis_names[i], name)) { ci->vis_kinds[i] = kind; return; }
+  if (ci->nvis >= ci->cvis) {
+    ci->cvis = ci->cvis ? ci->cvis * 2 : 8;
+    char **nn = realloc(ci->vis_names, sizeof(char *) * (size_t)ci->cvis);
+    int *nk = realloc(ci->vis_kinds, sizeof(int) * (size_t)ci->cvis);
+    if (!nn || !nk) { fprintf(stderr, "out of memory\n"); exit(1); }
+    ci->vis_names = nn; ci->vis_kinds = nk;
+  }
+  ci->vis_names[ci->nvis] = strdup(name);
+  ci->vis_kinds[ci->nvis] = kind;
+  ci->nvis++;
+}
+
+int comp_method_vis(ClassInfo *ci, const char *name) {
+  if (!name) return SP_VIS_PUBLIC;
+  for (int i = 0; i < ci->nvis; i++)
+    if (sp_streq(ci->vis_names[i], name)) return ci->vis_kinds[i];
+  return SP_VIS_PUBLIC;
+}
+
+int comp_method_vis_in_chain(Compiler *c, int class_id, const char *name) {
+  name = comp_resolve_alias(c, class_id, name);
+  for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent) {
+    ClassInfo *ci = &c->classes[cid];
+    for (int i = 0; i < ci->nvis; i++)
+      if (sp_streq(ci->vis_names[i], name)) return ci->vis_kinds[i];
+  }
+  return SP_VIS_PUBLIC;
 }
 
 /* Detect an instance_eval/exec trampoline method: a method whose body is a
