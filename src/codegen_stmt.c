@@ -4957,3 +4957,544 @@ const char *hash_box_cls(TyKind t) {
   }
 }
 
+
+/* ---- Index / element-assignment statements (a[i]=x, a[i] op= x, a[i]&&=/||=,
+   and receiver-mutating array calls) moved from codegen_call.c. ---- */
+int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+
+  /* mutable-string append: a STRBUF-typed local appends in place (amortized
+     O(1)) via sp_String_append. Chains (`s << a << b`) all target the same
+     buffer. recv is emitted raw (the sp_String*), not via emit_expr (which
+     would hand out a copy). */
+  if ((sp_streq(name, "<<") || sp_streq(name, "concat")) && argc == 1) {
+    int chain[64]; int nchain = 0; int cur = id;
+    while (nchain < 64) {
+      while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
+        int pb = nt_ref(nt, cur, "body");
+        if (pb < 0) break;
+        int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
+        if (bn != 1) break;
+        cur = bb[0];
+      }
+      const char *cty = nt_type(nt, cur);
+      if (!cty || !sp_streq(cty, "CallNode")) break;
+      const char *cnm = nt_str(nt, cur, "name");
+      int crecv = nt_ref(nt, cur, "receiver");
+      if (!cnm || (!sp_streq(cnm, "<<") && !sp_streq(cnm, "concat")) || crecv < 0) break;
+      int cargs = nt_ref(nt, cur, "arguments");
+      int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
+      if (cac != 1) break;
+      chain[nchain++] = cav[0];
+      cur = crecv;
+    }
+    const char *bty = nt_type(nt, cur);
+    LocalVar *blv = (bty && sp_streq(bty, "LocalVariableReadNode"))
+                    ? scope_local(comp_scope_of(c, cur), nt_str(nt, cur, "name")) : NULL;
+    if (nchain > 0 && blv && blv->type == TY_STRBUF) {
+      const char *bn2 = rename_local(nt_str(nt, cur, "name"));
+      for (int j = nchain - 1; j >= 0; j--) {
+        int arg = chain[j];
+        TyKind at = comp_ntype(c, arg);
+        emit_indent(b, indent);
+        buf_printf(b, "sp_String_append_bin(lv_%s, ", bn2);
+        if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+        else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+        else emit_expr(c, arg, b);
+        buf_puts(b, ");\n");
+      }
+      return 1;
+    }
+  }
+
+  /* string append: s << x  ->  s = sp_str_concat(s, x) (value semantics).
+     recv must be an assignable lvalue (local or ivar). A chained append
+     `s << a << b << c` bottoms out at the same lvalue, so unroll it into
+     one reassignment per argument in left-to-right order. */
+  if (rt == TY_STRING && sp_streq(name, "<<") && argc == 1) {
+    /* walk down the receiver chain, collecting each `<<` argument */
+    int chain[64]; int nchain = 0;
+    int cur = id;
+    while (nchain < 64) {
+      /* unwrap ParenthesesNode wrappers (e.g. `(s << a) << b`) */
+      while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
+        int pb = nt_ref(nt, cur, "body");
+        if (pb < 0) break;
+        int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
+        if (bn != 1) break;
+        cur = bb[0];
+      }
+      const char *cty = nt_type(nt, cur);
+      if (!cty || !sp_streq(cty, "CallNode")) break;
+      const char *cnm = nt_str(nt, cur, "name");
+      int crecv = nt_ref(nt, cur, "receiver");
+      if (!cnm || !sp_streq(cnm, "<<") || crecv < 0 || comp_ntype(c, crecv) != TY_STRING) break;
+      int cargs = nt_ref(nt, cur, "arguments");
+      int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
+      if (cac != 1) break;
+      chain[nchain++] = cav[0];
+      cur = crecv;
+    }
+    const char *rty = nt_type(nt, cur);
+    if (nchain > 0 && rty &&
+        (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
+      /* chain was collected outermost-first; emit left-to-right */
+      for (int j = nchain - 1; j >= 0; j--) {
+        int arg = chain[j];
+        TyKind at = comp_ntype(c, arg);
+        emit_indent(b, indent);
+        buf_puts(b, "sp_str_check_mutable("); emit_expr(c, cur, b); buf_puts(b, ");\n");
+        emit_indent(b, indent);
+        emit_expr(c, cur, b); buf_puts(b, " = sp_str_concat(");
+        emit_expr(c, cur, b); buf_puts(b, ", ");
+        if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+        else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+        else emit_expr(c, arg, b);
+        buf_puts(b, ");\n");
+      }
+      return 1;
+    }
+    /* `<<` onto a frozen string literal raises FrozenError */
+    if (rty && sp_streq(rty, "StringNode")) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
+      return 1;
+    }
+    return 0;
+  }
+
+  /* in-place string bang methods on an assignable receiver: reassign the
+     receiver to the transformed value (value-semantics mutation, like <<). */
+  if (rt == TY_STRING && argc == 0) {
+    const char *base = NULL;
+    if      (sp_streq(name, "chomp!"))      base = "chomp";
+    else if (sp_streq(name, "chop!"))       base = "chop";
+    else if (sp_streq(name, "upcase!"))     base = "upcase";
+    else if (sp_streq(name, "downcase!"))   base = "downcase";
+    else if (sp_streq(name, "capitalize!")) base = "capitalize";
+    else if (sp_streq(name, "swapcase!"))   base = "swapcase";
+    else if (sp_streq(name, "strip!"))      base = "strip";
+    else if (sp_streq(name, "lstrip!"))     base = "lstrip";
+    else if (sp_streq(name, "rstrip!"))     base = "rstrip";
+    else if (sp_streq(name, "reverse!"))    base = "reverse";
+    else if (sp_streq(name, "squeeze!"))    base = "squeeze";
+    if (base) {
+      const char *rty = nt_type(nt, recv);
+      if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
+        emit_indent(b, indent);
+        emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ");\n");
+        return 1;
+      }
+    }
+  }
+  /* replace / prepend / clear / delete_prefix!/suffix! via reassignment */
+  if (rt == TY_STRING) {
+    const char *rty = nt_type(nt, recv);
+    int assignable = rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"));
+    /* an in-place mutator on a frozen string literal raises FrozenError */
+    if (rty && sp_streq(rty, "StringNode") &&
+        (sp_streq(name, "insert") || sp_streq(name, "prepend") || sp_streq(name, "<<") ||
+         sp_streq(name, "concat") || sp_streq(name, "replace") || sp_streq(name, "clear") ||
+         sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!"))) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"FrozenError\", \"can't modify frozen String\");\n");
+      return 1;
+    }
+    if (assignable && sp_streq(name, "replace") && argc == 1) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = "); emit_expr(c, argv[0], b); buf_puts(b, ";\n");
+      return 1;
+    }
+    if (assignable && sp_streq(name, "prepend") && argc == 1) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      return 1;
+    }
+    if (assignable && sp_streq(name, "clear") && argc == 0) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent); emit_expr(c, recv, b); buf_puts(b, " = (&(\"\\xff\")[1]);\n");
+      return 1;
+    }
+    if (assignable && sp_streq(name, "insert") && argc == 2) {
+      /* insert(i, x): s[0,i] + x + s[i..]. A negative i counts from the end
+         and inserts after that character (i += len + 1). */
+      int ti = ++g_tmp;
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent);
+      buf_printf(b, "{ mrb_int _t%d = ", ti); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; if (_t%d < 0) _t%d += (mrb_int)sp_str_length(", ti, ti); emit_expr(c, recv, b); buf_printf(b, ") + 1; ");
+      emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat(sp_str_concat(sp_str_sub_range(");
+      emit_expr(c, recv, b); buf_printf(b, ", 0, _t%d), ", ti); emit_expr(c, argv[1], b);
+      buf_puts(b, "), sp_str_sub_range("); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, (mrb_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_printf(b, "))); }\n");
+      return 1;
+    }
+    if (assignable && (sp_streq(name, "delete_prefix!") || sp_streq(name, "delete_suffix!")) && argc == 1) {
+      const char *base = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
+      emit_indent(b, indent); emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ");\n");
+      return 1;
+    }
+    /* concat(a, b, ...): append each argument in order (multi-arg `<<`). An
+       Integer argument appends its codepoint, like `<<`. */
+    if (assignable && sp_streq(name, "concat") && argc >= 1) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      for (int a = 0; a < argc; a++) {
+        TyKind at = comp_ntype(c, argv[a]);
+        emit_indent(b, indent);
+        emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (at == TY_INT) { buf_puts(b, "sp_int_codepoint_to_str("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+        else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[a], b);
+        buf_puts(b, ");\n");
+      }
+      return 1;
+    }
+    /* s[i] = str: replace the single character at index i (negative from the
+       end) with the (string) value -> s[0,i] + val + s[i+1..]. Valid range is
+       -len..len (i == len appends, matching CRuby); anything outside raises
+       IndexError with the original index. The (start,len) and Range / Regexp
+       forms remain unsupported (string splice). */
+    if (assignable && sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_INT) {
+      int ti = ++g_tmp;
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent);
+      buf_printf(b, "{ mrb_int _t%d = ", ti); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _len%d = (mrb_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_puts(b, ");");
+      buf_printf(b, " mrb_int _a%d = _t%d < 0 ? _t%d + _len%d : _t%d;", ti, ti, ti, ti, ti);
+      buf_printf(b, " if (_a%d < 0 || _a%d > _len%d) sp_raise_cls(\"IndexError\", sp_sprintf(\"index %%lld out of string\", (long long)_t%d));",
+                 ti, ti, ti, ti);
+      buf_puts(b, " "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_concat(sp_str_concat(sp_str_sub_range(");
+      emit_expr(c, recv, b); buf_printf(b, ", 0, _a%d), ", ti); emit_str_expr(c, argv[1], b);
+      buf_printf(b, "), sp_str_sub_range("); emit_expr(c, recv, b);
+      buf_printf(b, ", _a%d + 1 < _len%d ? _a%d + 1 : _len%d, _len%d)); }\n", ti, ti, ti, ti, ti);
+      return 1;
+    }
+  }
+
+  if (ty_is_hash(rt)) {
+    const char *hn = ty_hash_cname(rt);
+    if (hn && sp_streq(name, "[]=") && argc == 2) {
+      emit_indent(b, indent);
+      buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash();\n");
+      emit_indent(b, indent);
+      buf_printf(b, "sp_%sHash_set(", hn);
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[0], b); else emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+      buf_puts(b, ", ");
+      if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[1], b);
+      else {
+        /* A poly value (holds the hash's value type at runtime, e.g. a String?
+           guarded non-nil) into a typed-value hash: coerce to its element
+           representation, as the typed-array `[]=` path does. */
+        TyKind hvt = ty_hash_val(rt), vt = comp_ntype(c, argv[1]);
+        if (vt == TY_POLY && hvt == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        else if (vt == TY_POLY && hvt == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        else if (vt == TY_POLY && hvt == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[1], b);
+      }
+      buf_puts(b, ");\n");
+      return 1;
+    }
+    return 0;
+  }
+
+  if (rt == TY_POLY_ARRAY) {
+    if (sp_streq(name, "[]=") && argc == 2) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_PolyArray_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ");\n");
+      return 1;
+    }
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
+      for (int a = 0; a < argc; a++) {
+        emit_indent(b, indent);
+        buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_boxed(c, argv[a], b); buf_puts(b, ");\n");
+      }
+      return 1;
+    }
+    if (sp_streq(name, "clear") && argc == 0) {
+      emit_indent(b, indent);
+      buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")->len = 0;\n");
+      return 1;
+    }
+    return 0;
+  }
+
+  if (rt == TY_POLY &&
+      (sp_streq(name, "<<") || sp_streq(name, "push") || sp_streq(name, "append")) && argc >= 1) {
+    /* A poly value that holds an array at runtime appends via sp_poly_shl.
+       `<<` takes one arg; push/append take any number (each boxed in turn).
+       Skip when a user class defines the name -- the poly value may be that
+       object, so let it reach the per-class poly dispatch instead of forcing
+       the builtin-array append. */
+    int has_user = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_chain(c, k, name, NULL) >= 0) { has_user = 1; break; }
+    if (!has_user) {
+      for (int a = 0; a < argc; a++) {
+        emit_indent(b, indent);
+        buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[a], b); buf_puts(b, ");\n");
+      }
+      return 1;
+    }
+  }
+
+  if (!ty_is_array(rt)) return 0;
+  const char *k = array_kind(rt);
+  if (!k) return 0;
+
+  if (sp_streq(name, "[]=") && argc == 2) {
+    emit_indent(b, indent);
+    buf_printf(b, "sp_%sArray_set(", k);
+    emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
+    /* coerce a poly RHS to the typed array's element representation */
+    TyKind et = ty_array_elem(rt);
+    TyKind vt = comp_ntype(c, argv[1]);
+    if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+    else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+    else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+    else emit_expr(c, argv[1], b);
+    buf_puts(b, ");\n");
+    return 1;
+  }
+  if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1) {
+    TyKind et = ty_array_elem(rt);
+    for (int a = 0; a < argc; a++) {
+      emit_indent(b, indent);
+      buf_printf(b, "sp_%sArray_push(", k);
+      emit_expr(c, recv, b); buf_puts(b, ", ");
+      /* coerce a poly value (holds the element type at runtime) to the typed
+         array's element representation */
+      TyKind vt = comp_ntype(c, argv[a]);
+      if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+      else if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+      else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[a], b);
+      buf_puts(b, ");\n");
+    }
+    return 1;
+  }
+  if (sp_streq(name, "concat") && argc >= 1) {
+    /* Process each arg sequentially, snapshotting each arg's length before
+       its own loop (the test expects sequential/non-snapshotted behavior). */
+    int tr = ++g_tmp;
+    TyKind et = ty_array_elem(rt);
+    emit_indent(b, indent);
+    buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+    for (int a = 0; a < argc; a++) {
+      int tn = ++g_tmp, ti = ++g_tmp;
+      /* the source array may be a different kind than the receiver (e.g.
+         IntArray#concat(PolyArray)); read with the source's kind and coerce
+         each element into the receiver's element representation. */
+      TyKind at = comp_ntype(c, argv[a]);
+      const char *ak = (at == TY_POLY_ARRAY) ? "Poly" : array_kind(at);
+      if (!ak) ak = k;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "{ mrb_int _t%d = sp_%sArray_length(", tn, ak); emit_expr(c, argv[a], b);
+      buf_printf(b, "); for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push(_t%d, ",
+                 ti, ti, tn, ti, k, tr);
+      char getexpr[256];
+      /* element accessor on the source */
+      Buf eb; memset(&eb, 0, sizeof eb);
+      buf_printf(&eb, "sp_%sArray_get(", ak); { Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, argv[a], &ab); buf_puts(&eb, ab.p ? ab.p : ""); free(ab.p); }
+      buf_printf(&eb, ", _t%d)", ti);
+      snprintf(getexpr, sizeof getexpr, "%s", eb.p ? eb.p : ""); free(eb.p);
+      if (sp_streq(k, "Poly") && !sp_streq(ak, "Poly")) {
+        /* box the source scalar into the poly receiver */
+        emit_boxed_text(c, ty_array_elem(at), getexpr, b);
+      }
+      else if (!sp_streq(k, "Poly") && sp_streq(ak, "Poly")) {
+        /* unbox the source poly element into the receiver's scalar */
+        if (et == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", getexpr);
+        else if (et == TY_STRING) buf_printf(b, "sp_poly_to_s(%s)", getexpr);
+        else if (et == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", getexpr);
+        else buf_puts(b, getexpr);
+      }
+      else buf_puts(b, getexpr);
+      buf_puts(b, "); }\n");
+    }
+    emit_indent(b, indent);
+    buf_puts(b, "}\n");
+    return 1;
+  }
+  return 0;
+}
+
+/* h[k] op= v  /  a[i] op= v  (IndexOperatorWriteNode). Receiver and key
+   are evaluated once into temps. */
+void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *op = nt_str(nt, id, "binary_operator");
+  int args = nt_ref(nt, id, "arguments");
+  int v = nt_ref(nt, id, "value");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  if (argc != 1 || !op) unsupported(c, id, "index operator assignment");
+  TyKind rt = comp_ntype(c, recv);
+
+  int ta = ++g_tmp, tb = ++g_tmp;
+
+  if (ty_is_hash(rt)) {
+    const char *hn = ty_hash_cname(rt);
+    TyKind vt = ty_hash_val(rt);
+    if (!hn) unsupported(c, id, "index operator assignment (hash)");
+    emit_indent(b, indent);
+    buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
+    buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tb); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+    buf_puts(b, "; ");
+    buf_printf(b, "sp_%sHash_set(_t%d, _t%d, ", hn, ta, tb);
+    const char *pf = vt == TY_POLY ?
+        (sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
+         sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
+         sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL) : NULL;
+    if (vt == TY_STRING && sp_streq(op, "+")) {
+      buf_printf(b, "sp_str_concat(sp_%sHash_get(_t%d, _t%d), ", hn, ta, tb);
+      emit_expr(c, v, b); buf_puts(b, ")");
+    }
+    else if (pf) {
+      /* a poly-valued slot folds via the dynamic operator on boxed operands */
+      buf_printf(b, "%s(sp_%sHash_get(_t%d, _t%d), ", pf, hn, ta, tb);
+      emit_boxed(c, v, b); buf_puts(b, ")");
+    }
+    else {
+      buf_printf(b, "sp_%sHash_get(_t%d, _t%d) %s ", hn, ta, tb, op);
+      buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")");
+    }
+    buf_puts(b, "); }\n");
+    return;
+  }
+
+  if (ty_is_array(rt)) {
+    const char *k = array_kind(rt);
+    if (!k) unsupported(c, id, "index operator assignment (array)");
+    emit_indent(b, indent);
+    buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
+    buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
+    buf_puts(b, "; ");
+    buf_printf(b, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d) %s ", k, ta, tb, k, ta, tb, op);
+    buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")); }\n");
+    return;
+  }
+  if (rt == TY_POLY) {
+    /* poly receiver: dispatch get/op/set based on key type */
+    TyKind kt = comp_ntype(c, argv[0]);
+    TyKind vt = comp_ntype(c, v);
+    emit_indent(b, indent);
+    if (kt == TY_SYMBOL) {
+      int tc = ++g_tmp;
+      buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_sym _t%d = ", tb); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_get_sym(_t%d, _t%d);", tc, ta, tb);
+      buf_printf(b, " sp_poly_set_sym(_t%d, _t%d, sp_box_int(_t%d.v.i %s (", ta, tb, tc, op);
+      emit_expr(c, v, b); buf_puts(b, "))); }\n");
+    }
+    else if (kt == TY_STRING) {
+      int tc = ++g_tmp;
+      buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; const char *_t%d = ", tb); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_get_str(_t%d, _t%d);", tc, ta, tb);
+      buf_printf(b, " sp_poly_set_str(_t%d, _t%d, sp_box_int(_t%d.v.i %s (", ta, tb, tc, op);
+      emit_expr(c, v, b); buf_puts(b, "))); }\n");
+    }
+    else {
+      unsupported(c, id, "index operator assignment (poly-recv, non-sym/str key)");
+    }
+    return;
+  }
+  unsupported(c, id, "index operator assignment");
+}
+
+/* h[k] &&= v  /  h[k] ||= v  /  a[i] &&= v  /  a[i] ||= v.
+   IndexAndWriteNode / IndexOrWriteNode. Receiver and key evaluated once. */
+void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  int args = nt_ref(nt, id, "arguments");
+  int v = nt_ref(nt, id, "value");
+  int argc = 0;
+  const int *argv = NULL;
+  if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
+  if (argc != 1) { unsupported(c, id, is_or ? "index-or-write" : "index-and-write"); return; }
+  TyKind rt = comp_ntype(c, recv);
+  int ta = ++g_tmp, tb = ++g_tmp;
+
+  if (ty_is_hash(rt)) {
+    const char *hn = ty_hash_cname(rt);
+    if (!hn) { unsupported(c, id, "index and/or write (unknown hash)"); return; }
+    TyKind kt = ty_hash_key(rt);
+    TyKind vt = ty_hash_val(rt);
+    emit_indent(b, indent);
+    buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
+    buf_printf(b, "; %s _t%d = ", c_type_name(kt), tb); emit_hash_key(c, argv[0], kt, b);
+    buf_puts(b, "; ");
+    if (vt == TY_POLY) {
+      buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) sp_%sHash_set(_t%d, _t%d, ",
+                 is_or ? "!" : "", hn, ta, tb, hn, ta, tb);
+      emit_boxed(c, v, b);
+      buf_puts(b, ")");
+    }
+    else {
+      buf_printf(b, "if (%ssp_%sHash_has_key(_t%d, _t%d)) sp_%sHash_set(_t%d, _t%d, ",
+                 is_or ? "!" : "", hn, ta, tb, hn, ta, tb);
+      emit_expr(c, v, b);
+      buf_puts(b, ")");
+    }
+    buf_puts(b, "; }\n");
+    return;
+  }
+
+  if (ty_is_array(rt)) {
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+    if (!k) { unsupported(c, id, "index and/or write (array kind)"); return; }
+    emit_indent(b, indent);
+    buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
+    buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
+    buf_puts(b, "; ");
+    if (rt == TY_INT_ARRAY) {
+      /* int slots are nil only out of bounds (0 is truthy); ||= writes when
+         nil, &&= when present. Compare with == / != to avoid `!x != NIL`. */
+      buf_printf(b, "if (sp_IntArray_get(_t%d, _t%d) %s SP_INT_NIL) sp_IntArray_set(_t%d, _t%d, ",
+                 ta, tb, is_or ? "==" : "!=", ta, tb);
+      emit_expr(c, v, b);
+      buf_puts(b, ")");
+    }
+    else if (rt == TY_FLOAT_ARRAY) {
+      buf_printf(b, "if (%ssp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))) sp_FloatArray_set(_t%d, _t%d, ",
+                 is_or ? "" : "!", ta, tb, ta, tb);
+      emit_expr(c, v, b);
+      buf_puts(b, ")");
+    }
+    else if (rt == TY_STR_ARRAY) {
+      buf_printf(b, "if (%ssp_StrArray_get(_t%d, _t%d)) sp_StrArray_set(_t%d, _t%d, ",
+                 is_or ? "!" : "", ta, tb, ta, tb);
+      emit_expr(c, v, b);
+      buf_puts(b, ")");
+    }
+    else if (rt == TY_POLY_ARRAY) {
+      buf_printf(b, "if (%ssp_poly_truthy(sp_PolyArray_get(_t%d, _t%d))) sp_PolyArray_set(_t%d, _t%d, ",
+                 is_or ? "!" : "", ta, tb, ta, tb);
+      emit_boxed(c, v, b);
+      buf_puts(b, ")");
+    }
+    else {
+      unsupported(c, id, "index and/or write (array type)"); return;
+    }
+    buf_puts(b, "; }\n");
+    return;
+  }
+
+  unsupported(c, id, is_or ? "index-or-write" : "index-and-write");
+}
+
