@@ -2112,6 +2112,14 @@ else {
       if (sp_streq(name, "join")) return TY_STRING;
       if (sp_streq(name, "to_i") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
       if (sp_streq(name, "to_f")) return TY_FLOAT;
+      /* Hash#keys / #values on a poly hash -> a poly array (boxed elements),
+         unless a user class defines that method (then its return type wins). */
+      if ((sp_streq(name, "keys") || sp_streq(name, "values")) && argc == 0) {
+        int has_user = 0;
+        for (int k = 0; k < c->nclasses && !has_user; k++)
+          if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
+        if (!has_user) return TY_POLY_ARRAY;
+      }
       if (sp_streq(name, "clamp")) return TY_POLY;  /* boxed numeric clamp -> poly */
       if (sp_streq(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
       if (sp_streq(name, "[]") && argc == 2) return TY_POLY;  /* 2-arg poly slice */
