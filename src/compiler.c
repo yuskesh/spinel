@@ -3,6 +3,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+int comp_ternary_arms(const NodeTable *nt, int id, int *then_node, int *else_node) {
+  const char *ty = nt_type(nt, id);
+  if (!ty || !sp_streq(ty, "IfNode")) return 0;
+  int then_b = nt_ref(nt, id, "statements");
+  int sub = nt_ref(nt, id, "subsequent");
+  if (then_b < 0 || sub < 0) return 0;
+  const char *subty = nt_type(nt, sub);
+  if (!subty || !sp_streq(subty, "ElseNode")) return 0;
+  int else_stmts = nt_ref(nt, sub, "statements");
+  if (else_stmts < 0) return 0;
+  int tn = 0, en = 0;
+  const int *tb = nt_arr(nt, then_b, "body", &tn);
+  const int *eb = nt_arr(nt, else_stmts, "body", &en);
+  if (tn != 1 || en != 1 || !tb || !eb) return 0;
+  *then_node = tb[0];
+  *else_node = eb[0];
+  return 1;
+}
+
 Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
   if (!c) return NULL;

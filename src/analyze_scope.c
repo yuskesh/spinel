@@ -2339,6 +2339,23 @@ static void dn_build(Compiler *c) {
   }
 }
 
+/* `@iv = cond ? nil : <int>` (a literal-nil ternary arm) pins the ivar as a
+   nullable int -- the SP_INT_NIL sentinel in an unboxed int slot, the same
+   representation a direct `@iv = nil` / `@iv = <int>` pair already yields
+   (a bare `@iv = nil` is skipped below, leaving the int writes) -- rather than
+   widening to poly. Scoped to the ivar write so the nullable value never
+   escapes as a bare ternary expression, where a non-ivar consumer would not be
+   sentinel-aware. Returns TY_INT for that shape, else TY_UNKNOWN. */
+static TyKind ivar_nullable_int_ternary(Compiler *c, int vnode) {
+  int tn, en;
+  if (!comp_ternary_arms(c->nt, vnode, &tn, &en)) return TY_UNKNOWN;
+  const char *tt = nt_type(c->nt, tn), *et = nt_type(c->nt, en);
+  int t_nil = tt && sp_streq(tt, "NilNode");
+  int e_nil = et && sp_streq(et, "NilNode");
+  if (t_nil == e_nil) return TY_UNKNOWN;  /* exactly one arm a literal nil */
+  return infer_type(c, t_nil ? en : tn) == TY_INT ? TY_INT : TY_UNKNOWN;
+}
+
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -2351,8 +2368,10 @@ int infer_ivar_types(Compiler *c) {
         sp_streq(ty, "InstanceVariableAndWriteNode") ||
         sp_streq(ty, "InstanceVariableOperatorWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
-      TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
+      int vnode = nt_ref(nt, id, "value");
+      TyKind vt = infer_type(c, vnode);
       if (vt == TY_NIL) continue;  /* nil write doesn't pin the ivar type */
+      if (vt == TY_POLY && ivar_nullable_int_ternary(c, vnode) == TY_INT) vt = TY_INT;
       Scope *s = comp_scope_of(c, id);
       int cls_id2 = s->class_id;
       if (!nm) continue;

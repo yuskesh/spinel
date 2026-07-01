@@ -227,6 +227,12 @@ void comp_free(Compiler *c);
 /* Resize per-node arrays (ntype/nscope) after the node table grew. */
 void comp_grow_node_arrays(Compiler *c);
 
+/* If `id` is a ternary `cond ? A : B` -- an IfNode whose then- and else-clauses
+   are each a single value expression (the shape the ternary emitter lowers to a
+   C `?:`) -- set *then_node and *else_node to A and B and return 1; else return
+   0. Shared by the nullable-int recognition in analyze and codegen. */
+int comp_ternary_arms(const NodeTable *nt, int id, int *then_node, int *else_node);
+
 /* Scopes. */
 Scope *comp_scope_new(Compiler *c, const char *name, int def_node);
 Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */

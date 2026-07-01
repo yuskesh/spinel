@@ -3064,6 +3064,28 @@ void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent) {
   emit_with_prelude(c, id, b, indent, emit_stmt_tail_inner);
 }
 
+/* Emit a `cond ? nil : <int>` ivar-write RHS as a C `?:` in int context: the
+   literal-nil arm becomes the SP_INT_NIL sentinel (a bare NilNode would emit
+   `0`, colliding with a real 0), the int arm emits raw. Returns 1 if `v` is that
+   shape (exactly one literal-nil arm) and was emitted, else 0 (caller falls
+   back to the generic paths). Pairs with analyze's ivar_nullable_int_ternary. */
+static int emit_nullable_int_ternary(Compiler *c, int v, Buf *b) {
+  int tn, en;
+  if (!comp_ternary_arms(c->nt, v, &tn, &en)) return 0;
+  const char *tt = nt_type(c->nt, tn), *et = nt_type(c->nt, en);
+  int t_nil = tt && sp_streq(tt, "NilNode");
+  int e_nil = et && sp_streq(et, "NilNode");
+  if (t_nil == e_nil) return 0;  /* exactly one arm a literal nil */
+  buf_puts(b, "(");
+  emit_cond(c, nt_ref(c->nt, v, "predicate"), b);
+  buf_puts(b, " ? ");
+  if (t_nil) buf_puts(b, "SP_INT_NIL"); else emit_expr(c, tn, b);
+  buf_puts(b, " : ");
+  if (e_nil) buf_puts(b, "SP_INT_NIL"); else emit_expr(c, en, b);
+  buf_puts(b, ")");
+  return 1;
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -3509,7 +3531,10 @@ else {
       if (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))
         v_empty_hash = (nt_arr(nt, v, "elements", &hen), hen == 0);
     }
-    if (vty && sp_streq(vty, "NilNode")) {
+    if (ivt == TY_INT && emit_nullable_int_ternary(c, v, b)) {
+      /* `@iv = cond ? nil : <int>` emitted in int context (nil -> SP_INT_NIL) */
+    }
+    else if (vty && sp_streq(vty, "NilNode")) {
       if (ivt == TY_RANGE) buf_puts(b, "(sp_Range){0}");
       else if (ivt == TY_POLY) buf_puts(b, "sp_box_nil()");
       else if (ivt == TY_INT) buf_puts(b, "SP_INT_NIL");
