@@ -878,6 +878,11 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
+  /* A poly receiver whose array-ness is only known at runtime (e.g. a recursive
+     param, or a `case ... end` whose arms mix arrays and scalars): coerce it to
+     a poly array at runtime and run the ordinary poly path over it. */
+  int poly_recv = (rt == TY_POLY);
+  if (poly_recv) rt = TY_POLY_ARRAY;
   if (!ty_is_array(rt)) return 0;
   const char *rk = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!rk) return 0;
@@ -889,7 +894,7 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
      scalars pass through. The block returns the bare element (a poly element,
      not statically an array), so the array-returning path below cannot handle
      it; emit the runtime flatten directly. */
-  if (bn == 1 && rt == TY_POLY_ARRAY) {
+  if (bn == 1 && rt == TY_POLY_ARRAY && !poly_recv) {
     const char *p0 = block_param_name(c, block, 0);
     const char *sty = nt_type(nt, bb[0]);
     if (p0 && !block_param_name(c, block, 1) && sty &&
@@ -916,7 +921,10 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   TyKind et = ty_array_elem(rt);
   int ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+  emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+  if (poly_recv) buf_printf(g_pre, " _t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "sp_box_nil()", ta);
+  else buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : "");
+  free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", bk, tres, bk, tres);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, rk, ta, ti);

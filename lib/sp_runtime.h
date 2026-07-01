@@ -1989,6 +1989,17 @@ static sp_RbVal sp_poly_arr_get(sp_RbVal a, mrb_int i) {
     default: return sp_box_nil();
   }
 }
+/* Coerce a poly value that holds an array (any builtin array kind) into an
+   sp_PolyArray of boxed elements. A poly-array value is returned as-is; nil or a
+   non-array yields an empty array. Lets block methods (flat_map/each/...) run on
+   a poly receiver whose array-ness is only known at runtime. */
+static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)v.v.p;
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  mrb_int n = sp_poly_arr_len(v);
+  for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(v, i));
+  return r;
+}
 /* Array#<=> across any pair of builtin array kinds: lexicographic element-wise
    compare via sp_poly_cmp, breaking ties on length. `*comparable` is cleared
    when an element pair is not mutually comparable (CRuby yields nil there). */

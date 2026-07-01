@@ -123,6 +123,12 @@ TyKind ty_unify(TyKind a, TyKind b) {
      single-class reference need not widen to poly. */
   if (a == TY_NIL && ty_is_object(b)) return b;
   if (b == TY_NIL && ty_is_object(a)) return a;
+  /* A poly array that also sees nil stays a (nullable) poly array: the
+     sp_PolyArray* NULL encodes nil, and the poly-array method paths already
+     NULL-guard, so a method returning `array | nil` need not widen to poly
+     (which would strip every array method from the result). */
+  if (a == TY_NIL && b == TY_POLY_ARRAY) return b;
+  if (b == TY_NIL && a == TY_POLY_ARRAY) return a;
   return TY_POLY;
 }
 

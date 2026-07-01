@@ -2144,6 +2144,12 @@ else {
           (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
            sp_streq(name, "first") || sp_streq(name, "last") || sp_streq(name, "sample")))
         return TY_POLY;
+      /* Block iterators on a poly value that holds an array at runtime (a
+         recursive param, a `case` whose arms mix arrays and scalars): the result
+         is a poly array. codegen coerces the receiver via sp_poly_to_poly_array. */
+      if (nt_ref(nt, id, "block") >= 0 &&
+          (sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")))
+        return TY_POLY_ARRAY;
       /* Fiber/Thread/IO/File instance methods: fallback when no user class defines `name`. */
       if (sp_streq(name, "resume") || sp_streq(name, "value") || sp_streq(name, "join"))
         return TY_POLY;

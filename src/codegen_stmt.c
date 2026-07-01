@@ -1513,21 +1513,35 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     /* find pattern `in [*head, m1..mk, *tail]`: scan for the first window of
        k consecutive elements matching the requireds; record its start in a
        position temp (-1 if none). The arm matches when that position >= 0. */
-    int find_pat = -1, find_pos = -1;
+    int find_pat = -1, find_pos = -1, find_arr = t;
     const char *find_k = NULL;
-    if (sp_streq(pty, "FindPatternNode") && !ty_is_array(pt)) {
-      /* A find pattern only matches arrays. With a non-array (or statically
-         unknown) scrutinee, fail closed -- never match -- rather than fall
-         through to emit_pm_cond (which has no find-pattern case and would
-         leave has_cond=0, i.e. match unconditionally). */
+    if (sp_streq(pty, "FindPatternNode") && !ty_is_array(pt) && pt != TY_POLY) {
+      /* A statically non-array, non-poly scrutinee (a scalar or object) can never
+         match a find pattern; fail closed rather than emit a coercion of a
+         non-sp_RbVal value (which would not compile). */
       buf_puts(&cond_buf, "0");
       has_cond = 1;
     }
     else if (sp_streq(pty, "FindPatternNode")) {
       find_pat = pat;
-      find_k = (pt == TY_POLY_ARRAY) ? "Poly" : array_kind(pt);
-      if (!find_k) find_k = "Int";
-      TyKind elem_t = ty_array_elem(pt);
+      find_arr = t;
+      TyKind elem_t;
+      if (ty_is_array(pt)) {
+        find_k = (pt == TY_POLY_ARRAY) ? "Poly" : array_kind(pt);
+        if (!find_k) find_k = "Int";
+        elem_t = ty_array_elem(pt);
+      }
+      else {
+        /* A poly scrutinee: coerce the boxed value to a poly array at runtime and
+           scan that. sp_poly_to_poly_array yields an empty array for a non-array
+           value, so a scalar or nil never matches. Root it -- the per-element
+           conditions and the arm bindings can allocate and trigger GC. */
+        find_k = "Poly";
+        find_arr = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d);\n", find_arr, t, find_arr);
+        elem_t = TY_POLY;
+      }
       if (elem_t == TY_UNKNOWN) elem_t = TY_POLY;
       int rn = 0;
       const int *reqs = nt_arr(nt, pat, "requireds", &rn);
@@ -1536,13 +1550,13 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       buf_printf(b, "mrb_int _t%d = -1;\n", find_pos);
       emit_indent(b, indent + 1);
       buf_printf(b, "for (mrb_int _fi = 0; _t%d && _fi + %dLL <= _t%d->len; _fi++) {\n",
-                 t, rn, t);
+                 find_arr, rn, find_arr);
       Buf wb = {NULL, 0, 0};
       for (int j = 0; j < rn; j++) {
         int e = ++g_tmp;
         emit_indent(b, indent + 2);
         emit_ctype(c, elem_t, b);
-        buf_printf(b, " _t%d = sp_%sArray_get(_t%d, _fi + %dLL);\n", e, find_k, t, j);
+        buf_printf(b, " _t%d = sp_%sArray_get(_t%d, _fi + %dLL);\n", e, find_k, find_arr, j);
         Buf rcb = {NULL, 0, 0};
         if (emit_pm_cond(c, reqs[j], e, elem_t, &rcb)) {
           buf_puts(&wb, " && "); buf_puts(&wb, rcb.p ? rcb.p : "1");
@@ -1775,7 +1789,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           if (lnm) {
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, 0LL, _t%d);\n",
-                       lnm, find_k, t, find_pos);
+                       lnm, find_k, find_arr, find_pos);
           }
         }
       }
@@ -1787,7 +1801,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         if (!lnm) continue;
         emit_indent(b, body_indent);
         buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d + %dLL);\n",
-                   lnm, find_k, t, find_pos, j);
+                   lnm, find_k, find_arr, find_pos, j);
       }
       /* trailing `*tail` = elements after the matched window */
       int right = nt_ref(nt, find_pat, "right");
@@ -1799,7 +1813,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           if (rnm) {
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, _t%d + %dLL, _t%d->len - (_t%d + %dLL));\n",
-                       rnm, find_k, t, find_pos, rn, t, find_pos, rn);
+                       rnm, find_k, find_arr, find_pos, rn, find_arr, find_pos, rn);
           }
         }
       }
