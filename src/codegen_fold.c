@@ -922,7 +922,7 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   int ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-  if (poly_recv) buf_printf(g_pre, " _t%d = sp_poly_to_poly_array(%s);\n", ta, rb.p ? rb.p : "sp_box_nil()");
+  if (poly_recv) buf_printf(g_pre, " _t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "sp_box_nil()", ta);
   else buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : "");
   free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", bk, tres, bk, tres);

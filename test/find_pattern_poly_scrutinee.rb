@@ -14,3 +14,13 @@ p f([:x, :a, :b, :y])   # [[:x], :ab, [:y]]
 p f([:a, :b])           # [[], :ab, []]
 p f([:p, :q])           # [:p, :q]
 p f(:scalar)            # :scalar (a non-array never matches)
+
+# a statically non-array scrutinee never matches a find pattern (fail closed)
+def h(n)
+  case n
+  in [*_pre, :a, *_post] then :matched
+  else :nomatch
+  end
+end
+p h(42)       # :nomatch
+p h("hi")     # :nomatch

@@ -1515,7 +1515,14 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
        position temp (-1 if none). The arm matches when that position >= 0. */
     int find_pat = -1, find_pos = -1, find_arr = t;
     const char *find_k = NULL;
-    if (sp_streq(pty, "FindPatternNode")) {
+    if (sp_streq(pty, "FindPatternNode") && !ty_is_array(pt) && pt != TY_POLY) {
+      /* A statically non-array, non-poly scrutinee (a scalar or object) can never
+         match a find pattern; fail closed rather than emit a coercion of a
+         non-sp_RbVal value (which would not compile). */
+      buf_puts(&cond_buf, "0");
+      has_cond = 1;
+    }
+    else if (sp_streq(pty, "FindPatternNode")) {
       find_pat = pat;
       find_arr = t;
       TyKind elem_t;
@@ -1525,13 +1532,14 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         elem_t = ty_array_elem(pt);
       }
       else {
-        /* A poly (or statically-unknown) scrutinee: coerce it to a poly array at
-           runtime and scan that. sp_poly_to_poly_array yields an empty array for
-           a non-array value, so a scalar or nil never matches a find pattern. */
+        /* A poly scrutinee: coerce the boxed value to a poly array at runtime and
+           scan that. sp_poly_to_poly_array yields an empty array for a non-array
+           value, so a scalar or nil never matches. Root it -- the per-element
+           conditions and the arm bindings can allocate and trigger GC. */
         find_k = "Poly";
         find_arr = ++g_tmp;
         emit_indent(b, indent + 1);
-        buf_printf(b, "sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d);\n", find_arr, t);
+        buf_printf(b, "sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d);\n", find_arr, t, find_arr);
         elem_t = TY_POLY;
       }
       if (elem_t == TY_UNKNOWN) elem_t = TY_POLY;

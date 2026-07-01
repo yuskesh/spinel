@@ -2,3 +2,5 @@
 [[], :ab, []]
 [:p, :q]
 :scalar
+:nomatch
+:nomatch
