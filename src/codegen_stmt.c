@@ -4336,11 +4336,29 @@ else {
     int *tmps = en > 0 ? alloca(sizeof(int) * (size_t)en) : NULL;
     for (int i = 0; i < en; i++) {
       tmps[i] = ++g_tmp;
-      Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
       emit_indent(b, indent);
-      emit_ctype(c, comp_ntype(c, els[i]), b);
+      /* A nil (or void) element has no scalar C type; hold it as a boxed poly
+         temp so the slot is valid and a poly target can read it directly. */
+      TyKind elt = comp_ntype(c, els[i]);
+      int nilish = (elt == TY_NIL || elt == TY_VOID);
+      emit_ctype(c, nilish ? TY_POLY : elt, b);
       buf_printf(b, " _t%d = ", tmps[i]);
-      buf_puts(b, vb.p ? vb.p : ""); buf_puts(b, ";\n"); free(vb.p);
+      if (nilish) {
+        /* A void element (e.g. a call that raises) still runs for its side
+           effects; only its absent value is replaced with nil. */
+        if (!node_is_pure_literal(nt, els[i])) {
+          Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
+          if (vb.p && vb.p[0]) buf_printf(b, "((void)(%s), sp_box_nil())", vb.p);
+          else buf_puts(b, "sp_box_nil()");
+          free(vb.p);
+        }
+        else buf_puts(b, "sp_box_nil()");
+      }
+      else {
+        Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
+        buf_puts(b, vb.p ? vb.p : ""); free(vb.p);
+      }
+      buf_puts(b, ";\n");
     }
     /* assign lefts */
     for (int i = 0; i < ln; i++) {
@@ -4584,9 +4602,14 @@ else {
       emit_indent(b, indent);
       buf_printf(b, "gv_%s = _t%d;\n", rest_gvar, tr);
     }
-    /* assign rights (post-splat fixed targets) */
+    /* assign rights (post-splat fixed targets). They fill left-to-right starting
+       just past the splat's actual length (max(0, en-ln-rn)); a target whose
+       source index runs off the end lands nil (`a, *b, c, d = [1, 2]` ->
+       c=2, d=nil) instead of reusing a leading element. */
+    int blen_r = en - ln - rn; if (blen_r < 0) blen_r = 0;
     for (int j = 0; j < rn; j++) {
-      int ridx = en - rn + j;
+      int ridx = ln + blen_r + j;
+      if (ridx >= en) ridx = -1;
       const char *lty = nt_type(nt, rights[j]);
       if (!lty) continue;
       const char *rnm_j = nt_str(nt, rights[j], "name");
