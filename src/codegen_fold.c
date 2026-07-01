@@ -905,8 +905,10 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
   /* A block whose value is not statically an array (a bare poly, or a mix of
      array and scalar as in `... ? sub_array : scalar`) is handled per CRuby:
      an array value is spliced one level, a scalar is appended as-is. The result
-     is then a poly array. */
-  int poly_ret = !ty_is_array(bret);
+     is then a poly array. Gate on the inferred result being TY_POLY_ARRAY so a
+     statically-scalar return (e.g. `Int`, inferred as a typed IntArray) is not
+     forced into a sp_PolyArray and mistyped -- it falls through as before. */
+  int poly_ret = !ty_is_array(bret) && comp_ntype(c, id) == TY_POLY_ARRAY;
   const char *bk = poly_ret ? "Poly" : ((bret == TY_POLY_ARRAY) ? "Poly" : array_kind(bret));
   if (!bk) return 0;
   int np = 0; while (block_param_name(c, block, np)) np++;
