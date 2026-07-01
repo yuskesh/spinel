@@ -16,3 +16,12 @@ S = Struct.new(:node)
 r = su([S.new(:a), S.new(:b)]).find { |n| n.node == :b }
 p r.node                                             # :b
 p su([S.new(:a)]).find { |n| n.node == :zzz }        # nil
+
+# the same find as a parameter default: evaluated at the call site, where the
+# block local has no top-level declaration (it is declared in the loop body).
+NET = [S.new(:begin), S.new(:x)]
+def pick(cur: NET.find { |n| n.node == :begin })
+  cur.node
+end
+p pick                                               # :begin
+p pick(cur: S.new(:z))                               # :z
