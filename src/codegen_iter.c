@@ -579,6 +579,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     /* Kernel#loop rescues StopIteration to terminate normally (e.g. an external
        Enumerator's #next at the end). Wrap the loop in a setjmp handler; a
        StopIteration falls through, any other exception re-raises. */
+    int gcl = ++g_tmp;
+    emit_indent(b, indent); buf_printf(b, "int _gcb%d = sp_gc_nroots; (void)_gcb%d;\n", gcl, gcl);
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     emit_indent(b, indent + 1); buf_puts(b, "for (;;) {\n");
@@ -588,6 +590,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    emit_indent(b, indent + 1); buf_printf(b, "sp_gc_nroots = _gcb%d;\n", gcl);
     emit_indent(b, indent + 1);
     buf_puts(b, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n");
     emit_indent(b, indent); buf_puts(b, "}\n");

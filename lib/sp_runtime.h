@@ -805,6 +805,17 @@ static inline mrb_float sp_float_clamp_ck(mrb_float v,mrb_float lo,mrb_float hi)
   if(v!=v)sp_raise_cls("ArgumentError",sp_sprintf("comparison of Float with %s failed",sp_float_to_s(lo)));
   return sp_float_clamp(v,lo,hi);
 }
+/* clamp(range): an exclusive range with a real end cannot clamp (CRuby); an
+   exclusive ENDLESS range (`1...`, last is the INTPTR_MAX sentinel) can. The
+   beginless/endless sentinels satisfy sp_int_clamp_ck's bounds naturally. */
+static inline mrb_int sp_int_clamp_range_ck(mrb_int v, sp_Range r) {
+  if (r.excl && r.last != INTPTR_MAX)
+    sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
+  /* Reaching here with excl means r.last is the INTPTR_MAX endless sentinel
+     (a real exclusive end raised above); pass it through unchanged -- it means
+     "no upper bound", which sp_int_clamp_ck handles, not INTPTR_MAX-1. */
+  return sp_int_clamp_ck(v, r.first, r.last);
+}
 /* `:name`, or `:"name"` when the name needs quoting -- shares the
    name-string predicates in lib/sp_str.c with the hash-key short form. */
 static const char *sp_sym_inspect(sp_sym id) { return sp_sym_inspect_name(sp_sym_to_s(id)); }
@@ -1785,9 +1796,16 @@ static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT 
 /* sp_sym_name_fn is now an extern hook (sp_gc.h / sp_gc.c) so cold lib readers
    like sp_json.c can resolve symbol names too; the generated TU still sets it. */
 static mrb_int sp_poly_arr_cmp(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);
+/* A user class that mixes in Comparable defines `<=>` in generated code, which
+   the runtime archive cannot call directly. The generated TU installs
+   sp_obj_cmp_hook to dispatch `<=>` by cls_id; sp_poly_cmp consults it for two
+   user objects so no-block sort/min/max/clamp compare correctly. A nil `<=>`
+   result clears *comparable, which the callers turn into an ArgumentError. */
+typedef mrb_int (*sp_obj_cmp_fn)(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);
+static sp_obj_cmp_fn sp_obj_cmp_hook = NULL;
 #define SP_IS_BUILTIN_ARRAY(id) ((id) == SP_BUILTIN_INT_ARRAY || (id) == SP_BUILTIN_STR_ARRAY || \
                                  (id) == SP_BUILTIN_FLT_ARRAY || (id) == SP_BUILTIN_POLY_ARRAY)
-static mrb_int sp_poly_cmp(sp_RbVal a, sp_RbVal b, mrb_bool *comparable) { if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(a.cls_id) && SP_IS_BUILTIN_ARRAY(b.cls_id)) return sp_poly_arr_cmp(a, b, comparable); if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) { *comparable = TRUE; return sp_bigint_cmp(ba, bb); } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) { mrb_float af = sp_poly_to_f(a), bf = sp_poly_to_f(b); *comparable = TRUE; return (af > bf) - (af < bf); } *comparable = FALSE; return 0; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) { mrb_float af = sp_poly_to_f(a), bf = sp_poly_to_f(b); *comparable = TRUE; return (af > bf) - (af < bf); } if (a.tag == SP_TAG_STR && b.tag == SP_TAG_STR) { if (a.v.s == NULL || b.v.s == NULL) { *comparable = (a.v.s == b.v.s); return 0; } *comparable = TRUE; return strcmp(a.v.s, b.v.s); } if (a.tag == SP_TAG_SYM && b.tag == SP_TAG_SYM) { *comparable = TRUE; if (sp_sym_name_fn) { int _r = strcmp(sp_sym_name_fn((sp_sym)a.v.i), sp_sym_name_fn((sp_sym)b.v.i)); return _r; } return (a.v.i > b.v.i) - (a.v.i < b.v.i); } *comparable = FALSE; return 0; }
+static mrb_int sp_poly_cmp(sp_RbVal a, sp_RbVal b, mrb_bool *comparable) { if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(a.cls_id) && SP_IS_BUILTIN_ARRAY(b.cls_id)) return sp_poly_arr_cmp(a, b, comparable); if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) { *comparable = TRUE; return sp_bigint_cmp(ba, bb); } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) { mrb_float af = sp_poly_to_f(a), bf = sp_poly_to_f(b); *comparable = TRUE; return (af > bf) - (af < bf); } *comparable = FALSE; return 0; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) { mrb_float af = sp_poly_to_f(a), bf = sp_poly_to_f(b); *comparable = TRUE; return (af > bf) - (af < bf); } if (a.tag == SP_TAG_STR && b.tag == SP_TAG_STR) { if (a.v.s == NULL || b.v.s == NULL) { *comparable = (a.v.s == b.v.s); return 0; } *comparable = TRUE; return strcmp(a.v.s, b.v.s); } if (a.tag == SP_TAG_SYM && b.tag == SP_TAG_SYM) { *comparable = TRUE; if (sp_sym_name_fn) { int _r = strcmp(sp_sym_name_fn((sp_sym)a.v.i), sp_sym_name_fn((sp_sym)b.v.i)); return _r; } return (a.v.i > b.v.i) - (a.v.i < b.v.i); } if (a.tag == SP_TAG_OBJ && sp_obj_cmp_hook) return sp_obj_cmp_hook(a, b, comparable); *comparable = FALSE; return 0; }
 /* Lexicographic <=> between two boxed int arrays (Array#<=> over int elems),
    so Array#max/min/sort work on an array of int pairs ([delta, idx] tuples). */
 static mrb_int sp_poly_cmp_int_arrays(sp_RbVal a, sp_RbVal b, mrb_bool *comparable) {
@@ -1807,6 +1825,55 @@ static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_in
 static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp <= 0) : FALSE; }
 static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp > 0) : FALSE; }
 static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp >= 0) : FALSE; }
+/* rb_cmpint-checked comparison: an incomparable pair (nil `<=>`) raises the
+   Comparable ArgumentError. Backs the object <,<=,>,>=,between? emitters when
+   the user `<=>` can return nil (a TY_INT `<=>` keeps the inline fast path). */
+static mrb_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) __attribute__((unused));
+static mrb_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) {
+  mrb_bool ok = FALSE; mrb_int r = sp_poly_cmp(a, b, &ok);
+  if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a), sp_poly_class_name(b)));
+  return r;
+}
+/* Comparable#==: identity is equal; a nil `<=>` makes it false, never an
+   error (CRuby cmp_equal). */
+static mrb_bool sp_poly_cmp_eq(sp_RbVal a, sp_RbVal b) __attribute__((unused));
+static mrb_bool sp_poly_cmp_eq(sp_RbVal a, sp_RbVal b) {
+  if (a.tag == b.tag && a.v.p == b.v.p) return TRUE;
+  mrb_bool ok = FALSE; mrb_int r = sp_poly_cmp(a, b, &ok);
+  return ok ? (r == 0) : FALSE;
+}
+/* Comparable#clamp(lo, hi) for user objects, mirroring CRuby cmp_clamp: a nil
+   bound clamps one-sided; both bounds present and lo > hi (or incomparable)
+   raise ArgumentError; the result is the receiver or the applied bound. The
+   user `<=>` dispatches through sp_obj_cmp_hook (via sp_poly_cmp). */
+static sp_RbVal sp_obj_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) __attribute__((unused));
+static sp_RbVal sp_obj_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
+  /* Each operand can be a heap object and sp_poly_cmp_ck dispatches the user
+     `<=>` (which allocates), so root all three -- v is live but unused across
+     the first lo<=>hi comparison, lo/hi across the later ones. */
+  SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(lo); SP_GC_ROOT_RBVAL(hi);
+  if (lo.tag != SP_TAG_NIL && hi.tag != SP_TAG_NIL && sp_poly_cmp_ck(lo, hi) > 0)
+    sp_raise_cls("ArgumentError", "min argument must be less than or equal to max argument");
+  if (lo.tag != SP_TAG_NIL) {
+    mrb_int c1 = sp_poly_cmp_ck(v, lo);
+    if (c1 == 0) return v;
+    if (c1 < 0) return lo;
+  }
+  if (hi.tag != SP_TAG_NIL && sp_poly_cmp_ck(v, hi) > 0) return hi;
+  return v;
+}
+/* Comparable#clamp(range) for user objects: an exclusive range with a real
+   end cannot clamp (CRuby); beginless/endless endpoints (the INTPTR_MIN/MAX
+   range sentinels) clamp one-sided as nil bounds. Integer endpoints are boxed
+   and flow to the user `<=>` like any operand. */
+static sp_RbVal sp_obj_clamp_range(sp_RbVal v, sp_Range r) __attribute__((unused));
+static sp_RbVal sp_obj_clamp_range(sp_RbVal v, sp_Range r) {
+  if (r.excl && r.last != INTPTR_MAX)
+    sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
+  sp_RbVal lo = r.first == INTPTR_MIN ? sp_box_nil() : sp_box_int(r.first);
+  sp_RbVal hi = r.last == INTPTR_MAX ? sp_box_nil() : sp_box_int(r.last);
+  return sp_obj_clamp(v, lo, hi);
+}
 /* Stable ascending sort of idx[0..n) by the poly key keys[idx[k]], leaving equal
    (or incomparable) keys in their original relative order. Backs sort_by's
    Schwartzian lowering: keys are precomputed once per element, so the comparator
@@ -1858,10 +1925,26 @@ static sp_RbVal sp_num_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
   if (dv > dhi) return hi;
   return v;
 }
-/* clamp on a boxed numeric: routes through sp_num_clamp so the returned operand
-   keeps its own Integer/Float class (was unconditionally floated up before). */
+/* clamp on a boxed value: numerics route through sp_num_clamp so the returned
+   operand keeps its own Integer/Float class; a user object anywhere in the
+   triple routes through sp_obj_clamp (the user `<=>` via the cmp hook) instead
+   of being reinterpreted as a float. */
 static sp_RbVal sp_poly_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
+  if ((v.tag == SP_TAG_OBJ && !sp_poly_numeric_p(v)) ||
+      (lo.tag == SP_TAG_OBJ && !sp_poly_numeric_p(lo)) ||
+      (hi.tag == SP_TAG_OBJ && !sp_poly_numeric_p(hi)))
+    return sp_obj_clamp(v, lo, hi);
   return sp_num_clamp(v, lo, hi);
+}
+/* clamp(range) on a boxed value: an exclusive range with a real end cannot
+   clamp (CRuby); the INTPTR_MIN/MAX beginless/endless sentinels act as
+   unbounded sides for numerics and nil bounds for user objects. */
+static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) __attribute__((unused));
+static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
+  if (r.excl && r.last != INTPTR_MAX)
+    sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
+  if (v.tag == SP_TAG_OBJ && !sp_poly_numeric_p(v)) return sp_obj_clamp_range(v, r);
+  return sp_num_clamp(v, sp_box_int(r.first), sp_box_int(r.last));
 }
 /* Integer #** : Spinel has no Rational, so a negative integer exponent --
    which CRuby evaluates to a Rational like (1/2) -- raises RangeError rather
@@ -2522,15 +2605,43 @@ static void sp_PolyArray_rotate_bang(sp_PolyArray*a,mrb_int n){if(!a)return;if(a
 static sp_PolyArray *sp_PolyArray_shuffle(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_shuffle_bang(b); return b; }
 /* When sort hits an incomparable pair the result is discarded and we raise
    ArgumentError, matching CRuby. The comparator cannot raise (it would longjmp
-   out of qsort), so it records the offending pair and sort_bang raises after. */
+   out of the sort), so it records the offending pair and sort_bang raises after. */
 static int _sp_sort_incomparable;
 static sp_RbVal _sp_sort_inc_a, _sp_sort_inc_b;
-static int _sp_poly_cmp_qsort(const void *pa, const void *pb) {
+static int _sp_poly_cmp_rec(const void *pa, const void *pb) {
   if (_sp_sort_incomparable) return 0;
   mrb_bool ok = FALSE;
   mrb_int r = sp_poly_cmp(*(const sp_RbVal *)pa, *(const sp_RbVal *)pb, &ok);
   if (!ok) { _sp_sort_incomparable = 1; _sp_sort_inc_a = *(const sp_RbVal *)pa; _sp_sort_inc_b = *(const sp_RbVal *)pb; return 0; }
   return (int)r;
+}
+/* Bottom-up merge sort over boxed elements. libc qsort visits pairs in an
+   implementation-defined order, so which pair gets recorded as incomparable
+   (and hence the ArgumentError message operands) would vary by platform; a
+   fixed merge schedule keeps it identical everywhere, with the left/earlier
+   element as the `<=>` receiver like CRuby. Both `a` and the scratch copy
+   are rooted PolyArrays, so every element stays GC-reachable while the
+   comparator (which can allocate) runs; stale slots in the buffer being
+   overwritten are still valid boxed values, so scanning them is safe. */
+static void _sp_poly_msort(sp_PolyArray *a, int (*cmp)(const void *, const void *)) {
+  if (!a || a->len < 2) return;
+  SP_GC_ROOT(a);
+  sp_PolyArray *tmp = sp_PolyArray_dup(a);
+  SP_GC_ROOT(tmp);
+  sp_RbVal *src = a->data, *dst = tmp->data;
+  for (mrb_int w = 1; w < a->len; w *= 2) {
+    for (mrb_int lo = 0; lo < a->len; lo += 2 * w) {
+      mrb_int mid = lo + w < a->len ? lo + w : a->len;
+      mrb_int hi = lo + 2 * w < a->len ? lo + 2 * w : a->len;
+      mrb_int i = lo, j = mid, k = lo;
+      while (i < mid && j < hi)
+        dst[k++] = cmp(&src[i], &src[j]) <= 0 ? src[i++] : src[j++];
+      while (i < mid) dst[k++] = src[i++];
+      while (j < hi) dst[k++] = src[j++];
+    }
+    sp_RbVal *t = src; src = dst; dst = t;
+  }
+  if (src != a->data) memcpy(a->data, src, (size_t)a->len * sizeof(sp_RbVal));
 }
 /* max/min over boxed elements: numerics/strings via sp_poly_cmp, int arrays
    lexicographically. Returns nil for an empty array. */
@@ -2566,7 +2677,7 @@ static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
   if (!a || a->frozen) { if (a && a->frozen) sp_raise_frozen_array(); return; }
   /* Root the array across the sort: the comparator runs sp_poly_cmp, which can
      allocate (e.g. a bigint temp) and trigger GC; without this, a precise sweep
-     could collect a (and its elements) mid-qsort. This also roots the transient
+     could collect a (and its elements) mid-sort. This also roots the transient
      copy made by sp_PolyArray_sort. */
   SP_GC_ROOT(a);
   if (a->len > 1) {
@@ -2575,7 +2686,7 @@ static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
     int prev = _sp_sort_incomparable;
     sp_RbVal prev_a = _sp_sort_inc_a, prev_b = _sp_sort_inc_b;
     _sp_sort_incomparable = 0;
-    qsort(a->data, (size_t)a->len, sizeof(sp_RbVal), _sp_poly_cmp_qsort);
+    _sp_poly_msort(a, _sp_poly_cmp_rec);
     int inc = _sp_sort_incomparable;
     sp_RbVal ia = _sp_sort_inc_a, ib = _sp_sort_inc_b;
     _sp_sort_incomparable = prev;
@@ -2585,11 +2696,60 @@ static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
   }
 }
 static sp_PolyArray *sp_PolyArray_sort(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_sort_bang(b); return b; }
+/* Object-array (sp_PtrArray of one user class, TY_OBJ_ARRAY) comparison
+   family: box the elements with the statically-known cls_id (tag assembly,
+   no allocation) and reuse the PolyArray comparator machinery -- the user
+   `<=>` via the cmp hook, incomparable pairs raising the Comparable
+   ArgumentError. Only the fresh result containers allocate; everything live
+   across an allocation is rooted. */
+static sp_PolyArray *sp_ptr_array_box(sp_PtrArray *a, int cls_id) {
+  sp_PolyArray *p = sp_PolyArray_new(); SP_GC_ROOT(p);
+  if (a) for (mrb_int i = 0; i < a->len; i++)
+    sp_PolyArray_push(p, sp_box_nullable_obj(a->data[i], cls_id));
+  return p;
+}
+static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) __attribute__((unused));
+static sp_PtrArray *sp_PtrArray_sort_obj(sp_PtrArray *a, int cls_id) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *p = sp_ptr_array_box(a, cls_id);
+  SP_GC_ROOT(p);   /* box's own root is popped on its return; sort + new_scan below allocate */
+  sp_PolyArray_sort_bang(p);
+  sp_PtrArray *r = a ? sp_PtrArray_new_scan(a->scan_elem) : sp_PtrArray_new();
+  SP_GC_ROOT(r);
+  for (mrb_int i = 0; i < p->len; i++) sp_PtrArray_push(r, p->data[i].v.p);
+  return r;
+}
+static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) __attribute__((unused));
+static void sp_PtrArray_sort_obj_bang(sp_PtrArray *a, int cls_id) {
+  if (!a) return;
+  if (a->frozen) { sp_raise_frozen_array(); return; }
+  SP_GC_ROOT(a);
+  sp_PolyArray *p = sp_ptr_array_box(a, cls_id);
+  SP_GC_ROOT(p);   /* box's own root is popped on its return; sort_bang runs the user <=> (allocates) */
+  sp_PolyArray_sort_bang(p);
+  for (mrb_int i = 0; i < a->len; i++) a->data[i] = p->data[i].v.p;
+}
+/* min/max over an object array; empty -> NULL (the object-typed nil). */
+static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) __attribute__((unused));
+static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) {
+  if (!a || a->len == 0) return NULL;
+  SP_GC_ROOT(a);
+  void *best = a->data[0];
+  for (mrb_int i = 1; i < a->len; i++) {
+    mrb_bool ok = FALSE;
+    sp_RbVal bi = sp_box_nullable_obj(a->data[i], cls_id);
+    sp_RbVal bb = sp_box_nullable_obj(best, cls_id);
+    mrb_int r = sp_poly_cmp(bi, bb, &ok);
+    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(bi), sp_poly_class_name(bb)));
+    if (want_max ? (r > 0) : (r < 0)) best = a->data[i];
+  }
+  return best;
+}
 /* Compare two boxed arrays element-wise (Array#<=> semantics): first differing
    comparable element decides, else the shorter array sorts first. Used to order
    Hash#sort's [key, value] pairs. */
 static int _sp_pair_cmp_incomparable;  /* set when two pairs cannot be ordered */
-static int _sp_poly_pair_cmp_qsort(const void *pa, const void *pb) {
+static int _sp_poly_pair_cmp(const void *pa, const void *pb) {
   /* Once a pair is found incomparable the sort result is discarded and we
      raise, so skip the remaining comparisons (and any work they would do). */
   if (_sp_pair_cmp_incomparable) return 0;
@@ -2614,7 +2774,7 @@ static sp_PolyArray *sp_PolyArray_sort_pairs(sp_PolyArray *a) {
        sort_pairs (e.g. via a nested sort) cannot clobber this call's state. */
     int prev = _sp_pair_cmp_incomparable;
     _sp_pair_cmp_incomparable = 0;
-    qsort(b->data, (size_t)b->len, sizeof(sp_RbVal), _sp_poly_pair_cmp_qsort);
+    _sp_poly_msort(b, _sp_poly_pair_cmp);
     int incomparable = _sp_pair_cmp_incomparable;
     _sp_pair_cmp_incomparable = prev;
     if (incomparable)
@@ -2624,7 +2784,7 @@ static sp_PolyArray *sp_PolyArray_sort_pairs(sp_PolyArray *a) {
 }
 /* Schwartzian helper for Hash#sort_by: `a` is an array of [sort_key, value]
    tuples; sort it by the comparable sort_key and return the values in order. */
-static int _sp_poly_first_cmp_qsort(const void *pa, const void *pb) {
+static int _sp_poly_first_cmp(const void *pa, const void *pb) {
   mrb_bool ok = FALSE;
   mrb_int r = sp_poly_cmp(sp_poly_arr_get(*(const sp_RbVal *)pa, 0),
                           sp_poly_arr_get(*(const sp_RbVal *)pb, 0), &ok);
@@ -2633,7 +2793,7 @@ static int _sp_poly_first_cmp_qsort(const void *pa, const void *pb) {
 static sp_PolyArray *sp_PolyArray_sort_by_first(sp_PolyArray *a) {
   SP_GC_ROOT(a);
   sp_PolyArray *b = sp_PolyArray_dup(a); SP_GC_ROOT(b);
-  if (b && b->len > 1) qsort(b->data, (size_t)b->len, sizeof(sp_RbVal), _sp_poly_first_cmp_qsort);
+  if (b && b->len > 1) _sp_poly_msort(b, _sp_poly_first_cmp);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   for (mrb_int i = 0; b && i < b->len; i++) sp_PolyArray_push(r, sp_poly_arr_get(b->data[i], 1));
   return r;

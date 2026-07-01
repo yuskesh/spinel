@@ -88,6 +88,27 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_PtrArray_empty("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
+    /* no-block comparisons via the boxed comparator (user `<=>` through the
+       cmp hook); the narrowing pass admits these only when the element class
+       has `<=>` and (for sort) the result lands in a modeled consumer. */
+    if (sp_streq(name, "sort") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      buf_puts(b, "sp_PtrArray_sort_obj("); emit_expr(c, recv, b);
+      buf_printf(b, ", %d)", ecls);
+      return 1;
+    }
+    if (sp_streq(name, "sort!") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      int tr = ++g_tmp;
+      buf_printf(b, "({ sp_PtrArray *_t%d = ", tr); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_PtrArray_sort_obj_bang(_t%d, %d); _t%d; })", tr, ecls, tr);
+      return 1;
+    }
+    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0 &&
+        nt_ref(nt, id, "block") < 0) {
+      buf_printf(b, "((sp_%s *)sp_PtrArray_minmax_obj(", ecn);
+      emit_expr(c, recv, b);
+      buf_printf(b, ", %d, %d))", ecls, sp_streq(name, "max") ? 1 : 0);
+      return 1;
+    }
     return 0;  /* unsupported obj-array op: pass should have prevented this. */
   }
   if (recv >= 0 && ty_is_array(rt)) {
@@ -1451,6 +1472,19 @@ else {
         buf_puts(b, "sp_PolyArray_sort("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      /* minmax (no block): [min, max] via the poly comparator (user `<=>`
+         through the cmp hook); incomparable raises the Comparable
+         ArgumentError; empty -> [nil, nil]. Both temps rooted: min/max can
+         allocate inside sp_poly_cmp (bigint temps) and push reallocs. */
+      if (sp_streq(name, "minmax") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        int t = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_PolyArray_min(_t%d));"
+                      " sp_PolyArray_push(_t%d, sp_PolyArray_max(_t%d)); _t%d; })",
+                   t, o, o, o, t, o, t, o);
+        return 1;
+      }
       {
         const char *base = NULL;
         if      (sp_streq(name, "reverse!")) base = "reverse_bang";
@@ -2742,10 +2776,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "clamp") && argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
-        int rn = argv[0]; int tcr = ++g_tmp;
-        buf_printf(b, "({ sp_Range _t%d = ", tcr); emit_expr(c, argv[0], b);
-        buf_printf(b, "; sp_int_clamp_ck(%s, _t%d.first, _t%d.last - _t%d.excl); })", r, tcr, tcr, tcr);
-        (void)rn;
+        /* the helper raises on an exclusive range with a real end (CRuby) */
+        buf_printf(b, "sp_int_clamp_range_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "digits") && argc == 0) buf_printf(b, "sp_int_digits(%s, 10)", r);
       else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -2943,6 +2975,37 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_class_le(((sp_Class){%d}),_t%d); }))", cid, k);
       return 1;
     }
+  }
+
+  /* Comparable#clamp(lo, hi) on a user object: dispatch the user `<=>` through
+     sp_obj_clamp. The result is self or the APPLIED BOUND, so it keeps the
+     receiver's class only when both bounds are statically that class (the
+     inference arm matches); otherwise it stays boxed. */
+  if (recv >= 0 && ty_is_object(rt) && sp_streq(name, "clamp") && argc == 2 &&
+      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
+    TyKind clo = comp_ntype(c, argv[0]), chi = comp_ntype(c, argv[1]);
+    int same_cls = (clo == rt || clo == TY_NIL) && (chi == rt || chi == TY_NIL);
+    if (same_cls) { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }
+    buf_puts(b, "sp_obj_clamp(");
+    emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_boxed(c, argv[0], b); buf_puts(b, ", ");
+    emit_boxed(c, argv[1], b);
+    buf_puts(b, ")");
+    if (same_cls) buf_puts(b, ".v.p)");
+    return 1;
+  }
+  /* Comparable#clamp(range) on a user object: int endpoints become bounds fed
+     to the user `<=>`; beginless/endless clamp one-sided; an exclusive range
+     with a real end raises (CRuby). A clamped result IS the Integer endpoint
+     itself, so the value stays boxed (inference: TY_POLY). */
+  if (recv >= 0 && ty_is_object(rt) && sp_streq(name, "clamp") && argc == 1 &&
+      comp_ntype(c, argv[0]) == TY_RANGE &&
+      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
+    buf_puts(b, "sp_obj_clamp_range(");
+    emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    return 1;
   }
 
   /* Struct instance methods (to_h / to_a / values / members / dig). */
@@ -3871,10 +3934,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 1 &&
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
-    int tcr = ++g_tmp;
-    buf_printf(b, "({ sp_Range _t%d = ", tcr); emit_expr(c, argv[0], b);
-    buf_puts(b, "; sp_poly_clamp("); emit_boxed(c, recv, b);
-    buf_printf(b, ", sp_box_int(_t%d.first), sp_box_int(_t%d.last - _t%d.excl)); })", tcr, tcr, tcr);
+    /* raises on an exclusive range with a real end; routes a user-object
+       receiver through the `<=>` hook (sp_obj_clamp_range) */
+    buf_puts(b, "sp_poly_clamp_range("); emit_boxed(c, recv, b);
+    buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
   /* poly receiver: replace(other) -> runtime dispatch (nullable array). */

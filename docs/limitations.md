@@ -82,6 +82,20 @@ Limited today, but additively fixable; listed roughly easiest-first.
   follows CRuby (Integer for `round` with 0 digits, Float otherwise).
 - **Frozen literals** — explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. (String literals are *not* implicitly frozen — see below.)
+- **Comparable is keyed on `<=>` presence** — the Comparable operator methods
+  (`<`, `<=`, `>`, `>=`, `between?`, `clamp`) work on any class that defines
+  `<=>`; CRuby additionally requires `include Comparable` (a `NoMethodError`
+  otherwise). Spinel does not model the mixin, so it is permissive where CRuby
+  raises. `sort`/`min`/`max`/`minmax` need only `<=>` in both. Related edges:
+  the comparison-failed message names an operand's class where CRuby inspects
+  special constants (`NilClass` vs `nil`); `sort_by` keeps incomparable keys
+  in their original order where CRuby raises; `include?`/`index` on arrays of
+  user objects compare by identity unless the class defines its own `==`.
+  Sorts run a deterministic stable merge (identical on every platform, unlike
+  libc `qsort`); it matches CRuby's comparison schedule for small arrays, but
+  for larger ones (roughly 8 elements and up, where CRuby switches to its
+  quicksort) the order of tied elements and which incomparable pair the
+  ArgumentError names can differ from CRuby — deterministically so.
 - **Thread data races are observable** — Spinel runs threads with real
   parallelism and no GVL, so two threads mutating the same `Array`/`Hash`/object
   without a `Mutex` is undefined at the Ruby level, exactly as in JRuby and

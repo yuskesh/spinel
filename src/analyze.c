@@ -1685,7 +1685,7 @@ int desugar_enum_method_recv(Compiler *c) {
    Strictly conservative: any unmodeled use, class conflict, unresolved flow, or
    absent object evidence kills the component, leaving it TY_POLY_ARRAY. Runs
    ONCE, after the fixpoint, so the new type never feeds forward inference. */
-typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; } OAS;
+typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; } OAS;
 
 static int oa_find(OAS *sl, int n, int sidx, LocalVar *lv) {
   for (int i = 0; i < n; i++) if (sl[i].sidx == sidx && sl[i].lv == lv) return i;
@@ -1719,6 +1719,13 @@ static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if ((sp_streq(nm, "length") || sp_streq(nm, "size")) && argc == 0) return 1;
   if (sp_streq(nm, "empty?") && argc == 0) return 1;
   if ((sp_streq(nm, "first") || sp_streq(nm, "last")) && argc == 0) return 1;
+  /* no-block comparisons: usable when the element class has `<=>` (the
+     needs_cmp bit, checked at component resolution). sort's RESULT must
+     also land in a modeled place (slot alias or statement position) --
+     step 4 kills the component otherwise, so an escaping `arr.sort.map`
+     keeps today's boxed poly path instead of becoming a reject. */
+  if ((sp_streq(nm, "min") || sp_streq(nm, "max")) && argc == 0) return 1;
+  if ((sp_streq(nm, "sort") || sp_streq(nm, "sort!")) && argc == 0) return 1;
   return 0;
 }
 
@@ -1732,14 +1739,34 @@ static void narrow_object_arrays(Compiler *c) {
     for (int li = 0; li < sc->nlocals; li++) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded) continue;
-      if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); }
-      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; n++;
+      if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
+      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; n++;
     }
   }
   if (n == 0) { free(sl); return; }
   int nc = nt->count ? nt->count : 1;
   int *read_slot = (int *)malloc(sizeof(int) * nc);
   char *claimed = (char *)calloc(nc, 1);
+  /* value_ok[id]: node id sits in statement position (a StatementsNode body
+     entry) -- one modeled consumer for a `sort`/`sort!` result. The other
+     (slot-alias RHS) is recognized in step 5. */
+  char *value_ok = (char *)calloc(nc, 1);
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "StatementsNode")) continue;
+    int bn = 0; const int *bl = nt_arr(nt, id, "body", &bn);
+    for (int i = 0; i < bn; i++) if (bl[i] >= 0 && bl[i] < nc) value_ok[bl[i]] = 1;
+  }
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
+    int sidx = c->nscope[id];
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *lv = nm ? scope_local(&c->scopes[sidx], nm) : NULL;
+    if (!lv || oa_find(sl, n, sidx, lv) < 0) continue;   /* target must be a slot */
+    int v = nt_ref(nt, id, "value");
+    if (v >= 0 && v < nc) value_ok[v] = 1;   /* alias edge made in step 5 */
+  }
 
   /* 2. map each LocalVariableReadNode of a slot to its slot index. */
   for (int id = 0; id < nt->count; id++) {
@@ -1785,6 +1812,16 @@ static void narrow_object_arrays(Compiler *c) {
           for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_obj_class_of(c, argv[a]));
         else if (name && sp_streq(name, "[]=") && argc == 2)
           sl[S].cls = oa_cls_join(sl[S].cls, oa_obj_class_of(c, argv[1]));
+        else if (name && (sp_streq(name, "min") || sp_streq(name, "max") ||
+                          sp_streq(name, "sort") || sp_streq(name, "sort!"))) {
+          sl[S].needs_cmp = 1;
+          /* a sort/sort! RESULT must land in a modeled consumer (statement
+             position, or a slot-alias write handled in step 5); an escaping
+             result keeps the component on the boxed poly path. */
+          if ((sp_streq(name, "sort") || sp_streq(name, "sort!")) &&
+              !(id < nc && value_ok[id]))
+            sl[S].alive = 0;
+        }
       }
       else sl[S].alive = 0;
     }
@@ -1830,6 +1867,20 @@ static void narrow_object_arrays(Compiler *c) {
       claimed[v] = 1; oa_uf_union(sl, S, read_slot[v]);
     }
     else if (sp_streq(vty, "NilNode")) { /* nullable, neutral */ }
+    else if (sp_streq(vty, "CallNode")) {
+      /* `b = arr.sort` / `b = arr.sort!`: the sorted array shares arr's
+         element class -- an alias edge, like a plain slot-to-slot copy. */
+      const char *cn = nt_str(nt, v, "name");
+      int crecv = nt_ref(nt, v, "receiver");
+      int cargs = nt_ref(nt, v, "arguments");
+      int can = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &can);
+      if (cn && (sp_streq(cn, "sort") || sp_streq(cn, "sort!")) && can == 0 &&
+          nt_ref(nt, v, "block") < 0 && crecv >= 0 && read_slot[crecv] >= 0) {
+        claimed[crecv] = 1;
+        oa_uf_union(sl, S, read_slot[crecv]);
+      }
+      else sl[S].alive = 0;
+    }
     else sl[S].alive = 0;
   }
 
@@ -1843,12 +1894,17 @@ static void narrow_object_arrays(Compiler *c) {
     int r = oa_uf_find(sl, i);
     if (r == i) continue;
     sl[r].cls = oa_cls_join(sl[r].cls, sl[i].cls);
+    if (sl[i].needs_cmp) sl[r].needs_cmp = 1;
     if (!sl[i].alive) sl[r].alive = 0;
   }
   for (int i = 0; i < n; i++) {
     int r = oa_uf_find(sl, i);
-    if (sl[r].alive && sl[r].cls >= 0)
-      sl[i].lv->type = ty_obj_array(sl[r].cls);
+    if (!sl[r].alive || sl[r].cls < 0) continue;
+    /* a component using no-block sort/min/max narrows only when the element
+       class can actually compare (has `<=>` in its chain); otherwise it stays
+       poly, where the boxed comparator raises the CRuby ArgumentError. */
+    if (sl[r].needs_cmp && comp_method_in_chain(c, sl[r].cls, "<=>", NULL) < 0) continue;
+    sl[i].lv->type = ty_obj_array(sl[r].cls);
   }
 
   /* 8. dependent locals: `b = arr[i]` (arr now a narrowed obj array) makes `b`
@@ -1885,7 +1941,7 @@ static void narrow_object_arrays(Compiler *c) {
     }
   }
 
-  free(sl); free(read_slot); free(claimed);
+  free(sl); free(read_slot); free(claimed); free(value_ok);
 }
 
 /* ===== Post-fixpoint: narrow a poly local that is only ever used as an int =====

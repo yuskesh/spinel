@@ -1561,7 +1561,7 @@ else {
     int t = ++g_tmp;
     buf_puts(b, "({ ");
     emit_ctype(c, rt, b);
-    buf_printf(b, " _t%d = %s; sp_exc_top++;\n", t, default_value(rt));
+    buf_printf(b, " _t%d = %s; int _gcb%d = sp_gc_nroots; (void)_gcb%d; sp_exc_top++;\n", t, default_value(rt), t, t);
     buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     /* expression arm — assign result to temp (skip diverging exprs like raise) */
     TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;
@@ -1577,9 +1577,9 @@ else {
       /* diverging expression like raise: emit as stmt (no assignment) */
       emit_expr(c, e, b); buf_puts(b, ";");
     }
-    buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  "
+    buf_printf(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  sp_gc_nroots = _gcb%d;\n  "
                 "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n  "
-                "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n  ");
+                "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n  ", t);
     /* rescue arm */
     if (r >= 0) {
       buf_printf(b, "_t%d = ", t);

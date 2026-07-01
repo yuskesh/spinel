@@ -2838,6 +2838,12 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   int else_stmts = else_c >= 0 ? nt_ref(nt, else_c, "statements") : -1;
   int ensure_stmts = ensure_c >= 0 ? nt_ref(nt, ensure_c, "statements") : -1;
   int fr = ++g_tmp;
+  /* GC root watermark for the protected region: a raise unwinds via longjmp,
+     which skips the __attribute__((cleanup)) pops of any SP_GC_ROOT locals in
+     the body (or in runtime helpers it called), leaving stale entries on the
+     root stack. Restore to this watermark on the exception landing, before the
+     rescue/ensure bodies allocate, so GC never marks a dead stack slot. */
+  int gcb = ++g_tmp;
 
   if (ensure_stmts >= 0 && g_ensure_depth < MAX_ENSURE_DEPTH) {
     /* Ensure clause present: use goto-based deferred-return mechanism so that
@@ -2857,6 +2863,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     }
     g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval };
 
+    emit_indent(b, indent); buf_printf(b, "int _gcb%d = sp_gc_nroots; (void)_gcb%d;\n", gcb, gcb);
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     if (resultvar && else_stmts < 0) {
@@ -2879,6 +2886,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    emit_indent(b, indent + 1); buf_printf(b, "sp_gc_nroots = _gcb%d;\n", gcb);
     /* A non-local unwind (proc return / throw) only passes through here; it is
        not an exception, so skip rescue -- only the ensure (below) runs. */
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {\n");
@@ -2969,6 +2977,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   const char *saved_retry = g_retry_label;
   if (has_retry) g_retry_label = retry_label;
 
+  emit_indent(b, indent); buf_printf(b, "int _gcb%d = sp_gc_nroots; (void)_gcb%d;\n", gcb, gcb);
   emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
   /* body value is the begin value only when there is no else clause */
@@ -2995,6 +3004,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent); buf_puts(b, "}\n");
   emit_indent(b, indent); buf_puts(b, "else {\n");
   emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+  emit_indent(b, indent + 1); buf_printf(b, "sp_gc_nroots = _gcb%d;\n", gcb);
   /* Drop home nodes a real exception unwound past (no-op for a throw/proc-return
      pass-through, where sp_unwind_kind is set); see the tail-position begin. */
   emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n");
@@ -4808,6 +4818,8 @@ else {
        fall through to the rescue expression on any exception. */
     int e = nt_ref(nt, id, "expression");
     int r = nt_ref(nt, id, "rescue_expression");
+    int gcm = ++g_tmp;
+    emit_indent(b, indent); buf_printf(b, "int _gcb%d = sp_gc_nroots; (void)_gcb%d;\n", gcm, gcm);
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     if (e >= 0) emit_stmt(c, e, b, indent + 1);
@@ -4815,6 +4827,7 @@ else {
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+    emit_indent(b, indent + 1); buf_printf(b, "sp_gc_nroots = _gcb%d;\n", gcm);
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n");
     /* A non-local unwind only passes through (no ensure here): continue it. */
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
