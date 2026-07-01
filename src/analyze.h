@@ -37,6 +37,26 @@ TyKind ie_block_break_next_ty(Compiler *c, int node);
    array). Excludes range-native methods (each/map/select/sum/min/count-no-arg). */
 int range_enum_redispatch(Compiler *c, int id);
 
+/* True if `node` (a block body / statements subtree) contains a top-level
+   `break` that binds to the enclosing block -- i.e. not captured by a nested
+   loop or block-bearing call. */
+int block_has_top_break(Compiler *c, int node);
+/* True if CallNode `id` takes a literal block whose body has a top-level
+   break and is an inlined iterator the break wrapper should catch (a real
+   receiver, not instance_exec/eval). When true, the call returns the break
+   value on break, so its result type widens to poly. */
+int call_breaks(Compiler *c, int id);
+/* Scope of an inline-able yielding user method a block-bearing CallNode
+   resolves to (its literal block is spliced at yield sites), else -1. */
+int call_user_yield_mi(Compiler *c, int id);
+/* True if scope `scope_idx` contains an explicit `return`. */
+int scope_has_return(Compiler *c, int scope_idx);
+/* When set, the call_breaks override in infer_call is suppressed so the
+   wrapper can compute the call's normal (no-break) result type. */
+extern int g_infer_ignore_brk;
+/* Recompute a node's type without consulting the cache (used by the break
+   wrapper with g_infer_ignore_brk set to recover the normal result type). */
+TyKind infer_uncached(Compiler *c, int id);
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
 /* Name of a block's trailing rest parameter (`|*a|`), or NULL. */

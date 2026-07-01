@@ -105,6 +105,16 @@ extern int g_redo_depth;
 
 /* When set inside a loop-as-expression, BreakNode assigns its value here. */
 extern const char *g_loop_break_var;
+/* Valued-break-from-block state (see codegen_util.c). */
+extern const char *g_brk_ser_var;
+extern int g_brk_ensure_base;
+extern const char *g_block_brk_var;
+extern const char *g_yield_blk_brk_fallback;
+extern int g_block_brk_ebase;
+extern int g_yield_blk_brk_efallback;
+extern int g_proc_body_kind;
+extern const char *g_proc_brk_home;
+extern int g_brk_skip_id;
 extern const char *g_hoist_len_var;
 extern const char *g_hoist_len_recv;
 /* When set, tail positions assign to this var instead of `return`ing
@@ -447,6 +457,7 @@ int emit_range_call(Compiler *c, int id, Buf *b);
 int emit_poly_call(Compiler *c, int id, Buf *b);
 int diagnose_eval_call(Compiler *c, int id);
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent);
+void emit_brk_wrapped_call(Compiler *c, int id, Buf *b);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);
 int scope_has_return(Compiler *c, int scope_idx);

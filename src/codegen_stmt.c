@@ -2947,7 +2947,14 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
                  eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid);
     }
     else {
-      if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
+      /* inside a poly-slot proc body (g_result_var, e.g. a break-capable
+         lambda) the deferred value returns through the slot ABI, not a raw
+         C return of an sp_RbVal from an mrb_int function */
+      if (has_retval && g_proc_body_kind != 0 && g_result_var && g_ret_type == TY_POLY)
+        buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, g_result_var, eid);
+      else if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
+      else if (g_proc_body_kind != 0 && g_result_var && g_ret_type == TY_POLY)
+        buf_printf(b, "if (_retf%d) { %s = sp_box_nil(); return 0; }\n", eid, g_result_var);
       else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil();\n", eid);
       else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0;\n", eid); /* main() */
       else buf_printf(b, "if (_retf%d) return;\n", eid);
@@ -3220,6 +3227,20 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
         /* These are class-body declarations handled at analysis time; skip. */
         return;
       }
+    }
+    /* A statement-position call whose block top-level-breaks needs its own
+       wrapper here: the inline/iteration emitters below would splice the
+       block without one, leaving the break to target a WRONG enclosing scope
+       (or a bare C `break`). The wrapper emits everything through g_pre. */
+    if (id != g_brk_skip_id && call_breaks(c, id)) {
+      Buf pre; memset(&pre, 0, sizeof pre);
+      Buf *sv_pre = g_pre; int sv_ind = g_indent;
+      g_pre = &pre; g_indent = indent;
+      emit_brk_wrapped_call(c, id, NULL);
+      g_pre = sv_pre; g_indent = sv_ind;
+      if (pre.p) buf_puts(b, pre.p);
+      free(pre.p);
+      return;
     }
     if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0); return; }
     if (is_blockless_block_param_call(c, id)) return;  /* dead path: no block supplied */
@@ -4762,10 +4783,87 @@ else {
   if (sp_streq(ty, "IndexOrWriteNode"))  { emit_index_and_or_write(c, id, b, indent, 1); return; }
   if (sp_streq(ty, "IfNode"))     { emit_if(c, id, b, indent, 0, 0); return; }
   if (sp_streq(ty, "UnlessNode")) { emit_if(c, id, b, indent, 1, 0); return; }
-  if (sp_streq(ty, "WhileNode"))  { emit_while(c, id, b, indent, 0); return; }
-  if (sp_streq(ty, "UntilNode"))  { emit_while(c, id, b, indent, 1); return; }
-  if (sp_streq(ty, "ForNode"))    { emit_for(c, id, b, indent); return; }
+  /* A `break` directly inside a Ruby while/until/for targets that loop, not an
+     enclosing break-wrapped iterator: suppress the longjmp lowering for the
+     loop body (a nested iterator inside re-establishes its own scope). */
+  if (sp_streq(ty, "WhileNode"))  { const char *sv = g_brk_ser_var; g_brk_ser_var = NULL; emit_while(c, id, b, indent, 0); g_brk_ser_var = sv; return; }
+  if (sp_streq(ty, "UntilNode"))  { const char *sv = g_brk_ser_var; g_brk_ser_var = NULL; emit_while(c, id, b, indent, 1); g_brk_ser_var = sv; return; }
+  if (sp_streq(ty, "ForNode"))    { const char *sv = g_brk_ser_var; g_brk_ser_var = NULL; emit_for(c, id, b, indent); g_brk_ser_var = sv; return; }
   if (sp_streq(ty, "BreakNode")) {
+    if (g_brk_ser_var) {
+      /* break from a block: deliver the value to the enclosing wrapper. With
+         no intervening ensure frames this is a same-function `goto` -- no
+         longjmp, so register-allocated locals mutated in the block keep
+         their values. Ensure-crossing breaks longjmp via sp_brk_throw so the
+         ensure bodies run (accepting the catch/throw-class register hazard). */
+      int bargs = nt_ref(nt, id, "arguments");
+      int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
+      int brk_goto = (g_ensure_depth == g_brk_ensure_base) &&
+                     strncmp(g_brk_ser_var, "_brkser", 7) == 0;
+      const char *sfx = brk_goto ? g_brk_ser_var + 7 : NULL;   /* wrapper temp id */
+      emit_indent(b, indent);
+      if (brk_goto) buf_printf(b, "sp_brk_val[_brkslot%s - 1] = ", sfx);
+      else buf_printf(b, "sp_brk_throw(%s, ", g_brk_ser_var);
+      if (bvargc == 0) buf_puts(b, "sp_box_nil()");
+      else if (bvargc == 1) emit_boxed(c, bvargs[0], b);
+      else {
+        /* `break a, b, ...` returns an array of the values */
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
+        for (int k = 0; k < bvargc; k++) {
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, bvargs[k], b); buf_puts(b, "); ");
+        }
+        buf_printf(b, "sp_box_poly_array(_t%d); })", t);
+      }
+      if (brk_goto) buf_printf(b, "; goto _brklbl%s;\n", sfx);
+      else buf_puts(b, ");\n");
+      return;
+    }
+    /* break inside a lambda body: a return from the lambda (CRuby). A break-
+       capable lambda's ret is widened to poly, so the value returns through
+       the proc ABI's _sp_proc_poly_ret slot (g_result_var) with `return 0`;
+       ensure deferral still applies through emit_return otherwise. */
+    if (g_proc_body_kind == 1) {
+      if (g_result_var && g_ensure_depth == 0) {
+        int bargs = nt_ref(nt, id, "arguments");
+        int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
+        emit_indent(b, indent);
+        buf_printf(b, "{ %s = ", g_result_var);
+        if (bvargc == 0) buf_puts(b, "sp_box_nil()");
+        else if (bvargc == 1) emit_boxed(c, bvargs[0], b);
+        else {
+          int t = ++g_tmp;
+          buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
+          for (int k = 0; k < bvargc; k++) {
+            buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, bvargs[k], b); buf_puts(b, "); ");
+          }
+          buf_printf(b, "sp_box_poly_array(_t%d); })", t);
+        }
+        buf_puts(b, "; return 0; }\n");
+        return;
+      }
+      emit_return(c, id, b, indent);
+      return;
+    }
+    /* break inside a non-lambda proc body: throw to the captured creating
+       scope's serial; a dead/foreign scope raises LocalJumpError. */
+    if (g_proc_body_kind == 2 && g_proc_brk_home) {
+      int bargs = nt_ref(nt, id, "arguments");
+      int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
+      emit_indent(b, indent); buf_printf(b, "sp_brk_throw(%s, ", g_proc_brk_home);
+      if (bvargc == 0) buf_puts(b, "sp_box_nil()");
+      else if (bvargc == 1) emit_boxed(c, bvargs[0], b);
+      else {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
+        for (int k = 0; k < bvargc; k++) {
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, bvargs[k], b); buf_puts(b, "); ");
+        }
+        buf_printf(b, "sp_box_poly_array(_t%d); })", t);
+      }
+      buf_puts(b, ");\n");
+      return;
+    }
     if (g_loop_break_var) {
       int bargs = nt_ref(nt, id, "arguments");
       int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
@@ -4845,6 +4943,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "UnlessNode")) { emit_if(c, id, b, indent, 1, 1); return; }
   if (sp_streq(ty, "CaseMatchNode")) { emit_case_match(c, id, b, indent, 1, -1); return; }
   if (sp_streq(ty, "ReturnNode")) { emit_return(c, id, b, indent); return; }
+  /* a tail `break` in a lambda/proc body diverges (return / brk-throw): emit
+     it as a statement, like `raise` below; the fall-through value is dead. */
+  if (sp_streq(ty, "BreakNode") && g_proc_body_kind != 0) {
+    emit_stmt_inner(c, id, b, indent);
+    return;
+  }
   /* `raise` diverges -- no value to return; emit as a plain statement. */
   if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
       nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "raise")) {
@@ -4911,8 +5015,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     if (celled) { emit_stmt(c, id, b, indent); return; }
   }
   /* iteration calls with a block are side-effect statements at tail position;
-     emit them without wrapping in a return (the method returns nil implicitly) */
+     emit them without wrapping in a return (the method returns nil implicitly).
+     A break-carrying iterator is the exception: its value (the break value, or
+     the normal result if no break is taken) IS the method's return, so it must
+     take the value path below (the break wrapper in emit_call), not the
+     statement form here. */
   if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
+      !call_breaks(c, id) &&
       emit_iteration_stmt(c, id, b, indent))
     return;
 

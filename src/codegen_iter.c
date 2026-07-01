@@ -3,14 +3,6 @@
 
 #include "codegen_internal.h"
 
-int scope_has_return(Compiler *c, int scope_idx) {
-  for (int id = 0; id < c->nt->count; id++) {
-    const char *ty = nt_type(c->nt, id);
-    if (ty && sp_streq(ty, "ReturnNode") && c->nscope[id] == scope_idx) return 1;
-  }
-  return 0;
-}
-
 /* Follow a chain of pure `...` forwarders (a method whose whole body is a
    single `target(...)` call, no receiver) from `mi` to the method that
    actually yields or owns the &block; return its index, else -1. A real-
@@ -107,11 +99,23 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_self = g_self;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
+  const char *saved_bbv = g_block_brk_var, *saved_yfbv = g_yield_blk_brk_fallback;
+  const char *saved_ser = g_brk_ser_var;
+  int saved_bbe = g_block_brk_ebase, saved_yfbe = g_yield_blk_brk_efallback;
+  int saved_ebase = g_brk_ensure_base;
   static char selfbuf[64];
   /* Nested `yield` inside the block body should chain to the block that was
      active before this inline, not to the inner block. */
   g_yield_block_fallback = saved_block;
+  g_yield_blk_brk_fallback = saved_bbv;
+  g_yield_blk_brk_efallback = saved_bbe;
   g_block_id = block;
+  /* the literal block binds to THIS call site's break scope; a forwarded
+     BlockArgumentNode block keeps its original definition-site scope */
+  g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
+  g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
+  /* the METHOD BODY's own breaks (a while inside m) never target the caller */
+  g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
 
   if (as_expr) buf_puts(b, "({\n");
@@ -206,6 +210,9 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   g_nren = saved_nren;
   g_block_id = saved_block;
+  g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
+  g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
+  g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_self = saved_self;
   g_self_deref = saved_deref;
   g_block_param_name = saved_bpn;
@@ -366,7 +373,16 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      the outermost caller's block rather than going dead. */
   int svb = g_block_id; g_block_id = g_yield_block_fallback;
   const char *svbpn = g_block_param_name; g_block_param_name = NULL;
+  /* the block body executes in its DEFINITION site's break scope: a
+     top-level break targets the call that received the block, not whatever
+     loop/iterator surrounds this yield inside the method body */
+  const char *svser = g_brk_ser_var; g_brk_ser_var = g_block_brk_var;
+  int svebase = g_brk_ensure_base; g_brk_ensure_base = g_block_brk_ebase;
+  const char *svbbv = g_block_brk_var; g_block_brk_var = g_yield_blk_brk_fallback;
+  int svbbe = g_block_brk_ebase; g_block_brk_ebase = g_yield_blk_brk_efallback;
   emit_stmts(c, bbody, b, as_expr ? 0 : indent);
+  g_brk_ser_var = svser; g_brk_ensure_base = svebase;
+  g_block_brk_var = svbbv; g_block_brk_ebase = svbbe;
   g_block_id = svb; g_block_param_name = svbpn;
   if (as_expr) {
     /* `{ return e }`: the block exits the enclosing function, so the

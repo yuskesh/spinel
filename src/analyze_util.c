@@ -486,3 +486,46 @@ int method_recv_node(Compiler *c, int recv) {
   }
   return -1;
 }
+
+/* True when scope `scope_idx` contains an explicit `return` (such a method
+   cannot be inlined at its call sites). Shared by the inliner and the
+   valued-break detector. */
+int scope_has_return(Compiler *c, int scope_idx) {
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (ty && sp_streq(ty, "ReturnNode") && c->nscope[id] == scope_idx) return 1;
+  }
+  return 0;
+}
+
+/* Resolve a block-bearing CallNode to an INLINE-ABLE yielding user method:
+   mirrors emit_inline_call_x's resolution (free function -> implicit-self
+   chain -> Cls class method -> object-receiver chain) and its
+   yields/!return guard. -1 for anything else -- builtin iterators, `loop`,
+   `catch`, proc/lambda literals, and methods the inliner would refuse. */
+int call_user_yield_mi(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name) return -1;
+  int mi = -1;
+  if (recv < 0) {
+    mi = comp_method_index(c, name);
+    if (mi < 0) {
+      Scope *encl = comp_scope_of(c, id);
+      if (encl && encl->class_id >= 0) mi = comp_method_in_chain(c, encl->class_id, name, NULL);
+    }
+  }
+  else {
+    TyKind rt = infer_type(c, recv);
+    const char *rty = nt_type(nt, recv);
+    const char *cname = (rty && sp_streq(rty, "ConstantReadNode")) ? nt_str(nt, recv, "name") : NULL;
+    int ci = cname ? comp_class_index(c, cname) : -1;
+    if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
+    else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+  }
+  if (mi < 0) return -1;
+  Scope *m = &c->scopes[mi];
+  if (!m->yields || scope_has_return(c, mi)) return -1;
+  return mi;
+}

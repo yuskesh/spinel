@@ -1249,6 +1249,8 @@ static void sp_mark_in_flight_exceptions(void);
 /* Mark the current fiber's in-flight proc-return values; defined with the
    proc-return machinery (sp_proc_home) further down. */
 static void sp_mark_proc_homes(void);
+/* Mark in-flight valued-break values; defined with the sp_brk machinery. */
+static void sp_mark_brk_vals(void);
 
 /* Mark the regex globals as live during GC. Each holds a pointer to a
    string allocated via sp_str_alloc_raw on the str-heap; without this
@@ -1273,6 +1275,7 @@ static void sp_re_mark_globals(void) {
   if (sp_argv_array_cache) sp_gc_mark(sp_argv_array_cache);
   sp_mark_in_flight_exceptions();
   sp_mark_proc_homes();
+  sp_mark_brk_vals();
   sp_mark_fiber_root_storage();
 }
 
@@ -3575,7 +3578,7 @@ static sp_StrArray *sp_caller(mrb_int start, mrb_bool have_len, mrb_int len) {
    ensures it passes over). Declared here, before sp_raise_cls, so a real raise
    can clear it -- an exception raised inside an ensure during an unwind
    supersedes that unwind. The machinery that uses it lives further down. */
-enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW };
+enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW, SP_UNWIND_BREAK };
 struct sp_proc_home;
 static SP_TLS int sp_unwind_kind = SP_UNWIND_NONE, sp_unwind_target = -1, sp_unwind_exc_top = 0;  /* per-worker (see sp_exc_stack) */
 static SP_TLS struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (THROW uses sp_unwind_target) */
@@ -3850,6 +3853,71 @@ static void sp_throw(const char *tag, mrb_int val) {
   sp_raise_cls("UncaughtThrowError", sp_sprintf("uncaught throw :%s", tag));
 }
 
+/* ---- valued `break` from a block (CRuby's TAG_BREAK) ----------------------
+   A `break <v>` inside a block makes the call that received the block return
+   <v>, through any number of intervening frames. Every wrapped block-taking
+   call pushes a break scope inside a setjmp; the scope's SERIAL (a fresh,
+   never-reused id, like the proc-return home ids) is what a break addresses,
+   because nested live scopes make top-of-stack targeting ambiguous: in
+   `def m; [1].map { yield }; end; m { break 5 }` the spliced outer block
+   executes inside the inner map's scope, yet its break belongs to m's call.
+   Non-lambda procs capture their creation scope's serial the same way; a miss
+   (dead or foreign scope) is CRuby's LocalJumpError "break from proc-closure".
+   A break with intervening exception frames routes through sp_exc_stack first
+   (SP_UNWIND_BREAK) so `ensure` bodies run, exactly like sp_throw and
+   sp_proc_return above. The value channel is poly so any break value carries
+   faithfully. Per-worker (SP_TLS) and fiber-context-saved like the catch
+   arrays; the push is unchecked like sp_exc_arm / the catch push. */
+#define SP_BRK_STACK_MAX 64
+static SP_TLS jmp_buf sp_brk_stack[SP_BRK_STACK_MAX];
+static SP_TLS sp_RbVal sp_brk_val[SP_BRK_STACK_MAX];
+static SP_TLS mrb_int sp_brk_serial[SP_BRK_STACK_MAX];
+static SP_TLS int sp_brk_exc_top[SP_BRK_STACK_MAX];   /* sp_exc_top at scope entry */
+static SP_TLS volatile int sp_brk_top = 0;
+/* shared counter (not SP_TLS) so serials are globally unique; see
+   sp_proc_home_seq for the same shape */
+static mrb_int sp_brk_seq = 1;
+static mrb_int sp_brk_push(void) {
+  /* Fixed-depth stack like sp_exc / sp_catch: guard the push so pathological
+     nesting (e.g. deep recursion through .each/.map) fails loudly instead of
+     writing past the array. CRuby's SystemStackError message. */
+  if (sp_brk_top >= SP_BRK_STACK_MAX) {
+    fputs("unhandled exception: stack level too deep\n", stderr);
+    exit(1);
+  }
+#ifdef SP_THREADS
+  mrb_int s = __atomic_fetch_add(&sp_brk_seq, 1, __ATOMIC_RELAXED);
+#else
+  mrb_int s = sp_brk_seq++;
+#endif
+  sp_brk_serial[sp_brk_top] = s;
+  sp_brk_exc_top[sp_brk_top] = sp_exc_top;
+  sp_brk_val[sp_brk_top] = sp_box_nil();
+  sp_brk_top++;
+  return s;
+}
+static void __attribute__((noreturn)) sp_brk_throw(mrb_int serial, sp_RbVal v) {
+  for (int i = sp_brk_top - 1; i >= 0; i--) {
+    if (sp_brk_serial[i] != serial) continue;
+    sp_brk_val[i] = v;
+    sp_brk_top = i + 1;                    /* drop scopes above the target */
+    if (sp_exc_top > sp_brk_exc_top[i]) {  /* run intervening ensures first */
+      sp_unwind_kind = SP_UNWIND_BREAK; sp_unwind_target = i;
+      sp_unwind_exc_top = sp_brk_exc_top[i];
+      longjmp(sp_exc_stack[sp_exc_top - 1], 1);
+    }
+    longjmp(sp_brk_stack[i], 1);
+  }
+  /* no live scope carries the serial: an escaped/foreign proc's break. An
+     inlined block's serial is always live, so this is unreachable for those. */
+  sp_raise_cls("LocalJumpError", "break from proc-closure");
+}
+/* GC: the in-flight break values -- ensures between the throw and the landing
+   can allocate and collect. Called from sp_re_mark_globals. */
+static void sp_mark_brk_vals(void) {
+  for (int i = 0; i < sp_brk_top; i++) sp_mark_rbval(sp_brk_val[i]);
+}
+
 /* ---- non-lambda proc `return` (non-local return to the home method) -------
    A non-lambda proc's `return` returns from the method that created the proc.
    The home method declares a `sp_proc_home` node on its own C stack and links it
@@ -3912,6 +3980,11 @@ static void sp_proc_return(mrb_int id, sp_RbVal v) {
 static void sp_proc_homes_unwind(void) {
   while (sp_proc_ret_head && sp_proc_ret_head->exc_top > sp_exc_top)
     sp_proc_ret_head = sp_proc_ret_head->prev;
+  /* pop break scopes the exception unwound past too, so a later proc-break
+     addressing a dead scope misses (LocalJumpError) instead of longjmping
+     into a freed C frame */
+  while (sp_brk_top > 0 && sp_brk_exc_top[sp_brk_top - 1] > sp_exc_top)
+    sp_brk_top--;
 }
 /* GC: mark the current fiber's chain of in-flight return values (suspended fibers
    are handled by sp_exc_ctx_mark). Each node's val is sp_box_nil() until a return
@@ -3932,6 +4005,8 @@ static void sp_publish_worker_roots(void) {
   if (sp_pending_exc_obj) _sp_gc_root_push((void **)&sp_pending_exc_obj);
   for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev)
     _sp_gc_root_push((void **)((uintptr_t)&h->val | (uintptr_t)1));   /* sp_RbVal root */
+  for (int i = 0; i < sp_brk_top; i++)
+    _sp_gc_root_push((void **)((uintptr_t)&sp_brk_val[i] | (uintptr_t)1));
 }
 __attribute__((constructor)) static void sp_install_safepoint_publish(void) {
   sp_safepoint_publish_hook = sp_publish_worker_roots;
@@ -3945,6 +4020,7 @@ static void sp_unwind_resume(void) {
   int kind = sp_unwind_kind;
   sp_unwind_kind = SP_UNWIND_NONE;
   if (kind == SP_UNWIND_PROCRET) longjmp(sp_unwind_home->jb, 1);
+  if (kind == SP_UNWIND_BREAK) longjmp(sp_brk_stack[sp_unwind_target], 1);
   longjmp(sp_catch_stack[sp_unwind_target], 1);
 }
 
@@ -3960,6 +4036,7 @@ static void sp_unwind_resume(void) {
 typedef struct {
   jmp_buf *es; const char **em; const char **ec; void **eo; int en, ecap;
   jmp_buf *cs; const char **ct; mrb_int *cv; int *cet;    int cn, ccap;
+  jmp_buf *bs; sp_RbVal *bv; mrb_int *bser; int *bet;     int bn, bcap;  /* break scopes */
   sp_proc_home *prhead;  /* this fiber's proc-return chain head (nodes on its C stack) */
   int uk, ut, ue; sp_proc_home *uh;  /* transient unwind state (in flight only while running ensures) */
 } sp_exc_ctx_t;
@@ -3969,7 +4046,8 @@ void sp_exc_ctx_free(void *p) {
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
   free(x->es); free(x->em); free(x->ec); free(x->eo);
-  free(x->cs); free(x->ct); free(x->cv); free(x->cet); free(x);
+  free(x->cs); free(x->ct); free(x->cv); free(x->cet);
+  free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x);
 }
 void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
@@ -3991,6 +4069,16 @@ void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   for (int i = 0; i < m; i++) { memcpy(x->cs[i], sp_catch_stack[i], sizeof(jmp_buf));
     x->ct[i] = sp_catch_tag[i]; x->cv[i] = sp_catch_val[i]; x->cet[i] = sp_catch_exc_top[i]; }
   x->cn = m;
+  int bn = sp_brk_top;
+  if (bn > x->bcap) { x->bcap = bn;
+    x->bs = (jmp_buf *)realloc(x->bs, sizeof(jmp_buf) * bn);
+    x->bv = (sp_RbVal *)realloc(x->bv, sizeof(sp_RbVal) * bn);
+    x->bser = (mrb_int *)realloc(x->bser, sizeof(mrb_int) * bn);
+    x->bet = (int *)realloc(x->bet, sizeof(int) * bn);
+    if (!x->bs || !x->bv || !x->bser || !x->bet) sp_oom_die(); }
+  for (int i = 0; i < bn; i++) { memcpy(x->bs[i], sp_brk_stack[i], sizeof(jmp_buf));
+    x->bv[i] = sp_brk_val[i]; x->bser[i] = sp_brk_serial[i]; x->bet[i] = sp_brk_exc_top[i]; }
+  x->bn = bn;
   x->prhead = sp_proc_ret_head;
   x->uk = sp_unwind_kind; x->ut = sp_unwind_target; x->ue = sp_unwind_exc_top; x->uh = sp_unwind_home;
 }
@@ -4002,6 +4090,9 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   for (int i = 0; i < x->cn; i++) { memcpy(sp_catch_stack[i], x->cs[i], sizeof(jmp_buf));
     sp_catch_tag[i] = x->ct[i]; sp_catch_val[i] = x->cv[i]; sp_catch_exc_top[i] = x->cet[i]; }
   sp_catch_top = x->cn;
+  for (int i = 0; i < x->bn; i++) { memcpy(sp_brk_stack[i], x->bs[i], sizeof(jmp_buf));
+    sp_brk_val[i] = x->bv[i]; sp_brk_serial[i] = x->bser[i]; sp_brk_exc_top[i] = x->bet[i]; }
+  sp_brk_top = x->bn;
   sp_proc_ret_head = x->prhead;
   sp_unwind_kind = x->uk; sp_unwind_target = x->ut; sp_unwind_exc_top = x->ue; sp_unwind_home = x->uh;
 }
@@ -4012,6 +4103,7 @@ void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carri
   /* a suspended fiber's proc-return chain (nodes on its preserved C stack) may
      carry an in-flight return value; mark each so it survives a GC during yield. */
   for (sp_proc_home *h = x->prhead; h; h = h->prev) sp_mark_rbval(h->val);
+  for (int i = 0; i < x->bn; i++) sp_mark_rbval(x->bv[i]);   /* carried break scopes */
 }
 /* Trampoline base handler (#1474): the fiber trampoline arms a copy of its own
    setjmp buffer as the fiber's lowest handler, so an otherwise-unhandled raise
