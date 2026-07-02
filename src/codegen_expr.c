@@ -1541,6 +1541,7 @@ else {
                else if (lt==TY_FLOAT) buf_printf(b, "sp_box_float(_t%d)", t); \
                else if (lt==TY_BOOL) buf_printf(b, "sp_box_bool(_t%d)", t); \
                else if (lt==TY_SYMBOL) buf_printf(b, "sp_box_sym(_t%d)", t); \
+               else if (ty_is_object(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
                else buf_printf(b, "_t%d", t); free(_vb.p); } \
              else buf_printf(b, "_t%d", t); } \
     } while (0)
