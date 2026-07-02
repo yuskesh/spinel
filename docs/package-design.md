@@ -114,18 +114,29 @@ conflate the two because mruby has no `require`; Spinel cannot. The prefix is
 a scaffolding default (`spin new foo` creates `spinel-foo/`), not a
 resolution rule — the index maps names to repos, wherever they live.
 
+There are no per-language role directories (RubyGems' `lib/` is a load-path
+unit and mrbgems' `mrblib/`/`src/` split follows its two build pipelines;
+Spinel has neither — everything is input to the one compile). **Role is
+carried by extension, and the gem root is the require root**, matching the
+colocated-directory form in [require.md](require.md): `.rb` compiles and
+defines the require namespace, `.rbs` is an optional sidecar next to the file
+it pins, `.c`/`.h` are carried native sources (R6). `test/` is the one
+reserved name, excluded from compilation and resolution; manifest, README,
+and LICENSE are excluded by extension. A single-file gem is the minimal form:
+
 ```
 spinel-mypkg/
   gem.toml      # manifest: name = "mypkg" (no prefix), version, deps, provides
-  lib/                # Ruby sources; lib/<feature>.rb per provided feature
-  src/                # optional C sources (in-TU or objects; see R6)
-  sig/                # optional .rbs pinning the public surface
-  test/               # runnable under `spin test`
+  mypkg.rb      # require "mypkg" resolves here
+  mypkg.rbs     # optional sidecar pinning the public surface
+  mypkg_ext.c   # optional carried C (see R6)
+  mypkg/        # subfeatures: require "mypkg/util" -> mypkg/util.rb
+  test/         # runnable under `spin test`
   LICENSE / README.md
 ```
 
 Manifest fields (minimum): `name`, `version` (semver), `provides` (feature
-names its `lib/` satisfies; defaults to `name`), `dependencies` (name +
+names its sources satisfy; defaults to `name`), `dependencies` (name +
 version constraint), `spinel` (compiler version constraint), plus `license`,
 `source`. C-carrying packages add a `[native]` table (sources, cflags, libs —
 the FFI DSL remains usable *inside* the Ruby sources for external libraries).
@@ -187,7 +198,7 @@ happens only as part of building an application that depends on it.
   (package, version, toolchain, flags) — never into the package tree.
 - Two supported shapes: **FFI** to an external installed library (existing
   DSL, package declares `libs` so the link line is derivable), and **carried
-  C** (`src/*.c` + headers) compiled as separate TUs and linked in. In-TU
+  C** (`.c`/`.h` sources in the gem tree) compiled as separate TUs and linked in. In-TU
   splicing (single-TU inlining for cross-TU optimization) is an optimization
   behind the same declaration, not a third user-facing shape.
 - Carried C sees a *stable, documented* runtime surface (a `spinel/runtime.h`
@@ -199,7 +210,7 @@ happens only as part of building an application that depends on it.
 
 - Package sources are spliced and inferred with the application (C1); no
   pre-compiled types.
-- A package may ship `sig/*.rbs` to pin its public methods, giving stable
+- A package may ship `.rbs` sidecars to pin its public methods, giving stable
   diagnostics at the package boundary and protecting the package's inferred
   interior from caller-driven widening (the existing `--rbs` pin machinery).
 - Poly-dispatch arms contributed by package classes are instantiation-gated:
