@@ -335,7 +335,12 @@ regexp: $(SP_RT_LIB) $(SP_RT_MT_LIB)
 TOOL_NAMES = doctor reduce flatten
 TOOL_BINS  = $(addprefix bin/spinel-,$(TOOL_NAMES))
 
-tools: $(TOOL_BINS)
+tools: $(TOOL_BINS) bin/spin
+
+# spin: the spinelgems project tool (self-hosted; see docs/spin.md)
+bin/spin: tools/spin.rb tools/spin/toml.rb $(SPINEL) $(SP_RT_LIB)
+	$(SPINEL) tools/spin.rb -o bin/spin
+	@echo "tools/spin.rb -> bin/spin"
 
 bin/spinel-%: tools/%.rb tools/tool_common.rb $(SPINEL) $(SP_RT_LIB)
 	@mkdir -p bin
