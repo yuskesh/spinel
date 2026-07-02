@@ -2446,6 +2446,61 @@ void emit_super(Compiler *c, int id, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* Generate sp_obj_cmp_dispatch: a cls_id switch calling each instantiated
+   Comparable class's user `<=>`, reporting a nil result as not-comparable.
+   Installed as sp_obj_cmp_hook so the runtime comparator (no-block
+   sort/min/max/clamp) can order user objects. Only object- and poly-typed
+   operands are handled; an exotic operand type omits its arm and falls through
+   to not-comparable, which the callers raise as an ArgumentError. */
+static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static mrb_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, mrb_bool *comparable) {\n");
+  buf_puts(b, "  switch (a.cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated) continue;
+    int defcls = -1;
+    int mi = comp_method_in_chain(c, k, "<=>", &defcls);
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
+    if (m->ret != TY_INT && m->ret != TY_POLY) continue;  /* unusable return -> not-comparable */
+    LocalVar *p = scope_local(m, m->pnames[0]);
+    TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
+    const char *dcn = c->classes[defcls].name;
+    int self_vt = c->classes[defcls].is_value_type;
+    int cid = comp_class_index(c, c->classes[k].name);
+    char argbuf[160];
+    int obj_operand = 0;
+    int pcid = -1;
+    if (ty_is_object(pt)) {
+      int pcls = ty_object_class(pt);
+      const char *pcn = c->classes[pcls].name;
+      pcid = comp_class_index(c, pcn);   /* guard b against the OPERAND's class, not the receiver's */
+      snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b.v.p",
+               c->classes[pcls].is_value_type ? "*" : "", pcn);
+      obj_operand = 1;
+    } else if (pt == TY_POLY) {
+      snprintf(argbuf, sizeof argbuf, "b");
+    } else {
+      continue;
+    }
+    buf_printf(b, "    case %d: {\n", cid);
+    if (obj_operand)
+      buf_printf(b, "      if (b.tag != SP_TAG_OBJ || b.cls_id != %d) { *comparable = FALSE; return 0; }\n", pcid);
+    if (m->ret == TY_INT) {
+      buf_printf(b, "      *comparable = TRUE; return (mrb_int)sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
+                 dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
+    } else {
+      buf_printf(b, "      sp_RbVal _r = sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
+                 dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);
+      buf_puts(b, "      if (_r.tag == SP_TAG_NIL) { *comparable = FALSE; return 0; }\n");
+      buf_puts(b, "      *comparable = TRUE; return _r.v.i;\n");
+    }
+    buf_puts(b, "    }\n");
+  }
+  buf_puts(b, "    default: break;\n");
+  buf_puts(b, "  }\n  *comparable = FALSE; return 0;\n}\n");
+}
+
 /* Emit the static regex-literal globals and, when g_re_init_needed, the
    sp_re_init() that installs the symbol/regex/class/global-mark hooks and
    compiles the literals at startup. */
@@ -2467,9 +2522,13 @@ void emit_regex_section(Buf *b) {
       "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p);\n"
       "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal iv, int *ok);\n");
   }
+  if (g_has_user_cmp)
+    buf_puts(b, "static mrb_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);\n");
   buf_puts(b, "static void sp_re_init(void) {\n");
   if (g_uses_symbols)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
+  if (g_has_user_cmp)
+    buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
   if (g_needs_class_machinery)
     buf_puts(b, "  sp_user_exc_parent_fn = sp_user_exc_parent;\n");
   /* Replace the runtime's hook with the superset that also marks this
@@ -3627,9 +3686,20 @@ char *codegen_program(const NodeTable *nt) {
     }
     free(mk.p);
   }
+  /* An instantiated class that can reach a `<=>` (its own or an ancestor's)
+     needs the cmp-hook so the runtime comparator can order its instances
+     (no-block sort/min/max/clamp and the checked object comparisons). The
+     chain walk matters: a subclass may inherit `<=>` from a base class that
+     is itself never instantiated. */
+  g_has_user_cmp = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated) continue;
+    if (comp_method_in_chain(c, k, "<=>", NULL) >= 0) { g_has_user_cmp = 1; break; }
+  }
+
   /* sp_re_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
-                     g_has_user_global_marks;
+                     g_has_user_global_marks || g_has_user_cmp;
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
      proc literals they contain accumulate static functions into g_procs /
@@ -3644,6 +3714,8 @@ char *codegen_program(const NodeTable *nt) {
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
   }
+  /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
+  if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
 
   /* Emit END block static functions for atexit registration */
   int end_count = 0;

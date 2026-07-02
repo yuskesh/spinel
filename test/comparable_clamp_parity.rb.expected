@@ -1,0 +1,19 @@
+min argument must be less than or equal to max argument
+10
+3
+5
+1
+5
+false
+true
+5
+2
+cannot clamp with an exclusive range
+2
+cannot clamp with an exclusive range
+5
+7
+0
+30
+30
+cannot clamp with an exclusive range

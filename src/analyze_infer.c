@@ -1547,6 +1547,21 @@ else {
     if (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?") ||
         sp_streq(name, "respond_to?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "nil?") || sp_streq(name, "equal?") || sp_streq(name, "frozen?")) return TY_BOOL;
+    /* Comparable#clamp returns self or the APPLIED BOUND: the receiver's
+       class only when each bound is statically that class or nil (a nil
+       bound clamps one-sided and is never returned); a mixed-class or
+       Integer-endpoint (range form) bound can be returned as-is, so the
+       result is boxed. */
+    if (sp_streq(name, "clamp") && argc == 2 &&
+        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) {
+      TyKind lo = infer_type(c, argv[0]), hi = infer_type(c, argv[1]);
+      return ((lo == rt || lo == TY_NIL) && (hi == rt || hi == TY_NIL)) ? rt : TY_POLY;
+    }
+    if (sp_streq(name, "clamp") && argc == 1 && infer_type(c, argv[0]) == TY_RANGE &&
+        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) return TY_POLY;
+    /* Comparable#between?(lo, hi) on an object with `<=>` is a boolean. */
+    if (sp_streq(name, "between?") && argc == 2 &&
+        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) return TY_BOOL;
     /* instance_variable_get(:@x) yields @x's declared type; instance_variable_set
        yields the field type too (C `lvalue = v` evaluates to the lvalue). The
        codegen lowers both to a direct iv_ field access on the known layout. */
@@ -1995,6 +2010,11 @@ else {
     if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) return rt;
     if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0) return TY_INT;
     if (sp_streq(name, "empty?") && argc == 0) return TY_BOOL;
+    /* no-block comparisons (admitted by the narrowing pass only for element
+       classes with `<=>`): sort keeps the array type, min/max yield an
+       element (NULL-encoded nil when empty). */
+    if ((sp_streq(name, "sort") || sp_streq(name, "sort!")) && argc == 0) return rt;
+    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 0) return ty_object(ecls);
   }
 
   /* array receiver methods */
