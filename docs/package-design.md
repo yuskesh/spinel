@@ -6,7 +6,7 @@ Status: requirements draft, not yet implemented. Companion to
 
 Naming (decided): the ecosystem is **spinelgems**; one unit is a **gem** (a
 "spinelgem" where CRuby gems need distinguishing). One manifest filename,
-`spinelgem.toml`, serves both a gem and an application (cargo-style: the
+`gem.toml`, serves both a gem and an application (cargo-style: the
 application is simply the gem at the compile root). CLI surface is
 `spinel gem <cmd>`. The community compatibility catalog of the same name is
 the intended seed for the Phase-2 index (see R5/R8) — to be coordinated with
@@ -97,7 +97,7 @@ directory that holds gems holds *only* gems:
   gems/<name>/            # pre-installed (version = the compiler's)
 
 <project>
-  spinelgem.toml, spinelgem.lock
+  gem.toml, gem.lock
   vendor/gems/<name>-<version>/    # vendored for hermetic builds
 
 ~/.cache/spinel/gems/<name>-<version>/   # fetch cache (XDG)
@@ -116,7 +116,7 @@ resolution rule — the index maps names to repos, wherever they live.
 
 ```
 spinel-mypkg/
-  spinelgem.toml      # manifest: name = "mypkg" (no prefix), version, deps, provides
+  gem.toml      # manifest: name = "mypkg" (no prefix), version, deps, provides
   lib/                # Ruby sources; lib/<feature>.rb per provided feature
   src/                # optional C sources (in-TU or objects; see R6)
   sig/                # optional .rbs pinning the public surface
@@ -136,10 +136,10 @@ happens only as part of building an application that depends on it.
 
 ### R3 — consumer surface
 
-- A project manifest at the application root (`spinelgem.toml`, `[gem]` +
+- A project manifest at the application root (`gem.toml`, `[gem]` +
   `[dependencies]` tables) declaring name-and-constraint pairs; sources:
   index name, git URL + ref, or local path.
-- A lockfile (`spinelgem.lock`) with exact versions + content hashes;
+- A lockfile (`gem.lock`) with exact versions + content hashes;
   committed; builds use only the lockfile.
 - In code, consumers write `require "name"` — nothing else. Resolution order:
   runtime-native feature → stdlib → project packages (lockfile) → `-I` roots.
@@ -236,8 +236,11 @@ outside an XDG cache directory.
 ## 7. Decided
 
 - Manifest is **TOML**, never executable (R2's no-code-at-fetch guarantee).
-- Ecosystem name **spinelgems**; unit "gem"; one `spinelgem.toml` for gems
-  and applications alike; CLI `spinel gem <cmd>`.
+- Ecosystem name **spinelgems**; unit "gem"; one `gem.toml` for gems
+  and applications alike (short over self-branding: inside a `spinel-*`
+  checkout the context is clear, and the `spinel = "~> x.y"` constraint key
+  doubles as the ecosystem discriminator should another toolchain ever
+  adopt the same filename); lockfile `gem.lock`; CLI `spinel gem <cmd>`.
 - Gem *directories/repos* are `spinel-<name>` by convention; gem *names* (and
   therefore `require` strings) carry no prefix (R2). Gems-only directories:
   `gems/<name>/` in the compiler tree (pre-installed), `vendor/gems/
