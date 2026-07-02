@@ -3574,6 +3574,12 @@ __attribute__((constructor)) static void sp_json_install_hooks(void) {
    Empty (plain static, byte-identical) in the single-threaded build. */
 static SP_TLS jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
 static SP_TLS const char *sp_exc_msg[SP_EXC_STACK_MAX];
+/* GC-root watermark at each handler's entry: a raise longjmps past the
+   __attribute__((cleanup)) pops of SP_GC_ROOT locals in the unwound frames,
+   so the landing restores sp_gc_nroots from the popped slot. A side array
+   (not a per-region C local) so protected regions add no stack locals --
+   an extra local per region measurably shifts hot-function frames. */
+static SP_TLS int sp_exc_rootmark[SP_EXC_STACK_MAX];
 static SP_TLS volatile int sp_exc_top = 0;
 static SP_TLS const char *sp_exc_cls[SP_EXC_STACK_MAX];
 static SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
@@ -3995,6 +4001,7 @@ static SP_TLS jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];   /* per-worker (see s
 static SP_TLS const char *sp_catch_tag[SP_CATCH_STACK_MAX];
 static SP_TLS mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
 static SP_TLS int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
+static SP_TLS int sp_catch_rootmark[SP_CATCH_STACK_MAX]; /* GC-root watermark at entry (see sp_exc_rootmark) */
 static SP_TLS volatile int sp_catch_top = 0;
 static void sp_throw(const char *tag, mrb_int val) {
   int i = sp_catch_top - 1;
