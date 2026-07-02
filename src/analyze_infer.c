@@ -62,6 +62,52 @@ TyKind ie_block_break_next_ty(Compiler *c, int node) {
   return r;
 }
 
+int g_infer_ignore_brk = 0;
+
+/* Top-level `break` detector: a BreakNode binding to the enclosing block,
+   stopping at nested loops and nested block-bearing calls (which capture their
+   own break). Mirrors codegen_stmt's subtree_has_loop_break. */
+int block_has_top_break(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 0;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return 0;
+  if (sp_streq(ty, "BreakNode")) return 1;
+  if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+      sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
+      sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return 0;
+  if (sp_streq(ty, "CallNode") && nt_ref(nt, node, "block") >= 0) return 0;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (block_has_top_break(c, nt_ref_at(nt, node, i))) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *el = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++) if (block_has_top_break(c, el[j])) return 1;
+  }
+  return 0;
+}
+
+/* A call is a break-wrapped iterator when it takes a literal block whose body
+   has a top-level break and is either a receiver-bearing builtin iterator or
+   a call resolving to an inline-able yielding user method (whose body -- and
+   so the block, at its yield sites -- is spliced at this call site, putting
+   the wrapper's setjmp in exactly the right C scope). Receiverless
+   NON-methods (loop / catch / proc / lambda literals) run their own scopes
+   and stay excluded, as does instance_exec/eval (handled inline). */
+int call_breaks(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty || !sp_streq(ty, "CallNode")) return 0;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  const char *bty = nt_type(nt, block);
+  if (!bty || !sp_streq(bty, "BlockNode")) return 0;   /* not &proc / &:sym */
+  const char *name = nt_str(nt, id, "name");
+  if (name && (sp_streq(name, "instance_exec") || sp_streq(name, "instance_eval"))) return 0;
+  if (nt_ref(nt, id, "receiver") < 0 && call_user_yield_mi(c, id) < 0) return 0;
+  return block_has_top_break(c, nt_ref(nt, block, "body"));
+}
+
 /* Whether every element written into the poly-array ivar `@<ivname>` of class
    `cid` is an int-returning kind: a bound method (a dispatch-table entry, called
    with an int arg returns int), an int array, an int, or nil filler. Mirrors
@@ -469,6 +515,12 @@ TyKind infer_call(Compiler *c, int id) {
   const int *argv = NULL;
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   if (!name) return TY_UNKNOWN;
+
+  /* A block with a top-level `break <v>` makes this call return <v>, so its
+     result is the union of the normal result and the break value -- poly. The
+     break wrapper suppresses this (g_infer_ignore_brk) to recover the normal
+     result type for the inner emission. */
+  if (!g_infer_ignore_brk && call_breaks(c, id)) return TY_POLY;
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
   /* A Range Enumerable method spinel serves by materializing to an int array:

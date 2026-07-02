@@ -630,6 +630,10 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   const char *saved_dmn = g_dm_subst_name; int saved_dmnode = g_dm_subst_node;
   g_dm_subst_name = s->dm_subst_name; g_dm_subst_node = s->dm_subst_node;
   int saved_lowered = g_current_scope_is_lowered; g_current_scope_is_lowered = s->is_lowered_yield;
+  /* a method body is a fresh break context: a stray enclosing serial must
+     not leak into it (its own wrapped iterators re-establish scopes) */
+  const char *saved_bser = g_brk_ser_var; g_brk_ser_var = NULL;
+  int saved_bskip = g_brk_skip_id; g_brk_skip_id = -1;
   /* value-type reader methods receive self by value, so ivar access uses `.` */
   const char *saved_deref = g_self_deref;
   g_self_deref = (s->class_id >= 0 && !s->is_cmethod && c->classes[s->class_id].is_value_type &&
@@ -701,6 +705,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_emitting_class_id = saved_emcls;
   g_dm_subst_name = saved_dmn; g_dm_subst_node = saved_dmnode;
   g_current_scope_is_lowered = saved_lowered;
+  g_brk_ser_var = saved_bser; g_brk_skip_id = saved_bskip;
   buf_puts(b, "}\n");
 }
 
@@ -1100,6 +1105,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   g_block_param_name = bp0; g_self = sv_self;
   g_yielder_name = as_gen ? bp0 : NULL;   /* `y << v` -> Fiber.yield in the body */
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
+  const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
+  int sv_fbskip = g_brk_skip_id; g_brk_skip_id = -1;
 
   /* Unpack capture struct */
   if (ncap > 0 || cap_self) {
@@ -1214,6 +1221,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
+  g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
 
   /* Emit creation expression:
      If there are captures, allocate a GC-managed capture struct, fill it,
@@ -1453,6 +1461,13 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
      IS the proc's value on the fall-through path (no `return` fired): keep the
      analyzed `ret` and emit it normally, so the value is not lost. */
   int ret_proc = (g_method_pr_label != NULL) && proc_does_nonlocal_return(c, create);
+  /* A non-lambda EXPLICIT proc (`proc {}` / `Proc.new {}`) whose body
+     top-level-breaks raises LocalJumpError "break from proc-closure" when
+     called -- CRuby 4 delivers a break only for a block-converted proc, never
+     an explicitly created one. A lambda's break is a return from the lambda. */
+  int brk_proc = !is_lambda && !is_block_node && block_has_top_break(c, body);
+  /* a lambda whose body can top-level-break returns that value: box the ret */
+  if (is_lambda && block_has_top_break(c, body)) ret = TY_POLY;
   if (ret_proc && tail_is_return) { tail_ret_arg = -1; ret = TY_NIL; }
   /* A block passed as a method's &block argument must return the value type the
      method expects across all its call sites (its blk_ret): if that unified type
@@ -1573,6 +1588,16 @@ else if (orecv >= 0 && onm) {
   else g_proc_return_home = NULL;
   g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
+  /* the proc body is a fresh function: an enclosing break serial is out of
+     scope inside it; a break here is a lambda-local return (kind 1) or a
+     throw to the captured home serial (kind 2) */
+  const char *sv_bser = g_brk_ser_var; g_brk_ser_var = NULL;
+  int sv_bskip = g_brk_skip_id; g_brk_skip_id = -1;
+  int sv_pbk = g_proc_body_kind; const char *sv_pbh = g_proc_brk_home;
+  g_proc_body_kind = is_lambda ? 1 : (brk_proc ? 2 : 0);
+  /* serial -1 never matches a live scope: sp_brk_throw raises the CRuby
+     LocalJumpError after evaluating the break value */
+  g_proc_brk_home = brk_proc ? "-1" : NULL;
   char cap_struct_name[32] = "";
   if (ncap > 0) { snprintf(cap_struct_name, sizeof cap_struct_name, "_proc_cap_%d", pid); g_cap_struct = cap_struct_name; g_cap_names = &caps; }
   else { g_cap_struct = NULL; g_cap_names = NULL; }
@@ -1698,6 +1723,8 @@ else if (orecv >= 0 && onm) {
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
+  g_brk_ser_var = sv_bser; g_brk_skip_id = sv_bskip;
+  g_proc_body_kind = sv_pbk; g_proc_brk_home = sv_pbh;
   g_result_poly = sv_rp;
   g_method_pr_label = sv_pr_label; g_method_pr_var = sv_pr_var; g_proc_return_home = sv_prh;
 
@@ -2239,9 +2266,19 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int saved_nren = g_nren, saved_block = g_block_id;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
+  const char *saved_bbv = g_block_brk_var, *saved_yfbv = g_yield_blk_brk_fallback;
+  const char *saved_ser = g_brk_ser_var;
+  int saved_bbe = g_block_brk_ebase, saved_yfbe = g_yield_blk_brk_efallback;
+  int saved_ebase = g_brk_ensure_base;
 
   g_yield_block_fallback = saved_block;
+  g_yield_blk_brk_fallback = saved_bbv;
+  g_yield_blk_brk_efallback = saved_bbe;
   g_block_id = block;
+  /* same break-context rules as emit_inline_call_x */
+  g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
+  g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
+  g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
 
   if (as_expr) buf_puts(b, "({\n");
@@ -2303,6 +2340,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_id = saved_block;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
+  g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
+  g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
+  g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   return 1;
 }
 

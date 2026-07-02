@@ -237,6 +237,32 @@ static int ie_body_has_break_next(Compiler *c, int node) {
   return 0;
 }
 
+/* Iterators whose normal return value is the receiver (Ruby returns self) and
+   that have no value-producing emitter -- the valued-break wrapper emits these
+   as a statement and uses the receiver as the no-break result. */
+static int brk_iter_returns_self(const char *name) {
+  if (!name) return 0;
+  return sp_streq(name, "each") || sp_streq(name, "each_with_index") ||
+         sp_streq(name, "each_pair") || sp_streq(name, "each_value") ||
+         sp_streq(name, "each_key") || sp_streq(name, "each_entry") ||
+         sp_streq(name, "reverse_each");
+}
+
+/* A receiver safe to evaluate twice (once by the iterator's loop, once as the
+   break wrapper's no-break result): a read with no side effects. A CallNode or
+   anything else falls through, so a side-effecting receiver is not duplicated. */
+static int brk_recv_is_pure(Compiler *c, int recv) {
+  if (recv < 0) return 0;
+  const char *t = nt_type(c->nt, recv);
+  if (!t) return 0;
+  return sp_streq(t, "LocalVariableReadNode") || sp_streq(t, "InstanceVariableReadNode") ||
+         sp_streq(t, "ClassVariableReadNode") || sp_streq(t, "GlobalVariableReadNode") ||
+         sp_streq(t, "ConstantReadNode") || sp_streq(t, "ConstantPathNode") ||
+         sp_streq(t, "SelfNode") || sp_streq(t, "ArrayNode") || sp_streq(t, "HashNode") ||
+         sp_streq(t, "RangeNode") || sp_streq(t, "IntegerNode") || sp_streq(t, "FloatNode") ||
+         sp_streq(t, "StringNode") || sp_streq(t, "SymbolNode");
+}
+
 /* Unify the value type of every splice-bound break/next in `node` (same
    binding rules as ie_body_has_break_next). TY_UNKNOWN if none carry a value.
    Sizes the splice result temp so a `next <poly>` (e.g. an int ivar widened in
@@ -2473,6 +2499,116 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Wrap a break-carrying block call in a serial-addressed setjmp scope: the
+   scope's serial (from sp_brk_push) is what a top-level `break` in the
+   inlined block -- or a non-lambda proc created under it -- addresses via
+   sp_brk_throw; the call expression then yields the break value. The result
+   type widened to poly at inference; the call's NORMAL (no-break) type is
+   recovered for the inner emission and boxed. b == NULL emits the call in
+   statement position (the value temp is simply left unread). */
+void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int wrecv = nt_ref(nt, id, "receiver");
+  const char *wname = nt_str(nt, id, "name");
+  /* A builtin self-returning iterator (each / each_with_index / ...) has no
+     value-producing emitter: run it as a statement and use the receiver as
+     the no-break result. A user method resolving through the inliner takes
+     the normal value path (its return value is the result, NOT the receiver
+     -- name-matching alone would be wrong for a user `each`). */
+  int self_ret = wrecv >= 0 && call_user_yield_mi(c, id) < 0 &&
+                 brk_iter_returns_self(wname);
+  int sv_ig = g_infer_ignore_brk; g_infer_ignore_brk = 1;
+  TyKind normal_ty = self_ret ? comp_ntype(c, wrecv) : infer_uncached(c, id);
+  g_infer_ignore_brk = sv_ig;
+  if (normal_ty == TY_STRBUF) normal_ty = TY_STRING;
+  int tR = ++g_tmp, tG = ++g_tmp, tS = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tR, tR);
+  /* frame snapshots: the goto delivery (and the longjmp landing) restore the
+     exception/catch/break depths to the wrapper's entry state */
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "int _brkexc%d = sp_exc_top, _brkcat%d = sp_catch_top, _brkslot%d = 0;"
+                    " (void)_brkexc%d; (void)_brkcat%d; (void)_brkslot%d;\n",
+             tS, tS, tS, tS, tS, tS);
+  /* An impure self-returning receiver is evaluated ONCE into a rooted temp,
+     substituted for the receiver node below (g_argov), and reused as the
+     no-break result -- so `make_arr.each { break }` builds the array once. */
+  int spill = -1, spilled_argov = 0;
+  if (self_ret && !brk_recv_is_pure(c, wrecv)) {
+    /* The impure receiver feeds both the call and the no-break result, so it
+       MUST be spilled to a temp -- evaluating it twice would double its side
+       effects. If the override table is full we cannot substitute it; reject
+       loudly rather than emit a double-evaluating call. */
+    if (g_n_argov >= MAX_ARG_OVERRIDE)
+      unsupported(c, id, "break-wrapped iterator with impure receiver (override table full)");
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_expr(c, wrecv, &rb);
+    spill = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    emit_ctype(c, normal_ty, g_pre);
+    buf_printf(g_pre, " _t%d = %s;", spill, rb.p ? rb.p : "0");
+    free(rb.p);
+    if (needs_root(normal_ty)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", spill);
+    buf_puts(g_pre, "\n");
+    g_argov_node[g_n_argov] = wrecv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", spill);
+    g_n_argov++;
+    spilled_argov = 1;
+  }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "int _t%d = sp_gc_nroots; (void)_t%d;\n", tG, tG);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_int _brkser%d = sp_brk_push(); (void)_brkser%d;\n", tS, tS);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "_brkslot%d = sp_brk_top;\n", tS);
+  emit_indent(g_pre, g_indent);
+  buf_puts(g_pre, "if (setjmp(sp_brk_stack[sp_brk_top - 1]) == 0) {\n");
+  g_indent++;
+  TyKind sv_cache = c->ntype[id]; c->ntype[id] = normal_ty;
+  char servar[24]; snprintf(servar, sizeof servar, "_brkser%d", tS);
+  const char *sv_ser = g_brk_ser_var; g_brk_ser_var = servar;
+  int sv_ebase = g_brk_ensure_base; g_brk_ensure_base = g_ensure_depth;
+  int sv_skip = g_brk_skip_id; g_brk_skip_id = id;
+  Buf inner; memset(&inner, 0, sizeof inner);
+  /* A no-value normal type (a yield method ending in puts/nil) runs as a
+     statement with nil as the no-break result. */
+  int stmt_form = self_ret || !is_scalar_ret(normal_ty);
+  if (stmt_form) {
+    emit_stmt(c, id, g_pre, g_indent);
+    if (self_ret) {
+      if (spill >= 0) buf_printf(&inner, "_t%d", spill);
+      else emit_expr(c, wrecv, &inner);
+    }
+  } else {
+    emit_call(c, id, &inner);   /* emits the loop into g_pre, result expr into inner */
+  }
+  g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_skip_id = sv_skip;
+  c->ntype[id] = sv_cache;
+  if (spilled_argov) g_n_argov--;
+  Buf boxed; memset(&boxed, 0, sizeof boxed);
+  if (inner.p && inner.p[0]) emit_boxed_text(c, normal_ty, inner.p, &boxed);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "_t%d = %s;\n", tR, boxed.p && boxed.p[0] ? boxed.p : "sp_box_nil()");
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_brk_top--;\n");
+  free(inner.p); free(boxed.p);
+  g_indent--;
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "} else {\n");
+  /* the goto delivery lands here too; restore every depth to the entry
+     snapshot (correct for both paths -- after an ensure-running longjmp the
+     handlers have already popped down to these) */
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "_brklbl%d: __attribute__((unused));\n", tS);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_gc_nroots = _t%d;\n", tG);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_exc_top = _brkexc%d; sp_catch_top = _brkcat%d; sp_brk_top = _brkslot%d;\n",
+             tS, tS, tS);
+  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = sp_brk_val[sp_brk_top - 1];\n", tR);
+  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_brk_top--;\n");
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  if (b) buf_printf(b, "_t%d", tR);
+  else { emit_indent(g_pre, g_indent); buf_printf(g_pre, "(void)_t%d;\n", tR); }
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -2488,6 +2624,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "0");
       return;
     }
+  }
+  /* Valued `break` from a block: wrap the call in a serial-addressed setjmp
+     scope so a top-level `break <v>` in the block sp_brk_throws back here and
+     the call yields <v> (see emit_brk_wrapped_call). */
+  if (id != g_brk_skip_id && call_breaks(c, id)) {
+    emit_brk_wrapped_call(c, id, b);
+    return;
   }
   /* Inside an Enumerator.new { |y| ... } generator, `y << v` and `y.yield(v)` on
      the yielder lower to a Fiber.yield (the generator runs on a fiber). */
@@ -2603,6 +2746,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "for (;;) {\n");
         const char *sv_lb = g_loop_break_var;
         int sv_iep = g_ie_res_poly;
+        const char *sv_bj = g_brk_ser_var; g_brk_ser_var = NULL;  /* break here targets this loop */
         g_ie_res_poly = (bt == TY_POLY);   /* box a scalar `break <v>` into the poly slot */
         char lb_buf[32]; snprintf(lb_buf, sizeof lb_buf, "_t%d", t);
         g_loop_break_var = lb_buf;
@@ -2610,6 +2754,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         emit_stmts(c, lbody, g_pre, g_indent + 2);
         g_loop_break_var = sv_lb;
         g_ie_res_poly = sv_iep;
+        g_brk_ser_var = sv_bj;
         emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
         emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_exc_top--;\n");
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -2645,6 +2790,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_top++;\n");
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "if (setjmp(sp_catch_stack[sp_catch_top-1]) == 0) {\n");
+      /* a bare break in a catch body keeps today's C-break behavior */
+      const char *sv_cser = g_brk_ser_var; g_brk_ser_var = NULL;
       int body = nt_ref(nt, blk, "body");
       int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
       for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], g_pre, g_indent + 1);
@@ -2666,6 +2813,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         }
       }
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_catch_top--;\n");
+      g_brk_ser_var = sv_cser;
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "else {\n");
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_catch_top--;\n");
@@ -4733,6 +4881,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            g_ie_next_var. A `return` still returns from the enclosing function. */
         int ie_bn_wrap = ie_body_has_break_next(c, blk_body);
         const char *sv_lb = g_loop_break_var, *sv_nx = g_ie_next_var;
+        /* the splice body's break binds to the do/while(0) below, never to an
+           enclosing valued-break scope */
+        const char *sv_bser = g_brk_ser_var; g_brk_ser_var = NULL;
         int sv_iep = g_ie_res_poly;
         g_ie_res_poly = (scalar_res && body_ty == TY_POLY);
         char bvbuf[32];
@@ -4762,6 +4913,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           g_indent--; emit_indent(g_pre, g_indent); buf_puts(g_pre, "} while (0);\n");
         }
         g_ie_res_poly = sv_iep;
+        g_brk_ser_var = sv_bser;
         g_ie_discard_value = saved_discard;
       }
       g_ie_class_id = saved_ie;

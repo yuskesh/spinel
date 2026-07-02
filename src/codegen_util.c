@@ -105,6 +105,38 @@ const char *g_ie_next_var = NULL;
 /* Set while emitting an instance_exec/eval splice whose result temp is poly:
    a `break <v>` / `next <v>` carrying a scalar value must box it to match. */
 int g_ie_res_poly = 0;
+/* Set while emitting a block body wrapped in a valued-break setjmp scope:
+   the C lvalue holding the enclosing scope's SERIAL, so a top-level
+   `break <v>` lowers to sp_brk_throw(<serial>, v) rather than a C `break`.
+   NULLed when entering a nested C loop (while/for/until/loop) or another
+   emission context (method/proc/fiber body, instance_exec splice) whose own
+   `break` must not target this scope. Non-lambda procs capture its value at
+   creation as their break home. */
+const char *g_brk_ser_var = NULL;
+/* g_ensure_depth at the enclosing wrapper: a break at the SAME depth has no
+   intervening ensure bodies and delivers by same-function `goto` (register-
+   safe: a longjmp would roll back register-allocated locals mutated since
+   the setjmp -- the known hazard of the catch/throw machinery); a deeper
+   break longjmps via sp_brk_throw so the ensures run. */
+int g_brk_ensure_base = 0;
+/* The break-scope serial var bound to the CURRENT block (g_block_id): saved
+   at the call site when a yielding method is inlined, re-installed while the
+   block body is spliced at a yield site -- so a `break` in the block targets
+   the call that received it even when the yield sits inside the method's own
+   loops or nested iterators. Paired with g_yield_block_fallback the same way
+   g_block_id is. */
+const char *g_block_brk_var = NULL;
+const char *g_yield_blk_brk_fallback = NULL;
+int g_block_brk_ebase = 0;
+int g_yield_blk_brk_efallback = 0;
+/* Proc-literal body context: 1 = lambda (break returns from the lambda),
+   2 = non-lambda proc with a break (targets its captured home scope). */
+int g_proc_body_kind = 0;
+/* C expression for the non-lambda proc's captured break-home serial. */
+const char *g_proc_brk_home = NULL;
+/* The CallNode id currently being emitted as the inner (unwrapped) call of its
+   own break wrapper, so the wrapper is not re-entered recursively. */
+int g_brk_skip_id = -1;
 const char *g_result_var = NULL;
 int g_result_poly = 0;
 /* Non-lambda proc `return` support. While emitting a method that owns a
