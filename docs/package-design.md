@@ -97,7 +97,7 @@ directory that holds gems holds *only* gems:
   gems/<name>/            # pre-installed (version = the compiler's)
 
 <project>
-  gem.toml, gem.lock
+  gem.toml (+ gem.lock in applications)
   vendor/gems/<name>-<version>/    # vendored for hermetic builds
 
 ~/.cache/spinel/gems/<name>-<version>/   # fetch cache (XDG)
@@ -139,8 +139,17 @@ happens only as part of building an application that depends on it.
 - A project manifest at the application root (`gem.toml`, `[gem]` +
   `[dependencies]` tables) declaring name-and-constraint pairs; sources:
   index name, git URL + ref, or local path.
-- A lockfile (`gem.lock`) with exact versions + content hashes;
-  committed; builds use only the lockfile.
+- A lockfile (`gem.lock`) recording the machine-resolved result of the
+  manifest's human intent: exact versions *including transitive
+  dependencies*, plus content hashes for integrity. Reproducibility matters
+  more here than in CRuby — under whole-program inference a dependency's
+  minor bump can change whether the application *compiles*, not just how it
+  behaves.
+- The lockfile is an application artifact, not a requirement: absent a
+  `gem.lock`, builds resolve from `gem.toml` (fully deterministic when every
+  source is an exact pin); `spinel gem add`/`lock` writes it. Applications
+  commit it; library gems do not (version selection belongs to the consuming
+  application — the cargo convention).
 - In code, consumers write `require "name"` — nothing else. Resolution order:
   runtime-native feature → stdlib → project packages (lockfile) → `-I` roots.
   A `require` satisfied by no layer stays the existing compile-time LoadError.
@@ -240,7 +249,7 @@ outside an XDG cache directory.
   and applications alike (short over self-branding: inside a `spinel-*`
   checkout the context is clear, and the `spinel = "~> x.y"` constraint key
   doubles as the ecosystem discriminator should another toolchain ever
-  adopt the same filename); lockfile `gem.lock`; CLI `spinel gem <cmd>`.
+  adopt the same filename); lockfile `gem.lock` is an application artifact (libraries do not commit one, and a build without one resolves from the manifest); CLI `spinel gem <cmd>`.
 - Gem *directories/repos* are `spinel-<name>` by convention; gem *names* (and
   therefore `require` strings) carry no prefix (R2). Gems-only directories:
   `gems/<name>/` in the compiler tree (pre-installed), `vendor/gems/
