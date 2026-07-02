@@ -2544,7 +2544,10 @@ void analyze_program(Compiler *c) {
       if (iv < 0) continue;
       if (class_ivar_pinned(cl, ivname)) continue;  /* --rbs seed pins the type */
       TyKind t = cl->ivar_types[iv];
-      if (t != TY_INT && t != TY_FLOAT && t != TY_STRING &&
+      /* TY_INT is exempt: the generated constructor already seeds int ivars
+         with SP_INT_NIL (emit_ivar_nil_inits), so a pre-write read is nil
+         through the nullable-int machinery without widening to poly. */
+      if (t != TY_FLOAT && t != TY_STRING &&
           t != TY_SYMBOL && t != TY_BOOL) continue;
       cl->ivar_types[iv] = TY_POLY;
       ivar_backstop_changed = 1;
