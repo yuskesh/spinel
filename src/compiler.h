@@ -180,6 +180,9 @@ typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags,
 typedef struct {
   const NodeTable *nt;
   TyKind *ntype;    /* [node_cap] node id -> inferred type */
+  TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
+                        guard: the read's non-nil type (codegen unboxes the poly
+                        slot at the read site); TY_UNKNOWN = not narrowed */
   int *nscope;      /* [node_cap] node id -> owning scope index */
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
   int node_cap;     /* allocated length of ntype/nscope (>= nt->count) */

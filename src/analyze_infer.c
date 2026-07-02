@@ -3176,6 +3176,8 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
 
   if (nk == NK_LocalVariableReadNode) {
+    /* a `return .. if p.nil?`-guarded param read: the non-nil type (#1661) */
+    if (c->nilnarrow[id] != TY_UNKNOWN) return c->nilnarrow[id];
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
     /* &block param that escapes (not yield-inlined): the LocalVar slot type is

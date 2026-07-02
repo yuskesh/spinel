@@ -486,6 +486,15 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (g_dm_subst_name && lrn && sp_streq(lrn, g_dm_subst_name) && g_dm_subst_node >= 0) {
       emit_expr(c, g_dm_subst_node, b); return;
     }
+    /* a `return .. if p.nil?`-guarded param read: unbox the poly slot to the
+       non-nil type the narrowing pass proved (#1661) */
+    if (c->nilnarrow[id] != TY_UNKNOWN) {
+      Buf rb2; memset(&rb2, 0, sizeof rb2);
+      emit_local_ref(c, id, lrn, &rb2);
+      emit_unbox_text(c, c->nilnarrow[id], rb2.p ? rb2.p : "", b);
+      free(rb2.p);
+      return;
+    }
     LocalVar *slv = lrn ? scope_local(comp_scope_of(c, id), lrn) : NULL;
     if (slv && slv->type == TY_STRBUF) {
       /* A mutable-string local read yields an independent GC string copy: its

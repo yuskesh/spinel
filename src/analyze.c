@@ -2059,6 +2059,148 @@ static void narrow_poly_int_locals(Compiler *c) {
   free(is_read); free(claimed);
 }
 
+/* ---- `return <expr> if p.nil?` guard narrowing (#1661) --------------------
+   A method whose call sites pass `T | nil` types its parameter poly (T has no
+   first-class nullable slot: String, Time, ...). When the body OPENS with
+   early-return nil guards on that parameter and never reassigns it, every
+   read after the guard is provably non-nil: mark those read nodes with the
+   non-nil type in c->nilnarrow. infer_type returns the narrowed type for the
+   marked reads and codegen unboxes the poly slot at each read site, so the
+   rest of the body (and the method's return) type as T. */
+
+static void nng_mark_reads(Compiler *c, int root, Scope *s, const char *pn, TyKind t) {
+  if (root < 0) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty && sp_streq(ty, "LocalVariableReadNode")) {
+    const char *nm = nt_str(nt, root, "name");
+    /* only reads owned by the method scope itself: a block-interior read goes
+       through capture plumbing and keeps the poly slot (sound, just unnarrowed) */
+    if (nm && sp_streq(nm, pn) && comp_scope_of(c, root) == s)
+      c->nilnarrow[root] = t;
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) nng_mark_reads(c, nt_ref_at(nt, root, i), s, pn, t);
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0;
+    const int *a = nt_arr_at(nt, root, i, &n2);
+    for (int j = 0; j < n2; j++) nng_mark_reads(c, a[j], s, pn, t);
+  }
+}
+
+/* Any write/target of `pn` anywhere in the method disables narrowing (it
+   could re-store nil, or another type, after the guard). */
+static int nng_has_write(Compiler *c, int root, const char *pn) {
+  if (root < 0) return 0;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty && (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableTargetNode") ||
+             sp_streq(ty, "LocalVariableOperatorWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
+             sp_streq(ty, "LocalVariableAndWriteNode"))) {
+    const char *nm = nt_str(nt, root, "name");
+    if (nm && sp_streq(nm, pn)) return 1;
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) if (nng_has_write(c, nt_ref_at(nt, root, i), pn)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0;
+    const int *a = nt_arr_at(nt, root, i, &n2);
+    for (int j = 0; j < n2; j++) if (nng_has_write(c, a[j], pn)) return 1;
+  }
+  return 0;
+}
+
+/* `return <expr> if p.nil?` (modifier or block form, no else) on a poly
+   param of scope `s`: returns the param name, else NULL. */
+static const char *nng_guard_param(Compiler *c, Scope *s, int st) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, st);
+  if (!ty || !sp_streq(ty, "IfNode")) return NULL;
+  if (nt_ref(nt, st, "subsequent") >= 0) return NULL;
+  int pred = nt_ref(nt, st, "predicate");
+  if (pred < 0 || !nt_type(nt, pred) || !sp_streq(nt_type(nt, pred), "CallNode")) return NULL;
+  const char *cn = nt_str(nt, pred, "name");
+  if (!cn || !sp_streq(cn, "nil?")) return NULL;
+  if (nt_ref(nt, pred, "arguments") >= 0) return NULL;
+  int recv = nt_ref(nt, pred, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return NULL;
+  const char *pn = nt_str(nt, recv, "name");
+  if (!pn) return NULL;
+  LocalVar *lv = scope_local(s, pn);
+  if (!lv || !lv->is_param || lv->is_block_param || lv->type != TY_POLY) return NULL;
+  int thb = nt_ref(nt, st, "statements");
+  int n = 0;
+  const int *a = thb >= 0 ? nt_arr(nt, thb, "body", &n) : NULL;
+  if (!a || n != 1) return NULL;
+  const char *rt2 = nt_type(nt, a[0]);
+  if (!rt2 || !sp_streq(rt2, "ReturnNode")) return NULL;
+  return pn;
+}
+
+static void narrow_nil_guard_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->def_node < 0 || s->nparams <= 0 || !s->name) continue;
+    /* one definition of this name program-wide: the argument collection below
+       is name-matched (like param inference itself), so a same-named sibling
+       method would blend unrelated call sites */
+    int dup = 0;
+    for (int sj = 0; sj < c->nscopes && !dup; sj++)
+      if (sj != si && c->scopes[sj].def_node >= 0 && c->scopes[sj].name &&
+          sp_streq(c->scopes[sj].name, s->name)) dup = 1;
+    if (dup) continue;
+    int body = nt_ref(nt, s->def_node, "body");
+    int bn = 0;
+    const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (!bb || bn < 2) continue;
+    for (int g = 0; g < bn - 1; g++) {
+      const char *pn = nng_guard_param(c, s, bb[g]);
+      if (!pn) break;               /* leading guards only */
+      int k = -1;
+      for (int i = 0; i < s->nparams; i++) if (sp_streq(s->pnames[i], pn)) { k = i; break; }
+      if (k < 0 || (s->rest_idx >= 0 && k >= s->rest_idx)) continue;
+      if (nng_has_write(c, body, pn)) continue;
+      /* non-nil unify over every name-matched plain call's argument k; any
+         caller shape this cannot see through (super, splat, kwargs, missing
+         positional) bails */
+      TyKind t = TY_UNKNOWN;
+      int ok = 1;
+      for (int id = 0; id < nt->count && ok; id++) {
+        const char *ty2 = nt_type(nt, id);
+        if (!ty2) continue;
+        if (sp_streq(ty2, "SuperNode") || sp_streq(ty2, "ForwardingSuperNode")) {
+          Scope *cs = comp_scope_of(c, id);
+          if (cs && cs->name && sp_streq(cs->name, s->name)) ok = 0;
+          continue;
+        }
+        if (!sp_streq(ty2, "CallNode")) continue;
+        const char *cn2 = nt_str(nt, id, "name");
+        if (!cn2 || !sp_streq(cn2, s->name)) continue;
+        int args = nt_ref(nt, id, "arguments");
+        int an = 0;
+        const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+        if (!av || an <= k) { ok = 0; break; }
+        const char *aty = nt_type(nt, av[k]);
+        if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "KeywordHashNode"))) { ok = 0; break; }
+        if (aty && sp_streq(aty, "NilNode")) continue;
+        TyKind at = infer_type(c, av[k]);
+        if (at == TY_NIL) continue;
+        if (at == TY_UNKNOWN || at == TY_POLY || at == TY_VOID) { ok = 0; break; }
+        t = (t == TY_UNKNOWN) ? at : ty_unify(t, at);
+      }
+      if (!ok || t == TY_UNKNOWN || t == TY_POLY || t == TY_NIL) continue;
+      /* the read-site unbox must be expressible for T */
+      if (!(t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_SYMBOL ||
+            t == TY_STRING || t == TY_TIME || ty_is_object(t) ||
+            ty_is_array(t) || ty_is_hash(t))) continue;
+      for (int j = g + 1; j < bn; j++) nng_mark_reads(c, bb[j], s, pn, t);
+    }
+  }
+}
+
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
@@ -2651,6 +2793,11 @@ void analyze_program(Compiler *c) {
       }
     }
   }
+  /* `return .. if p.nil?` early-return guards: reads of the guarded poly
+     param after the guard take its non-nil type (#1661). Post-fixpoint so
+     param and argument types are final; before the return recompute below so
+     narrowed tails type the enclosing method's return. */
+  narrow_nil_guard_params(c);
   /* Post-backstop: re-run write type inference so multi-write locals whose
      RHS chains through a now-typed ivar (e.g. @h[bank][idx] where @h was
      just promoted from UNKNOWN to POLY) get their types resolved. */
