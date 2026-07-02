@@ -4201,9 +4201,16 @@ else {
           }
           else if ((sp_streq(lty, "ConstantTargetNode") || sp_streq(lty, "ConstantPathTargetNode"))) {
             const char *cnm_rt = nt_str(nt, lefts[i], "name");
-            if (!cnm_rt || !comp_const(c, cnm_rt)) continue;
+            LocalVar *cv_rt = cnm_rt ? comp_const(c, cnm_rt) : NULL;
+            if (!cv_rt) continue;
             emit_indent(b, indent);
-            buf_printf(b, "cst_%s = sp_%sArray_get(_t%d, %dLL);\n", cnm_rt, k, tarr, i);
+            char cgx[80]; snprintf(cgx, sizeof cgx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+            buf_printf(b, "cst_%s = ", cnm_rt);
+            if (sp_streq(k, "Poly") && cv_rt->type != TY_POLY && cv_rt->type != TY_UNKNOWN)
+              emit_unbox_text(c, cv_rt->type, cgx, b);  /* typed constant from a poly tuple */
+            else
+              buf_puts(b, cgx);
+            buf_puts(b, ";\n");
           }
           /* setter target (`obj.attr = elem`): invoke the writer method so a
              custom writer (e.g. CPU#next_frame_clock= setting @clk_frame) runs.

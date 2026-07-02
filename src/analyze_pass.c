@@ -401,6 +401,31 @@ static int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max)
   return an;
 }
 
+/* `A, B = [x, y].map { ... }`: the tuple has exactly the literal receiver's
+   element count and every element takes the block's (concrete) result type.
+   Returns that count, or 0 when the shape doesn't apply. */
+static int map_literal_elem_types(Compiler *c, int value, TyKind *out, int max) {
+  const NodeTable *nt = c->nt;
+  const char *vty = nt_type(nt, value);
+  if (!vty || !sp_streq(vty, "CallNode")) return 0;
+  const char *mn = nt_str(nt, value, "name");
+  if (!mn || (!sp_streq(mn, "map") && !sp_streq(mn, "collect"))) return 0;
+  int recv = nt_ref(nt, value, "receiver");
+  if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "ArrayNode")) return 0;
+  int en = 0;
+  nt_arr(nt, recv, "elements", &en);
+  if (en < 2 || en > max) return 0;
+  int blk = nt_ref(nt, value, "block");
+  int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+  int bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (!bb || bn <= 0) return 0;
+  TyKind et = infer_type(c, bb[bn - 1]);
+  if (et == TY_UNKNOWN || et == TY_POLY || et == TY_NIL || et == TY_VOID) return 0;
+  for (int i = 0; i < en; i++) out[i] = et;
+  return en;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -597,6 +622,7 @@ int infer_write_types(Compiler *c) {
       nt_arr(nt, id, "rights", &rn0);
       TyKind elems[16];
       int ecount = rn0 == 0 ? multi_return_elem_types(c, value, elems, 16) : 0;
+      if (ecount == 0 && rn0 == 0) ecount = map_literal_elem_types(c, value, elems, 16);
       if (ecount == ln) {
         Scope *ms_mr = comp_scope_of(c, id);
         for (int i = 0; i < ln; i++) {
@@ -617,6 +643,17 @@ int infer_write_types(Compiler *c) {
             if (mg != c->classes[ms_mr->class_id].ivar_types[ivx]) {
               c->classes[ms_mr->class_id].ivar_types[ivx] = mg; changed = 1;
             }
+          }
+          else if (sp_streq(lty_mr, "ConstantTargetNode")) {
+            const char *cnm = nt_str(nt, lefts[i], "name");
+            LocalVar *cv = cnm ? comp_const(c, cnm) : NULL;
+            if (!cv) continue;
+            /* SET, not unify: an early fixpoint round can guess a nested
+               element as poly-array before the block body settles; a later
+               round must be able to correct it (constants persist across
+               rounds, unlike locals). Same convention as
+               infer_multiwrite_const_types. */
+            if (cv->type != elems[i]) { cv->type = elems[i]; changed = 1; }
           }
         }
         continue;  /* the generic poly-tuple widening below must not re-widen */
