@@ -7,8 +7,8 @@ Status: requirements draft, not yet implemented. Companion to
 Naming (decided): the ecosystem is **spinelgems**; one unit is a **gem** (a
 "spinelgem" where CRuby gems need distinguishing). One manifest filename,
 `gem.toml`, serves both a gem and an application (cargo-style: the
-application is simply the gem at the compile root). CLI surface is
-`spinel gem <cmd>`. The community compatibility catalog of the same name is
+application is simply the gem at the compile root). Project workflows live in a separate tool, `spin` (R9);
+the compiler CLI stays compile-only. The community compatibility catalog of the same name is
 the intended seed for the Phase-2 index (see R5/R8) — to be coordinated with
 its author rather than renamed around. The rest of this document says
 "package" generically; read it as "gem".
@@ -111,7 +111,7 @@ Spinel port next to a same-named CRuby gem); the gem *name* in the manifest
 carries **no prefix**, because the name is the `require` string and
 `require "json"` must keep working verbatim (R5's name policy). mrbgems can
 conflate the two because mruby has no `require`; Spinel cannot. The prefix is
-a scaffolding default (`spinel gem new foo` creates `spinel-foo/`), not a
+a scaffolding default (`spin new foo` creates `spinel-foo/`), not a
 resolution rule — the index maps names to repos, wherever they live.
 
 ```
@@ -120,7 +120,7 @@ spinel-mypkg/
   lib/                # Ruby sources; lib/<feature>.rb per provided feature
   src/                # optional C sources (in-TU or objects; see R6)
   sig/                # optional .rbs pinning the public surface
-  test/               # runnable under `spinel gem test`
+  test/               # runnable under `spin test`
   LICENSE / README.md
 ```
 
@@ -147,7 +147,7 @@ happens only as part of building an application that depends on it.
   behaves.
 - The lockfile is an application artifact, not a requirement: absent a
   `gem.lock`, builds resolve from `gem.toml` (fully deterministic when every
-  source is an exact pin); `spinel gem add`/`lock` writes it. Applications
+  source is an exact pin); `spin add`/`lock` writes it. Applications
   commit it; library gems do not (version selection belongs to the consuming
   application — the cargo convention).
 - In code, consumers write `require "name"` — nothing else. Resolution order:
@@ -171,7 +171,7 @@ happens only as part of building an application that depends on it.
 ### R5 — distribution (phased)
 
 - **Phase 1: no registry.** Local paths + git URLs pinned by the lockfile
-  hash. `spinel gem vendor` copies the resolved tree into `vendor/` for
+  hash. `spin vendor` copies the resolved tree into `vendor/` for
   offline/hermetic builds; vendored trees are read-only inputs (build
   artifacts never land next to package sources).
 - **Phase 2: an index**, not a server: a git-hosted name→(repo, versions)
@@ -210,18 +210,41 @@ happens only as part of building an application that depends on it.
 
 ### R8 — compatibility as metadata
 
-- `spinel gem test` runs a package's `test/` under the current compiler; the
+- `spin test` runs a package's `test/` under the current compiler; the
   manifest records the last-passing compiler version.
 - The index (Phase 2) records probe results per compiler release, so `spinel
   gem add` can warn "compiles at 0.9, fails at 0.10" before fetching. This is
   the productized form of the existing corpus reprobes.
 
-### R9 — tooling
+### R9 — tooling: `spin`, a separate project tool
 
-`spinel gem <cmd>`: `init` (write a project manifest), `add`/`remove` (edit +
-re-resolve + update lockfile), `vendor`, `test`, `new` (scaffold a package).
+The compiler CLI stays what it is — gcc-like, one job: sources + `-I` roots
+in, binary out, **no network, no manifest knowledge, no state** (the
+compile-time counterpart of R2's no-code-at-fetch guarantee; hermetic builds
+follow from the pair). Gem workflows live in a separate tool, **`spin`**
+(mix/cargo-style), which owns everything stateful:
+
+- `spin new` (scaffold `spinel-<name>/`), `spin add`/`remove` (edit manifest,
+  re-resolve, update `gem.lock`), `spin lock`, `spin vendor`, `spin test`,
+  `spin build`/`run` (resolve → assemble the `-I` root list and per-gem
+  provenance from the lockfile/vendor tree → invoke `spinel`).
+- The compiler never reads `gem.toml`: `spin` passes resolved roots (and the
+  gem→root mapping R4's undeclared-dependency enforcement needs) on the
+  command line. The zero-manifest escape hatch is therefore just "invoking
+  `spinel -I` yourself".
+- `spin` is written in Spinel and ships as a static binary — dogfooding both
+  the language and, once bootstrapped, the gem format itself. Its own
+  dependencies are stdlib-only (TOML parsing, subprocess git) to avoid a
+  bootstrap cycle.
+- Subcommands were considered on the compiler CLI and rejected: `spinel
+  build` is ambiguous against `spinel build.rb` (a file), and the compiler
+  binary should not carry TOML/git/network code.
+- Known name collisions, accepted: Fermyon's wasm tool and the SPIN model
+  checker also install `spin`; distro packages may need a `spinel-spin`
+  package name even though the binary stays `spin`.
+
 All offline-capable given a vendor tree; no daemon, no per-machine state
-outside an XDG cache directory.
+outside the XDG cache directory.
 
 ## 5. Non-goals
 
@@ -249,7 +272,11 @@ outside an XDG cache directory.
   and applications alike (short over self-branding: inside a `spinel-*`
   checkout the context is clear, and the `spinel = "~> x.y"` constraint key
   doubles as the ecosystem discriminator should another toolchain ever
-  adopt the same filename); lockfile `gem.lock` is an application artifact (libraries do not commit one, and a build without one resolves from the manifest); CLI `spinel gem <cmd>`.
+  adopt the same filename); lockfile `gem.lock` is an application artifact (libraries do not commit one,
+  and a build without one resolves from the manifest).
+- Project tool is **`spin`** — separate from the compiler CLI, written in
+  Spinel, stdlib-only dependencies (R9); the compiler stays gcc-like and
+  manifest-free.
 - Gem *directories/repos* are `spinel-<name>` by convention; gem *names* (and
   therefore `require` strings) carry no prefix (R2). Gems-only directories:
   `gems/<name>/` in the compiler tree (pre-installed), `vendor/gems/
