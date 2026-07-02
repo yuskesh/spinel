@@ -165,7 +165,8 @@ or a diff fails, so assert-and-raise style works unchanged (raise → non-zero
 Manifest fields (minimum): `name`, `version` (semver), `provides` (feature
 names its sources satisfy; defaults to `name`), `dependencies` (name +
 version constraint), `dev-dependencies` (test-only, resolved for `spin test`
-and never for consumers), `spinel` (compiler version constraint), plus `license`,
+and never for consumers), `spinel` (compiler version constraint — reserved,
+unenforced until the toolchain is versioned), plus `license`,
 `source`. C-carrying packages add a `[native]` table (sources, cflags, libs —
 the FFI DSL remains usable *inside* the Ruby sources for external libraries).
 
@@ -311,8 +312,10 @@ outside the XDG cache directory.
 1. **Stdlib carve-out granularity.** Which of the require-gated features move
    from compiler tree to pre-installed gems first (`erb`/`optparse`/`set`
    are the easy three; `json`/`stringio` are C-backed and test R6).
-2. **Version skew between compiler and gems.** Is the compiler version
-   constraint (`spinel = "~> 0.9"`) hard (refuse) or advisory (warn)?
+2. **Version skew between compiler and gems** — deferred, not merely open:
+   the compiler itself carries no version number yet. The `spinel` manifest
+   field stays reserved but unenforced; hard-vs-advisory is decided when
+   toolchain versioning exists.
 3. **Index coordination.** Concrete shape of seeding the Phase-2 index from
    the community spinelgems catalog (and who owns the name registry).
 
