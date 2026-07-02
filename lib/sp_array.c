@@ -76,6 +76,11 @@ void sp_IntArray_splice(sp_IntArray*a,mrb_int start,mrb_int len,const mrb_int*sr
   if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
   if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
   if(s+len>alen)len=alen-s;
+  /* Equal-length replacement is a pure overwrite: no length change, no
+     capacity growth, no tail shift. memmove, since src may alias a's own
+     buffer (self-splice). This is the hot shape (optcarrot's per-tile
+     `@bg_pixels[x, 8] = <8-elem row>`); the general path below allocates. */
+  if(len==srcn){if(srcn>0)memmove(a->data+a->start+s,src,sizeof(mrb_int)*(size_t)srcn);return;}
   mrb_int*sb=NULL;
   if(srcn>0){sb=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(mrb_int)*(size_t)srcn);}
   mrb_int tail_from=s+len,tail_n=alen-tail_from;
@@ -96,6 +101,7 @@ void sp_FloatArray_splice(sp_FloatArray*a,mrb_int start,mrb_int len,const mrb_fl
   if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
   if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
   if(s+len>alen)len=alen-s;
+  if(len==srcn){if(srcn>0)memmove(a->data+s,src,sizeof(mrb_float)*(size_t)srcn);return;}  /* see the int form */
   mrb_float*sb=NULL;
   if(srcn>0){sb=(mrb_float*)malloc(sizeof(mrb_float)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(mrb_float)*(size_t)srcn);}
   mrb_int tail_from=s+len,tail_n=alen-tail_from;
@@ -116,6 +122,7 @@ void sp_StrArray_splice(sp_StrArray*a,mrb_int start,mrb_int len,const char*const
   if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
   if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
   if(s+len>alen)len=alen-s;
+  if(len==srcn){if(srcn>0)memmove(a->data+s,src,sizeof(const char*)*(size_t)srcn);return;}  /* see the int form */
   const char**sb=NULL;
   if(srcn>0){sb=(const char**)malloc(sizeof(const char*)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(const char*)*(size_t)srcn);}
   /* Snapshot the tail into a *rooted* holder before truncating a->len: once
