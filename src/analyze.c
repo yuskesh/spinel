@@ -1810,8 +1810,12 @@ static void narrow_object_arrays(Compiler *c) {
         claimed[recv] = 1;
         if (name && (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")))
           for (int a = 0; a < argc; a++) sl[S].cls = oa_cls_join(sl[S].cls, oa_obj_class_of(c, argv[a]));
-        else if (name && sp_streq(name, "[]=") && argc == 2)
-          sl[S].cls = oa_cls_join(sl[S].cls, oa_obj_class_of(c, argv[1]));
+        else if (name && sp_streq(name, "[]=") && argc == 2) {
+          /* a range-keyed []= is a splice, which the obj-array representation
+             has no emitter for: keep the slot on the poly path */
+          if (infer_type(c, argv[0]) == TY_RANGE) sl[S].alive = 0;
+          else sl[S].cls = oa_cls_join(sl[S].cls, oa_obj_class_of(c, argv[1]));
+        }
         else if (name && (sp_streq(name, "min") || sp_streq(name, "max") ||
                           sp_streq(name, "sort") || sp_streq(name, "sort!"))) {
           sl[S].needs_cmp = 1;

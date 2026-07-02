@@ -257,7 +257,10 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 
 __attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);  /* lib/sp_core.c */
 __attribute__((noreturn)) void sp_raise_frozen_str(const char *s);              /* lib/sp_str.c */
-static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", "can't modify frozen Array"); }
+/* The message carries the rodata marker byte: an in-flight exception's msg is
+   marked by the GC (sp_mark_string reads s[-1]), so a bare literal -- whose
+   [-1] is out of bounds -- would be UB when it lands at a section edge. */
+static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Array")[1])); }
 
 /* sp_PolyArray: a growable array of boxed values. */
 typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;

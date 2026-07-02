@@ -426,6 +426,32 @@ static int map_literal_elem_types(Compiler *c, int value, TyKind *out, int max) 
   return en;
 }
 
+/* The element type a splice RHS (`a[s,l] = rhs` / `a[range] = rhs`) would
+   contribute to the receiver: a typed array source contributes its element
+   type; a poly array -- or nil, which only a poly array can hold --
+   contributes TY_POLY; an empty-`[]` source (TY_UNKNOWN) contributes no
+   evidence; a scalar contributes itself. A user object goes through its
+   to_ary return type when it defines one (CRuby coerces the splice source);
+   without to_ary it inserts as a single heterogeneous element. Stable across
+   the fixpoint: scopes[].ret settles monotonically, and an unsettled ret
+   simply contributes no evidence that iteration. */
+static TyKind splice_incoming_elem(Compiler *c, int rhs) {
+  TyKind t = infer_type(c, rhs);
+  if (t == TY_POLY_ARRAY) return TY_POLY_ARRAY;  /* heterogeneous source */
+  if (ty_is_array(t)) return ty_array_elem(t);
+  if (ty_is_object(t)) {
+    int mi = comp_method_in_chain(c, ty_object_class(t), "to_ary", NULL);
+    if (mi >= 0) {
+      TyKind r = (TyKind)c->scopes[mi].ret;
+      if (r == TY_POLY_ARRAY) return TY_POLY_ARRAY;
+      if (ty_is_array(r)) return ty_array_elem(r);
+      return TY_UNKNOWN;
+    }
+    return t;
+  }
+  return t;   /* scalar (incl. TY_NIL, and TY_POLY = statically unknown) */
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -1110,7 +1136,7 @@ int infer_write_types(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
-    int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0;
+    int recv, kt = TY_UNKNOWN, vt = TY_UNKNOWN, is_push = 0, is_idx_write = 0, is_splice = 0;
     if (sp_streq(ty, "CallNode")) {
       recv = nt_ref(nt, id, "receiver");
       const char *name = nt_str(nt, id, "name");
@@ -1125,6 +1151,12 @@ int infer_write_types(Compiler *c) {
       }
       else if (name && sp_streq(name, "[]=") && an == 2) {
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
+        /* a range key is a splice: the RHS contributes element evidence */
+        if (kt == TY_RANGE) { is_splice = 1; vt = splice_incoming_elem(c, argv[1]); }
+      }
+      else if (name && sp_streq(name, "[]=") && an == 3) {
+        /* a[start, len] = rhs: a splice over the (start, len) span */
+        is_idx_write = 1; is_splice = 1; vt = splice_incoming_elem(c, argv[2]);
       }
       else if (name && (sp_streq(name, "fetch") ||
                         (sp_streq(name, "[]") && an == 1)) && an >= 1) {
@@ -1341,13 +1373,38 @@ int infer_write_types(Compiler *c) {
       if (*slot != TY_UNKNOWN && want != *slot) want = TY_POLY_ARRAY;
       *slot = want;
     }
+    else if (is_splice) {
+      /* arr[s,l] = rhs / arr[range] = rhs: a source whose elements the typed
+         receiver CONCRETELY cannot hold widens the slot to a poly array
+         (mirrors push, monotonic and fixpoint-stable). A TY_POLY value is
+         exempt -- statically unknown but usually the matching kind at
+         runtime; the emitters keep their runtime dispatch/conversion for it.
+         A 3-arg []= is unambiguous array evidence for an UNKNOWN slot; a
+         range key alone is not (h[1..2] = v is a legal hash write). */
+      if (vt == TY_UNKNOWN || vt == TY_POLY) { /* no evidence / exempt */ }
+      else if (ty_is_array(*slot)) {
+        if (*slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot)) *slot = TY_POLY_ARRAY;
+      }
+      else if (*slot == TY_UNKNOWN && kt != TY_RANGE) *slot = ty_array_of(vt);
+    }
     else if (*slot == TY_POLY_POLY_HASH) {
       /* already widest hash type; no further promotion needed */
     }
+    else if (kt == TY_INT && *slot != TY_UNKNOWN && ty_is_array(*slot)) {
+      /* int-key element write into a typed array: a value its element type
+         CONCRETELY cannot hold widens the slot to a poly array, mirroring
+         `a << x` -- the poly emitters then store the value exactly as CRuby
+         does (the former bail left e.g. `a[0] = "s"` on an int array to emit
+         invalid C through the typed setter). A TY_POLY value is exempt: the
+         typed setter's runtime conversion (sp_poly_to_i etc.) is the
+         long-standing intended path for it. */
+      if (vt != TY_UNKNOWN && vt != TY_POLY &&
+          *slot != TY_POLY_ARRAY && vt != ty_array_elem(*slot))
+        *slot = TY_POLY_ARRAY;
+    }
     else if (kt == TY_INT) {
-      /* int key []=: if slot already array, leave it; otherwise infer int-keyed hash */
+      /* int key []= on a non-array slot: infer an int-keyed hash */
       if (vt == TY_UNKNOWN) continue;
-      if (*slot != TY_UNKNOWN && ty_is_array(*slot)) continue;
       if (*slot != TY_UNKNOWN && !ty_is_hash(*slot)) continue;
       TyKind hv = ty_hash_of(TY_INT, vt);
       if (hv == TY_UNKNOWN) hv = TY_POLY_POLY_HASH;  /* int key + unknown val type */
@@ -1383,6 +1440,34 @@ int infer_write_types(Compiler *c) {
     }
     sp_ivwatch(watch_nm, is_push ? "usage_push" : (is_idx_write ? "usage_idxwrite" : "usage_read"), before, *slot);
     if (*slot != before) changed = 1;
+  }
+
+  /* Propagate container widening across direct local aliases (`b = a`): the
+     fold above runs AFTER the write-site unification, so an alias assigned
+     before its source widened would keep the narrower array kind -- two C
+     representations for one runtime object, which reads garbage. Whichever
+     side of the alias is the poly array wins, in both directions, to a local
+     fixpoint. Params stay excluded (their types are call-site unified). */
+  {
+    int prop = 1;
+    while (prop) {
+      prop = 0;
+      NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+        int v = nt_ref(nt, id, "value");
+        const char *vty = v >= 0 ? nt_type(nt, v) : NULL;
+        if (!vty || !sp_streq(vty, "LocalVariableReadNode")) continue;
+        const char *dn = nt_str(nt, id, "name");
+        const char *sn = nt_str(nt, v, "name");
+        LocalVar *dst = dn ? scope_local(comp_scope_of(c, id), dn) : NULL;
+        LocalVar *src = sn ? scope_local(comp_scope_of(c, v), sn) : NULL;
+        if (!dst || !src || dst == src) continue;
+        if (dst->is_param || dst->is_block_param || src->is_param || src->is_block_param) continue;
+        if (!ty_is_array(dst->type) || !ty_is_array(src->type)) continue;
+        if (dst->type == src->type) continue;
+        if (dst->type == TY_POLY_ARRAY) { src->type = TY_POLY_ARRAY; prop = 1; changed = 1; }
+        else if (src->type == TY_POLY_ARRAY) { dst->type = TY_POLY_ARRAY; prop = 1; changed = 1; }
+      }
+    }
   }
 
   /* Second pass: re-compute proc_ret for proc-typed locals after body-internal

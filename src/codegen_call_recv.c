@@ -3732,6 +3732,24 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* If `recv` is an index expression `outer[oidx]` (a `[]` CallNode with a single
+   int argument), set *outer/*oidx and return 1. Lets a `[]=`/splice on such a
+   receiver write a promoted array back into outer's slot instead of dropping the
+   write-back (which would lose a typed->poly promotion for a computed receiver). */
+static int splice_recv_index_slot(Compiler *c, int recv, int *outer, int *oidx) {
+  const NodeTable *nt = c->nt;
+  const char *rty = nt_type(nt, recv);
+  if (!rty || !sp_streq(rty, "CallNode")) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  if (!rn || !sp_streq(rn, "[]")) return 0;
+  int ro = nt_ref(nt, recv, "receiver");
+  if (ro < 0) return 0;
+  int rargc; const int *rargv = call_args(nt, recv, &rargc);
+  if (rargc != 1 || comp_ntype(c, rargv[0]) != TY_INT) return 0;
+  *outer = ro; *oidx = rargv[0];
+  return 1;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -3814,16 +3832,86 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 3 &&
       !sp_is_fiber_storage_recv(nt, recv)) {
     int tv = ++g_tmp;
-    buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[2], b);
-    buf_puts(b, "; sp_poly_splice("); emit_expr(c, recv, b); buf_puts(b, ", ");
-    emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b);
-    buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+    const char *rcvty = nt_type(nt, recv);
+    int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
+                                   sp_streq(rcvty, "InstanceVariableReadNode"));
+    int outer, oidx;
+    TyKind rty2 = comp_ntype(c, argv[2]);
+    int tam = splice_to_ary_mi(c, rty2);
+    buf_puts(b, "({ ");
+    if (tam >= 0) {
+      /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
+      Buf call; memset(&call, 0, sizeof call);
+      TyKind cty = emit_splice_to_ary_src(c, argv[2], rty2, tam, tv, b, &call);
+      buf_printf(b, "sp_RbVal _t%d = ", tv);
+      emit_boxed_text(c, cty, call.p ? call.p : "", b);
+      buf_puts(b, "; ");
+      free(call.p);
+    }
+    else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[2], b); buf_puts(b, "; "); }
+    /* Store the possibly-promoted array back into the receiver so a typed->poly
+       promotion survives: assign to a local/ivar lvalue, or write to outer's slot
+       for a computed `outer[idx]` receiver; otherwise splice in place. */
+    if (recv_is_lvalue) {
+      emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    }
+    else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
+      buf_puts(b, "sp_poly_slot_splice("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    }
+    else {
+      buf_puts(b, "sp_poly_splice("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    }
+    if (tam >= 0)
+      buf_printf(b, ", _t%d); sp_box_obj(_tq%d, %d); })", tv, tv, ty_object_class(rty2));
+    else
+      buf_printf(b, ", _t%d); _t%d; })", tv, tv);
     return 1;
   }
   /* poly receiver: []= with symbol, string, int, or poly key -> runtime dispatch
      Skip Fiber/Fiber.current storage receivers (handled later). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 &&
       !sp_is_fiber_storage_recv(nt, recv)) {
+    /* arr[range] = rhs on a poly receiver: a splice over the range's span. */
+    if (comp_ntype(c, argv[0]) == TY_RANGE) {
+      int tv = ++g_tmp;
+      const char *rcvty = nt_type(nt, recv);
+      int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
+                                     sp_streq(rcvty, "InstanceVariableReadNode"));
+      int outer, oidx;
+      TyKind rty1 = comp_ntype(c, argv[1]);
+      int tam = splice_to_ary_mi(c, rty1);
+      buf_puts(b, "({ ");
+      if (tam >= 0) {
+        /* object RHS with to_ary: splice the coercion; the OBJECT is the value */
+        Buf call; memset(&call, 0, sizeof call);
+        TyKind cty = emit_splice_to_ary_src(c, argv[1], rty1, tam, tv, b, &call);
+        buf_printf(b, "sp_RbVal _t%d = ", tv);
+        emit_boxed_text(c, cty, call.p ? call.p : "", b);
+        buf_puts(b, "; ");
+        free(call.p);
+      }
+      else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, "; "); }
+      if (recv_is_lvalue) {
+        emit_expr(c, recv, b); buf_puts(b, " = sp_poly_splice_range("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      }
+      else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
+        buf_puts(b, "sp_poly_slot_splice_range("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      }
+      else {
+        buf_puts(b, "sp_poly_splice_range("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b);
+      }
+      if (tam >= 0)
+        buf_printf(b, ", _t%d); sp_box_obj(_tq%d, %d); })", tv, tv, ty_object_class(rty1));
+      else
+        buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+      return 1;
+    }
     TyKind at = comp_ntype(c, argv[0]);
     TyKind vt = comp_ntype(c, argv[1]);
     int tv = ++g_tmp;
@@ -3838,23 +3926,28 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", "); emit_expr(c, argv[0], b);
     }
     else if (at == TY_INT) {
-      /* widen_and_set only returns a *different* boxed value when an IntArray is
-         promoted to a PolyArray; otherwise it mutates in place. We can only
-         write the result back when the receiver is a simple assignable lvalue
-         (a local or ivar). For a computed receiver (e.g. @nmt_mem[bank][idx]=v,
-         where the receiver is itself an array element), drop the write-back and
-         rely on in-place mutation. */
+      /* widen_and_set returns a *different* boxed value when a typed array is
+         promoted to a PolyArray (element-kind mismatch); otherwise it mutates in
+         place. Store the result back so promotion survives: assign to a
+         local/ivar lvalue, or write to outer's slot for a computed `outer[idx]`
+         receiver; a receiver we cannot address falls back to in-place mutation. */
       const char *rcvty = nt_type(nt, recv);
       int recv_is_lvalue = rcvty && (sp_streq(rcvty, "LocalVariableReadNode") ||
                                      sp_streq(rcvty, "InstanceVariableReadNode"));
+      int outer, oidx;
       if (recv_is_lvalue) {
         emit_expr(c, recv, b);
         buf_puts(b, " = sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
+      }
+      else if (splice_recv_index_slot(c, recv, &outer, &oidx)) {
+        buf_puts(b, "sp_poly_slot_set("); emit_boxed(c, outer, b); buf_puts(b, ", "); emit_int_expr(c, oidx, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
       }
       else {
         buf_puts(b, "sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
       }
-      buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
     }
     else {
       buf_printf(b, "sp_poly_set_poly("); emit_expr(c, recv, b);

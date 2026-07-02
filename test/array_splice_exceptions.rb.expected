@@ -1,0 +1,19 @@
+IndexError: negative length (-2)
+IndexError: negative length (-1)
+FrozenError
+IndexError
+IndexError: negative length (-1)
+IndexError: index -5 too small for array; minimum: -3
+RangeError: -10..1 out of range
+RangeError: -10.. out of range
+FrozenError
+FrozenError
+FrozenError
+FrozenError
+FrozenError
+FrozenError
+IndexError: negative length (-1)
+IndexError: negative length (-1)
+RangeError: -9..0 out of range
+[9, 3]
+[1, 8]

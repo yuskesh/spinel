@@ -2342,6 +2342,201 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Emit `mrb_int _s<ta> = ...; mrb_int _l<ta> = ...;` for a splice, from either
+   the (start,len) pair or a range computed against the receiver's length. The
+   receiver temp `_t<ta>` must already be bound; `tg` names the range temp. */
+static void emit_splice_bounds(Compiler *c, int ta, int tg,
+                               int start_node, int len_node, int range_node, Buf *b) {
+  if (range_node >= 0) {
+    buf_printf(b, "sp_Range _t%d = ", tg); emit_expr(c, range_node, b);
+    buf_printf(b, "; mrb_int _al%d = _t%d->len;", tg, ta);
+    /* frozen precedes any range validation (CRuby's modify-check order),
+       and a range beginning before -len is a RangeError, not IndexError */
+    buf_printf(b, " if(_t%d->frozen)sp_raise_frozen_array();", ta);
+    buf_printf(b, " if(_t%d.first!=INTPTR_MIN&&_t%d.first<-_al%d)"
+                  "sp_raise_cls(\"RangeError\",sp_sprintf(\"%%s out of range\",sp_range_str(_t%d)));",
+               tg, tg, tg, tg);
+    /* INTPTR_MIN/MAX are the beginless/endless sentinels: start 0 / to-end */
+    buf_printf(b, " mrb_int _s%d = _t%d.first==INTPTR_MIN?0:(_t%d.first<0?_t%d.first+_al%d:_t%d.first);",
+               ta, tg, tg, tg, tg, tg);
+    buf_printf(b, " mrb_int _l%d;"
+                  " if(_t%d.last==INTPTR_MAX){_l%d=_al%d-_s%d;if(_l%d<0)_l%d=0;}"
+                  " else{mrb_int _e%d=_t%d.last<0?_t%d.last+_al%d:_t%d.last;"
+                  " _l%d=_e%d-_s%d+(_t%d.excl?0:1);if(_l%d<0)_l%d=0;} ",
+               ta,
+               tg, ta, tg, ta, ta, ta,
+               tg, tg, tg, tg, tg,
+               ta, tg, ta, tg, ta, ta);
+  } else {
+    buf_printf(b, "mrb_int _s%d = ", ta); emit_int_expr(c, start_node, b);
+    buf_printf(b, "; mrb_int _l%d = ", ta); emit_int_expr(c, len_node, b);
+    buf_puts(b, "; ");
+  }
+}
+
+/* Scope index of an array-returning `to_ary` in rhs_ty's class chain, else -1.
+   CRuby coerces a non-array splice source through to_ary (rb_ary_to_ary); the
+   object itself remains the expression value. Value-type classes are excluded
+   (their instances are not boxed). */
+int splice_to_ary_mi(Compiler *c, TyKind rhs_ty) {
+  if (!ty_is_object(rhs_ty)) return -1;
+  int cid = ty_object_class(rhs_ty);
+  if (c->classes[cid].is_value_type) return -1;
+  int mi = comp_method_in_chain(c, cid, "to_ary", NULL);
+  if (mi < 0) return -1;
+  return ty_is_array((TyKind)c->scopes[mi].ret) ? mi : -1;
+}
+
+/* Bind the splice RHS object to `_tq<ta>` (rooted -- the to_ary dispatch and
+   the splice pushes can allocate) and write its to_ary call text into out. */
+TyKind emit_splice_to_ary_src(Compiler *c, int rhs_node, TyKind rhs_ty,
+                              int mi, int ta, Buf *b, Buf *out) {
+  int cid = ty_object_class(rhs_ty);
+  char selfptr[24];
+  snprintf(selfptr, sizeof selfptr, "_tq%d", ta);
+  buf_printf(b, "sp_%s *_tq%d = ", c->classes[cid].name, ta);
+  emit_expr(c, rhs_node, b);
+  buf_printf(b, "; SP_GC_ROOT(_tq%d); ", ta);
+  emit_dispatch(c, cid, "to_ary", selfptr, -1, -1, out);
+  return (TyKind)c->scopes[mi].ret;
+}
+
+/* Emit a splice assignment: `arr[start,len] = rhs` (start_node,len_node given,
+   range_node = -1) or `arr[range] = rhs` (range_node given, the others -1). The
+   expression value is the RHS, matching Ruby. A typed receiver requires a
+   matching element type (mismatch -> clean reject); a poly receiver accepts any
+   RHS and fills nil gaps. An object RHS with to_ary splices the coerced array
+   while the object stays the expression value (CRuby rb_ary_to_ary). */
+void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
+                       int start_node, int len_node, int range_node,
+                       int rhs_node, Buf *b) {
+  TyKind rhs_ty = comp_ntype(c, rhs_node);
+  int rhs_is_arr = ty_is_array(rhs_ty);
+  /* An empty array literal `[]` infers TY_UNKNOWN; treat it as a zero-element
+     source (the splice degenerates to a pure delete of the [start,len) span). */
+  int rhs_empty = 0;
+  {
+    const char *rnt = nt_type(c->nt, rhs_node);
+    if (rnt && sp_streq(rnt, "ArrayNode")) {
+      int en = 0; nt_arr(c->nt, rhs_node, "elements", &en);
+      rhs_empty = (en == 0);
+    }
+  }
+  int ta = ++g_tmp, ts = ++g_tmp, tg = ++g_tmp;  /* recv, src, range temps */
+  int tam = splice_to_ary_mi(c, rhs_ty);
+
+  if (rt == TY_POLY_ARRAY) {
+    buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");
+    if (tam >= 0) {
+      /* object RHS with to_ary: splice the coercion, yield the object */
+      Buf call; memset(&call, 0, sizeof call);
+      TyKind cty = emit_splice_to_ary_src(c, rhs_node, rhs_ty, tam, ta, b, &call);
+      buf_printf(b, "sp_RbVal _t%d = ", ts);
+      emit_boxed_text(c, cty, call.p ? call.p : "", b);
+      buf_puts(b, "; ");
+      free(call.p);
+      emit_splice_bounds(c, ta, tg, start_node, len_node, range_node, b);
+      buf_printf(b, "sp_PolyArray_splice(_t%d, _s%d, _l%d, _t%d); sp_box_obj(_tq%d, %d); })",
+                 ta, ta, ta, ts, ta, ty_object_class(rhs_ty));
+      return;
+    }
+    buf_printf(b, "sp_RbVal _t%d = ", ts);
+    if (rhs_empty) buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())");
+    else emit_boxed(c, rhs_node, b);
+    buf_puts(b, "; ");
+    emit_splice_bounds(c, ta, tg, start_node, len_node, range_node, b);
+    buf_printf(b, "sp_PolyArray_splice(_t%d, _s%d, _l%d, _t%d); _t%d; })", ta, ta, ta, ts, ts);
+    return;
+  }
+
+  const char *k = array_kind(rt);   /* "Int" / "Str" / "Float" */
+  TyKind elem = ty_array_elem(rt);
+  if (!k) { unsupported(c, id, "array splice on this receiver type"); return; }
+  /* Runtime `src` pointer type per element kind (Str stores `const char *`). */
+  const char *srcty = elem == TY_INT   ? "const mrb_int *"
+                    : elem == TY_FLOAT ? "const mrb_float *"
+                    :                    "const char *const *";
+
+  /* Typed receiver: bind recv, derive a (src, srcn) pair from the RHS, then
+     issue one splice call. `valtmp` (normally the RHS temp `_t<ts>`) is the
+     yielded value (Ruby `[]=` returns the assigned value as written). */
+  char valtmp[24];
+  snprintf(valtmp, sizeof valtmp, "_t%d", ts);
+  buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b); buf_puts(b, "; ");
+  buf_printf(b, "%s_src%d; mrb_int _srcn%d; ", srcty, ta, ta);
+
+  if (rhs_empty) {
+    /* pure delete: the source is a fresh empty array (also the yielded value) */
+    buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); _src%d = NULL; _srcn%d = 0; ",
+               k, ts, k, ta, ta);
+  } else if (rhs_is_arr) {
+    /* source array must share the receiver's element type; a poly/mismatched
+       source would mix types into a flat typed array (reject loudly). */
+    TyKind rhs_elem = ty_array_elem(rhs_ty);
+    if (rhs_ty == TY_POLY_ARRAY || rhs_elem != elem) {
+      unsupported(c, id, "array splice with a mismatched-element-type source");
+      return;
+    }
+    /* rooted: the splice's pushes can allocate, and a Str source's elements
+       are reachable only through this array until they are pushed */
+    buf_printf(b, "sp_%sArray *_t%d = ", k, ts); emit_expr(c, rhs_node, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); ", ts);
+    /* IntArray carries a `start` offset; Str/Float data begins at index 0 */
+    buf_printf(b, "_src%d = ", ta);
+    if (elem == TY_INT) buf_printf(b, "_t%d->data + _t%d->start", ts, ts);
+    else buf_printf(b, "_t%d->data", ts);
+    buf_printf(b, "; _srcn%d = _t%d->len; ", ta, ts);
+  } else if (tam >= 0 && (TyKind)c->scopes[tam].ret != TY_POLY_ARRAY &&
+             ty_array_elem((TyKind)c->scopes[tam].ret) == elem) {
+    /* object RHS whose to_ary returns this element kind: splice the coerced
+       array; the OBJECT is the yielded value (CRuby rb_ary_to_ary) */
+    Buf call; memset(&call, 0, sizeof call);
+    emit_splice_to_ary_src(c, rhs_node, rhs_ty, tam, ta, b, &call);
+    buf_printf(b, "sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d); ",
+               k, ts, call.p ? call.p : "", ts);
+    free(call.p);
+    buf_printf(b, "_src%d = ", ta);
+    if (elem == TY_INT) buf_printf(b, "_t%d->data + _t%d->start", ts, ts);
+    else buf_printf(b, "_t%d->data", ts);
+    buf_printf(b, "; _srcn%d = _t%d->len; ", ta, ts);
+    snprintf(valtmp, sizeof valtmp, "_tq%d", ta);
+  } else if (rhs_ty == TY_POLY) {
+    /* A poly RHS can be a same-kind array boxed as poly (e.g. `poly_arr.first`,
+       statically TY_POLY but an IntArray at runtime) or a genuine scalar. Decide
+       at runtime: use the array's elements when the class id matches the
+       receiver's element kind, else the unboxed scalar. */
+    const char *bcon = elem == TY_INT   ? "SP_BUILTIN_INT_ARRAY"
+                     : elem == TY_STRING ? "SP_BUILTIN_STR_ARRAY"
+                     :                     "SP_BUILTIN_FLT_ARRAY";
+    const char *conv = elem == TY_INT   ? "sp_poly_to_i"
+                     : elem == TY_STRING ? "sp_poly_to_s"
+                     :                     "sp_poly_to_f";
+    buf_printf(b, "sp_RbVal _t%d = ", ts); emit_boxed(c, rhs_node, b);
+    /* root the boxed RHS: when it holds a same-kind array, _src aliases into
+       _sa->data, which the splice's pushes can collect out from under us */
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ts);
+    emit_ctype(c, elem, b); buf_printf(b, " _v%d; ", ta);
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %s) { sp_%sArray *_sa%d = (sp_%sArray *)_t%d.v.p; _src%d = ",
+               ts, ts, bcon, k, ta, k, ts, ta);
+    if (elem == TY_INT) buf_printf(b, "_sa%d->data + _sa%d->start", ta, ta);
+    else buf_printf(b, "_sa%d->data", ta);
+    buf_printf(b, "; _srcn%d = _sa%d->len; } else { _v%d = %s(_t%d); _src%d = &_v%d; _srcn%d = 1; } ",
+               ta, ta, ta, conv, ts, ta, ta, ta);
+  } else {
+    /* scalar RHS: replace the slice with a single element */
+    int scalar_ok = (elem == TY_INT    && rhs_ty == TY_INT) ||
+                    (elem == TY_STRING && rhs_ty == TY_STRING) ||
+                    (elem == TY_FLOAT  && rhs_ty == TY_FLOAT);
+    if (!scalar_ok) { unsupported(c, id, "array splice with a mismatched scalar value"); return; }
+    emit_ctype(c, elem, b); buf_printf(b, " _t%d = ", ts); emit_expr(c, rhs_node, b); buf_puts(b, "; ");
+    buf_printf(b, "_src%d = &_t%d; _srcn%d = 1; ", ta, ts, ta);
+  }
+
+  emit_splice_bounds(c, ta, tg, start_node, len_node, range_node, b);
+  buf_printf(b, "sp_%sArray_splice(_t%d, _s%d, _l%d, _src%d, _srcn%d); %s; })",
+             k, ta, ta, ta, ta, ta, valtmp);
+}
+
 static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -7135,67 +7330,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      (Ruby []= returns the assigned value). The statement form is emitted
      elsewhere; this covers rvalue chains like `b = arr[i] = v`. */
   /* a[i, n] = src  —  slice assignment */
+  /* arr[start, len] = rhs : a splice (remove `len` at `start`, insert rhs). */
   if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 3) {
-    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
-    TyKind rhs_ty = comp_ntype(c, argv[2]);
-    if (k && ty_is_array(rhs_ty)) {
-      /* src is an array: copy elements from src into arr starting at i */
-      int ta = ++g_tmp, ti = ++g_tmp, ts = ++g_tmp, tj = ++g_tmp;
-      buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
-      buf_printf(b, "; mrb_int _t%d = ", ti); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
-      buf_printf(b, "sp_%sArray *_t%d = ", k, ts); emit_expr(c, argv[2], b); buf_puts(b, "; ");
-      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)", tj, tj, k, ts, tj);
-      buf_printf(b, " sp_%sArray_set(_t%d, _t%d + _t%d, sp_%sArray_get(_t%d, _t%d));", k, ta, ti, tj, k, ts, tj);
-      buf_printf(b, " _t%d; })", ts);
-      return;
-    }
-    if (k && rhs_ty == TY_POLY && rt != TY_POLY_ARRAY) {
-      /* poly RHS wrapping a same-kind array (e.g. PolyArray element is IntArray):
-         unbox via v.p cast and copy elements */
-      int ta3 = ++g_tmp, ti3 = ++g_tmp, ts3 = ++g_tmp, tj3 = ++g_tmp;
-      buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta3); emit_expr(c, recv, b);
-      buf_printf(b, "; mrb_int _t%d = ", ti3); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
-      buf_printf(b, "sp_RbVal _tv%d = ", ts3); emit_expr(c, argv[2], b); buf_puts(b, "; ");
-      buf_printf(b, "sp_%sArray *_t%d = (sp_%sArray *)_tv%d.v.p; ", k, ts3, k, ts3);
-      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)", tj3, tj3, k, ts3, tj3);
-      buf_printf(b, " sp_%sArray_set(_t%d, _t%d + _t%d, sp_%sArray_get(_t%d, _t%d));", k, ta3, ti3, tj3, k, ts3, tj3);
-      buf_printf(b, " _tv%d; })", ts3);
-      return;
-    }
-    if (k && rhs_ty == TY_POLY && rt == TY_POLY_ARRAY) {
-      /* poly_array recv + poly src (array at runtime): copy src elements to recv[start..] */
-      int ta4 = ++g_tmp, tst4 = ++g_tmp, tsrc4 = ++g_tmp, tlen4 = ++g_tmp, tj4 = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta4); emit_expr(c, recv, b); buf_puts(b, ";");
-      buf_printf(b, " mrb_int _t%d = ", tst4); emit_int_expr(c, argv[0], b); buf_puts(b, ";");
-      buf_printf(b, " sp_RbVal _t%d = ", tsrc4); emit_expr(c, argv[2], b); buf_puts(b, ";");
-      buf_printf(b, " mrb_int _t%d = sp_poly_arr_len(_t%d);", tlen4, tsrc4);
-      buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)", tj4, tj4, tlen4, tj4);
-      buf_printf(b, " sp_PolyArray_set(_t%d, _t%d + _t%d, sp_poly_arr_get(_t%d, _t%d));", ta4, tst4, tj4, tsrc4, tj4);
-      buf_printf(b, " _t%d; })", tsrc4);
-      return;
-    }
-    if (k && !ty_is_array(rhs_ty)) {
-      /* scalar RHS: set element at start index and return the scalar value */
-      int ta2 = ++g_tmp, ti2 = ++g_tmp, tv2 = ++g_tmp;
-      buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta2); emit_expr(c, recv, b);
-      buf_printf(b, "; mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
-      if (rt == TY_POLY_ARRAY) {
-        buf_printf(b, "sp_RbVal _t%d = ", tv2); emit_boxed(c, argv[2], b);
-      }
-      else {
-        TyKind et2 = ty_array_elem(rt);
-        emit_ctype(c, et2, b); buf_printf(b, " _t%d = ", tv2);
-        if (rhs_ty == TY_POLY && et2 == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[2], b); buf_puts(b, ")"); }
-        else if (rhs_ty == TY_POLY && et2 == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[2], b); buf_puts(b, ")"); }
-        else if (rhs_ty == TY_POLY && et2 == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, argv[2], b); buf_puts(b, ")"); }
-        else emit_expr(c, argv[2], b);
-      }
-      buf_printf(b, "; sp_%sArray_set(_t%d, _t%d, _t%d); _t%d; })", k, ta2, ti2, tv2, tv2);
-      return;
-    }
+    emit_array_splice(c, id, recv, rt, argv[0], argv[1], -1, argv[2], b);
+    return;
   }
   if (recv >= 0 && ty_is_array(rt) && sp_streq(name, "[]=") && argc == 2) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+    /* arr[range] = rhs : a splice over the range's (start, length). */
+    if (k && comp_ntype(c, argv[0]) == TY_RANGE) {
+      emit_array_splice(c, id, recv, rt, -1, -1, argv[0], argv[1], b);
+      return;
+    }
     if (k) {
       int t = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);

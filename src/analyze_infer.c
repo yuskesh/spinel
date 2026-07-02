@@ -2239,8 +2239,17 @@ else {
       return ty_array_elem(rt);
     if (sp_streq(name, "shift") && argc == 0) return ty_array_elem(rt);
     if (sp_streq(name, "slice!") && argc == 2) return rt;  /* removed subarray */
-    if (sp_streq(name, "[]=") && argc == 2)            return ty_array_elem(rt);
-    if (sp_streq(name, "[]=") && argc == 3)            return infer_type(c, argv[2]);
+    /* a[i] = v -> v's type (== element type); a[range] = v / a[s,l] = v is a
+       splice and returns the RHS as written. The poly-array splice emitter
+       yields the RHS BOXED (its `_t` temp is an sp_RbVal), so a poly receiver
+       infers TY_POLY; a typed receiver's emitter yields the raw RHS value. */
+    if (sp_streq(name, "[]=") && argc == 2) {
+      if (infer_type(c, argv[0]) == TY_RANGE)
+        return rt == TY_POLY_ARRAY ? TY_POLY : infer_type(c, argv[1]);
+      return ty_array_elem(rt);
+    }
+    if (sp_streq(name, "[]=") && argc == 3)
+      return rt == TY_POLY_ARRAY ? TY_POLY : infer_type(c, argv[2]);
     if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && rt == TY_POLY_ARRAY)
       return TY_POLY_ARRAY;  /* the matching sub-array, or nil (NULL ptr) */
     if (sp_streq(name, "to_h") && argc == 0 && block < 0) {
@@ -2331,6 +2340,8 @@ else {
       if (sp_streq(name, "clamp")) return TY_POLY;  /* boxed numeric clamp -> poly */
       if (sp_streq(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
       if (sp_streq(name, "[]") && argc == 2) return TY_POLY;  /* 2-arg poly slice */
+      /* []= on a poly receiver yields the assigned value, emitted boxed */
+      if (sp_streq(name, "[]=") && (argc == 2 || argc == 3)) return TY_POLY;
       if (sp_streq(name, "dig") && argc >= 1) return TY_POLY;
       {
         int blk = nt_ref(nt, id, "block");

@@ -60,6 +60,130 @@ sp_IntArray*sp_IntArray_slice(sp_IntArray*a,mrb_int start,mrb_int len){SP_GC_ROO
    negative start. Issue #496. */
 sp_IntArray*sp_IntArray_slice_range(sp_IntArray*a,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=a->len;if(start<0)start+=a->len;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_IntArray_slice(a,start,n);}
 void sp_IntArray_replace(sp_IntArray*dst,sp_IntArray*src){dst->len=0;dst->start=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));sp_gc_bytes-=sizeof(mrb_int)*dst->cap;h->size-=sizeof(mrb_int)*dst->cap;void*nd=realloc(dst->data,sizeof(mrb_int)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(mrb_int*)nd;dst->cap=src->len;h->size+=sizeof(mrb_int)*dst->cap;sp_gc_bytes+=sizeof(mrb_int)*dst->cap;}memcpy(dst->data,src->data+src->start,sizeof(mrb_int)*src->len);dst->len=src->len;}
+/* arr[start,len] = src / arr[range] = src : remove `len` elements at `start`
+   and insert the `srcn` elements of `src` in their place, shifting the tail.
+   Reuses push so capacity growth + GC byte accounting stay in one place. src
+   is snapshotted first so splicing an array into itself (`a[1,1]=a`) is safe.
+   A start beyond the end would need a nil gap, which a typed array cannot
+   hold, so it raises (the poly-array splice fills nil instead). */
+void sp_IntArray_splice(sp_IntArray*a,mrb_int start,mrb_int len,const mrb_int*src,mrb_int srcn){
+  if(!a)return;
+  if(a->frozen){sp_raise_frozen_array();return;}
+  SP_GC_ROOT(a);
+  mrb_int alen=a->len,s=start;
+  if(s<0)s+=alen;
+  if(len<0){sp_raise_cls("IndexError",sp_sprintf("negative length (%lld)",(long long)len));return;}
+  if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
+  if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
+  if(s+len>alen)len=alen-s;
+  mrb_int*sb=NULL;
+  if(srcn>0){sb=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(mrb_int)*(size_t)srcn);}
+  mrb_int tail_from=s+len,tail_n=alen-tail_from;
+  mrb_int*tb=NULL;
+  if(tail_n>0){tb=(mrb_int*)malloc(sizeof(mrb_int)*(size_t)tail_n);if(!tb){free(sb);sp_oom_die();}memcpy(tb,a->data+a->start+tail_from,sizeof(mrb_int)*(size_t)tail_n);}
+  a->len=s;
+  for(mrb_int i=0;i<srcn;i++)sp_IntArray_push(a,sb[i]);
+  for(mrb_int i=0;i<tail_n;i++)sp_IntArray_push(a,tb[i]);
+  free(sb);free(tb);
+}
+void sp_FloatArray_splice(sp_FloatArray*a,mrb_int start,mrb_int len,const mrb_float*src,mrb_int srcn){
+  if(!a)return;
+  if(a->frozen){sp_raise_frozen_array();return;}
+  SP_GC_ROOT(a);
+  mrb_int alen=a->len,s=start;
+  if(s<0)s+=alen;
+  if(len<0){sp_raise_cls("IndexError",sp_sprintf("negative length (%lld)",(long long)len));return;}
+  if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
+  if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
+  if(s+len>alen)len=alen-s;
+  mrb_float*sb=NULL;
+  if(srcn>0){sb=(mrb_float*)malloc(sizeof(mrb_float)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(mrb_float)*(size_t)srcn);}
+  mrb_int tail_from=s+len,tail_n=alen-tail_from;
+  mrb_float*tb=NULL;
+  if(tail_n>0){tb=(mrb_float*)malloc(sizeof(mrb_float)*(size_t)tail_n);if(!tb){free(sb);sp_oom_die();}memcpy(tb,a->data+tail_from,sizeof(mrb_float)*(size_t)tail_n);}
+  a->len=s;
+  for(mrb_int i=0;i<srcn;i++)sp_FloatArray_push(a,sb[i]);
+  for(mrb_int i=0;i<tail_n;i++)sp_FloatArray_push(a,tb[i]);
+  free(sb);free(tb);
+}
+void sp_StrArray_splice(sp_StrArray*a,mrb_int start,mrb_int len,const char*const*src,mrb_int srcn){
+  if(!a)return;
+  if(a->frozen){sp_raise_frozen_array();return;}
+  SP_GC_ROOT(a);
+  mrb_int alen=a->len,s=start;
+  if(s<0)s+=alen;
+  if(len<0){sp_raise_cls("IndexError",sp_sprintf("negative length (%lld)",(long long)len));return;}
+  if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
+  if(s>alen){sp_raise_cls("RuntimeError",sp_sprintf("index %lld out of range for typed-array splice (would require nil fill)",(long long)s));return;}
+  if(s+len>alen)len=alen-s;
+  const char**sb=NULL;
+  if(srcn>0){sb=(const char**)malloc(sizeof(const char*)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,src,sizeof(const char*)*(size_t)srcn);}
+  /* Snapshot the tail into a *rooted* holder before truncating a->len: once
+     a->len shrinks, a no longer scans the tail, so a raw buffer would leave the
+     tail's GC strings unrooted across the pushes below (which can collect). The
+     root sits at function scope -- not inside the guard -- so it stays live for
+     the whole splice. */
+  mrb_int tail_from=s+len,tail_n=alen-tail_from;
+  sp_StrArray*tb=NULL;SP_GC_ROOT(tb);
+  if(tail_n>0){tb=sp_StrArray_new();for(mrb_int i=0;i<tail_n;i++)sp_StrArray_push(tb,a->data[tail_from+i]);}
+  a->len=s;
+  for(mrb_int i=0;i<srcn;i++)sp_StrArray_push(a,sb[i]);
+  if(tb)for(mrb_int i=0;i<tb->len;i++)sp_StrArray_push(a,tb->data[i]);
+  free(sb);
+}
+/* poly-array splice: like the typed forms but elements are boxed, so a nil gap
+   (start past the end) is filled with nil rather than raising. Ruby's `a[s,l]=`
+   splices the RHS's elements when it is an Array, else inserts it as one
+   element -- a runtime fact decided here from src's class id. */
+void sp_PolyArray_splice(sp_PolyArray*a,mrb_int start,mrb_int len,sp_RbVal src){
+  if(!a)return;
+  if(a->frozen){sp_raise_frozen_array();return;}
+  SP_GC_ROOT(a);
+  /* src rooted too: the pushes below can trigger a collection while some of
+     the snapshotted elements are reachable only through src. */
+  SP_GC_ROOT_RBVAL(src);
+  mrb_int alen=a->len,s=start;
+  if(s<0)s+=alen;
+  if(len<0){sp_raise_cls("IndexError",sp_sprintf("negative length (%lld)",(long long)len));return;}
+  if(s<0){sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)start,(long long)-alen));return;}
+  /* snapshot the source elements as boxed values. src's class id decides
+     array-vs-single-element (Ruby splices an Array RHS, inserts anything
+     else). A user object with to_ary is coerced at COMPILE time when its
+     static type is known; a to_ary object reaching here as a runtime poly
+     value still inserts as one element -- closing that would need a
+     codegen-installed dispatch hook (the sp_obj_cmp_hook pattern). */
+  int src_is_array=src.tag==SP_TAG_OBJ&&(src.cls_id==SP_BUILTIN_INT_ARRAY||src.cls_id==SP_BUILTIN_FLT_ARRAY||src.cls_id==SP_BUILTIN_STR_ARRAY||src.cls_id==SP_BUILTIN_POLY_ARRAY);
+  mrb_int srcn=0;sp_RbVal*sb=NULL;
+  if(src_is_array){
+    void*p=src.v.p;
+    switch(src.cls_id){
+      case SP_BUILTIN_INT_ARRAY:{sp_IntArray*x=(sp_IntArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)malloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(mrb_int i=0;i<srcn;i++)sb[i]=sp_box_int(x->data[x->start+i]);}break;}
+      case SP_BUILTIN_FLT_ARRAY:{sp_FloatArray*x=(sp_FloatArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)malloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(mrb_int i=0;i<srcn;i++)sb[i]=sp_box_float(x->data[i]);}break;}
+      case SP_BUILTIN_STR_ARRAY:{sp_StrArray*x=(sp_StrArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)malloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();for(mrb_int i=0;i<srcn;i++)sb[i]=sp_box_str(x->data[i]);}break;}
+      case SP_BUILTIN_POLY_ARRAY:{sp_PolyArray*x=(sp_PolyArray*)p;srcn=x->len;if(srcn>0){sb=(sp_RbVal*)malloc(sizeof(sp_RbVal)*(size_t)srcn);if(!sb)sp_oom_die();memcpy(sb,x->data,sizeof(sp_RbVal)*(size_t)srcn);}break;}
+      default:break;
+    }
+  }else{
+    srcn=1;sb=(sp_RbVal*)malloc(sizeof(sp_RbVal));if(!sb)sp_oom_die();sb[0]=src;
+  }
+  /* clamp/gap: when start is past the end, the [s+len) tail is empty and the
+     [alen,s) gap fills with nil */
+  mrb_int gap=0,tail_from,tail_n;
+  if(s<=alen){if(s+len>alen)len=alen-s;tail_from=s+len;tail_n=alen-tail_from;}
+  else{gap=s-alen;tail_from=alen;tail_n=0;}
+  /* Snapshot the tail into a *rooted* holder before truncating a->len: the tail
+     elements belong to a and, once a->len shrinks, are reachable through neither
+     a nor src, so a raw buffer would leave them unrooted across the pushes below
+     (which can collect). The source snapshot sb needs no such holder -- its
+     elements stay reachable through the already-rooted src. */
+  sp_PolyArray*tb=NULL;SP_GC_ROOT(tb);
+  if(tail_n>0){tb=sp_PolyArray_new();for(mrb_int i=0;i<tail_n;i++)sp_PolyArray_push(tb,a->data[tail_from+i]);}
+  a->len=(s<=alen)?s:alen;
+  for(mrb_int i=0;i<gap;i++)sp_PolyArray_push(a,sp_box_nil());
+  for(mrb_int i=0;i<srcn;i++)sp_PolyArray_push(a,sb[i]);
+  if(tb)for(mrb_int i=0;i<tb->len;i++)sp_PolyArray_push(a,tb->data[i]);
+  free(sb);
+}
 void sp_IntArray_reverse_bang(sp_IntArray*a){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}for(mrb_int i=0,j=a->len-1;i<j;i++,j--){mrb_int t=a->data[a->start+i];a->data[a->start+i]=a->data[a->start+j];a->data[a->start+j]=t;}}
 void sp_IntArray_rotate_bang(sp_IntArray*a,mrb_int n){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}if(a->len<=0)return;n=((n%a->len)+a->len)%a->len;if(n==0)return;mrb_int*d=a->data+a->start;mrb_int lo=0,hi=n-1;while(lo<hi){mrb_int t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=n;hi=a->len-1;while(lo<hi){mrb_int t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}lo=0;hi=a->len-1;while(lo<hi){mrb_int t=d[lo];d[lo]=d[hi];d[hi]=t;lo++;hi--;}}
 static int _sp_int_cmp(const void*a,const void*b){mrb_int va=*(const mrb_int*)a,vb=*(const mrb_int*)b;return(va>vb)-(va<vb);}

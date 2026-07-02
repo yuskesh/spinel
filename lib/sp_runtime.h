@@ -518,7 +518,8 @@ static inline int sp_gc_bucket(size_t sz){int b=(int)(sz/16);return b<SP_GC_NBUC
    (see sp_IntArray); strings use the 0xff marker / wrapper bit. */
 static inline mrb_bool sp_gc_is_frozen(void *p) { if (!p) return FALSE; return ((sp_gc_hdr *)((char *)p - sizeof(sp_gc_hdr)))->frozen; }
 static inline void *sp_gc_freeze(void *p) { if (p) ((sp_gc_hdr *)((char *)p - sizeof(sp_gc_hdr)))->frozen = 1; return p; }
-static void __attribute__((noinline,cold)) sp_raise_frozen_hash(void){sp_raise_cls("FrozenError","can't modify frozen Hash");}
+/* marker-prefixed message: see sp_raise_frozen_array (lib/sp_alloc.h) */
+static void __attribute__((noinline,cold)) sp_raise_frozen_hash(void){sp_raise_cls("FrozenError",(&("\xff" "can't modify frozen Hash")[1]));}
 /* Pool-aware alloc. The recycle hook is stored in the gc_hdr; sweep
    calls it on unmarked objects instead of finalize+free. The hook
    decides whether to push the storage onto a per-class free-list or
@@ -2157,35 +2158,128 @@ static sp_RbVal sp_poly_slice(sp_RbVal a, mrb_int start, mrb_int len) {
     default: return sp_box_nil();
   }
 }
-/* 3-arg []=: replace `len` elements at `start` with elements from `src`. */
-static void sp_poly_splice(sp_RbVal recv, mrb_int start, mrb_int len, sp_RbVal src) {
-  if (recv.tag != SP_TAG_OBJ) return;
-  mrb_int rlen = 0;
-  if (recv.cls_id == SP_BUILTIN_INT_ARRAY) rlen = ((sp_IntArray*)recv.v.p)->len;
-  else if (recv.cls_id == SP_BUILTIN_POLY_ARRAY) rlen = ((sp_PolyArray*)recv.v.p)->len;
-  else return;
-  if (start < 0) start += rlen;
-  if (start < 0) start = 0;
-  if (len < 0) len = 0;
-  if (start + len > rlen) len = rlen - start;
-  if (recv.cls_id == SP_BUILTIN_INT_ARRAY && src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_INT_ARRAY) {
-    sp_IntArray *a = (sp_IntArray*)recv.v.p, *s = (sp_IntArray*)src.v.p;
-    mrb_int n = len < s->len ? len : s->len;
-    for (mrb_int i = 0; i < n; i++) a->data[a->start + start + i] = s->data[s->start + i];
+/* True when a boxed value is one of the builtin array kinds. */
+static int sp_rbval_is_array(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ &&
+    (v.cls_id == SP_BUILTIN_INT_ARRAY || v.cls_id == SP_BUILTIN_FLT_ARRAY ||
+     v.cls_id == SP_BUILTIN_STR_ARRAY || v.cls_id == SP_BUILTIN_POLY_ARRAY);
+}
+/* Frozen flag of a builtin array, matching what sp_*Array_splice check (the
+   struct field, which the promote path would otherwise bypass by building a new
+   array, and which lets us check frozen up front before any GC root is live). */
+static int sp_typed_arr_frozen(sp_RbVal v) {
+  switch (v.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: return ((sp_IntArray *)v.v.p)->frozen;
+    case SP_BUILTIN_FLT_ARRAY: return ((sp_FloatArray *)v.v.p)->frozen;
+    case SP_BUILTIN_STR_ARRAY: return ((sp_StrArray *)v.v.p)->frozen;
+    case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)v.v.p)->frozen;
+    default: return 0;
   }
-  else if (recv.cls_id == SP_BUILTIN_POLY_ARRAY) {
-    sp_PolyArray *a = (sp_PolyArray*)recv.v.p;
-    if (src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_INT_ARRAY) {
-      sp_IntArray *s = (sp_IntArray*)src.v.p;
-      mrb_int n = len < s->len ? len : s->len;
-      for (mrb_int i = 0; i < n; i++) a->data[start + i] = sp_box_int(s->data[s->start + i]);
-    }
-    else if (src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_POLY_ARRAY) {
-      sp_PolyArray *s = (sp_PolyArray*)src.v.p;
-      mrb_int n = len < s->len ? len : s->len;
-      for (mrb_int i = 0; i < n; i++) a->data[start + i] = s->data[i];
-    }
+}
+/* 3-arg []= on a poly receiver whose runtime object is a builtin array. Matches
+   CRuby: a POLY_ARRAY splices directly (sp_PolyArray_splice already inserts a
+   nil/scalar src as one element, splats an array src, and nil-fills a gap past
+   the end). A typed array stays typed only when the result provably remains
+   homogeneous -- an empty ([]) src, a same-kind array, or a matching scalar, AND
+   no nil-fill (start <= len). Otherwise the array is promoted to a poly array
+   (boxing its elements) and spliced there. Returns the possibly-new boxed array
+   so the caller stores it back into the receiver's slot. */
+static sp_RbVal sp_poly_splice(sp_RbVal recv, mrb_int start, mrb_int len, sp_RbVal src) {
+  if (recv.tag != SP_TAG_OBJ) return recv;
+  mrb_int alen = sp_poly_arr_len(recv);
+  mrb_int s = start < 0 ? start + alen : start;
+  /* Validate frozen/length/index UP FRONT -- before any delegate roots the
+     array -- so a raise never longjmps with a GC root live (an inline rescue
+     does not restore sp_gc_nroots, so such a root would dangle). The delegates
+     re-check the same conditions but, being pre-satisfied, never raise. The
+     order matches CRuby: modify-check first, then negative length, then the
+     too-small index. */
+  if (sp_typed_arr_frozen(recv)) sp_raise_frozen_array();
+  if (len < 0) sp_raise_cls("IndexError", sp_sprintf("negative length (%lld)", (long long)len));
+  if (s < 0) sp_raise_cls("IndexError",
+                          sp_sprintf("index %lld too small for array; minimum: %lld", (long long)start, (long long)-alen));
+  if (recv.cls_id == SP_BUILTIN_POLY_ARRAY) {
+    sp_PolyArray_splice((sp_PolyArray *)recv.v.p, start, len, src);
+    return recv;
   }
+  int nofill = s <= alen;   /* a start past the end needs a nil-fill -> promote */
+  int is_empty_arr = sp_rbval_is_array(src) && sp_poly_arr_len(src) == 0;
+  switch (recv.cls_id) {
+    case SP_BUILTIN_INT_ARRAY: {
+      sp_IntArray *a = (sp_IntArray *)recv.v.p;
+      if (nofill && is_empty_arr) { sp_IntArray_splice(a, start, len, NULL, 0); return recv; }
+      if (nofill && src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_INT_ARRAY) {
+        sp_IntArray *sa = (sp_IntArray *)src.v.p;
+        sp_IntArray_splice(a, start, len, sa->data + sa->start, sa->len); return recv;
+      }
+      if (nofill && src.tag == SP_TAG_INT) { mrb_int v = src.v.i; sp_IntArray_splice(a, start, len, &v, 1); return recv; }
+      break;
+    }
+    case SP_BUILTIN_FLT_ARRAY: {
+      sp_FloatArray *a = (sp_FloatArray *)recv.v.p;
+      if (nofill && is_empty_arr) { sp_FloatArray_splice(a, start, len, NULL, 0); return recv; }
+      if (nofill && src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_FLT_ARRAY) {
+        sp_FloatArray *sa = (sp_FloatArray *)src.v.p;
+        sp_FloatArray_splice(a, start, len, sa->data, sa->len); return recv;
+      }
+      if (nofill && src.tag == SP_TAG_FLT) { mrb_float v = src.v.f; sp_FloatArray_splice(a, start, len, &v, 1); return recv; }
+      break;
+    }
+    case SP_BUILTIN_STR_ARRAY: {
+      sp_StrArray *a = (sp_StrArray *)recv.v.p;
+      if (nofill && is_empty_arr) { sp_StrArray_splice(a, start, len, NULL, 0); return recv; }
+      if (nofill && src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_STR_ARRAY) {
+        sp_StrArray *sa = (sp_StrArray *)src.v.p;
+        sp_StrArray_splice(a, start, len, sa->data, sa->len); return recv;
+      }
+      if (nofill && src.tag == SP_TAG_STR) { const char *v = src.v.s; sp_StrArray_splice(a, start, len, &v, 1); return recv; }
+      break;
+    }
+    default: return recv;
+  }
+  /* promote to poly and splice there (handles nil / heterogeneous / nil-fill).
+     Index/length/frozen were validated up front, so nothing below raises; the
+     GC roots are pushed only around the actual allocation and pop normally. */
+  SP_GC_ROOT_RBVAL(src);
+  /* recv is read element-by-element inside the conversion's push loop, each of
+     which can collect; a temporary receiver held by no rooted container would
+     otherwise dangle mid-loop. */
+  SP_GC_ROOT_RBVAL(recv);
+  sp_PolyArray *p = sp_poly_to_poly_array(recv);
+  SP_GC_ROOT(p);
+  sp_PolyArray_splice(p, start, len, src);
+  return sp_box_poly_array(p);
+}
+/* Render a Range for a RangeError message ("-10..1", "1...3", "-10..", "..2"). */
+static const char *sp_range_str(sp_Range r) {
+  const char *dots = r.excl ? "..." : "..";
+  if (r.first == INTPTR_MIN && r.last == INTPTR_MAX) return dots;
+  if (r.first == INTPTR_MIN) return sp_sprintf("%s%lld", dots, (long long)r.last);
+  if (r.last == INTPTR_MAX)  return sp_sprintf("%lld%s", (long long)r.first, dots);
+  return sp_sprintf("%lld%s%lld", (long long)r.first, dots, (long long)r.last);
+}
+/* `arr[range] = src` on a poly receiver: resolve beginless (INTPTR_MIN -> 0) and
+   endless (INTPTR_MAX -> length) endpoints and negative endpoints against the
+   runtime length, then splice. A begin index below -length raises RangeError
+   (CRuby uses RangeError here, not the (start,len) form's IndexError). */
+static sp_RbVal sp_poly_splice_range(sp_RbVal recv, sp_Range r, sp_RbVal src) {
+  /* frozen precedes range validation (CRuby's modify-check runs first) */
+  if (recv.tag == SP_TAG_OBJ && sp_typed_arr_frozen(recv)) sp_raise_frozen_array();
+  mrb_int alen = sp_poly_arr_len(recv);
+  mrb_int first = r.first;
+  if (first == INTPTR_MIN) first = 0;      /* beginless */
+  else if (first < 0) {
+    if (first < -alen) sp_raise_cls("RangeError", sp_sprintf("%s out of range", sp_range_str(r)));
+    first += alen;
+  }
+  mrb_int len;
+  if (r.last == INTPTR_MAX) { len = alen - first; if (len < 0) len = 0; }  /* endless */
+  else {
+    mrb_int last = r.last < 0 ? r.last + alen : r.last;
+    len = last - first + (r.excl ? 0 : 1);
+    if (len < 0) len = 0;
+  }
+  return sp_poly_splice(recv, first, len, src);
 }
 /* Array#replace(other): replace recv's contents with other's, returning recv.
    recv keeps the same boxed pointer (the underlying array is mutated in place),
@@ -3351,15 +3445,19 @@ static sp_RbVal sp_poly_arr_set(sp_RbVal v, mrb_int idx, sp_RbVal val) {
   }
   return val;
 }
-/* Like sp_poly_arr_set but widens IntArray to PolyArray when val is non-numeric.
-   Returns the (possibly new) array RbVal so the caller can update the slot. */
+/* Like sp_poly_arr_set but widens a typed array to a PolyArray when val does not
+   match its element kind (int<-non-int incl. float, flt<-non-float, str<-non-str),
+   so the value is stored exactly as CRuby does (e.g. a Float into a former int
+   array). Returns the (possibly new) boxed array so the caller updates the slot. */
 static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, mrb_int idx, sp_RbVal val) {
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY &&
-      val.tag != SP_TAG_INT && val.tag != SP_TAG_FLT) {
-    sp_IntArray *ia = (sp_IntArray *)v.v.p;
-    sp_PolyArray *pa = sp_PolyArray_new();
-    for (mrb_int k = 0; k < ia->len; k++)
-      sp_PolyArray_push(pa, sp_box_int(ia->data[ia->start + k]));
+  if (v.tag == SP_TAG_OBJ &&
+      ((v.cls_id == SP_BUILTIN_INT_ARRAY && val.tag != SP_TAG_INT) ||
+       (v.cls_id == SP_BUILTIN_FLT_ARRAY && val.tag != SP_TAG_FLT) ||
+       (v.cls_id == SP_BUILTIN_STR_ARRAY && val.tag != SP_TAG_STR))) {
+    if (sp_typed_arr_frozen(v)) sp_raise_frozen_array();
+    SP_GC_ROOT_RBVAL(val);
+    sp_PolyArray *pa = sp_poly_to_poly_array(v);
+    SP_GC_ROOT(pa);
     sp_PolyArray_set(pa, idx, val);
     return sp_box_poly_array(pa);
   }
@@ -3394,6 +3492,35 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
     case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash*)v.v.p, key, val); break;
     default: break;
   }
+  return val;
+}
+/* `outer[oidx][start,len] = src` where the splice receiver is itself an index
+   expression: read the inner array, promoting-splice it, and store the possibly
+   promoted result back into outer's slot so a typed->poly promotion survives.
+   outer is a POLY_ARRAY for an array-of-arrays; sp_poly_set_poly also covers a
+   hash outer. Codegen yields the rhs separately, so the return is advisory. */
+static sp_RbVal sp_poly_slot_splice(sp_RbVal outer, mrb_int oidx, mrb_int start, mrb_int len, sp_RbVal src) {
+  sp_RbVal inner = sp_poly_arr_get(outer, oidx);
+  sp_RbVal res = sp_poly_splice(inner, start, len, src);
+  sp_poly_set_poly(outer, sp_box_int(oidx), res);
+  return res;
+}
+static sp_RbVal sp_poly_slot_splice_range(sp_RbVal outer, mrb_int oidx, sp_Range r, sp_RbVal src) {
+  sp_RbVal inner = sp_poly_arr_get(outer, oidx);
+  sp_RbVal res = sp_poly_splice_range(inner, r, src);
+  sp_poly_set_poly(outer, sp_box_int(oidx), res);
+  return res;
+}
+/* `outer[oidx][ikey] = val` single-index assign through an index-expression
+   receiver: read inner, widen-and-set (promoting on element-kind mismatch), and
+   store the possibly promoted result back into outer's slot. No GC root spans
+   the calls: outer stays live via the caller's rooted local, and src/val are
+   rooted inside the callee only where an allocation (promotion) happens, after
+   every raise condition has been checked. */
+static sp_RbVal sp_poly_slot_set(sp_RbVal outer, mrb_int oidx, mrb_int ikey, sp_RbVal val) {
+  sp_RbVal inner = sp_poly_arr_get(outer, oidx);
+  sp_RbVal res = sp_poly_arr_widen_and_set(inner, ikey, val);
+  sp_poly_set_poly(outer, sp_box_int(oidx), res);
   return val;
 }
 static mrb_int sp_poly_length(sp_RbVal v){if(v.tag==SP_TAG_STR)return v.v.s?(mrb_int)strlen(v.v.s):0;if(v.tag==SP_TAG_SYM)return sp_sym_name_fn?(mrb_int)strlen(sp_sym_name_fn((sp_sym)v.v.i)):0;if(v.tag!=SP_TAG_OBJ)return 0;switch(v.cls_id){case SP_BUILTIN_INT_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_FLT_ARRAY:return sp_FloatArray_length((sp_FloatArray*)v.v.p);case SP_BUILTIN_STR_ARRAY:return sp_StrArray_length((sp_StrArray*)v.v.p);case SP_BUILTIN_SYM_ARRAY:return sp_IntArray_length((sp_IntArray*)v.v.p);case SP_BUILTIN_POLY_ARRAY:return sp_PolyArray_length((sp_PolyArray*)v.v.p);case SP_BUILTIN_STR_INT_HASH:return sp_StrIntHash_length((sp_StrIntHash*)v.v.p);case SP_BUILTIN_STR_STR_HASH:return sp_StrStrHash_length((sp_StrStrHash*)v.v.p);case SP_BUILTIN_INT_STR_HASH:return sp_IntStrHash_length((sp_IntStrHash*)v.v.p);case SP_BUILTIN_STR_POLY_HASH:return sp_StrPolyHash_length((sp_StrPolyHash*)v.v.p);case SP_BUILTIN_SYM_POLY_HASH:return sp_SymPolyHash_length((sp_SymPolyHash*)v.v.p);case SP_BUILTIN_POLY_POLY_HASH:return sp_PolyPolyHash_length((sp_PolyPolyHash*)v.v.p);default:return 0;}}

@@ -5395,6 +5395,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   if (rt == TY_POLY_ARRAY) {
     if (sp_streq(name, "[]=") && argc == 2) {
+      /* arr[range] = rhs : a splice over the range's (start, length). */
+      if (comp_ntype(c, argv[0]) == TY_RANGE) {
+        emit_indent(b, indent);
+        emit_array_splice(c, id, recv, rt, -1, -1, argv[0], argv[1], b);
+        buf_puts(b, ";\n");
+        return 1;
+      }
       emit_indent(b, indent);
       buf_puts(b, "sp_PolyArray_set("); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ");\n");
@@ -5440,6 +5447,13 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (!k) return 0;
 
   if (sp_streq(name, "[]=") && argc == 2) {
+    /* arr[range] = rhs : a splice over the range's (start, length). */
+    if (comp_ntype(c, argv[0]) == TY_RANGE) {
+      emit_indent(b, indent);
+      emit_array_splice(c, id, recv, rt, -1, -1, argv[0], argv[1], b);
+      buf_puts(b, ";\n");
+      return 1;
+    }
     emit_indent(b, indent);
     buf_printf(b, "sp_%sArray_set(", k);
     emit_expr(c, recv, b); buf_puts(b, ", ");
