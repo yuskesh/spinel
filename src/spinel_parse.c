@@ -117,6 +117,84 @@ static char *g_source_file_escaped = NULL;  /* escape_str(g_source_file), set on
    `node_line` field so codegen can place C `#line` directives. Off by
    default so the AST text format (and golden tests) are unchanged. */
 static int g_emit_line = 0;
+/* Set from the ENTRY file's `# frozen_string_literal: true` magic comment.
+   The pragma is per-file in Ruby: the require resolvers build g_fsl_lines
+   (one flag byte per line of the final spliced buffer, from each spliced
+   file's own head), and flatten() stamps an `fzl` field on string-literal
+   nodes from it. This global is the fallback -- used when the per-line
+   table is unavailable (syntax-sugar changed the line count) -- and the
+   whole-program gate read by the analyzer's mutable-string-buffer pass. */
+int g_frozen_string_literal = 0;
+/* Per-line pragma flags for the final spliced buffer (0-based line index). */
+static unsigned char *g_fsl_lines = NULL;
+static size_t g_fsl_nlines = 0;
+
+/* `# frozen_string_literal: true` on the first line (or the second when the
+   first is a shebang); scanning stops at the first non-comment line. */
+static int sp_scan_fsl_pragma(const char *src) {
+  const char *p = src;
+  for (int line = 0; line < 2 && p && *p; line++) {
+    const char *nl = strchr(p, '\n');
+    size_t len = nl ? (size_t)(nl - p) : strlen(p);
+    const char *q = p; while (*q == ' ' || *q == '\t') q++;
+    if (*q != '#') break;                      /* code reached: stop scanning */
+    if (line == 0 && q[1] == '!') { p = nl ? nl + 1 : NULL; continue; }  /* shebang */
+    char linebuf[512];
+    size_t rem = len - (size_t)(q - p);
+    size_t cl = rem < sizeof(linebuf) - 1 ? rem : sizeof(linebuf) - 1;
+    memcpy(linebuf, q, cl); linebuf[cl] = '\0';
+    const char *m = strstr(linebuf, "frozen_string_literal:");
+    if (m) {
+      m += strlen("frozen_string_literal:");
+      while (*m == ' ' || *m == '\t') m++;
+      if (strncmp(m, "true", 4) == 0) {
+        char c = m[4];
+        return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                 (c >= '0' && c <= '9') || c == '_');
+      }
+      return 0;
+    }
+    p = nl ? nl + 1 : NULL;
+  }
+  return 0;
+}
+
+/* Lines of `s` as the require splicers count them: one per '\n', plus one for
+   a trailing unterminated fragment (the splicers append the missing '\n'). */
+static size_t sp_count_lines(const char *s) {
+  size_t n = 0; const char *p = s;
+  for (; *p; p++) if (*p == '\n') n++;
+  if (p != s && p[-1] != '\n') n++;
+  return n;
+}
+
+/* Fresh flag buffer for `text`, every line carrying that file's pragma flag. */
+static unsigned char *sp_fsl_make(const char *text, int flag, size_t *n_out) {
+  size_t n = sp_count_lines(text);
+  unsigned char *v = malloc(n ? n : 1);
+  if (!v) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  memset(v, flag ? 1 : 0, n);
+  *n_out = n;
+  return v;
+}
+
+/* Replace `remove` entries at line index `at` with the `insn` entries of
+   `ins`, mirroring a text splice on the flag buffer. */
+static void sp_fsl_splice(unsigned char **buf, size_t *n, size_t at,
+                          size_t remove, const unsigned char *ins, size_t insn) {
+  if (at > *n) at = *n;
+  if (remove > *n - at) remove = *n - at;
+  size_t newn = *n - remove + insn;
+  unsigned char *nv = malloc(newn ? newn : 1);
+  if (!nv) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  if (at) memcpy(nv, *buf, at);
+  if (insn) memcpy(nv + at, ins, insn);
+  size_t rest = *n - at - remove;
+  if (rest) memcpy(nv + at + insn, *buf + at + remove, rest);
+  free(*buf);
+  *buf = nv;
+  *n = newn;
+}
 /* Debug multi-file source map, populated by sp_build_line_map() before
    flatten() runs and read in flatten() to attribute each node to its
    original file/line. Declared here because flatten() precedes the
@@ -298,6 +376,17 @@ static int pm_int_overflows(pm_integer_t *integer) {
   uint64_t max_negative = max_positive + 1ULL;
   if (integer->negative) return overflow || val >= max_negative;
   return overflow || val > max_positive;
+}
+
+/* frozen_string_literal flag for the file `node`'s source line came from:
+   the per-line table when available, else the entry file's pragma. */
+static int sp_node_fsl(pm_node_t *node) {
+  if (g_fsl_lines) {
+    int32_t bl = pm_newline_list_line(&g_parser->newline_list,
+                                      node->location.start, g_parser->start_line);
+    if (bl >= 1 && (size_t)bl <= g_fsl_nlines) return g_fsl_lines[bl - 1];
+  }
+  return g_frozen_string_literal;
 }
 
 /* ---- Main flattening ---- */
@@ -793,12 +882,16 @@ else {
     pm_string_node_t *n = (pm_string_node_t *)node;
     N("StringNode");
     S("content", escape_pm_string(&n->unescaped));
+    /* `fzl` only when the literal's file has the frozen pragma, so the AST
+       text is byte-identical for programs without one. */
+    if (sp_node_fsl(node)) I("fzl", 1);
     break;
   }
   case PM_INTERPOLATED_STRING_NODE: {
     pm_interpolated_string_node_t *n = (pm_interpolated_string_node_t *)node;
     N("InterpolatedStringNode");
     A("parts", &n->parts);
+    if (sp_node_fsl(node)) I("fzl", 1);  /* adjacent-literal fold ("a" "b") */
     break;
   }
   case PM_EMBEDDED_STATEMENTS_NODE: {
@@ -1145,6 +1238,7 @@ else {
        in g_source_file_escaped at init since it never changes. */
     N("SourceFileNode");
     emit_str(id, "content", g_source_file_escaped);
+    if (sp_node_fsl(node)) I("fzl", 1);  /* __FILE__ is a literal of its file */
     break;
   }
   case PM_SOURCE_ENCODING_NODE: {
@@ -1865,7 +1959,25 @@ static void sp_normalize_dots(char *path) {
    require_relative "path" with the file content. Files that have
    already been included once are silently skipped on subsequent
    requires (matching Ruby's load-once semantics). */
-static char *resolve_requires(const char *source, const char *source_path) {
+/* PUSH/POP wrap adds one marker line before and after (--debug only): pad the
+   file's flag lines to match so the buffer stays aligned with the text. */
+static void sp_fsl_pad_wrap(unsigned char **v, size_t *n) {
+  unsigned char z = 0;
+  if (!g_emit_line) return;
+  sp_fsl_splice(v, n, 0, 0, &z, 1);
+  sp_fsl_splice(v, n, *n, 0, &z, 1);
+}
+
+/* 0-based line index of byte offset `at` in `text` (both resolvers splice at
+   line starts, so this is the spliced line's index in the flag buffer). */
+static size_t sp_fsl_line_at(const char *text, size_t at) {
+  size_t line = 0;
+  for (size_t i = 0; i < at; i++) if (text[i] == '\n') line++;
+  return line;
+}
+
+static char *resolve_requires(const char *source, const char *source_path,
+                              unsigned char **fsl_out, size_t *fsl_n_out) {
   /* Get base directory */
   char *path_copy = strdup(source_path);
   char *dir = strdup(path_copy);
@@ -1876,6 +1988,10 @@ static char *resolve_requires(const char *source, const char *source_path) {
   free(path_copy);
 
   char *result = strdup(source);
+  /* One pragma flag per line of `result`, kept in lockstep with every text
+     splice below so each literal keeps its own file's flag. */
+  size_t fsl_n;
+  unsigned char *fsl = sp_fsl_make(source, sp_scan_fsl_pragma(source), &fsl_n);
   char *pos;
   char *scan_from = result;
   while ((pos = strstr(scan_from, "require_relative")) != NULL) {
@@ -1931,9 +2047,11 @@ else { scan_from = pos + 1; continue; }
 
     char *canonical = sp_canonical_path(full_path);
     char *content;
+    unsigned char *cfsl = NULL; size_t cfsl_n = 0;   /* spliced content's flags */
     if (sp_path_already_included(canonical)) {
       /* Already inlined once -- replace require with empty content */
       content = strdup("# require_relative skipped (already included)");
+      cfsl = sp_fsl_make(content, 0, &cfsl_n);
       free(canonical);
     }
 else {
@@ -1953,7 +2071,7 @@ else {
       }
 else {
         /* Recursively resolve */
-        char *resolved = resolve_requires(content, full_path);
+        char *resolved = resolve_requires(content, full_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;
       }
@@ -1963,12 +2081,18 @@ else {
     /* Debug: wrap with PUSH/POP markers so the line map can attribute this
        file's nodes to the right source. No-op outside --debug. */
     content = sp_wrap_included(content, full_path);
+    sp_fsl_pad_wrap(&cfsl, &cfsl_n);
 
     /* Replace the line */
     size_t line_len = (line_end - pos) + ((*line_end == '\n') ? 1 : 0);
     size_t content_len = strlen(content);
     size_t result_len = strlen(result);
     size_t before_len = pos - result;
+
+    /* Mirror the splice on the flag buffer: the require line's one entry is
+       replaced by the included file's entries. */
+    sp_fsl_splice(&fsl, &fsl_n, sp_fsl_line_at(result, before_len), 1, cfsl, cfsl_n);
+    free(cfsl);
 
     char *new_result = malloc(result_len - line_len + content_len + 2);
     memcpy(new_result, result, before_len);
@@ -1984,6 +2108,8 @@ else {
     free(content);
   }
   free(dir);
+  *fsl_out = fsl;
+  *fsl_n_out = fsl_n;
   return result;
 }
 
@@ -2014,7 +2140,8 @@ static int sp_require_tolerated(const char *name) {
 }
 
 /* ---- Plain require resolution ---- */
-static char *resolve_plain_requires(char *source, const char *exe_path) {
+static char *resolve_plain_requires(char *source, const char *exe_path,
+                                    unsigned char **fsl, size_t *fsl_n) {
   /* Find lib/ directory relative to this executable */
   char lib_dir[1024];
   strncpy(lib_dir, exe_path, sizeof(lib_dir) - 1);
@@ -2087,6 +2214,7 @@ else {
        still produces struct-redefinition errors. */
     char *canonical = sp_canonical_path(lib_path);
     char *content;
+    unsigned char *cfsl = NULL; size_t cfsl_n = 0;   /* spliced content's flags */
     if (sp_path_already_included(canonical)) {
       content = strdup("# require skipped (already included)");
       free(canonical);
@@ -2156,11 +2284,13 @@ else {
         /* A bundled lib/<name>.rb was found and spliced; record the feature so
            the require-gate enables any C-native methods it stands in for. */
         sp_feature_mark(lib_name);
-        char *resolved = resolve_requires(content, lib_path);
+        char *resolved = resolve_requires(content, lib_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;
       }
     }
+    /* Stub arms above leave cfsl NULL: their content is a one-line comment. */
+    if (!cfsl) cfsl = sp_fsl_make(content, 0, &cfsl_n);
 
     /* A trailing same-line modifier (`rescue`, `if`, `unless`, `and`,
        `&&`, ...) puts the require in expression position: `require 'x'
@@ -2179,6 +2309,7 @@ else {
       if (*trail != '\n' && *trail != '\r' && *trail != ';' &&
           *trail != '\0' && *trail != '#') {
         free(content);
+        free(cfsl);   /* same-line `nil` substitution: line count unchanged */
         size_t rl_len = (size_t)((end + 1) - pos);   /* the `require 'x'` span */
         size_t result_len = strlen(result);
         size_t before_len = (size_t)(pos - result);
@@ -2197,6 +2328,7 @@ else {
     /* Debug: marker-wrap so plain-require'd lib content doesn't corrupt the
        line map's accounting for code after the require. No-op without --debug. */
     content = sp_wrap_included(content, lib_path);
+    sp_fsl_pad_wrap(&cfsl, &cfsl_n);
 
     /* Replace only the `require "name"` statement itself, not the whole
        line, so `require "x"; code` keeps `code`. Consume trailing
@@ -2206,11 +2338,21 @@ else {
        then pushes onto its own line. */
     char *stmt_end = end + 1;  /* just past the closing quote */
     while (*stmt_end == ' ' || *stmt_end == '\t') stmt_end++;
-    if (*stmt_end == '\n') stmt_end++;
+    int consumed_nl = (*stmt_end == '\n');
+    if (consumed_nl) stmt_end++;
     size_t line_len = stmt_end - pos;
     size_t content_len = strlen(content);
     size_t result_len = strlen(result);
     size_t before_len = pos - result;
+
+    /* Flag-buffer mirror: the require line is consumed entirely (its one
+       entry replaced by the lib's entries) -- unless trailing code stayed on
+       it, in which case that remainder becomes its own line and keeps the
+       original line's entry (insert the lib's entries before it). At EOF
+       with no trailing newline there is no remainder either. */
+    sp_fsl_splice(fsl, fsl_n, sp_fsl_line_at(result, before_len),
+                  (consumed_nl || *stmt_end == '\0') ? 1 : 0, cfsl, cfsl_n);
+    free(cfsl);
     char *new_result = malloc(result_len - line_len + content_len + 2);
     memcpy(new_result, result, before_len);
     memcpy(new_result + before_len, content, content_len);
@@ -2452,6 +2594,11 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
     return 1;
   }
 
+  /* `# frozen_string_literal: true` magic comment, per file: the entry file's
+     flag is the whole-program fallback; the require resolvers below build the
+     per-line table each spliced file's literals are stamped from. */
+  g_frozen_string_literal = sp_scan_fsl_pragma(source);
+
   /* Set the debug flag before resolving requires so the resolvers insert the
      PUSH/POP markers used to rebuild the multi-file source map. */
   {
@@ -2472,9 +2619,10 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
     free(entry_canon);
   }
   g_require_gate = getenv("SPINEL_REQUIRE_GATE") ? 1 : 0;
-  char *resolved = resolve_requires(source, source_file);
+  unsigned char *fsl = NULL; size_t fsl_n = 0;
+  char *resolved = resolve_requires(source, source_file, &fsl, &fsl_n);
   free(source);
-  source = resolve_plain_requires(resolved, argv0);
+  source = resolve_plain_requires(resolved, argv0, &fsl, &fsl_n);
 
   /* Debug: build the buffer-line -> (file, original line) map from the
      marker-annotated buffer *before* syntax-sugar rewriting (which could
@@ -2487,6 +2635,18 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
     if (!premap) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   }
   source = rewrite_syntax_sugar(source);
+  /* Adopt the per-line pragma table only while it provably still lines up
+     with the buffer (sugar preserves line count); on mismatch fall back to
+     the entry file's flag rather than misattribute. */
+  if (sp_count_lines(source) == fsl_n) {
+    g_fsl_lines = fsl;
+    g_fsl_nlines = fsl_n;
+  }
+else {
+    free(fsl);
+    g_fsl_lines = NULL;
+    g_fsl_nlines = 0;
+  }
   if (g_emit_line) {
     size_t la = 1, lb = 1;
     for (const char *p = premap; *p; p++) if (*p == '\n') la++;
@@ -2526,6 +2686,7 @@ else {
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
     free(source);
+    free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
     sp_includes_free();
     return 1;
   }
@@ -2566,6 +2727,7 @@ else {
   pm_node_destroy(&parser, root);
   pm_parser_free(&parser);
   free(source);
+  free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
   free(g_source_file_escaped);  /* paired with the escape_str() in init */
   g_source_file_escaped = NULL;
   sp_includes_free();

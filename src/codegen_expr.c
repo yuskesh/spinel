@@ -212,7 +212,9 @@ else {
   }
 
   if (nargs == 0) {
-    buf_puts(b, "(&(\"\\xff\" \"");
+    /* adjacent literals ("a" "b") fold to one literal: frozen per the
+       InterpolatedStringNode's own file pragma flag */
+    buf_printf(b, "(&(\"%s\" \"", nt_int(c->nt, id, "fzl", 0) ? "\\xf1" : "\\xff");
     for (const char *p = fmt.p ? fmt.p : ""; *p; p++) {
       if (p[0] == '%' && p[1] == '%') { buf_puts(b, "%"); p++; }
       else buf_printf(b, "%c", *p);
@@ -374,12 +376,15 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (sp_streq(ty, "StringNode")) {
     const char *sc = nt_str(nt, id, "content");
-    emit_str_literal_n(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0);
+    emit_str_literal_n(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0,
+                       (int)nt_int(nt, id, "fzl", 0));
     return;
   }
   if (sp_streq(ty, "SourceFileNode")) {
+    /* __FILE__ is a literal of its file: frozen under that file's pragma. */
     const char *sc = nt_str(nt, id, "content");
-    emit_str_literal_n(b, sc ? sc : "", sc ? strlen(sc) : 0);
+    emit_str_literal_n(b, sc ? sc : "", sc ? strlen(sc) : 0,
+                       (int)nt_int(nt, id, "fzl", 0));
     return;
   }
   if (sp_streq(ty, "SourceLineNode")) {
@@ -397,9 +402,10 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (sp_streq(ty, "InterpolatedStringNode")) { emit_interp(c, id, b); return; }
   if (sp_streq(ty, "XStringNode")) {
+    /* backtick content is a command argument, never a user-visible string */
     const char *sc = nt_str(nt, id, "content");
     buf_puts(b, "sp_backtick(");
-    emit_str_literal_n(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0);
+    emit_str_literal_n(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0, 0);
     buf_puts(b, ")");
     return;
   }

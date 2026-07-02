@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 # String#delete_prefix! / delete_suffix! on a mutable_str mutate in
 # place and return the receiver. On a frozen string literal they
 # raise FrozenError, consistent with chomp! / upcase! et al.

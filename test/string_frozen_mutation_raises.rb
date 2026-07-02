@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 # Issue #886: Mutating methods on a frozen string literal raise
 # FrozenError per MRI. spinel string literals are always frozen.
 # Mutable strings (String.new("...")) keep working via the

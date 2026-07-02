@@ -3193,8 +3193,13 @@ void analyze_program(Compiler *c) {
     /* Only promote when every write to this local is a bare string literal:
        such a value is a fresh mutable string. A `.freeze`/`.dup`/method-result
        write may carry runtime frozen state that sp_String_new would discard,
-       so `<<` would fail to raise FrozenError. Conservative but sound. */
-    int all_literal_writes = 1, saw_write = 0;
+       so `<<` would fail to raise FrozenError. Conservative but sound.
+       Under `# frozen_string_literal: true` (the literal's `fzl` node flag,
+       per file) the premise inverts -- the literal is FROZEN, and copying it
+       into a writable sp_String would let `<<` mutate where CRuby raises
+       FrozenError -- so a frozen contributing literal blocks the promotion
+       and the value path's sp_str_check_mutable raises faithfully. */
+    int all_literal_writes = 1, saw_write = 0, frozen_literal_write = 0;
     for (int w = 0; w < c->nt->count; w++) {
       const char *wty = nt_type(c->nt, w);
       if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
@@ -3204,8 +3209,9 @@ void analyze_program(Compiler *c) {
       int wv = nt_ref(c->nt, w, "value");
       const char *wvty = wv >= 0 ? nt_type(c->nt, wv) : NULL;
       if (!wvty || !sp_streq(wvty, "StringNode")) { all_literal_writes = 0; break; }
+      if (nt_int(c->nt, wv, "fzl", 0)) { frozen_literal_write = 1; break; }
     }
-    if (!saw_write || !all_literal_writes) continue;
+    if (!saw_write || !all_literal_writes || frozen_literal_write) continue;
     /* Exclude vars used with a reassigning string mutator (replace/prepend/
        insert/clear or a bang method): codegen emits those as `recv = ...`,
        which needs a plain lvalue, not the copy a STRBUF read produces. */
