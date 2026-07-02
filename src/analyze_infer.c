@@ -1410,6 +1410,9 @@ else {
         sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     if (sp_streq(name, "<=>")) return TY_INT;
     if (sp_streq(name, "class")) return TY_STRING;
+    /* predicates (is_a?/kind_of?/instance_of?/between?/...) before the int
+       catch-all below swallows them */
+    { size_t tnl = strlen(name); if (tnl > 0 && name[tnl - 1] == '?') return TY_BOOL; }
     /* year/mon/day/hour/min/sec/wday/yday/to_i/tv_sec/tv_usec/usec/tv_nsec/nsec/... */
     return TY_INT;
   }

@@ -808,8 +808,8 @@ int eq_family(TyKind t) {
 }
 int ty_matches_class(TyKind t, const char *cn, int exact) {
   const char *self_cls = NULL;
-  if (t == TY_STRING) self_cls = "String";
-  else if (t == TY_INT) self_cls = "Integer";
+  if (t == TY_STRING || t == TY_STRBUF) self_cls = "String";
+  else if (t == TY_INT || t == TY_BIGINT) self_cls = "Integer";
   else if (t == TY_FLOAT) self_cls = "Float";
   else if (t == TY_SYMBOL) self_cls = "Symbol";
   else if (t == TY_RANGE) self_cls = "Range";
@@ -823,12 +823,26 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   else if (t == TY_MUTEX) self_cls = "Mutex";
   else if (t == TY_CONDVAR) self_cls = "ConditionVariable";
   else if (t == TY_ENUMERATOR) self_cls = "Enumerator";
+  else if (t == TY_TIME) self_cls = "Time";
+  else if (t == TY_COMPLEX) self_cls = "Complex";
+  else if (t == TY_RATIONAL) self_cls = "Rational";
+  else if (t == TY_REGEX) self_cls = "Regexp";
+  else if (t == TY_MATCHDATA) self_cls = "MatchData";
+  else if (t == TY_STRINGIO) self_cls = "StringIO";
+  else if (t == TY_STRINGSCANNER) self_cls = "StringScanner";
+  else if (t == TY_PROC) self_cls = "Proc";
+  else if (t == TY_RANDOM) self_cls = "Random";
+  else if (t == TY_IO) self_cls = "IO";
   if (!self_cls) return -1;
   if (sp_streq(cn, self_cls)) return 1;
   if (exact) return 0;
   if (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) return 1;
-  if (sp_streq(cn, "Comparable") && (t == TY_STRING || t == TY_INT || t == TY_FLOAT || t == TY_SYMBOL)) return 1;
-  if (sp_streq(cn, "Numeric") && (t == TY_INT || t == TY_FLOAT)) return 1;
-  if (sp_streq(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE)) return 1;
+  if (sp_streq(cn, "Comparable") && (t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_BIGINT ||
+                                     t == TY_FLOAT || t == TY_SYMBOL || t == TY_TIME ||
+                                     t == TY_COMPLEX || t == TY_RATIONAL)) return 1;
+  if (sp_streq(cn, "Numeric") && (t == TY_INT || t == TY_BIGINT || t == TY_FLOAT ||
+                                  t == TY_COMPLEX || t == TY_RATIONAL)) return 1;
+  if (sp_streq(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE ||
+                                     t == TY_STRINGIO || t == TY_ENUMERATOR)) return 1;
   return 0;
 }

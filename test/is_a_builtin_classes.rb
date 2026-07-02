@@ -1,0 +1,13 @@
+t = Time.now
+p t.is_a?(Time)
+p t.is_a?(Comparable)
+p t.is_a?(Object)
+p t.is_a?(String)
+p t.instance_of?(Time)
+p t.kind_of?(Time)
+p 5.is_a?(Numeric)
+p Rational(1, 2).is_a?(Numeric)
+p Rational(1, 2).is_a?(Comparable)
+p Complex(1, 2).is_a?(Numeric)
+p (/a/).is_a?(Regexp)
+p "s".is_a?(Comparable)
