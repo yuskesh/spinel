@@ -2493,12 +2493,38 @@ void analyze_program(Compiler *c) {
 
   /* A read-only ivar (referenced but never assigned a typed value) stays
      TY_UNKNOWN -> it has no C type. Such a slot always reads nil at runtime;
-     give it a boxed-nil poly field so `.nil?`/`.inspect` behave (#712). */
+     give it a boxed-nil poly field so `.nil?`/`.inspect` behave (#712).
+     A never-typed BASE-class slot (only nil inits, e.g. an abstract
+     Oscillator whose subclasses hold the real object) takes its subclasses'
+     unified type first: going straight to poly would re-widen every typed
+     subclass slot on the rerun below. Post-fixpoint, so subclass types are
+     final. */
   int ivar_backstop_changed = 0;
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cl = &c->classes[ci];
-    for (int iv = 0; iv < cl->nivars; iv++)
-      if (cl->ivar_types[iv] == TY_UNKNOWN) { const char *_n = cl->ivars[iv]; sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "unknown_backstop", TY_UNKNOWN, TY_POLY); cl->ivar_types[iv] = TY_POLY; ivar_backstop_changed = 1; }
+    for (int iv = 0; iv < cl->nivars; iv++) {
+      if (cl->ivar_types[iv] != TY_UNKNOWN) continue;
+      /* Unify across the whole hierarchy this class belongs to (root's
+         subtree), so an abstract base AND a leaf that never writes the ivar
+         (e.g. Triangle's @envelope) both take the type their siblings hold,
+         keeping one C type per field across the hierarchy. */
+      int root = ci;
+      while (c->classes[root].parent >= 0) root = c->classes[root].parent;
+      TyKind fill = TY_UNKNOWN;
+      for (int cj = 0; cj < c->nclasses; cj++) {
+        int an = cj;
+        while (an >= 0 && an != root) an = c->classes[an].parent;
+        if (an != root) continue;
+        int cidx = comp_ivar_index(&c->classes[cj], cl->ivars[iv]);
+        if (cidx >= 0 && c->classes[cj].ivar_types[cidx] != TY_UNKNOWN)
+          fill = ty_unify(fill, c->classes[cj].ivar_types[cidx]);
+      }
+      const char *_n = cl->ivars[iv];
+      sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "unknown_backstop", TY_UNKNOWN,
+                 fill != TY_UNKNOWN ? fill : TY_POLY);
+      cl->ivar_types[iv] = fill != TY_UNKNOWN ? fill : TY_POLY;
+      ivar_backstop_changed = 1;
+    }
   }
   /* An attr_reader/attr_accessor ivar typed via a writer call (scalar type),
      but whose class has no initialize that writes it, starts nil on fresh
