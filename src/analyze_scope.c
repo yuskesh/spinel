@@ -633,6 +633,25 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (ty && (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode"))) {
     int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
+    /* `module String` reopening a builtin CLASS is CRuby's TypeError; reject
+       with that message instead of colliding with the runtime's sp_<Name> C
+       type (a raw C error). A lexically nested or path-qualified
+       `module A::Encoding` names a fresh constant in CRuby, but the generated
+       C type is the bare tail name and still collides -- refuse that loudly
+       too, as unsupported rather than TypeError. */
+    if (sp_streq(ty, "ModuleNode") && cname &&
+        is_builtin_class_name(cname) && !is_builtin_module_name(cname)) {
+      int ln = (int)nt_int(c->nt, id, "node_line", 0);
+      const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
+      int toplevel = class_id < 0 && cp >= 0 && nt_type(c->nt, cp) &&
+                     sp_streq(nt_type(c->nt, cp), "ConstantReadNode");
+      if (toplevel)
+        fprintf(stderr, "spinel: %s:%d: %s is not a module (TypeError)\n", file, ln, cname);
+      else
+        fprintf(stderr, "spinel: %s:%d: unsupported module name '%s': "
+                        "collides with the builtin class of that name\n", file, ln, cname);
+      exit(1);
+    }
     /* `class CONST` where CONST aliases an existing class reopens that class.
        Rewrite the AST name so every later pass (registration, includes) agrees. */
     if (cname && cp >= 0 && comp_class_index(c, cname) < 0) {

@@ -132,6 +132,19 @@ poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
 representable (`2.0 ** -1 # => 0.5`). A `Rational` base is also fine
 (`Rational(1,2) ** -1 # => (2/1)`).
 
+#### Nested modules named after a builtin class
+
+`module Encoding` at the top level is CRuby's `TypeError` (`Encoding is not a
+module`) and Spinel reports the same error at compile time. A *nested*
+`module Foo::Encoding` (or `class Foo; module Encoding; end; end`) is legal
+CRuby — it names a fresh constant — but Spinel's generated C type for a class
+or module is its bare tail name, which collides with the runtime's own
+`sp_Encoding` type. Spinel refuses these at compile time with
+`unsupported module name '<Name>': collides with the builtin class of that
+name` instead of failing with a raw C error. Renaming the nested module
+avoids it. Builtin *modules* (`Comparable`, `Kernel`, `Math`, …) reopen
+normally at any nesting level.
+
 #### `Rational` precision and `Complex` components
 
 `Rational` is stored as a pair of fixed `mrb_int` numerator/denominator. The

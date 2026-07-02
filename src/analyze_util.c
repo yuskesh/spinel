@@ -15,6 +15,17 @@ int is_builtin_class_name(const char *n) {
   for (int i = 0; CL[i]; i++) if (sp_streq(n, CL[i])) return 1;
   return 0;
 }
+/* Builtin constants that are MODULES in CRuby: `module Kernel` reopens them
+   legally, while `module String` (a class) is CRuby's TypeError. */
+int is_builtin_module_name(const char *n) {
+  if (!n) return 0;
+  static const char *const MODS[] = {
+    "Comparable","Enumerable","Kernel","Math","GC","ObjectSpace",
+    "Signal","Process", NULL
+  };
+  for (int i = 0; MODS[i]; i++) if (sp_streq(n, MODS[i])) return 1;
+  return 0;
+}
 int is_builtin_exception_name(const char *n) {
   if (!n) return 0;
   static const char *const EXC[] = {
