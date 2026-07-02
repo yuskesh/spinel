@@ -341,6 +341,66 @@ static int ivw_index_first(const LWIndex *ix, const char *name) {
   return ix->head[ivw_hash(name) & (unsigned)(ix->cap - 1)];
 }
 
+/* `x, y = obj.m` where the callee's body ends in `return a, b` with statically
+   known element types: yields those types so the destructured targets keep
+   them instead of widening to poly with the tuple. The callee must be uniquely
+   resolvable (object receiver with no subclass override, constant receiver, or
+   self) and every element must infer to a concrete type. Returns the element
+   count, or 0 when the shape doesn't apply. */
+static int multi_return_elem_types(Compiler *c, int value, TyKind *out, int max) {
+  const NodeTable *nt = c->nt;
+  const char *vty = nt_type(nt, value);
+  if (!vty || !sp_streq(vty, "CallNode")) return 0;
+  const char *mn = nt_str(nt, value, "name");
+  if (!mn) return 0;
+  int recv = nt_ref(nt, value, "receiver");
+  int mi = -1;
+  if (recv >= 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      int cid = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (cid < 0) return 0;
+      mi = comp_cmethod_in_chain(c, cid, mn, NULL);
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      if (!ty_is_object(rt)) return 0;
+      int cid = ty_object_class(rt);
+      mi = comp_method_in_chain(c, cid, mn, NULL);
+      /* a subclass override could return different element types */
+      for (int cj = 0; mi >= 0 && cj < c->nclasses; cj++) {
+        int an = cj;
+        while (an >= 0 && an != cid) an = c->classes[an].parent;
+        if (an != cid || cj == cid) continue;
+        if (comp_method_in_chain(c, cj, mn, NULL) != mi) return 0;
+      }
+    }
+  }
+  else {
+    Scope *s = comp_scope_of(c, value);
+    if (!s || s->class_id < 0) return 0;
+    mi = comp_method_in_chain(c, s->class_id, mn, NULL);
+  }
+  if (mi < 0) return 0;
+  int def = c->scopes[mi].def_node;
+  int body = def >= 0 ? nt_ref(nt, def, "body") : -1;
+  int bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (!bb || bn <= 0) return 0;
+  int last = bb[bn - 1];
+  if (!nt_type(nt, last) || !sp_streq(nt_type(nt, last), "ReturnNode")) return 0;
+  int args = nt_ref(nt, last, "arguments");
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (!av || an < 2 || an > max) return 0;
+  for (int i = 0; i < an; i++) {
+    TyKind et = infer_type(c, av[i]);
+    if (et == TY_UNKNOWN || et == TY_POLY || et == TY_NIL || et == TY_VOID) return 0;
+    out[i] = et;
+  }
+  return an;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -528,6 +588,38 @@ int infer_write_types(Compiler *c) {
           if (lv && lv->type != TY_IO) { lv->type = TY_IO; changed = 1; }
         }
         continue;
+      }
+    }
+    /* `x, y = obj.m` with a known multi-value return: element types flow to
+       the targets (codegen unboxes each element from the tuple). */
+    if (ln >= 2 && value >= 0 && nt_ref(nt, id, "rest") < 0) {
+      int rn0 = 0;
+      nt_arr(nt, id, "rights", &rn0);
+      TyKind elems[16];
+      int ecount = rn0 == 0 ? multi_return_elem_types(c, value, elems, 16) : 0;
+      if (ecount == ln) {
+        Scope *ms_mr = comp_scope_of(c, id);
+        for (int i = 0; i < ln; i++) {
+          const char *lty_mr = nt_type(nt, lefts[i]) ? nt_type(nt, lefts[i]) : "";
+          if (sp_streq(lty_mr, "LocalVariableTargetNode")) {
+            const char *lnm = nt_str(nt, lefts[i], "name");
+            LocalVar *lv = lnm ? scope_local(ms_mr, lnm) : NULL;
+            if (!lv || lv->is_param || lv->is_block_param) continue;
+            TyKind mg = ty_unify(lv->type, elems[i]);
+            if (mg != lv->type) { lv->type = mg; changed = 1; }
+          }
+          else if (sp_streq(lty_mr, "InstanceVariableTargetNode") &&
+                   ms_mr && ms_mr->class_id >= 0) {
+            const char *ivnm = nt_str(nt, lefts[i], "name");
+            int ivx = ivnm ? comp_ivar_index(&c->classes[ms_mr->class_id], ivnm) : -1;
+            if (ivx < 0 || class_ivar_pinned(&c->classes[ms_mr->class_id], ivnm)) continue;
+            TyKind mg = ty_unify(c->classes[ms_mr->class_id].ivar_types[ivx], elems[i]);
+            if (mg != c->classes[ms_mr->class_id].ivar_types[ivx]) {
+              c->classes[ms_mr->class_id].ivar_types[ivx] = mg; changed = 1;
+            }
+          }
+        }
+        continue;  /* the generic poly-tuple widening below must not re-widen */
       }
     }
     if (!vty || !sp_streq(vty, "ArrayNode")) {

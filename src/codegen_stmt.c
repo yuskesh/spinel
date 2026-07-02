@@ -4167,6 +4167,10 @@ else {
               emit_boxed_text(c, elem, gx, &bx);
               buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
             }
+            else if (sp_streq(k, "Poly") && ltt != TY_POLY && ltt != TY_UNKNOWN) {
+              /* typed target from a poly tuple (known multi-value return) */
+              emit_unbox_text(c, ltt, gx, b);
+            }
             else buf_puts(b, gx);
             buf_puts(b, ";\n");
           }
@@ -4187,6 +4191,10 @@ else {
               Buf bx; memset(&bx, 0, sizeof bx);
               emit_boxed_text(c, elem, get_expr, &bx);
               buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+            }
+            else if (sp_streq(k, "Poly") && ivt != TY_POLY && ivt != TY_UNKNOWN) {
+              /* typed target from a poly tuple (known multi-value return) */
+              emit_unbox_text(c, ivt, get_expr, b);
             }
             else buf_puts(b, get_expr);
             buf_puts(b, ";\n");
