@@ -120,8 +120,9 @@ Spinel has neither — everything is input to the one compile). **Role is
 carried by extension, and the gem root is the require root**, matching the
 colocated-directory form in [require.md](require.md): `.rb` compiles and
 defines the require namespace, `.rbs` is an optional sidecar next to the file
-it pins, `.c`/`.h` are carried native sources (R6). `test/` is the one
-reserved name, excluded from compilation and resolution; manifest, README,
+it pins, `.c`/`.h` are carried native sources (R6). Two reserved
+directory names, both excluded from the require namespace: `test/` (runnable
+under `spin test`) and `bin/` (executables — see below); manifest, README,
 and LICENSE are excluded by extension. A single-file gem is the minimal form:
 
 ```
@@ -131,9 +132,22 @@ spinel-mypkg/
   mypkg.rbs     # optional sidecar pinning the public surface
   mypkg_ext.c   # optional carried C (see R6)
   mypkg/        # subfeatures: require "mypkg/util" -> mypkg/util.rb
+  bin/          # executables: each bin/<name>.rb is a compile root
   test/         # runnable under `spin test`
   LICENSE / README.md
 ```
+
+**Executables.** Gems are not only libraries: RubyGems has `executables`
+(rake, rubocop) and mrbgems has `mruby-bin-*`. Here, each `bin/<name>.rb` is
+an executable named after the file, and each is its *own whole-program
+compile root* — spliced with the gem's library sources and resolved
+dependencies, cargo's `src/bin/*.rs` shape. An **application is simply a gem
+with executables**; there is no separate project kind and no entry-point
+manifest field. `spin build` builds every `bin/` entry, `spin run <name>`
+runs one (bare `spin run` when there is exactly one). Because executables
+are separate compile roots, a *dependent* of the gem never compiles or pays
+for them — the reason mrbgems splits `mruby-bin-*` into separate gems does
+not apply, and library + CLI live in one gem.
 
 Manifest fields (minimum): `name`, `version` (semver), `provides` (feature
 names its sources satisfy; defaults to `name`), `dependencies` (name +
@@ -158,8 +172,8 @@ happens only as part of building an application that depends on it.
   behaves.
 - The lockfile is an application artifact, not a requirement: absent a
   `gem.lock`, builds resolve from `gem.toml` (fully deterministic when every
-  source is an exact pin); `spin add`/`lock` writes it. Applications
-  commit it; library gems do not (version selection belongs to the consuming
+  source is an exact pin); `spin add`/`lock` writes it. Gems that build executables (applications) commit it; pure library gems do
+  not (version selection belongs to the consuming
   application — the cargo convention).
 - In code, consumers write `require "name"` — nothing else. Resolution order:
   runtime-native feature → stdlib → project packages (lockfile) → `-I` roots.
