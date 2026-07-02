@@ -78,8 +78,18 @@ mrb_bool sp_sym_simple_p(const char *n) {
   return FALSE;
 }
 const char *sp_sym_inspect_name(const char *name) {
-  if (sp_sym_simple_p(name)) return sp_str_concat(":", name);
-  return sp_str_concat(":", sp_str_inspect(name));
+  /* Build ":" + body directly rather than sp_str_concat(":", body): a bare
+     literal like ":" has no length-marker byte, so sp_str_byte_len would read
+     one byte before it (out of bounds of the .rodata constant). `body` is a
+     real spinel string (the symbol's name, or its inspected form), so measuring
+     it is safe. */
+  const char *body = sp_sym_simple_p(name) ? name : sp_str_inspect(name);
+  SP_GC_ROOT(body);   /* the non-simple branch just allocated body; keep it live across sp_str_alloc's GC */
+  size_t bl = sp_str_byte_len(body);
+  char *r = sp_str_alloc(1 + bl);
+  r[0] = ':';
+  memcpy(r + 1, body, bl);
+  return r;
 }
 /* A symbol hash key in the `key: value` short form: a simple name is bare, a
    name needing quotes is string-quoted (`"k space": ...`) -- no leading colon. */
