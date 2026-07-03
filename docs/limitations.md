@@ -132,6 +132,28 @@ poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
 representable (`2.0 ** -1 # => 0.5`). A `Rational` base is also fine
 (`Rational(1,2) ** -1 # => (2/1)`).
 
+#### String methods on a nil receiver answer typed defaults, not NoMethodError
+
+A statically string-typed slot carries nil as a NULL pointer (there is no
+separate `String?` representation), and a resolved `String` method compiles
+to a direct `sp_str_*` call with no dispatch. Raising CRuby's
+`NoMethodError for nil` faithfully would put a NULL-check-and-raise in front
+of *every* string call site, so instead the runtime functions are total over
+NULL and answer the type's default:
+
+```ruby
+v = ENV["NO_SUCH"]   # nil, faithfully (v.nil? => true)
+v.length             # CRuby: NoMethodError; Spinel: 0
+v.upcase             # CRuby: NoMethodError; Spinel: ""
+```
+
+Conversions keep their CRuby value semantics (`v.to_s` is `""`, `v.inspect`
+is `"nil"`, `"x#{v}y"` is `"xy"`), so nil-tolerant code behaves identically;
+only the *error* on a non-conversion method is absorbed. This is the same
+deliberate silent-default family as the unresolved-call NoMethodError gate,
+and the staged raise plan (`SPINEL_GATE_RAISE`) is the eventual path to
+making these loud.
+
 #### Nested modules named after a builtin class
 
 `module Encoding` at the top level is CRuby's `TypeError` (`Encoding is not a

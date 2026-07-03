@@ -3156,6 +3156,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
     }
   }
+  /* ENV[key] = value -> setenv (value nil unsets, like CRuby) */
+  if (recv >= 0 && sp_streq(name, "[]=") && argc == 2) {
+    const char *rty2 = nt_type(nt, recv);
+    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+      const char *rn = nt_str(nt, recv, "name");
+      if (rn && sp_streq(rn, "ENV")) {
+        int tk = ++g_tmp, tv = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", tk); emit_expr(c, argv[0], b);
+        buf_printf(b, "; const char *_t%d = ", tv); emit_str_expr(c, argv[1], b);
+        buf_printf(b, "; if (_t%d) setenv(_t%d, _t%d, 1); else unsetenv(_t%d); _t%d; })",
+                   tv, tk, tv, tk, tv);
+        return;
+      }
+    }
+  }
   /* ENV.fetch(key, default) -> getenv with fallback */
   if (recv >= 0 && sp_streq(name, "fetch") && argc >= 1) {
     const char *rty2 = nt_type(nt, recv);

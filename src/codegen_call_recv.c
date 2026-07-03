@@ -2477,7 +2477,14 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "chomp"))      buf_printf(b, "sp_str_chomp(%s)", r);
       else if (sp_streq(name, "chop"))       buf_printf(b, "sp_str_chop(%s)", r);
-      else if (sp_streq(name, "to_s") || sp_streq(name, "to_str")) buf_puts(b, r);
+      else if (sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
+        /* NOT the identity: a nullable string carries nil as NULL, and
+           CRuby's nil.to_s is "" -- the coalesce keeps `ENV[missing].to_s`
+           comparable against "" (#1664). A provably non-nil receiver costs
+           one always-taken branch. */
+        int tv = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = %s; _t%d ? _t%d : SPL(\"\"); })", tv, r, tv, tv);
+      }
       else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) buf_printf(b, "sp_str_dup_external(%s)", r);
       else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
       else if (sp_streq(name, "empty?"))     buf_printf(b, "(sp_str_length(%s) == 0)", r);
