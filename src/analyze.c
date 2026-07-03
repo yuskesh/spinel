@@ -2474,6 +2474,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_cvar_types(c);
     ch |= infer_inherited_ivars(c);
     ch |= infer_return_types(c);
+    ch |= backprop_hash_return_types(c);
     if (!ch) break;
   }
 
