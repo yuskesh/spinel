@@ -60,6 +60,7 @@ end
 def index_dir(offline)
   base = ENV["XDG_CACHE_HOME"].to_s
   base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
+  Dir.mkdir(base) unless Dir.exist?(base)   # a fresh XDG_CACHE_HOME
   d = File.join(base, "spinel")
   Dir.mkdir(d) unless Dir.exist?(d)
   d = File.join(d, "index")
@@ -153,16 +154,21 @@ def native_cc
   c == "" ? "cc" : c
 end
 
-# The public runtime headers ship beside the compiler (dev tree: ../lib,
-# installed tree: ./lib) -- same resolution the compiler itself uses.
+# The public runtime headers ship beside the compiler: dev tree ../lib,
+# installed tree ./lib. $0 does not resolve symlinks, so when spin runs as
+# the /usr/local/bin/spin symlink the sibling is the /usr/local/bin/spinel
+# symlink -- probe the install layout (<prefix>/lib/spinel/lib) from there.
 def spinel_hdr_dir
   bin = spinel_bin
   return "" if bin == "spinel"
   d = File.expand_path("..", bin)
   a = File.join(d, "lib")
   return a if File.exist?(File.join(a, "sp_runtime.h"))
-  b = File.join(File.expand_path("..", d), "lib")
+  up = File.expand_path("..", d)
+  b = File.join(up, "lib")
   return b if File.exist?(File.join(b, "sp_runtime.h"))
+  c = File.join(up, "lib/spinel/lib")
+  return c if File.exist?(File.join(c, "sp_runtime.h"))
   ""
 end
 
@@ -201,6 +207,7 @@ end
 def native_cache_dir(key)
   base = ENV["XDG_CACHE_HOME"].to_s
   base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
+  Dir.mkdir(base) unless Dir.exist?(base)   # a fresh XDG_CACHE_HOME
   d = File.join(base, "spinel")
   Dir.mkdir(d) unless Dir.exist?(d)
   d = File.join(d, "native")
@@ -238,6 +245,7 @@ end
 def cache_gems_dir
   base = ENV["XDG_CACHE_HOME"].to_s
   base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
+  Dir.mkdir(base) unless Dir.exist?(base)   # a fresh XDG_CACHE_HOME
   d = File.join(base, "spinel")
   Dir.mkdir(d) unless Dir.exist?(d)
   g = File.join(d, "gems")
