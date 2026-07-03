@@ -51,3 +51,15 @@ puts kind(5)
 puts kind("s")
 puts kind(:title)
 puts kind(3.5)
+
+# a constant ALIASING a class must stay a Module#=== class test
+class Widget; end
+WidgetAlias = Widget
+def alias_kind(x)
+  case x
+  when WidgetAlias then "widget"
+  else "other"
+  end
+end
+puts alias_kind(Widget.new)
+puts alias_kind(7)
