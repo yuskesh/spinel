@@ -68,6 +68,14 @@ expect "test (CRuby parity)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 [ -s test/color_test.rb.expected ] || fail "test --regen wrote no snapshot"
 expect "test (snapshot)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 
+# --- unresolved require is a hard error (spin sets SPINEL_REQUIRE_GATE) ---------
+printf 'require "nosuchgem"\nputs 1\n' > bin/broken.rb
+if "$SPIN" build broken >/dev/null 2>"$WORK/gate.err"; then
+  fail "unresolved require compiled anyway"
+fi
+grep -q "nosuchgem" "$WORK/gate.err" || fail "gate error doesn't name the missing gem"
+rm -f bin/broken.rb
+
 # --- vendor -> offline, with and without the lock -------------------------------
 "$SPIN" vendor >/dev/null
 rm -rf "$XDG_CACHE_HOME"

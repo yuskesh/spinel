@@ -246,7 +246,12 @@ end
 # --- build -------------------------------------------------------------------
 
 def compile(prj, entry, out, extra)
-  cmd = "#{spinel_bin} #{entry}"
+  # Inside a spin project the dependency universe is fully known (manifest +
+  # lock), so an unresolvable require is a bug, not a maybe: flip the
+  # compiler's require gate from warning to hard error. This also makes
+  # stdlib features require-gated, i.e. CRuby-style `require "stringio"`
+  # before use.
+  cmd = "SPINEL_REQUIRE_GATE=1 #{spinel_bin} #{entry}"
   prj.dep_paths.each { |d| cmd += " -I #{d}" }
   cmd += " -I #{prj.root}"
   cmd += " #{extra}" if extra != ""
