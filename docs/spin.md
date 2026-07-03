@@ -9,7 +9,7 @@ know the shape. The design record lives in
 `spin` ships beside the compiler: building the repo (`make`) produces
 `bin/spin`, and `make install` installs it next to `spinel`.
 
-## Starting a project
+## Starting an application
 
 ```sh
 spin new myapp        # scaffold: gem.toml, bin/myapp.rb, test/, .gitignore
@@ -28,14 +28,66 @@ myapp/
 ```
 
 An application **is** a gem: there is no separate project kind. Executables
-live in `bin/` (one per file, `spin run <name>` when there are several), and
-a gem consumed as a library simply has no `bin/`. `spin init` writes a
-`gem.toml` into an existing directory instead of scaffolding.
+live in `bin/` (one per file, `spin run <name>` when there are several).
+Grow the app by putting shared code in `myapp.rb` / `myapp/*.rb` and
+requiring it from `bin/`; more `bin/*.rb` files become more executables.
+`spin init` writes a `gem.toml` into an existing directory instead of
+scaffolding.
 
 Everything in the gem participates by extension, not by manifest lists:
 `.rb` is source, `.rbs` is an optional type sidecar, `.c`/`.h` is carried
 native code (below). `build/`, `vendor/`, `test/`, and `bin/` are the only
 special directory names.
+
+## Starting a library
+
+```sh
+spin new mylib --lib  # gem.toml with [gem] name/version, mylib.rb, test/
+cd mylib
+```
+
+A library is the same gem shape minus `bin/`: there is nothing to `spin
+build` or `spin run` — a library is *exercised through its tests*:
+
+```sh
+cat > mylib.rb <<'RUBY'
+module Mylib
+  def self.shout(s) = s.upcase + "!"
+end
+RUBY
+cat > test/shout_test.rb <<'RUBY'
+require "mylib"
+puts Mylib.shout("hi")   # HI!
+RUBY
+spin test                # runs it (against CRuby when no snapshot yet)
+spin test --regen        # freeze the output as the .expected snapshot
+```
+
+While developing an application against your library, wire it up as a
+live path dependency — edits take effect on the next build, nothing is
+pinned:
+
+```sh
+cd ../myapp
+spin add mylib --path ../mylib
+```
+
+To share it, push the directory as a git repo (conventionally named
+`spinel-mylib`; the gem *name* stays `mylib` because it is the `require`
+string). Consumers then use it directly:
+
+```sh
+spin add mylib --git https://github.com/you/spinel-mylib
+```
+
+or, once it has releases, through [the index](#the-index): open a pull
+request at [spinel-index](https://github.com/matz/spinel-index) adding
+`gems/mylib.toml` with one `[[release]]` per published version — each `ref`
+a full commit SHA whose tree carries the matching `version` in `gem.toml`.
+From then on `spin add mylib --version "~> 0.1"` works, and bumping
+`version` + adding a release entry is how you publish an update. Libraries
+do not commit a `gem.lock`; version selection belongs to the consuming
+application.
 
 ## Dependencies
 
