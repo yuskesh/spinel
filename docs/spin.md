@@ -190,9 +190,14 @@ only where `-I` genuinely cannot carry the information:
   option layered *on top of* `-I` (exact shape decided then), not a
   replacement for it. Until then R4's rule is checked by `spin` only at
   resolution granularity (the dependency must be in the resolved set).
-- `[native]` C sources are compiled by `spin` into the shared cache and the
-  objects appended to the link line (R6); `spinel` itself never compiles
-  gem C.
+- Carried C is discovered by extension (R2): every `.c` in a gem's tree
+  (outside `build/`, `vendor/`, `test/`) is compiled by `spin` into the
+  shared native cache and the objects handed to the compiler via repeatable
+  `--link` flags (R6); `spinel` itself never compiles gem C. Objects are
+  keyed `<gem>-<version>-<cc>` and rebuilt when any of the gem's `.c`/`.h`
+  is newer; the gem's own tree and the compiler's runtime headers are on
+  the include path. External libraries stay on the existing `ffi_lib`
+  Ruby-side DSL (its SPINEL_LINK markers already reach the link line).
 
 ### Rebuilds & staleness
 

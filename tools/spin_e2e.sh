@@ -68,6 +68,36 @@ expect "test (CRuby parity)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 [ -s test/color_test.rb.expected ] || fail "test --regen wrote no snapshot"
 expect "test (snapshot)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 
+# --- carried native C (M2): gem .c compiled to the shared cache, --link'ed ------
+cd "$WORK"
+mkdir -p spinel-fast
+printf '[gem]\nname = "fast"\n' > spinel-fast/gem.toml
+cat > spinel-fast/fast.rb <<'EOF'
+module Fast
+  ffi_func :fast_quad, [:int], :int
+end
+EOF
+cat > spinel-fast/fast_ext.c <<'EOF'
+#include <stdint.h>
+intptr_t fast_quad(intptr_t x) { return x * 4; }
+EOF
+cd "$WORK/app"
+printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\nfast = { path = "../spinel-fast" }\n' "$WORK" > gem.toml
+printf 'require "ansi"\nrequire "greet"\nrequire "fast"\nputs Ansi.red(Greet.hi("spin"))\nputs Fast.fast_quad(10)\n' > bin/app.rb
+OUT=$("$SPIN" run 2>&1)
+echo "$OUT" | grep -q "^cc fast/fast_ext.c$" || fail "native compile line missing"
+expect "carried-C result" "40" "$(echo "$OUT" | tail -1)"
+# second build: object cached, no recompile
+"$SPIN" clean >/dev/null
+OUT=$("$SPIN" run 2>&1)
+echo "$OUT" | grep -q "^cc " && fail "native object not reused from cache"
+expect "carried-C cached result" "40" "$(echo "$OUT" | tail -1)"
+# touching the .c invalidates the cached object and the app binary
+sleep 1
+touch ../spinel-fast/fast_ext.c
+OUT=$("$SPIN" run 2>&1)
+echo "$OUT" | grep -q "^cc fast/fast_ext.c$" || fail "touched .c not recompiled"
+
 # --- unresolved require is a hard error (spin sets SPINEL_REQUIRE_GATE) ---------
 printf 'require "nosuchgem"\nputs 1\n' > bin/broken.rb
 if "$SPIN" build broken >/dev/null 2>"$WORK/gate.err"; then
@@ -80,9 +110,13 @@ rm -f bin/broken.rb
 "$SPIN" vendor >/dev/null
 rm -rf "$XDG_CACHE_HOME"
 "$SPIN" clean >/dev/null
-expect "offline (locked, vendored)" "$WANT_OUT" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
+OUT=$(SPIN_OFFLINE=1 "$SPIN" run 2>&1)
+expect "offline (locked, vendored)" "$WANT_OUT
+40" "$(echo "$OUT" | tail -2)"
 rm -f gem.lock
 "$SPIN" clean >/dev/null
-expect "offline (no lock)" "$WANT_OUT" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
+OUT=$(SPIN_OFFLINE=1 "$SPIN" run 2>&1)
+expect "offline (no lock)" "$WANT_OUT
+40" "$(echo "$OUT" | tail -2)"
 
 echo "spin-e2e: ALL GREEN"

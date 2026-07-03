@@ -172,6 +172,7 @@ static void usage(void) {
     "       spinel -E app.rb a b c     - compile + run with ARGV=[a, b, c]\n\n"
     "Options:\n"
     "  -o FILE     Output file\n"
+    "  --link ARG  Extra link input (object/archive/-lLIB); repeatable\n"
     "  -c          C source only (don't compile)\n"
     "  -I DIR      Add a feature search root for `require \"name\"` (like ruby -I)\n"
     "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary\n"
@@ -193,6 +194,7 @@ static void usage(void) {
 int main(int argc, char **argv) {
   const char *source = NULL;
   const char *output = NULL;
+  const char *link_extra[64]; int n_link_extra = 0;
   const char *cc_cmd = "cc";
   const char *opt_level = "2";
   const char *int_overflow = "raise";
@@ -216,6 +218,7 @@ int main(int argc, char **argv) {
     else if (!strncmp(a, "--int-overflow=", 15)) { int_overflow = a + 15; i++; }
     else if (sp_streq(a, "--int-overflow")) { if (++i < argc) int_overflow = argv[i]; i++; }
     else if (sp_streq(a, "-o"))            { if (++i < argc) output = argv[i]; i++; }
+    else if (sp_streq(a, "--link"))        { if (++i < argc && n_link_extra < 64) link_extra[n_link_extra++] = argv[i]; i++; }
     else if (sp_streq(a, "-O"))            { if (++i < argc) opt_level = argv[i]; i++; }
     else if (sp_streq(a, "--debug"))       { debug = 1; opt_level = "0"; want_g = 1; i++; }
     else if (sp_streq(a, "-g"))            { debug = 1; want_g = 1; i++; }
@@ -444,11 +447,18 @@ int main(int argc, char **argv) {
   if (uses_threads) s_add(&cmd, "-DSP_THREADS -ftls-model=initial-exec ");
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   s_add_arg(&cmd, c_path);
+  /* --link objects/archives sit between the generated TU and the runtime
+     archive: they reference sp_ runtime symbols, and ld resolves left to
+     right. --link -l flags go after -lm below, where DSOs belong. */
+  for (int li = 0; li < n_link_extra; li++)
+    if (strncmp(link_extra[li], "-l", 2) != 0) s_add_arg(&cmd, link_extra[li]);
   snprintf(tmp, sizeof tmp, "\"%s%c%s\" ", lib_dir, PATH_SEP, rt_lib); s_add(&cmd, tmp);
   /* -lm AFTER the archive: ld processes inputs left to right and (with the
      GNU default --as-needed) drops a DSO no preceding input references.
      sp_format.o pulls in sqrt/sin/cos, so libm must follow libspinel_rt.a. */
   s_add(&cmd, "-lm ");
+  for (int li = 0; li < n_link_extra; li++)
+    if (strncmp(link_extra[li], "-l", 2) == 0) { s_add(&cmd, link_extra[li]); s_add(&cmd, " "); }
   if (uses_threads) s_add(&cmd, "-lpthread ");
   s_add(&cmd, ov_define); s_add(&cmd, " ");
   if (want_g) s_add(&cmd, "-g ");

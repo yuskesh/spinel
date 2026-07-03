@@ -42,6 +42,97 @@ def spinel_bin
 end
 
 
+# --- carried native C (M2) ----------------------------------------------------
+# A gem may carry .c/.h sources (R6). spin compiles each .c once into the
+# shared cache, keyed by (gem, version, toolchain), and hands the objects to
+# spinel via --link; the compiler itself never touches gem C. Objects are
+# project-independent (carried C is not specialized by inference).
+
+def native_cc
+  c = ENV["CC"].to_s
+  c == "" ? "cc" : c
+end
+
+# The public runtime headers ship beside the compiler (dev tree: ../lib,
+# installed tree: ./lib) -- same resolution the compiler itself uses.
+def spinel_hdr_dir
+  bin = spinel_bin
+  return "" if bin == "spinel"
+  d = File.expand_path("..", bin)
+  a = File.join(d, "lib")
+  return a if File.exist?(File.join(a, "sp_runtime.h"))
+  b = File.join(File.expand_path("..", d), "lib")
+  return b if File.exist?(File.join(b, "sp_runtime.h"))
+  ""
+end
+
+# newline-packed .c paths (an [] accumulator arg would go poly-array and
+# box the paths -- same tuple trap as dep_srcs)
+def collect_c(dir)
+  out = ""
+  Dir.children(dir).each do |e|
+    next if e.start_with?(".")
+    next if e == "build" || e == "vendor" || e == "test"
+    p2 = File.join(dir, e)
+    if File.directory?(p2)
+      out += collect_c(p2)
+    elsif e.end_with?(".c")
+      out += p2 + "\n"
+    end
+  end
+  out
+end
+
+def newest_native_input(dir, newest)
+  Dir.children(dir).each do |e|
+    next if e.start_with?(".")
+    next if e == "build" || e == "vendor" || e == "test"
+    p2 = File.join(dir, e)
+    if File.directory?(p2)
+      newest = newest_native_input(p2, newest)
+    elsif e.end_with?(".c") || e.end_with?(".h")
+      m = File.mtime(p2).to_i
+      newest = m if m > newest
+    end
+  end
+  newest
+end
+
+def native_cache_dir(key)
+  base = ENV["XDG_CACHE_HOME"].to_s
+  base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
+  d = File.join(base, "spinel")
+  Dir.mkdir(d) unless Dir.exist?(d)
+  d = File.join(d, "native")
+  Dir.mkdir(d) unless Dir.exist?(d)
+  d = File.join(d, key)
+  Dir.mkdir(d) unless Dir.exist?(d)
+  d
+end
+
+# Compile one gem's carried C into the cache; returns the object list.
+def native_objs_for(name, dir, version)
+  cs = collect_c(dir)
+  return [] if cs == ""
+  odir = native_cache_dir(name + "-" + version + "-" + File.basename(native_cc))
+  hdr = spinel_hdr_dir
+  hnew = newest_native_input(dir, 0)
+  objs = []
+  cs.split("\n").each do |c|
+    rel = c[dir.length + 1..-1].to_s
+    o = File.join(odir, rel.gsub("/", "_")[0..-3] + ".o")
+    if !File.exist?(o) || File.mtime(o).to_i < hnew
+      cmd = native_cc + " -O2 -c #{c} -I #{dir}"
+      cmd += " -I #{hdr}" if hdr != ""
+      cmd += " -o #{o}"
+      spin_die("native compile failed: " + rel + " (" + name + ")") unless system(cmd)
+      puts "cc #{name}/#{rel}"
+    end
+    objs.push(o)
+  end
+  objs
+end
+
 # --- shared cache & git sources (M1) -----------------------------------------
 
 def cache_gems_dir
@@ -184,13 +275,28 @@ class Project
     @name = nm
     @dep_paths = []
     @dep_records = resolve_deps(root, ENV["SPIN_OFFLINE"].to_s.length > 0)
+    # tab-packed name\tdir\tversion records (an array of tuples would go
+    # poly and poison the string params downstream)
+    @dep_srcs = @name + "\t" + root + "\t" + gem_version_of(root)
     @dep_records.split("\n").each do |rec|
       next if rec == ""
       f = rec.split("\t")
       # prefer a vendored copy when present
       vd = File.join(root, "vendor/gems", f[0] + "-" + f[2])
-      @dep_paths.push(File.directory?(vd) ? vd : f[1])
+      d = File.directory?(vd) ? vd : f[1]
+      @dep_paths.push(d)
+      @dep_srcs += "\n" + f[0] + "\t" + d + "\t" + f[2]
     end
+  end
+
+  # carried native C across the root gem and every resolved dep (M2)
+  def native_objs
+    objs = []
+    @dep_srcs.split("\n").each do |s|
+      f = s.split("\t")
+      native_objs_for(f[0], f[1], f[2]).each { |o| objs.push(o) }
+    end
+    objs
   end
 
   def dep_records
@@ -227,7 +333,7 @@ def newest_mtime(dir, newest)
     next if e == "build" || e == "vendor"
     if File.directory?(p2)
       newest = newest_mtime(p2, newest)
-    elsif e.end_with?(".rb") || e.end_with?(".rbs") || e == "gem.toml"
+    elsif e.end_with?(".rb") || e.end_with?(".rbs") || e.end_with?(".c") || e.end_with?(".h") || e == "gem.toml"
       m = File.mtime(p2).to_i
       newest = m if m > newest
     end
@@ -254,6 +360,7 @@ def compile(prj, entry, out, extra)
   cmd = "SPINEL_REQUIRE_GATE=1 #{spinel_bin} #{entry}"
   prj.dep_paths.each { |d| cmd += " -I #{d}" }
   cmd += " -I #{prj.root}"
+  prj.native_objs.each { |o| cmd += " --link #{o}" }
   cmd += " #{extra}" if extra != ""
   cmd += " -o #{out}"
   ok = system(cmd)
