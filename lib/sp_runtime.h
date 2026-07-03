@@ -3340,6 +3340,20 @@ static sp_RbVal sp_poly_each_elem(sp_RbVal a, mrb_int i) {
   }
 }
 /* poly_arr_get/set for PolyPolyHash with integer index key. */
+/* multi-assign element read: `a, b = v` destructures only when the boxed
+   value is an Array (Ruby's to_ary semantics); any other runtime kind is a
+   scalar -- the first target takes the whole value, the rest nil-fill.
+   sp_poly_arr_get_hash is NOT that (Integer#[i] reads a bit, String#[i] a
+   char, Hash#[i] a lookup). */
+static sp_RbVal sp_poly_massign_get(sp_RbVal v, mrb_int i) {
+  if (v.tag == SP_TAG_OBJ) switch (v.cls_id) {
+    case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_SYM_ARRAY:
+    case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_FLT_ARRAY:
+      return sp_poly_arr_get(v, i);
+    default: break;
+  }
+  return i == 0 ? v : sp_box_nil();
+}
 static sp_RbVal sp_poly_arr_get_hash(sp_RbVal a, mrb_int i) {
   if (a.tag == SP_TAG_INT) return sp_box_int((a.v.i >> i) & 1);
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_POLY_POLY_HASH)
