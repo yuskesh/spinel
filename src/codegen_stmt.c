@@ -586,7 +586,8 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   }
   else if ((is_empty_hash || is_hash_new) && lv && ty_hash_cname(lv->type)) {
     const char *hcn = ty_hash_cname(lv->type);
-    int poly_val = (lv->type == TY_SYM_POLY_HASH || lv->type == TY_STR_POLY_HASH);
+    int poly_val = (lv->type == TY_SYM_POLY_HASH || lv->type == TY_STR_POLY_HASH ||
+                    lv->type == TY_POLY_POLY_HASH);
     if (is_hash_new && hash_new_default >= 0) {
       buf_printf(b, "sp_%sHash_new_with_default(", hcn);
       if (poly_val) emit_boxed(c, hash_new_default, b); else emit_expr(c, hash_new_default, b);

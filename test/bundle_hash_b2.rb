@@ -7,8 +7,8 @@ def t_hash_new_default_value
   # `Hash.new(default_value)` per-instance default support.
   #
   # Each hash variant struct (StrIntHash / StrStrHash / IntStrHash /
-  # SymIntHash / SymStrHash / StrPolyHash / SymPolyHash) gains a
-  # `default_v` field. `_new` initializes it to the variant's
+  # SymIntHash / SymStrHash / StrPolyHash / SymPolyHash / PolyPolyHash)
+  # gains a `default_v` field. `_new` initializes it to the variant's
   # sentinel zero (so legacy `{}` literals unchanged); `_new_with_default`
   # is a new constructor that sets the field. `_get` returns
   # `default_v` on miss; `_dup` / `_merge` propagate (merge inherits
@@ -66,6 +66,23 @@ def t_hash_new_default_value
   counter["x"] = counter["x"] + 1
   puts counter["x"]       # 1
   puts counter["z"]       # 0
+
+  # Float default with int keys -- lands on the PolyPoly variant, which
+  # previously had no default_v / _new_with_default at all, so
+  # `Hash.new(0.0)` emitted `sp_PolyPolyHash_new_with_default(0.0)` and
+  # failed C compilation (int-to-pointer conversion).
+  f = Hash.new(0.0)
+  f[1] += 2.5
+  p f[1]                  # 2.5
+  p f[7]                  # 0.0 (default for a missing key)
+  p f.default             # 0.0
+  f.default = 1.5
+  p f[9]                  # 1.5
+  fd = f.dup
+  p fd[42]                # 1.5 (dup propagates default)
+  fm = f.merge({2 => 3.5})
+  p fm[2]                 # 3.5
+  p fm[99]                # 1.5 (merge inherits left default)
 end
 t_hash_new_default_value
 
