@@ -5610,7 +5610,33 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       emit_expr(c, v, b); buf_puts(b, "))); }\n");
     }
     else {
-      unsupported(c, id, "index operator assignment (poly-recv, non-sym/str key)");
+      /* int or fully dynamic key (e.g. `m[a][c] += v` on a nested array):
+         read the slot polymorphically, fold via the tag-dispatching
+         sp_poly_<op> (handles int/float/bigint/str), and store back through
+         the poly setter. Mirrors the IndexOrWrite poly-receiver path. */
+      const char *pf =
+          sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
+          sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
+          sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" :
+          sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr" :
+          sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
+          sp_streq(op, "^") ? "sp_poly_bxor" : NULL;
+      if (!pf) unsupported(c, id, "index operator assignment (poly-recv, operator)");
+      int tc = ++g_tmp;
+      if (kt == TY_INT) {
+        buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_arr_get_hash(_t%d, _t%d);", tc, ta, tb);
+        buf_printf(b, " sp_poly_arr_set_hash(_t%d, _t%d, %s(_t%d, ", ta, tb, pf, tc);
+        emit_boxed(c, v, b); buf_puts(b, ")); }\n");
+      }
+      else {
+        buf_printf(b, "{ sp_RbVal _t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_index_poly(_t%d, _t%d);", tc, ta, tb);
+        buf_printf(b, " sp_poly_set_poly(_t%d, _t%d, %s(_t%d, ", ta, tb, pf, tc);
+        emit_boxed(c, v, b); buf_puts(b, ")); }\n");
+      }
     }
     return;
   }
