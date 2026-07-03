@@ -52,10 +52,37 @@ for the text AST format the parser emits and the analyzer consumes.
 # Fetch libprism sources (from the prism gem on rubygems.org):
 make deps
 
-# Build everything:
+# Build everything (the compiler `spinel` and the project tool `spin`):
 make
+sudo make install     # optional: puts spinel and spin on PATH
 
-# Write a Ruby program:
+# Start a project:
+spin new myapp && cd myapp
+spin run              # compile bin/myapp.rb and run it
+```
+
+`spin` is the day-to-day interface — cargo/mix style. It scaffolds
+projects, resolves dependencies, drives the compiler, and runs tests; no
+Makefile, no hand-written `-I` flags:
+
+```bash
+spin add ansi --version "~> 1.0"   # from the spinelgems index
+spin add mylib --path ../mylib     # or a local checkout / --git URL
+spin test                          # snapshot tests (CRuby is the oracle)
+spin build && ./build/bin/myapp
+```
+
+Dependencies (gems) are source trees compiled into your binary — no
+runtime loading, no extension builds; a gem can even carry `.c` files.
+See **[docs/spin.md](docs/spin.md)** for the full guide, including how to
+write and publish a library.
+
+### Single files: the compiler directly
+
+`spinel` is the underlying compiler — gcc-like, one job — and stays the
+right tool for single-file scripts and experiments:
+
+```bash
 cat > hello.rb <<'RUBY'
 def fib(n)
   if n < 2
@@ -68,12 +95,9 @@ end
 puts fib(34)
 RUBY
 
-# Compile and run:
 ./spinel hello.rb
 ./hello               # prints 5702887 (instantly)
 ```
-
-### Options
 
 ```bash
 ./spinel app.rb              # compiles to ./app
@@ -85,28 +109,14 @@ RUBY
 ./spinel app.rb --int-overflow=wrap   # +/-/* wrap silently instead of raising
 ```
 
-`./spinel` is the compiler: a single native binary (`build/spinel`; the
-repo-root `spinel` is a convenience symlink `make` creates) that parses,
-infers types, emits C, invokes `cc` to link it, and can run the result —
-no shell wrapper or chained helper binaries. It supports the full option set, including `--rbs DIR`
-(RBS-seeded inference) and the `--emit-rbs` / `--emit-types` /
-`--emit-symbol-map` analysis modes.
-
-### Projects & packages
-
-For anything bigger than one file, `bin/spin` is the project tool — cargo/mix
-style: scaffolding, dependencies (local paths, git URLs, or the
-[spinelgems index](https://github.com/matz/spinel-index) with version
-constraints), a lockfile, snapshot tests, vendoring for offline builds, and
-native C carried inside gems.
-
-```bash
-bin/spin new myapp && cd myapp
-spin add ansi --version "~> 1.0"
-spin run
-```
-
-See [docs/spin.md](docs/spin.md).
+`./spinel` is a single native binary (`build/spinel`; the repo-root
+`spinel` is a convenience symlink `make` creates) that parses, infers
+types, emits C, invokes `cc` to link it, and can run the result — no shell
+wrapper or chained helper binaries, no network, no manifest knowledge
+(that separation is what keeps builds hermetic; `spin` owns the stateful
+side). It supports the full option set, including `--rbs DIR` (RBS-seeded
+inference) and the `--emit-rbs` / `--emit-types` / `--emit-symbol-map`
+analysis modes.
 
 #### Integer overflow
 
@@ -429,11 +439,11 @@ file.
 
 ```bash
 make deps         # fetch libprism into vendor/prism (one-time)
-make              # build the C compiler (parser + regexp library + spinel)
+make              # build the compiler (parser + regexp library + spinel) and spin
 make test         # run the feature tests (always a fresh run)
 make bench        # run benchmarks vs CRuby
 make optcarrot    # end-to-end optcarrot integration test
-sudo make install # install the C compiler to /usr/local (spinel in PATH)
+sudo make install # install to /usr/local (spinel and spin in PATH)
 make clean        # remove build artifacts
 ```
 

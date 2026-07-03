@@ -673,10 +673,11 @@ gate-optcarrot:
 PREFIX   ?= /usr/local
 SPNLDIR   = $(PREFIX)/lib/spinel
 
-# Install the single `spinel` binary only.
-install: all
+# Install the compiler, the spin project tool, and the runtime.
+install: all bin/spin
 	install -d $(SPNLDIR)/lib
 	install -m 755 $(SPINEL)            $(SPNLDIR)/spinel
+	install -m 755 bin/spin             $(SPNLDIR)/spin
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_rt_mt.a $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/
@@ -703,12 +704,13 @@ install: all
 	install -m 644 lib/*.rb              $(SPNLDIR)/lib/
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
+	ln -sf $(SPNLDIR)/spin   $(PREFIX)/bin/spin
 	for t in $(TOOL_NAMES); do \
 	  install -m 755 bin/spinel-$$t $(PREFIX)/bin/spinel-$$t; \
 	done
 
 uninstall:
-	rm -f $(PREFIX)/bin/spinel
+	rm -f $(PREFIX)/bin/spinel $(PREFIX)/bin/spin
 	for t in $(TOOL_NAMES); do rm -f $(PREFIX)/bin/spinel-$$t; done
 	rm -rf $(SPNLDIR)
 
