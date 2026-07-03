@@ -31,7 +31,6 @@ def find_root(dir)
     return "" if up == d
     d = up
   end
-  ""  # unreachable; keeps the return type a plain String (a while's value is nil)
 end
 
 def spinel_bin
@@ -155,7 +154,10 @@ def resolve_deps(root, offline)
           rec = git_fetch(dep, url, ref, want)
         end
         parts = rec.split("\n")
-        out += dep + "\t" + parts[0] + "\t" + parts[1] + "\tgit\t" + url + "\x01" + parts[2] + "\n"
+        # want may be "" (no gem.lock yet): split drops the trailing empty
+        # field, so read the SHA defensively rather than trusting parts[2].
+        sha = parts.length > 2 ? parts[2] : ""
+        out += dep + "\t" + parts[0] + "\t" + parts[1] + "\tgit\t" + url + "\x01" + sha + "\n"
         queue.push(parts[0])
       else
         spin_die("dependency " + dep + ": needs { path = .. } or { git = .. }")
@@ -219,8 +221,9 @@ end
 # --- staleness (newest input mtime vs output mtime) --------------------------
 
 def newest_mtime(dir, newest)
-  Dir.glob(dir + "/*").each do |p2|
-    e = File.basename(p2)
+  Dir.children(dir).each do |e|
+    next if e.start_with?(".")   # .git and friends
+    p2 = File.join(dir, e)
     next if e == "build" || e == "vendor"
     if File.directory?(p2)
       newest = newest_mtime(p2, newest)
@@ -316,8 +319,11 @@ def cmd_test(prj, files, regen)
     src = File.join(prj.root, "test", t)
     spin_die("no such test: test/#{t}") unless File.exist?(src)
     exp = src + ".expected"
+    inc = ""
+    prj.dep_paths.each { |d| inc += " -I #{d}" }
+    inc += " -I #{prj.root}"
     if regen
-      system("ruby #{src} > #{exp} 2>/dev/null")
+      system("ruby#{inc} #{src} > #{exp} 2>/dev/null")
       puts "regen #{t}"
       next
     end
@@ -332,7 +338,7 @@ def cmd_test(prj, files, regen)
     else
       # no snapshot: diff directly against CRuby (the subset-parity check)
       cexp = bin + ".cruby"
-      system("ruby #{src} > #{cexp} 2>&1")
+      system("ruby#{inc} #{src} > #{cexp} 2>&1")
       expected = File.exist?(cexp) ? File.read(cexp) : ""
     end
     if actual == expected
