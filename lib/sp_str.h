@@ -82,6 +82,15 @@ const char*sp_str_rstrip(const char*s);
 const char*sp_str_dup(const char*s);
 
 /* ---- utf8-dependent cold transforms (lib/sp_str.c) ---- */
+/* nil-receiver raise: a nullable string carries nil as NULL, and CRuby
+   answers NoMethodError. The bare primitives below stay total over NULL
+   (runtime internals pass legitimately-nil elements); the _m/_p variants
+   carry Ruby receiver semantics at method call sites. */
+SP_NORETURN SP_COLD void sp_nil_recv(const char *meth);
+mrb_int sp_str_length_m(const char *s);
+mrb_int sp_str_bytesize_m(const char *s);
+mrb_bool sp_str_empty_p(const char *s);
+const char *sp_str_plus(const char *a, const char *b);
 mrb_int sp_str_count_chars(const char *s, size_t bl);
 mrb_int sp_str_length(const char*s);
 mrb_int sp_str_ord(const char*s);

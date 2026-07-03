@@ -2616,10 +2616,10 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb);
         if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[0], b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_concat(_t%d, _t%d); })", tb, ta, tb);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(_t%d, _t%d); })", tb, ta, tb);
       }
       else {
-        buf_puts(b, "sp_str_concat(");
+        buf_puts(b, "sp_str_plus(");
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (arg_poly) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[0], b);
@@ -6400,15 +6400,33 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      is boxed to poly so a single format path handles mixed specs. */
   if (recv >= 0 && rt == TY_STRING && sp_streq(name, "%") && argc == 1) {
     TyKind at = a0;
+    /* A nil (NULL) receiver is CRuby's NoMethodError. The check sits at the
+       call site rather than inside sp_str_format_polyarr, whose body is
+       optcarrot-layout-sensitive (a guard there cost ~9% fps); a literal
+       format can't be nil and is emitted bare. */
+    const char *frty = nt_type(nt, recv);
+    int fck = (frty && (sp_streq(frty, "StringNode") || sp_streq(frty, "InterpolatedStringNode")))
+              ? -1 : ++g_tmp;
     if (at == TY_POLY_ARRAY) {
-      buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      if (fck >= 0) {
+        buf_printf(b, "sp_str_format_polyarr(({ const char *_t%d = ", fck);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; if (!_t%d) sp_nil_recv(\"%%\"); _t%d; }), ", fck, fck);
+      }
+      else { buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); buf_puts(b, ", "); }
+      emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     const char *ak = array_kind(at);
     if (ak) {
       const char *kind = at == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY"
                        : at == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" : "SP_BUILTIN_INT_ARRAY";
-      buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b);
+      if (fck >= 0) {
+        buf_printf(b, "sp_str_format_polyarr(({ const char *_t%d = ", fck);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; if (!_t%d) sp_nil_recv(\"%%\"); _t%d; })", fck, fck);
+      }
+      else { buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); }
       buf_puts(b, ", sp_typed_to_poly((void *)("); emit_expr(c, argv[0], b);
       buf_printf(b, "), %s))", kind);
       return;

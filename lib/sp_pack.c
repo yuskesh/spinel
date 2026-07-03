@@ -31,6 +31,7 @@
    straight from the shared headers: this separate TU can now allocate GC strings
    directly onto the one shared heap, so no sp_ext_str_* shim is needed. */
 #include "sp_alloc.h"   /* string + object allocation, sp_box_*, sp_PolyArray */
+#include "sp_str.h"     /* sp_nil_recv for the nil-receiver unpack raise */
 
 /* ---------- Helpers ---------- */
 
@@ -299,6 +300,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
 /* ---------- Unpack entry point ---------- */
 
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
+  if (!str) sp_nil_recv("unpack");
   sp_PolyArray *out = sp_PolyArray_new();
   if (!str || !fmt) return out;
   /* sp_ext_str_byte_len honors the heap-string header so embedded

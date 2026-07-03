@@ -1,0 +1,18 @@
+length: undefined method 'length' for nil
+upcase: undefined method 'upcase' for nil
+split: undefined method 'split' for nil
+slice: undefined method '[]' for nil
+empty?: undefined method 'empty?' for nil
+include?: undefined method 'include?' for nil
+plus: undefined method '+' for nil
+plus_nil_arg: TypeError
+to_str: undefined method 'to_str' for nil
+strip: undefined method 'strip' for nil
+index: undefined method 'index' for nil
+chars: undefined method 'chars' for nil
+""
+0
+true
+true
+nil
+a--b

@@ -932,7 +932,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (idx >= 0) ct = c->classes[cid].cvar_types[idx];
     char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[cid].name, nm + 2);
     if (ct == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "(%s = sp_str_concat(%s, ", ref, ref);
+      buf_printf(b, "(%s = sp_str_plus(%s, ", ref, ref);
       emit_expr(c, v, b); buf_puts(b, "))");
     }
     else if (ct == TY_POLY) {

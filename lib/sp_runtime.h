@@ -888,7 +888,7 @@ const char *sp_crypto_hmac_sha256_b64url(const char *key, const char *msg);
      other       -> FFI / unknown provenance, treated as frozen
    Returns the byte value (CRuby setbyte return). */
 static inline mrb_int sp_str_getbyte(const char *s, mrb_int i) {
-  if (!s) return 0;
+  if (!s) sp_nil_recv("getbyte");
   mrb_int bl = (mrb_int)sp_str_byte_len(s);
   if (i < 0) i += bl;
   if (i < 0 || i >= bl) return 0;
@@ -896,10 +896,7 @@ static inline mrb_int sp_str_getbyte(const char *s, mrb_int i) {
 }
 
 static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
-  if (!s) {
-    sp_raise_cls("FrozenError", "can't modify frozen String");
-    return v;
-  }
+  if (!s) sp_nil_recv("setbyte");
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m == 0xfe || m == 0xfc) {
     (((sp_str_hdr *)(s - 1)) - 1)->hash = 0;  /* invalidate cached key hash */
@@ -4889,7 +4886,7 @@ static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
 static sp_PolyArray *sp_str_chars_poly(const char *s) {
   sp_PolyArray *a = sp_PolyArray_new();
   SP_GC_ROOT(a);
-  if (!s) return a;
+  if (!s) sp_nil_recv("chars");
   for (const char *p = s; *p; ) {
     int n = sp_utf8_advance(p);
     char *c = sp_str_alloc(n); memcpy(c, p, n); c[n] = 0;

@@ -2296,7 +2296,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     if (hn && !subtree_mutates_local(c, body, hn)) {
       int ht = ++g_tmp;
       emit_indent(b, indent);
-      buf_printf(b, "mrb_int _t%d = sp_str_length(", ht); emit_expr(c, hr, b); buf_puts(b, ");\n");
+      buf_printf(b, "mrb_int _t%d = sp_str_length_m(", ht); emit_expr(c, hr, b); buf_puts(b, ");\n");
       snprintf(hbuf, sizeof hbuf, "_t%d", ht);
       g_hoist_len_var = hbuf; g_hoist_len_recv = hn;
     }
