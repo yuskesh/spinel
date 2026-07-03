@@ -98,6 +98,15 @@ static void exe_dir(const char *argv0, char *out, size_t outsz) {
     /* Fall back to argv0 (resolve when it carries a path). */
     if (!realpath(argv0, buf)) { strncpy(buf, argv0, sizeof buf - 1); buf[sizeof buf - 1] = '\0'; }
   }
+  else {
+    /* Canonicalize: _NSGetExecutablePath returns the path spinel was invoked
+       through WITHOUT following symlinks, so the installed tree's
+       /usr/local/bin/spinel symlink resolved lib/ against bin/ and the link
+       line pointed at bin/lib/libspinel_rt.a. (/proc/self/exe is already
+       fully resolved; realpath is a no-op on that branch.) */
+    char rp[4096];
+    if (realpath(buf, rp)) { strncpy(buf, rp, sizeof buf - 1); buf[sizeof buf - 1] = '\0'; }
+  }
   char *slash = strrchr(buf, '/');
   if (slash) *slash = '\0';
   else strcpy(buf, ".");
