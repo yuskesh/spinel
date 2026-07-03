@@ -8,6 +8,8 @@ def mk_int;  Hash.new(0);  end
 def mk_bare; {};           end
 def mk_ret;  return Hash.new(""); end
 
+def mk_top; ::Hash.new(""); end          # top-level ::Hash (ConstantPathNode receiver)
+
 module Tep
   def self.str_hash; Hash.new(""); end   # the roundhouse shape: a Const.cmethod
 end
@@ -33,3 +35,7 @@ puts d["p"]
 e = Tep.str_hash
 e["a"] = "b"
 puts e["a"]
+
+f = mk_top
+f["m"] = "n"
+puts f["m"]

@@ -2537,14 +2537,21 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
       int ha = nt_ref(c->nt, node, "arguments"); int hac = 0;
       const int *hav = ha >= 0 ? nt_arr(c->nt, ha, "arguments", &hac) : NULL;
       int poly_val = (g_ret_type == TY_SYM_POLY_HASH || g_ret_type == TY_STR_POLY_HASH);
-      if (hac >= 1) {
+      if (hac == 0) {
+        buf_printf(b, "sp_%sHash_new()", hcn);
+        return;
+      }
+      /* `Hash.new(default)`: every hash variant has an sp_<H>Hash_new_with_default
+         except PolyPolyHash (#1673). backprop_hash_return_types won't pin that
+         combo, but a return typed PolyPolyHash by other means (rbs/explicit) with
+         a Hash.new(default) tail would emit a nonexistent constructor -- leave it
+         to the generic path below (master's pre-existing behavior). */
+      if (g_ret_type != TY_POLY_POLY_HASH) {
         buf_printf(b, "sp_%sHash_new_with_default(", hcn);
         if (poly_val) emit_boxed(c, hav[0], b); else emit_expr(c, hav[0], b);
         buf_puts(b, ")");
-      } else {
-        buf_printf(b, "sp_%sHash_new()", hcn);
+        return;
       }
-      return;
     }
   }
   Buf tmp; memset(&tmp, 0, sizeof tmp);

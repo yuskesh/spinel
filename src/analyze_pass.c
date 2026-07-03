@@ -4251,7 +4251,8 @@ static void rn_build(Compiler *c) {
 /* A `{}` / `Hash.new` / `Hash.new(default)` construct whose element types are
    not witnessed here: infer_type reports it as TY_UNKNOWN (analyze_infer.c),
    deferring the hash variant to key/value usage. `Hash.new { }` is excluded
-   (it infers a concrete TY_STR_POLY_HASH). */
+   (it infers a concrete TY_STR_POLY_HASH). A `::Hash` / namespaced receiver is a
+   ConstantPathNode, matching the receiver forms codegen's tail handling accepts. */
 static int node_is_empty_hash_construct(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
@@ -4265,24 +4266,35 @@ static int node_is_empty_hash_construct(Compiler *c, int node) {
     if (!nm || !sp_streq(nm, "new")) return 0;
     if (nt_ref(nt, node, "block") >= 0) return 0;   /* Hash.new { } is STR_POLY_HASH */
     int recv = nt_ref(nt, node, "receiver");
-    if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) return 0;
+    if (recv < 0) return 0;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 0;
     const char *cn = nt_str(nt, recv, "name");
     return cn && sp_streq(cn, "Hash");
   }
   return 0;
 }
 
-/* True when method scope `mi`'s value is an element-less hash: the body's tail
-   expression (or a trailing `return {}`) is an empty `{}` / `Hash.new`. Such a
-   return infers TY_UNKNOWN with no in-body witness, which collapses the C
-   signature to `void` (#1680). */
-static int scope_tail_is_empty_hash(Compiler *c, int mi) {
+/* True when `node` is a `Hash.new(default)` -- an element-less Hash.new with a
+   default argument (vs a bare `{}` / argless `Hash.new`). */
+static int hash_new_has_default(const NodeTable *nt, int node) {
+  if (nt_kind(nt, node) != NK_CallNode) return 0;
+  int ha = nt_ref(nt, node, "arguments"); int hac = 0;
+  if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
+  return hac >= 1;
+}
+
+/* If method scope `mi`'s value is an element-less hash -- the body's tail
+   expression (or a trailing `return {}`) is an empty `{}` / `Hash.new` -- return
+   that tail node, else -1. Such a return infers TY_UNKNOWN with no in-body
+   witness, which collapses the C signature to `void` (#1680). */
+static int scope_tail_empty_hash(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   int b = c->scopes[mi].body;
-  if (b < 0) return 0;
+  if (b < 0) return -1;
   if (nt_kind(nt, b) == NK_StatementsNode) {
     int n = 0; const int *bb = nt_arr(nt, b, "body", &n);
-    if (n == 0) return 0;
+    if (n == 0) return -1;
     b = bb[n - 1];
   }
   if (nt_kind(nt, b) == NK_ReturnNode) {
@@ -4290,7 +4302,7 @@ static int scope_tail_is_empty_hash(Compiler *c, int mi) {
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an == 1) b = av[0];
   }
-  return node_is_empty_hash_construct(c, b);
+  return node_is_empty_hash_construct(c, b) ? b : -1;
 }
 
 /* Resolve a `local = call(...)` value node to its callee method scope for the
@@ -4316,7 +4328,8 @@ static int backprop_call_target(Compiler *c, int call_id) {
   }
   NodeKind rk = nt_kind(nt, recv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    const char *cn = nt_str(nt, recv, "name");   /* NULL for a non-flat path */
+    int ci = cn ? comp_class_index(c, cn) : -1;
     return ci >= 0 ? comp_cmethod_in_chain(c, ci, name, NULL) : -1;
   }
   TyKind rt = infer_type(c, recv);
@@ -4332,10 +4345,21 @@ static int backprop_call_target(Compiler *c, int call_id) {
    fails to compile. But the caller local `x` is independently pinned to a
    concrete hash by its own use (`x["k"] = "v"` -> StrStrHash); adopt that as the
    method's return so the signature is a real hash pointer. Mirrors the empty-`{}`
-   argument reverse-binding in bind_call_params. */
+   argument reverse-binding in bind_call_params.
+
+   Pin only when every hash-typed caller of a method AGREES on the variant. A
+   method compiles to a single C return type, so disagreeing callers (`a=mk;
+   a["s"]=1` vs `b=mk; b[o]=o`) can't be served by any one concrete hash; unifying
+   to TY_POLY isn't a valid empty-hash return (infer_return_types would re-collapse
+   it to void every pass), so a conflict is left UNKNOWN -- the same honest void
+   error as before the fix, rather than a mispinned incompatible-pointer type. */
 int backprop_hash_return_types(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int changed = 0;
+  int ns = c->nscopes;
+  /* want[mi]: TY_UNKNOWN = no hash caller seen; a hash = agreed so far;
+     TY_POLY = conflict / unconstructible -> do not pin. */
+  TyKind *want = calloc((size_t)(ns > 0 ? ns : 1), sizeof(TyKind));
+  if (!want) return 0;
   NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
     int val = nt_ref(nt, id, "value");
     if (val < 0 || nt_kind(nt, val) != NK_CallNode) continue;
@@ -4347,14 +4371,24 @@ int backprop_hash_return_types(Compiler *c) {
     int mi = backprop_call_target(c, val);
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];
-    if (!(m->ret == TY_UNKNOWN || ty_is_hash(m->ret))) continue;
+    if (m->ret != TY_UNKNOWN) continue;   /* already settled elsewhere; leave it */
     if (m->ret_rbs_seeded || m->ret_specialized || m->cs_synth || m->is_lowered_yield) continue;
-    if (!scope_tail_is_empty_hash(c, mi)) continue;
-    /* Unify across call sites: a lone caller pins the concrete variant; two with
-       different shapes widen the return to poly (still a real hash, not void). */
-    TyKind nr = m->ret == TY_UNKNOWN ? lv->type : ty_unify(m->ret, lv->type);
-    if (nr != m->ret) { m->ret = nr; changed = 1; }
+    int tail = scope_tail_empty_hash(c, mi);
+    if (tail < 0) continue;
+    /* `Hash.new(default)` has no runtime constructor for a PolyPolyHash (#1673):
+       don't pin a return codegen can't emit -- leave it void (the honest error)
+       rather than emitting a nonexistent sp_PolyPolyHash_new_with_default. */
+    if (lv->type == TY_POLY_POLY_HASH && hash_new_has_default(nt, tail)) { want[mi] = TY_POLY; continue; }
+    if (want[mi] == TY_UNKNOWN) want[mi] = lv->type;
+    else if (want[mi] != lv->type) want[mi] = TY_POLY;   /* callers disagree */
   }
+  int changed = 0;
+  for (int mi = 0; mi < ns; mi++) {
+    if (!ty_is_hash(want[mi])) continue;   /* TY_UNKNOWN (none) or TY_POLY (conflict) */
+    Scope *m = &c->scopes[mi];
+    if (m->ret == TY_UNKNOWN) { m->ret = want[mi]; changed = 1; }
+  }
+  free(want);
   return changed;
 }
 
@@ -4460,7 +4494,7 @@ int infer_return_types(Compiler *c) {
        (no witnessed element). Once a caller has pinned it to a concrete hash
        (backprop_hash_return_types), don't collapse it back to UNKNOWN -- that
        would re-emit a void C signature the caller can't assign (#1680). */
-    if (r == TY_UNKNOWN && ty_is_hash(sc->ret) && scope_tail_is_empty_hash(c, s)) continue;
+    if (r == TY_UNKNOWN && ty_is_hash(sc->ret) && scope_tail_empty_hash(c, s) >= 0) continue;
     if (r != sc->ret) { sc->ret = r; changed = 1; }
     /* For a method with a &block param, record the value type its block yields
        (unified across all call sites). Blocks passed to it are emitted returning
