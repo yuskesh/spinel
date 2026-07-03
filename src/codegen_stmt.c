@@ -1993,6 +1993,11 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           const char *cty2 = nt_type(nt, conds[j]);
           const char *cn2 = cty2 && (sp_streq(cty2, "ConstantReadNode") || sp_streq(cty2, "ConstantPathNode"))
                            ? nt_str(nt, conds[j], "name") : NULL;
+          /* a VALUE constant (`STATE_TITLE = :title`; registered in
+             comp_const with a real type) in `when` is an equality test,
+             not Module#=== -- treating it as a class name folded every
+             arm of doom's Menu#render state dispatch to `if (0)`. */
+          if (cn2 && ({ LocalVar *_wv = comp_const(c, cn2); _wv && _wv->type != TY_UNKNOWN; })) cn2 = NULL;
           if (cn2 && pt == TY_POLY) {
             char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
             if (!emit_poly_class_when(c, conds[j], tmp, b))
@@ -2142,6 +2147,8 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         const char *cty2 = nt_type(nt, conds[j]);
         const char *cn2 = cty2 && (sp_streq(cty2, "ConstantReadNode") || sp_streq(cty2, "ConstantPathNode"))
                          ? nt_str(nt, conds[j], "name") : NULL;
+        /* value constant in `when`: equality, not a class test (see above) */
+        if (cn2 && ({ LocalVar *_wv = comp_const(c, cn2); _wv && _wv->type != TY_UNKNOWN; })) cn2 = NULL;
         if (cn2 && pt == TY_POLY) {
           char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
           if (!emit_poly_class_when(c, conds[j], tmp, b)) buf_puts(b, "0");
