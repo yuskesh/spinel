@@ -342,6 +342,7 @@ int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b);
 int nameset_has(NameSet *s, const char *nm);
 void nameset_add(NameSet *s, const char *nm);
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b);
+void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent);
 void emit_yblk_ref(Buf *b);
 void emit_tail_lead(Buf *b);
 const char *rename_local(const char *nm);

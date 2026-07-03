@@ -4882,6 +4882,32 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
 }
 
 void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
+  /* Ruby block-locals are FRESH on every block invocation. Find the
+     BlockNode whose body this is (memoized linear scan) and reset its
+     non-param locals at the top of each iteration -- without this a name
+     first assigned inside the block kept the previous iteration's value
+     (doom's render_sprites `sprite ||= ...` reused the first sprite for
+     every object on screen). */
+  {
+    static const NodeTable *blk_map_nt = NULL;
+    static int *blk_map = NULL;
+    if (blk_map_nt != c->nt) {
+      free(blk_map);
+      blk_map = malloc(sizeof(int) * (size_t)c->nt->count);
+      for (int i2 = 0; i2 < c->nt->count; i2++) blk_map[i2] = -1;
+      for (int i2 = 0; i2 < c->nt->count; i2++) {
+        const char *t2 = nt_type(c->nt, i2);
+        if (t2 && sp_streq(t2, "BlockNode")) {
+          int b2 = nt_ref(c->nt, i2, "body");
+          if (b2 >= 0 && b2 < c->nt->count) blk_map[b2] = i2;
+        }
+      }
+      blk_map_nt = c->nt;
+    }
+    if (id >= 0 && id < c->nt->count && blk_map[id] >= 0)
+      emit_block_locals_reset(c, blk_map[id], b, indent);
+  }
+
   if (id < 0) return;
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);

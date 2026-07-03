@@ -1004,6 +1004,27 @@ else {
   case PM_BLOCK_NODE: {
     pm_block_node_t *n = (pm_block_node_t *)node;
     N("BlockNode");
+    /* Block-local variables (params + first-assigned-inside): Ruby scoping
+       makes non-param locals FRESH on every block invocation; codegen needs
+       the list to reset them per iteration in fused loops. */
+    if (n->locals.size > 0) {
+      size_t total = 1;
+      for (size_t li = 0; li < n->locals.size; li++) {
+        char *nm2 = cstr(n->locals.ids[li]);
+        total += strlen(nm2) + 1;
+        free(nm2);
+      }
+      char *joined = malloc(total);
+      joined[0] = '\0';
+      for (size_t li = 0; li < n->locals.size; li++) {
+        char *nm2 = cstr(n->locals.ids[li]);
+        if (li) strcat(joined, ",");
+        strcat(joined, nm2);
+        free(nm2);
+      }
+      out_add("S %d locals %s", id, joined);
+      free(joined);
+    }
     /* Serialize block parameters */
     if (n->parameters) {
       if (PM_NODE_TYPE(n->parameters) == PM_BLOCK_PARAMETERS_NODE) {
