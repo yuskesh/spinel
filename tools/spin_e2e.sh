@@ -119,4 +119,11 @@ OUT=$(SPIN_OFFLINE=1 "$SPIN" run 2>&1)
 expect "offline (no lock)" "$WANT_OUT
 40" "$(echo "$OUT" | tail -2)"
 
+# --- list / tree -----------------------------------------------------------------
+"$SPIN" list | grep -q "^ansi 0.0.0 (path " || fail "spin list lacks the path dep"
+"$SPIN" list | grep -q "^greet 0.0.0 (git " || fail "spin list lacks the git dep"
+"$SPIN" list --json | grep -q '^\[{"name":"' || fail "spin list --json shape"
+"$SPIN" tree | grep -q "^  fast 0.0.0" || fail "spin tree lacks the nested dep line"
+"$SPIN" tree --json | grep -q '"deps":\[' || fail "spin tree --json shape"
+
 echo "spin-e2e: ALL GREEN"

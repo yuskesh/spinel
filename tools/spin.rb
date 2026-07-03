@@ -14,6 +14,8 @@ usage: spin <command> [args]
   run [target] [-- a]  build, then run one executable
   test [file..]        build and run test/*.rb against expectations
   clean                remove build/
+  list [--json]        resolved dependency set (name, version, source)
+  tree [--json]        dependency tree from this gem
 USAGE
 
 def spin_die(msg)
@@ -488,6 +490,88 @@ def lock_from_records(prj)
   puts "locked " + prj.dep_paths.length.to_s + " gem(s)"
 end
 
+def jq_str(s)
+  out = ""
+  s.split("").each do |ch|
+    if ch == "\\" || ch == "\""
+      out += "\\" + ch
+    else
+      out += ch
+    end
+  end
+  "\"" + out + "\""
+end
+
+def cmd_list(prj, json)
+  if json
+    out = "["
+    first = true
+    prj.dep_records.split("\n").each do |rec|
+      next if rec == ""
+      f = rec.split("\t")
+      src = f[3] == "git" ? f[4].split("\x01")[0] : f[4]
+      out += "," unless first
+      first = false
+      out += "{\"name\":" + jq_str(f[0]) + ",\"version\":" + jq_str(f[2]) +
+             ",\"kind\":" + jq_str(f[3]) + ",\"source\":" + jq_str(src) + "}"
+    end
+    puts out + "]"
+  else
+    prj.dep_records.split("\n").each do |rec|
+      next if rec == ""
+      f = rec.split("\t")
+      src = f[3] == "git" ? f[4].split("\x01")[0] : f[4]
+      puts f[0] + " " + f[2] + " (" + f[3] + " " + src + ")"
+    end
+  end
+end
+
+# name -> resolved dir, for walking each gem's own manifest
+def tree_children(dir)
+  mf = File.join(dir, "gem.toml")
+  return [] unless File.exist?(mf)
+  TomlDoc.parse(File.read(mf)).table_keys("dependencies")
+end
+
+def tree_walk(prj, name, dir, version, indent, seen, json)
+  out = ""
+  if json
+    out = "{\"name\":" + jq_str(name) + ",\"version\":" + jq_str(version) + ",\"deps\":["
+  else
+    puts indent + name + " " + version
+  end
+  first = true
+  tree_children(dir).each do |dep|
+    # resolved location/version from the flat record set
+    ddir = ""
+    dver = ""
+    prj.dep_records.split("\n").each do |rec|
+      f = rec.split("\t")
+      if f[0] == dep
+        ddir = f[1]
+        dver = f[2]
+      end
+    end
+    next if ddir == ""
+    if seen.include?("|" + dep + "|")
+      puts indent + "  " + dep + " " + dver + " (...)" unless json
+      next
+    end
+    sub = tree_walk(prj, dep, ddir, dver, indent + "  ", seen + "|" + dep + "|", json)
+    if json
+      out += "," unless first
+      first = false
+      out += sub
+    end
+  end
+  json ? out + "]}" : ""
+end
+
+def cmd_tree(prj, json)
+  r = tree_walk(prj, prj.name, prj.root, gem_version_of(prj.root), "", "|" + prj.name + "|", json)
+  puts r if json
+end
+
 def cmd_add(root, name, url, ref, pth)
   spin_die("usage: spin add <name> [--git URL [--ref R] | --path DIR]") if name == ""
   spin_die("spin add " + name + ": needs --git or --path in M1 (index arrives in Phase 2)") if url == "" && pth == ""
@@ -624,6 +708,13 @@ when "lock", "fetch", "vendor"
   lock_from_records(prj) if cmd == "lock"
   puts "fetched " + prj.dep_paths.length.to_s + " gem(s)" if cmd == "fetch"
   cmd_vendor(prj) if cmd == "vendor"
+when "list", "tree"
+  root = find_root(Dir.pwd)
+  spin_die("no gem.toml found") if root == ""
+  prj = Project.new(root)
+  json = rest.include?("--json")
+  cmd_list(prj, json) if cmd == "list"
+  cmd_tree(prj, json) if cmd == "tree"
 when "build", "run", "test", "clean"
   root = find_root(Dir.pwd)
   spin_die("no gem.toml found (run `spin init`, or `spin new <name>`)") if root == ""
