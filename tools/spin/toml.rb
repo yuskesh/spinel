@@ -5,8 +5,8 @@
 
 class TomlDoc
   def initialize
-    @vals = { "" => "" }    # "table\0key" => plain string value
-    @inline = { "" => "" }  # "table\0key\0ik" => inline-table member
+    @vals = { "" => "" }    # "table\x01key" => plain string value
+    @inline = { "" => "" }  # "table\x01key\x01ik" => inline-table member
     @keys = { "" => "" }    # "table" => newline-joined key list
   end
 
@@ -54,11 +54,11 @@ class TomlDoc
         next if peq.nil?
         ik = pair[0..(peq - 1)].strip
         iv = unquote(pair[(peq + 1)..-1].strip)
-        @inline[table + "\0" + key + "\0" + ik] = iv
+        @inline[table + "\x01" + key + "\x01" + ik] = iv
       end
-      @vals[table + "\0" + key] = ""
+      @vals[table + "\x01" + key] = ""
     else
-      @vals[table + "\0" + key] = unquote(val)
+      @vals[table + "\x01" + key] = unquote(val)
     end
   end
 
@@ -69,14 +69,14 @@ class TomlDoc
 
   # plain value, "" when absent (or when the value is an inline table)
   def get(table, key)
-    k = table + "\0" + key
+    k = table + "\x01" + key
     return "" unless @vals.key?(k)
     @vals[k]
   end
 
   # inline-table member, "" when absent
   def get_inline(table, key, ik)
-    k = table + "\0" + key + "\0" + ik
+    k = table + "\x01" + key + "\x01" + ik
     return "" unless @inline.key?(k)
     @inline[k]
   end
