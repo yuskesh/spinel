@@ -6,8 +6,13 @@ class D
     @t
   end
 end
-f = "/tmp/nope_#{Process.pid}"
-d = File.exist?(f) ? D.new(File.read(f)) : D.new("")
+# untaken arm with a side effect must not run (File.read behind the guard)
+missing = "/tmp/spinel_ternary_lazy_missing_#{Process.pid}"
+d = File.exist?(missing) ? D.new(File.read(missing)) : D.new("")
 puts d.t.length
-g = File.exist?("/etc/hostname") ? D.new(File.read("/etc/hostname")) : D.new("")
+# taken arm still evaluates its prelude (self-created file, platform-neutral)
+present = "/tmp/spinel_ternary_lazy_present_#{Process.pid}"
+File.write(present, "content")
+g = File.exist?(present) ? D.new(File.read(present)) : D.new("")
 puts g.t.length > 0
+File.delete(present)
