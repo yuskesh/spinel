@@ -38,3 +38,36 @@ puts lvl.check
 puts lvl.check_and(false)
 puts lvl.check_and(true)
 p lvl.sym_or_default
+
+# ||= / &&= on nilable symbol slots (ivar and local, statement and value form)
+class Cache
+  def initialize
+    @mode = nil
+  end
+  def mode_or_default
+    @mode ||= :easy
+  end
+  def try_upgrade
+    @mode &&= :hard
+    @mode
+  end
+  def reset
+    @mode = nil
+  end
+end
+
+c = Cache.new
+p c.mode_or_default
+p c.mode_or_default
+p c.try_upgrade
+c.reset
+p c.try_upgrade
+
+def lsym(start)
+  s = start ? :given : nil
+  s ||= :fallback
+  got = (s &&= :promoted)
+  [s, got]
+end
+p lsym(true)
+p lsym(false)

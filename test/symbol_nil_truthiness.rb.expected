@@ -5,3 +5,9 @@ exit:normal
 finish
 continue
 :normal
+:easy
+:easy
+:hard
+nil
+[:promoted, :promoted]
+[:promoted, :promoted]

@@ -681,6 +681,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; %s; })", ref3);
       }
     }
+    else if (ivt3 == TY_SYMBOL) {
+      /* nilable symbol: (sp_sym)-1 is the nil sentinel */
+      buf_printf(b, "({ if (%s %s= (sp_sym)-1) %s = ", ref3, is_or ? "=" : "!", ref3);
+      emit_expr(c, v, b);
+      buf_printf(b, "; %s; })", ref3);
+    }
     else if (ivt3 == TY_STRING) {
       if (is_or) {
         buf_printf(b, "({ if (!%s) %s = ", ref3, ref3);
@@ -727,6 +733,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     }
     else if (t == TY_BOOL) {
       buf_printf(b, "({ if (%slv_%s) lv_%s = ", is_or ? "!" : "", en, en);
+      emit_expr(c, v, b);
+      buf_printf(b, "; lv_%s; })", en);
+    }
+    else if (t == TY_SYMBOL) {
+      /* nilable symbol: (sp_sym)-1 is the nil sentinel */
+      buf_printf(b, "({ if (lv_%s %s= (sp_sym)-1) lv_%s = ", en, is_or ? "=" : "!", en);
       emit_expr(c, v, b);
       buf_printf(b, "; lv_%s; })", en);
     }
@@ -1580,16 +1592,14 @@ else {
     /* the "kept-left" arm and the "right" arm, each widened to res */
     #define EMIT_ARM(IS_RIGHT) do { \
       if (IS_RIGHT) { if (res == TY_POLY && comp_ntype(c, right) != TY_POLY) emit_boxed(c, right, b); else emit_expr(c, right, b); } \
-      else { if (res == TY_POLY && lt != TY_POLY) { /* box temp */ \
-               Buf _vb; memset(&_vb,0,sizeof _vb); buf_printf(&_vb, "_t%d", t); \
-               /* reuse emit_boxed by faking: just box by left type */ \
+      else { if (res == TY_POLY && lt != TY_POLY) { /* box the temp by left type */ \
                if (lt==TY_INT) buf_printf(b, "sp_box_int(_t%d)", t); \
                else if (lt==TY_STRING) buf_printf(b, "sp_box_nullable_str(_t%d)", t); \
                else if (lt==TY_FLOAT) buf_printf(b, "sp_box_float(_t%d)", t); \
                else if (lt==TY_BOOL) buf_printf(b, "sp_box_bool(_t%d)", t); \
                else if (lt==TY_SYMBOL) buf_printf(b, "(_t%d != (sp_sym)-1 ? sp_box_sym(_t%d) : sp_box_nil())", t, t); \
                else if (ty_is_object(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
-               else buf_printf(b, "_t%d", t); free(_vb.p); } \
+               else buf_printf(b, "_t%d", t); } \
              else buf_printf(b, "_t%d", t); } \
     } while (0)
     if (is_and) { EMIT_ARM(1); buf_puts(b, " : "); EMIT_ARM(0); }
