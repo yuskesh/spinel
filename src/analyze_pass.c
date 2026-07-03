@@ -4338,6 +4338,14 @@ int infer_return_types(Compiler *c) {
              : infer_type(c, sc->body);
     /* explicit returns within this scope (collected above) */
     if (!tail_unreachable && has_ret && has_ret[s]) r = ty_unify(r, ret_acc[s]);
+    /* Post-backstop re-runs fill returns whose body only settled after the
+       main fixpoint (a `r = expr; r` chain, #1670). Adopting a NEW poly there
+       is a net loss: the late-settling chains that matter are scalar, while a
+       previously-UNKNOWN return deriving poly is typically a store-style
+       method whose value no caller reads -- boxing it puts an sp_RbVal
+       return in optcarrot's hottest poke path for ~4% fps. Keep those at
+       their pre-pass type; the main fixpoint still widens to poly freely. */
+    if (g_ret_no_new_poly && r == TY_POLY && sc->ret != TY_POLY) continue;
     if (r != sc->ret) { sc->ret = r; changed = 1; }
     /* For a method with a &block param, record the value type its block yields
        (unified across all call sites). Blocks passed to it are emitted returning

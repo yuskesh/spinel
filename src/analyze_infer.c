@@ -64,6 +64,10 @@ TyKind ie_block_break_next_ty(Compiler *c, int node) {
 
 int g_infer_ignore_brk = 0;
 
+/* Post-backstop return re-derivation must not newly widen a return to poly
+   (see infer_return_types); set only around analyze_program's post-pass. */
+int g_ret_no_new_poly = 0;
+
 /* Top-level `break` detector: a BreakNode binding to the enclosing block,
    stopping at nested loops and nested block-bearing calls (which capture their
    own break). Mirrors codegen_stmt's subtree_has_loop_break. */

@@ -3129,11 +3129,13 @@ void analyze_program(Compiler *c) {
      locals (`a = m()`) -- and the callers' own returns -- on the next round.
      A write-only re-run would strand such a caller's return at UNKNOWN, and
      the method would emit as void, silently dropping its value (#1670). */
+  g_ret_no_new_poly = 1;
   for (int iter = 0; iter < 8; iter++) {
     int ch = infer_write_types(c);
     ch |= infer_return_types(c);
     if (!ch) break;
   }
+  g_ret_no_new_poly = 0;
   /* The write-type re-run can re-derive a hash/array container type for an
      iteration-bound block param from its element-index usage (e.g. `a[1]=v`),
      clobbering the TY_POLY the block-param pass pinned for a poly-collection
