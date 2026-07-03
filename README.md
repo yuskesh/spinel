@@ -92,6 +92,22 @@ no shell wrapper or chained helper binaries. It supports the full option set, in
 (RBS-seeded inference) and the `--emit-rbs` / `--emit-types` /
 `--emit-symbol-map` analysis modes.
 
+### Projects & packages
+
+For anything bigger than one file, `bin/spin` is the project tool — cargo/mix
+style: scaffolding, dependencies (local paths, git URLs, or the
+[spinelgems index](https://github.com/matz/spinel-index) with version
+constraints), a lockfile, snapshot tests, vendoring for offline builds, and
+native C carried inside gems.
+
+```bash
+bin/spin new myapp && cd myapp
+spin add ansi --version "~> 1.0"
+spin run
+```
+
+See [docs/spin-guide.md](docs/spin-guide.md).
+
 #### Integer overflow
 
 Integers are native fixed-width words. `--int-overflow=MODE` selects how
