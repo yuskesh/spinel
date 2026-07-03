@@ -3123,8 +3123,17 @@ void analyze_program(Compiler *c) {
   /* The method-reference backstop and ivar up-propagation above changed param
      and ivar types after the main fixpoint, so re-run local write-type inference:
      a local like `xfine = 8 - (data & 0x7)` only becomes int once its method's
-     `data` param is pinned to int by the backstop. */
-  for (int iter = 0; iter < 8; iter++) if (!infer_write_types(c)) break;
+     `data` param is pinned to int by the backstop. Return types alternate with
+     the write re-runs: a method returning through a local (`r = expr; r`) whose
+     expr only settles here re-derives its return, which in turn types callers'
+     locals (`a = m()`) -- and the callers' own returns -- on the next round.
+     A write-only re-run would strand such a caller's return at UNKNOWN, and
+     the method would emit as void, silently dropping its value (#1670). */
+  for (int iter = 0; iter < 8; iter++) {
+    int ch = infer_write_types(c);
+    ch |= infer_return_types(c);
+    if (!ch) break;
+  }
   /* The write-type re-run can re-derive a hash/array container type for an
      iteration-bound block param from its element-index usage (e.g. `a[1]=v`),
      clobbering the TY_POLY the block-param pass pinned for a poly-collection

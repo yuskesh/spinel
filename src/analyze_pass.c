@@ -4300,6 +4300,10 @@ int infer_return_types(Compiler *c) {
     }
     /* synthesized compiler_state methods carry a fixed return type (no AST). */
     if (sc->cs_synth) continue;
+    /* A lowered self-recursive yield method returns its block's value through
+       a raw mrb_int carrier pinned when the lowering rewrites the scope
+       (post-fixpoint); re-deriving from the body would break that ABI. */
+    if (sc->is_lowered_yield) continue;
     /* An empty method body returns nil; if its value is used at all it must
        be poly (a void C function yields nothing to read). */
     int empty_body = sc->body < 0;
