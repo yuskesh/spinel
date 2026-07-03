@@ -4065,7 +4065,11 @@ else {
       TyKind st = comp_ntype(c, value);
       int multi_src = vty && (sp_streq(vty, "CallNode") || sp_streq(vty, "SuperNode") ||
                               sp_streq(vty, "ForwardingSuperNode") || sp_streq(vty, "YieldNode"));
-      if (vty && !multi_src && !ty_is_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN) {
+      /* a TY_POLY value can hold an array at runtime (doom's
+         `lump_name, mirrored = @sprite_index[key]` read through a local),
+         so it must take the runtime-destructure path below, not the
+         scalar fill -- which handed the whole array to the first target. */
+      if (vty && !multi_src && !ty_is_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN && st != TY_POLY) {
         for (int i = 0; i < ln; i++) {
           const char *lty = nt_type(nt, lefts[i]);
           if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
