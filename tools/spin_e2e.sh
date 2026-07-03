@@ -1,0 +1,80 @@
+#!/bin/sh
+# spin end-to-end check: scaffold -> path dep -> git dep -> lock -> vendor ->
+# offline -> test, all hermetic (file:// git remote, scratch HOME cache).
+# Usage: tools/spin_e2e.sh <spin-binary>   (run from the repo root)
+set -e
+
+SPIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+WORK=$(mktemp -d /tmp/spin-e2e.XXXXXX)
+export XDG_CACHE_HOME="$WORK/cache"
+trap 'rm -rf "$WORK"' EXIT
+
+fail() { echo "spin-e2e FAIL: $1" >&2; exit 1; }
+expect() { # expect <label> <want> <got>
+  [ "$3" = "$2" ] || fail "$1: want [$2] got [$3]"
+}
+
+cd "$WORK"
+
+# --- scaffold + run -----------------------------------------------------------
+"$SPIN" new app >/dev/null
+cd app
+expect "scaffold run" "Hello from app" "$("$SPIN" run 2>&1 | tail -1)"
+
+# --- library gem (path dependency) --------------------------------------------
+cd "$WORK"
+"$SPIN" new spinel-ansi >/dev/null
+rm -rf spinel-ansi/bin
+printf '[gem]\nname = "ansi"\n' > spinel-ansi/gem.toml
+cat > spinel-ansi/ansi.rb <<'EOF'
+module Ansi
+  def self.red(s) = "\e[31m" + s + "\e[0m"
+end
+EOF
+
+# --- git-source gem (file:// remote) -------------------------------------------
+mkdir gitgem
+cd gitgem
+git init -q
+printf '[gem]\nname = "greet"\n' > gem.toml
+printf 'module Greet\n  def self.hi(n) = "hi " + n\nend\n' > greet.rb
+git add gem.toml greet.rb
+git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm init
+cd "$WORK/app"
+
+printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\n' "$WORK" > gem.toml
+printf 'require "ansi"\nrequire "greet"\nputs Ansi.red(Greet.hi("spin"))\n' > bin/app.rb
+
+expect "fetch" "fetched 2 gem(s)" "$("$SPIN" fetch 2>&1 | tail -1)"
+WANT_OUT=$(printf '\033[31mhi spin\033[0m')
+expect "run with deps" "$WANT_OUT" "$("$SPIN" run 2>&1 | tail -1)"
+
+# --- lock ----------------------------------------------------------------------
+"$SPIN" lock >/dev/null
+[ -f gem.lock ] || fail "gem.lock not written"
+grep -q '^\[lock\.greet\]$' gem.lock || fail "gem.lock lacks [lock.greet]"
+grep -q '^ref = "[0-9a-f]\{40\}"$' gem.lock || fail "gem.lock lacks a full-SHA ref"
+
+# --- add / remove edit the manifest --------------------------------------------
+"$SPIN" add extra --path ../spinel-ansi >/dev/null
+grep -q '^extra = ' gem.toml || fail "spin add didn't edit gem.toml"
+"$SPIN" remove extra >/dev/null
+grep -q '^extra = ' gem.toml && fail "spin remove didn't edit gem.toml"
+
+# --- test: snapshot regen + CRuby parity fallback (both need dep -I) ------------
+printf 'require "ansi"\nputs Ansi.red("t")\n' > test/color_test.rb
+expect "test (CRuby parity)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
+"$SPIN" test --regen >/dev/null 2>&1
+[ -s test/color_test.rb.expected ] || fail "test --regen wrote no snapshot"
+expect "test (snapshot)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
+
+# --- vendor -> offline, with and without the lock -------------------------------
+"$SPIN" vendor >/dev/null
+rm -rf "$XDG_CACHE_HOME"
+"$SPIN" clean >/dev/null
+expect "offline (locked, vendored)" "$WANT_OUT" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
+rm -f gem.lock
+"$SPIN" clean >/dev/null
+expect "offline (no lock)" "$WANT_OUT" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
+
+echo "spin-e2e: ALL GREEN"

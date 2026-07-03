@@ -35,7 +35,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all regexp rbs_extract rbs-test rbs-seed-test \
+.PHONY: all regexp rbs_extract rbs-test rbs-seed-test spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench \
         gate-optcarrot clean install uninstall deps tools
@@ -647,6 +647,12 @@ optcarrot: $(SPINEL) $(SP_RT_LIB)
 check:
 	+@$(MAKE) --no-print-directory all
 	+@$(MAKE) --no-print-directory test OPT=-O1
+	+@$(MAKE) --no-print-directory spin-check
+
+# spin end-to-end: scaffold/path-dep/git-dep/lock/vendor/offline/test,
+# hermetic under a mktemp dir (tools/spin_e2e.sh).
+spin-check: bin/spin
+	@tools/spin_e2e.sh bin/spin
 
 # Full pre-push gate: test || bench || optcarrot in parallel.
 gate:
