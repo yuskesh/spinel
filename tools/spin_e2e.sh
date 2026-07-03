@@ -126,4 +126,51 @@ expect "offline (no lock)" "$WANT_OUT
 "$SPIN" tree | grep -q "^  fast 0.0.0" || fail "spin tree lacks the nested dep line"
 "$SPIN" tree --json | grep -q '"deps":\[' || fail "spin tree --json shape"
 
+# --- index (M3): TOML index, MVS selection, search ------------------------------
+cd "$WORK"
+mkdir hello
+cd hello
+git init -q
+printf '[gem]\nname = "hello"\nversion = "1.0.0"\n' > gem.toml
+printf 'module Hello\n  def self.greet = "hello v1"\nend\n' > hello.rb
+git add gem.toml hello.rb
+git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v1
+SHA1=$(git rev-parse HEAD)
+printf '[gem]\nname = "hello"\nversion = "1.1.0"\n' > gem.toml
+printf 'module Hello\n  def self.greet = "hello v11"\nend\n' > hello.rb
+git add gem.toml hello.rb
+git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v11
+SHA2=$(git rev-parse HEAD)
+cd "$WORK"
+mkdir -p index/gems
+cd index
+git init -q
+printf 'name = "hello"\nrepo = "file://%s/hello"\n\n[[release]]\nversion = "1.0.0"\nref = "%s"\n\n[[release]]\nversion = "1.1.0"\nref = "%s"\n' "$WORK" "$SHA1" "$SHA2" > gems/hello.toml
+git add gems
+git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm seed
+cd "$WORK"
+export SPIN_INDEX="file://$WORK/index"
+"$SPIN" new idxapp >/dev/null
+cd idxapp
+printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = ">= 1.0"\n' > gem.toml
+printf 'require "hello"\nputs Hello.greet\n' > bin/idxapp.rb
+expect "index MVS (lowest satisfying)" "hello v1" "$("$SPIN" run 2>&1 | tail -1)"
+"$SPIN" lock >/dev/null
+grep -q '^version = "1.0.0"$' gem.lock || fail "index lock lacks the selected version"
+grep -q "^ref = \"$SHA1\"$" gem.lock || fail "index lock lacks the release SHA"
+printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = "~> 1.1"\n' > gem.toml
+OUT=$("$SPIN" run 2>&1)
+echo "$OUT" | grep -q "reselecting 1.1.0" || fail "constraint change didn't reselect"
+expect "index reselect" "hello v11" "$(echo "$OUT" | tail -1)"
+"$SPIN" search hell | grep -q "^hello 1.1.0 " || fail "spin search misses the gem"
+printf '[gem]\nname = "idxapp"\n\n[dependencies]\n' > gem.toml
+"$SPIN" add hello --version "~> 1.0" >/dev/null
+grep -q '^hello = "~> 1.0"$' gem.toml || fail "spin add --version didn't write the constraint"
+"$SPIN" lock >/dev/null
+"$SPIN" vendor >/dev/null
+rm -rf "$XDG_CACHE_HOME/spinel/gems" "$XDG_CACHE_HOME/spinel/index"
+"$SPIN" clean >/dev/null
+expect "index offline (locked, vendored)" "hello v1" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
+unset SPIN_INDEX
+
 echo "spin-e2e: ALL GREEN"

@@ -7,7 +7,8 @@ SPIN_USAGE = <<USAGE
 usage: spin <command> [args]
   new <name> [--lib]   scaffold an application (or a library with --lib)
   init                 write a gem.toml into the current directory
-  add <name> --git URL [--ref R] | --path DIR   add a dependency + lock
+  add <name> [--version C | --git URL [--ref R] | --path DIR]  add + lock
+  search [term]        find gems in the index (name, latest, repo)
   remove <name>        drop a dependency + relock
   lock | fetch | vendor  resolve deps / warm the cache / copy into vendor/
   build [target..]     build bin/ executables into build/bin/
@@ -43,6 +44,102 @@ def spinel_bin
   "spinel"  # PATH fallback
 end
 
+
+# --- index (M3) ----------------------------------------------------------------
+# The index is a git repo, not a server (R5): gems/<name>.toml maps a name to
+# its repo plus [[release]] version/ref entries. Selection is MVS: the LOWEST
+# release satisfying every constraint gathered for the gem, so a build without
+# a lock is still deterministic; gem.lock then pins the outcome.
+
+def spin_index_url
+  u = ENV["SPIN_INDEX"].to_s
+  u == "" ? "https://github.com/matz/spinel-index" : u
+end
+
+def index_dir(offline)
+  base = ENV["XDG_CACHE_HOME"].to_s
+  base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
+  d = File.join(base, "spinel")
+  Dir.mkdir(d) unless Dir.exist?(d)
+  d = File.join(d, "index")
+  return d if Dir.exist?(File.join(d, ".git"))
+  spin_die("--offline: no cached index (spin fetch first)") if offline
+  ok = system("git clone -q --depth 1 #{spin_index_url} #{d}")
+  spin_die("cannot clone the index: " + spin_index_url) unless ok
+  d
+end
+
+def index_refresh(offline)
+  return if offline
+  d = index_dir(false)
+  system("git -C #{d} pull -q --ff-only 2>/dev/null")  # offline-tolerant: stale is usable
+end
+
+# "1.2.3" <=> "1.10" as numeric components; missing parts are 0
+def vcmp(a, b)
+  pa = a.split(".")
+  pb = b.split(".")
+  n = pa.length > pb.length ? pa.length : pb.length
+  i = 0
+  while i < n
+    x = i < pa.length ? pa[i].to_i : 0
+    y = i < pb.length ? pb[i].to_i : 0
+    return -1 if x < y
+    return 1 if x > y
+    i += 1
+  end
+  0
+end
+
+# constraint: "*"/"" (any), "~> X.Y(.Z)" (pessimistic), ">= X", or exact "X.Y.Z"
+def version_satisfies(v, cons)
+  c = cons.strip
+  return true if c == "" || c == "*"
+  if c.start_with?("~>")
+    floor = c[2..-1].to_s.strip
+    return false if vcmp(v, floor) < 0
+    parts = floor.split(".")
+    return true if parts.length < 2
+    ceil = ""
+    i = 0
+    while i < parts.length - 1
+      ceil += "." unless ceil == ""
+      ceil += (i == parts.length - 2 ? (parts[i].to_i + 1).to_s : parts[i])
+      i += 1
+    end
+    return vcmp(v, ceil) < 0
+  end
+  return vcmp(v, c[2..-1].to_s.strip) >= 0 if c.start_with?(">=")
+  vcmp(v, c) == 0
+end
+
+# MVS pick from gems/<name>.toml: lowest release satisfying the constraint.
+# Returns "version\nrepo\nref" ("" when nothing matches).
+def index_select(dep, cons, offline)
+  gf = File.join(index_dir(offline), "gems", dep + ".toml")
+  spin_die("not in the index: " + dep + " (spin add " + dep + " --git URL is the escape hatch)") unless File.exist?(gf)
+  gdoc = TomlDoc.parse(File.read(gf))
+  repo = gdoc.get("", "repo")
+  spin_die("index entry for " + dep + " lacks a repo") if repo == ""
+  n = gdoc.array_len("release")
+  sel_v = ""
+  sel_r = ""
+  i = 0
+  while i < n
+    t = "release." + i.to_s
+    v = gdoc.get(t, "version")
+    r = gdoc.get(t, "ref")
+    if v != "" && r != "" && version_satisfies(v, cons)
+      if sel_v == "" || vcmp(v, sel_v) < 0
+        sel_v = v
+        sel_r = r
+      end
+    end
+    i += 1
+  end
+  spin_die("no release of " + dep + " satisfies " + (cons == "" ? "*" : cons)) if sel_v == ""
+  sel_v + "\n" + repo + "\n" + sel_r
+end
 
 # --- carried native C (M2) ----------------------------------------------------
 # A gem may carry .c/.h sources (R6). spin compiles each .c once into the
@@ -178,11 +275,30 @@ def git_fetch(name, url, ref, want_sha)
   end
   tmp = File.join(gems, ".fetch-" + name)
   system("rm -rf " + tmp)
-  refarg = ref == "" ? "" : " --branch " + ref
-  ok = system("git clone -q --depth 1" + refarg + " " + url + " " + tmp)
-  spin_die("fetch failed: git clone " + url) unless ok
+  cloned = false
+  if want_sha != ""
+    # materialize the exact pinned/selected commit: fetch it directly
+    # (works on file:// and GitHub); a server refusing SHA fetches falls
+    # back to the full clone + checkout below.
+    cloned = system("mkdir -p " + tmp) &&
+             system("git -C " + tmp + " init -q 2>/dev/null") &&
+             system("git -C " + tmp + " fetch -q --depth 1 " + url + " " + want_sha + " 2>/dev/null") &&
+             system("git -C " + tmp + " checkout -q FETCH_HEAD 2>/dev/null")
+    system("rm -rf " + tmp) unless cloned
+  end
+  unless cloned
+    refarg = ref == "" ? "" : " --branch " + ref
+    depth = want_sha == "" ? " --depth 1" : ""
+    ok = system("git clone -q" + depth + refarg + " " + url + " " + tmp)
+    spin_die("fetch failed: git clone " + url) unless ok
+    if want_sha != ""
+      okc = system("git -C " + tmp + " checkout -q " + want_sha)
+      spin_die("fetch failed: " + name + " has no commit " + want_sha) unless okc
+    end
+  end
   sha = sh_read("git -C " + tmp + " rev-parse HEAD")
   spin_die("fetch failed: no HEAD sha for " + url) if sha == ""
+  spin_die("fetch verify failed: wanted " + want_sha + ", got " + sha) if want_sha != "" && sha != want_sha
   ver = gem_version_of(tmp)
   final = File.join(gems, name + "-" + ver)
   system("rm -rf " + final)
@@ -253,7 +369,42 @@ def resolve_deps(root, offline)
         out += dep + "\t" + parts[0] + "\t" + parts[1] + "\tgit\t" + url + "\x01" + sha + "\n"
         queue.push(parts[0])
       else
-        spin_die("dependency " + dep + ": needs { path = .. } or { git = .. }")
+        # a plain string value is an index constraint: foo = "~> 1.2" / "*"
+        cons = toml.get("dependencies", dep)
+        sel = index_select(dep, cons, offline).split("\n")
+        sel_v = sel[0]
+        repo = sel[1]
+        sel_r = sel.length > 2 ? sel[2] : ""
+        # verify-not-select: a lock ref that still satisfies the constraint
+        # pins the build; one that no longer does is reselected (spin lock
+        # rewrites the pin).
+        want = lock.get("lock." + dep, "ref")
+        lv = lock.get("lock." + dep, "version")
+        if want != "" && version_satisfies(lv, cons)
+          sel_r = want
+          sel_v = lv
+        elsif want != ""
+          $stderr.puts "spin: gem.lock pins " + dep + " " + lv + " outside " + cons + "; reselecting " + sel_v
+        end
+        rec = ""
+        if offline
+          hit = ""
+          Dir.glob(cache_gems_dir + "/" + dep + "-*").each do |h|
+            st = File.join(h, ".spin-sha")
+            hit = h if sel_r != "" && File.exist?(st) && File.read(st).strip == sel_r
+          end
+          if hit == ""
+            Dir.glob(File.join(root0, "vendor/gems") + "/" + dep + "-*").each { |h| hit = h }
+          end
+          spin_die("--offline: " + dep + " not in cache or vendor (spin fetch/vendor first)") if hit == ""
+          rec = hit + "\n" + gem_version_of(hit) + "\n" + sel_r
+        else
+          rec = git_fetch(dep, repo, "", sel_r)
+        end
+        parts = rec.split("\n")
+        sha = parts.length > 2 ? parts[2] : sel_r
+        out += dep + "\t" + parts[0] + "\t" + sel_v + "\tindex\t" + repo + "\x01" + sha + "\x01" + cons + "\n"
+        queue.push(parts[0])
       end
     end
   end
@@ -479,7 +630,7 @@ def lock_from_records(prj)
     next if rec == ""
     f = rec.split("\t")
     lines.push("\n[lock." + f[0] + "]\nversion = \"" + f[2] + "\"\n")
-    if f[3] == "git"
+    if f[3] == "git" || f[3] == "index"
       us = f[4].split("\x01")
       lines.push("git = \"" + us[0] + "\"\nref = \"" + us[1] + "\"\n")
     else
@@ -509,7 +660,7 @@ def cmd_list(prj, json)
     prj.dep_records.split("\n").each do |rec|
       next if rec == ""
       f = rec.split("\t")
-      src = f[3] == "git" ? f[4].split("\x01")[0] : f[4]
+      src = f[3] == "path" ? f[4] : f[4].split("\x01")[0]
       out += "," unless first
       first = false
       out += "{\"name\":" + jq_str(f[0]) + ",\"version\":" + jq_str(f[2]) +
@@ -520,7 +671,7 @@ def cmd_list(prj, json)
     prj.dep_records.split("\n").each do |rec|
       next if rec == ""
       f = rec.split("\t")
-      src = f[3] == "git" ? f[4].split("\x01")[0] : f[4]
+      src = f[3] == "path" ? f[4] : f[4].split("\x01")[0]
       puts f[0] + " " + f[2] + " (" + f[3] + " " + src + ")"
     end
   end
@@ -572,14 +723,21 @@ def cmd_tree(prj, json)
   puts r if json
 end
 
-def cmd_add(root, name, url, ref, pth)
-  spin_die("usage: spin add <name> [--git URL [--ref R] | --path DIR]") if name == ""
-  spin_die("spin add " + name + ": needs --git or --path in M1 (index arrives in Phase 2)") if url == "" && pth == ""
+def cmd_add(root, name, url, ref, pth, cons)
+  spin_die("usage: spin add <name> [--version C | --git URL [--ref R] | --path DIR]") if name == ""
   mf = File.join(root, "gem.toml")
   text = File.read(mf)
-  spec = pth != "" ? "{ path = \"" + pth + "\" }"
-                   : (ref == "" ? "{ git = \"" + url + "\" }"
-                                : "{ git = \"" + url + "\", ref = \"" + ref + "\" }")
+  spec = ""
+  if pth != ""
+    spec = "{ path = \"" + pth + "\" }"
+  elsif url != ""
+    spec = ref == "" ? "{ git = \"" + url + "\" }"
+                     : "{ git = \"" + url + "\", ref = \"" + ref + "\" }"
+  else
+    # index form: bare name takes any release, --version narrows it
+    index_refresh(false)
+    spec = "\"" + (cons == "" ? "*" : cons) + "\""
+  end
   line = name + " = " + spec + "\n"
   if text.include?("\n[dependencies]\n")
     text = text.sub("\n[dependencies]\n", "\n[dependencies]\n" + line)
@@ -592,6 +750,27 @@ def cmd_add(root, name, url, ref, pth)
   prj = Project.new(root)
   lock_from_records(prj)
   puts "added " + name
+end
+
+def cmd_search(term)
+  index_refresh(false)
+  d = File.join(index_dir(false), "gems")
+  found = 0
+  Dir.glob(d + "/*.toml").sort.each do |gf|
+    nm = File.basename(gf)[0..-6]
+    next unless term == "" || nm.include?(term)
+    gdoc = TomlDoc.parse(File.read(gf))
+    best = ""
+    i = 0
+    while i < gdoc.array_len("release")
+      v = gdoc.get("release." + i.to_s, "version")
+      best = v if best == "" || vcmp(v, best) > 0
+      i += 1
+    end
+    puts nm + " " + best + " " + gdoc.get("", "repo")
+    found += 1
+  end
+  puts "no matches" if found == 0
 end
 
 def cmd_remove(root, name)
@@ -679,6 +858,7 @@ when "add"
   url = ""
   ref = ""
   pth = ""
+  cons = ""
   i2 = 0
   while i2 < rest.length
     a = rest[i2]
@@ -691,12 +871,15 @@ when "add"
     elsif a == "--path"
       i2 += 1
       pth = rest[i2].to_s
+    elsif a == "--version"
+      i2 += 1
+      cons = rest[i2].to_s
     elsif !a.start_with?("--") && nm == ""
       nm = a
     end
     i2 += 1
   end
-  cmd_add(root, nm, url, ref, pth)
+  cmd_add(root, nm, url, ref, pth, cons)
 when "remove"
   root = find_root(Dir.pwd)
   spin_die("no gem.toml found") if root == ""
@@ -708,6 +891,8 @@ when "lock", "fetch", "vendor"
   lock_from_records(prj) if cmd == "lock"
   puts "fetched " + prj.dep_paths.length.to_s + " gem(s)" if cmd == "fetch"
   cmd_vendor(prj) if cmd == "vendor"
+when "search"
+  cmd_search(rest.empty? ? "" : rest[0])
 when "list", "tree"
   root = find_root(Dir.pwd)
   spin_die("no gem.toml found") if root == ""

@@ -234,9 +234,32 @@ Phase 1 needs, beyond `spin` itself:
 
 No compiler changes are required for Phase 1 (§5: plain `-I`).
 
-Phase 2 adds: index-backed `spin add name`, `spin search`, `spin publish`
-(index PR automation), and probe-result surfacing in `add`/`build` warnings
-(R8).
+Phase 2 (M3, implemented except publish): the index is a git repo, not a
+server -- `https://github.com/matz/spinel-index` by default, `SPIN_INDEX`
+overrides (file:// works; the E2E uses a local fixture). One TOML file per
+gem, read by the same TomlDoc reader as gem.toml:
+
+```toml
+# gems/<name>.toml
+name = "ansi"
+repo = "https://github.com/x/spinel-ansi"
+
+[[release]]
+version = "1.2.0"
+ref = "a94a8fe5cc..."   # full commit SHA
+```
+
+A plain string in `[dependencies]` is an index constraint: `hello = "~> 1.1"`
+(also `">= X"`, exact, `"*"`). Selection is **MVS**: the *lowest* release
+satisfying the constraint, so an unlocked build is still deterministic;
+`gem.lock` then pins the outcome (a pinned version that no longer satisfies a
+changed constraint is reselected with a warning, and `spin lock` rewrites the
+pin). `spin add name [--version C]` writes the constraint form; `spin search
+[term]` lists index entries. Fetch materializes the exact release SHA
+(direct SHA fetch, full-clone + checkout fallback) and verifies it.
+
+Still Phase 2: `spin publish` (index PR automation) and probe-result
+surfacing in `add`/`build` warnings (R8).
 
 ## 8. Open points
 

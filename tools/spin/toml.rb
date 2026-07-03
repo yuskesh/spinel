@@ -8,6 +8,7 @@ class TomlDoc
     @vals = { "" => "" }    # "table\x01key" => plain string value
     @inline = { "" => "" }  # "table\x01key\x01ik" => inline-table member
     @keys = { "" => "" }    # "table" => newline-joined key list
+    @counts = { "" => 0 }   # "[[base]]" occurrence count; entries live at "base.<i>"
   end
 
   def self.parse(text)
@@ -21,6 +22,13 @@ class TomlDoc
     text.split("\n").each do |line0|
       line = strip_comment(line0).strip
       next if line == ""
+      if line.start_with?("[[") && line.end_with?("]]")
+        base = line[2..-3].strip
+        n = @counts.key?(base) ? @counts[base] : 0
+        @counts[base] = n + 1
+        table = base + "." + n.to_s
+        next
+      end
       if line.start_with?("[") && line.end_with?("]")
         table = line[1..-2].strip
         next
@@ -79,6 +87,11 @@ class TomlDoc
     k = table + "\x01" + key + "\x01" + ik
     return "" unless @inline.key?(k)
     @inline[k]
+  end
+
+  # number of [[base]] entries; each is a table named "base.<i>"
+  def array_len(base)
+    @counts.key?(base) ? @counts[base] : 0
   end
 
   def table_keys(table)
