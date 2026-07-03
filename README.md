@@ -106,7 +106,7 @@ spin add ansi --version "~> 1.0"
 spin run
 ```
 
-See [docs/spin-guide.md](docs/spin-guide.md).
+See [docs/spin.md](docs/spin.md).
 
 #### Integer overflow
 

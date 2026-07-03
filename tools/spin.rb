@@ -1,5 +1,6 @@
 # spin — the Spinel project tool (M0: new/init/build/run/test/clean,
-# path dependencies only, no network, no lockfile). See docs/spin.md.
+# path dependencies only, no network, no lockfile). Usage: docs/spin.md;
+# design record: docs/internals/spin.md.
 
 require_relative "spin/toml"
 

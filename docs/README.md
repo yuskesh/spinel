@@ -5,7 +5,7 @@ Start here, then open the topic you need.
 
 ## For users
 
-- **[spin-guide.md](spin-guide.md)** — projects and packages with `spin`:
+- **[spin.md](spin.md)** — projects and packages with `spin`:
   scaffold, dependencies (path / git / index), lockfile, tests, vendoring,
   and native C in gems. Start here to build anything bigger than one file.
 - **[limitations.md](limitations.md)** — what an AOT compiler can and cannot do.
