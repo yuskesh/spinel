@@ -45,6 +45,15 @@ const char*sp_str_concat4(const char*a,const char*b,const char*c,const char*d){i
 /* Concatenate N strings into a single GC-managed buffer. */
 /* Issue #760: NULL entries treated as empty strings. */
 const char*sp_str_concat_arr(const char *const *parts,int n){size_t total=0;for(int i=0;i<n;i++)total+=sp_str_byte_len(parts[i]?parts[i]:"");char*r=sp_str_alloc(total);char*p=r;for(int i=0;i<n;i++){const char*s=parts[i]?parts[i]:"";size_t sl=sp_str_byte_len(s);memcpy(p,s,sl);p+=sl;}return r;}
+/* The unresolved-call gate's raise. Deliberately NOT declared noreturn
+   (sp_runtime.h): gate arms sit inside hot dispatch functions and a noreturn
+   call restructures their CFG; as a plain value-returning extern call the
+   arm keeps the sp_box_nil() shape it replaced. sp_raise_cls longjmps, so
+   the return never executes. */
+sp_RbVal sp_raise_nomethod(const char *msg) {
+  sp_raise_cls("NoMethodError", msg);
+  return sp_box_nil();
+}
 /* NoMethodError for a String method reaching a nil (NULL) receiver,
    matching CRuby's "undefined method 'upcase' for nil" message shape. */
 void sp_nil_recv(const char*meth){
