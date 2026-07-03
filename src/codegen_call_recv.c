@@ -2490,7 +2490,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int tv = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = %s; if (!_t%d) sp_nil_recv(\"to_str\"); _t%d; })", tv, r, tv, tv);
       }
-      else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) buf_printf(b, "sp_str_dup_external(%s)", r);
+      else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0)
+        /* sp_str_dup, not dup_external: the receiver is a spinel string, and
+           the byte_len-aware copy carries embedded NULs (dup_external is for
+           unmarked C pointers and must stay strlen-based). */
+        buf_printf(b, "sp_str_dup(%s)", r);
       else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
       else if (sp_streq(name, "empty?"))     buf_printf(b, "sp_str_empty_p(%s)", r);
       else if (sp_streq(name, "include?") && argc == 1) {

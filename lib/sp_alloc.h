@@ -125,15 +125,25 @@ static inline char *sp_str_alloc(size_t len) {
   return body + 1;
 }
 
+/* Raw variant: the caller writes a NUL-terminated payload whose final
+   length it doesn't know yet (worst-case sized transforms: dump, gsub,
+   tr, ...). Leave the header length unset so sp_str_byte_len answers
+   strlen until sp_str_set_len records the real (possibly NUL-embedded)
+   length; a capacity left in the header would over-read on concat and
+   break byte-exact equality. */
+#define SP_STR_LEN_UNSET 0xFFFFFFFFu
 static inline char *sp_str_alloc_raw(size_t total_with_null) {
-  return sp_str_alloc(total_with_null > 0 ? total_with_null - 1 : 0);
+  char *s = sp_str_alloc(total_with_null > 0 ? total_with_null - 1 : 0);
+  (((sp_str_hdr *)(s - 1)) - 1)->len = SP_STR_LEN_UNSET;
+  return s;
 }
 
 static inline size_t sp_str_byte_len(const char *s) {
   if (!s) return 0;
   unsigned char marker = ((const unsigned char *)s)[-1];
   if (marker == 0xfe || marker == 0xfc || marker == 0xfd) {
-    return (((const sp_str_hdr *)(s - 1)) - 1)->len;
+    uint32_t l = (((const sp_str_hdr *)(s - 1)) - 1)->len;
+    if (l != SP_STR_LEN_UNSET) return l;
   }
   return strlen(s);
 }

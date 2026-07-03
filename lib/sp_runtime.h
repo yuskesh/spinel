@@ -233,7 +233,7 @@ static inline mrb_bool sp_int_mul_overflow_p(mrb_int a, mrb_int b, mrb_int *r) {
 /* sp_gcd / sp_lcm / sp_powmod / sp_ceildiv / sp_int_clamp / sp_int_sqrt
    now live in libspinel_rt.a (lib/sp_core.c); declared via sp_core.h. */
 static inline char *sp_str_alloc_raw(size_t total_with_null);  /* fwd decl */
-static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;return s;}
+static const char*sp_int_chr(mrb_int n){char*s=sp_str_alloc_raw(2);s[0]=(char)n;s[1]=0;sp_str_set_len(s,1);return s;}
 /* sp_ipow10 / sp_int_round / sp_int_ceil / sp_int_floor /
    sp_int_truncate / sp_str_oct now live in libspinel_rt.a
    (lib/sp_core.c); declared via sp_core.h. */
@@ -463,7 +463,16 @@ static const char *sp_int_codepoint_to_str(mrb_int n) {
    dereference NULL on either side. nil-vs-string equality is false in
    Ruby; nil == nil is true, so falling back to pointer equality on the
    NULL path covers both. */
-static inline int sp_str_eq(const char*a,const char*b){if(a==b)return 1;if(!a||!b)return 0;return strcmp(a,b)==0;}
+static inline int sp_str_eq(const char*a,const char*b){
+  if(a==b)return 1;
+  if(!a||!b)return 0;
+  if(strcmp(a,b)!=0)return 0;
+  /* strcmp equality is only prefix equality when a length header records
+     an embedded NUL ("a\0b" vs "a"): confirm byte-exact equality. The
+     miss path above stays a single strcmp. */
+  size_t la=sp_str_byte_len(a);
+  return la==sp_str_byte_len(b)&&memcmp(a,b,la)==0;
+}
 /* Issue #762: check malloc/realloc returns. On OOM, return an empty
    array rather than dereferencing NULL. */
 
@@ -943,7 +952,7 @@ static inline const char *sp_str_freeze_val(const char *s) {
    across to the fresh buffer. */
 static inline const char *sp_str_clone_val(const char *s) {
   if (!s) return NULL;
-  const char *r = sp_str_dup_external(s);
+  const char *r = sp_str_dup(s);  /* byte_len-aware: clone carries embedded NULs */
   if (r && sp_str_is_frozen_val(s)) ((unsigned char *)r)[-1] = 0xf1;
   return r;
 }
@@ -4474,6 +4483,7 @@ static const char *sp_file_read(const char *path) {
     n = fread(buf, 1, sz, f);
   }
   buf[n] = 0;
+  sp_str_set_len(buf, n);  /* a short read must not leave the size as length */
   fclose(f);
   return buf;
 }

@@ -132,6 +132,22 @@ poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
 representable (`2.0 ** -1 # => 0.5`). A `Rational` base is also fine
 (`Rational(1,2) ** -1 # => (2/1)`).
 
+#### Embedded NUL bytes: byte-exact core, C-string transforms
+
+Strings store embedded NUL bytes, and the byte-exact core matches CRuby:
+literals (`"a\0b"`), `length` / `bytesize` / `bytes`, `==` (`"a\0b" == "a"`
+is false), Hash keys, slicing (`s[i]`, `s[a, n]`, ranges, `byteslice`),
+`dup` / `clone`, concatenation, `0.chr`, `File.write` / `File.read`
+round-trips, StringIO, pack/unpack, and Marshal.
+
+The transform and search methods walk the C string and stop at the first
+NUL: case ops (`upcase`, ...), `strip` family, `index` / `include?` /
+`start_with?`, `sub` / `gsub` / `tr` / `delete` / `squeeze`, `split`,
+`reverse`, `succ`, and interpolation / `%` formatting (`"x#{s}y"` drops
+the NUL and its tail). `inspect` renders `\x00` where CRuby prints
+`\u0000`. Treat embedded-NUL strings as byte containers, not text to
+transform; full binary-safe transforms are a possible future project.
+
 #### Nested modules named after a builtin class
 
 `module Encoding` at the top level is CRuby's `TypeError` (`Encoding is not a

@@ -4893,7 +4893,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (argc0 == 0 && recv_t == TY_STRING && is_dup_clone) {
       /* clone preserves the frozen state; dup always returns an unfrozen copy. */
-      buf_printf(b, "%s(", sp_streq(name, "clone") ? "sp_str_clone_val" : "sp_str_dup_external");
+      /* sp_str_dup, not dup_external: byte_len-aware, carries embedded NULs. */
+      buf_printf(b, "%s(", sp_streq(name, "clone") ? "sp_str_clone_val" : "sp_str_dup");
       emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
   }
