@@ -1574,6 +1574,7 @@ else {
     else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
              lt == TY_PROC || lt == TY_STRINGIO || lt == TY_STRINGSCANNER || lt == TY_MATCHDATA || lt == TY_EXCEPTION)
       buf_printf(b, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
+    else if (lt == TY_SYMBOL) buf_printf(b, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
     else                    buf_puts(b, "1");  /* concrete value: always truthy */
     buf_puts(b, " ? ");
     /* the "kept-left" arm and the "right" arm, each widened to res */
@@ -1586,7 +1587,7 @@ else {
                else if (lt==TY_STRING) buf_printf(b, "sp_box_nullable_str(_t%d)", t); \
                else if (lt==TY_FLOAT) buf_printf(b, "sp_box_float(_t%d)", t); \
                else if (lt==TY_BOOL) buf_printf(b, "sp_box_bool(_t%d)", t); \
-               else if (lt==TY_SYMBOL) buf_printf(b, "sp_box_sym(_t%d)", t); \
+               else if (lt==TY_SYMBOL) buf_printf(b, "(_t%d != (sp_sym)-1 ? sp_box_sym(_t%d) : sp_box_nil())", t, t); \
                else if (ty_is_object(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
                else buf_printf(b, "_t%d", t); free(_vb.p); } \
              else buf_printf(b, "_t%d", t); } \

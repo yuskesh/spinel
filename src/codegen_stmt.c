@@ -882,7 +882,11 @@ void emit_cond(Compiler *c, int id, Buf *b) {
   }
   if (t == TY_INT)   { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != SP_INT_NIL)"); return; }
   if (t == TY_FLOAT) { buf_puts(b, "(!sp_float_is_nil("); emit_expr(c, id, b); buf_puts(b, "))"); return; }
-  if (t == TY_SYMBOL) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }
+  /* a nilable symbol slot holds (sp_sym)-1 for nil (default_value), so
+     truthiness must test the sentinel -- `if @exit_triggered` with
+     `@exit_triggered = nil` read always-true and ended doom's level on
+     the first tic. */
+  if (t == TY_SYMBOL) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != (sp_sym)-1)"); return; }
   /* Always-truthy concrete value types: a Range / Class / Complex / Rational /
      Time value is never nil or false, so it is truthy in condition position.
      Evaluate it for side effects and yield 1. */
