@@ -1218,7 +1218,7 @@ else {
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
       if (sp_streq(name, "pwd") || sp_streq(name, "home")) return TY_STRING;
-      if (sp_streq(name, "glob")) return TY_STR_ARRAY;
+      if (sp_streq(name, "glob") || sp_streq(name, "entries") || sp_streq(name, "children")) return TY_STR_ARRAY;
       if (sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir"))
         return TY_INT;
     }

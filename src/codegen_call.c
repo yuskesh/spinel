@@ -5814,6 +5814,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "glob") && argc == 1) {
       buf_puts(b, "sp_dir_glob("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
+    if ((sp_streq(name, "entries") || sp_streq(name, "children")) && argc == 1) {
+      buf_printf(b, "sp_dir_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
     if ((sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir")) && argc >= 1) {
       buf_printf(b, "sp_dir_%s(", name); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }

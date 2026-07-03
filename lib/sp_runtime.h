@@ -4668,6 +4668,31 @@ else {
   sp_StrArray_sort_bang(a);
   return a;
 }
+/* Dir.entries / Dir.children: every entry of one directory, dotfiles
+   included; children drops "." / "..". Sorted for determinism (CRuby
+   leaves readdir order unspecified). A missing directory raises like
+   CRuby, not the glob-style empty result. */
+static sp_StrArray *sp_dir_entries_impl(const char *path, int children) {
+  if (!path) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  DIR *d = opendir(path);
+  if (!d) sp_raise_cls("Errno::ENOENT", sp_sprintf("No such file or directory @ dir_initialize - %s", path));
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    const char *name = e->d_name;
+    if (children && name[0] == '.' &&
+        (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
+    char *copy = sp_str_alloc(strlen(name));
+    strcpy(copy, name);
+    sp_StrArray_push(a, copy);
+  }
+  closedir(d);
+  sp_StrArray_sort_bang(a);
+  return a;
+}
+static sp_StrArray *sp_dir_entries(const char *path) { return sp_dir_entries_impl(path, 0); }
+static sp_StrArray *sp_dir_children(const char *path) { return sp_dir_entries_impl(path, 1); }
 
 /* File.expand_path(path[, base]) -- CRuby-compatible pure-string
    expansion (does NOT require the path to exist). A leading `~` / `~/`
