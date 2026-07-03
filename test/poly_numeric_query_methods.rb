@@ -59,3 +59,29 @@ puts s.getbyte(-1) # 98
 p s.getbyte(5)     # nil (out of range)
 puts s.bytesize    # 2
 puts s.ord         # 97
+
+# Non-finite floats: rounding raises FloatDomainError (not C UB), abs works
+nan = [0.0 / 0.0, "x"][0]
+inf = [-1.0 / 0.0, "x"][0]
+begin
+  nan.floor
+rescue FloatDomainError => ex
+  puts "#{ex.class}: #{ex.message}"   # FloatDomainError: NaN
+end
+begin
+  inf.round
+rescue FloatDomainError => ex
+  puts "#{ex.class}: #{ex.message}"   # FloatDomainError: -Infinity
+end
+puts nan.abs.nan?  # true
+puts inf.finite?   # false
+p inf.infinite?    # -1
+
+# Empty string: bytesize 0; ord raises CRuby's ArgumentError
+es = ["", 1][0]
+puts es.bytesize   # 0
+begin
+  es.ord
+rescue ArgumentError => ex
+  puts "#{ex.class}: #{ex.message}"   # ArgumentError: empty string
+end
