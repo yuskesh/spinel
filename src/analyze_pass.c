@@ -4306,9 +4306,34 @@ int infer_return_types(Compiler *c) {
     if (sc->body >= 0 && nt_kind(nt, sc->body) == NK_StatementsNode) {
       int bn = 0; nt_arr(nt, sc->body, "body", &bn); if (bn == 0) empty_body = 1;
     }
-    TyKind r = empty_body ? TY_POLY : infer_type(c, sc->body);
+    /* A trailing infinite loop (`while true` / `until false`) with no
+       top-level break can't fall through, so its nil value is unreachable:
+       when explicit returns exist, they alone type the method instead of
+       nil-widening it to poly. A breaking or finite loop still contributes
+       its nil fall-through, as CRuby does. */
+    int tail_unreachable = 0;
+    if (!empty_body && has_ret && has_ret[s] &&
+        nt_kind(nt, sc->body) == NK_StatementsNode) {
+      int bn2 = 0; const int *bb2 = nt_arr(nt, sc->body, "body", &bn2);
+      if (bn2 > 0) {
+        int last = bb2[bn2 - 1];
+        NodeKind lk = nt_kind(nt, last);
+        if (lk == NK_WhileNode || lk == NK_UntilNode) {
+          int pred = nt_ref(nt, last, "predicate");
+          const char *cty = pred >= 0 ? nt_type(nt, pred) : NULL;
+          int infinite = cty && ((lk == NK_WhileNode && sp_streq(cty, "TrueNode")) ||
+                                 (lk == NK_UntilNode && sp_streq(cty, "FalseNode")));
+          int lbody = nt_ref(nt, last, "statements");
+          if (infinite && (lbody < 0 || !block_has_top_break(c, lbody)))
+            tail_unreachable = 1;
+        }
+      }
+    }
+    TyKind r = empty_body ? TY_POLY
+             : tail_unreachable ? ret_acc[s]
+             : infer_type(c, sc->body);
     /* explicit returns within this scope (collected above) */
-    if (has_ret && has_ret[s]) r = ty_unify(r, ret_acc[s]);
+    if (!tail_unreachable && has_ret && has_ret[s]) r = ty_unify(r, ret_acc[s]);
     if (r != sc->ret) { sc->ret = r; changed = 1; }
     /* For a method with a &block param, record the value type its block yields
        (unified across all call sites). Blocks passed to it are emitted returning
