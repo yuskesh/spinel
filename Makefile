@@ -683,7 +683,9 @@ install: all
 	install -m 644 lib/sp_array.h        $(SPNLDIR)/lib/
 	install -m 644 lib/sp_str.h          $(SPNLDIR)/lib/
 	install -m 644 lib/sp_re.h           $(SPNLDIR)/lib/
-	install -m 644 lib/sp_fiber.h         $(SPNLDIR)/lib/
+	install -m 644 lib/sp_fiber.h        $(SPNLDIR)/lib/
+	install -m 644 lib/sp_fiber_ctx.h    $(SPNLDIR)/lib/
+	install -m 644 lib/sp_sched.h        $(SPNLDIR)/lib/
 	install -m 644 lib/sp_io.h           $(SPNLDIR)/lib/
 	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_net.h          $(SPNLDIR)/lib/
