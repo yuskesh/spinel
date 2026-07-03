@@ -1008,22 +1008,29 @@ else {
        makes non-param locals FRESH on every block invocation; codegen needs
        the list to reset them per iteration in fused loops. */
     if (n->locals.size > 0) {
+      /* join the names in one pass (single cstr per name, no strcat rescans) */
       size_t total = 1;
-      for (size_t li = 0; li < n->locals.size; li++) {
-        char *nm2 = cstr(n->locals.ids[li]);
-        total += strlen(nm2) + 1;
-        free(nm2);
+      char **nms = malloc(n->locals.size * sizeof(char *));
+      if (nms) {
+        for (size_t li = 0; li < n->locals.size; li++) {
+          nms[li] = cstr(n->locals.ids[li]);
+          total += strlen(nms[li]) + 1;
+        }
+        char *joined = malloc(total);
+        if (joined) {
+          char *w = joined;
+          for (size_t li = 0; li < n->locals.size; li++) {
+            if (li) *w++ = ',';
+            size_t nl2 = strlen(nms[li]);
+            memcpy(w, nms[li], nl2); w += nl2;
+          }
+          *w = '\0';
+          out_add("S %d locals %s", id, joined);
+          free(joined);
+        }
+        for (size_t li = 0; li < n->locals.size; li++) free(nms[li]);
+        free(nms);
       }
-      char *joined = malloc(total);
-      joined[0] = '\0';
-      for (size_t li = 0; li < n->locals.size; li++) {
-        char *nm2 = cstr(n->locals.ids[li]);
-        if (li) strcat(joined, ",");
-        strcat(joined, nm2);
-        free(nm2);
-      }
-      out_add("S %d locals %s", id, joined);
-      free(joined);
     }
     /* Serialize block parameters */
     if (n->parameters) {

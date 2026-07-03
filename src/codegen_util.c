@@ -376,12 +376,16 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
   if (blk < 0) return;
   const char *locs = nt_str(c->nt, blk, "locals");
   if (!locs || !*locs) return;
-  char tmpn[128];
+  char tmpn_buf[128];
   const char *p = locs;
   while (*p) {
     const char *e = strchr(p, ',');
     size_t l = e ? (size_t)(e - p) : strlen(p);
-    if (l && l < sizeof tmpn) {
+    if (l) {
+      /* names longer than the stack buffer are legal Ruby; heap-fall back
+         rather than silently skipping the reset */
+      char *tmpn = l < sizeof tmpn_buf ? tmpn_buf : malloc(l + 1);
+      if (!tmpn) break;
       memcpy(tmpn, p, l); tmpn[l] = 0;
       /* Skip every name bound by the block's parameter list, including
          destructured, optional, rest, and shadow (`; x`) declarations --
@@ -399,6 +403,7 @@ void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
           buf_printf(b, "lv_%s = %s;\n", rename_local(tmpn), nv);
         }
       }
+      if (tmpn != tmpn_buf) free(tmpn);
     }
     if (!e) break;
     p = e + 1;
