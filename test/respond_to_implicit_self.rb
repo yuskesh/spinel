@@ -43,11 +43,23 @@ class Screen
   def self.build
     puts respond_to?(:build)
     puts respond_to?(:nope)
+    # builtin Class capabilities on the implicit class object
+    puts respond_to?(:new)
+    puts respond_to?(:allocate)
+    puts respond_to?(:name)
     new
   end
 end
 
+module Palette
+  def self.probe
+    puts respond_to?(:probe)
+    puts respond_to?(:new)  # a module does not respond to new
+  end
+end
+
 s = Screen.build
+Palette.probe
 s.apply(:fullscreen, true)
 s.apply(:width, 640)
 s.probe
