@@ -470,6 +470,31 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
 
+  if (sp_streq(ty, "MatchPredicateNode")) {
+    /* `expr in pattern` as a boolean: materialize the scrutinee, then yield the
+       pattern-match condition. Bindings are not introduced by the predicate
+       form here; an unsupported pattern rejects loudly. */
+    int value = nt_ref(nt, id, "value");
+    int pattern = nt_ref(nt, id, "pattern");
+    TyKind vt = comp_ntype(c, value);
+    if (vt == TY_UNKNOWN) vt = TY_POLY;
+    int tv = ++g_tmp;
+    Buf vb = expr_buf(c, value);
+    emit_indent(g_pre, g_indent); emit_ctype(c, vt, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", tv, vb.p ? vb.p : default_value(vt));
+    free(vb.p);
+    if (needs_root(vt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tv); }
+    Buf cb; memset(&cb, 0, sizeof cb);
+    if (!emit_pm_cond(c, pattern, tv, vt, &cb)) {
+      free(cb.p);
+      unsupported(c, id, "one-line `in` pattern");
+      return;
+    }
+    buf_printf(b, "(%s)", cb.p ? cb.p : "0");
+    free(cb.p);
+    return;
+  }
+
   if (sp_streq(ty, "MatchWriteNode")) {
     /* `/(?<n>..)/ =~ str`: run the match (setting the match registers), bind
        each named group to its local (NULL = nil when it did not participate),

@@ -3238,6 +3238,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_SourceEncodingNode)      return TY_POLY;
   if (nk == NK_RegularExpressionNode ||
       nk == NK_InterpolatedRegularExpressionNode) return TY_REGEX;
+  if (nk == NK_MatchPredicateNode)      return TY_BOOL;   /* `expr in pattern` */
   /* `/(?<n>..)/ =~ str` -- the value is the `=~` result (match index or nil). */
   if (sp_streq(ty, "MatchWriteNode")) return TY_POLY;
   if (nk == NK_InterpolatedStringNode)  return TY_STRING;

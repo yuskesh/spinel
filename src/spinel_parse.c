@@ -1446,6 +1446,14 @@ else {
     }
     break;
   }
+  case PM_MATCH_PREDICATE_NODE: {
+    /* `expr in pattern`: a boolean one-line pattern test (Ruby 3.0+). */
+    pm_match_predicate_node_t *n = (pm_match_predicate_node_t *)node;
+    N("MatchPredicateNode");
+    R("value", n->value);
+    R("pattern", n->pattern);
+    break;
+  }
   case PM_ALTERNATION_PATTERN_NODE: {
     pm_alternation_pattern_node_t *n = (pm_alternation_pattern_node_t *)node;
     N("AlternationPatternNode");
