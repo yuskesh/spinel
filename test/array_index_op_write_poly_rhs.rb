@@ -42,6 +42,20 @@ t = ["ef", 1]
 s[1] += t[0]
 p s                # ["ab!", "cdef"]
 
+# str_array[i] <<= (String#<< appends) and *= (String#* repeats)
+u = ["x", "y"]
+u[0] <<= "z"
+u[1] *= 3
+p u                # ["xz", "yyy"]
+
+# same ops when the analyzer demotes the receiver to poly_array
+# (mixing *= and <<= on one array does that): the fold goes through
+# sp_poly_mul / sp_poly_shl, which handle the String arms
+w = ["ab", "cd"]
+w[0] *= 2
+w[1] <<= "!"
+p w                # ["abab", "cd!"]
+
 # poly_array receiver: += float / int / poly slot
 pa = [1.5, "x", 2]
 pa[0] += 2.0

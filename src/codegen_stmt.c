@@ -5664,12 +5664,22 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) unsupported(c, id, "index operator assignment (array)");
     TyKind vt = comp_ntype(c, v);
+    /* same operator table as the TY_POLY receiver path below */
     const char *pf =
         sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
         sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
-        sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL;
+        sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" :
+        sp_streq(op, "<<") ? "sp_poly_shl" : sp_streq(op, ">>") ? "sp_poly_shr" :
+        sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
+        sp_streq(op, "^") ? "sp_poly_bxor" : NULL;
     emit_indent(b, indent);
+    /* The receiver temp is GC-rooted: the RHS expression and the fold
+       helpers below (sp_poly_<op>, sp_str_plus/repeat) can allocate, and a
+       receiver that is itself a fresh temporary (`make_array()[i] += v`)
+       has no other root, so a collection inside the statement would free
+       it before the closing sp_*Array_set. */
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
     buf_puts(b, "; ");
     if (rt == TY_POLY_ARRAY) {
@@ -5680,15 +5690,25 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
                  ta, tb, pf, ta, tb);
       emit_boxed(c, v, b); buf_puts(b, ")); }\n");
     }
-    else if (rt == TY_STR_ARRAY && sp_streq(op, "+")) {
-      /* `s[i] += x` concatenates: a native `char* + char*` never compiles.
-         Both operands GC-rooted across the allocating sp_str_plus. */
-      int tc = ++g_tmp, td = ++g_tmp;
-      buf_printf(b, "sp_StrArray_set(_t%d, _t%d, ({ const char *_t%d = sp_StrArray_get(_t%d, _t%d); "
-                 "SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb, tc, ta, tb, tc, td);
-      if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
-      else emit_expr(c, v, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(_t%d, _t%d); })); }\n", td, tc, td);
+    else if (rt == TY_STR_ARRAY) {
+      /* String slots take String ops only: `+`/`<<` concatenate, `*` repeats
+         (String#*). The native fallthrough (`char* << char*`, `char* * int`)
+         never compiles, so anything else is rejected here explicitly. */
+      if (sp_streq(op, "+") || sp_streq(op, "<<")) {
+        int tc = ++g_tmp, td = ++g_tmp;
+        buf_printf(b, "sp_StrArray_set(_t%d, _t%d, ({ const char *_t%d = sp_StrArray_get(_t%d, _t%d); "
+                   "SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb, tc, ta, tb, tc, td);
+        if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
+        else emit_expr(c, v, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(_t%d, _t%d); })); }\n", td, tc, td);
+      }
+      else if (sp_streq(op, "*")) {
+        buf_printf(b, "sp_StrArray_set(_t%d, _t%d, sp_str_repeat(sp_StrArray_get(_t%d, _t%d), ",
+                   ta, tb, ta, tb);
+        emit_int_expr(c, v, b);
+        buf_puts(b, ")); }\n");
+      }
+      else unsupported(c, id, "index operator assignment (string array, operator)");
     }
     else if (vt == TY_POLY && pf) {
       /* typed int/float slot, poly RHS: box the slot, fold via the dynamic
