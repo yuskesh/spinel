@@ -3832,6 +3832,36 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
     if (sp_streq(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    /* Numeric queries / rounding: dispatch on the runtime tag (a non-numeric
+       tag raises CRuby's NoMethodError). A user method or attr reader with
+       the same name wins -- the poly method dispatch handles it instead. */
+    {
+      const char *pfn =
+        sp_streq(name, "nan?")      ? "sp_poly_nan_p" :
+        sp_streq(name, "finite?")   ? "sp_poly_finite_p" :
+        sp_streq(name, "infinite?") ? "sp_poly_infinite" :
+        sp_streq(name, "zero?")     ? "sp_poly_zero_p" :
+        sp_streq(name, "positive?") ? "sp_poly_positive_p" :
+        sp_streq(name, "negative?") ? "sp_poly_negative_p" :
+        sp_streq(name, "abs")       ? "sp_poly_abs" :
+        sp_streq(name, "floor")     ? "sp_poly_floor" :
+        sp_streq(name, "ceil")      ? "sp_poly_ceil" :
+        sp_streq(name, "round")     ? "sp_poly_round" :
+        sp_streq(name, "truncate")  ? "sp_poly_truncate" :
+        sp_streq(name, "bytesize")  ? "sp_poly_bytesize" :
+        sp_streq(name, "ord")       ? "sp_poly_ord" :
+        sp_streq(name, "bit_length") ? "sp_poly_bit_length" : NULL;
+      if (pfn) {
+        int has_user = 0;
+        for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+          if (comp_method_in_chain(c, kk, name, NULL) >= 0 ||
+              comp_reader_in_chain(c, kk, name, NULL)) has_user = 1;
+        if (!has_user) {
+          buf_printf(b, "%s(", pfn); emit_expr(c, recv, b); buf_puts(b, ")");
+          return 1;
+        }
+      }
+    }
     if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_box_str(sp_str_upcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "downcase"))   { buf_puts(b, "sp_box_str(sp_str_downcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "capitalize")) { buf_puts(b, "sp_box_str(sp_str_capitalize(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
@@ -3842,6 +3872,19 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chr"))        { buf_puts(b, "sp_box_str(sp_str_chr(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "freeze"))     { emit_expr(c, recv, b); return 1; }
+  }
+  /* poly receiver: String#getbyte (a non-string tag raises NoMethodError).
+     A user method or attr reader with the same name wins. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "getbyte")) {
+    int has_user = 0;
+    for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+      if (comp_method_in_chain(c, kk, name, NULL) >= 0 ||
+          comp_reader_in_chain(c, kk, name, NULL)) has_user = 1;
+    if (!has_user) {
+      buf_puts(b, "sp_poly_getbyte("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
   }
   /* poly receiver: arr[start, len] = src -- 3-arg splice assign
      Skip Fiber/Fiber.current storage receivers (handled later). */

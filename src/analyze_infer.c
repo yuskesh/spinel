@@ -2379,6 +2379,22 @@ else {
         }
       }
       if (found) return r;
+      /* Numeric queries / rounding on a boxed value: the sp_poly_* helpers
+         dispatch on the runtime tag (a non-numeric tag raises CRuby's
+         NoMethodError). abs keeps the receiver's class and floor/... can
+         return a bigint unchanged, so those stay boxed. */
+      if (argc == 0) {
+        if (sp_streq(name, "nan?") || sp_streq(name, "finite?") ||
+            sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
+            sp_streq(name, "negative?")) return TY_BOOL;
+        if (sp_streq(name, "abs") || sp_streq(name, "infinite?") ||
+            sp_streq(name, "floor") || sp_streq(name, "ceil") ||
+            sp_streq(name, "round") || sp_streq(name, "truncate")) return TY_POLY;
+        if (sp_streq(name, "bytesize") || sp_streq(name, "ord") ||
+            sp_streq(name, "bit_length")) return TY_INT;
+      }
+      /* String#getbyte on a boxed value: int byte or nil on out-of-range. */
+      if (argc == 1 && sp_streq(name, "getbyte")) return TY_POLY;
       /* Array-reduction methods on a boxed array element (a run from
          chunk_while etc.): the concrete element type is erased to poly, so the
          result is a boxed poly value resolved at runtime by cls_id. */
