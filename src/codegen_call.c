@@ -5692,73 +5692,61 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (sp_streq(name, "erfc"))  cfn = "erfc";
     else if (sp_streq(name, "gamma")) cfn = "sp_math_gamma";
     if (cfn && argc == 1) {
-      TyKind a0t = comp_ntype(c, argv[0]);
+      /* emit_float_expr casts a plain int and unboxes a poly value alike
+         (sp_poly_to_f) -- a bare `if (a0t==TY_INT) "(double)"` cast, as this
+         used to do, left a poly-typed arg (e.g. `Math.sqrt(dx*dx + dy*dy)`
+         over locals that unify to Integer|Float) passed straight through as
+         an unconvertible sp_RbVal. */
       buf_printf(b, "%s(", cfn);
-      if (a0t == TY_INT) buf_puts(b, "(double)");
-      emit_expr(c, argv[0], b);
+      emit_float_expr(c, argv[0], b);
       buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "lgamma") && argc == 1) {
       /* Math.lgamma(x) -> [log(|gamma(x)|), sign] as a poly array */
-      buf_puts(b, "sp_math_lgamma((double)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      buf_puts(b, "sp_math_lgamma("); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     /* Math.log(x) or Math.log(x, base) */
     if (sp_streq(name, "log") && (argc == 1 || argc == 2)) {
-      TyKind a0t = comp_ntype(c, argv[0]);
       if (argc == 1) {
         buf_puts(b, "sp_math_log(");
-        if (a0t == TY_INT) buf_puts(b, "(double)");
-        emit_expr(c, argv[0], b);
+        emit_float_expr(c, argv[0], b);
         buf_puts(b, ")");
       }
       else {
-        TyKind a1t = comp_ntype(c, argv[1]);
         int t0 = ++g_tmp, t1 = ++g_tmp;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "double _t%d = ", t0);
-        if (a0t == TY_INT) buf_puts(g_pre, "(double)");
-        emit_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
+        emit_float_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "double _t%d = ", t1);
-        if (a1t == TY_INT) buf_puts(g_pre, "(double)");
-        emit_expr(c, argv[1], g_pre); buf_puts(g_pre, ";\n");
+        emit_float_expr(c, argv[1], g_pre); buf_puts(g_pre, ";\n");
         buf_printf(b, "(sp_math_log(_t%d) / sp_math_log(_t%d))", t0, t1);
       }
       return;
     }
     /* Math.log2(x), Math.log10(x) */
     if (sp_streq(name, "log2") && argc == 1) {
-      TyKind a0t = comp_ntype(c, argv[0]);
       buf_puts(b, "sp_math_log2(");
-      if (a0t == TY_INT) buf_puts(b, "(double)");
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "log10") && argc == 1) {
-      TyKind a0t = comp_ntype(c, argv[0]);
       buf_puts(b, "sp_math_log10(");
-      if (a0t == TY_INT) buf_puts(b, "(double)");
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     /* Math.atan2(y, x), Math.hypot(x, y), Math.ldexp(x, e) */
     if ((sp_streq(name, "atan2") || sp_streq(name, "hypot")) && argc == 2) {
-      TyKind a0t = comp_ntype(c, argv[0]);
-      TyKind a1t = comp_ntype(c, argv[1]);
       buf_printf(b, "%s(", name);
-      if (a0t == TY_INT) buf_puts(b, "(double)");
-      emit_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (a1t == TY_INT) buf_puts(b, "(double)");
-      emit_expr(c, argv[1], b); buf_puts(b, ")");
+      emit_float_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_float_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "ldexp") && argc == 2) {
-      TyKind a0t = comp_ntype(c, argv[0]);
       buf_puts(b, "ldexp(");
-      if (a0t == TY_INT) buf_puts(b, "(double)");
-      emit_expr(c, argv[0], b); buf_puts(b, ", (int)");
+      emit_float_expr(c, argv[0], b); buf_puts(b, ", (int)");
       emit_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }
