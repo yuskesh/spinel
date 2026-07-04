@@ -3889,6 +3889,127 @@ else {
     }
     return;
   }
+  if (sp_streq(ty, "CallOperatorWriteNode")) {
+    /* `recv.attr op= value` (e.g. doom's `sector.ceiling_height -=
+       speed`) has neither a statement-level handler here nor an
+       expression-level one, so it falls all the way through emit_expr's
+       final "unsupported expression" catch-all. Handles the common
+       case: an object receiver with a plain attr_reader/Struct-member
+       attribute. `recv` is evaluated into a temp exactly once (it may
+       be a hash lookup or other expression with real work behind it,
+       not just a bare local) and both the read and the write go through
+       that same temp. */
+    int recv = nt_ref(nt, id, "receiver");
+    const char *attr = nt_str(nt, id, "name");
+    const char *op = nt_str(nt, id, "binary_operator");
+    int val = nt_ref(nt, id, "value");
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    int rdcls = -1;
+    if (recv >= 0 && attr && ty_is_object(rt) &&
+        comp_reader_in_chain(c, ty_object_class(rt), attr, &rdcls)) {
+      const char *rn = comp_resolve_alias(c, rdcls, attr);
+      char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
+      int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
+      TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
+      int trecv = ++g_tmp;
+      emit_indent(b, indent);
+      emit_ctype(c, rt, b);
+      buf_printf(b, " _t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
+      const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
+      emit_indent(b, indent);
+      const char *cpf = op && sp_streq(op, "+") ? "sp_poly_add"
+                      : op && sp_streq(op, "-") ? "sp_poly_sub"
+                      : op && sp_streq(op, "*") ? "sp_poly_mul"
+                      : op && sp_streq(op, "/") ? "sp_poly_div"
+                      : op && sp_streq(op, "%") ? "sp_poly_mod" : NULL;
+      if (ivt == TY_STRING && op && sp_streq(op, "+")) {
+        buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, rn, trecv, acc, rn);
+        emit_expr(c, val, b); buf_puts(b, ");\n");
+      }
+      else if (ivt == TY_POLY && cpf) {
+        /* boxed slot: dynamic operator on boxed operands (same as the
+           poly-receiver dispatch arms below). */
+        buf_printf(b, "_t%d%siv_%s = %s(_t%d%siv_%s, ", trecv, acc, rn, cpf, trecv, acc, rn);
+        emit_boxed(c, val, b); buf_puts(b, ");\n");
+      }
+      else {
+        buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, rn, trecv, acc, rn, op ? op : "+");
+        TyKind rhst = comp_ntype(c, val);
+        if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
+          buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
+        }
+        else if (rhst == TY_POLY && ivt == TY_FLOAT) {
+          buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")");
+        }
+        else emit_expr(c, val, b);
+        buf_puts(b, ";\n");
+      }
+      return;
+    }
+    if (recv >= 0 && attr && rt == TY_POLY) {
+      /* poly receiver (e.g. a Hash value that was never narrowed to a
+         concrete object type -- doom's `door[:sector]`, where `door`
+         is itself one Hash's poly-boxed value pulled from another).
+         Dispatch on cls_id: emit a case arm for every instantiated
+         class exposing a reader named `attr`, reading/writing that
+         class's ivar directly through the cast pointer. */
+      int trecv = ++g_tmp;
+      emit_indent(b, indent);
+      buf_puts(b, "sp_RbVal ");
+      buf_printf(b, "_t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "switch (_t%d.cls_id) {\n", trecv);
+      int any = 0;
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!c->classes[k].instantiated) continue;
+        int pdcls = -1;
+        if (!comp_reader_in_chain(c, k, attr, &pdcls)) continue;
+        const char *rn = comp_resolve_alias(c, pdcls, attr);
+        char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
+        int ivx = comp_ivar_index(&c->classes[pdcls], ivn);
+        TyKind ivt = ivx >= 0 ? c->classes[pdcls].ivar_types[ivx] : TY_INT;
+        const char *cn = c->classes[pdcls].name;
+        any = 1;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "case %d: { sp_%s *_o = (sp_%s *)_t%d.v.p; ", k, cn, cn, trecv);
+        const char *ppf = op && sp_streq(op, "+") ? "sp_poly_add"
+                        : op && sp_streq(op, "-") ? "sp_poly_sub"
+                        : op && sp_streq(op, "*") ? "sp_poly_mul"
+                        : op && sp_streq(op, "/") ? "sp_poly_div"
+                        : op && sp_streq(op, "%") ? "sp_poly_mod" : NULL;
+        if (ivt == TY_STRING && op && sp_streq(op, "+")) {
+          buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, rn);
+          buf_puts(b, ", "); emit_expr(c, val, b); buf_puts(b, "); break; }\n");
+        }
+        else if (ivt == TY_POLY && ppf) {
+          /* the slot itself is boxed (a whole-program-widened numeric like
+             Sector#ceiling_height): fold via the dynamic operator on boxed
+             operands rather than raw C arithmetic on an sp_RbVal. */
+          buf_puts(b, "_o->iv_"); buf_puts(b, rn);
+          buf_printf(b, " = %s(_o->iv_", ppf); buf_puts(b, rn); buf_puts(b, ", ");
+          emit_boxed(c, val, b);
+          buf_puts(b, "); break; }\n");
+        }
+        else {
+          buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = _o->iv_"); buf_puts(b, rn);
+          buf_printf(b, " %s ", op ? op : "+");
+          TyKind rhst = comp_ntype(c, val);
+          if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
+            buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
+          }
+          else if (rhst == TY_POLY && ivt == TY_FLOAT) {
+            buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")");
+          }
+          else emit_expr(c, val, b);
+          buf_puts(b, "; break; }\n");
+        }
+      }
+      emit_indent(b, indent);
+      buf_puts(b, "}\n");
+      if (any) return;
+    }
+    unsupported(c, id, "call operator write (unsupported receiver/attr)");
+  }
   if (sp_streq(ty, "GlobalVariableWriteNode") || sp_streq(ty, "ConstantWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     int isg = ty[0] == 'G';
