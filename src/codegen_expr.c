@@ -1613,6 +1613,15 @@ else {
                else if (lt==TY_BOOL) buf_printf(b, "sp_box_bool(_t%d)", t); \
                else if (lt==TY_SYMBOL) buf_printf(b, "(_t%d != (sp_sym)-1 ? sp_box_sym(_t%d) : sp_box_nil())", t, t); \
                else if (ty_is_object(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
+               /* a nullable hash/array pointer boxes like an object: NULL is \
+                  nil (the AND kept-left arm only runs when the temp IS NULL). \
+                  Previously these fell to the raw pointer temp, yielding a \
+                  ternary with mismatched C operand types (sp_RbVal vs \
+                  sp_PolyPolyHash *, e.g. doom's `picked && picked[idx]`). */ \
+               else if (ty_is_hash(lt) && hash_box_cls(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %s)", t, hash_box_cls(lt)); \
+               else if (ty_is_array(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %s)", t, \
+                        lt==TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : lt==TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" : \
+                        lt==TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : "SP_BUILTIN_POLY_ARRAY"); \
                else buf_printf(b, "_t%d", t); } \
              else buf_printf(b, "_t%d", t); } \
     } while (0)
