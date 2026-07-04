@@ -2816,6 +2816,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   char servar[24]; snprintf(servar, sizeof servar, "_brkser%d", tS);
   const char *sv_ser = g_brk_ser_var; g_brk_ser_var = servar;
   int sv_ebase = g_brk_ensure_base; g_brk_ensure_base = g_ensure_depth;
+  int sv_bexc = g_brk_exc_base; g_brk_exc_base = g_exc_frame_depth;
   int sv_skip = g_brk_skip_id; g_brk_skip_id = id;
   Buf inner; memset(&inner, 0, sizeof inner);
   /* A no-value normal type (a yield method ending in puts/nil) runs as a
@@ -2830,7 +2831,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   } else {
     emit_call(c, id, &inner);   /* emits the loop into g_pre, result expr into inner */
   }
-  g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_skip_id = sv_skip;
+  g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_skip_id = sv_skip;
   c->ntype[id] = sv_cache;
   if (spilled_argov) g_n_argov--;
   Buf boxed; memset(&boxed, 0, sizeof boxed);
@@ -2994,6 +2995,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
         emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "for (;;) {\n");
         const char *sv_lb = g_loop_break_var;
+        int sv_lexc = g_loop_exc_base; g_loop_exc_base = g_exc_frame_depth;
         int sv_iep = g_ie_res_poly;
         const char *sv_bj = g_brk_ser_var; g_brk_ser_var = NULL;  /* break here targets this loop */
         g_ie_res_poly = (bt == TY_POLY);   /* box a scalar `break <v>` into the poly slot */
@@ -3002,6 +3004,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         int lbody = nt_ref(nt, blk, "body");
         emit_stmts(c, lbody, g_pre, g_indent + 2);
         g_loop_break_var = sv_lb;
+        g_loop_exc_base = sv_lexc;
         g_ie_res_poly = sv_iep;
         g_brk_ser_var = sv_bj;
         emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
@@ -5162,7 +5165,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int sv_iep = g_ie_res_poly;
         g_ie_res_poly = (scalar_res && body_ty == TY_POLY);
         char bvbuf[32];
+        int sv_lexc2 = g_loop_exc_base;
         if (ie_bn_wrap) {
+          g_loop_exc_base = g_exc_frame_depth;   /* break/next exit the do{}while(0) */
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n"); g_indent++;
           if (scalar_res) { snprintf(bvbuf, sizeof bvbuf, "_t%d", tres); g_loop_break_var = bvbuf; g_ie_next_var = bvbuf; }
           else { g_loop_break_var = NULL; g_ie_next_var = NULL; }
@@ -5187,6 +5192,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           g_loop_break_var = sv_lb; g_ie_next_var = sv_nx;
           g_indent--; emit_indent(g_pre, g_indent); buf_puts(g_pre, "} while (0);\n");
         }
+        g_loop_exc_base = sv_lexc2;
         g_ie_res_poly = sv_iep;
         g_brk_ser_var = sv_bser;
         g_ie_discard_value = saved_discard;

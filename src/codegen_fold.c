@@ -2637,6 +2637,7 @@ static void emit_block_value_into(Compiler *c, int block, const char *dest,
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly;
+  int sv_lexc = g_loop_exc_base; g_loop_exc_base = g_exc_frame_depth;
   g_ie_next_var = dest; g_ie_res_poly = want_poly;
   int sd = g_indent;
   /* Wrap the body in do{}while(0): an interior or tail `next <v>` assigns
@@ -2672,7 +2673,7 @@ static void emit_block_value_into(Compiler *c, int block, const char *dest,
   }
   g_indent = sd;
   emit_indent(g_pre, indent); buf_puts(g_pre, "} while (0);\n");
-  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly;
+  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_loop_exc_base = sv_lexc;
 }
 
 /* map/select/reject/filter as an expression: build a result array via a

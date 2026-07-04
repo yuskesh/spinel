@@ -2278,6 +2278,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_bbv = g_block_brk_var, *saved_yfbv = g_yield_blk_brk_fallback;
   const char *saved_ser = g_brk_ser_var;
   int saved_bbe = g_block_brk_ebase, saved_yfbe = g_yield_blk_brk_efallback;
+  int saved_bbexc = g_block_brk_exc_base, saved_bexc = g_brk_exc_base;
   int saved_ebase = g_brk_ensure_base;
 
   g_yield_block_fallback = saved_block;
@@ -2287,6 +2288,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   /* same break-context rules as emit_inline_call_x */
   g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
   g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
+  g_block_brk_exc_base = (block == saved_block) ? saved_bbexc : saved_bexc;
   g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
 
@@ -2351,6 +2353,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_block_fallback = saved_yfb;
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
+  g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   return 1;
 }

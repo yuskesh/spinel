@@ -132,6 +132,9 @@ extern const char *g_method_pr_var;
 extern const char *g_proc_return_home;
 extern int g_exc_frame_depth;      /* live begin/rescue setjmp frames (see codegen_util.c) */
 extern int g_method_pr_exc_depth;
+extern int g_loop_exc_base;
+extern int g_brk_exc_base;
+extern int g_block_brk_exc_base;
 /* Return type of the method currently being emitted, so a tail/return value
    can be boxed when the method returns poly but the value is concrete. */
 extern TyKind g_ret_type;

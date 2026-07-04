@@ -156,6 +156,9 @@ const char *g_proc_return_home = NULL;
    g_method_pr_exc_depth snapshots the depth at the return-funnel target so
    funnel gotos pop only the frames they actually exit. */
 int g_exc_frame_depth = 0;
+int g_loop_exc_base = 0;        /* frame depth at the innermost C-loop entry */
+int g_brk_exc_base = 0;         /* frame depth at the valued-break wrapper */
+int g_block_brk_exc_base = 0;   /* ... for yield-block re-entry (mirrors g_block_brk_ebase) */
 int g_method_pr_exc_depth = 0;
 /* Loop-invariant string-length hoisting: while a loop whose receiver string is
    not mutated in its body is being emitted, g_hoist_len_recv holds that

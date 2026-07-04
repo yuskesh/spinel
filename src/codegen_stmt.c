@@ -4891,6 +4891,7 @@ else {
       int bargs = nt_ref(nt, id, "arguments");
       int bvargc = 0; const int *bvargs = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &bvargc) : NULL;
       int brk_goto = (g_ensure_depth == g_brk_ensure_base) &&
+                     (g_exc_frame_depth == g_brk_exc_base) &&
                      strncmp(g_brk_ser_var, "_brkser", 7) == 0;
       const char *sfx = brk_goto ? g_brk_ser_var + 7 : NULL;   /* wrapper temp id */
       emit_indent(b, indent);
@@ -4965,7 +4966,12 @@ else {
         buf_puts(b, ";\n");
       }
     }
-    emit_indent(b, indent); buf_puts(b, "break;\n"); return;
+    emit_indent(b, indent);
+    /* leaving through live begin/rescue frames opened inside the loop body:
+       pop them, or their jmp_bufs dangle (same accounting as emit_return) */
+    if (g_exc_frame_depth > g_loop_exc_base)
+      buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth - g_loop_exc_base);
+    buf_puts(b, "break;\n"); return;
   }
   if (sp_streq(ty, "NextNode")) {
     if (g_ie_next_var) {
@@ -4977,7 +4983,10 @@ else {
         buf_puts(b, ";\n");
       }
     }
-    emit_indent(b, indent); buf_puts(b, "continue;\n"); return;
+    emit_indent(b, indent);
+    if (g_exc_frame_depth > g_loop_exc_base)
+      buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth - g_loop_exc_base);
+    buf_puts(b, "continue;\n"); return;
   }
   if (sp_streq(ty, "RedoNode"))   {
     emit_indent(b, indent);

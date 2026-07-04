@@ -102,6 +102,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_bbv = g_block_brk_var, *saved_yfbv = g_yield_blk_brk_fallback;
   const char *saved_ser = g_brk_ser_var;
   int saved_bbe = g_block_brk_ebase, saved_yfbe = g_yield_blk_brk_efallback;
+  int saved_bbexc = g_block_brk_exc_base, saved_bexc = g_brk_exc_base;
   int saved_ebase = g_brk_ensure_base;
   static char selfbuf[64];
   /* Nested `yield` inside the block body should chain to the block that was
@@ -114,6 +115,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      BlockArgumentNode block keeps its original definition-site scope */
   g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
   g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
+  g_block_brk_exc_base = (block == saved_block) ? saved_bbexc : saved_bexc;
   /* the METHOD BODY's own breaks (a while inside m) never target the caller */
   g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
@@ -212,6 +214,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_id = saved_block;
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
+  g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_self = saved_self;
   g_self_deref = saved_deref;
@@ -378,10 +381,11 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      loop/iterator surrounds this yield inside the method body */
   const char *svser = g_brk_ser_var; g_brk_ser_var = g_block_brk_var;
   int svebase = g_brk_ensure_base; g_brk_ensure_base = g_block_brk_ebase;
+  int svbexc = g_brk_exc_base; g_brk_exc_base = g_block_brk_exc_base;
   const char *svbbv = g_block_brk_var; g_block_brk_var = g_yield_blk_brk_fallback;
   int svbbe = g_block_brk_ebase; g_block_brk_ebase = g_yield_blk_brk_efallback;
   emit_stmts(c, bbody, b, as_expr ? 0 : indent);
-  g_brk_ser_var = svser; g_brk_ensure_base = svebase;
+  g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc;
   g_block_brk_var = svbbv; g_block_brk_ebase = svbbe;
   g_block_id = svb; g_block_param_name = svbpn;
   if (as_expr) {
@@ -457,6 +461,11 @@ int subtree_has_own_redo(const NodeTable *nt, int id) {
    stack) when the body contains a `redo` that targets this loop. The label
    sits at the body top so `redo` re-runs the body without advancing. */
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
+  /* break/next inside this body exit THIS C loop: record the live
+     begin/rescue frame depth at loop entry so their emission can pop the
+     frames opened inside the body (mirrors emit_return's accounting). */
+  int sv_lexc = g_loop_exc_base;
+  g_loop_exc_base = g_exc_frame_depth;
   int has_redo = subtree_has_own_redo(c->nt, body);
   int lbl = 0;
   if (has_redo) {
@@ -474,6 +483,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (g_uses_threads) { emit_indent(b, indent); buf_puts(b, "if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();\n"); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
+  g_loop_exc_base = sv_lexc;
 }
 
 /* `recv.tap { |x| body }` / `recv.then { |x| body }` (alias yield_self) in
