@@ -3904,27 +3904,48 @@ else {
     const char *op = nt_str(nt, id, "binary_operator");
     int val = nt_ref(nt, id, "value");
     TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    TyKind rhst = val >= 0 ? comp_ntype(c, val) : TY_UNKNOWN;
+    /* the dynamic operator for a boxed (poly) slot, and the bitwise set the
+       boxed slot handles via unbox-op-rebox (both mirror the ivar op-assign
+       poly arms above). */
+    const char *cpf = op && sp_streq(op, "+") ? "sp_poly_add"
+                    : op && sp_streq(op, "-") ? "sp_poly_sub"
+                    : op && sp_streq(op, "*") ? "sp_poly_mul"
+                    : op && sp_streq(op, "/") ? "sp_poly_div"
+                    : op && sp_streq(op, "%") ? "sp_poly_mod" : NULL;
+    int bitop = op && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
+                       sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"));
     int rdcls = -1;
+    /* Ruby desugars `recv.attr op= v` into a reader call AND a writer call;
+       an attr_reader-only attribute raises NoMethodError for `attr=`, so a
+       reader-only match must not silently lower into an ivar store. */
     if (recv >= 0 && attr && ty_is_object(rt) &&
-        comp_reader_in_chain(c, ty_object_class(rt), attr, &rdcls)) {
+        comp_reader_in_chain(c, ty_object_class(rt), attr, &rdcls) &&
+        comp_writer_in_chain(c, ty_object_class(rt), attr, NULL)) {
       const char *rn = comp_resolve_alias(c, rdcls, attr);
       char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
       int ivx = comp_ivar_index(&c->classes[rdcls], ivn);
-      TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
+      /* no resolvable backing slot: fail the lowering rather than guess */
+      if (ivx < 0) unsupported(c, id, "call operator write (reader without an ivar slot)");
+      TyKind ivt = c->classes[rdcls].ivar_types[ivx];
+      /* operators the slot type can't take would otherwise fall through to
+         raw C on an sp_Str pointer or an sp_RbVal (pointer arithmetic / a
+         type error) */
+      if (ivt == TY_STRING && !(op && sp_streq(op, "+")))
+        unsupported(c, id, "call operator write (operator on a string attribute)");
+      if (ivt == TY_POLY && !cpf && !bitop)
+        unsupported(c, id, "call operator write (operator on a boxed attribute)");
       int trecv = ++g_tmp;
       emit_indent(b, indent);
       emit_ctype(c, rt, b);
       buf_printf(b, " _t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
       const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
       emit_indent(b, indent);
-      const char *cpf = op && sp_streq(op, "+") ? "sp_poly_add"
-                      : op && sp_streq(op, "-") ? "sp_poly_sub"
-                      : op && sp_streq(op, "*") ? "sp_poly_mul"
-                      : op && sp_streq(op, "/") ? "sp_poly_div"
-                      : op && sp_streq(op, "%") ? "sp_poly_mod" : NULL;
-      if (ivt == TY_STRING && op && sp_streq(op, "+")) {
+      if (ivt == TY_STRING) {
         buf_printf(b, "_t%d%siv_%s = sp_str_concat(_t%d%siv_%s, ", trecv, acc, rn, trecv, acc, rn);
-        emit_expr(c, val, b); buf_puts(b, ");\n");
+        if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
+        else emit_expr(c, val, b);
+        buf_puts(b, ");\n");
       }
       else if (ivt == TY_POLY && cpf) {
         /* boxed slot: dynamic operator on boxed operands (same as the
@@ -3932,9 +3953,16 @@ else {
         buf_printf(b, "_t%d%siv_%s = %s(_t%d%siv_%s, ", trecv, acc, rn, cpf, trecv, acc, rn);
         emit_boxed(c, val, b); buf_puts(b, ");\n");
       }
+      else if (ivt == TY_POLY) {
+        /* bitwise op-assign on a boxed slot: coerce to int, re-box */
+        buf_printf(b, "_t%d%siv_%s = sp_box_int((sp_poly_to_i(_t%d%siv_%s) %s (",
+                   trecv, acc, rn, trecv, acc, rn, op);
+        if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
+        else emit_expr(c, val, b);
+        buf_puts(b, ")));\n");
+      }
       else {
         buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, rn, trecv, acc, rn, op ? op : "+");
-        TyKind rhst = comp_ntype(c, val);
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
           buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
         }
@@ -3958,42 +3986,62 @@ else {
       buf_puts(b, "sp_RbVal ");
       buf_printf(b, "_t%d = ", trecv); emit_expr(c, recv, b); buf_puts(b, ";\n");
       emit_indent(b, indent);
-      buf_printf(b, "switch (_t%d.cls_id) {\n", trecv);
+      /* Every boxed scalar carries cls_id 0, which aliases the user class at
+         index 0 (cf. issue #1576 and emit_poly_dispatch_key): key a non-object
+         value to a sentinel matching no case so it lands in the default raise
+         rather than dereferencing v.p through a wrong cast. */
+      buf_printf(b, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {\n", trecv, trecv);
       int any = 0;
       for (int k = 0; k < c->nclasses; k++) {
         if (!c->classes[k].instantiated) continue;
         int pdcls = -1;
+        /* both accessors, same as the concrete arm: a reader-only class must
+           raise NoMethodError for `attr=` (via the default arm), not store */
         if (!comp_reader_in_chain(c, k, attr, &pdcls)) continue;
+        if (!comp_writer_in_chain(c, k, attr, NULL)) continue;
         const char *rn = comp_resolve_alias(c, pdcls, attr);
         char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", rn);
         int ivx = comp_ivar_index(&c->classes[pdcls], ivn);
-        TyKind ivt = ivx >= 0 ? c->classes[pdcls].ivar_types[ivx] : TY_INT;
+        if (ivx < 0) continue;  /* no resolvable backing slot: don't guess */
+        TyKind ivt = c->classes[pdcls].ivar_types[ivx];
+        /* skip a class whose slot can't take this operator (the raw C
+           fallthrough would be pointer arithmetic on an sp_Str* or a type
+           error on an sp_RbVal); a runtime object of that class lands in
+           the default raise instead -- same skip-on-static-mismatch shape
+           as the poly attr-write dispatch above. */
+        if (ivt == TY_STRING && !(op && sp_streq(op, "+"))) continue;
+        if (ivt == TY_POLY && !cpf && !bitop) continue;
         const char *cn = c->classes[pdcls].name;
         any = 1;
         emit_indent(b, indent + 1);
         buf_printf(b, "case %d: { sp_%s *_o = (sp_%s *)_t%d.v.p; ", k, cn, cn, trecv);
-        const char *ppf = op && sp_streq(op, "+") ? "sp_poly_add"
-                        : op && sp_streq(op, "-") ? "sp_poly_sub"
-                        : op && sp_streq(op, "*") ? "sp_poly_mul"
-                        : op && sp_streq(op, "/") ? "sp_poly_div"
-                        : op && sp_streq(op, "%") ? "sp_poly_mod" : NULL;
-        if (ivt == TY_STRING && op && sp_streq(op, "+")) {
+        if (ivt == TY_STRING) {
           buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = sp_str_concat(_o->iv_"); buf_puts(b, rn);
-          buf_puts(b, ", "); emit_expr(c, val, b); buf_puts(b, "); break; }\n");
+          buf_puts(b, ", ");
+          if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
+          else emit_expr(c, val, b);
+          buf_puts(b, "); break; }\n");
         }
-        else if (ivt == TY_POLY && ppf) {
+        else if (ivt == TY_POLY && cpf) {
           /* the slot itself is boxed (a whole-program-widened numeric like
              Sector#ceiling_height): fold via the dynamic operator on boxed
              operands rather than raw C arithmetic on an sp_RbVal. */
           buf_puts(b, "_o->iv_"); buf_puts(b, rn);
-          buf_printf(b, " = %s(_o->iv_", ppf); buf_puts(b, rn); buf_puts(b, ", ");
+          buf_printf(b, " = %s(_o->iv_", cpf); buf_puts(b, rn); buf_puts(b, ", ");
           emit_boxed(c, val, b);
           buf_puts(b, "); break; }\n");
+        }
+        else if (ivt == TY_POLY) {
+          /* bitwise op-assign on a boxed slot: coerce to int, re-box */
+          buf_puts(b, "_o->iv_"); buf_puts(b, rn);
+          buf_printf(b, " = sp_box_int((sp_poly_to_i(_o->iv_%s) %s (", rn, op);
+          if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
+          else emit_expr(c, val, b);
+          buf_puts(b, "))); break; }\n");
         }
         else {
           buf_puts(b, "_o->iv_"); buf_puts(b, rn); buf_puts(b, " = _o->iv_"); buf_puts(b, rn);
           buf_printf(b, " %s ", op ? op : "+");
-          TyKind rhst = comp_ntype(c, val);
           if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
             buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")");
           }
@@ -4004,6 +4052,10 @@ else {
           buf_puts(b, "; break; }\n");
         }
       }
+      /* a receiver whose runtime class has no such accessor pair (or a boxed
+         scalar) is CRuby's NoMethodError, not a silent no-op */
+      emit_indent(b, indent + 1);
+      buf_printf(b, "default: sp_raise_poly_nomethod(\"%s=\", _t%d);\n", attr, trecv);
       emit_indent(b, indent);
       buf_puts(b, "}\n");
       if (any) return;
