@@ -1,7 +1,7 @@
 # spin — projects and packages
 
 `spin` is Spinel's project tool: it scaffolds a project, resolves
-dependencies (spinelgems), and drives the compiler so you never write a
+dependencies (spin packages), and drives the compiler so you never write a
 Makefile or a `spinel -I ...` line by hand. If you know cargo or mix, you
 know the shape. The design record lives in
 [internals/spin.md](internals/spin.md); this page is how to use it.
@@ -27,7 +27,7 @@ myapp/
   build/              # disposable output (spin clean)
 ```
 
-An application **is** a gem: there is no separate project kind. Executables
+An application **is** a package: there is no separate project kind. Executables
 live in `bin/` (one per file, `spin run <name>` when there are several).
 Grow the app by putting shared code in `myapp.rb` / `myapp/*.rb` and
 requiring it from `bin/`; more `bin/*.rb` files become more executables.
@@ -36,7 +36,7 @@ scaffolding. When the CLI is ready for daily use, `spin install` builds it
 and copies the executables to `~/.local/bin` (`$XDG_BIN_HOME` / `--prefix`
 override; `--uninstall` removes them).
 
-Everything in the gem participates by extension, not by manifest lists:
+Everything in the package participates by extension, not by manifest lists:
 `.rb` is source, `.rbs` is an optional type sidecar, `.c`/`.h` is carried
 native code (below). `build/`, `vendor/`, `test/`, and `bin/` are the only
 special directory names.
@@ -44,11 +44,11 @@ special directory names.
 ## Starting a library
 
 ```sh
-spin new mylib --lib  # spin.toml with [gem] name/version, mylib.rb, test/
+spin new mylib --lib  # spin.toml with [package] name/version, mylib.rb, test/
 cd mylib
 ```
 
-A library is the same gem shape minus `bin/`: there is nothing to `spin
+A library is the same package shape minus `bin/`: there is nothing to `spin
 build` or `spin run` — a library is *exercised through its tests*:
 
 ```sh
@@ -89,12 +89,12 @@ release is one command:
 spin publish
 ```
 
-It validates the release (committed and pushed, `[gem] name`/`version`
+It validates the release (committed and pushed, `[package] name`/`version`
 present, the tree at the release commit carrying that same version, the
 name not owned by another repo in the index), **runs `spin test` as a hard
-gate**, then submits `gems/mylib.toml` with a `[[release]]` entry pinning
+gate**, then submits `packages/mylib.toml` with a `[[release]]` entry pinning
 the full commit SHA: as a pull request to
-[spinel-index](https://github.com/matz/spinel-index) when the `gh` CLI is
+[spin-index](https://github.com/matz/spin-index) when the `gh` CLI is
 available, by printed instructions otherwise, or pushed directly with
 `--direct` if you have index write access. From then on
 `spin add mylib --version "~> 0.1"` works, and bumping `version` +
@@ -121,9 +121,9 @@ spin list                             # resolved set: name, version, source
 spin tree                             # nested view (--json on both)
 ```
 
-Dependencies are transitive: each fetched gem's own `[dependencies]` is
+Dependencies are transitive: each fetched package's own `[dependencies]` is
 resolved too. Inside a project every `require` must resolve — an
-unsatisfiable `require` is a compile error naming the missing gem, and
+unsatisfiable `require` is a compile error naming the missing package, and
 stdlib features need their `require` just like CRuby (`spin` compiles with
 the require gate on; see [require.md](require.md)).
 
@@ -131,7 +131,7 @@ the require gate on; see [require.md](require.md)).
 
 A bare `name = "constraint"` dependency is looked up in the index — a git
 repository (no server) mapping names to repos and releases:
-<https://github.com/matz/spinel-index>. Constraints are `"~> 1.2"`
+<https://github.com/matz/spin-index>. Constraints are `"~> 1.2"`
 (pessimistic), `">= 1.2.3"`, an exact version, or `"*"`.
 
 Selection is MVS: `spin` picks the **lowest** release satisfying the
@@ -157,14 +157,14 @@ the next `spin lock` rewrites the pin.
 
 ### Offline and vendoring
 
-Fetched gems live in a shared cache (`$XDG_CACHE_HOME/spinel/gems/`),
+Fetched packages live in a shared cache (`$XDG_CACHE_HOME/spin/packages/`),
 keyed by the commit SHA. `spin vendor` copies the resolved tree into
-`vendor/gems/` for hermetic builds; with `SPIN_OFFLINE=1`, resolution uses
+`vendor/packages/` for hermetic builds; with `SPIN_OFFLINE=1`, resolution uses
 only the cache and `vendor/` — nothing touches the network.
 
 ## Tests
 
-Each `test/*.rb` is one test program, compiled with the gem's sources and
+Each `test/*.rb` is one test program, compiled with the package's sources and
 dependencies spliced in. Pass/fail is snapshot-based:
 
 ```sh
@@ -178,9 +178,9 @@ With no snapshot, the same file runs under `ruby` and the outputs are
 diffed directly — the test doubles as a CRuby-parity check. A non-zero
 exit or a diff fails, so plain assert-and-raise style works.
 
-## Native C in a gem
+## Native C in a package
 
-Drop `.c`/`.h` files anywhere in the gem tree and bind them with the
+Drop `.c`/`.h` files anywhere in the package tree and bind them with the
 [FFI declarations](FFI.md):
 
 ```ruby
@@ -197,7 +197,7 @@ intptr_t fast_quad(intptr_t x) { return x * 4; }
 ```
 
 `spin` compiles each `.c` once into a shared cache keyed by
-(gem, version, toolchain) — set `CC` to choose the compiler — and links the
+(package, version, toolchain) — set `CC` to choose the compiler — and links the
 objects into every dependent build. External libraries use the existing
 `ffi_lib` declaration and need no manifest entry.
 
@@ -206,7 +206,7 @@ objects into every dependent build. External libraries use the existing
 `spin build`/`run`/`test` skip recompilation when nothing changed (input
 mtimes across the project, its dependencies, and the compiler binary).
 There is no file-granular incremental mode — whole-program type
-specialization spans every source — but compiles are fast and gem C
+specialization spans every source — but compiles are fast and package C
 objects are reused from the cache. `spin clean` removes `build/`.
 
 ## Command summary
@@ -225,4 +225,4 @@ objects are reused from the cache. `spin clean` removes `build/`.
 | `spin clean` | remove `build/` |
 
 Environment: `SPIN_INDEX` (index URL), `SPIN_OFFLINE=1` (cache/vendor
-only), `CC` (toolchain for gem C).
+only), `CC` (toolchain for package C).

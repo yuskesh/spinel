@@ -7,7 +7,7 @@ Start here, then open the topic you need.
 
 - **[spin.md](spin.md)** — projects and packages with `spin`:
   scaffold, dependencies (path / git / index), lockfile, tests, vendoring,
-  and native C in gems. Start here to build anything bigger than one file.
+  and native C in packages. Start here to build anything bigger than one file.
 - **[limitations.md](limitations.md)** — what an AOT compiler can and cannot do.
   The honest catalogue of where Spinel differs from CRuby, and why. Read this
   first if something behaves unexpectedly.

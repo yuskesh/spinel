@@ -2293,10 +2293,11 @@ else {
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", alt_path);
       }
       if (!content) {
-        /* pre-installed gems (the carved-out stdlib): gems/ sits beside lib/
-           in both the repo and the installed tree. The gem root is the
-           require root, so `require "erb"` is gems/erb/erb.rb and
-           `require "erb/util"` is gems/erb/erb/util.rb. */
+        /* pre-installed packages (the carved-out stdlib): packages/ sits
+           beside lib/ in both the repo and the installed tree. The package
+           root is the require root, so `require "erb"` is
+           packages/erb/erb.rb and `require "erb/util"` is
+           packages/erb/erb/util.rb. */
         char gp[1024];
         char first[256];
         {
@@ -2308,11 +2309,11 @@ else {
         }
         int base_len = (int)strlen(lib_dir);
         if (base_len >= 4 && strcmp(lib_dir + base_len - 4, "/lib") == 0) base_len -= 4;
-        snprintf(gp, sizeof(gp), "%.*s/gems/%s/%s.rb", base_len, lib_dir, first, lib_name);
+        snprintf(gp, sizeof(gp), "%.*s/packages/%s/%s.rb", base_len, lib_dir, first, lib_name);
         content = read_file(gp);
         if (!content) {
           /* dev binary one level below the repo root (build/spinel) */
-          snprintf(gp, sizeof(gp), "%.*s/../gems/%s/%s.rb", base_len, lib_dir, first, lib_name);
+          snprintf(gp, sizeof(gp), "%.*s/../packages/%s/%s.rb", base_len, lib_dir, first, lib_name);
           content = read_file(gp);
         }
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);

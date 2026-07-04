@@ -21,31 +21,31 @@ cd "$WORK"
 cd app
 expect "scaffold run" "Hello from app" "$("$SPIN" run 2>&1 | tail -1)"
 
-# --- library gem (path dependency) --------------------------------------------
+# --- library package (path dependency) --------------------------------------------
 cd "$WORK"
 "$SPIN" new spinel-ansi >/dev/null
 rm -rf spinel-ansi/bin
-printf '[gem]\nname = "ansi"\n' > spinel-ansi/spin.toml
+printf '[package]\nname = "ansi"\n' > spinel-ansi/spin.toml
 cat > spinel-ansi/ansi.rb <<'EOF'
 module Ansi
   def self.red(s) = "\e[31m" + s + "\e[0m"
 end
 EOF
 
-# --- git-source gem (file:// remote) -------------------------------------------
+# --- git-source package (file:// remote) -------------------------------------------
 mkdir gitgem
 cd gitgem
 git init -q
-printf '[gem]\nname = "greet"\n' > spin.toml
+printf '[package]\nname = "greet"\n' > spin.toml
 printf 'module Greet\n  def self.hi(n) = "hi " + n\nend\n' > greet.rb
 git add spin.toml greet.rb
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm init
 cd "$WORK/app"
 
-printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\n' "$WORK" > spin.toml
+printf '[package]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\n' "$WORK" > spin.toml
 printf 'require "ansi"\nrequire "greet"\nputs Ansi.red(Greet.hi("spin"))\n' > bin/app.rb
 
-expect "fetch" "fetched 2 gem(s)" "$("$SPIN" fetch 2>&1 | tail -1)"
+expect "fetch" "fetched 2 package(s)" "$("$SPIN" fetch 2>&1 | tail -1)"
 WANT_OUT=$(printf '\033[31mhi spin\033[0m')
 expect "run with deps" "$WANT_OUT" "$("$SPIN" run 2>&1 | tail -1)"
 
@@ -68,10 +68,10 @@ expect "test (CRuby parity)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 [ -s test/color_test.rb.expected ] || fail "test --regen wrote no snapshot"
 expect "test (snapshot)" "1/1 passed" "$("$SPIN" test 2>&1 | tail -1)"
 
-# --- carried native C (M2): gem .c compiled to the shared cache, --link'ed ------
+# --- carried native C (M2): package .c compiled to the shared cache, --link'ed ------
 cd "$WORK"
 mkdir -p spinel-fast
-printf '[gem]\nname = "fast"\n' > spinel-fast/spin.toml
+printf '[package]\nname = "fast"\n' > spinel-fast/spin.toml
 cat > spinel-fast/fast.rb <<'EOF'
 module Fast
   ffi_func :fast_quad, [:int], :int
@@ -82,7 +82,7 @@ cat > spinel-fast/fast_ext.c <<'EOF'
 intptr_t fast_quad(intptr_t x) { return x * 4; }
 EOF
 cd "$WORK/app"
-printf '[gem]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\nfast = { path = "../spinel-fast" }\n' "$WORK" > spin.toml
+printf '[package]\nname = "app"\n\n[dependencies]\nansi = { path = "../spinel-ansi" }\ngreet = { git = "file://%s/gitgem" }\nfast = { path = "../spinel-fast" }\n' "$WORK" > spin.toml
 printf 'require "ansi"\nrequire "greet"\nrequire "fast"\nputs Ansi.red(Greet.hi("spin"))\nputs Fast.fast_quad(10)\n' > bin/app.rb
 OUT=$("$SPIN" run 2>&1)
 echo "$OUT" | grep -q "^cc fast/fast_ext.c$" || fail "native compile line missing"
@@ -131,44 +131,44 @@ cd "$WORK"
 mkdir hello
 cd hello
 git init -q
-printf '[gem]\nname = "hello"\nversion = "1.0.0"\n' > spin.toml
+printf '[package]\nname = "hello"\nversion = "1.0.0"\n' > spin.toml
 printf 'module Hello\n  def self.greet = "hello v1"\nend\n' > hello.rb
 git add spin.toml hello.rb
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v1
 SHA1=$(git rev-parse HEAD)
-printf '[gem]\nname = "hello"\nversion = "1.1.0"\n' > spin.toml
+printf '[package]\nname = "hello"\nversion = "1.1.0"\n' > spin.toml
 printf 'module Hello\n  def self.greet = "hello v11"\nend\n' > hello.rb
 git add spin.toml hello.rb
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm v11
 SHA2=$(git rev-parse HEAD)
 cd "$WORK"
-mkdir -p index/gems
+mkdir -p index/packages
 cd index
 git init -q
-printf 'name = "hello"\nrepo = "file://%s/hello"\n\n[[release]]\nversion = "1.0.0"\nref = "%s"\n\n[[release]]\nversion = "1.1.0"\nref = "%s"\n' "$WORK" "$SHA1" "$SHA2" > gems/hello.toml
-git add gems
+printf 'name = "hello"\nrepo = "file://%s/hello"\n\n[[release]]\nversion = "1.0.0"\nref = "%s"\n\n[[release]]\nversion = "1.1.0"\nref = "%s"\n' "$WORK" "$SHA1" "$SHA2" > packages/hello.toml
+git add packages
 git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm seed
 cd "$WORK"
 export SPIN_INDEX="file://$WORK/index"
 "$SPIN" new idxapp >/dev/null
 cd idxapp
-printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = ">= 1.0"\n' > spin.toml
+printf '[package]\nname = "idxapp"\n\n[dependencies]\nhello = ">= 1.0"\n' > spin.toml
 printf 'require "hello"\nputs Hello.greet\n' > bin/idxapp.rb
 expect "index MVS (lowest satisfying)" "hello v1" "$("$SPIN" run 2>&1 | tail -1)"
 "$SPIN" lock >/dev/null
 grep -q '^version = "1.0.0"$' spin.lock || fail "index lock lacks the selected version"
 grep -q "^ref = \"$SHA1\"$" spin.lock || fail "index lock lacks the release SHA"
-printf '[gem]\nname = "idxapp"\n\n[dependencies]\nhello = "~> 1.1"\n' > spin.toml
+printf '[package]\nname = "idxapp"\n\n[dependencies]\nhello = "~> 1.1"\n' > spin.toml
 OUT=$("$SPIN" run 2>&1)
 echo "$OUT" | grep -q "reselecting 1.1.0" || fail "constraint change didn't reselect"
 expect "index reselect" "hello v11" "$(echo "$OUT" | tail -1)"
 "$SPIN" search hell | grep -q "^hello 1.1.0 " || fail "spin search misses the gem"
-printf '[gem]\nname = "idxapp"\n\n[dependencies]\n' > spin.toml
+printf '[package]\nname = "idxapp"\n\n[dependencies]\n' > spin.toml
 "$SPIN" add hello --version "~> 1.0" >/dev/null
 grep -q '^hello = "~> 1.0"$' spin.toml || fail "spin add --version didn't write the constraint"
 "$SPIN" lock >/dev/null
 "$SPIN" vendor >/dev/null
-rm -rf "$XDG_CACHE_HOME/spinel/gems" "$XDG_CACHE_HOME/spinel/index"
+rm -rf "$XDG_CACHE_HOME/spin/packages" "$XDG_CACHE_HOME/spin/index"
 "$SPIN" clean >/dev/null
 expect "index offline (locked, vendored)" "hello v1" "$(SPIN_OFFLINE=1 "$SPIN" run 2>&1 | tail -1)"
 unset SPIN_INDEX
@@ -179,7 +179,7 @@ git -C "$WORK/index" config receive.denyCurrentBranch updateInstead
 cd "$WORK"
 "$SPIN" new publib --lib >/dev/null
 cd publib
-printf '[gem]\nname = "publib"\nversion = "0.1.0"\n' > spin.toml
+printf '[package]\nname = "publib"\nversion = "0.1.0"\n' > spin.toml
 printf 'module Publib\n  def self.hi = "hi"\nend\n' > publib.rb
 git init -q
 git add spin.toml publib.rb .gitignore
@@ -197,27 +197,27 @@ git -c user.email=spin@e2e -c user.name=spin-e2e commit -qm tests
 git push -q origin HEAD
 git fetch -q origin
 expect "publish --direct" "published publib 0.1.0 (direct)" "$("$SPIN" publish --direct --repo https://example.com/you/spinel-publib 2>&1 | tail -1)"
-grep -q '^ref = "[0-9a-f]\{40\}"$' "$WORK/index/gems/publib.toml" || fail "published entry lacks a full SHA"
+grep -q '^ref = "[0-9a-f]\{40\}"$' "$WORK/index/packages/publib.toml" || fail "published entry lacks a full SHA"
 OUT=$("$SPIN" publish --direct --repo https://example.com/you/spinel-publib 2>&1) \
   && fail "duplicate publish must be refused"
 echo "$OUT" | grep -q "already in the index" || fail "duplicate message"
 OUT=$("$SPIN" publish --direct --repo https://example.com/other/spinel-publib 2>&1) \
   && fail "same name, different repo must be refused"
 echo "$OUT" | grep -q "name policy" || fail "name-policy message"
-"$SPIN" search publib | grep -q "^publib 0.1.0 " || fail "published gem missing from search"
+"$SPIN" search publib | grep -q "^publib 0.1.0 " || fail "published package missing from search"
 
 # --- R8 probes: publish records a pass; resolution warns on recorded fails -------
-grep -q '^\[\[probe\]\]$' "$WORK/index/gems/publib.toml" || fail "publish wrote no probe record"
-grep -q '^result = "pass"$' "$WORK/index/gems/publib.toml" || fail "probe record isn't a pass"
+grep -q '^\[\[probe\]\]$' "$WORK/index/packages/publib.toml" || fail "publish wrote no probe record"
+grep -q '^result = "pass"$' "$WORK/index/packages/publib.toml" || fail "probe record isn't a pass"
 REV=$(cd "$WORK" && "$(dirname "$SPIN")/spinel" --version | awk '{print $2}')
-printf '\n[[probe]]\nversion = "0.1.0"\nspinel = "%s"\nresult = "fail"\ndetail = "e2e-injected"\ndate = "2026-01-01"\n' "$REV" >> "$WORK/index/gems/publib.toml"
-git -C "$WORK/index" add gems/publib.toml
+printf '\n[[probe]]\nversion = "0.1.0"\nspinel = "%s"\nresult = "fail"\ndetail = "e2e-injected"\ndate = "2026-01-01"\n' "$REV" >> "$WORK/index/packages/publib.toml"
+git -C "$WORK/index" add packages/publib.toml
 git -C "$WORK/index" -c user.email=spin@e2e -c user.name=spin-e2e commit -qm failprobe
 cd "$WORK"
 "$SPIN" new probeapp >/dev/null
 cd probeapp
-printf '[gem]\nname = "probeapp"\n\n[dependencies]\npublib = "0.1.0"\n' > spin.toml
-rm -rf "$XDG_CACHE_HOME/spinel/index"
+printf '[package]\nname = "probeapp"\n\n[dependencies]\npublib = "0.1.0"\n' > spin.toml
+rm -rf "$XDG_CACHE_HOME/spin/index"
 OUT=$("$SPIN" fetch 2>&1 || true)
 echo "$OUT" | grep -q "recorded FAILING with this compiler build" || fail "exact-build fail probe didn't warn"
 unset SPIN_INDEX

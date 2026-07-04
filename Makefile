@@ -712,7 +712,7 @@ install: all bin/spin
 	install -m 644 lib/sp_io.h           $(SPNLDIR)/lib/
 	install -m 644 lib/sp_time.h         $(SPNLDIR)/lib/
 	install -m 644 lib/sp_net.h          $(SPNLDIR)/lib/
-	cp -r gems $(SPNLDIR)/gems
+	cp -r packages $(SPNLDIR)/packages
 	install -d $(PREFIX)/bin
 	ln -sf $(SPNLDIR)/spinel $(PREFIX)/bin/spinel
 	ln -sf $(SPNLDIR)/spin   $(PREFIX)/bin/spin

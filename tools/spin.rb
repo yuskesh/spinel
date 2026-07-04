@@ -9,7 +9,7 @@ usage: spin <command> [args]
   new <name> [--lib]   scaffold an application (or a library with --lib)
   init                 write a spin.toml into the current directory
   add <name> [--version C | --git URL [--ref R] | --path DIR]  add + lock
-  search [term]        find gems in the index (name, latest, repo)
+  search [term]        find packages in the index (name, latest, repo)
   remove <name>        drop a dependency + relock
   lock | fetch | vendor  resolve deps / warm the cache / copy into vendor/
   build [target..]     build bin/ executables into build/bin/
@@ -17,7 +17,7 @@ usage: spin <command> [args]
   test [file..]        build and run test/*.rb against expectations
   clean                remove build/
   list [--json]        resolved dependency set (name, version, source)
-  tree [--json]        dependency tree from this gem
+  tree [--json]        dependency tree from this package
   publish [--direct]   validate + test, then submit this release to the index
   install [name..]     build and copy bin/ executables to ~/.local/bin
                        (--prefix DIR, --uninstall)
@@ -58,21 +58,21 @@ end
 
 
 # --- index (M3) ----------------------------------------------------------------
-# The index is a git repo, not a server (R5): gems/<name>.toml maps a name to
+# The index is a git repo, not a server (R5): packages/<name>.toml maps a name
 # its repo plus [[release]] version/ref entries. Selection is MVS: the LOWEST
-# release satisfying every constraint gathered for the gem, so a build without
+# release satisfying every constraint gathered for the package, so a build without
 # a lock is still deterministic; spin.lock then pins the outcome.
 
 def spin_index_url
   u = ENV["SPIN_INDEX"].to_s
-  u == "" ? "https://github.com/matz/spinel-index" : u
+  u == "" ? "https://github.com/matz/spin-index" : u
 end
 
 def index_dir(offline)
   base = ENV["XDG_CACHE_HOME"].to_s
   base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
   Dir.mkdir(base) unless Dir.exist?(base)   # a fresh XDG_CACHE_HOME
-  d = File.join(base, "spinel")
+  d = File.join(base, "spin")
   Dir.mkdir(d) unless Dir.exist?(d)
   d = File.join(d, "index")
   return d if Dir.exist?(File.join(d, ".git"))
@@ -126,10 +126,10 @@ def version_satisfies(v, cons)
   vcmp(v, c) == 0
 end
 
-# MVS pick from gems/<name>.toml: lowest release satisfying the constraint.
+# MVS pick from packages/<name>.toml: lowest release satisfying the constraint.
 # Returns "version\nrepo\nref" ("" when nothing matches).
 def index_select(dep, cons, offline)
-  gf = File.join(index_dir(offline), "gems", dep + ".toml")
+  gf = File.join(index_dir(offline), "packages", dep + ".toml")
   spin_die("not in the index: " + dep + " (spin add " + dep + " --git URL is the escape hatch)") unless File.exist?(gf)
   gdoc = TomlDoc.parse(File.read(gf))
   repo = gdoc.get("", "repo")
@@ -178,9 +178,9 @@ def index_select(dep, cons, offline)
 end
 
 # --- carried native C (M2) ----------------------------------------------------
-# A gem may carry .c/.h sources (R6). spin compiles each .c once into the
-# shared cache, keyed by (gem, version, toolchain), and hands the objects to
-# spinel via --link; the compiler itself never touches gem C. Objects are
+# A package may carry .c/.h sources (R6). spin compiles each .c once into the
+# shared cache, keyed by (package, version, toolchain), and hands the objects to
+# spinel via --link; the compiler itself never touches package C. Objects are
 # project-independent (carried C is not specialized by inference).
 
 def native_cc
@@ -242,7 +242,7 @@ def native_cache_dir(key)
   base = ENV["XDG_CACHE_HOME"].to_s
   base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
   Dir.mkdir(base) unless Dir.exist?(base)   # a fresh XDG_CACHE_HOME
-  d = File.join(base, "spinel")
+  d = File.join(base, "spin")
   Dir.mkdir(d) unless Dir.exist?(d)
   d = File.join(d, "native")
   Dir.mkdir(d) unless Dir.exist?(d)
@@ -251,7 +251,7 @@ def native_cache_dir(key)
   d
 end
 
-# Compile one gem's carried C into the cache; returns the object list.
+# Compile one package's carried C into the cache; returns the object list.
 def native_objs_for(name, dir, version)
   cs = collect_c(dir)
   return [] if cs == ""
@@ -276,13 +276,13 @@ end
 
 # --- shared cache & git sources (M1) -----------------------------------------
 
-def cache_gems_dir
+def cache_packages_dir
   base = ENV["XDG_CACHE_HOME"].to_s
   base = File.join(ENV["HOME"].to_s, ".cache") if base == ""
   Dir.mkdir(base) unless Dir.exist?(base)   # a fresh XDG_CACHE_HOME
-  d = File.join(base, "spinel")
+  d = File.join(base, "spin")
   Dir.mkdir(d) unless Dir.exist?(d)
-  g = File.join(d, "gems")
+  g = File.join(d, "packages")
   Dir.mkdir(g) unless Dir.exist?(g)
   g
 end
@@ -298,16 +298,16 @@ end
 def gem_version_of(dir)
   mf = File.join(dir, "spin.toml")
   return "0.0.0" unless File.exist?(mf)
-  v = TomlDoc.parse(File.read(mf)).get("gem", "version")
+  v = TomlDoc.parse(File.read(mf)).get("package", "version")
   v == "" ? "0.0.0" : v
 end
 
 # Fetch (or reuse) a git source; returns "dir\nversion\nsha".
 def git_fetch(name, url, ref, want_sha)
-  gems = cache_gems_dir
+  pkgs = cache_packages_dir
   # a previously locked SHA that is already cached wins (offline path)
   if want_sha != ""
-    hits = Dir.glob(gems + "/" + name + "-*")
+    hits = Dir.glob(pkgs + "/" + name + "-*")
     hits.each do |h|
       stamp = File.join(h, ".spin-sha")
       next unless File.exist?(stamp)
@@ -316,7 +316,7 @@ def git_fetch(name, url, ref, want_sha)
       end
     end
   end
-  tmp = File.join(gems, ".fetch-" + name)
+  tmp = File.join(pkgs, ".fetch-" + name)
   system("rm -rf " + tmp)
   cloned = false
   if want_sha != ""
@@ -343,7 +343,7 @@ def git_fetch(name, url, ref, want_sha)
   spin_die("fetch failed: no HEAD sha for " + url) if sha == ""
   spin_die("fetch verify failed: wanted " + want_sha + ", got " + sha) if want_sha != "" && sha != want_sha
   ver = gem_version_of(tmp)
-  final = File.join(gems, name + "-" + ver)
+  final = File.join(pkgs, name + "-" + ver)
   system("rm -rf " + final)
   system("rm -rf " + File.join(tmp, ".git"))
   File.write(File.join(tmp, ".spin-sha"), sha + "\n")
@@ -393,12 +393,12 @@ def resolve_deps(root, offline)
         rec = ""
         if offline
           hit = ""
-          Dir.glob(cache_gems_dir + "/" + dep + "-*").each do |h|
+          Dir.glob(cache_packages_dir + "/" + dep + "-*").each do |h|
             st = File.join(h, ".spin-sha")
             hit = h if want != "" && File.exist?(st) && File.read(st).strip == want
           end
           if hit == ""
-            Dir.glob(File.join(root0, "vendor/gems") + "/" + dep + "-*").each { |h| hit = h }
+            Dir.glob(File.join(root0, "vendor/packages") + "/" + dep + "-*").each { |h| hit = h }
           end
           spin_die("--offline: " + dep + " not in cache or vendor (spin fetch/vendor first)") if hit == ""
           rec = hit + "\n" + gem_version_of(hit) + "\n" + want.to_s
@@ -432,12 +432,12 @@ def resolve_deps(root, offline)
         rec = ""
         if offline
           hit = ""
-          Dir.glob(cache_gems_dir + "/" + dep + "-*").each do |h|
+          Dir.glob(cache_packages_dir + "/" + dep + "-*").each do |h|
             st = File.join(h, ".spin-sha")
             hit = h if sel_r != "" && File.exist?(st) && File.read(st).strip == sel_r
           end
           if hit == ""
-            Dir.glob(File.join(root0, "vendor/gems") + "/" + dep + "-*").each { |h| hit = h }
+            Dir.glob(File.join(root0, "vendor/packages") + "/" + dep + "-*").each { |h| hit = h }
           end
           spin_die("--offline: " + dep + " not in cache or vendor (spin fetch/vendor first)") if hit == ""
           rec = hit + "\n" + gem_version_of(hit) + "\n" + sel_r
@@ -462,7 +462,7 @@ class Project
   def initialize(root)
     @root = root
     toml = TomlDoc.parse(File.read(File.join(root, "spin.toml")))
-    nm = toml.get("gem", "name")
+    nm = toml.get("package", "name")
     if nm == ""
       base = File.basename(root)
       base = base[7..-1] if base.start_with?("spinel-")
@@ -478,14 +478,14 @@ class Project
       next if rec == ""
       f = rec.split("\t")
       # prefer a vendored copy when present
-      vd = File.join(root, "vendor/gems", f[0] + "-" + f[2])
+      vd = File.join(root, "vendor/packages", f[0] + "-" + f[2])
       d = File.directory?(vd) ? vd : f[1]
       @dep_paths.push(d)
       @dep_srcs += "\n" + f[0] + "\t" + d + "\t" + f[2]
     end
   end
 
-  # carried native C across the root gem and every resolved dep (M2)
+  # carried native C across the root package and every resolved dep (M2)
   def native_objs
     objs = []
     @dep_srcs.split("\n").each do |s|
@@ -561,7 +561,7 @@ def compile(prj, entry, out, extra)
   cmd += " -o #{out}"
   ok = system(cmd)
   unless ok
-    # close the add-a-gem loop: wrap the compiler's unsatisfiable-require error
+    # close the add-a-package loop: wrap the compiler's unsatisfiable-require error
     $stderr.puts "spin: build failed (hint: an unresolved require may need a dependency: spin add <name> --path <dir>)"
     exit 1
   end
@@ -681,7 +681,7 @@ def lock_from_records(prj)
     end
   end
   write_lock(prj.root, lines)
-  puts "locked " + prj.dep_paths.length.to_s + " gem(s)"
+  puts "locked " + prj.dep_paths.length.to_s + " package(s)"
 end
 
 def jq_str(s)
@@ -720,7 +720,7 @@ def cmd_list(prj, json)
   end
 end
 
-# name -> resolved dir, for walking each gem's own manifest
+# name -> resolved dir, for walking each package's own manifest
 def tree_children(dir)
   mf = File.join(dir, "spin.toml")
   return [] unless File.exist?(mf)
@@ -797,7 +797,7 @@ end
 
 def cmd_search(term)
   index_refresh(false)
-  d = File.join(index_dir(false), "gems")
+  d = File.join(index_dir(false), "packages")
   found = 0
   Dir.glob(d + "/*.toml").sort.each do |gf|
     nm = File.basename(gf)[0..-6]
@@ -831,7 +831,7 @@ end
 # --- publish (index PR automation) --------------------------------------------
 # `spin publish` folds "get my release into the index" into one command:
 # validate identity + a pushed, version-consistent commit, run the tests as a
-# hard gate (R8), write gems/<name>.toml, then submit -- straight push with
+# hard gate (R8), write packages/<name>.toml, then submit -- straight push with
 # --direct (index write access), a gh-driven fork + PR when gh is available,
 # or printed instructions otherwise. No tarballs, no accounts: the git
 # identity is the identity, and nothing executes at fetch time.
@@ -849,7 +849,7 @@ def publish_repo_url(root, override)
   u
 end
 
-# `spin install`: build this gem's executables and copy them onto PATH --
+# `spin install`: build this package's executables and copy them onto PATH --
 # the last step of "I wrote a CLI and now I use it". Local sources only;
 # installing a tool from the index is a separate (deferred) verb, so the
 # rubygems reading of `install <name>` never collides with bin/<name>.
@@ -890,9 +890,9 @@ end
 
 def cmd_publish(root, repo_override, ref_override, direct)
   toml = TomlDoc.parse(File.read(File.join(root, "spin.toml")))
-  name = toml.get("gem", "name")
-  version = toml.get("gem", "version")
-  spin_die("publish makes identity mandatory: set [gem] name and version in spin.toml") if name == "" || version == ""
+  name = toml.get("package", "name")
+  version = toml.get("package", "version")
+  spin_die("publish makes identity mandatory: set [package] name and version in spin.toml") if name == "" || version == ""
   repo = publish_repo_url(root, repo_override)
 
   dirty = sh_read("git -C " + root + " status --porcelain")
@@ -911,7 +911,7 @@ def cmd_publish(root, repo_override, ref_override, direct)
   end
   spin_die("publish: spin.toml at " + ref[0..11].to_s + " says version \"" + tv + "\", manifest says \"" + version + "\"") if tv != version
 
-  # hard test gate (R8): a gem publishes with passing tests or not at all
+  # hard test gate (R8): a package publishes with passing tests or not at all
   prj = Project.new(root)
   spin_die("publish requires tests: add test/*.rb (spin test)") if prj.tests.empty?
   cmd_test(prj, [], false)   # exits non-zero on any failure
@@ -919,7 +919,7 @@ def cmd_publish(root, repo_override, ref_override, direct)
   # write the index entry
   index_refresh(false)
   idir = index_dir(false)
-  gf = File.join(idir, "gems", name + ".toml")
+  gf = File.join(idir, "packages", name + ".toml")
   entry = ""
   if File.exist?(gf)
     gdoc = TomlDoc.parse(File.read(gf))
@@ -942,7 +942,7 @@ def cmd_publish(root, repo_override, ref_override, direct)
 
   if direct
     File.write(gf, entry)
-    ok = system("git -C " + idir + " add gems/" + name + ".toml") &&
+    ok = system("git -C " + idir + " add packages/" + name + ".toml") &&
          system("git -C " + idir + " -c user.email=spin@publish -c user.name=spin commit -qm \"" + name + " " + version + "\"") &&
          system("git -C " + idir + " push -q origin HEAD")
     spin_die("publish --direct: push to the index failed (no write access?)") unless ok
@@ -955,15 +955,15 @@ def cmd_publish(root, repo_override, ref_override, direct)
     tmp = File.join(File.dirname(idir), ".publish-" + name)
     system("rm -rf " + tmp)
     spin_die("publish: cannot clone the index") unless system("git clone -q " + idir + " " + tmp)
-    File.write(File.join(tmp, "gems", name + ".toml"), entry)
+    File.write(File.join(tmp, "packages", name + ".toml"), entry)
     br = "publish-" + name + "-" + version.gsub(".", "-")
     login = sh_read("gh api user -q .login")
     spin_die("publish: gh is installed but not authenticated (gh auth login)") if login == ""
     system("gh repo fork " + spin_index_url + " --clone=false > /dev/null 2>&1")
     ok = system("git -C " + tmp + " checkout -qb " + br) &&
-         system("git -C " + tmp + " add gems/" + name + ".toml") &&
+         system("git -C " + tmp + " add packages/" + name + ".toml") &&
          system("git -C " + tmp + " -c user.email=spin@publish -c user.name=spin commit -qm \"" + name + " " + version + "\"") &&
-         system("git -C " + tmp + " push -q https://github.com/" + login + "/spinel-index.git " + br + ":" + br)
+         system("git -C " + tmp + " push -q https://github.com/" + login + "/spin-index.git " + br + ":" + br)
     spin_die("publish: pushing the fork branch failed") unless ok
     body = "spin publish: " + name + " " + version + "%0A%0Arepo: " + repo + "%0Aref: " + ref + "%0Atests: pass (spin test gate)"
     body = body.gsub("%0A", "\n")
@@ -978,7 +978,7 @@ def cmd_publish(root, repo_override, ref_override, direct)
   end
 
   puts "gh not found -- open a pull request against " + spin_index_url
-  puts "adding this as gems/" + name + ".toml:"
+  puts "adding this as packages/" + name + ".toml:"
   puts ""
   puts entry
 end
@@ -986,7 +986,7 @@ end
 def cmd_vendor(prj)
   vg = File.join(prj.root, "vendor")
   Dir.mkdir(vg) unless Dir.exist?(vg)
-  vg = File.join(vg, "gems")
+  vg = File.join(vg, "packages")
   Dir.mkdir(vg) unless Dir.exist?(vg)
   prj.dep_records.split("\n").each do |rec|
     next if rec == ""
@@ -1001,7 +1001,7 @@ end
 # --- scaffold ----------------------------------------------------------------
 
 APP_MANIFEST = <<TOML
-# spin manifest — an application needs no [gem] identity.
+# spin manifest — an application needs no [package] identity.
 # Add dependencies like:
 #   [dependencies]
 #   ansi = { path = "../spinel-ansi" }
@@ -1014,7 +1014,7 @@ def cmd_new(name, lib)
   Dir.mkdir(File.join(name, "test"))
   if lib
     File.write(File.join(name, "spin.toml"),
-               "[gem]\nname = \"#{name}\"\nversion = \"0.1.0\"\n\n# published repos are conventionally named spinel-#{name}\n")
+               "[package]\nname = \"#{name}\"\nversion = \"0.1.0\"\n\n# published repos are conventionally named spinel-#{name}\n")
     File.write(File.join(name, "#{name}.rb"), "# #{name}: library entry (require \"#{name}\")\n")
   else
     File.write(File.join(name, "spin.toml"), APP_MANIFEST)
@@ -1087,7 +1087,7 @@ when "lock", "fetch", "vendor"
   spin_die("no spin.toml found") if root == ""
   prj = Project.new(root)
   lock_from_records(prj) if cmd == "lock"
-  puts "fetched " + prj.dep_paths.length.to_s + " gem(s)" if cmd == "fetch"
+  puts "fetched " + prj.dep_paths.length.to_s + " package(s)" if cmd == "fetch"
   cmd_vendor(prj) if cmd == "vendor"
 when "search"
   cmd_search(rest.empty? ? "" : rest[0])
@@ -1158,7 +1158,7 @@ when "build", "run", "test", "clean"
     puts "cleaned"
   end
 when "--version"
-  puts "spin (spinelgems M0)"
+  puts "spin"
 else
   puts SPIN_USAGE
   exit(cmd == "" || cmd == "help" || cmd == "--help" ? 0 : 3)

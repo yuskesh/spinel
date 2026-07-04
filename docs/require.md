@@ -92,14 +92,14 @@ A few `require`s name a capability Spinel already provides as core, and are
 - `require "enumerator"` (Enumerator is core)
 - `require "fiber"` (Fiber is core)
 
-### Pre-installed gems (the carved-out stdlib)
+### Pre-installed packages (the carved-out stdlib)
 
 Some stdlib ships with Spinel as Ruby source and is spliced when required —
 `set`, `forwardable`, `optparse`, `erb` (plus the `stringio`/`strscan`
 marker shims for their C-backed features). Each lives as an ordinary
-spinelgem under `gems/<name>/` beside the compiler (`gems/set/set.rb` with
+spinelgem under `packages/<name>/` beside the compiler (`packages/set/set.rb` with
 its `spin.toml`); `lib/` holds only the C runtime. The `require` pulls in
-the gem's file like any other gem — pre-installed just means no fetch.
+the package's file like any other package — pre-installed just means no fetch.
 
 ## Providing your own feature
 

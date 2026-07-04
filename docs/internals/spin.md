@@ -1,14 +1,18 @@
-# spinelgems & spin — design
+# spin packages & spin — design
 
-The design record for Spinel's package system (**spinelgems**) and its
+The design record for Spinel's package system (**spin packages**) and its
 project tool (**`spin`**). The user-facing guide is [../spin.md](../spin.md);
 this document is the *why* and the *contract*: the constraints, the
 requirements (R1–R9), the resolution semantics, and what remains open.
 
-Naming note: the manifest is **`spin.toml`** and the lockfile **`spin.lock`**
-(renamed from gem.toml/gem.lock): the manifest is the tool's contract file,
-Cargo.toml-style, and the name can never collide with another ecosystem's
-generic `gem.toml`. The *unit* is still a gem and the ecosystem spinelgems.
+Naming note: the tool is **`spin`**, the manifest **`spin.toml`**, the
+lockfile **`spin.lock`**, the unit a **package**, and the registry
+[spin-index](https://github.com/matz/spin-index). "Gem" was dropped
+deliberately: the mechanism shares nothing with RubyGems (no gemspec, no
+runtime require, no tarballs -- sources splice into one AOT compile), and a
+Ruby-evocative unit name invited expectations of compatibility the design
+cannot honor. Published *repos* stay `spinel-<name>` -- that convention is
+scoped to the language, like `mruby-*`.
 
 Status: implemented through M3 — scaffold, path/git/index dependencies with
 MVS selection, `spin.lock`, vendor + offline, snapshot tests, carried native
@@ -31,7 +35,7 @@ manifest, a lockfile, a flat namespace, and `require "name"` as the only
 thing consumers write. Its *mechanism* (runtime `require` onto a load path,
 dynamic .so extensions, install-time code execution) does not fit AOT.
 
-**mrbgems** gives the *producer model* worth copying: a gem is a source tree
+**mrbgems** gives the *producer model* worth copying: a package is a source tree
 compiled *into* the final binary, with a small spec. Its consumer model
 (gems baked into the VM per toolchain) does not fit either: Spinel
 dependencies are per-application.
@@ -45,11 +49,11 @@ compile-into-the-binary producer model.**
   `require` is textual splicing. Packages are *source* inputs to the one
   compile: inference specializes a package's code per application. There is
   no binary package artifact and no ABI.
-- **C2 — subset language.** Not every gem compiles under Spinel.
+- **C2 — subset language.** Not every package compiles under Spinel.
   Compatibility is a first-class, testable property (the ~189k-gem probe
   corpus), not a footnote.
 - **C3 — C is reachable two ways.** FFI (`ffi_lib`/`ffi_func`) to external
-  libraries, and carried C inside the gem tree. The runtime headers stay
+  libraries, and carried C inside the package tree. The runtime headers stay
   additive-only; package C must not mutate runtime internals.
 - **C4 — the require-gate is the resolution point.** `require "name"`
   already resolves bundled stdlib, native features, and `-I` roots, and
@@ -71,37 +75,37 @@ compile-into-the-binary producer model.**
 |---|---|---|---|
 | runtime | `sp_*.c/h`, archives | the compiler | never edited, not require-able |
 | stdlib | require-gated features (`set`, `erb`, `json`, …) | the compiler | via `require`, no manifest entry |
-| gems | everything else | fetched/vendored per project | via `require` + manifest entry |
+| packages | everything else | fetched/vendored per project | via `require` + manifest entry |
 
 The boundary is directory-level and implemented: `lib/` holds runtime C
 only, and the bundled pure-Ruby stdlib (`set`, `erb`, `optparse`,
 `forwardable`, plus the `stringio`/`strscan` marker shims) lives as
-pre-installed gems under `gems/<name>/` -- each an ordinary spinelgem with
+pre-installed packages under `packages/<name>/` -- each an ordinary package with
 a `spin.toml`, proving the format on the compiler's own stdlib. The
-compiler resolves `require` against `gems/` beside its runtime (repo and
-installed tree alike, through symlinked invocation). Gems-only
-directories: `gems/<name>/` (pre-installed),
-`vendor/gems/<name>-<version>/` in a project,
-`$XDG_CACHE_HOME/spinel/gems/<name>-<version>/` for fetches.
+compiler resolves `require` against `packages/` beside its runtime (repo and
+installed tree alike, through symlinked invocation). Packages-only
+directories: `packages/<name>/` (pre-installed),
+`vendor/packages/<name>-<version>/` in a project,
+`$XDG_CACHE_HOME/spin/packages/<name>-<version>/` for fetches.
 
 ### R2 — package format (implemented)
 
-A gem is a directory, typically a git repo named `spinel-<name>` by
-publishing convention; the gem *name* carries no prefix because the name is
+A package is a directory, typically a git repo named `spinel-<name>` by
+publishing convention; the package *name* carries no prefix because the name is
 the `require` string. There are no per-language role directories: **role is
-carried by extension and the gem root is the require root**. `.rb` compiles
+carried by extension and the package root is the require root**. `.rb` compiles
 and defines the require namespace (`mypkg.rb`, subfeatures under `mypkg/`),
 `.rbs` is an optional sidecar, `.c`/`.h` are carried native sources (R6).
 Reserved directory names, excluded from the require namespace: `test/`,
 `bin/`, `build/`, `vendor/`.
 
 **Executables.** Each `bin/<name>.rb` is an executable and its own
-whole-program compile root, spliced with the gem's library sources and
+whole-program compile root, spliced with the package's library sources and
 resolved dependencies (cargo's `src/bin/*.rs` shape). **An application is a
-gem with executables** — same manifest, no separate project kind, and the
-`[gem]` identity table is optional for applications (name defaults to the
+package with executables** — same manifest, no separate project kind, and the
+`[package]` identity table is optional for applications (name defaults to the
 directory basename; publishing is what makes identity mandatory).
-Dependents of a gem never compile its `bin/`.
+Dependents of a package never compile its `bin/`.
 
 **Tests.** Each top-level `test/*.rb` is one test program through exactly
 the `bin/` mechanics. Pass/fail is the compiler-repo oracle convention: a
@@ -111,10 +115,10 @@ same file runs under `ruby` and diffs directly — the subset-parity check.
 `require_relative` helpers, not entries.
 
 **Manifest** (`spin.toml`) is TOML and never executable: fetching or
-vendoring a gem runs no gem code, and compilation of gem C happens only
-while building a dependent application. Implemented fields: `[gem]
+vendoring a package runs no package code, and compilation of package C happens only
+while building a dependent application. Implemented fields: `[package]
 name`/`version`, `[dependencies]`. *Still specification:*
-`[dev-dependencies]`, `provides` (feature names beyond the gem's own),
+`[dev-dependencies]`, `provides` (feature names beyond the package's own),
 `spinel` (compiler version constraint — reserved until the toolchain is
 versioned), `[native]` cflags/libs (carried C currently needs no manifest
 entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
@@ -131,36 +135,36 @@ entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
   Applications commit it; libraries do not. Absent a lock, builds resolve
   from the manifest (deterministic — see R5/MVS).
 - In code, consumers write `require "name"` — nothing else. Resolution
-  order: runtime-native feature → stdlib → project gems → `-I` roots.
+  order: runtime-native feature → stdlib → project packages → `-I` roots.
 - The zero-manifest escape hatch stays: hand-written `spinel -I` invocations
   have identical semantics; a manifest is only needed for
   versioned/fetched dependencies.
 
 ### R4 — resolution & versioning semantics
 
-- Flat namespace; **one version of a gem per application** (two copies of
+- Flat namespace; **one version of a package per application** (two copies of
   the same classes are a whole-program conflict, not an isolation feature).
-- The dependency graph is walked transitively (a fetched gem's own
+- The dependency graph is walked transitively (a fetched package's own
   `[dependencies]` resolves too) and must be acyclic.
-- *Still specification:* feature-namespace ownership enforcement (two gems
+- *Still specification:* feature-namespace ownership enforcement (two packages
   providing overlapping features as a named resolution error), and
-  undeclared-cross-gem-require checking below resolution granularity — the
+  undeclared-cross-package-require checking below resolution granularity — the
   latter needs per-root provenance that plain `-I` does not carry, layered
   on top of `-I` when it moves into the compiler.
 
 ### R5 — distribution (implemented through the index)
 
 - **Phase 1: no registry.** Local paths + git URLs pinned by the lockfile
-  SHA. `spin vendor` copies the resolved tree into `vendor/gems/`;
+  SHA. `spin vendor` copies the resolved tree into `vendor/packages/`;
   `SPIN_OFFLINE=1` builds from cache/vendor only. Vendored trees are
   read-only inputs.
 - **Phase 2: an index, not a server** (implemented): a git repository —
-  <https://github.com/matz/spinel-index> by default, `SPIN_INDEX`
+  <https://github.com/matz/spin-index> by default, `SPIN_INDEX`
   overrides, `file://` works — mapping names to repos and releases. One
-  TOML file per gem, read by the same reader as `spin.toml`:
+  TOML file per package, read by the same reader as `spin.toml`:
 
   ```toml
-  # gems/<name>.toml
+  # packages/<name>.toml
   name = "ansi"
   repo = "https://github.com/x/spinel-ansi"
 
@@ -175,7 +179,7 @@ entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
   (coordination still open).
 - `spin publish` (implemented): validates identity + a pushed,
   version-consistent release commit, runs `spin test` as a hard gate (R8's
-  spirit ahead of its metadata), then writes `gems/<name>.toml` and submits
+  spirit ahead of its metadata), then writes `packages/<name>.toml` and submits
   -- a gh-driven fork + PR when `gh` exists, printed instructions
   otherwise, or a direct push with `--direct` for index write access. The
   GitHub ssh remote form normalizes to https; file:// and local-path repos
@@ -184,20 +188,20 @@ entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
   (removals are hand-written index PRs).
 
 **Selection is MVS** (decided, implemented): among releases admitted by the
-constraint (`~>` pessimistic, `>=`, exact, `*`), every gem resolves to the
+constraint (`~>` pessimistic, `>=`, exact, `*`), every package resolves to the
 *lowest* admissible version.
 
 - Deterministic without a lockfile — which is what makes `spin.lock`
   droppable for libraries instead of load-bearing.
 - No SAT solving. Constraint gathering is first-encounter: a later
-  conflicting constraint on an already-resolved gem is an error, not a
+  conflicting constraint on an already-resolved package is an error, not a
   re-solve.
 - Not auto-riding the newest release is intentional under whole-program
   inference; upgrades are opt-in and diffable.
 
 Order of authority: `spin.lock` when it satisfies the manifest (a pinned
 version that no longer satisfies a changed constraint is reselected with a
-warning, and the next `spin lock` rewrites the pin); `vendor/gems/` then the
+warning, and the next `spin lock` rewrites the pin); `vendor/packages/` then the
 cache for sources; path deps always read live and are recorded unpinned.
 Fetch materializes the exact release SHA — direct SHA fetch with a
 full-clone + checkout fallback — and dies on mismatch. *Still
@@ -205,19 +209,19 @@ specification:* `spin lock --update` and `--frozen` (CI mode).
 
 ### R6 — C in packages (implemented)
 
-- Carried C is discovered by extension: every `.c` in the gem tree (outside
+- Carried C is discovered by extension: every `.c` in the package tree (outside
   `build/`, `vendor/`, `test/`) compiles into the shared cache
-  `$XDG_CACHE_HOME/spinel/native/<gem>-<version>-<cc>/` — never into the
+  `$XDG_CACHE_HOME/spin/native/<package>-<version>-<cc>/` — never into the
   package tree — and the objects reach the compiler via its repeatable
-  `--link` flag; `spinel` itself never compiles gem C. Objects rebuild when
-  any of the gem's `.c`/`.h` is newer; the gem tree and the compiler's
+  `--link` flag; `spinel` itself never compiles package C. Objects rebuild when
+  any of the package's `.c`/`.h` is newer; the package tree and the compiler's
   runtime headers are on the include path; `CC` selects the toolchain.
 - The second shape, FFI to an external installed library, stays on the
   Ruby-side `ffi_lib`/`ffi_func` DSL (its SPINEL_LINK/SPINEL_CFLAGS markers
   already reach the link line). In-TU splicing of carried C is a possible
   future optimization behind the same declaration, not a third shape.
 - *Still specification:* the `spinel/runtime.h` umbrella defining the
-  stable public sp_ surface for carried C; today gem C sees the same
+  stable public sp_ surface for carried C; today package C sees the same
   headers as the generated TU, with no compatibility promise on internals.
 
 ### R7 — type inference across packages
@@ -234,7 +238,7 @@ specification:* `spin lock --update` and `--frozen` (CI mode).
 
 The toolchain version is the compiler's build revision — `spinel
 --version` prints the git SHA embedded at build time — which unblocks R8
-without deciding semver. Index gem files carry flat `[[probe]]` records
+without deciding semver. Index package files carry flat `[[probe]]` records
 (version, spinel = build SHA, result, detail, date): `spin publish`
 appends a pass for the publishing build automatically (its hard test gate
 just ran), and reprobe sweeps can append fails. Resolution surfaces them
@@ -250,17 +254,17 @@ The compiler CLI stays gcc-like: sources + `-I` roots in, binary out, no
 network, no manifest knowledge, no state. `spin` owns everything stateful —
 manifest editing, resolution, fetching, vendoring, invoking the compiler —
 and every command works offline given a populated cache or vendor tree. No
-daemon; no per-machine state outside `$XDG_CACHE_HOME/spinel/`.
+daemon; no per-machine state outside `$XDG_CACHE_HOME/spin/`.
 
 - `spin` is written in Spinel and ships beside the compiler (`make
-  bin/spin`), dogfooding the language and the gem format. Its dependencies
+  bin/spin`), dogfooding the language and the package format. Its dependencies
   are stdlib-only; its TOML reader (`tools/spin/toml.rb`, string-only
   storage, `[table]`/`[[table]]`/inline tables) is the intended seed of a
   future `toml` stdlib feature.
 - Subcommands on the compiler CLI were considered and rejected: `spinel
   build` is ambiguous against `spinel build.rb`, and the compiler binary
   should not carry TOML/git/network code.
-- Compiler interface: one `-I` per resolved gem in resolution order, plus
+- Compiler interface: one `-I` per resolved package in resolution order, plus
   `-I <root>`, plus `--link <obj>` per cached native object, plus
   `SPINEL_REQUIRE_GATE=1`. An unresolved-`require` compile error is wrapped
   with the `spin add` hint that would fix it.
@@ -275,20 +279,20 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spinel/`.
 - Build artifacts are per-project and disposable: `build/bin/<target>`,
   `build/test/<name>` (`spin clean` removes `build/`). `spin` writes
   nowhere else in the project except `spin.toml` (`add`/`remove`),
-  `spin.lock`, and `vendor/gems/`.
+  `spin.lock`, and `vendor/packages/`.
 - Rebuild tracking is the newest-input-mtime of the project and its
   dependency trees (`.rb`/`.rbs`/`.c`/`.h`/`spin.toml` plus the compiler
   binary) against each output — a flat input set; there is deliberately no
   per-file dependency graph, because type specialization spans every
   source. *Aspiration:* content-hash stamps (the compiler-repo scheme)
-  instead of mtimes. Gem C is cached across projects (R6); `spin` runs no
+  instead of mtimes. Package C is cached across projects (R6); `spin` runs no
   arbitrary build tasks (no rake surface) — projects with bespoke steps
   call `spin` from their own build system.
 - Output: one line per phase; `spin list --json` / `spin tree --json` are
   the machine surface. *Still specification:* `-q`/`-v`, distinct exit
   codes (currently 0/1), test parallelism (`-j`),
   `spin clean --cache`, and `spin remove` refusing while another dependency
-  still requires the gem. `spin install` (implemented) copies built `bin/`
+  still requires the package. `spin install` (implemented) copies built `bin/`
   executables to `$XDG_BIN_HOME` / `~/.local/bin` (`--prefix` overrides,
   `--uninstall` removes); installing a tool *from the index* is
   deliberately a separate, deferred verb so the rubygems reading of
@@ -296,12 +300,12 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spinel/`.
 
 ## 6. spin.lock
 
-TOML, one table per resolved gem, written by `spin add`/`remove`/`lock`,
+TOML, one table per resolved package, written by `spin add`/`remove`/`lock`,
 consumed by every build; something you *diff*, never edit:
 
 ```toml
 [lock.ansi]
-version = "0.1.0"        # from the gem's own spin.toml at the pinned ref
+version = "0.1.0"        # from the package's own spin.toml at the pinned ref
 git = "https://…"        # git and index sources: repo URL
 ref = "<commit SHA>"     # always a full SHA, never a branch name
 
@@ -320,8 +324,8 @@ non-git transports would arrive with any such transport.
 
 - **Runtime loading** of any kind (no dlopen, no late require).
 - **Binary package distribution** (no ABI exists; C1).
-- **Side-by-side versions** of one gem in one application (R4).
-- **Install-time code execution** (R2); gems compute nothing at fetch.
+- **Side-by-side versions** of one package in one application (R4).
+- **Install-time code execution** (R2); packages compute nothing at fetch.
 - **A hosted registry service** (the git index instead).
 - Replacing FFI: it remains the boundary to *external* native libraries.
 
@@ -345,11 +349,11 @@ string parameters downstream (tab/newline-packed record strings instead),
 ## 9. Open points
 
 1. **Stdlib carve-out** (R1): which require-gated features move from the
-   compiler tree into pre-installed gems first (`erb`/`optparse`/`set` are
+   compiler tree into pre-installed packages first (`erb`/`optparse`/`set` are
    the easy three; `json`/`stringio` are C-backed and exercise R6), and the
-   `gems/` directory itself.
+   `packages/` directory itself.
 2. **Index seeding** from the probe corpus, and coordination with the
-   community spinelgems compatibility catalog (who owns the name registry).
+   community spin packages compatibility catalog (who owns the name registry).
 3. **Toolchain versioning**: the `spinel` manifest constraint, R8 probe
    warnings, and spin↔spinel skew handling all wait on the compiler
    carrying a version.

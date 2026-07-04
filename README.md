@@ -66,14 +66,14 @@ projects, resolves dependencies, drives the compiler, and runs tests; no
 Makefile, no hand-written `-I` flags:
 
 ```bash
-spin add ansi --version "~> 1.0"   # from the spinelgems index
+spin add ansi --version "~> 1.0"   # from the spin package index
 spin add mylib --path ../mylib     # or a local checkout / --git URL
 spin test                          # snapshot tests (CRuby is the oracle)
 spin build && ./build/bin/myapp
 ```
 
-Dependencies (gems) are source trees compiled into your binary — no
-runtime loading, no extension builds; a gem can even carry `.c` files.
+Dependencies (packages) are source trees compiled into your binary — no
+runtime loading, no extension builds; a package can even carry `.c` files.
 See **[docs/spin.md](docs/spin.md)** for the full guide, including how to
 write and publish a library.
 
@@ -550,7 +550,7 @@ Adjacent ecosystem (community-built, not part of this repo):
   analysis). The zero-dependency tools — `spinel-doctor` (health check),
   `spinel-reduce` (minimal-repro reducer), and `spinel-flatten` — now
   ship in the box; see [`tools/`](tools/).
-- [spinelgems](https://github.com/OriPekelman/spinelgems): a survey of
+- [spin packages](https://github.com/OriPekelman/spin packages): a survey of
   which RubyGems compile and run under Spinel, plus bundler-spinel, a
   Bundler plugin that vendors and compatibility-gates `Gemfile`
   dependencies.

@@ -1,0 +1,4 @@
+[package]
+name = "erb"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
