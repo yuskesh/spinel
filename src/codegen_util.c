@@ -206,6 +206,33 @@ TyKind g_fn_ret_type = TY_UNKNOWN;
 int g_current_scope_is_lowered = 0;
 EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
 int       g_ensure_depth = 0;
+RescueSave g_rescue_save_stack[MAX_ENSURE_DEPTH];
+int        g_rescue_save_depth = 0;
+
+/* rescue bodies crossed by an exit to frame-depth pop_base: those entered at or
+   deeper than pop_base (their exc_base >= pop_base). */
+static int rescues_crossed(int pop_base) {
+  int k = 0;
+  for (int i = 0; i < g_rescue_save_depth; i++)
+    if (g_rescue_save_stack[i].exc_base >= pop_base) k++;
+  return k;
+}
+/* Pop the k crossed rescue-body handlers (no frame pop). Used at sites whose
+   frame-pop text is special (the begin..ensure deferred-return). */
+void emit_cur_exc_restore(Buf *b, int pop_base) {
+  int k = rescues_crossed(pop_base);
+  if (k > 0) buf_printf(b, "sp_rescue_sp -= %d; ", k);
+}
+int emit_frame_unwind(Buf *b, int pop_base, const char *guard) {
+  int pops = g_exc_frame_depth - pop_base;
+  int k = rescues_crossed(pop_base);
+  if (pops <= 0 && k == 0) return 0;
+  if (guard) buf_printf(b, "if (%s) { ", guard);
+  if (pops > 0) buf_printf(b, "sp_exc_top -= %d; ", pops);
+  if (k > 0) buf_printf(b, "sp_rescue_sp -= %d; ", k);
+  if (guard) buf_puts(b, "}");
+  return 1;
+}
 Buf g_procs;
 Buf g_proc_protos;
 int g_proc_counter = 0;

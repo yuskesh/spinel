@@ -2377,6 +2377,7 @@ else {
       return TY_STRING;
     if (sp_streq(name, "class")) return TY_CLASS;  /* a Class object, carried by name */
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
+    if (sp_streq(name, "cause")) return TY_EXCEPTION;      /* the threaded cause, nil if none */
   }
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */

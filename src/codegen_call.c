@@ -4548,6 +4548,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "(_t%d ? sp_exc_message(_t%d) : \"\")", t, t);
       return;
     }
+    if (sp_streq(name, "cause")) {
+      buf_puts(b, "sp_exc_cause("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
     if (sp_streq(name, "full_message")) {
       int t = ++g_tmp;
       Buf rb = expr_buf(c, recv);
@@ -8441,9 +8445,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       else {
         /* the deferred return leaves through every enclosing live begin
-           frame: pop them (see the begin..ensure epilogue in codegen_stmt.c) */
-        if (g_exc_frame_depth > 0)
-          buf_printf(b, "if (_retf%d) sp_exc_top -= %d; ", eid, g_exc_frame_depth);
+           frame: pop them (see the begin..ensure epilogue in codegen_stmt.c),
+           and pop the sp_rescue_sp handler for each rescue body it leaves */
+        { char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
+          if (emit_frame_unwind(b, 0, g)) buf_puts(b, " "); }
         if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d; ", eid, eid);
         else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil(); ", eid);
         else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0; ", eid);
