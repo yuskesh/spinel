@@ -47,6 +47,25 @@ def plain_guard
   puts "done"
 end
 
+# A builtin tail must not mask an unresolved parent: MissingParent does not
+# exist, so the whole path is statically false (CRuby agrees: nil).
+def qualified_tail_builtin
+  if defined?(MissingParent::String)
+    shim = YjitShim.new
+    shim.frobnicate_qualified
+    puts "unreachable"
+  end
+  puts "qualified done"
+end
+
+def nested_missing_root
+  if defined?(MissingRoot::Sub::Thing) && MissingRoot::Sub::Thing.on?
+    setup_yjit_toggle
+    puts "nested on"
+  end
+  puts "nested done"
+end
+
 # Control: a truthy defined? over a real builtin keeps its branch.
 def known_guard
   if defined?(String)
@@ -60,4 +79,6 @@ yjit_toggle
 elsif_variant(3)
 elsif_variant(42)
 plain_guard
+qualified_tail_builtin
+nested_missing_root
 known_guard
