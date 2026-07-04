@@ -5673,13 +5673,14 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
         sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
         sp_streq(op, "^") ? "sp_poly_bxor" : NULL;
     emit_indent(b, indent);
-    /* The receiver temp is GC-rooted: the RHS expression and the fold
-       helpers below (sp_poly_<op>, sp_str_plus/repeat) can allocate, and a
-       receiver that is itself a fresh temporary (`make_array()[i] += v`)
-       has no other root, so a collection inside the statement would free
-       it before the closing sp_*Array_set. */
+    /* The receiver temp is GC-rooted when the receiver expression itself
+       can allocate (`make_array()[i] += v`): such a fresh temporary has no
+       other root, and the RHS / fold helpers below (sp_poly_<op>,
+       sp_str_plus/repeat) can trigger a collection before the closing
+       sp_*Array_set. A bare local/ivar read is already rooted at its slot,
+       so it skips the push (keeps hot emissions byte-identical). */
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
+    if (subtree_may_allocate(nt, recv)) buf_printf(b, "; SP_GC_ROOT(_t%d)", ta);
     buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
     buf_puts(b, "; ");
     if (rt == TY_POLY_ARRAY) {
