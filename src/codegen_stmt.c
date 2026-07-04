@@ -2096,6 +2096,17 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
   for (int k = 0; k < n - 1; k++) emit_stmt(c, bb[k], b, 0);
+  /* a value-less tail (nil/void/unknown -- e.g. an arm ending in `puts`,
+     doom's debug-toggle arms in GosuWindow#button_down): run it as a
+     statement and leave the arm value at the slot default, mirroring the
+     if-as-value emitter. Assigning it would route `puts` through
+     emit_expr, which has no expression form for it. */
+  TyKind lt = n > 0 ? comp_ntype(c, bb[n - 1]) : TY_NIL;
+  if (n > 0 && (lt == TY_NIL || lt == TY_VOID || lt == TY_UNKNOWN)) {
+    emit_stmt(c, bb[n - 1], b, 0);
+    buf_printf(b, "_cr%d = %s; ", cr, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
+    return;
+  }
   buf_printf(b, "_cr%d = ", cr);
   if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], b); else emit_expr(c, bb[n - 1], b); }
   else buf_puts(b, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));

@@ -6523,8 +6523,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* respond_to?(:m): compile-time approximation. A universal method set is
      always true; otherwise consult the receiver's class / class-method chain.
-     Unknown primitive methods answer conservatively false. */
-  if (sp_streq(name, "respond_to?") && recv >= 0 && argc >= 1) {
+     Unknown primitive methods answer conservatively false. Also fires for
+     the receiverless (implicit-self) form, resolved against the enclosing
+     class -- `self.fullscreen = v if respond_to?(:fullscreen=)` (doom's
+     gosu_window.rb). */
+  if (sp_streq(name, "respond_to?") && argc >= 1) {
     const char *aty = nt_type(nt, argv[0]);
     const char *qm = NULL;
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
@@ -6592,7 +6595,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             }
           }
         }
-        else if (ty_is_object(rt)) {
+        else if (recv >= 0 && ty_is_object(rt)) {
           int cid = ty_object_class(rt);
           /* a writer query (`m=`) consults the writer table under its base name */
           size_t ql = strlen(qm);
@@ -6608,6 +6611,45 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }       /* public: always */
             else if (foldable) { resolved = 1; yes = include_all; }  /* private/protected */
             /* else: private/protected + runtime include_all -> unresolved */
+          }
+        }
+        else if (recv < 0) {
+          /* implicit self: resolve against the enclosing scope's class. An
+             instance method consults the instance chain (methods + attr
+             readers/writers, a `m=` query matching the writer table under
+             its base name); a class (`def self.x`) method consults the
+             class-method chain and singleton attrs. Toplevel (class_id < 0)
+             stays unresolved and takes the normal fall-through. */
+          Scope *ss = comp_scope_of(c, id);
+          if (ss && ss->class_id >= 0) {
+            int cid = ss->class_id;
+            size_t ql = strlen(qm);
+            int is_wr = ql > 0 && qm[ql - 1] == '=';
+            char wbase[256]; wbase[0] = '\0';
+            if (is_wr && ql - 1 < sizeof wbase) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+            if (ss->is_cmethod) {
+              resolved = 1;
+              yes = comp_cmethod_in_chain(c, cid, qm, NULL) >= 0;
+              /* singleton attr_accessor/reader/writer via class << self */
+              if (!yes) {
+                if (is_wr) yes = comp_is_sg_writer(&c->classes[cid], wbase);
+                else yes = comp_is_sg_reader(&c->classes[cid], qm);
+              }
+            }
+            else {
+              int found = comp_method_in_chain(c, cid, qm, NULL) >= 0 ||
+                          comp_reader_in_chain(c, cid, qm, NULL) ||
+                          (is_wr && comp_writer_in_chain(c, cid, wbase, NULL));
+              if (!found) { resolved = 1; yes = 0; }
+              else {
+                /* receiverless respond_to? still answers false for a private
+                   or protected match unless include_all folded true. */
+                int v = comp_method_vis_in_chain(c, cid, qm);
+                if (v == SP_VIS_PUBLIC) { resolved = 1; yes = 1; }
+                else if (foldable) { resolved = 1; yes = include_all; }
+                /* else: private/protected + runtime include_all -> unresolved */
+              }
+            }
           }
         }
         /* a primitive/poly/unknown receiver with a non-universal method: we
