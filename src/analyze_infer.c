@@ -883,10 +883,14 @@ TyKind infer_call(Compiler *c, int id) {
                       sp_streq(name, "protected_instance_methods"))) return TY_POLY;
   }
 
-  /* __method__ / __callee__ -> the enclosing method's name (a symbol) */
+  /* __method__ / __callee__ -> the enclosing method's name (a symbol), or
+     nil at the top level, where the enclosing scope has no name (matching
+     the codegen, which emits sp_box_nil() there) */
   if (recv < 0 && argc == 0 &&
-      (sp_streq(name, "__method__") || sp_streq(name, "__callee__")))
-    return TY_SYMBOL;
+      (sp_streq(name, "__method__") || sp_streq(name, "__callee__"))) {
+    Scope *s = comp_scope_of(c, id);
+    return (s && s->name && s->name[0]) ? TY_SYMBOL : TY_NIL;
+  }
 
   /* identity methods: return the receiver unchanged */
   if (recv >= 0 && argc == 0 &&
