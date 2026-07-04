@@ -210,6 +210,22 @@ void compute_instantiated(Compiler *c) {
         disable = 1; break;
       }
     }
+    /* bare `new(...)` (no receiver) inside a class/singleton method (`def
+       self.foo; ...; new(...); end`) is implicit `self.new(...)`, i.e. the
+       enclosing class -- e.g. doom's `Texture.parse_texture` builds each
+       Texture via a bare `new(name, ...)`. Missing this meant such a
+       class's `instantiated` flag never got set unless some other call
+       site also did `Texture.new` explicitly -- so a poly-array element
+       member-read dispatch silently dropped its case arm, reading back
+       nil/0 for every field of an otherwise fully-constructed object.
+       Class methods only: inside an *instance* method bare `new` is not
+       Class#new (Ruby raises NameError unless a method `new` is in
+       scope), so it must not mark the class instantiated. */
+    if (recv < 0 && sp_streq(name, "new")) {
+      Scope *encl = comp_scope_of(c, id);
+      if (encl && encl->class_id >= 0 && encl->is_cmethod)
+        c->classes[encl->class_id].instantiated = 1;
+    }
     /* raise Cls / raise Cls, msg : constructs an instance of Cls */
     if (recv < 0 && sp_streq(name, "raise")) {
       int rargs = nt_ref(nt, id, "arguments");

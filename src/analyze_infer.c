@@ -2399,6 +2399,19 @@ else {
         if (!has_user) return TY_POLY_ARRAY;
       }
       if (sp_streq(name, "clamp")) return TY_POLY;  /* boxed numeric clamp -> poly */
+      /* poly.delete(chars): String#delete on a value that widened to poly
+         (`data[offset, 8].delete("\x00").upcase` stripping NUL padding off a
+         fixed-width WAD name field in doom's texture parser). Resolve it here
+         so the poly method-dispatch below does not bind `delete` to whatever
+         user class happens to define one; always a concrete TY_STRING, like
+         the rt==TY_STRING rule. Skipped when a user class defines `delete`
+         (the class-dispatch unification then wins). */
+      if (sp_streq(name, "delete") && argc == 1) {
+        int has_user = 0;
+        for (int k = 0; k < c->nclasses && !has_user; k++)
+          if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
+        if (!has_user) return TY_STRING;
+      }
       if (sp_streq(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
       if (sp_streq(name, "[]") && argc == 2) return TY_POLY;  /* 2-arg poly slice */
       /* []= on a poly receiver yields the assigned value, emitted boxed */

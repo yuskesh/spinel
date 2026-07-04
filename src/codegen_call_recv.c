@@ -4259,6 +4259,23 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
+  /* poly receiver: delete(chars) -> String#delete on the unboxed payload.
+     Mirrors the analyzer's poly rule (result is a concrete TY_STRING): a
+     string that widened to poly -- `data[offset, 8].delete("\x00")` stripping
+     NUL padding off a fixed-width WAD name field in doom's texture parser.
+     Like the analyzer rule, skipped when a user class defines `delete` (the
+     per-class poly dispatch below then generates the proper arms). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "delete") && argc == 1 &&
+      comp_ntype(c, id) == TY_STRING) {
+    int has_user_delete = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_chain(c, k, "delete", NULL) >= 0) { has_user_delete = 1; break; }
+    if (!has_user_delete) {
+      buf_puts(b, "sp_str_delete(sp_poly_to_s("); emit_expr(c, recv, b);
+      buf_puts(b, "), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
+  }
 
   /* poly receiver: gsub/sub with a regex literal -- extract the string
      payload (poly values reaching here are strings) and route to the
