@@ -21,6 +21,11 @@ class Set
     add(x)
   end
 
+  def delete(x)
+    @data.delete(x)
+    self
+  end
+
   def include?(x)
     @data.include?(x)
   end

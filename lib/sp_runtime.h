@@ -2063,6 +2063,25 @@ static sp_PolyArray *sp_math_lgamma(double x) {
 }
 static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
 static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (mrb_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
+/* Array#delete(v): removes every element sp_poly_eq to v, returns v (or
+   nil if not found). Was missing for TY_POLY_ARRAY -- only TY_INT_ARRAY/
+   TY_STR_ARRAY had it -- which blocked the array-backed Set package's
+   #delete (doom's `@secret_sectors.delete(sector_idx)`). Lives here (not
+   sp_array.c, home of sp_IntArray_delete et al) because it needs
+   sp_poly_eq, which is inline-per-TU in this file, not linkable from the
+   separately-compiled cold array library. */
+static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {
+  if (a && a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); }
+  if (!a) return sp_box_nil();
+  mrb_int w = 0;
+  mrb_bool found = FALSE;
+  for (mrb_int i = 0; i < a->len; i++) {
+    if (!sp_poly_eq(a->data[i], v)) { a->data[w] = a->data[i]; w++; }
+    else found = TRUE;
+  }
+  a->len = w;
+  return found ? v : sp_box_nil();
+}
 
 /* FFI array hand-off. Concrete arrays expose their element storage zero-copy
    (mrb_int/mrb_float are int64/double on 64-bit targets). A poly_array can't
@@ -3311,6 +3330,30 @@ static sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b
 static mrb_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 static mrb_int sp_PolyPolyHash_length(sp_PolyPolyHash*h){return h->len;}
 static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->occ[i]=0;h->len=0;}
+/* Hash#delete for a poly-keyed hash: was entirely missing (only the
+   String/Symbol-keyed hash kinds had a delete), so `poly_poly_hash.
+   delete(k)` hit codegen's "unsupported call" catch-all -- e.g. doom's
+   `@active_doors.delete(sector_idx)` once @active_doors unifies to
+   poly-keyed storage. Rebuild-and-swap rather than an in-place
+   backward-shift: order[] here stores *slot indices* (unlike Str/
+   SymPolyHash, which store keys directly), so a backward-shift would
+   also need to renumber every order[] entry whose slot moved -- this is
+   O(n) either way for a table this size, and much less error-prone. `tmp`
+   is a GC-allocated shell; steal its arrays into `h` and null tmp's own
+   fields so its finalizer (which frees h->keys et al by pointer) doesn't
+   double-free the arrays h now owns when tmp is later collected. */
+static void sp_PolyPolyHash_delete(sp_PolyPolyHash*h,sp_RbVal k){
+  if(!h||!sp_PolyPolyHash_has_key(h,k))return;
+  sp_PolyPolyHash*tmp=sp_PolyPolyHash_new();
+  for(mrb_int i=0;i<h->len;i++){
+    mrb_int idx=h->order[i];
+    if(!sp_rbval_eql_key(h->keys[idx],k))sp_PolyPolyHash_set(tmp,h->keys[idx],h->vals[idx]);
+  }
+  free(h->keys);free(h->vals);free(h->order);free(h->occ);
+  h->keys=tmp->keys;h->vals=tmp->vals;h->order=tmp->order;h->occ=tmp->occ;
+  h->len=tmp->len;h->cap=tmp->cap;h->mask=tmp->mask;
+  tmp->keys=NULL;tmp->vals=NULL;tmp->order=NULL;tmp->occ=NULL;
+}
 static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
   if (v.tag != SP_TAG_OBJ) return sp_box_nil();
   switch (v.cls_id) {

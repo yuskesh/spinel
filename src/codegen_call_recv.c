@@ -325,6 +325,15 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_PolyArray_delete_at("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
+    /* Array#delete(v) (value-based, not index-based) on TY_POLY_ARRAY --
+       same array_kind()==NULL gating gap as delete_at above. The typed
+       forms live inside the `if (k)` block below; poly arrays never get
+       there. Needed for the array-backed Set package's #delete, whose
+       @data widens to poly for mixed-element sets. */
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "delete") && argc == 1) {
+      buf_puts(b, "sp_PolyArray_delete("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
     /* find / detect { |x| cond } on a poly array -> the element or nil. The
        typed-array forms live inside the `if (k)` block below, but array_kind is
        NULL for a poly array, so handle it here with the boxed element type. */
@@ -2353,7 +2362,7 @@ else {
       }
       if (sp_streq(name, "delete") && argc == 1 &&
           (rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH || rt == TY_SYM_POLY_HASH ||
-           rt == TY_STR_POLY_HASH)) {
+           rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) {
         /* returns the deleted value (or nil on a miss), then removes the key */
         TyKind vt = ty_hash_val(rt);
         int th = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
