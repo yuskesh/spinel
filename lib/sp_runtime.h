@@ -2073,6 +2073,9 @@ static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) ret
 static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {
   if (a && a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); }
   if (!a) return sp_box_nil();
+  /* sp_poly_eq can allocate (bigint promotion) and so trigger a collection
+     mid-loop; a and v may be reachable only through the call expression. */
+  SP_GC_ROOT(a); SP_GC_ROOT_RBVAL(v);
   mrb_int w = 0;
   mrb_bool found = FALSE;
   for (mrb_int i = 0; i < a->len; i++) {
@@ -3341,10 +3344,16 @@ static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(mrb_int i=
    O(n) either way for a table this size, and much less error-prone. `tmp`
    is a GC-allocated shell; steal its arrays into `h` and null tmp's own
    fields so its finalizer (which frees h->keys et al by pointer) doesn't
-   double-free the arrays h now owns when tmp is later collected. */
+   double-free the arrays h now owns when tmp is later collected. Root h
+   and tmp for the rebuild (house pattern, cf. sp_StrIntHash_keys and the
+   codegen compact arm): sp_rbval_eql_key/_hash_key can reach the user
+   ==/hash hooks, whose generated code may allocate and collect -- an
+   unrooted tmp would be swept (and finalized) mid-loop. */
 static void sp_PolyPolyHash_delete(sp_PolyPolyHash*h,sp_RbVal k){
   if(!h||!sp_PolyPolyHash_has_key(h,k))return;
+  SP_GC_ROOT(h);
   sp_PolyPolyHash*tmp=sp_PolyPolyHash_new();
+  SP_GC_ROOT(tmp);
   for(mrb_int i=0;i<h->len;i++){
     mrb_int idx=h->order[i];
     if(!sp_rbval_eql_key(h->keys[idx],k))sp_PolyPolyHash_set(tmp,h->keys[idx],h->vals[idx]);
