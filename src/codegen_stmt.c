@@ -2644,6 +2644,8 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "%s = %s; ", g_method_pr_var, nilv);
       }
     }
+    if (g_exc_frame_depth > g_method_pr_exc_depth)
+      buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth - g_method_pr_exc_depth);
     buf_printf(b, "goto %s; }\n", g_method_pr_label);
     return;
   }
@@ -2671,12 +2673,20 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         buf_puts(b, "; ");
       }
     }
-    buf_printf(b, "_retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
-               ctx->lid, ctx->lid);
+    {
+      int pops = g_exc_frame_depth - ctx->exc_base;
+      if (pops < 1) pops = 1;   /* at least the ensure frame itself */
+      buf_printf(b, "_retf%d = 1; sp_exc_top -= %d; goto _ensure%d; }\n",
+                 ctx->lid, pops, ctx->lid);
+    }
     return;
   }
 
   emit_indent(b, indent);
+  /* leaving through live begin/rescue frames: pop them, or their jmp_bufs
+     dangle into this soon-dead C frame and the next raise longjmps into
+     garbage (doom's SoundManager#[] early cache returns). */
+  if (g_exc_frame_depth > 0) buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth);
   if (n > 1) {
     int ta = ++g_tmp;
     buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
@@ -2906,11 +2916,12 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       emit_indent(b, indent); emit_ctype(c, g_ret_type, b);
       buf_printf(b, " _retv%d = %s;\n", eid, default_value(g_ret_type));
     }
-    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval };
+    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth };
 
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+    g_exc_frame_depth++;
     if (resultvar && else_stmts < 0) {
       const char *sv = g_result_var; g_result_var = resultvar;
       emit_stmts_tail(c, body, b, indent + 1);
@@ -2919,6 +2930,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     else {
       emit_stmts(c, body, b, indent + 1);
     }
+    g_exc_frame_depth--;
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
     if (else_stmts >= 0) {
       if (resultvar) {
@@ -3000,6 +3012,12 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
                  eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid);
     }
     else {
+      /* the deferred return leaves through every enclosing live begin frame:
+         pop them or their jmp_bufs dangle into this soon-dead C frame */
+      if (g_exc_frame_depth > 0) {
+        buf_printf(b, "if (_retf%d) sp_exc_top -= %d;\n", eid, g_exc_frame_depth);
+        emit_indent(b, indent);
+      }
       /* inside a poly-slot proc body (g_result_var, e.g. a break-capable
          lambda) the deferred value returns through the slot ABI, not a raw
          C return of an sp_RbVal from an mrb_int function */
@@ -3032,6 +3050,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
   emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+  g_exc_frame_depth++;
   /* body value is the begin value only when there is no else clause */
   if (resultvar && else_stmts < 0) {
     const char *sv = g_result_var; g_result_var = resultvar;
@@ -3041,6 +3060,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   else {
     emit_stmts(c, body, b, indent + 1);
   }
+  g_exc_frame_depth--;
   emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
   if (else_stmts >= 0) {  /* else runs only on success; its value is the begin value */
     if (resultvar) {

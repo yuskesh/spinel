@@ -640,6 +640,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_self_deref = (s->class_id >= 0 && !s->is_cmethod && c->classes[s->class_id].is_value_type &&
                   s->name && !sp_streq(s->name, "initialize")) ? "." : "->";
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
+  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
   int is_void = method_is_void(s);
   /* A method that creates a non-lambda proc with a `return` owns a proc-return
      frame: a setjmp target the proc longjmps to. All returns funnel through a
@@ -677,6 +678,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     }
     buf_puts(b, "    {\n");
     g_method_pr_label = "_pr_done"; g_method_pr_var = is_void ? NULL : "_prret";
+    g_method_pr_exc_depth = 0;   /* _pr_done sits outside every begin frame */
   }
   const char *sv_rv2 = g_result_var; int sv_rp2 = g_result_poly;
   if (pr_frame && !is_void) { g_result_var = "_prret"; g_result_poly = (s->ret == TY_POLY); }
@@ -1108,6 +1110,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
   int sv_fbskip = g_brk_skip_id; g_brk_skip_id = -1;
+  int sv_fbexcd = g_exc_frame_depth, sv_fbprexcd = g_method_pr_exc_depth;
+  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
 
   /* Unpack capture struct */
   if (ncap > 0 || cap_self) {
@@ -1223,6 +1227,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
+  g_exc_frame_depth = sv_fbexcd; g_method_pr_exc_depth = sv_fbprexcd;
 
   /* Emit creation expression:
      If there are captures, allocate a GC-managed capture struct, fill it,
@@ -1584,6 +1589,8 @@ else if (orecv >= 0 && onm) {
      capture. Save/clear the method funnel and set the proc-return home accessor. */
   const char *sv_pr_label = g_method_pr_label, *sv_pr_var = g_method_pr_var, *sv_prh = g_proc_return_home;
   g_method_pr_label = NULL; g_method_pr_var = NULL;
+  int sv_excd = g_exc_frame_depth, sv_prexcd = g_method_pr_exc_depth;
+  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
   char home_acc[48] = "";
   if (ret_proc) { snprintf(home_acc, sizeof home_acc, "((_proc_cap_%d *)_cap)->_home", pid); g_proc_return_home = home_acc; }
   else g_proc_return_home = NULL;
@@ -1728,6 +1735,7 @@ else if (orecv >= 0 && onm) {
   g_proc_body_kind = sv_pbk; g_proc_brk_home = sv_pbh;
   g_result_poly = sv_rp;
   g_method_pr_label = sv_pr_label; g_method_pr_var = sv_pr_var; g_proc_return_home = sv_prh;
+  g_exc_frame_depth = sv_excd; g_method_pr_exc_depth = sv_prexcd;
 
   if (ncap == 0 && !cap_self && !ret_proc) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",

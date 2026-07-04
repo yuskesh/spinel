@@ -7961,9 +7961,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "int _retf%d = 0; int _excf%d = 0; const char *_excmsg%d = NULL, *_exccls%d = NULL; ",
                  eid, eid, eid, eid);
       if (has_retval) { emit_ctype(c, g_ret_type, b); buf_printf(b, " _retv%d = %s; ", eid, default_value(g_ret_type)); }
-      g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval };
+      g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth };
       buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; ");
       buf_puts(b, "sp_exc_top++; if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) { ");
+      g_exc_frame_depth++;
     }
     for (int k = 0; k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
     if (bbn > 0) {
@@ -7983,6 +7984,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (is_mx) {
       g_ensure_depth--;
+      g_exc_frame_depth--;
       buf_printf(b, "sp_exc_top--; } else { sp_exc_top--; sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; if (sp_unwind_kind == SP_UNWIND_NONE) { sp_proc_homes_unwind(); _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; } } ",
                  eid, eid, eid);
       buf_printf(b, "_ensure%d: ; sp_Mutex_unlock(_t%d); ", eid, mtmp);
@@ -8000,6 +8002,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
                    eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid);
       }
       else {
+        /* the deferred return leaves through every enclosing live begin
+           frame: pop them (see the begin..ensure epilogue in codegen_stmt.c) */
+        if (g_exc_frame_depth > 0)
+          buf_printf(b, "if (_retf%d) sp_exc_top -= %d; ", eid, g_exc_frame_depth);
         if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d; ", eid, eid);
         else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil(); ", eid);
         else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0; ", eid);

@@ -130,6 +130,8 @@ extern int g_result_poly;
 extern const char *g_method_pr_label;
 extern const char *g_method_pr_var;
 extern const char *g_proc_return_home;
+extern int g_exc_frame_depth;      /* live begin/rescue setjmp frames (see codegen_util.c) */
+extern int g_method_pr_exc_depth;
 /* Return type of the method currently being emitted, so a tail/return value
    can be boxed when the method returns poly but the value is concrete. */
 extern TyKind g_ret_type;
@@ -154,7 +156,7 @@ void emit_line_directive(Compiler *c, int id, Buf *b);
    pushes a context on this stack; emit_return uses the top to emit a
    deferred goto instead of a bare C `return`. */
 #define MAX_ENSURE_DEPTH 32
-typedef struct { int lid; int has_retval; } EnsureCtx;
+typedef struct { int lid; int has_retval; int exc_base; } EnsureCtx;
 extern EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
 extern int       g_ensure_depth;
 
