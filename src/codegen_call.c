@@ -3781,11 +3781,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "({ ");
       buf_printf(b, "sp_File *_t%d = %s; ", rf, r);
       free(rb.p); r = NULL;
-      /* Read each line into a reusable stack buffer instead of allocating a
-         GC string per line; the line does not escape the loop body. */
-      buf_printf(b, "char _t%d[65536]; const char *_t%d; "
-                    "while ((_t%d = sp_File_gets_buf(_t%d, _t%d, sizeof(_t%d))) != NULL) {",
-                 buft, lt, lt, rf, buft, buft);
+      /* Read each line into ONE reusable heap line string (allocated once
+         per loop, length reset per line) instead of a GC string per line;
+         the line does not escape the loop body. A heap string carries a
+         real marker header, so runtime helpers can root it -- a raw stack
+         buffer must not cross the runtime API (its [-1] byte is arbitrary
+         stack memory for the GC mark). */
+      buf_printf(b, "char *_t%d = sp_str_alloc(65535); SP_GC_ROOT(_t%d); const char *_t%d; "
+                    "while ((_t%d = sp_File_gets_into(_t%d, _t%d, 65536)) != NULL) {",
+                 buft, buft, lt, lt, rf, buft);
       if (bpn) buf_printf(b, " const char *lv_%s = _t%d;", bpn, lt);
       for (int k = 0; k < bbn; k++) emit_stmt(c, bbb[k], b, 0);
       buf_printf(b, " } (sp_File *)_t%d; })", rf);

@@ -996,6 +996,17 @@ static inline const char *sp_File_gets_buf(sp_File *f, char *buf, int size) {
   if (!fgets(buf, size, f->fp)) return NULL;
   return buf;
 }
+/* Like gets_buf, but into a reusable HEAP line string: the buffer carries a
+   real string header (marker + length), so it is a first-class spinel string
+   -- runtime helpers may read its marker or root it safely. Every string
+   crossing the runtime API must be spinel-marked (or a 0xff literal); a raw
+   stack buffer whose [-1] byte is arbitrary memory breaks the GC mark. */
+static inline const char *sp_File_gets_into(sp_File *f, char *s, int cap) {
+  if (!f || !f->fp) return NULL;
+  if (!fgets(s, cap, f->fp)) return NULL;
+  sp_str_set_len(s, strlen(s));
+  return s;
+}
 static inline const char *sp_File_read(sp_File *f) {
   if (!f || !f->fp) return sp_str_empty;
   long pos = ftell(f->fp);

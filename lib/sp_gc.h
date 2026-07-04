@@ -79,6 +79,12 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    walker routes it through sp_mark_rbval (the object pointer sits in a union at
    a nonzero offset, only for STR/OBJ tags). */
 #define SP_GC_ROOT_RBVAL(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)1))
+/* Root a string slot that may hold a NON-spinel pointer (a stack line
+   buffer from sp_File_gets_buf, an external char*): tag bit 2 routes the
+   mark through sp_mark_string, which touches nothing unless the marker
+   byte is exactly 0xfe -- safe on arbitrary memory, unlike sp_gc_mark's
+   header walk. Use this for string parameters in runtime helpers. */
+#define SP_GC_ROOT_STR(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)2))
 #define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
 extern sp_gc_hdr *sp_gc_heap;
 extern size_t sp_gc_bytes;
@@ -151,6 +157,7 @@ static inline void sp_cell_scan_rbval(void *p) { sp_mark_rbval(*(sp_RbVal *)p); 
 static inline void sp_gc_mark_root_entry(void **e) {
   uintptr_t u = (uintptr_t)e;
   if (u & (uintptr_t)1) { sp_mark_rbval(*(sp_RbVal *)(u & ~(uintptr_t)1)); }
+  else if (u & (uintptr_t)2) { sp_mark_string(*(const char **)(u & ~(uintptr_t)2)); }
   else { void *o = *e; if (o) sp_gc_mark(o); }
 }
 
