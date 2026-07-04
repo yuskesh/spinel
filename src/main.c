@@ -18,6 +18,7 @@
  *   spinel -E app.rb a b c      compile to a temp dir, run, ARGV=[a,b,c]
  */
 #include "node_table.h"
+#include "spinel_rev.h"
 #include "codegen.h"
 #include "analyze.h"
 
@@ -173,6 +174,7 @@ static void usage(void) {
     "Options:\n"
     "  -o FILE     Output file\n"
     "  --link ARG  Extra link input (object/archive/-lLIB); repeatable\n"
+    "  --version   Print the compiler build revision\n"
     "  -c          C source only (don't compile)\n"
     "  -I DIR      Add a feature search root for `require \"name\"` (like ruby -I)\n"
     "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary\n"
@@ -234,6 +236,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
     else if (sp_streq(a, "--dump-ast"))    { dump_ast = 1; i++; }
     else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
+    else if (sp_streq(a, "--version")) { printf("spinel %s\n", SPINEL_BUILD_REV); return 0; }
     else if (sp_streq(a, "-e")) {
       if (++i < argc) {
         if (eval_used) s_add(&eval_src, "\n");

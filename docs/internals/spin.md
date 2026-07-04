@@ -221,12 +221,19 @@ specification:* `spin lock --update` and `--frozen` (CI mode).
   (an application that never constructs a package class should not pay for
   it — also the recovery path for the gate-flip's optcarrot cost).
 
-### R8 — compatibility as metadata (specification)
+### R8 — compatibility as metadata (implemented, SHA-versioned)
 
-`spin test` already runs a gem's tests under the current compiler; the
-recorded last-passing compiler version, per-release probe results in the
-index, and "compiles at 0.9, fails at 0.10" warnings in `spin add`/`build`
-await toolchain versioning.
+The toolchain version is the compiler's build revision — `spinel
+--version` prints the git SHA embedded at build time — which unblocks R8
+without deciding semver. Index gem files carry flat `[[probe]]` records
+(version, spinel = build SHA, result, detail, date): `spin publish`
+appends a pass for the publishing build automatically (its hard test gate
+just ran), and reprobe sweeps can append fails. Resolution surfaces them
+before fetching: a fail recorded against the exact current build warns
+"recorded FAILING with this compiler build", any newest-fail warns
+generically, and neither blocks — the build is the final answer. Semver
+toolchain constraints (`spinel = "~> x.y"` in the manifest) still await
+real versioning.
 
 ### R9 — tooling: `spin`, a separate project tool (implemented)
 

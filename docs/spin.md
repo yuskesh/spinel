@@ -137,6 +137,13 @@ constraint, so a build without a lockfile is still deterministic;
 `gem.lock` then pins the exact commit. `spin search [term]` lists index
 entries. Set `SPIN_INDEX` to use another index (a `file://` URL works).
 
+Index entries also carry **probe records** — which compiler build a release
+passed or failed its tests under (`spin publish` records a pass for your
+build automatically; `spinel --version` prints the build revision). When
+you depend on a release with a recorded failure, resolution warns before
+fetching — strongly when the failure was recorded against your exact
+compiler build — but never blocks: your own build is the final answer.
+
 ### gem.lock
 
 `spin lock` (and `spin add`/`remove`) writes `gem.lock`: one `[lock.<name>]`

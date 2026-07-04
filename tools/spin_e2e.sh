@@ -205,6 +205,21 @@ OUT=$("$SPIN" publish --direct --repo https://example.com/other/spinel-publib 2>
   && fail "same name, different repo must be refused"
 echo "$OUT" | grep -q "name policy" || fail "name-policy message"
 "$SPIN" search publib | grep -q "^publib 0.1.0 " || fail "published gem missing from search"
+
+# --- R8 probes: publish records a pass; resolution warns on recorded fails -------
+grep -q '^\[\[probe\]\]$' "$WORK/index/gems/publib.toml" || fail "publish wrote no probe record"
+grep -q '^result = "pass"$' "$WORK/index/gems/publib.toml" || fail "probe record isn't a pass"
+REV=$(cd "$WORK" && "$(dirname "$SPIN")/spinel" --version | awk '{print $2}')
+printf '\n[[probe]]\nversion = "0.1.0"\nspinel = "%s"\nresult = "fail"\ndetail = "e2e-injected"\ndate = "2026-01-01"\n' "$REV" >> "$WORK/index/gems/publib.toml"
+git -C "$WORK/index" add gems/publib.toml
+git -C "$WORK/index" -c user.email=spin@e2e -c user.name=spin-e2e commit -qm failprobe
+cd "$WORK"
+"$SPIN" new probeapp >/dev/null
+cd probeapp
+printf '[gem]\nname = "probeapp"\n\n[dependencies]\npublib = "0.1.0"\n' > gem.toml
+rm -rf "$XDG_CACHE_HOME/spinel/index"
+OUT=$("$SPIN" fetch 2>&1 || true)
+echo "$OUT" | grep -q "recorded FAILING with this compiler build" || fail "exact-build fail probe didn't warn"
 unset SPIN_INDEX
 
 echo "spin-e2e: ALL GREEN"

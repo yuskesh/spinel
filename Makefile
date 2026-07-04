@@ -135,7 +135,18 @@ build/csrc:
 	@mkdir -p build/csrc
 
 build/csrc/%.o: src/%.c $(SPINEL_HDRS) | build/csrc
-	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+	$(CC) $(CFLAGS) -Isrc -Ibuild/csrc -c $< -o $@
+
+# Build revision, embedded in `spinel --version` (and spin's probe records).
+# cmp-guarded so only a HEAD move recompiles main.o, not every build.
+build/csrc/spinel_rev.h: FORCE | build/csrc
+	@r=$$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown); \
+	echo "#define SPINEL_BUILD_REV \"$$r\"" > $@.tmp; \
+	if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
+
+build/csrc/main.o: build/csrc/spinel_rev.h
+
+FORCE:
 
 build/csrc/sp_parse_lib.o: src/spinel_parse.c $(PRISM_LIB) | build/csrc
 	$(CC) $(CFLAGS) -I$(PRISM_INC) -c src/spinel_parse.c -o $@

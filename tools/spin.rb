@@ -46,6 +46,14 @@ def spinel_bin
   "spinel"  # PATH fallback
 end
 
+# the compiler build revision ("spinel <sha>"), "" when unknown -- keys the
+# R8 probe records; a git SHA is the toolchain version until semver exists
+def spinel_rev
+  f = sh_read(spinel_bin + " --version").split(" ")
+  r = f.length >= 2 ? f[1] : ""
+  r == "unknown" ? "" : r
+end
+
 
 # --- index (M3) ----------------------------------------------------------------
 # The index is a git repo, not a server (R5): gems/<name>.toml maps a name to
@@ -141,6 +149,29 @@ def index_select(dep, cons, offline)
     i += 1
   end
   spin_die("no release of " + dep + " satisfies " + (cons == "" ? "*" : cons)) if sel_v == ""
+  # R8: surface recorded probe results for the selected release. A fail
+  # recorded against THIS compiler build is a strong warning; the newest
+  # fail against any build still warns. Never an error -- the build tells.
+  myrev = spinel_rev
+  exact = ""
+  latest = ""
+  latest_detail = ""
+  pi = 0
+  while pi < gdoc.array_len("probe")
+    t2 = "probe." + pi.to_s
+    if gdoc.get(t2, "version") == sel_v
+      r2 = gdoc.get(t2, "result")
+      latest = r2
+      latest_detail = gdoc.get(t2, "detail")
+      exact = r2 if myrev != "" && gdoc.get(t2, "spinel") == myrev
+    end
+    pi += 1
+  end
+  if exact == "fail"
+    $stderr.puts "spin: warning: " + dep + " " + sel_v + " is recorded FAILING with this compiler build" + (latest_detail == "" ? "" : " (" + latest_detail + ")")
+  elsif exact == "" && latest == "fail"
+    $stderr.puts "spin: warning: " + dep + " " + sel_v + "'s newest probe is a fail" + (latest_detail == "" ? "" : " (" + latest_detail + ")")
+  end
   sel_v + "\n" + repo + "\n" + sel_r
 end
 
@@ -863,6 +894,10 @@ def cmd_publish(root, repo_override, ref_override, direct)
     entry = "name = \"" + name + "\"\nrepo = \"" + repo + "\"\n"
   end
   entry += "\n[[release]]\nversion = \"" + version + "\"\nref = \"" + ref + "\"\n"
+  rev = spinel_rev
+  if rev != ""
+    entry += "\n[[probe]]\nversion = \"" + version + "\"\nspinel = \"" + rev + "\"\nresult = \"pass\"\ndate = \"" + Time.now.strftime("%Y-%m-%d") + "\"\n"
+  end
 
   if direct
     File.write(gf, entry)
