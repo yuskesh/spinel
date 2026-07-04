@@ -148,6 +148,15 @@ int g_result_poly = 0;
 const char *g_method_pr_label = NULL;
 const char *g_method_pr_var = NULL;
 const char *g_proc_return_home = NULL;
+/* Number of live setjmp exception frames (begin/rescue) enclosing the
+   current emission point. A `return` from inside a try body must pop them
+   (sp_exc_top -= N) before leaving -- a stale frame's jmp_buf points into
+   a dead C stack frame, and the next raise longjmps into it (doom's
+   SoundManager#[] early returns corrupted the stack this way).
+   g_method_pr_exc_depth snapshots the depth at the return-funnel target so
+   funnel gotos pop only the frames they actually exit. */
+int g_exc_frame_depth = 0;
+int g_method_pr_exc_depth = 0;
 /* Loop-invariant string-length hoisting: while a loop whose receiver string is
    not mutated in its body is being emitted, g_hoist_len_recv holds that
    receiver's AST local name and g_hoist_len_var the C temp caching its length;
