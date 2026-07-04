@@ -19,6 +19,8 @@ usage: spin <command> [args]
   list [--json]        resolved dependency set (name, version, source)
   tree [--json]        dependency tree from this gem
   publish [--direct]   validate + test, then submit this release to the index
+  install [name..]     build and copy bin/ executables to ~/.local/bin
+                       (--prefix DIR, --uninstall)
 USAGE
 
 def spin_die(msg)
@@ -847,6 +849,45 @@ def publish_repo_url(root, override)
   u
 end
 
+# `spin install`: build this gem's executables and copy them onto PATH --
+# the last step of "I wrote a CLI and now I use it". Local sources only;
+# installing a tool from the index is a separate (deferred) verb, so the
+# rubygems reading of `install <name>` never collides with bin/<name>.
+def install_dir(prefix)
+  return prefix if prefix != ""
+  d = ENV["XDG_BIN_HOME"].to_s
+  return d if d != ""
+  File.join(ENV["HOME"].to_s, ".local/bin")
+end
+
+def cmd_install(prj, targets, prefix, uninstall)
+  bins = prj.bins
+  spin_die("no bin/*.rb executables (a library has nothing to install)") if bins.empty?
+  targets = bins if targets.empty?
+  targets.each { |t| spin_die("no such executable: bin/#{t}.rb") unless bins.include?(t) }
+  d = install_dir(prefix)
+  if uninstall
+    targets.each do |t|
+      f = File.join(d, t)
+      if File.exist?(f)
+        File.delete(f)
+        puts "uninstalled " + f
+      else
+        puts "not installed: " + f
+      end
+    end
+    return
+  end
+  cmd_build(prj, targets, "")
+  system("mkdir -p " + d)
+  targets.each do |t|
+    src = File.join(prj.root, "build/bin", t)
+    dst = File.join(d, t)
+    spin_die("install: copy failed for " + t) unless system("install -m 755 " + src + " " + dst)
+    puts "installed " + t + " -> " + dst
+  end
+end
+
 def cmd_publish(root, repo_override, ref_override, direct)
   toml = TomlDoc.parse(File.read(File.join(root, "gem.toml")))
   name = toml.get("gem", "name")
@@ -1050,6 +1091,24 @@ when "lock", "fetch", "vendor"
   cmd_vendor(prj) if cmd == "vendor"
 when "search"
   cmd_search(rest.empty? ? "" : rest[0])
+when "install"
+  root = find_root(Dir.pwd)
+  spin_die("no gem.toml found") if root == ""
+  prj = Project.new(root)
+  pfx = ""
+  names = []
+  i4 = 0
+  while i4 < rest.length
+    a4 = rest[i4]
+    if a4 == "--prefix"
+      i4 += 1
+      pfx = rest[i4].to_s
+    elsif !a4.start_with?("--")
+      names.push(a4)
+    end
+    i4 += 1
+  end
+  cmd_install(prj, names, pfx, rest.include?("--uninstall"))
 when "publish"
   root = find_root(Dir.pwd)
   spin_die("no gem.toml found") if root == ""

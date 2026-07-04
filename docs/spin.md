@@ -32,7 +32,9 @@ live in `bin/` (one per file, `spin run <name>` when there are several).
 Grow the app by putting shared code in `myapp.rb` / `myapp/*.rb` and
 requiring it from `bin/`; more `bin/*.rb` files become more executables.
 `spin init` writes a `gem.toml` into an existing directory instead of
-scaffolding.
+scaffolding. When the CLI is ready for daily use, `spin install` builds it
+and copies the executables to `~/.local/bin` (`$XDG_BIN_HOME` / `--prefix`
+override; `--uninstall` removes them).
 
 Everything in the gem participates by extension, not by manifest lists:
 `.rb` is source, `.rbs` is an optional type sidecar, `.c`/`.h` is carried
@@ -219,6 +221,7 @@ objects are reused from the cache. `spin clean` removes `build/`.
 | `spin lock` / `fetch` / `vendor` | pin / warm the cache / copy into `vendor/` |
 | `spin list` / `tree` / `search` (`--json`) | inspect the resolved set / the index |
 | `spin publish [--direct]` | validate + test, then submit this release to the index |
+| `spin install [name..]` | build and copy `bin/` executables to `~/.local/bin` (`--prefix`, `--uninstall`) |
 | `spin clean` | remove `build/` |
 
 Environment: `SPIN_INDEX` (index URL), `SPIN_OFFLINE=1` (cache/vendor

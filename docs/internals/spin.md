@@ -277,9 +277,13 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spinel/`.
   call `spin` from their own build system.
 - Output: one line per phase; `spin list --json` / `spin tree --json` are
   the machine surface. *Still specification:* `-q`/`-v`, distinct exit
-  codes (currently 0/1), test parallelism (`-j`), `spin install`,
+  codes (currently 0/1), test parallelism (`-j`),
   `spin clean --cache`, and `spin remove` refusing while another dependency
-  still requires the gem.
+  still requires the gem. `spin install` (implemented) copies built `bin/`
+  executables to `$XDG_BIN_HOME` / `~/.local/bin` (`--prefix` overrides,
+  `--uninstall` removes); installing a tool *from the index* is
+  deliberately a separate, deferred verb so the rubygems reading of
+  `install <name>` never collides with `bin/<name>`.
 
 ## 6. gem.lock
 
@@ -344,4 +348,5 @@ string parameters downstream (tab/newline-packed record strings instead),
    of `-I`).
 5. Native-cache eviction (currently: never).
 6. `spin lock --update`, `--frozen`, `--dev`/`[dev-dependencies]`,
-   `spin install`, `-q`/`-v`/`-j`, `spin clean --cache`.
+   index-install (a `spin get`-style verb), `-q`/`-v`/`-j`,
+   `spin clean --cache`.

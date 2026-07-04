@@ -222,4 +222,13 @@ OUT=$("$SPIN" fetch 2>&1 || true)
 echo "$OUT" | grep -q "recorded FAILING with this compiler build" || fail "exact-build fail probe didn't warn"
 unset SPIN_INDEX
 
+# --- install: build + copy bin/ onto a prefix, uninstall removes ----------------
+cd "$WORK/app"
+"$SPIN" install --prefix "$WORK/binhome" >/dev/null
+OUT=$("$WORK/binhome/app" | tail -2)
+expect "installed binary runs" "$WANT_OUT
+40" "$OUT"
+"$SPIN" install --uninstall --prefix "$WORK/binhome" >/dev/null
+[ -e "$WORK/binhome/app" ] && fail "uninstall left the binary"
+
 echo "spin-e2e: ALL GREEN"
