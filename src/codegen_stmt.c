@@ -3370,7 +3370,21 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
             memcpy(base, nm, ln - 1); base[ln - 1] = '\0';
             int args = nt_ref(nt, id, "arguments");
             int an = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-            if (comp_writer_in_chain(c, ty_object_class(rt), base, NULL)) {
+            /* attr writer -> field write, UNLESS an explicit `def x=` overrides
+               it at an equal-or-more-derived class (CRuby: attr_accessor
+               defines an ordinary writer method, overridable by a subclass or
+               same-class `def x=`). When overridden, fall through to normal
+               dispatch. The more-derived definition wins; a same-class tie
+               goes to the explicit method. */
+            int wdc = -1, wmdc = -1;
+            int writer_wins = comp_writer_in_chain(c, ty_object_class(rt), base, &wdc);
+            if (writer_wins && comp_method_in_chain(c, ty_object_class(rt), nm, &wmdc) >= 0) {
+              for (int k = ty_object_class(rt); k >= 0; k = c->classes[k].parent) {
+                if (k == wmdc) { writer_wins = 0; break; }
+                if (k == wdc) { writer_wins = 1; break; }
+              }
+            }
+            if (writer_wins) {
               if (an >= 1) {
                 int rc = ty_object_class(rt);
                 char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", base);

@@ -6216,8 +6216,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       char _abase[256]; int _ablen = _alen - 1;
       if (_ablen < (int)sizeof _abase) {
         memcpy(_abase, name, (size_t)_ablen); _abase[_ablen] = '\0';
-        int _arc = ty_object_class(_art), _adefc = -1;
-        if (comp_writer_in_chain(c, _arc, _abase, &_adefc)) {
+        int _arc = ty_object_class(_art), _adefc = -1, _awmdc = -1;
+        /* attr writer -> field write, UNLESS an explicit `def x=` overrides it
+           at an equal-or-more-derived class; then fall through to dispatch.
+           CRuby: attr_accessor defines an ordinary writer method. */
+        int _awins = comp_writer_in_chain(c, _arc, _abase, &_adefc);
+        if (_awins && comp_method_in_chain(c, _arc, name, &_awmdc) >= 0) {
+          for (int k = _arc; k >= 0; k = c->classes[k].parent) {
+            if (k == _awmdc) { _awins = 0; break; }
+            if (k == _adefc) { _awins = 1; break; }
+          }
+        }
+        if (_awins) {
           char _aivn[258]; snprintf(_aivn, sizeof _aivn, "@%s", _abase);
           int _aiv = comp_ivar_index(&c->classes[_adefc < 0 ? _arc : _adefc], _aivn);
           TyKind _aivt = _aiv >= 0 ? c->classes[_adefc < 0 ? _arc : _adefc].ivar_types[_aiv] : TY_UNKNOWN;

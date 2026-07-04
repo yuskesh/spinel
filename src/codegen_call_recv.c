@@ -3414,12 +3414,27 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
 
-    /* attr reader -> field access (recv).iv_x */
-    if (comp_reader_in_chain(c, cid, name, NULL)) {
-      const char *rn2 = comp_resolve_alias(c, cid, name);
-      buf_puts(b, "("); emit_expr(c, recv, b);
-      buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", rn2);
-      return 1;
+    /* attr reader -> field access (recv).iv_x, UNLESS an explicit method of
+       the same name overrides it at an equal-or-more-derived class. CRuby:
+       attr_reader defines an ordinary method, so a subclass `def x` (or a
+       same-class `def x`) overrides it via normal dispatch rather than
+       reading the field. Whichever definition sits in the more-derived class
+       wins; on a same-class tie the explicit method wins. */
+    int rdc = -1, mdc = -1;
+    if (comp_reader_in_chain(c, cid, name, &rdc)) {
+      int reader_wins = 1;
+      if (comp_method_in_chain(c, cid, name, &mdc) >= 0) {
+        for (int k = cid; k >= 0; k = c->classes[k].parent) {
+          if (k == mdc) { reader_wins = 0; break; }
+          if (k == rdc) { reader_wins = 1; break; }
+        }
+      }
+      if (reader_wins) {
+        const char *rn2 = comp_resolve_alias(c, cid, name);
+        buf_puts(b, "("); emit_expr(c, recv, b);
+        buf_printf(b, ")%siv_%s", comp_ty_value_obj(c, rt) ? "." : "->", rn2);
+        return 1;
+      }
     }
     int mi = comp_method_in_chain(c, cid, name, NULL);
     if (mi >= 0) {
