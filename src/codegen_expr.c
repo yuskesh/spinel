@@ -1111,6 +1111,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "PATH_SEPARATOR")) { buf_puts(b, "(&(\"\\xff\" \":\")[1])"); return; }
       if (sp_streq(nm, "ALT_SEPARATOR"))  { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
     }
+    if (par_nmc && (sp_streq(par_nmc, "IO") || sp_streq(par_nmc, "File")) && nm) {
+      /* IO#seek whence constants (File inherits them from IO); the Ruby
+         values 0/1/2 are what sp_File_seek expects. */
+      if (sp_streq(nm, "SEEK_SET")) { buf_puts(b, "((mrb_int)0)"); return; }
+      if (sp_streq(nm, "SEEK_CUR")) { buf_puts(b, "((mrb_int)1)"); return; }
+      if (sp_streq(nm, "SEEK_END")) { buf_puts(b, "((mrb_int)2)"); return; }
+    }
     if (par_nmc && sp_streq(par_nmc, "Process") && nm) {
       if (sp_streq(nm, "CLOCK_MONOTONIC")) { buf_puts(b, "((mrb_int)1)"); return; }
       if (sp_streq(nm, "CLOCK_REALTIME"))  { buf_puts(b, "((mrb_int)0)"); return; }
