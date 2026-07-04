@@ -7321,9 +7321,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (sp_streq(name, "value") || sp_streq(name, "resume")) pm = "sp_poly_fiber_value";
     else if (sp_streq(name, "join")) pm = "sp_poly_fiber_join";
     if (pm) {
+      /* Attr readers count as user definitions too: `attr_accessor :value`
+         must shadow the builtin helper exactly like `def value` does, or the
+         reader call is hijacked (e.g. sp_poly_fiber_value on a Node). The
+         general poly dispatch below emits reader arms, so it handles them. */
       int ncand = 0;
       for (int k = 0; k < c->nclasses; k++)
-        if (comp_method_in_chain(c, k, name, NULL) >= 0) ncand++;
+        if (comp_method_in_chain(c, k, name, NULL) >= 0 ||
+            comp_reader_in_chain(c, k, name, NULL)) ncand++;
       if (ncand == 0) {
         buf_printf(b, "%s(", pm); emit_expr(c, recv, b); buf_puts(b, ")");
         return;
