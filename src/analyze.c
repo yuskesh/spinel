@@ -3673,6 +3673,97 @@ void analyze_program(Compiler *c) {
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty) continue;
+    /* nil-witness: a slot holding `nil | W` encodes nil as the heap
+       pointer's NULL; a by-value struct has no nil representation, so any
+       nil witness on a W-typed slot disqualifies the value layout (#1686).
+       The pointer form's NULL-nil machinery (and the nil-guard narrowing)
+       then applies unchanged. */
+    if (sp_streq(ty, "ReturnNode")) {
+      int a2 = nt_ref(c->nt, id, "arguments");
+      int an2 = 0;
+      const int *av2 = a2 >= 0 ? nt_arr(c->nt, a2, "arguments", &an2) : NULL;
+      int is_nil = (an2 == 0) ||
+                   (nt_type(c->nt, av2[0]) && sp_streq(nt_type(c->nt, av2[0]), "NilNode"));
+      if (is_nil) {
+        Scope *s2 = comp_scope_of(c, id);
+        if (s2 && ty_is_object(s2->ret)) {
+          int q = ty_object_class(s2->ret);
+          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+        }
+      }
+    }
+    if (sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "LocalVariableOrWriteNode") ||
+        sp_streq(ty, "LocalVariableAndWriteNode")) {
+      int v2 = nt_ref(c->nt, id, "value");
+      if (v2 >= 0 && nt_type(c->nt, v2) && sp_streq(nt_type(c->nt, v2), "NilNode")) {
+        const char *nm2 = nt_str(c->nt, id, "name");
+        Scope *s2 = comp_scope_of(c, id);
+        LocalVar *lv2 = (nm2 && s2) ? scope_local(s2, nm2) : NULL;
+        if (lv2 && ty_is_object(lv2->type)) {
+          int q = ty_object_class(lv2->type);
+          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+        }
+      }
+    }
+    if (sp_streq(ty, "InstanceVariableWriteNode") || sp_streq(ty, "InstanceVariableOrWriteNode")) {
+      int v2 = nt_ref(c->nt, id, "value");
+      if (v2 >= 0 && nt_type(c->nt, v2) && sp_streq(nt_type(c->nt, v2), "NilNode")) {
+        Scope *s2 = comp_scope_of(c, id);
+        const char *ivn = nt_str(c->nt, id, "name");
+        if (s2 && s2->class_id >= 0 && ivn) {
+          int ix = comp_ivar_index(&c->classes[s2->class_id], ivn);
+          TyKind it2 = ix >= 0 ? c->classes[s2->class_id].ivar_types[ix] : TY_UNKNOWN;
+          if (ty_is_object(it2)) {
+            int q = ty_object_class(it2);
+            if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+          }
+        }
+      }
+    }
+    if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode")) {
+      TyKind t2 = comp_ntype(c, id);
+      if (ty_is_object(t2)) {
+        /* a W-valued conditional with a nil arm (x = cond ? W.new : nil):
+           if either arm's tail is nil -- or the else arm is absent -- the
+           expression carries nil */
+        int nil_arm = 0;
+        int arms[2];
+        arms[0] = nt_ref(c->nt, id, "statements");
+        arms[1] = nt_ref(c->nt, id, sp_streq(ty, "IfNode") ? "subsequent" : "else_clause");
+        if (arms[1] < 0) nil_arm = 1;
+        for (int ai = 0; ai < 2 && !nil_arm; ai++) {
+          int an3 = arms[ai];
+          if (an3 < 0) continue;
+          const char *aty = nt_type(c->nt, an3);
+          if (aty && sp_streq(aty, "ElseNode")) an3 = nt_ref(c->nt, an3, "statements");
+          const char *aty2 = an3 >= 0 ? nt_type(c->nt, an3) : NULL;
+          if (aty2 && sp_streq(aty2, "StatementsNode")) {
+            int bn3 = 0;
+            const int *bb3 = nt_arr(c->nt, an3, "body", &bn3);
+            an3 = bn3 > 0 ? bb3[bn3 - 1] : -1;
+          }
+          if (an3 < 0) { nil_arm = 1; break; }
+          const char *lty = nt_type(c->nt, an3);
+          if (lty && sp_streq(lty, "NilNode")) nil_arm = 1;
+        }
+        if (nil_arm) {
+          int q = ty_object_class(t2);
+          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+        }
+      }
+    }
+    if (sp_streq(ty, "OptionalParameterNode") || sp_streq(ty, "OptionalKeywordParameterNode")) {
+      int v2 = nt_ref(c->nt, id, "value");
+      if (v2 >= 0 && nt_type(c->nt, v2) && sp_streq(nt_type(c->nt, v2), "NilNode")) {
+        const char *nm2 = nt_str(c->nt, id, "name");
+        Scope *s2 = comp_scope_of(c, id);
+        LocalVar *lv2 = (nm2 && s2) ? scope_local(s2, nm2) : NULL;
+        if (lv2 && ty_is_object(lv2->type)) {
+          int q = ty_object_class(lv2->type);
+          if (q >= 0 && q < c->nclasses) c->classes[q].is_value_type = 0;
+        }
+      }
+    }
     /* immutable check: an ivar write outside `initialize` defeats value type */
     if (sp_streq(ty, "InstanceVariableWriteNode") ||
         sp_streq(ty, "InstanceVariableOperatorWriteNode") ||
