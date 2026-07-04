@@ -2316,6 +2316,7 @@ else {
     if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "product") && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "repeated_combination") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "combination") && argc == 1 && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     if ((sp_streq(name, "delete_at") || sp_streq(name, "delete")) && argc == 1)
       return ty_array_elem(rt);
