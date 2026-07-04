@@ -127,14 +127,16 @@ mrb_bool sp_File_eof_p(sp_File *f) {
 mrb_int sp_File_seek(sp_File *f, mrb_int off, mrb_int whence) {
   if (!f || !f->fp) return -1;
   /* whence uses the Ruby IO::SEEK_* values (0/1/2), mapped explicitly so we
-     never depend on the platform's SEEK_SET/CUR/END numbering. */
+     never depend on the platform's SEEK_SET/CUR/END numbering. fseeko/ftello
+     take off_t rather than fseek's long, so offsets past 2GB survive even
+     where long is 32-bit. */
   int w = (whence == 1) ? SEEK_CUR : (whence == 2) ? SEEK_END : SEEK_SET;
-  return (mrb_int)fseek(f->fp, (long)off, w);
+  return (mrb_int)fseeko(f->fp, (off_t)off, w);
 }
 
 mrb_int sp_File_tell(sp_File *f) {
-  if (!f || !f->fp) return 0;
-  return (mrb_int)ftell(f->fp);
+  if (!f || !f->fp) return -1;
+  return (mrb_int)ftello(f->fp);
 }
 
 mrb_int sp_File_rewind(sp_File *f) {

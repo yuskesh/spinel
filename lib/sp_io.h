@@ -29,7 +29,7 @@ void sp_File_print(sp_File *f, const char *s);
 mrb_int sp_File_flush(sp_File *f);
 mrb_bool sp_File_eof_p(sp_File *f);
 mrb_int sp_File_seek(sp_File *f, mrb_int off, mrb_int whence); /* #seek -- whence: 0=SET 1=CUR 2=END */
-mrb_int sp_File_tell(sp_File *f);       /* #tell / #pos -- ftell */
+mrb_int sp_File_tell(sp_File *f);       /* #tell / #pos -- ftello, -1 on closed */
 mrb_int sp_File_rewind(sp_File *f);     /* #rewind */
 mrb_bool sp_File_tty_p(sp_File *f);     /* #tty? / #isatty -- isatty(fileno) */
 mrb_int sp_File_fileno(sp_File *f);     /* #fileno */

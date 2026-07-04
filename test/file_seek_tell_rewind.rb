@@ -1,4 +1,4 @@
-path = "/tmp/spinel_file_seek_test.txt"
+path = "spinel_file_seek_test_#{Process.pid}.txt"
 File.open(path, "w") do |f|
   f.write("HELLOWORLDABCDEF")
 end
@@ -21,5 +21,5 @@ puts f.tell
 puts f.read(5)
 f.close
 
-File.delete(path)
+File.delete(path) if File.exist?(path)
 puts "done"
