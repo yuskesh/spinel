@@ -358,6 +358,57 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
+    /* find_index / index { |x| cond } on a poly array -> the index or nil.
+       The typed-array form lives inside the `if (k)` block below; array_kind
+       is NULL for a poly array, so handle it here. Unlike the int/str-array
+       forms (which infer TY_POLY and box), index/find_index on a poly array
+       infer as a plain nullable mrb_int -- return the bare SP_INT_NIL
+       sentinel, don't box. */
+    if (rt == TY_POLY_ARRAY && (sp_streq(name, "find_index") || sp_streq(name, "index")) &&
+        nt_ref(nt, id, "block") >= 0) {
+      int fblock = nt_ref(nt, id, "block");
+      const char *bp = block_param_name(c, fblock, 0); if (bp) bp = rename_local(bp);
+      int body = nt_ref(nt, fblock, "body");
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      if (bn >= 1) {
+        int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
+        Buf rb = expr_buf(c, recv);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", trecv, rb.p ? rb.p : "NULL", trecv); free(rb.p);
+        emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = SP_INT_NIL;\n", tres);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n",
+                   ti, ti, trecv, ti);
+        /* Declare the block param in the loop body so the form is self-contained
+           (same rationale as find/detect above). */
+        if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
+        for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+        int sv = g_indent; g_indent++;
+        Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "if (%s) { _t%d = _t%d; break; }\n", cb.p ? cb.p : "0", tres, ti);
+        free(cb.p);
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        buf_printf(b, "_t%d", tres);
+        return 1;
+      }
+    }
+    /* index(v) / find_index(v) on a poly array (no block) -> the first
+       position whose element == v (sp_poly_eq), or nil (SP_INT_NIL),
+       mirroring the count(v)/any?(v) idiom (doom: @map.sectors.index(sector)). */
+    if (rt == TY_POLY_ARRAY && (sp_streq(name, "index") || sp_streq(name, "find_index")) &&
+        argc == 1 && nt_ref(nt, id, "block") < 0) {
+      int trecv = ++g_tmp, ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
+      Buf ra = expr_buf(c, recv);
+      buf_printf(b, "({ sp_PolyArray *_t%d = %s;", trecv, ra.p ? ra.p : "NULL"); free(ra.p);
+      buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b); buf_puts(b, ";");
+      buf_printf(b, " mrb_int _t%d = SP_INT_NIL;", tres);
+      buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", ti, ti, trecv, ti);
+      buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) { _t%d = _t%d; break; }",
+                 trecv, ti, ta, tres, ti);
+      buf_printf(b, " _t%d; })", tres);
+      return 1;
+    }
     if (k) {
       if ((sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "entries") ||
            sp_streq(name, "flatten") || sp_streq(name, "compact")) && argc == 0) {
@@ -1607,6 +1658,48 @@ else {
         else                       buf_printf(b, "sp_poly_arr_get(_t%d, 1)", tp);
         buf_printf(b, "); } _t%d; })", th);
         return 1;
+      }
+      /* to_h { |x| [k, v] } on a poly array -> a hash keyed by the block's
+         literal [k, v] tail pair (the only shape analyze_infer types):
+         string/symbol keys get their own hash kind, anything else a fully
+         boxed hash (doom: flats.to_h { |f| [f.name, f] }). */
+      if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+        int blk = nt_ref(nt, id, "block");
+        const char *bp = block_param_name(c, blk, 0); if (bp) bp = rename_local(bp);
+        int body = nt_ref(nt, blk, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        int tail = bn > 0 ? bb[bn - 1] : -1;
+        const char *tty = tail >= 0 ? nt_type(nt, tail) : NULL;
+        int pairn = 0;
+        const int *pair = (tty && sp_streq(tty, "ArrayNode")) ? nt_arr(nt, tail, "elements", &pairn) : NULL;
+        const char *hn = pair && pairn == 2 ? ty_hash_cname(res) : NULL;
+        if (hn) {
+          TyKind kt = comp_ntype(c, pair[0]);
+          int trecv = ++g_tmp, ti = ++g_tmp, th = ++g_tmp;
+          Buf rb = expr_buf(c, recv);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", trecv, rb.p ? rb.p : "NULL", trecv); free(rb.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", hn, th, hn, th);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n",
+                     ti, ti, trecv, ti);
+          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
+          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+          int sv = g_indent; g_indent++;
+          Buf kb; memset(&kb, 0, sizeof kb);
+          if (kt == TY_STRING) { buf_puts(&kb, "sp_str_dup("); emit_expr(c, pair[0], &kb); buf_puts(&kb, ")"); }
+          else if (kt == TY_SYMBOL) emit_expr(c, pair[0], &kb);
+          else emit_boxed(c, pair[0], &kb);
+          Buf vb; memset(&vb, 0, sizeof vb); emit_boxed(c, pair[1], &vb);
+          g_indent = sv;
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "sp_%sHash_set(_t%d, %s, %s);\n", hn, th, kb.p ? kb.p : "", vb.p ? vb.p : "");
+          free(kb.p); free(vb.p);
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          buf_printf(b, "_t%d", th);
+          return 1;
+        }
       }
     }
   }

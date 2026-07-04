@@ -3630,7 +3630,8 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "filter_map") || sp_streq(name, "count_by") ||
               sp_streq(name, "partition") || sp_streq(name, "each_slice") ||
               sp_streq(name, "minmax_by") || sp_streq(name, "bsearch_index") ||
-              sp_streq(name, "each_cons") || sp_streq(name, "cycle")) &&
+              sp_streq(name, "each_cons") || sp_streq(name, "cycle") ||
+              sp_streq(name, "to_h")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
     /* each_index { |i| } binds the index, not the element: always int. */

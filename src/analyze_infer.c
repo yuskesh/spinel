@@ -2084,6 +2084,29 @@ else {
            a scalar block return behaves like map (each wrapped element). */
         return ty_is_array(bret) ? bret : ty_array_of(bret);
       }
+      if (sp_streq(name, "to_h") && argc == 0) {
+        /* array.to_h { |x| [k, v] } -> a boxed-value hash, keyed by the
+           block's [k, v] tail-pair key type (string/symbol get their own
+           hash kind; anything else falls back to a fully boxed hash). */
+        int body = nt_ref(nt, block, "body");
+        int bn = 0;
+        const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        int tail = bn > 0 ? bb[bn - 1] : -1;
+        const char *tty = tail >= 0 ? nt_type(nt, tail) : NULL;
+        if (tty && sp_streq(tty, "ArrayNode")) {
+          int en = 0; const int *el = nt_arr(nt, tail, "elements", &en);
+          if (en == 2) {
+            TyKind kt = infer_type(c, el[0]);
+            if (kt == TY_SYMBOL) return TY_SYM_POLY_HASH;
+            if (kt == TY_STRING) return TY_STR_POLY_HASH;
+            /* the key's type hasn't settled yet (mid-fixpoint) -- stay
+               unknown rather than locking in poly_poly_hash prematurely,
+               which would then never narrow once kt resolves. */
+            if (kt == TY_UNKNOWN) return TY_UNKNOWN;
+          }
+        }
+        return TY_POLY_POLY_HASH;
+      }
       if (sp_streq(name, "select") || sp_streq(name, "reject") ||
           sp_streq(name, "filter") || sp_streq(name, "sort_by") ||
           sp_streq(name, "sort_by!") ||
