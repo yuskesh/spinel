@@ -3211,6 +3211,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   if (!name) unsupported(c, id, "call (no name)");
 
+  /* $~[N]: the Nth regexp group of the last match (0 = the whole match), read
+     from the match registers. $~ is a special regexp accessor rather than
+     stored MatchData, so index it directly instead of char-indexing a string. */
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "GlobalVariableReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "$~")) {
+    buf_puts(b, "({ mrb_int _mi = "); emit_int_expr(c, argv[0], b);
+    buf_puts(b, "; _mi == 0 ? sp_re_match_str : (_mi >= 1 && _mi <= 9 ? sp_re_captures[_mi] : (const char *)0); })");
+    return;
+  }
+
   /* `@nested[i]` inferred as an int array (poly array of int arrays): unbox
      the poly element to sp_IntArray* so the surrounding code stays typed. */
   if (recv >= 0 && sp_streq(name, "[]") && argc == 1 &&
