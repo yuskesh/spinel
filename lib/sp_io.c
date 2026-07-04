@@ -124,6 +124,25 @@ mrb_bool sp_File_eof_p(sp_File *f) {
   return FALSE;
 }
 
+mrb_int sp_File_seek(sp_File *f, mrb_int off, mrb_int whence) {
+  if (!f || !f->fp) return -1;
+  /* whence uses the Ruby IO::SEEK_* values (0/1/2), mapped explicitly so we
+     never depend on the platform's SEEK_SET/CUR/END numbering. */
+  int w = (whence == 1) ? SEEK_CUR : (whence == 2) ? SEEK_END : SEEK_SET;
+  return (mrb_int)fseek(f->fp, (long)off, w);
+}
+
+mrb_int sp_File_tell(sp_File *f) {
+  if (!f || !f->fp) return 0;
+  return (mrb_int)ftell(f->fp);
+}
+
+mrb_int sp_File_rewind(sp_File *f) {
+  if (!f || !f->fp) return -1;
+  rewind(f->fp);
+  return 0;
+}
+
 /* ---- File metadata predicates ----
    libc / WinAPI only, no spinel-string allocation and no shared mutable
    state, so they live here rather than inline in sp_runtime.h. */

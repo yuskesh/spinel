@@ -3765,6 +3765,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "eof?") || sp_streq(name, "eof")) {
       buf_printf(b, "sp_File_eof_p(%s)", r); free(rb.p); return;
     }
+    if (sp_streq(name, "seek") && argc >= 1) {
+      /* offset plus optional whence (IO::SEEK_SET/CUR/END -> 0/1/2; absolute
+         when omitted, matching Ruby's SEEK_SET default) */
+      buf_printf(b, "sp_File_seek(%s, ", r);
+      emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", ");
+      if (argc >= 2) emit_int_expr(c, argv[1], b);
+      else buf_puts(b, "0");
+      buf_puts(b, ")");
+      free(rb.p); return;
+    }
+    if (sp_streq(name, "tell") || sp_streq(name, "pos")) {
+      buf_printf(b, "sp_File_tell(%s)", r); free(rb.p); return;
+    }
+    if (sp_streq(name, "rewind")) {
+      buf_printf(b, "sp_File_rewind(%s)", r); free(rb.p); return;
+    }
     if (sp_streq(name, "path") || sp_streq(name, "to_path")) {
       buf_printf(b, "sp_File_path(%s)", r); free(rb.p); return;
     }

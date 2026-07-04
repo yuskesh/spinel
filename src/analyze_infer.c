@@ -3299,6 +3299,11 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (nm && (sp_streq(nm, "SEPARATOR") || sp_streq(nm, "PATH_SEPARATOR") ||
                  sp_streq(nm, "ALT_SEPARATOR"))) return TY_STRING;
     }
+    if (par_nm && (sp_streq(par_nm, "IO") || sp_streq(par_nm, "File"))) {
+      /* IO#seek whence constants (File inherits them from IO) */
+      if (nm && (sp_streq(nm, "SEEK_SET") || sp_streq(nm, "SEEK_CUR") ||
+                 sp_streq(nm, "SEEK_END"))) return TY_INT;
+    }
     if (par_nm && sp_streq(par_nm, "Integer")) {
       if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) return TY_UNKNOWN; /* raises NameError */
     }
