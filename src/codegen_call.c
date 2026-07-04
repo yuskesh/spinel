@@ -2068,8 +2068,11 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     }
   }
 
-  if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
-    int eq = sp_streq(name, "==");
+  if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!=") ||
+                    (sp_streq(name, "eql?") && ty_is_array(rt)))) {
+    /* Array#eql? is structural, the same element-wise comparison as ==;
+       only != negates. Scalar eql? is handled by the per-type emitters. */
+    int eq = !sp_streq(name, "!=");
     /* `x == nil` / `x != nil` for any receiver */
     int a_nil = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode");
     int r_nil = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "NilNode");
