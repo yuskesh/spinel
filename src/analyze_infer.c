@@ -1547,6 +1547,32 @@ else {
     }
   }
 
+  /* instance_variable_get(:@x) on a POLY receiver: unify @x's declared type
+     across every instantiated class that has the slot (all the same concrete
+     type -> that type; mixed or none -> poly). Without this the call fell
+     through to an unrelated rule and inferred a bogus type, so the whole
+     chain was silently dropped. Codegen dispatches on cls_id per class. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") && argc >= 1) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) {
+      const char *sym = sp_streq(a0ty, "SymbolNode")
+                          ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+      if (sym && sym[0] == '@') {
+        TyKind uni = TY_UNKNOWN;
+        for (int ci = 0; ci < c->nclasses; ci++) {
+          if (!c->classes[ci].instantiated) continue;
+          int iv = comp_ivar_index(&c->classes[ci], sym);
+          if (iv < 0) continue;
+          TyKind t = c->classes[ci].ivar_types[iv];
+          if (uni == TY_UNKNOWN) uni = t;
+          else if (uni != t) { uni = TY_POLY; break; }
+        }
+        return uni == TY_UNKNOWN ? TY_POLY : uni;
+      }
+      return TY_POLY;
+    }
+  }
+
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);

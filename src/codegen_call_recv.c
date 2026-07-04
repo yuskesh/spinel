@@ -3790,6 +3790,48 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (is_enc) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
   }
 
+  /* instance_variable_get(:@x) on a POLY receiver with a literal symbol or
+     string name: dispatch the field read over every instantiated class that
+     has the slot, boxing per the slot's declared type (the poly twin of the
+     concrete lowering; see the matching inference rule in analyze_infer.c).
+     A receiver whose runtime class lacks the slot reads as nil, matching
+     CRuby's unset-ivar behavior; the SP_TAG_OBJ guard keeps a boxed scalar
+     (cls_id 0) from aliasing the user class at index 0 (cf. issue #1576). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *a0ty = nt_type(nt, argv[0]);
+    const char *sym = sp_streq(a0ty, "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    if (sym && sym[0] == '@') {
+      TyKind res = comp_ntype(c, id);
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; sp_RbVal _ivg%d = sp_box_nil(); if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {",
+                 tv, tv, tv);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (!c->classes[k].instantiated) continue;
+        int iv = comp_ivar_index(&c->classes[k], sym);
+        if (iv < 0) continue;
+        TyKind t = c->classes[k].ivar_types[iv];
+        char fld[320];
+        snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].name, tv, sym + 1);
+        buf_printf(b, " case %d: _ivg%d = ", k, tv);
+        emit_boxed_text(c, t, fld, b);
+        buf_puts(b, "; break;");
+      }
+      buf_puts(b, " } ");
+      if (res != TY_POLY && res != TY_UNKNOWN) {
+        char ivn[24]; snprintf(ivn, sizeof ivn, "_ivg%d", tv);
+        emit_unbox_text(c, res, ivn, b);
+        buf_puts(b, "; })");
+      }
+      else buf_printf(b, "_ivg%d; })", tv);
+      return 1;
+    }
+  }
+
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
