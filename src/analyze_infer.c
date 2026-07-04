@@ -514,13 +514,14 @@ int range_enum_redispatch(Compiler *c, int id) {
   }
   /* Non-collecting Enumerable methods: their result does not depend on the
      block-produced element type, so materializing the range to an int array is
-     transparent. (Array-building block collectors -- flat_map/filter_map/
-     partition/chunk_while -- are NOT redispatched: the int-array receiver flip
-     does not reach the block-param/element typing pass, which still sees a
-     range, so they stay a clean reject rather than miscompile.) */
+     transparent. flat_map/collect_concat also redispatch because the block-param
+     typing pass types their range block parameter as an int; other array-building
+     collectors (filter_map/partition/chunk_while) are not typed there yet, so
+     they stay a clean reject rather than miscompile. */
   if (sp_streq(name, "group_by") || sp_streq(name, "find") ||
       sp_streq(name, "detect") || sp_streq(name, "zip") ||
       sp_streq(name, "tally")) return 1;
+  if ((sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) && block >= 0) return 1;
   /* reduce/inject: the explicit symbol / initial-value forms (no block). */
   if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && argc >= 1 && block < 0) return 1;
   /* count: the block / argument forms (bare count is size, handled natively). */

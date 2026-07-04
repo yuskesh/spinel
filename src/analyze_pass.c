@@ -3588,7 +3588,8 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "sort_by") || sp_streq(name, "find_all") || sp_streq(name, "count") ||
               sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
               sp_streq(name, "one?") || sp_streq(name, "sum") || sp_streq(name, "min_by") ||
-              sp_streq(name, "max_by") || sp_streq(name, "bsearch")) && rt == TY_RANGE)
+              sp_streq(name, "max_by") || sp_streq(name, "bsearch") ||
+              sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) && rt == TY_RANGE)
       pt = TY_INT;
     /* (range).lazy.select/reject/filter { |x| } : x is an integer range element */
     else if ((sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter")) &&
