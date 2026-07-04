@@ -5661,14 +5661,55 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
   }
 
   if (ty_is_array(rt)) {
-    const char *k = array_kind(rt);
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) unsupported(c, id, "index operator assignment (array)");
+    TyKind vt = comp_ntype(c, v);
+    const char *pf =
+        sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
+        sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
+        sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL;
     emit_indent(b, indent);
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
     buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
     buf_puts(b, "; ");
-    buf_printf(b, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d) %s ", k, ta, tb, k, ta, tb, op);
-    buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")); }\n");
+    if (rt == TY_POLY_ARRAY) {
+      /* poly slot: fold via the tag-dispatching operator on boxed operands,
+         like the TY_POLY receiver path below. */
+      if (!pf) unsupported(c, id, "index operator assignment (poly array, operator)");
+      buf_printf(b, "sp_PolyArray_set(_t%d, _t%d, %s(sp_PolyArray_get(_t%d, _t%d), ",
+                 ta, tb, pf, ta, tb);
+      emit_boxed(c, v, b); buf_puts(b, ")); }\n");
+    }
+    else if (rt == TY_STR_ARRAY && sp_streq(op, "+")) {
+      /* `s[i] += x` concatenates: a native `char* + char*` never compiles.
+         Both operands GC-rooted across the allocating sp_str_plus. */
+      int tc = ++g_tmp, td = ++g_tmp;
+      buf_printf(b, "sp_StrArray_set(_t%d, _t%d, ({ const char *_t%d = sp_StrArray_get(_t%d, _t%d); "
+                 "SP_GC_ROOT(_t%d); const char *_t%d = ", ta, tb, tc, ta, tb, tc, td);
+      if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
+      else emit_expr(c, v, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_str_plus(_t%d, _t%d); })); }\n", td, tc, td);
+    }
+    else if (vt == TY_POLY && pf) {
+      /* typed int/float slot, poly RHS: box the slot, fold via the dynamic
+         operator, unbox back to the slot type -- exactly what the plain
+         `a[i] = a[i] + rhs` form emits (issue: `double + sp_RbVal`). */
+      const char *box = (rt == TY_FLOAT_ARRAY) ? "sp_box_float" : "sp_box_int";
+      const char *unbox = (rt == TY_FLOAT_ARRAY) ? "sp_poly_to_f" : "sp_poly_to_i";
+      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, %s(%s(%s(sp_%sArray_get(_t%d, _t%d)), ",
+                 k, ta, tb, unbox, pf, box, k, ta, tb);
+      emit_boxed(c, v, b); buf_puts(b, "))); }\n");
+    }
+    else if (vt == TY_POLY) {
+      /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
+      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d) %s sp_poly_to_i(",
+                 k, ta, tb, k, ta, tb, op);
+      emit_boxed(c, v, b); buf_puts(b, ")); }\n");
+    }
+    else {
+      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d) %s ", k, ta, tb, k, ta, tb, op);
+      buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")); }\n");
+    }
     return;
   }
   if (rt == TY_POLY) {
