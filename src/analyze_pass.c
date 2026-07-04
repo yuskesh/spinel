@@ -4299,7 +4299,7 @@ static int scope_tail_empty_hash(Compiler *c, int mi) {
 /* Resolve a `local = call(...)` value node to its callee method scope for the
    subset of shapes empty-hash returns arrive through: a bare self-send, a
    `Const.cmethod`, and an object-receiver instance call. -1 if unresolved. */
-static int backprop_call_target(Compiler *c, int call_id) {
+int backprop_call_target(Compiler *c, int call_id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, call_id, "name");
   if (!name || sp_streq(name, "new")) return -1;  /* constructors bind elsewhere */

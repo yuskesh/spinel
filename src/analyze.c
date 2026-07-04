@@ -2139,6 +2139,187 @@ static const char *nng_guard_param(Compiler *c, Scope *s, int st) {
   return pn;
 }
 
+/* ---- caller-side narrowing of a nil-guarded poly LOCAL (#1675) ------------
+   `a = m()` where m's value is `nil | Time` types `a` poly (Time has no
+   first-class nullable slot). When a branch is guarded by `a.nil?` or `a`
+   truthiness and the local is never reassigned, reads inside the non-nil arm
+   are provably Time: mark them in c->nilnarrow, the same read-site unbox
+   #1661 uses for parameters -- no global type mutates, so nothing cascades. */
+
+/* returns-walk: every explicit return owned by scope mi is either nil or the
+   single base type; blocks' returns belong to their block scope and are NOT
+   collected, which can only lose a nil witness and disable the narrowing. */
+static void spnb_ret_walk(Compiler *c, int root, Scope *s, TyKind *base, int *saw_nil, int *ok) {
+  if (root < 0 || !*ok) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty && sp_streq(ty, "ReturnNode") && comp_scope_of(c, root) == s) {
+    int a = nt_ref(nt, root, "arguments");
+    int an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an == 0 || (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "NilNode"))) {
+      *saw_nil = 1;
+    }
+    else {
+      TyKind t = infer_type(c, av[0]);
+      if (t == TY_TIME && (*base == TY_UNKNOWN || *base == TY_TIME)) *base = TY_TIME;
+      else { *ok = 0; return; }
+    }
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) spnb_ret_walk(c, nt_ref_at(nt, root, i), s, base, saw_nil, ok);
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0;
+    const int *arr = nt_arr_at(nt, root, i, &n2);
+    for (int j = 0; j < n2; j++) spnb_ret_walk(c, arr[j], s, base, saw_nil, ok);
+  }
+}
+
+/* tail-value contribution: the body's falling-off value */
+static void spnb_tail(Compiler *c, int node, TyKind *base, int *saw_nil, int *ok) {
+  if (node < 0 || !*ok) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, node);
+  if (!ty) { *ok = 0; return; }
+  if (sp_streq(ty, "StatementsNode")) {
+    int n = 0;
+    const int *bb = nt_arr(nt, node, "body", &n);
+    if (n == 0) { *saw_nil = 1; return; }
+    spnb_tail(c, bb[n - 1], base, saw_nil, ok);
+    return;
+  }
+  if (sp_streq(ty, "ReturnNode")) return;   /* counted by the returns walk */
+  if (sp_streq(ty, "NilNode")) { *saw_nil = 1; return; }
+  if (sp_streq(ty, "IfNode")) {
+    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
+    int sub = nt_ref(nt, node, "subsequent");
+    if (sub >= 0) spnb_tail(c, sub, base, saw_nil, ok);
+    else *saw_nil = 1;                       /* if-without-else can fall nil */
+    return;
+  }
+  if (sp_streq(ty, "ElseNode")) {
+    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
+    return;
+  }
+  if (sp_streq(ty, "UnlessNode")) {
+    spnb_tail(c, nt_ref(nt, node, "statements"), base, saw_nil, ok);
+    int sub = nt_ref(nt, node, "else_clause");
+    if (sub >= 0) spnb_tail(c, sub, base, saw_nil, ok);
+    else *saw_nil = 1;
+    return;
+  }
+  {
+    TyKind t = infer_type(c, node);
+    if (t == TY_TIME && (*base == TY_UNKNOWN || *base == TY_TIME)) { *base = TY_TIME; return; }
+  }
+  *ok = 0;
+}
+
+/* the single non-nil type scope mi's poly return decomposes to, or UNKNOWN */
+static TyKind scope_poly_nil_base(Compiler *c, int mi) {
+  Scope *s = &c->scopes[mi];
+  if (s->ret != TY_POLY || s->body < 0 || s->cs_synth || s->is_lowered_yield) return TY_UNKNOWN;
+  TyKind base = TY_UNKNOWN;
+  int saw_nil = 0, ok = 1;
+  spnb_ret_walk(c, s->body, s, &base, &saw_nil, &ok);
+  spnb_tail(c, s->body, &base, &saw_nil, &ok);
+  return (ok && saw_nil && base == TY_TIME) ? base : TY_UNKNOWN;
+}
+
+/* predicate shape: `A.nil?` (returns 1) or bare `A` truthiness (returns 2) */
+static int spnb_pred_shape(Compiler *c, int pred, Scope *s, const char *nm) {
+  const NodeTable *nt = c->nt;
+  const char *ty = pred >= 0 ? nt_type(nt, pred) : NULL;
+  if (!ty) return 0;
+  if (sp_streq(ty, "LocalVariableReadNode")) {
+    const char *pn = nt_str(nt, pred, "name");
+    return pn && sp_streq(pn, nm) && comp_scope_of(c, pred) == s ? 2 : 0;
+  }
+  if (sp_streq(ty, "CallNode")) {
+    const char *cn = nt_str(nt, pred, "name");
+    if (!cn || !sp_streq(cn, "nil?")) return 0;
+    int recv = nt_ref(nt, pred, "receiver");
+    const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+    if (!rty || !sp_streq(rty, "LocalVariableReadNode")) return 0;
+    const char *pn = nt_str(nt, recv, "name");
+    return pn && sp_streq(pn, nm) && comp_scope_of(c, recv) == s ? 1 : 0;
+  }
+  return 0;
+}
+
+static void spnb_mark_guards(Compiler *c, int root, Scope *s, const char *nm, TyKind base) {
+  if (root < 0) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty && (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode"))) {
+    int is_unless = sp_streq(ty, "UnlessNode");
+    int shape = spnb_pred_shape(c, nt_ref(nt, root, "predicate"), s, nm);
+    int branch = -1;
+    if (shape == 1)       /* A.nil?  -> the falsy arm is non-nil */
+      branch = nt_ref(nt, root, is_unless ? "statements" : "subsequent");
+    else if (shape == 2)  /* bare A  -> the truthy arm is non-nil */
+      branch = nt_ref(nt, root, is_unless ? "else_clause" : "statements");
+    if (branch >= 0 && !nng_has_write(c, branch, nm))
+      nng_mark_reads(c, branch, s, nm, base);
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) spnb_mark_guards(c, nt_ref_at(nt, root, i), s, nm, base);
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0;
+    const int *arr = nt_arr_at(nt, root, i, &n2);
+    for (int j = 0; j < n2; j++) spnb_mark_guards(c, arr[j], s, nm, base);
+  }
+}
+
+static void narrow_nil_guard_locals(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    Scope *s = comp_scope_of(c, id);
+    if (!s) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int val = nt_ref(nt, id, "value");
+    if (!nm || val < 0 || nt_kind(nt, val) != NK_CallNode) continue;
+    LocalVar *lv = scope_local(s, nm);
+    if (!lv || lv->type != TY_POLY || lv->is_param || lv->is_block_param || lv->is_cell) continue;
+    int mi = backprop_call_target(c, val);
+    if (mi < 0) continue;
+    TyKind base = scope_poly_nil_base(c, mi);
+    if (base == TY_UNKNOWN) continue;
+    /* the assignment above must be the local's ONLY write in its scope:
+       nng_has_write counts every write form, so probe the scope body with
+       this node's own write discounted by name-match count */
+    int writes = 0;
+    {
+      NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w2) {
+        const char *n2 = nt_str(nt, w2, "name");
+        if (n2 && sp_streq(n2, nm) && comp_scope_of(c, w2) == s) writes++;
+      }
+      NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, w3) {
+        const char *n3 = nt_str(nt, w3, "name");
+        if (n3 && sp_streq(n3, nm) && comp_scope_of(c, w3) == s) writes += 2;  /* massign etc: bail */
+      }
+      NT_FOREACH_KIND(nt, NK_LocalVariableOperatorWriteNode, w4) {
+        const char *n4 = nt_str(nt, w4, "name");
+        if (n4 && sp_streq(n4, nm) && comp_scope_of(c, w4) == s) writes += 2;
+      }
+      NT_FOREACH_KIND(nt, NK_LocalVariableOrWriteNode, w5) {
+        const char *n5 = nt_str(nt, w5, "name");
+        if (n5 && sp_streq(n5, nm) && comp_scope_of(c, w5) == s) writes += 2;
+      }
+      NT_FOREACH_KIND(nt, NK_LocalVariableAndWriteNode, w6) {
+        const char *n6 = nt_str(nt, w6, "name");
+        if (n6 && sp_streq(n6, nm) && comp_scope_of(c, w6) == s) writes += 2;
+      }
+    }
+    if (writes != 1) continue;
+    int body = s->body >= 0 ? s->body : (s->def_node >= 0 ? nt_ref(nt, s->def_node, "body") : -1);
+    if (body < 0) continue;
+    spnb_mark_guards(c, body, s, nm, base);
+  }
+}
+
 static void narrow_nil_guard_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int si = 0; si < c->nscopes; si++) {
@@ -2799,6 +2980,7 @@ void analyze_program(Compiler *c) {
      param and argument types are final; before the return recompute below so
      narrowed tails type the enclosing method's return. */
   narrow_nil_guard_params(c);
+  narrow_nil_guard_locals(c);
   /* Post-backstop: re-run write type inference so multi-write locals whose
      RHS chains through a now-typed ivar (e.g. @h[bank][idx] where @h was
      just promoted from UNKNOWN to POLY) get their types resolved. */

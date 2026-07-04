@@ -203,6 +203,7 @@ int desugar_symbol_to_proc_call(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
 int backprop_hash_return_types(Compiler *c);
+int backprop_call_target(Compiler *c, int call_id);
 void cr_collect_calls(const NodeTable *nt, int id, char ***out, int *n, int *cap);
 void compute_reachable(Compiler *c);
 void compute_instantiated(Compiler *c);
