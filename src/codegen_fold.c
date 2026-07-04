@@ -2208,6 +2208,9 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
 
   int body = block >= 0 ? nt_ref(nt, block, "body") : -1;
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  /* fresh block-locals per iteration (this emitter walks the body itself
+     instead of going through emit_stmts, so reset explicitly) */
+  if (block >= 0) emit_block_locals_reset(c, block, g_pre, din);
   if (is_each) {
     for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, din);
   }
@@ -2643,6 +2646,8 @@ static void emit_block_value_into(Compiler *c, int block, const char *dest,
      value). Bodies without a next still run once -- the wrapper is free. */
   emit_indent(g_pre, indent); buf_puts(g_pre, "do {\n");
   int bi = indent + 1; g_indent = bi;
+  /* fresh block-locals on every invocation (this path bypasses emit_stmts) */
+  emit_block_locals_reset(c, block, g_pre, bi);
   for (int j = 0; j + 1 < bn; j++) emit_stmt(c, bb[j], g_pre, bi);
   if (bn > 0) {
     int tail = bb[bn - 1];

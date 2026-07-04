@@ -365,6 +365,90 @@ void emit_tail_lead(Buf *b) {
   if (g_result_var) buf_printf(b, "%s = ", g_result_var);
   else buf_puts(b, "return ");
 }
+/* The C representation of Ruby `nil` for a concretely-typed slot (vs
+   default_value's zero-value): a fresh block-local starts nil, and several
+   types carry an in-band nil sentinel (NULL string, SP_INT_NIL, NaN float,
+   (sp_sym)-1). Types with no sentinel fall back to the zero value. */
+static const char *nil_value(TyKind t) {
+  switch (t) {
+    case TY_STRING: return "NULL";
+    case TY_INT:    return "SP_INT_NIL";
+    case TY_FLOAT:  return "sp_float_nil()";
+    case TY_POLY:   return "sp_box_nil()";
+    default:        return NULL;
+  }
+}
+
+static int subtree_has_param_named(const NodeTable *nt, int id, const char *nm) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+
+  /* numbered params (_1.._9): the NumberedParametersNode carries no child
+     parameter nodes, yet the block's locals list contains the names. */
+  if (ty && sp_streq(ty, "NumberedParametersNode") &&
+      nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && !nm[2]) return 1;
+  if (ty && sp_streq(ty, "ItParametersNode") && sp_streq(nm, "it")) return 1;
+  if (ty && (strstr(ty, "ParameterNode") || sp_streq(ty, "LocalVariableTargetNode"))) {
+    const char *pn = nt_str(nt, id, "name");
+    /* shadow-renaming rewrites a param's node-table name to NAME__bpNN;
+       the parser's locals list keeps the raw NAME -- match both. */
+    if (pn) {
+      size_t nl = strlen(nm);
+      if (sp_streq(pn, nm)) return 1;
+      if (!strncmp(pn, nm, nl) && !strncmp(pn + nl, "__bp", 4)) return 1;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_has_param_named(nt, nt_ref_at(nt, id, i), nm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_has_param_named(nt, ids[j], nm)) return 1;
+  }
+  return 0;
+}
+
+void emit_block_locals_reset(Compiler *c, int blk, Buf *b, int indent) {
+  if (blk < 0) return;
+  const char *locs = nt_str(c->nt, blk, "locals");
+  if (!locs || !*locs) return;
+  char tmpn_buf[128];
+  const char *p = locs;
+  while (*p) {
+    const char *e = strchr(p, ',');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    if (l) {
+      /* names longer than the stack buffer are legal Ruby; heap-fall back
+         rather than silently skipping the reset */
+      char *tmpn = l < sizeof tmpn_buf ? tmpn_buf : malloc(l + 1);
+      if (!tmpn) break;
+      memcpy(tmpn, p, l); tmpn[l] = 0;
+      /* Skip every name bound by the block's parameter list, including
+         destructured, optional, rest, and shadow (`; x`) declarations --
+         collected straight from the parameters subtree, since
+         block_param_name only covers plain leading params. */
+      int is_param = subtree_has_param_named(c->nt, nt_ref(c->nt, blk, "parameters"), tmpn);
+
+      if (!is_param) {
+        Scope *sc = comp_scope_of(c, blk);
+        LocalVar *lv = sc ? scope_local(sc, tmpn) : NULL;
+        if (lv && lv->type != TY_UNKNOWN && !lv->is_cell) {
+          const char *nv = nil_value(lv->type);
+          if (!nv) nv = lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type);
+          emit_indent(b, indent);
+          buf_printf(b, "lv_%s = %s;\n", rename_local(tmpn), nv);
+        }
+      }
+      if (tmpn != tmpn_buf) free(tmpn);
+    }
+    if (!e) break;
+    p = e + 1;
+  }
+}
+
 const char *rename_local(const char *nm) {
   for (int i = 0; i < g_nren; i++)
     if (sp_streq(g_ren_from[i], nm)) return g_ren_to[i];

@@ -232,6 +232,9 @@ typedef struct {
   /* FFI cflags per module (semicolon-separated) */
   FfiCflag *ffi_cflags;
   int n_ffi_cflags, c_ffi_cflags;
+  /* body-node id -> enclosing BlockNode id (lazy; emit_stmts block-local
+     resets). Sized nt->count; -1 = not a block body. */
+  int *blk_body_map;
 } Compiler;
 
 Compiler *comp_new(const NodeTable *nt);

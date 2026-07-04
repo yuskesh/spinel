@@ -72,6 +72,8 @@ void comp_grow_node_arrays(Compiler *c) {
 
 void comp_free(Compiler *c) {
   if (!c) return;
+  free(c->blk_body_map);
+  c->blk_body_map = NULL;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     free(sc->name);
