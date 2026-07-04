@@ -400,8 +400,11 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         argc == 1 && nt_ref(nt, id, "block") < 0) {
       int trecv = ++g_tmp, ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
       Buf ra = expr_buf(c, recv);
-      buf_printf(b, "({ sp_PolyArray *_t%d = %s;", trecv, ra.p ? ra.p : "NULL"); free(ra.p);
-      buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b); buf_puts(b, ";");
+      /* Root the receiver and the boxed needle: sp_poly_eq can allocate
+         (bigint promotion), so a collection may run mid-loop. */
+      buf_printf(b, "({ sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);", trecv, ra.p ? ra.p : "NULL", trecv); free(ra.p);
+      buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ta);
       buf_printf(b, " mrb_int _t%d = SP_INT_NIL;", tres);
       buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", ti, ti, trecv, ti);
       buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) { _t%d = _t%d; break; }",
@@ -1688,7 +1691,15 @@ else {
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
           Buf kb; memset(&kb, 0, sizeof kb);
-          if (kt == TY_STRING) { buf_puts(&kb, "sp_str_dup("); emit_expr(c, pair[0], &kb); buf_puts(&kb, ")"); }
+          if (kt == TY_STRING) {
+            /* A TY_STRING slot can carry nil (NULL); a Str-keyed hash can't
+               store it (NULL marks an empty bucket and sp_str_hash reads
+               k[-1]), so raise instead of segfaulting on a nil key. */
+            int tk = ++g_tmp;
+            buf_printf(&kb, "({ const char *_t%d = sp_str_dup(", tk);
+            emit_expr(c, pair[0], &kb);
+            buf_printf(&kb, "); if (!_t%d) sp_raise_cls(\"TypeError\", \"nil key in a string-keyed Hash\"); _t%d; })", tk, tk);
+          }
           else if (kt == TY_SYMBOL) emit_expr(c, pair[0], &kb);
           else emit_boxed(c, pair[0], &kb);
           Buf vb; memset(&vb, 0, sizeof vb); emit_boxed(c, pair[1], &vb);
