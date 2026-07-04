@@ -1503,10 +1503,15 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
   int lbl = ++g_tmp;
   TyKind pt = (pred >= 0) ? comp_ntype(c, pred) : TY_POLY;
   if (pt == TY_UNKNOWN) pt = TY_POLY;
+  /* Evaluate the scrutinee first so its own prelude is flushed to g_pre before
+     the `_tN =` initializer. In value position b IS g_pre, so emitting the
+     scrutinee inline would splice its prelude into the middle of this line. */
+  Buf sb; memset(&sb, 0, sizeof sb);
+  if (pred >= 0) sb = expr_buf(c, pred);
   emit_indent(b, indent); emit_ctype(c, pt, b);
   buf_printf(b, " _t%d = ", t);
-  if (pred >= 0) emit_expr(c, pred, b);
-  else buf_puts(b, default_value(pt));
+  buf_puts(b, sb.p ? sb.p : default_value(pt));
+  free(sb.p);
   buf_puts(b, ";\n");
   if (needs_root(pt)) { emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", t); }
 
