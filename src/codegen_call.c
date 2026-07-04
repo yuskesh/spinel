@@ -2009,17 +2009,19 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
 }
 
 /* True when the user `<=>` reachable from cid (or a subclass override) can
-   return nil at runtime -- its unified return type is TY_POLY. The object
-   comparison emitters (<, <=, >, >=, ==, between?) then route through the
-   checked boxed comparators (sp_poly_cmp_ck / sp_poly_cmp_eq, dispatching
-   the user `<=>` via sp_obj_cmp_hook) so an incomparable pair raises the
-   Comparable ArgumentError like CRuby; a TY_INT `<=>` keeps the zero-cost
-   inline `<op> 0` path. Value-type classes stay inline (never boxed). */
-static int user_cmp_ret_poly(Compiler *c, int cid) {
+   return nil at runtime -- its unified return type is TY_POLY (nil among
+   other results) or TY_NIL (always nil). The object comparison emitters
+   (<, <=, >, >=, ==, between?) then route through the checked boxed
+   comparators (sp_poly_cmp_ck / sp_poly_cmp_eq, dispatching the user `<=>`
+   via sp_obj_cmp_hook) so an incomparable pair raises the Comparable
+   ArgumentError like CRuby; a TY_INT `<=>` keeps the zero-cost inline
+   `<op> 0` path. Value-type classes stay inline (never boxed). */
+static int user_cmp_needs_check(Compiler *c, int cid) {
   if (c->classes[cid].is_value_type) return 0;
   int def = -1;
   int mi = comp_method_in_chain(c, cid, "<=>", &def);
-  TyKind ret = mi >= 0 ? (TyKind)c->scopes[mi].ret : TY_UNKNOWN;
+  if (mi < 0) return 0;   /* no user <=> reachable: keep the inline path */
+  TyKind ret = (TyKind)c->scopes[mi].ret;
   for (int k = 0; k < c->nclasses; k++) {
     if (!is_descendant(c, k, cid)) continue;
     int kd = -1;
@@ -2027,7 +2029,7 @@ static int user_cmp_ret_poly(Compiler *c, int cid) {
     if (kmi >= 0 && (TyKind)c->scopes[kmi].ret != TY_UNKNOWN)
       ret = ty_unify(ret, (TyKind)c->scopes[kmi].ret);
   }
-  return ret == TY_POLY;
+  return ret == TY_POLY || ret == TY_NIL;
 }
 
 /* Bind `node`'s boxed value to a fresh rooted sp_RbVal temp in g_pre and
@@ -2244,7 +2246,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       if (comp_method_in_chain(c, ecid, "<=>", NULL) >= 0) {
         /* a `<=>` that can return nil: Comparable#== semantics -- identity is
            equal, an incomparable pair is false (never an error) */
-        if (user_cmp_ret_poly(c, ecid)) {
+        if (user_cmp_needs_check(c, ecid)) {
           int ta = hoist_boxed_rooted(c, recv), tb2 = hoist_boxed_rooted(c, argv[0]);
           buf_printf(b, "(%ssp_poly_cmp_eq(_t%d, _t%d))", eq ? "" : "!", ta, tb2);
           return 1;
@@ -7197,7 +7199,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           comp_method_in_chain(c, cid4, "<=>", NULL) >= 0) {
         /* a `<=>` that can return nil: check it -- incomparable raises the
            Comparable ArgumentError instead of comparing a garbage value */
-        if (user_cmp_ret_poly(c, cid4)) {
+        if (user_cmp_needs_check(c, cid4)) {
           int ta = hoist_boxed_rooted(c, recv), tb2 = hoist_boxed_rooted(c, argv[0]);
           buf_printf(b, "(sp_poly_cmp_ck(_t%d, _t%d) %s 0)", ta, tb2, name);
           return;
@@ -7353,7 +7355,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int cid_b = ty_object_class(rt);
       int defcls_b = -1;
       int mi_b = comp_method_in_chain(c, cid_b, "<=>", &defcls_b);
-      if (mi_b >= 0 && user_cmp_ret_poly(c, cid_b)) {
+      if (mi_b >= 0 && user_cmp_needs_check(c, cid_b)) {
         /* nil-capable `<=>`: checked comparisons (incomparable raises) */
         int ts = hoist_boxed_rooted(c, recv);
         int tlo = hoist_boxed_rooted(c, argv[0]), thi = hoist_boxed_rooted(c, argv[1]);
