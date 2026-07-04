@@ -2101,11 +2101,11 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
   for (int k = 0; k < n - 1; k++) emit_stmt(c, bb[k], b, 0);
-  /* a value-less tail (nil/void/unknown -- e.g. an arm ending in `puts`,
-     doom's debug-toggle arms in GosuWindow#button_down): run it as a
-     statement and leave the arm value at the slot default, mirroring the
-     if-as-value emitter. Assigning it would route `puts` through
-     emit_expr, which has no expression form for it. */
+  /* a value-less tail (nil/void/unknown -- e.g. an arm ending in `puts` or
+     a writer call, doom's debug-toggle arms in GosuWindow#button_down):
+     run it as a statement and leave the arm value at the slot default,
+     mirroring the if-as-value emitter. Assigning it would route the tail
+     through emit_expr, which has no expression form for it. */
   TyKind lt = n > 0 ? comp_ntype(c, bb[n - 1]) : TY_NIL;
   if (n > 0 && (lt == TY_NIL || lt == TY_VOID || lt == TY_UNKNOWN)) {
     emit_stmt(c, bb[n - 1], b, 0);
@@ -2123,6 +2123,11 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
 void emit_case_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   TyKind rt = comp_ntype(c, id);
+  /* a void/nil-typed case (arms are writer calls or nil) has no C storage
+     type -- emit_ctype would declare `void _crN` -- so hold it boxed.
+     TY_UNKNOWN falls through emit_ctype to `void` too; widen it as well,
+     matching the case/in-as-value path in emit_expr. */
+  if (rt == TY_VOID || rt == TY_NIL || rt == TY_UNKNOWN) rt = TY_POLY;
   int pred = nt_ref(nt, id, "predicate");
   int nw = 0;
   const int *whens = nt_arr(nt, id, "conditions", &nw);
