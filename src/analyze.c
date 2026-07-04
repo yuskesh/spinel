@@ -3010,6 +3010,76 @@ void analyze_program(Compiler *c) {
     }
   }
 
+  /* Post-fixpoint: hash-variant back-propagation. A local that unified to
+     TY_POLY_POLY_HASH (e.g. a subscript write with a poly key widened it)
+     while the ivars feeding it stayed Str/Sym-keyed leaves the emitted C
+     with a PolyPolyHash* local pointing at a StrPolyHash object -- every
+     write through it then runs PolyPolyHash_set against the wrong struct
+     layout and corrupts the heap (doom's Animations#update
+     `translation = ... ? @texture_translation : @flat_translation`, which
+     shredded neighboring framebuffer memory into nils). Widen such source
+     ivars to the local's variant and re-run inference. */
+  {
+    int hb_changed = 0;
+    for (int id = 0; id < c->nt->count; id++) {
+      const char *nty = nt_type(c->nt, id);
+      if (!nty || !sp_streq(nty, "LocalVariableWriteNode")) continue;
+      const char *nm = nt_str(c->nt, id, "name");
+      LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
+      if (!lv || lv->type != TY_POLY_POLY_HASH) continue;
+      int v = nt_ref(c->nt, id, "value");
+      if (v < 0) continue;
+      /* DFS the value subtree for ivar reads (covers ternary/if arms);
+         stop at nested defs. Small fixed stack: value subtrees are tiny. */
+      int stack[256]; int sp = 0; stack[sp++] = v;
+      while (sp > 0) {
+        int nid = stack[--sp];
+        const char *t2 = nt_type(c->nt, nid);
+        if (!t2 || sp_streq(t2, "DefNode")) continue;
+        if (sp_streq(t2, "InstanceVariableReadNode")) {
+          Scope *sc2 = comp_scope_of(c, nid);
+          int ci2 = sc2 ? sc2->class_id : -1;
+          const char *ivn = nt_str(c->nt, nid, "name");
+          if (ci2 >= 0 && ivn) {
+            int ix = comp_ivar_index(&c->classes[ci2], ivn);
+            if (ix >= 0 && (c->classes[ci2].ivar_types[ix] == TY_STR_POLY_HASH ||
+                            c->classes[ci2].ivar_types[ix] == TY_SYM_POLY_HASH)) {
+              c->classes[ci2].ivar_types[ix] = TY_POLY_POLY_HASH;
+              hb_changed = 1;
+              /* patch the node-type cache for every read/write of this ivar
+                 in this class so codegen agrees (mirrors the UNKNOWN
+                 backstop above) */
+              for (int nid2 = 0; nid2 < c->nt->count; nid2++) {
+                const char *nty2 = nt_type(c->nt, nid2);
+                if (!nty2) continue;
+                if (!sp_streq(nty2, "InstanceVariableReadNode") &&
+                    !sp_streq(nty2, "InstanceVariableWriteNode") &&
+                    !sp_streq(nty2, "InstanceVariableOrWriteNode")) continue;
+                Scope *s2 = comp_scope_of(c, nid2);
+                if (!s2 || s2->class_id != ci2) continue;
+                const char *nm2 = nt_str(c->nt, nid2, "name");
+                if (nm2 && sp_streq(nm2, ivn)) c->ntype[nid2] = TY_POLY_POLY_HASH;
+              }
+            }
+          }
+        }
+        int nr2 = nt_num_refs(c->nt, nid);
+        for (int i2 = 0; i2 < nr2 && sp < 250; i2++) { int ch2 = nt_ref_at(c->nt, nid, i2); if (ch2 >= 0) stack[sp++] = ch2; }
+        int na2 = nt_num_arrs(c->nt, nid);
+        for (int i2 = 0; i2 < na2 && sp < 250; i2++) { int nn2 = 0; const int *ids2 = nt_arr_at(c->nt, nid, i2, &nn2); for (int k2 = 0; k2 < nn2 && sp < 250; k2++) if (ids2[k2] >= 0) stack[sp++] = ids2[k2]; }
+      }
+    }
+    if (hb_changed) {
+      for (int iter = 0; iter < 16; iter++) {
+        int ch = 0;
+        ch |= infer_param_types(c);
+        ch |= infer_return_types(c);
+        ch |= infer_write_types(c);
+        if (!ch) break;
+      }
+    }
+  }
+
   /* Post-fixpoint: unify param types across method override families.
      When an override widens a param to TY_POLY but the parent (or
      sibling) keeps it scalar, the generated C signatures disagree and
@@ -3903,9 +3973,22 @@ void analyze_program(Compiler *c) {
     int v = nt_ref(c->nt, id, "value");
     if (v < 0) continue;
     const char *vty = nt_type(c->nt, v);
+    /* `x ||= expr || {}`: the literal hides one level down in an or/and
+       arm; align that arm instead (doom's `@gfx_weapons ||= ...weapons
+       || {}`, whose {} otherwise defaulted to StrPolyHash against a
+       Sym-keyed slot). */
+    if (vty && (sp_streq(vty, "OrNode") || sp_streq(vty, "AndNode"))) {
+      int alt = nt_ref(c->nt, v, "right");
+      const char *aty = alt >= 0 ? nt_type(c->nt, alt) : NULL;
+      if (aty && (sp_streq(aty, "HashNode") || sp_streq(aty, "KeywordHashNode"))) { v = alt; vty = aty; }
+    }
     if (!vty || (!sp_streq(vty, "HashNode") && !sp_streq(vty, "KeywordHashNode"))) continue;
     TyKind litt = c->ntype[v];
-    if (!ty_is_hash(litt)) continue;
+    /* an EMPTY literal often has no inferred type at all (TY_UNKNOWN) --
+       `@near_linedefs ||= {}` -- and can adopt any variant, so let it
+       through; the widen-only guard below still applies. */
+    int lit_n = 0; nt_arr(c->nt, v, "elements", &lit_n);
+    if (!ty_is_hash(litt) && !(lit_n == 0 && (litt == TY_UNKNOWN || litt == TY_POLY))) continue;
     const char *nm = nt_str(c->nt, id, "name");
     if (!nm) continue;
     TyKind dstt = TY_UNKNOWN;
@@ -3926,6 +4009,65 @@ void analyze_program(Compiler *c) {
        literal. Other cross-variant widenings are left alone. */
     if (dstt == TY_POLY_POLY_HASH && litt != TY_POLY_POLY_HASH)
       c->ntype[v] = dstt;
+    /* an empty literal adopts ANY destination hash variant (nothing to
+       re-box), fixing e.g. a Sym-keyed slot initialized with `... || {}` */
+    else if (lit_n == 0 && ty_is_hash(dstt) && litt != dstt)
+      c->ntype[v] = dstt;
+  }
+
+  /* Final safety pass: a hash-typed LOCAL assigned from a plain TY_POLY
+     value, or from a reader whose backing ivar finished on a different
+     type, cannot assume its variant -- codegen would cast the boxed
+     pointer to the inferred variant and index a different struct layout
+     (doom's `opts = @menu.options`: a PolyPolyHash_get over the actual
+     SymPolyHash object segfaulted in respawn_player). Runs LAST so it
+     sees final ivar types; widens the local to TY_POLY and repoints the
+     node-type cache so subscripts go through the runtime dispatch. */
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *nty = nt_type(c->nt, id);
+    if (!nty || !sp_streq(nty, "LocalVariableWriteNode")) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    Scope *lsc = comp_scope_of(c, id);
+    LocalVar *lv = nm && lsc ? scope_local(lsc, nm) : NULL;
+    if (!lv || !ty_is_hash(lv->type)) continue;
+    int v = nt_ref(c->nt, id, "value");
+    if (v < 0) continue;
+    const char *vty2 = nt_type(c->nt, v);
+    if (vty2 && (sp_streq(vty2, "HashNode") || sp_streq(vty2, "KeywordHashNode"))) continue;
+    int widen2 = (comp_ntype(c, v) == TY_POLY);
+    if (!widen2 && vty2 && sp_streq(vty2, "CallNode")) {
+      int vrecv = nt_ref(c->nt, v, "receiver");
+      int vargs = nt_ref(c->nt, v, "arguments");
+      int vac = 0; if (vargs >= 0) nt_arr(c->nt, vargs, "arguments", &vac);
+      const char *vnm = nt_str(c->nt, v, "name");
+      if (vrecv >= 0 && vac == 0 && vnm && nt_ref(c->nt, v, "block") < 0) {
+        TyKind rt3 = comp_ntype(c, vrecv);
+        for (int ci3 = 0; ci3 < c->nclasses && !widen2; ci3++) {
+          if (ty_is_object(rt3) && ty_object_class(rt3) != ci3) continue;
+          if (!ty_is_object(rt3) && rt3 != TY_POLY) break;
+          if (!ty_is_object(rt3) && !c->classes[ci3].instantiated) continue;
+          int pdc3 = -1;
+          if (!comp_reader_in_chain(c, ci3, vnm, &pdc3)) continue;
+          char ivn3[300]; snprintf(ivn3, sizeof ivn3, "@%s", comp_resolve_alias(c, pdc3, vnm));
+          int ix3 = comp_ivar_index(&c->classes[pdc3], ivn3);
+          if (ix3 >= 0 && c->classes[pdc3].ivar_types[ix3] != lv->type) widen2 = 1;
+        }
+      }
+    }
+    if (widen2) {
+      lv->type = TY_POLY;
+      /* repoint the cache for this local's read/write nodes in this scope */
+      for (int nid2 = 0; nid2 < c->nt->count; nid2++) {
+        const char *t4 = nt_type(c->nt, nid2);
+        if (!t4) continue;
+        if (!sp_streq(t4, "LocalVariableReadNode") && !sp_streq(t4, "LocalVariableWriteNode") &&
+            !sp_streq(t4, "LocalVariableTargetNode") && !sp_streq(t4, "LocalVariableOrWriteNode")) continue;
+        const char *n4 = nt_str(c->nt, nid2, "name");
+        if (!n4 || !sp_streq(n4, nm)) continue;
+        if (comp_scope_of(c, nid2) != lsc) continue;
+        if (ty_is_hash(c->ntype[nid2])) c->ntype[nid2] = TY_POLY;
+      }
+    }
   }
 }
 
