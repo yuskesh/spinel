@@ -2535,6 +2535,39 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
     const char *hcn = ty_hash_cname(g_ret_type);
     if (hc == 0 && hcn) { buf_printf(b, "sp_%sHash_new()", hcn); return; }
   }
+  /* `Hash.new` / `Hash.new(default)` in a hash-returning tail takes the return
+     type the same way (the element types are witnessed by callers, not this
+     empty body -- #1680), constructing the concrete variant rather than falling
+     through to the generic call path that can't build an untyped Hash. Mirrors
+     the `h = Hash.new(default)` local-write case in emit_assign. */
+  if (nty && sp_streq(nty, "CallNode") && ty_is_hash(g_ret_type) && ty_hash_cname(g_ret_type) &&
+      sp_streq(nt_str(c->nt, node, "name") ? nt_str(c->nt, node, "name") : "", "new") &&
+      nt_ref(c->nt, node, "block") < 0) {
+    int hr = nt_ref(c->nt, node, "receiver");
+    const char *hrt = hr >= 0 ? nt_type(c->nt, hr) : NULL;
+    if (hrt && (sp_streq(hrt, "ConstantReadNode") || sp_streq(hrt, "ConstantPathNode")) &&
+        sp_streq(nt_str(c->nt, hr, "name") ? nt_str(c->nt, hr, "name") : "", "Hash")) {
+      const char *hcn = ty_hash_cname(g_ret_type);
+      int ha = nt_ref(c->nt, node, "arguments"); int hac = 0;
+      const int *hav = ha >= 0 ? nt_arr(c->nt, ha, "arguments", &hac) : NULL;
+      int poly_val = (g_ret_type == TY_SYM_POLY_HASH || g_ret_type == TY_STR_POLY_HASH);
+      if (hac == 0) {
+        buf_printf(b, "sp_%sHash_new()", hcn);
+        return;
+      }
+      /* `Hash.new(default)`: every hash variant has an sp_<H>Hash_new_with_default
+         except PolyPolyHash (#1673). backprop_hash_return_types won't pin that
+         combo, but a return typed PolyPolyHash by other means (rbs/explicit) with
+         a Hash.new(default) tail would emit a nonexistent constructor -- leave it
+         to the generic path below (master's pre-existing behavior). */
+      if (g_ret_type != TY_POLY_POLY_HASH) {
+        buf_printf(b, "sp_%sHash_new_with_default(", hcn);
+        if (poly_val) emit_boxed(c, hav[0], b); else emit_expr(c, hav[0], b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
+  }
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
   const char *txt = tmp.p ? tmp.p : "";
