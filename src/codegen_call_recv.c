@@ -1628,10 +1628,17 @@ else {
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = _telt%d;\n", bp, ti); }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
+          /* Capture the predicate in its own buffer: a multi-statement terminal
+             (a block ending in an if/else expression) lowers its statements
+             through g_pre, and emitting the condition straight into g_pre would
+             splice them after the already-written `if (!`. */
+          Buf cb; memset(&cb, 0, sizeof cb);
+          emit_cond(c, bb[bn - 1], &cb);
           emit_indent(g_pre, g_indent);
           buf_puts(g_pre, "if (");
           if (is_rej) buf_puts(g_pre, "!");
-          emit_cond(c, bb[bn - 1], g_pre);
+          buf_puts(g_pre, cb.p ? cb.p : "0");
+          free(cb.p);
           g_indent = sv;
           buf_printf(g_pre, ") { sp_PolyArray_set(_t%d, _t%d, _telt%d); _t%d++; }\n",
                      trecv, twp, ti, twp);
