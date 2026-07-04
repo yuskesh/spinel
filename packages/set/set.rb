@@ -26,6 +26,11 @@ class Set
   end
   alias member? include?
 
+  def delete(x)
+    @data.delete(x)
+    self
+  end
+
   def each
     @data.each { |x| yield x }
     self

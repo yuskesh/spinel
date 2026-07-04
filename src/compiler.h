@@ -274,6 +274,10 @@ const char *comp_resolve_gvar(Compiler *c, const char *name); /* alias resolutio
 void comp_add_gvar_alias(Compiler *c, const char *from, const char *to);
 LocalVar *comp_const(Compiler *c, const char *name);
 LocalVar *comp_const_intern(Compiler *c, const char *name);
+/* 1 when `pred` is a statically-false `defined?(Const)` if-guard (optionally
+   the left arm of an `&&` chain) over a constant that resolves to nothing;
+   the guarded branch is compile-time dead. */
+int comp_defined_guard_false(Compiler *c, int pred);
 
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);

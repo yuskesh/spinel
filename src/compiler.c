@@ -562,6 +562,65 @@ int comp_sg_reader_candidates(Compiler *c, int call_id, int *out, int max) {
   return comp_sg_const_candidates(c, ci, nm, out, max);
 }
 
+/* A constant name that resolves to something at compile time: a value
+   constant, a registered class/module, or a well-known builtin the
+   DefinedNode emit answers "constant" for (keep the list in sync with the
+   ConstantReadNode arm in codegen_expr.c). */
+static int const_name_resolves(Compiler *c, const char *cn) {
+  if (!cn) return 0;
+  if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 1;
+  static const char *const builtins[] = {
+    "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
+    "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
+    "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
+    "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
+    "STDOUT", "STDERR", "STDIN", NULL };
+  for (int bi = 0; builtins[bi]; bi++) if (sp_streq(cn, builtins[bi])) return 1;
+  return 0;
+}
+
+/* Statically-false `defined?(Const)` guard: the predicate is a DefinedNode
+   (or a `defined?(Const) && ...` AndNode, whose left arm short-circuits the
+   whole conjunction to nil) over a constant / constant path that resolves to
+   nothing at compile time. A constant path (A::B::C) needs every segment to
+   resolve for the path to possibly exist; one unresolved segment makes the
+   whole path -- and the guard -- statically false (`RubyVM::YJIT` folds on
+   RubyVM, and `MissingParent::String` folds on MissingParent despite its
+   builtin tail). Such an if-branch is compile-time dead -- doom's
+   `if defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled?` MRI hack -- so call
+   reachability must not walk it and codegen must not emit it. Deliberately
+   narrow: only constants/constant paths, no dynamic defined? forms. */
+int comp_defined_guard_false(Compiler *c, int pred) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0) return 0;
+  const char *pt = nt_type(nt, pred);
+  if (!pt) return 0;
+  /* `defined?(X) && rest`: falseness of the left arm decides the whole
+     predicate (recurses to cover chained `&&`s, which nest leftward). */
+  if (sp_streq(pt, "AndNode"))
+    return comp_defined_guard_false(c, nt_ref(nt, pred, "left"));
+  if (!sp_streq(pt, "DefinedNode")) return 0;
+  int v = nt_ref(nt, pred, "value");
+  if (v < 0) return 0;
+  const char *vt = nt_type(nt, v);
+  if (vt && sp_streq(vt, "ConstantReadNode"))
+    return !const_name_resolves(c, nt_str(nt, v, "name"));
+  if (vt && sp_streq(vt, "ConstantPathNode")) {
+    /* Walk tail-to-root; any unresolved segment kills the whole path. */
+    for (int seg = v; ; ) {
+      if (!const_name_resolves(c, nt_str(nt, seg, "name"))) return 1;
+      int par = nt_ref(nt, seg, "parent");
+      if (par < 0) return 0;                     /* ::Root form, all resolved */
+      const char *pty = nt_type(nt, par);
+      if (pty && sp_streq(pty, "ConstantPathNode")) { seg = par; continue; }
+      if (pty && sp_streq(pty, "ConstantReadNode"))
+        return !const_name_resolves(c, nt_str(nt, par, "name"));
+      return 0;                                  /* dynamic parent: no fold */
+    }
+  }
+  return 0;
+}
+
 /* A literal ArrayNode whose elements are all integer literals (or empty). */
 static int is_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;

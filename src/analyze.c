@@ -28,13 +28,13 @@ void compute_reachable(Compiler *c) {
   int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
   for (int s = 0; s < c->nscopes; s++) {
     if (c->scopes[s].body >= 0)
-      cr_collect_calls(c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s]);
+      cr_collect_calls(c, c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s]);
     /* Also scan parameter defaults (e.g. def foo(opt = bar)) — these emit calls
        within the method scope but live in the DefNode parameters subtree. */
     if (c->scopes[s].def_node >= 0) {
       int pn = nt_ref(c->nt, c->scopes[s].def_node, "parameters");
       if (pn >= 0)
-        cr_collect_calls(c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s]);
+        cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s]);
     }
   }
 

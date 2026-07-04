@@ -1003,6 +1003,11 @@ void emit_if(Compiler *c, int id, Buf *b, int indent, int is_unless, int tail) {
     int sc = static_isa_cond(c, pred);
     if (sc < 0) sc = static_nil_ivar_cond(c, pred);
     if (sc < 0) sc = static_nil_reader_cond(c, pred);
+    /* `if defined?(UnknownConst) [&& ...]`: nil guard, the branch is dead.
+       Must be dropped (not just emitted under `if (NULL)`): its body may call
+       methods reachability already skipped for the same reason, or lean on
+       the missing constant in ways that have no C translation. */
+    if (sc < 0 && comp_defined_guard_false(c, pred)) sc = 0;
     int eff = (sc < 0) ? -1 : (is_unless ? !sc : sc);
     if (eff == 1) {
       /* condition always true: emit only the then-branch */

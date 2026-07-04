@@ -4551,12 +4551,23 @@ int infer_return_types(Compiler *c) {
 /* Collect CallNode names in the subtree rooted at `id`, stopping at nested
    DefNodes (which are separate method scopes). `out` / `n` / `cap` are
    the dynamic string array to append to. */
-void cr_collect_calls(const NodeTable *nt, int id,
+void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
                               char ***out, int *n, int *cap) {
   if (id < 0) return;
   const char *ty = nt_type(nt, id);
   if (!ty) return;
   if (sp_streq(ty, "DefNode")) return;          /* don't enter nested methods */
+  /* `if defined?(UnknownConst) ... end`: the then-branch is compile-time dead
+     (and never emitted -- see emit_if), so collecting its calls would mark
+     genuinely unemittable methods live. Only walk the live side. */
+  if (sp_streq(ty, "IfNode") && comp_defined_guard_false(c, nt_ref(nt, id, "predicate"))) {
+    cr_collect_calls(c, nt, nt_ref(nt, id, "subsequent"), out, n, cap);
+    return;
+  }
+  if (sp_streq(ty, "UnlessNode") && comp_defined_guard_false(c, nt_ref(nt, id, "predicate"))) {
+    cr_collect_calls(c, nt, nt_ref(nt, id, "statements"), out, n, cap);
+    return;
+  }
   /* Collect method name from CallNode, or operator name from op-assign nodes
      (e.g. `a += 1` → InstanceVariableOperatorWriteNode with binary_operator "+"). */
   const char *nm = NULL;
@@ -4597,9 +4608,9 @@ void cr_collect_calls(const NodeTable *nt, int id,
     }
   }
   int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(nt, ch, out, n, cap); }
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(c, nt, ch, out, n, cap); }
   int na = nt_num_arrs(nt, id);
-  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int k = 0; k < nn; k++) if (ids[k] >= 0) cr_collect_calls(nt, ids[k], out, n, cap); }
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int k = 0; k < nn; k++) if (ids[k] >= 0) cr_collect_calls(c, nt, ids[k], out, n, cap); }
 }
 
 /* Mark each method scope reachable via transitive call-graph BFS.
