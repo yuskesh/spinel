@@ -16,7 +16,19 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_CONDVAR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_CONDVAR)", expr); return; }
   if (t == TY_ENUMERATOR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_ENUMERATOR)", expr); return; }
   if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
-  if (ty_is_object(t)) { buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t)); return; }
+  if (ty_is_object(t)) {
+    /* A reference-type object is a genuinely nilable C pointer (a hash/cache
+       lookup or a method that can `return nil` -- e.g. doom's
+       TextureManager#[] boxing build_composite's nullable result). Box via
+       sp_box_nullable_obj so a NULL pointer becomes a proper SP_TAG_NIL rather
+       than a "truthy" SP_TAG_OBJ wrapping NULL v.p, which passes `unless x` and
+       then segfaults on the first field/method read (renderer draw_wall_column
+       `texture.width`). A value-type object (a small Struct passed by value) is
+       never NULL and `expr` is not a pointer, so the plain box is correct. */
+    if (comp_ty_value_obj(c, t)) buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t));
+    else buf_printf(b, "sp_box_nullable_obj((void *)(%s), %d)", expr, ty_object_class(t));
+    return;
+  }
   if (ty_is_hash(t) && hash_box_cls(t)) { buf_printf(b, "sp_box_obj(%s, %s)", expr, hash_box_cls(t)); return; }
   const char *fn = NULL;
   switch (t) {
@@ -139,9 +151,16 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     return;
   }
   if (ty_is_object(t)) {
-    buf_printf(b, "sp_box_obj(");
+    /* A reference-type object is a nilable C pointer (a hash/cache lookup or a
+       method that can `return nil`, e.g. doom's TextureManager#[] boxing
+       build_composite's nullable result). Box via sp_box_nullable_obj so a
+       NULL pointer becomes SP_TAG_NIL rather than a truthy SP_TAG_OBJ over a
+       NULL v.p (which passes `unless x` then segfaults on the first field
+       read). A value-type object is never NULL and is not a pointer. */
+    int is_val = comp_ty_value_obj(c, t);
+    buf_printf(b, is_val ? "sp_box_obj(" : "sp_box_nullable_obj((void *)(");
     emit_expr(c, node, b);
-    buf_printf(b, ", %d)", ty_object_class(t));
+    buf_printf(b, is_val ? ", %d)" : "), %d)", ty_object_class(t));
     return;
   }
   if (ty_is_hash(t)) {
