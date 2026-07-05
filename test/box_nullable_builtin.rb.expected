@@ -1,0 +1,4 @@
+unset nil? true
+open nil? false
+have io
+done

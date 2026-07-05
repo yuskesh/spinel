@@ -1,5 +1,29 @@
 #include "codegen_internal.h"
 
+/* A reference-backed builtin (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
+   Enumerator/Exception/Proc/Method) is a genuinely nilable C pointer: an unset
+   ivar, a `return nil` method, or a cache miss yields NULL. It must box via
+   sp_box_nullable_obj so a NULL becomes SP_TAG_NIL rather than a "truthy"
+   SP_TAG_OBJ wrapping NULL v.p -- which passes `unless x`/`if x`, misreads as
+   non-nil (a wrong `nil?`), then segfaults on the first field/method read.
+   Value-type builtins (Range/Time/Complex/Rational, boxed as a by-value copy)
+   and non-pointer scalars are deliberately excluded -- they are never NULL. */
+const char *ty_nullable_builtin_id(TyKind t) {
+  switch (t) {
+    case TY_IO:         return "SP_BUILTIN_IO";
+    case TY_FIBER:      return "SP_BUILTIN_FIBER";
+    case TY_THREAD:     return "SP_BUILTIN_THREAD";
+    case TY_QUEUE:      return "SP_BUILTIN_QUEUE";
+    case TY_MUTEX:      return "SP_BUILTIN_MUTEX";
+    case TY_CONDVAR:    return "SP_BUILTIN_CONDVAR";
+    case TY_ENUMERATOR: return "SP_BUILTIN_ENUMERATOR";
+    case TY_EXCEPTION:  return "SP_BUILTIN_EXCEPTION";
+    case TY_PROC:       return "SP_BUILTIN_PROC";
+    case TY_METHOD:     return "SP_BUILTIN_METHOD";
+    default:            return NULL;
+  }
+}
+
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, expr); return; }
   /* An untyped or void value is already emitted as a boxed sp_RbVal (a nil
@@ -8,14 +32,12 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
      this, the int-boxing fallback below produced sp_box_int(<sp_RbVal>) -- an
      mrb_int slot fed a boxed value (the recurring poly-box bug family). */
   if (t == TY_UNKNOWN || t == TY_VOID || t == TY_REGEX) { buf_printf(b, "(%s, sp_box_nil())", expr); return; }
-  if (t == TY_EXCEPTION) { buf_printf(b, "sp_box_obj(%s, SP_BUILTIN_EXCEPTION)", expr); return; }
-  if (t == TY_FIBER) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_FIBER)", expr); return; }
-  if (t == TY_THREAD) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_THREAD)", expr); return; }
-  if (t == TY_QUEUE) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_QUEUE)", expr); return; }
-  if (t == TY_MUTEX) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_MUTEX)", expr); return; }
-  if (t == TY_CONDVAR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_CONDVAR)", expr); return; }
-  if (t == TY_ENUMERATOR) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_ENUMERATOR)", expr); return; }
-  if (t == TY_IO) { buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_IO)", expr); return; }
+  /* Reference-backed builtins are nilable C pointers -- box NULL as nil (see
+     ty_nullable_builtin_id). This also covers TY_PROC/TY_METHOD, which used to
+     fall to the sp_box_proc/sp_box_method switch cases below (both wrapped NULL
+     as a truthy proc/method). */
+  { const char *nbid = ty_nullable_builtin_id(t);
+    if (nbid) { buf_printf(b, "sp_box_nullable_obj((void *)(%s), %s)", expr, nbid); return; } }
   if (ty_is_object(t)) {
     /* A reference-type object is a genuinely nilable C pointer (a hash/cache
        lookup or a method that can `return nil` -- e.g. doom's
@@ -38,8 +60,7 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_SYMBOL: fn = "sp_box_sym"; break;     case TY_RANGE: fn = "sp_box_range"; break;
     case TY_TIME: fn = "sp_box_time"; break;
     case TY_COMPLEX: fn = "sp_box_complex"; break;  case TY_RATIONAL: fn = "sp_box_rational"; break;
-    case TY_PROC: fn = "sp_box_proc"; break;
-    case TY_METHOD: fn = "sp_box_method"; break;
+    /* TY_PROC / TY_METHOD are handled by the nullable-builtin box above. */
     case TY_CLASS: fn = "sp_box_class"; break;
     case TY_INT_ARRAY: fn = "sp_box_int_array"; break;
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
@@ -122,34 +143,15 @@ void emit_str_expr(Compiler *c, int node, Buf *b) {
 void emit_boxed(Compiler *c, int node, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_POLY) { emit_expr(c, node, b); return; }
-  if (t == TY_FIBER) {
-    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_FIBER)");
-    return;
-  }
-  if (t == TY_THREAD) {
-    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_THREAD)");
-    return;
-  }
-  if (t == TY_QUEUE) {
-    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_QUEUE)");
-    return;
-  }
-  if (t == TY_MUTEX) {
-    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_MUTEX)");
-    return;
-  }
-  if (t == TY_CONDVAR) {
-    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_CONDVAR)");
-    return;
-  }
-  if (t == TY_IO) {
-    buf_puts(b, "sp_box_obj((void *)("); emit_expr(c, node, b); buf_puts(b, "), SP_BUILTIN_IO)");
-    return;
-  }
-  if (t == TY_EXCEPTION) {
-    buf_printf(b, "sp_box_obj("); emit_expr(c, node, b); buf_puts(b, ", SP_BUILTIN_EXCEPTION)");
-    return;
-  }
+  /* Reference-backed builtins (IO/Fiber/Thread/Queue/Mutex/ConditionVariable/
+     Enumerator/Exception/Proc/Method) are nilable C pointers -- box NULL as nil
+     via sp_box_nullable_obj, not a truthy SP_TAG_OBJ over NULL. */
+  { const char *nbid = ty_nullable_builtin_id(t);
+    if (nbid) {
+      buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
+      buf_printf(b, "), %s)", nbid);
+      return;
+    } }
   if (ty_is_object(t)) {
     /* A reference-type object is a nilable C pointer (a hash/cache lookup or a
        method that can `return nil`, e.g. doom's TextureManager#[] boxing
@@ -217,8 +219,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     case TY_TIME:   fn = "sp_box_time";  break;
     case TY_COMPLEX:  fn = "sp_box_complex";  break;
     case TY_RATIONAL: fn = "sp_box_rational"; break;
-    case TY_PROC:   fn = "sp_box_proc";  break;
-    case TY_METHOD: fn = "sp_box_method"; break;
+    /* TY_PROC / TY_METHOD are handled by the nullable-builtin box above. */
     case TY_INT_ARRAY:   fn = "sp_box_int_array";   break;
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
     case TY_STR_ARRAY:   fn = "sp_box_str_array";   break;

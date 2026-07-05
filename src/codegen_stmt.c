@@ -3886,9 +3886,17 @@ else {
         buf_printf(g_pre, " _t%d = ", iatmp);
         emit_expr(c, ival, g_pre);
         buf_puts(g_pre, ";\n");
-        buf_printf(b, "%s = sp_box_obj(sp_%s_%s((sp_%s *)(%s).v.p, _t%d), %d);\n",
-                   ref, c->classes[poly_defcls].name, mc(pms->name),
-                   c->classes[poly_defcls].name, ref, iatmp, poly_defcls);
+        /* The operator method can `return nil` (a NULL reference); box a
+           reference-type result via sp_box_nullable_obj so NULL becomes nil, not
+           a truthy wrapper. A value-type class is never NULL, so keep sp_box_obj. */
+        const char *pbox = c->classes[poly_defcls].is_value_type
+                             ? "sp_box_obj(" : "sp_box_nullable_obj((void *)(";
+        const char *pboxc = c->classes[poly_defcls].is_value_type ? ", %d)" : "), %d)";
+        buf_printf(b, "%s = %ssp_%s_%s((sp_%s *)(%s).v.p, _t%d)", ref, pbox,
+                   c->classes[poly_defcls].name, mc(pms->name),
+                   c->classes[poly_defcls].name, ref, iatmp);
+        buf_printf(b, pboxc, poly_defcls);
+        buf_puts(b, ";\n");
       }
       else if ((sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") || sp_streq(op, "/"))) {
         /* numeric op on a poly slot: runtime poly arithmetic with a boxed rhs */
