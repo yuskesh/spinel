@@ -120,10 +120,16 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
   /* the block being captured is caller code: record the caller's self so
-     emit_block_invoke can restore it around the spliced block body. */
+     emit_block_invoke can restore it around the spliced block body. Copy the
+     STRING into a per-inline (stack) buffer: g_self may point at the shared
+     static selfbuf below, which a deeper nested inline overwrites -- aliasing
+     the fallback by pointer would then make the spliced block body read the
+     wrong (inner) receiver name. */
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
-  g_yield_self_fallback = g_self;
+  char self_fb_buf[sizeof selfbuf];
+  if (g_self) { snprintf(self_fb_buf, sizeof self_fb_buf, "%s", g_self); g_yield_self_fallback = self_fb_buf; }
+  else g_yield_self_fallback = NULL;
   g_yield_self_deref_fallback = g_self_deref;
   g_block_id = block;
   /* the literal block binds to THIS call site's break scope; a forwarded
