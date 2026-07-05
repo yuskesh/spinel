@@ -2234,9 +2234,23 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     if (vpoly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
     else { emit_ctype(c, bt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tv, default_value(bt)); }
     emit_block_value_into(c, block, tvb, vpoly, din);
-    char truth[40];
-    if (vpoly) snprintf(truth, sizeof truth, "sp_poly_truthy(_t%d)", tv);
-    else snprintf(truth, sizeof truth, "(_t%d)", tv);
+    /* Ruby truthiness of the block value: only nil/false are falsy. C
+       zero-falsiness ("(_tN)") would wrongly drop a numeric 0 / 0.0 (or an
+       empty string), which Ruby keeps -- so mirror emit_cond's per-type test
+       on the temp: a boxed poly goes through sp_poly_truthy, a nilable scalar
+       tests its sentinel, and every other concrete value is always truthy. */
+    char truth[48];
+    if (vpoly)                        snprintf(truth, sizeof truth, "sp_poly_truthy(_t%d)", tv);
+    else if (bt == TY_BOOL)           snprintf(truth, sizeof truth, "(_t%d)", tv);
+    else if (bt == TY_INT)            snprintf(truth, sizeof truth, "(_t%d != SP_INT_NIL)", tv);
+    else if (bt == TY_FLOAT)          snprintf(truth, sizeof truth, "(!sp_float_is_nil(_t%d))", tv);
+    else if (bt == TY_SYMBOL)         snprintf(truth, sizeof truth, "(_t%d != (sp_sym)-1)", tv);
+    else if (comp_ty_value_obj(c, bt)) snprintf(truth, sizeof truth, "1");
+    else if (bt == TY_STRING || ty_is_array(bt) || ty_is_hash(bt) || ty_is_object(bt) ||
+             bt == TY_PROC || bt == TY_STRINGIO || bt == TY_STRINGSCANNER || bt == TY_MATCHDATA ||
+             bt == TY_EXCEPTION || bt == TY_BIGINT || bt == TY_REGEX)
+                                      snprintf(truth, sizeof truth, "(_t%d != 0)", tv);
+    else                              snprintf(truth, sizeof truth, "1");  /* concrete value: always truthy */
     if (is_map) {
       emit_indent(g_pre, din); buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
       if (sp_streq(rk, "Poly") && !vpoly) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bt, tvb, &bx); buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p); }
