@@ -4076,6 +4076,15 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chop"))       { buf_puts(b, "sp_box_str(sp_str_chop(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chr"))        { buf_puts(b, "sp_box_str(sp_str_chr(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    /* poly.bytes / poly.codepoints -> concrete TY_INT_ARRAY, no boxing (matches
+       the inference rule). A String that widened to poly (a binary lump slice)
+       reaches here; without this arm .bytes hit the generic poly method
+       dispatch and raised "undefined method 'bytes' for poly". */
+    if ((sp_streq(name, "bytes") || sp_streq(name, "codepoints")) && argc == 0 &&
+        nt_ref(nt, id, "block") < 0) {
+      buf_printf(b, "sp_str_%s(sp_poly_to_s(", sp_streq(name, "bytes") ? "bytes" : "codepoints");
+      emit_expr(c, recv, b); buf_puts(b, "))"); return 1;
+    }
     if (sp_streq(name, "freeze"))     { emit_expr(c, recv, b); return 1; }
   }
   /* poly receiver: String#getbyte (a non-string tag raises NoMethodError).
@@ -4090,6 +4099,20 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       emit_int_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
+  }
+  /* poly receiver: String#unpack1(fmt) -- unbox via sp_poly_to_s first. A
+     String value that widened to poly (doom's binary WAD/texture parsing)
+     was entirely unhandled here and hit the generic poly method dispatch,
+     raising "undefined method 'unpack1' for poly". Mirrors the rt==TY_STRING
+     codegen and its inference rule (a single-directive int format stays int). */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "unpack1") && argc == 1) {
+    int is_int = comp_ntype(c, id) == TY_INT;
+    if (is_int) buf_puts(b, "sp_poly_to_i(");
+    buf_puts(b, "sp_PolyArray_get(sp_str_unpack(sp_poly_to_s(");
+    emit_expr(c, recv, b); buf_puts(b, "), ");
+    emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+    if (is_int) buf_puts(b, ")");
+    return 1;
   }
   /* poly receiver: arr[start, len] = src -- 3-arg splice assign
      Skip Fiber/Fiber.current storage receivers (handled later). */
