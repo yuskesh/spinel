@@ -2047,7 +2047,24 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, " a%d", i);
     }
     if (ci->nivars == 0) buf_puts(b, "void");
-    buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
+    buf_puts(b, ") {\n");
+    /* Root every heap-backed member argument before allocating the struct:
+       SP_POOL_NEW can trigger a GC, and a member value that is a fresh,
+       otherwise-unrooted temporary (e.g. a `data[8, 8].delete("\0").upcase`
+       WAD lump name) would be swept before it is stored into the ivar,
+       leaving a dangling pointer the collector later reads (use-after-free). */
+    for (int i = 0; i < ci->nivars; i++) {
+      TyKind mt = ci->ivar_types[i];
+      /* Gate on needs_root() -- the codebase's authoritative "this type is a
+         heap pointer the GC scans" predicate -- so EVERY heap-backed member
+         (bigint, obj_array, proc/method/exception, io/fiber/etc.) is rooted,
+         not just strings/poly/object/array/hash. A fresh bigint or obj_array
+         temporary is just as sweepable across SP_POOL_NEW's GC as a string. */
+      if (mt == TY_STRING)      buf_printf(b, "  SP_GC_ROOT_STR(a%d);\n", i);
+      else if (mt == TY_POLY)   buf_printf(b, "  SP_GC_ROOT_RBVAL(a%d);\n", i);
+      else if (needs_root(mt))  buf_printf(b, "  SP_GC_ROOT(a%d);\n", i);
+    }
+    buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
               ci->name, ci->name,
               class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
               class_needs_scan(ci) ? "_scan" : "");
