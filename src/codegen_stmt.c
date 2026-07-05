@@ -2672,6 +2672,16 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "%s = %s; ", g_method_pr_var, nilv);
       }
     }
+    else {
+      /* No result slot (a void-position inline funnel, e.g. a yielding method
+         inlined in statement position): the value is discarded, but a
+         `return <expr>` must still evaluate its argument for side effects
+         before jumping to the exit -- matching the void non-inline path below. */
+      for (int k = 0; k < n; k++) {
+        int vn = unwrap_parens(c, a[k]);
+        if (!node_is_pure_literal(c->nt, vn)) { buf_puts(b, "(void)("); emit_expr(c, vn, b); buf_puts(b, "); "); }
+      }
+    }
     if (g_exc_frame_depth > g_method_pr_exc_depth)
       buf_printf(b, "sp_exc_top -= %d; ", g_exc_frame_depth - g_method_pr_exc_depth);
     buf_printf(b, "goto %s; }\n", g_method_pr_label);

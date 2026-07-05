@@ -1,0 +1,4 @@
+before
+block 1
+side effect happened
+after
