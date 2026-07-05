@@ -5857,8 +5857,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, ")"); return;
     }
     if (sp_streq(name, "join")) {
+      /* each component initializes a `const char *` slot, so a poly arg (e.g.
+         doom's `File.join(Dir.tmpdir, ...)` where the first component stays
+         poly) must be unboxed via sp_poly_to_s, not land its sp_RbVal raw. */
       buf_printf(b, "sp_file_join((const char*[]){");
-      for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_expr(c, argv[k], b); }
+      for (int k = 0; k < argc; k++) { if (k) buf_puts(b, ", "); emit_str_expr(c, argv[k], b); }
       if (argc == 0) buf_puts(b, "(const char*)0");
       buf_printf(b, "}, %d)", argc); return;
     }
