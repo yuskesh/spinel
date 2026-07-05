@@ -339,7 +339,18 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
 
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
   if (!str) sp_nil_recv("unpack");
+  /* Root the source string across every allocation below: `str` is very often a
+     fresh, otherwise-unrooted substring (`data[4, 4].unpack1('V')` in doom's
+     binary WAD parsing). sp_PolyArray_new and the per-element boxes/pushes can
+     each trigger a GC that would sweep the input out from under us (a
+     use-after-free read of the freed bytes). Root the result array too. */
+  SP_GC_ROOT_STR(str);
+  /* `fmt` is walked (via `p`) across the very same allocations, so it is just as
+     exposed as `str`: a fresh, unrooted format string (e.g. `unpack1("V" * n)`)
+     could be swept mid-parse, leaving `p` dangling. Root it too. NUL-safe. */
+  SP_GC_ROOT_STR(fmt);
   sp_PolyArray *out = sp_PolyArray_new();
+  SP_GC_ROOT(out);
   if (!str || !fmt) return out;
   /* sp_ext_str_byte_len honors the heap-string header so embedded
      NULs (binary data) don't truncate the source. */
