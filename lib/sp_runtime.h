@@ -3460,6 +3460,17 @@ static sp_RbVal sp_poly_massign_get(sp_RbVal v, mrb_int i) {
 }
 static sp_RbVal sp_poly_arr_get_hash(sp_RbVal a, mrb_int i) {
   if (a.tag == SP_TAG_INT) return sp_box_int((a.v.i >> i) & 1);
+  /* String#[int]: return the single character at i (a 1-char string), or nil
+     when out of range. A String that widened to poly (e.g. a method with
+     multiple return paths) reaches this generic index path; without this arm
+     it fell through to sp_poly_arr_get and silently returned nil. */
+  if (a.tag == SP_TAG_STR) {
+    const char *s = a.v.s ? a.v.s : "";
+    mrb_int cl = sp_str_length(s);
+    if (i < 0) i += cl;
+    if (i < 0 || i >= cl) return sp_box_nil();
+    return sp_box_str(sp_str_sub_range(s, i, 1));
+  }
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_POLY_POLY_HASH)
     return sp_PolyPolyHash_get((sp_PolyPolyHash*)a.v.p, sp_box_int(i));
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_SYM_POLY_HASH)
