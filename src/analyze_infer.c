@@ -2448,6 +2448,12 @@ else {
       }
       if (sp_streq(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
       if (sp_streq(name, "[]") && argc == 2) return TY_POLY;  /* 2-arg poly slice */
+      /* fetch on a poly Hash yields a boxed (poly) value, like `[]` -- the
+         hash-value type is not statically known through the poly widening. Type
+         it here so the boxed dispatch result is not discarded as nil (without
+         this, `fetch` fell through to the non-hash `fetch(k, default)` rule or
+         to nil, and its value-position result was dropped). */
+      if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) return TY_POLY;
       /* []= on a poly receiver yields the assigned value, emitted boxed */
       if (sp_streq(name, "[]=") && (argc == 2 || argc == 3)) return TY_POLY;
       if (sp_streq(name, "dig") && argc >= 1) return TY_POLY;
