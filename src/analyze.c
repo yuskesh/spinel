@@ -335,8 +335,20 @@ int a_block_is_lifted(Compiler *c, int id) {
     if (mi < 0) { Scope *self = comp_scope_of(c, id); if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL); }
   }
 else {
-    TyKind rt = infer_type(c, recv);
-    if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    const char *rty = nt_type(nt, recv);
+    /* `Klass.cmeth { }` / `Mod::Sub.cmeth { }`: a class/module method keeps a
+       real &block the same way an instance method does, so its block is lifted
+       and captures enclosing locals. (Was omitted -- only ty_is_object was
+       handled -- so a block passed to a module method never celled its
+       captures, silently dropping writes to them.) */
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    }
   }
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
