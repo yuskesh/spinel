@@ -1995,6 +1995,41 @@ static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
+    int sinit = comp_method_in_chain(c, cid, "initialize", NULL);
+    if (sinit >= 0 && c->scopes[sinit].reachable && !c->scopes[sinit].yields) {
+      /* Custom `initialize` override (a `Struct.new(...) do def initialize ...
+         super(...) end end` block, e.g. doom's Visplane): the constructor
+         allocates a blank instance and delegates to the user initialize -- the
+         member ivars are set by its own super(...) call (see emit_super's
+         is_struct branch), not positionally here, since the args at the .new
+         site are the custom initialize's own params, not one-per-member. */
+      Scope *si = &c->scopes[sinit];
+      buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->name);
+      buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
+      if (si->nparams > 0) {
+        for (int i = 0; i < si->nparams; i++) {
+          if (i) buf_puts(b, ", ");
+          LocalVar *p = scope_local(si, si->pnames[i]);
+          TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
+          emit_ctype(c, pt, b);
+          buf_printf(b, " lv_%s", si->pnames[i]);
+        }
+      }
+      else buf_puts(b, "void");
+      buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
+                ci->name, ci->name,
+                class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->name : "NULL",
+                class_needs_scan(ci) ? "_scan" : "");
+      buf_puts(b, "  memset(self, 0, sizeof(*self));\n");
+      buf_puts(b, "  SP_GC_ROOT(self);\n");
+      buf_printf(b, "  self->cls_id = %d;\n", cid);
+      emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
+      buf_printf(b, "  sp_%s_initialize(self", ci->name);
+      for (int i = 0; i < si->nparams; i++) buf_printf(b, ", lv_%s", si->pnames[i]);
+      buf_puts(b, ");\n");
+      buf_puts(b, "  return self;\n}\n");
+      goto struct_meta;
+    }
     /* Struct constructor: one parameter per member, set the backing ivars. */
     buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->name);
     buf_printf(b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
@@ -2014,6 +2049,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     for (int i = 0; i < ci->nivars; i++)
       buf_printf(b, "  self->iv_%s = a%d;\n", ci->ivars[i] + 1, i);  /* skip leading '@' */
     buf_puts(b, "  return self;\n}\n");
+    struct_meta:;
     /* Struct/Data #inspect (== #to_s): `#<struct Name m=v, ...>` (Data uses
        `data`). Generated unless the user redefined the method, so a user
        override wins. to_s defers to inspect, which always exists here. */
@@ -2449,6 +2485,35 @@ void emit_super(Compiler *c, int id, Buf *b) {
                   sp_streq(uname, "initialize_dup") ||
                   sp_streq(uname, "initialize_clone"))) {
       buf_puts(b, "((void)0)");
+      return;
+    }
+    /* `super(...)` inside a Struct's custom `initialize`: Struct's own
+       initialize positionally assigns each member from the args. There is no
+       C `initialize` symbol for it (members are set inline at the .new site),
+       so route super to the same per-member ivar assignment. Without this the
+       members set only via super (e.g. doom's Visplane `super(..., Array.new,
+       Array.new, ...)`) stayed nil and later comparisons hit NilClass. */
+    if (c->classes[s->class_id].is_struct && uname && sp_streq(uname, "initialize")) {
+      ClassInfo *cls = &c->classes[s->class_id];
+      int args_id = ty && sp_streq(ty, "SuperNode") ? nt_ref(c->nt, id, "arguments") : -1;
+      int an = 0;
+      const int *sargv = args_id >= 0 ? nt_arr(c->nt, args_id, "arguments", &an) : NULL;
+      buf_puts(b, "(");
+      for (int a = 0; a < cls->nivars && a < an; a++) {
+        TyKind ivt = cls->ivar_types[a];
+        TyKind at = comp_ntype(c, sargv[a]);
+        buf_printf(b, "%s->iv_%s = ", g_self, cls->ivars[a] + 1);
+        if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, sargv[a], b);
+        else if (ivt != TY_POLY && at == TY_POLY) {
+          /* poly arg (e.g. an initialize param that stayed poly) into a scalar
+             member slot: unbox to the member's C type. */
+          Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, sargv[a], &ex);
+          emit_unbox_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
+        }
+        else emit_expr(c, sargv[a], b);
+        buf_puts(b, ", ");
+      }
+      buf_printf(b, "%s)", default_value(comp_ntype(c, id)));
       return;
     }
     /* No superclass method anywhere (parent chain, included-module shadow, and
@@ -3633,9 +3698,24 @@ char *codegen_program(const NodeTable *nt) {
     if (ci->is_struct) {
       /* struct constructor takes typed member params -- the prototype must
          match the definition (an empty () prototype + a _Bool param differ) */
+      int scust = comp_method_in_chain(c, i, "initialize", NULL);
+      int has_custom = scust >= 0 && c->scopes[scust].reachable && !c->scopes[scust].yields;
       buf_printf(&b, "static sp_%s *sp_%s_new(", ci->name, ci->name);
-      for (int m = 0; m < ci->nivars; m++) { if (m) buf_puts(&b, ", "); emit_ctype(c, ci->ivar_types[m], &b); }
-      if (ci->nivars == 0) buf_puts(&b, "void");
+      if (has_custom) {
+        /* custom initialize: the .new params are its params, not one-per-member */
+        Scope *s = &c->scopes[scust];
+        for (int m = 0; m < s->nparams; m++) {
+          if (m) buf_puts(&b, ", ");
+          LocalVar *p = scope_local(s, s->pnames[m]);
+          TyKind pm = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
+          emit_ctype(c, pm, &b);
+        }
+        if (s->nparams == 0) buf_puts(&b, "void");
+      }
+      else {
+        for (int m = 0; m < ci->nivars; m++) { if (m) buf_puts(&b, ", "); emit_ctype(c, ci->ivar_types[m], &b); }
+        if (ci->nivars == 0) buf_puts(&b, "void");
+      }
       buf_puts(&b, ");\n");
       /* forward-declare the generated stringifiers so one struct's #inspect may
          recurse into a struct-typed member regardless of definition order */
