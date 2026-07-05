@@ -64,6 +64,17 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
       sp_streq(ty, "InterpolatedStringNode") || sp_streq(ty, "SuperNode") ||
       sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode"))
     return 1;
+  /* A NUL-containing (binary) string literal does not lower to an immortal
+     rodata pointer: it allocates a heap string via sp_str_from_bytes (every
+     evaluation when unfrozen, or once to fill a call-site cache when frozen).
+     Either path can trigger a GC, so it must count as an allocating sibling
+     so the operand-rooting logic protects a fresh operand next to it. A plain
+     (NUL-free) literal is rodata and never allocates. */
+  if (sp_streq(ty, "StringNode")) {
+    const char *sc = nt_str(nt, id, "content");
+    if (sc && nt_str_len(nt, id, "content") > strlen(sc)) return 1;
+    return 0;
+  }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
     if (subtree_may_allocate(nt, nt_ref_at(nt, id, i))) return 1;
