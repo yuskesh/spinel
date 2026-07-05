@@ -1,0 +1,6 @@
+[package]
+name = "digest"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# A pure native binding: no carried C -- the symbols live in the runtime's
+# vendored crypto (lib/sp_crypto.c), and the declarations below bind them.

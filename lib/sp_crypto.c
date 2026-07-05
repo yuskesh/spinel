@@ -167,6 +167,24 @@ else {
     }
 }
 
+static char sp_crypto_sha256_hex_buf[65];
+
+/* SHA-256(msg) -> 64-char lowercase hex. The `digest` spin package binds
+   Digest::SHA256.hexdigest to this. Same static-buffer contract as the
+   sibling helpers. */
+const char *sp_crypto_sha256_hex(const char *msg) {
+    uint8_t out[32];
+    sp_crypto_sha256((const uint8_t *)msg, strlen(msg), out);
+    static const char H[] = "0123456789abcdef";
+    int i;
+    for (i = 0; i < 32; i++) {
+        sp_crypto_sha256_hex_buf[i*2]   = H[(out[i] >> 4) & 0xf];
+        sp_crypto_sha256_hex_buf[i*2+1] = H[out[i] & 0xf];
+    }
+    sp_crypto_sha256_hex_buf[64] = '\0';
+    return sp_crypto_sha256_hex_buf;
+}
+
 static char sp_crypto_sha1_hex_buf[41];
 
 const char *sp_crypto_sha1_hex(const char *msg) {

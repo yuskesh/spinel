@@ -61,7 +61,7 @@ SPINEL = bin/spinel
 # GNU Make expands a rule's prerequisites immediately when the rule is read -- a
 # definition further down would expand to empty in `all`'s prereq list. The
 # build rule + rationale live further below (near the runtime archive).
-BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o
+BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o packages/base64/sp_base64.o
 
 all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS)
 
@@ -257,6 +257,12 @@ packages/stringio/sp_stringio.o: packages/stringio/sp_stringio.c packages/string
 packages/strscan/sp_strscan.o: packages/strscan/sp_strscan.c \
                                lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib packages/strscan/sp_strscan.c -o $@
+
+# base64 carries its whole implementation; digest carries none (it binds the
+# runtime's vendored sp_crypto symbols and has no object of its own).
+packages/base64/sp_base64.o: packages/base64/sp_base64.c \
+                             lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib packages/base64/sp_base64.c -o $@
 
 build/sp_format.o: lib/sp_format.c lib/sp_format.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
