@@ -112,6 +112,27 @@ int call_breaks(Compiler *c, int id) {
   return block_has_top_break(c, nt_ref(nt, block, "body"));
 }
 
+/* str.unpack1(fmt) with a literal single-directive integer format: the
+   directive fixes the extracted value's type, so the result does not need
+   to stay poly (`data[4, 4].unpack1('V')` reading a WAD header count in
+   doom). Count/endian suffixes ("V2", "l<", "q>*") keep the first value's
+   type. Only the integer directives sp_str_unpack decodes qualify;
+   multi-directive, interpolated, and other formats stay TY_POLY. */
+static TyKind an_unpack1_lit_type(const NodeTable *nt, int arg) {
+  const char *aty = nt_type(nt, arg);
+  if (!aty || !sp_streq(aty, "StringNode")) return TY_POLY;
+  const char *f = nt_str(nt, arg, "content");
+  if (!f || !f[0]) return TY_POLY;
+  char d = f[0];
+  const char *p = f + 1;
+  while (*p == '<' || *p == '>' || *p == '!' || *p == '_') p++;
+  while (*p >= '0' && *p <= '9') p++;
+  if (*p == '*') p++;
+  if (*p) return TY_POLY;  /* further directives: not this one's type */
+  if (strchr("cCsSlLqQnNvV", d)) return TY_INT;
+  return TY_POLY;
+}
+
 /* Whether every element written into the poly-array ivar `@<ivname>` of class
    `cid` is an int-returning kind: a bound method (a dispatch-table entry, called
    with an int arg returns int), an int array, an int, or nil filler. Mirrors
@@ -2399,18 +2420,31 @@ else {
         if (!has_user) return TY_POLY_ARRAY;
       }
       if (sp_streq(name, "clamp")) return TY_POLY;  /* boxed numeric clamp -> poly */
+      /* String transforms on a boxed value: emit_poly_call routes these
+         through sp_poly_to_s and re-boxes the result, so the value stays
+         poly (mirrors the codegen list in codegen_call_recv.c). */
+      if (argc == 0 &&
+          (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
+           sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
+           sp_streq(name, "strip") || sp_streq(name, "reverse") ||
+           sp_streq(name, "chomp") || sp_streq(name, "chop") ||
+           sp_streq(name, "chr")))
+        return TY_POLY;
       /* poly.delete(chars): String#delete on a value that widened to poly
          (`data[offset, 8].delete("\x00").upcase` stripping NUL padding off a
          fixed-width WAD name field in doom's texture parser). Resolve it here
          so the poly method-dispatch below does not bind `delete` to whatever
-         user class happens to define one; always a concrete TY_STRING, like
-         the rt==TY_STRING rule. Skipped when a user class defines `delete`
-         (the class-dispatch unification then wins). */
+         user class happens to define one: the receiver can still be a string,
+         so a user-class `delete` (e.g. the bundled Set's) unifies WITH
+         TY_STRING (-> poly) instead of replacing it. No user class keeps the
+         concrete TY_STRING, like the rt==TY_STRING rule. */
       if (sp_streq(name, "delete") && argc == 1) {
-        int has_user = 0;
-        for (int k = 0; k < c->nclasses && !has_user; k++)
-          if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
-        if (!has_user) return TY_STRING;
+        TyKind dr = TY_STRING;
+        for (int k = 0; k < c->nclasses; k++) {
+          int mi = comp_method_in_chain(c, k, name, NULL);
+          if (mi >= 0) dr = ty_unify(dr, c->scopes[mi].ret);
+        }
+        return dr;
       }
       if (sp_streq(name, "[]") && argc == 1) return TY_POLY;  /* boxed array element access */
       if (sp_streq(name, "[]") && argc == 2) return TY_POLY;  /* 2-arg poly slice */
@@ -2792,7 +2826,7 @@ else {
         sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
     if (sp_streq(name, "scrub") || sp_streq(name, "crypt")) return TY_STRING;
     if (sp_streq(name, "sum") && argc == 0) return TY_INT;
-    if (sp_streq(name, "unpack1") && argc == 1) return TY_POLY;
+    if (sp_streq(name, "unpack1") && argc == 1) return an_unpack1_lit_type(nt, argv[0]);
     if (sp_streq(name, "rindex")) return TY_INT;
     if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
