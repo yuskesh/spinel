@@ -1,3 +1,6 @@
 size=6 bytesize=6
 txt size=3 bytesize=3
+snow size=1 bytesize=3
+acc size=4 bytesize=5
+mix size=4 bytesize=7
 blob size=100

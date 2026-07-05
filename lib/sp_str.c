@@ -304,37 +304,43 @@ mrb_int sp_str_count_chars(const char *s, size_t bl) {
   }
   return n;
 }
-/* Byte-length-bounded UTF-8 validity check. Used to decide char-count vs
-   byte-count semantics for String#length/size: a string with any invalid UTF-8
-   byte (near-certain for genuine binary data, e.g. a binary-mode File.read of a
-   WAD lump) is counted byte-for-byte instead of decoded, matching Ruby's
-   ASCII-8BIT semantics for binary I/O without a separate per-string encoding
-   tag. Valid UTF-8 (the common text case) still counts codepoints. */
-static mrb_bool sp_str_valid_utf8_bytes(const char *s, size_t bl) {
+/* Length in "units" for String#length/size, validating and counting in a
+   single walk: count UTF-8 codepoints while the bytes stay valid UTF-8, but
+   fall back to the raw byte count the moment an invalid byte appears
+   (near-certain for genuine binary data, e.g. a binary-mode File.read of a WAD
+   lump) -- matching Ruby's ASCII-8BIT semantics for binary I/O without a
+   separate per-string encoding tag. Folding validation into the count keeps
+   String#length off a two-pass hot path; valid text still costs one walk. */
+static mrb_int sp_str_count_units(const char *s, size_t bl) {
   const unsigned char *p = (const unsigned char *)s, *end = p + bl;
-  while (p < end) {
+  mrb_int n = 0;
+  for (;;) {
+    /* ASCII fast path: 8 bytes at a time, each a valid single-unit codepoint */
+    while (p + 8 <= end) {
+      uint64_t w;
+      memcpy(&w, p, sizeof(w));
+      if (w & 0x8080808080808080ULL) break;
+      p += 8; n += 8;
+    }
+    if (p >= end) break;
     unsigned c = *p;
-    if (c < 0x80) { p++; continue; }
+    if (c < 0x80) { p++; n++; continue; }
     int extra; unsigned cp, min;
     if ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; min = 0x80; }
     else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; min = 0x800; }
     else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; min = 0x10000; }
-    else return FALSE;
+    else return (mrb_int)bl;   /* invalid lead byte -> count bytes */
     p++;
-    if (p + extra > end) return FALSE;
+    if (p + extra > end) return (mrb_int)bl;
     for (int i = 0; i < extra; i++) {
-      if ((*p & 0xC0) != 0x80) return FALSE;
+      if ((*p & 0xC0) != 0x80) return (mrb_int)bl;
       cp = (cp << 6) | (*p & 0x3F);
       p++;
     }
-    if (cp < min) return FALSE;
-    if (cp >= 0xD800 && cp <= 0xDFFF) return FALSE;
-    if (cp > 0x10FFFF) return FALSE;
+    if (cp < min || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) return (mrb_int)bl;
+    n++;
   }
-  return TRUE;
-}
-static mrb_int sp_str_count_units(const char *s, size_t bl) {
-  return sp_str_valid_utf8_bytes(s, bl) ? sp_str_count_chars(s, bl) : (mrb_int)bl;
+  return n;
 }
 mrb_int sp_str_length(const char*s){
   if (!s) return 0;
