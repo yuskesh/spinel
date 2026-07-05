@@ -4001,10 +4001,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
     }
     if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "empty?")) {
+      /* has_user_len must also consult comp_reader_in_chain: a user class's
+         `.size`/`.length` is very often an attr_reader/attr_accessor -- or a
+         Struct member, which registers the same way -- rather than a `def`
+         method. comp_method_in_chain alone missed those, so this branch took
+         the built-in-only sp_poly_length() path and silently returned 0 for
+         any object whose class exposes the name only as a reader (e.g. a
+         `Struct.new(:offset, :size, :name)` entry answering `.size`). */
       int has_user_len = 0;
       const char *lcheck = (sp_streq(name, "empty?")) ? "length" : name;
       for (int kk = 0; kk < c->nclasses && !has_user_len; kk++)
-        if (comp_method_in_chain(c, kk, lcheck, NULL) >= 0) has_user_len = 1;
+        if (comp_method_in_chain(c, kk, lcheck, NULL) >= 0 ||
+            comp_reader_in_chain(c, kk, lcheck, NULL)) has_user_len = 1;
       if (sp_streq(name, "empty?") && !has_user_len)
         for (int kk = 0; kk < c->nclasses && !has_user_len; kk++)
           if (comp_method_in_chain(c, kk, "empty?", NULL) >= 0) has_user_len = 1;
