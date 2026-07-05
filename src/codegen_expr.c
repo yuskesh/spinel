@@ -705,7 +705,6 @@ void emit_expr(Compiler *c, int id, Buf *b) {
        this or-write was the RHS of a poly-receiver setter switch (#1447). */
     else if (ty_is_object(ivt3) || ty_is_array(ivt3) || ty_is_hash(ivt3) ||
              ivt3 == TY_FIBER || ivt3 == TY_THREAD || ivt3 == TY_QUEUE || ivt3 == TY_MUTEX || ivt3 == TY_CONDVAR || ivt3 == TY_PROC || ivt3 == TY_IO ||
-             ivt3 == TY_STRINGSCANNER ||
              ivt3 == TY_MATCHDATA || ivt3 == TY_EXCEPTION || ivt3 == TY_REGEX) {
       buf_printf(b, "({ if (%s%s) %s = ", is_or ? "!" : "", ref3, ref3);
       emit_expr(c, v, b);
@@ -1598,7 +1597,7 @@ else {
     else if (lt == TY_INT)  buf_printf(b, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel; a plain int is always truthy */
     else if (lt == TY_FLOAT) buf_printf(b, "(!sp_float_is_nil(_t%d))", t);
     else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
-             lt == TY_PROC || lt == TY_STRINGSCANNER || lt == TY_MATCHDATA || lt == TY_EXCEPTION)
+             lt == TY_PROC || lt == TY_MATCHDATA || lt == TY_EXCEPTION)
       buf_printf(b, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
     else if (lt == TY_SYMBOL) buf_printf(b, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
     else                    buf_puts(b, "1");  /* concrete value: always truthy */

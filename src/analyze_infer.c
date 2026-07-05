@@ -1061,7 +1061,6 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;
       if (cn && sp_streq(cn, "Object")) return TY_POLY;
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "StringScanner") && sp_feature_enabled("strscan")) return TY_STRINGSCANNER;
       if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN;
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
@@ -1096,7 +1095,6 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
       if (cn && sp_streq(cn, "Object")) return TY_POLY;  /* identity sentinel */
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "StringScanner") && sp_feature_enabled("strscan")) return TY_STRINGSCANNER;
       /* Hash.new { |hash, key| default } : a string-keyed poly hash with a
          default-proc (the block computes the missing-key value). */
       if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_STR_POLY_HASH;
@@ -1126,15 +1124,7 @@ else {
   }
 
   /* StringScanner instance methods */
-  if (recv >= 0 && rt == TY_STRINGSCANNER) {
-    if (sp_streq(name, "scan") || sp_streq(name, "check") || sp_streq(name, "scan_until") ||
-        sp_streq(name, "matched") || sp_streq(name, "pre_match") || sp_streq(name, "post_match") ||
-        sp_streq(name, "rest") || sp_streq(name, "string") || sp_streq(name, "getch") ||
-        sp_streq(name, "peek") || sp_streq(name, "[]")) return TY_STRING;  /* nullable via NULL */
-    if (sp_streq(name, "matched?") || sp_streq(name, "eos?") || sp_streq(name, "rest?")) return TY_BOOL;
-    if (sp_streq(name, "pos") || sp_streq(name, "charpos") || sp_streq(name, "rest_size")) return TY_INT;
-    if (sp_streq(name, "reset") || sp_streq(name, "terminate") || sp_streq(name, "unscan")) return TY_STRINGSCANNER;
-  }
+  /* StringScanner: a native-bound class (packages/strscan); no arms here. */
 
   /* Regexp class methods */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&

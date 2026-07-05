@@ -5424,31 +5424,7 @@ static inline const char *sp_poly_pack(sp_RbVal recv, const char *fmt) {
   return "";
 }
 
-/* ---- StringScanner (linked from sp_strscan.o) ----
-   GC-allocated; the source / matched fields are marked by
-   sp_StringScanner_scan_gc through the shim layer. */
-typedef struct sp_StringScanner sp_StringScanner;
-sp_StringScanner *sp_StringScanner_new(const char *str);
-const char *sp_StringScanner_scan(sp_StringScanner *sc, mrb_regexp_pattern *pat);
-const char *sp_StringScanner_check(sp_StringScanner *sc, mrb_regexp_pattern *pat);
-const char *sp_StringScanner_scan_until(sp_StringScanner *sc, mrb_regexp_pattern *pat);
-const char *sp_StringScanner_aref(sp_StringScanner *sc, mrb_int n);
-const char *sp_StringScanner_matched(sp_StringScanner *sc);
-mrb_bool    sp_StringScanner_matched_p(sp_StringScanner *sc);
-mrb_int     sp_StringScanner_pos(sp_StringScanner *sc);
-mrb_int     sp_StringScanner_pos_set(sp_StringScanner *sc, mrb_int p);
-mrb_bool    sp_StringScanner_eos_p(sp_StringScanner *sc);
-const char *sp_StringScanner_getch(sp_StringScanner *sc);
-const char *sp_StringScanner_peek(sp_StringScanner *sc, mrb_int n);
-sp_StringScanner *sp_StringScanner_unscan(sp_StringScanner *sc);
-const char *sp_StringScanner_rest(sp_StringScanner *sc);
-mrb_int     sp_StringScanner_rest_size(sp_StringScanner *sc);
-mrb_bool    sp_StringScanner_rest_p(sp_StringScanner *sc);
-sp_StringScanner *sp_StringScanner_terminate(sp_StringScanner *sc);
-const char *sp_StringScanner_string(sp_StringScanner *sc);
-const char *sp_StringScanner_pre_match(sp_StringScanner *sc);
-const char *sp_StringScanner_post_match(sp_StringScanner *sc);
-sp_StringScanner *sp_StringScanner_reset(sp_StringScanner *sc);
+/* StringScanner is a native-bound spin package (packages/strscan). */
 
 /* The sp_ext_* shim wrappers are gone: string/object allocation, sp_box_*, and
    sp_PolyArray now live in the shared headers (sp_alloc.h / sp_gc.h), so lib C

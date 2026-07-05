@@ -750,6 +750,8 @@ TyKind native_spec_to_ty(const char *spec) {
   if (sp_streq(spec, "any"))    return TY_POLY;
   if (sp_streq(spec, "string")) return TY_STRING;
   if (sp_streq(spec, "string?")) return TY_POLY;  /* nullable string -> boxed */
+  if (sp_streq(spec, "nstring")) return TY_STRING; /* NULL-able string, unboxed */
+  if (sp_streq(spec, "regexp")) return TY_REGEX;   /* regex-literal arg -> sp_re_pat_<n> */
   if (sp_streq(spec, "int"))    return TY_INT;
   if (sp_streq(spec, "float"))  return TY_FLOAT;
   if (sp_streq(spec, "bool"))   return TY_BOOL;

@@ -1870,10 +1870,6 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       if (cn && sp_streq(cn, "ConditionVariable")) {
         buf_puts(b, "sp_CondVar_new()"); return 1;
       }
-      if (cn && sp_streq(cn, "StringScanner") && argc == 1 && sp_feature_enabled("strscan")) {
-        buf_puts(b, "sp_StringScanner_new("); emit_expr(c, argv[0], b); buf_puts(b, ")");
-        return 1;
-      }
       if (cn && sp_streq(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) {
         /* Enumerator.new { |y| ... }: a fiber-backed generator where `y << v`
            lowers to a Fiber.yield. */
@@ -2242,7 +2238,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, eq ? "sp_float_is_nil(" : "(!sp_float_is_nil(");
         emit_expr(c, other, b); buf_puts(b, eq ? ")" : "))");
       }
-      else if (ot == TY_STRING || ot == TY_MATCHDATA || ot == TY_STRINGSCANNER ||
+      else if (ot == TY_STRING || ot == TY_MATCHDATA ||
                ty_is_hash(ot) || ty_is_array(ot) || ot == TY_PROC || ot == TY_IO ||
                ot == TY_FIBER || ot == TY_EXCEPTION || ot == TY_REGEX) {
         /* nullable heap pointer: a NULL pointer encodes nil (a `@h = {}` slot is
@@ -7098,7 +7094,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_INT) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)"); }
     else if (rt == TY_FLOAT) { buf_puts(b, "sp_float_is_nil("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else if (rt == TY_STRING || ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt) ||
-             rt == TY_PROC || rt == TY_STRINGSCANNER ||
+             rt == TY_PROC ||
              rt == TY_MATCHDATA || rt == TY_EXCEPTION || rt == TY_FIBER || rt == TY_IO) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == 0)");  /* NULL pointer is falsy */
     }
@@ -7542,7 +7538,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* nil? on a pointer-backed concrete type: nil is the NULL pointer. */
   if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") &&
       (rt == TY_FIBER || rt == TY_PROC || rt == TY_CURRY || rt == TY_RANDOM ||
-       rt == TY_METHOD || rt == TY_IO || rt == TY_STRINGSCANNER ||
+       rt == TY_METHOD || rt == TY_IO ||
        rt == TY_MATCHDATA || rt == TY_REGEX || rt == TY_EXCEPTION || rt == TY_BIGINT)) {
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
     return;

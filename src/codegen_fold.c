@@ -2247,7 +2247,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     else if (bt == TY_SYMBOL)         snprintf(truth, sizeof truth, "(_t%d != (sp_sym)-1)", tv);
     else if (comp_ty_value_obj(c, bt)) snprintf(truth, sizeof truth, "1");
     else if (bt == TY_STRING || ty_is_array(bt) || ty_is_hash(bt) || ty_is_object(bt) ||
-             bt == TY_PROC || bt == TY_STRINGSCANNER || bt == TY_MATCHDATA ||
+             bt == TY_PROC || bt == TY_MATCHDATA ||
              bt == TY_EXCEPTION || bt == TY_BIGINT || bt == TY_REGEX)
                                       snprintf(truth, sizeof truth, "(_t%d != 0)", tv);
     else                              snprintf(truth, sizeof truth, "1");  /* concrete value: always truthy */

@@ -1016,7 +1016,7 @@ int scope_creates_returning_proc(Compiler *c, int si) {
 int fiber_cap_needs_root(TyKind t) {
   return t == TY_STRING || t == TY_BIGINT || ty_is_array(t) || ty_is_hash(t) ||
          ty_is_object(t) || t == TY_POLY || t == TY_PROC || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR ||
-         t == TY_EXCEPTION || t == TY_STRINGSCANNER ||
+         t == TY_EXCEPTION ||
          t == TY_MATCHDATA || t == TY_REGEX || t == TY_TIME;
 }
 
@@ -2964,7 +2964,6 @@ static void ty_to_rbs_into(Compiler *c, TyKind t, Buf *b) {
     case TY_RANGE:                 buf_puts(b, "Range[Integer]"); break;
     case TY_TIME:                  buf_puts(b, "Time"); break;
     case TY_REGEX:                 buf_puts(b, "Regexp"); break;
-    case TY_STRINGSCANNER:         buf_puts(b, "StringScanner"); break;
     case TY_MATCHDATA:             buf_puts(b, "MatchData"); break;
     case TY_EXCEPTION:             buf_puts(b, "Exception"); break;
     case TY_COMPLEX:               buf_puts(b, "Complex"); break;

@@ -10,7 +10,7 @@ int is_builtin_class_name(const char *n) {
     "ArgumentError","NameError","NoMethodError","StopIteration","Math",
     "Complex","Rational","Encoding","Method","UnboundMethod","Fiber",
     "Thread","Mutex","GC","ObjectSpace","Signal","Process","Regexp",
-    "MatchData","StringScanner",NULL
+    "MatchData",NULL
   };
   for (int i = 0; CL[i]; i++) if (sp_streq(n, CL[i])) return 1;
   return 0;

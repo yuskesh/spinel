@@ -61,7 +61,7 @@ SPINEL = bin/spinel
 # GNU Make expands a rule's prerequisites immediately when the rule is read -- a
 # definition further down would expand to empty in `all`'s prereq list. The
 # build rule + rationale live further below (near the runtime archive).
-BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o
+BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o
 
 all: regexp $(SPINEL) $(RBS_EXTRACT_TARGET) tools $(BUNDLED_NATIVE_OBJS)
 
@@ -203,9 +203,6 @@ build/sp_pack.o: lib/sp_pack.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_pack.c -o build/sp_pack.o
 
-build/sp_strscan.o: lib/sp_strscan.c lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
-	@mkdir -p build
-	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib -Ilib/regexp lib/sp_strscan.c -o build/sp_strscan.o
 
 build/sp_time.o: lib/sp_time.c lib/sp_time.h lib/sp_alloc.h
 	@mkdir -p build
@@ -255,6 +252,12 @@ packages/stringio/sp_stringio.o: packages/stringio/sp_stringio.c packages/string
                                  lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib -Ipackages/stringio packages/stringio/sp_stringio.c -o $@
 
+# strscan is likewise a native-bound spin package; its regex matching links
+# against the runtime archive's re_exec (a forward extern in the package C).
+packages/strscan/sp_strscan.o: packages/strscan/sp_strscan.c \
+                               lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
+	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib packages/strscan/sp_strscan.c -o $@
+
 build/sp_format.o: lib/sp_format.c lib/sp_format.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h
 	@mkdir -p build
 	$(CC) -c -O2 -Wno-all $(SEC_FLAGS) -Ilib lib/sp_format.c -o build/sp_format.o
@@ -290,7 +293,7 @@ build/sp_io.o: lib/sp_io.c lib/sp_io.h lib/sp_gc.h lib/sp_types.h
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_strscan sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_re sp_fiber sp_sched sp_io
+RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_re sp_fiber sp_sched sp_io
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^

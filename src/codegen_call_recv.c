@@ -3377,6 +3377,14 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       for (int a = 0; a < nta; a++) natys[a] = comp_ntype(c, argv[a]);
       int nm = comp_native_method_find_typed(c, cid, name, argc, 0, nta == argc ? natys : NULL);
       if (nm >= 0) {
+        /* a :regexp arg binds only to a regex LITERAL at the call site (it
+           compiles to the generated sp_re_pat_<n> pattern); anything else
+           falls through to the generic paths. */
+        NativeMethod *mre = &c->native_methods[nm];
+        for (int ai = 0; ai < mre->nargs && ai < argc; ai++)
+          if (sp_streq(mre->args[ai], "regexp") && re_lit_index(c, argv[ai]) < 0) { nm = -1; break; }
+      }
+      if (nm >= 0) {
         NativeMethod *m = &c->native_methods[nm];
         int wrap = sp_streq(m->ret, "string?");
         if (wrap) buf_puts(b, "sp_box_nullable_str(");
@@ -3384,6 +3392,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
           buf_puts(b, ", ");
           if (sp_streq(m->args[ai], "any")) emit_boxed(c, argv[ai], b);
+          else if (sp_streq(m->args[ai], "regexp"))
+            buf_printf(b, "sp_re_pat_%d", re_lit_index(c, argv[ai]));
           else if (sp_streq(m->args[ai], "string") && comp_ntype(c, argv[ai]) == TY_POLY) {
             buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[ai], b); buf_puts(b, ")");
           }
@@ -3605,36 +3615,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
 
   /* StringScanner instance methods. String-returning methods may yield NULL
      (nil) on a miss; the NULL-aware string output operators render that. */
-  if (recv >= 0 && rt == TY_STRINGSCANNER) {
-    Buf rs = expr_buf(c, recv);
-    const char *r = rs.p ? rs.p : "";
-    int done = 1;
-    if ((sp_streq(name, "scan") || sp_streq(name, "check") || sp_streq(name, "scan_until")) &&
-        argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-      buf_printf(b, "sp_StringScanner_%s(%s, sp_re_pat_%d)", name, r, re_lit_index(c, argv[0]));
-    }
-    else if (sp_streq(name, "matched")) buf_printf(b, "sp_StringScanner_matched(%s)", r);
-    else if (sp_streq(name, "matched?")) buf_printf(b, "sp_StringScanner_matched_p(%s)", r);
-    else if (sp_streq(name, "pre_match")) buf_printf(b, "sp_StringScanner_pre_match(%s)", r);
-    else if (sp_streq(name, "post_match")) buf_printf(b, "sp_StringScanner_post_match(%s)", r);
-    else if (sp_streq(name, "pos") || sp_streq(name, "charpos")) buf_printf(b, "sp_StringScanner_pos(%s)", r);
-    else if (sp_streq(name, "pos=") && argc == 1) { buf_printf(b, "sp_StringScanner_pos_set(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "rest")) buf_printf(b, "sp_StringScanner_rest(%s)", r);
-    else if (sp_streq(name, "rest?")) buf_printf(b, "sp_StringScanner_rest_p(%s)", r);
-    else if (sp_streq(name, "rest_size")) buf_printf(b, "sp_StringScanner_rest_size(%s)", r);
-    else if (sp_streq(name, "string")) buf_printf(b, "sp_StringScanner_string(%s)", r);
-    else if (sp_streq(name, "eos?")) buf_printf(b, "sp_StringScanner_eos_p(%s)", r);
-    else if (sp_streq(name, "getch")) buf_printf(b, "sp_StringScanner_getch(%s)", r);
-    else if (sp_streq(name, "peek") && argc == 1) { buf_printf(b, "sp_StringScanner_peek(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "[]") && argc == 1) { buf_printf(b, "sp_StringScanner_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else if (sp_streq(name, "reset")) buf_printf(b, "(sp_StringScanner_reset(%s), %s)", r, r);
-    else if (sp_streq(name, "terminate")) buf_printf(b, "(sp_StringScanner_terminate(%s), %s)", r, r);
-    else if (sp_streq(name, "unscan")) buf_printf(b, "(sp_StringScanner_unscan(%s), %s)", r, r);
-    else done = 0;
-    free(rs.p);
-    if (done) return 1;
-  }
-
+  /* StringScanner dispatch: native-bound (packages/strscan); no arms here. */
   /* MatchData instance methods (sp_MatchData *, nullable on no-match). */
   if (recv >= 0 && rt == TY_MATCHDATA) {
     Buf rs = expr_buf(c, recv);

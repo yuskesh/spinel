@@ -22,9 +22,9 @@
 #include <string.h>
 #include <stdint.h>
 
-/* String + object allocation, sp_mark_string, sp_raise_cls -- all shared now,
-   so this TU allocates directly with no sp_ext_* shim. */
-#include "sp_alloc.h"
+/* A carried-C spin package (Path B typed object), linked on demand when
+   `require "strscan"` appears. Compiles against the stable package ABI. */
+#include "spinel/runtime.h"
 
 /* Forward decl mirrors lib/regexp/re_internal.h's public API. */
 typedef struct mrb_regexp_pattern mrb_regexp_pattern;
@@ -38,7 +38,8 @@ extern int re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, 
    byte offsets into `source`, group 0 first; unmatched groups are -1.
    ncaps is the number of valid ints (2 per group, group 0 included). */
 #define SP_SS_MAXCAP 20
-typedef struct {
+typedef struct sp_StringScanner_s {
+  mrb_int     cls_id;    /* object header: runtime class id, compiler-stamped */
   const char *source;
   const char *matched;
   int64_t     pos;
@@ -55,8 +56,9 @@ static void sp_StringScanner_scan_gc(void *p) {
   if (sc->matched) sp_mark_string(sc->matched);
 }
 
-sp_StringScanner *sp_StringScanner_new(const char *str) {
+sp_StringScanner *sp_StringScanner_new(mrb_int cls_id, const char *str) {
   sp_StringScanner *sc = (sp_StringScanner *)sp_gc_alloc(sizeof(sp_StringScanner), NULL, sp_StringScanner_scan_gc);
+  sc->cls_id = cls_id;
   sc->source = str ? str : sp_str_empty;
   sc->matched = sp_str_empty;
   sc->pos = 0;

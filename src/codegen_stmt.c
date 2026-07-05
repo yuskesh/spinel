@@ -3643,7 +3643,7 @@ else {
     else if (ty_is_object(ivt2) || ty_is_array(ivt2) || ty_is_hash(ivt2) ||
              ivt2 == TY_FIBER || ivt2 == TY_THREAD || ivt2 == TY_QUEUE || ivt2 == TY_MUTEX || ivt2 == TY_CONDVAR || ivt2 == TY_PROC || ivt2 == TY_IO ||
              
-             ivt2 == TY_STRINGSCANNER || ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
+             ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
       emit_indent(b, indent);
       if (is_or) buf_printf(b, "if (!%s) %s = ", ref2, ref2);
       else       buf_printf(b, "if (%s) %s = ", ref2, ref2);

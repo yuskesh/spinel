@@ -587,7 +587,6 @@ const char *c_type_name(TyKind t) {
     case TY_TIME:        return "sp_Time";
     case TY_COMPLEX:     return "sp_Complex";
     case TY_RATIONAL:    return "sp_Rational";
-    case TY_STRINGSCANNER: return "sp_StringScanner *";
     case TY_MATCHDATA:   return "sp_MatchData *";
     case TY_REGEX:       return "mrb_regexp_pattern *";
     case TY_EXCEPTION:   return "sp_Exception *";
@@ -622,7 +621,7 @@ const char *c_type_name(TyKind t) {
 }
 int is_scalar_ret(TyKind t) {
   return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_BOOL || t == TY_STRING ||
-         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_STRINGSCANNER || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
+         t == TY_SYMBOL || t == TY_RANGE || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_MATCHDATA || t == TY_REGEX || t == TY_EXCEPTION ||
          t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY || t == TY_STR_ARRAY ||
          t == TY_STRBUF ||
          t == TY_POLY || t == TY_POLY_ARRAY || t == TY_PROC || t == TY_CURRY || t == TY_FIBER || t == TY_THREAD || t == TY_QUEUE || t == TY_MUTEX || t == TY_CONDVAR || t == TY_RANDOM || t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_CLASS ||
@@ -636,6 +635,8 @@ const char *native_c_type(const char *spec) {
   if (sp_streq(spec, "any"))    return "sp_RbVal";
   if (sp_streq(spec, "string")) return "const char *";
   if (sp_streq(spec, "string?")) return "const char *";  /* nullable; call site wraps */
+  if (sp_streq(spec, "nstring")) return "const char *";   /* NULL-able string, unboxed */
+  if (sp_streq(spec, "regexp")) return "mrb_regexp_pattern *";
   if (sp_streq(spec, "int"))    return "mrb_int";
   if (sp_streq(spec, "float"))  return "double";
   if (sp_streq(spec, "bool"))   return "int";
@@ -677,7 +678,6 @@ const char *default_value(TyKind t) {
     case TY_TIME:   return "(sp_Time){0}";
     case TY_COMPLEX: return "(sp_Complex){0}";
     case TY_RATIONAL: return "(sp_Rational){0}";
-    case TY_STRINGSCANNER: return "NULL";
     case TY_MATCHDATA:  return "NULL";
     case TY_REGEX:      return "NULL";
     case TY_EXCEPTION: return "NULL";
@@ -971,7 +971,6 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   else if (t == TY_COMPLEX) self_cls = "Complex";
   else if (t == TY_RATIONAL) self_cls = "Rational";
   else if (t == TY_REGEX) self_cls = "Regexp";
-  else if (t == TY_STRINGSCANNER) self_cls = "StringScanner";
   else if (t == TY_MATCHDATA) self_cls = "MatchData";
   else if (t == TY_PROC) self_cls = "Proc";
   else if (t == TY_RANDOM) self_cls = "Random";
