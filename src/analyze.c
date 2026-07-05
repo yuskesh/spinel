@@ -335,8 +335,20 @@ int a_block_is_lifted(Compiler *c, int id) {
     if (mi < 0) { Scope *self = comp_scope_of(c, id); if (self && self->class_id >= 0) mi = comp_method_in_chain(c, self->class_id, name, NULL); }
   }
 else {
-    TyKind rt = infer_type(c, recv);
-    if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    const char *rty = nt_type(nt, recv);
+    /* `Klass.cmeth { }` / `Mod::Sub.cmeth { }`: a class/module method keeps a
+       real &block the same way an instance method does, so its block is lifted
+       and captures enclosing locals. (Was omitted -- only ty_is_object was
+       handled -- so a block passed to a module method never celled its
+       captures, silently dropping writes to them.) */
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
+      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    }
   }
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
@@ -2561,7 +2573,13 @@ void analyze_program(Compiler *c) {
     char *inproc_m = (char *)calloc((size_t)c->nt->count, 1);
     if (inproc_m) {
       for (int id = 0; id < c->nt->count; id++) {
-        if (!is_proc_create(c, id)) continue;
+        /* A Fiber/Enumerator/Thread `.new { }` block runs as an independent
+           closure on its own fiber stack, and a `{ }` block lifted to a
+           standalone proc (passed to a method that keeps a real &block)
+           captures like a proc literal: a blk_param read inside either is a
+           real capture-escape, so the method must keep a heap-materialized
+           &blk (not be yield-inlined). */
+        if (!a_proc_create_or_lifted(c, id)) continue;
         if (comp_scope_of(c, id) != m) continue;
         int body = a_proc_body(c, id);
         if (body >= 0) a_mark_subtree(c, body, inproc_m);

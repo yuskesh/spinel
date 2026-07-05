@@ -670,7 +670,14 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     if (t == TY_INT && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*"))) {
-      emit_local_ref(c, id, nm, b); buf_printf(b, " %s ", op); emit_expr(c, v, b); buf_puts(b, ";\n");
+      /* Coerce a poly RHS through sp_poly_to_i, exactly as the non-celled int
+         op-write below does -- an uncoerced `mrb_int <op> sp_RbVal` (e.g. a poly
+         array element folded into a captured int accumulator) fails to compile. */
+      TyKind vt = comp_ntype(c, v);
+      emit_local_ref(c, id, nm, b); buf_printf(b, " %s ", op);
+      if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, v, b); buf_puts(b, ")"); }
+      else emit_expr(c, v, b);
+      buf_puts(b, ";\n");
       return;
     }
     if (t == TY_FLOAT && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") || sp_streq(op, "/"))) {
