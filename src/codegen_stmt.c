@@ -4619,8 +4619,11 @@ else {
           if (!rk) rk = k;
           int tr = ++g_tmp;
           emit_indent(b, indent);
-          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL - %dLL);\n",
-                     rk, tr, rk, tarr, ln, tarr, ln, rn);
+          /* On underflow (fewer elements than the fixed pre/post targets) the
+             splat collects nothing rather than wrapping to a negative length;
+             clamp the slice length to zero. */
+          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_slice(_t%d, %dLL, _t%d->len > %dLL ? _t%d->len - %dLL : 0LL);\n",
+                     rk, tr, rk, tarr, ln, tarr, ln + rn, tarr, ln + rn);
           emit_indent(b, indent);
           buf_printf(b, "SP_GC_ROOT(_t%d);\n", tr);
           emit_indent(b, indent);
@@ -4632,15 +4635,33 @@ else {
           if (sp_streq(lty, "LocalVariableTargetNode")) {
             emit_indent(b, indent);
             const char *rlvn = nt_str(nt, rights[j], "name");
-            buf_printf(b, "lv_%s = ", rlvn);
             LocalVar *rllv = rlvn ? scope_local(rt_scope, rlvn) : NULL;
-            char rgx[80]; snprintf(rgx, sizeof rgx, "sp_%sArray_get(_t%d, _t%d->len - %dLL + %dLL)", k, tarr, tarr, rn, j);
+            /* CRuby fills the post-splat targets from the back when the source
+               has enough elements, but on underflow (fewer than ln+rn) it
+               assigns the remaining elements left-to-right starting just past
+               the pre targets and nil-fills the rest. That position is the max
+               of the back-aligned (len-rn+j) and front-aligned (ln+j) indices;
+               a position at or past the end nil-fills. */
+            int tix = ++g_tmp;
+            buf_printf(b, "mrb_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
+                       tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
+            emit_indent(b, indent);
+            buf_printf(b, "lv_%s = ", rlvn);
+            char rgx[96]; snprintf(rgx, sizeof rgx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
             if (rllv && rllv->type == TY_POLY && !sp_streq(k, "Poly")) {
               Buf bx; memset(&bx, 0, sizeof bx);
               emit_boxed_text(c, elem, rgx, &bx);
+              buf_printf(b, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
               buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+              buf_puts(b, ")");
             }
-            else buf_puts(b, rgx);
+            else {
+              const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
+                               : sp_streq(k, "Int") ? "SP_INT_NIL"
+                               : sp_streq(k, "Float") ? "sp_float_nil()"
+                               : "NULL";
+              buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, rgx);
+            }
             buf_puts(b, ";\n");
           }
           else if (sp_streq(lty, "InstanceVariableTargetNode") &&
@@ -4648,8 +4669,16 @@ else {
             const char *ivnm2 = nt_str(nt, rights[j], "name");
             if (!ivnm2) continue;
             emit_indent(b, indent);
-            char get_expr2[80];
-            snprintf(get_expr2, sizeof get_expr2, "sp_%sArray_get(_t%d, _t%d->len - %dLL + %dLL)", k, tarr, tarr, rn, j);
+            /* Same underflow clamp as the local-variable branch above: pick the
+               post-splat source index as the max of the back-aligned and
+               front-aligned positions, nil-filling any position at or past the
+               end (a, *b, @c = [1] -> @c = nil). */
+            int tix = ++g_tmp;
+            buf_printf(b, "mrb_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
+                       tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
+            emit_indent(b, indent);
+            char get_expr2[96];
+            snprintf(get_expr2, sizeof get_expr2, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
             TyKind ivt2 = TY_UNKNOWN;
             int iv_rt2 = comp_ivar_index(&c->classes[rt_scope->class_id], ivnm2);
             if (iv_rt2 >= 0) ivt2 = c->classes[rt_scope->class_id].ivar_types[iv_rt2];
@@ -4660,9 +4689,17 @@ else {
             if (ivt2 == TY_POLY && elem != TY_POLY) {
               Buf bx2; memset(&bx2, 0, sizeof bx2);
               emit_boxed_text(c, elem, get_expr2, &bx2);
+              buf_printf(b, "(_t%d >= _t%d->len ? sp_box_nil() : ", tix, tarr);
               buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
+              buf_puts(b, ")");
             }
-            else buf_puts(b, get_expr2);
+            else {
+              const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
+                               : sp_streq(k, "Int") ? "SP_INT_NIL"
+                               : sp_streq(k, "Float") ? "sp_float_nil()"
+                               : "NULL";
+              buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, get_expr2);
+            }
             buf_puts(b, ";\n");
           }
         }
