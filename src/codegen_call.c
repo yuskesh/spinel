@@ -1327,6 +1327,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        arm or the append is silently dropped. sp_poly_shl handles every array
        kind; the user arms above cover the object case. */
     int is_push = (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) && argc >= 1;
+    /* delete(chars) with a string arg: the poly value may be a string even
+       when a user class also defines `delete` (the bundled Set does), so the
+       switch needs a TAG_STR pre-arm routing to String#delete (doom's
+       `data[offset, 8].delete("\x00").upcase` WAD name fields). */
+    int is_strdel = sp_streq(name, "delete") && argc == 1 &&
+                    infer_type(c, argv[0]) == TY_STRING;
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
@@ -1371,6 +1377,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* include? on a TAG_STR receiver: check tag before entering cls_id switch */
       if (is_include && infer_type(c, argv[0]) == TY_STRING)
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_include(_t%d.v.s, _t%d); } else ", tv, tr, tv, atmp[0]);
+      /* delete(chars) on a TAG_STR receiver: String#delete, boxed when the
+         dispatch result stays poly. */
+      if (is_strdel && (ret == TY_POLY || ret == TY_STRING)) {
+        buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
+        if (ret == TY_POLY) buf_printf(b, "sp_box_str(sp_str_delete(_t%d.v.s, _t%d))", tv, atmp[0]);
+        else buf_printf(b, "sp_str_delete(_t%d.v.s, _t%d)", tv, atmp[0]);
+        buf_puts(b, "; } else ");
+      }
       /* The builtin index/bit-ref arms use the index as a raw mrb_int; unbox it
          when the index temp widened to poly (promote mode). */
       char idxref[64];
