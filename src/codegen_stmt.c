@@ -4720,14 +4720,20 @@ else {
              to poly and needs a boxed-nil default rather than a scalar zero. */
           LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
           TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
-          buf_printf(b, "lv_%s = %s;\n", lvn, default_value(ltt));
+          emit_local_ref(c, id, lvn, b);
+          buf_printf(b, " = %s;\n", default_value(ltt));
         }
         continue;
       }
       if (lty && sp_streq(lty, "LocalVariableTargetNode")) {
         emit_indent(b, indent);
         const char *lvn = nt_str(nt, lefts[i], "name");
-        buf_printf(b, "lv_%s = ", lvn);
+        /* cell-aware lvalue: a target captured by a later lambda (doom's
+           draw_automap `min_x`/`max_y`, closed over by the to_sx/to_sy
+           procs) lives in a heap cell, not a plain lv_ slot -- writing
+           lv_<name> referenced an undeclared identifier. */
+        emit_local_ref(c, id, lvn, b);
+        buf_puts(b, " = ");
         LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
         TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
         TyKind valt = comp_ntype(c, els[i]);
