@@ -1595,6 +1595,21 @@ else {
           else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
           buf_puts(b, "; break;");
         }
+        /* the poly value may be a generic PolyPolyHash keyed by (boxed) strings
+           -- a `to_h { |x| [x.name, x] }` result widened to poly, indexed by a
+           string (doom's `@flats[anim_flat(name)]`). The STR_*_HASH arms above
+           only match native-string-keyed storage, so box the string key and
+           look it up in the poly-keyed storage. Only for `[]` (nil on miss);
+           `fetch` keeps falling through to its default-seed (a bare get would
+           drop the caller's supplied default). */
+        if (is_aref) {
+          char getx[220];
+          snprintf(getx, sizeof getx, "sp_PolyPolyHash_get((sp_PolyPolyHash *)_t%d.v.p, sp_box_str(_t%d))", tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: _t%d = ", tr);
+          if (ret == TY_POLY) buf_puts(b, getx);
+          else emit_unbox_text(c, trt, getx, b);
+          buf_puts(b, "; break;");
+        }
       }
       /* a symbol-keyed hash (`{ name: ... }`) reaches here as SymPolyHash; add
          its `[]` / `fetch` arm so a Hash receiver indexed by a symbol is not
@@ -1615,6 +1630,23 @@ else {
         }
         else if (is_fetch) { buf_puts(b, "(sp_raise_cls(\"KeyError\", \"key not found\"), "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
         else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
+        buf_puts(b, "; break;");
+      }
+      /* a poly-keyed `[]` on a poly value that is actually a Hash: dispatch to
+         the hash storage by the (boxed) poly key. The string/symbol-key arms
+         above only fire for a statically-typed key; a key that stayed poly
+         (a method param, e.g. `@textures[name]` in doom's TextureManager, where
+         @textures = result[:textures] widened the Hash to a poly local) has no
+         static key type, so without this arm the receiver switch fell through
+         every Hash cls_id and returned nil. */
+      if (is_aref && infer_type(c, argv[0]) == TY_POLY) {
+        buf_puts(b, " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH:"
+                    " case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_STR_STR_HASH:"
+                    " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_INT_STR_HASH:");
+        char gx[64]; snprintf(gx, sizeof gx, "sp_poly_index_poly(_t%d, _t%d)", tv, atmp[0]);
+        buf_printf(b, " _t%d = ", tr);
+        if (ret == TY_POLY) buf_puts(b, gx);
+        else emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, gx, b);
         buf_puts(b, "; break;");
       }
       buf_printf(b, " } _t%d; })", tr);
