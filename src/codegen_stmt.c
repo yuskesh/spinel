@@ -481,6 +481,25 @@ else {
 
 /* ---- assignment ---- */
 
+/* A celled/captured TY_PROC local stores its pointer int-laundered in the cell
+   as (mrb_int)(uintptr_t)sp_Proc*. emit_local_ref renders the READ form
+   ((sp_Proc *)(uintptr_t)(*_cell_x)), which is not an assignable lvalue. When
+   writing such a local we need the raw cell deref instead; this emits it and
+   opens the `= (mrb_int)(uintptr_t)(` re-encoding, leaving the caller to emit
+   the value expression and a closing `)`. Returns 1 if it handled the lvalue
+   (proc cell), 0 if the local is not a laundered proc cell and the caller
+   should fall back to `emit_local_ref = value`. */
+static int emit_proc_cell_lvalue(Compiler *c, int scope_node, const char *nm, Buf *b) {
+  LocalVar *lv = nm ? scope_local(comp_scope_of(c, scope_node), nm) : NULL;
+  if (!lv || lv->type != TY_PROC) return 0;
+  int captured = g_cap_struct && g_cap_names && nameset_has(g_cap_names, nm);
+  if (!lv->is_cell && !captured) return 0;
+  if (captured) buf_printf(b, "*((%s *)_cap)->%s", g_cap_struct, nm);
+  else buf_printf(b, "*_cell_%s", nm);
+  buf_puts(b, " = (mrb_int)(uintptr_t)(");
+  return 1;
+}
+
 void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
@@ -4735,8 +4754,14 @@ else {
              to poly and needs a boxed-nil default rather than a scalar zero. */
           LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
           TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
-          emit_local_ref(c, id, lvn, b);
-          buf_printf(b, " = %s;\n", default_value(ltt));
+          /* a captured TY_PROC cell needs the raw int-laundered lvalue rather
+             than emit_local_ref's non-assignable cast form (see emit_assign). */
+          if (emit_proc_cell_lvalue(c, id, lvn, b)) {
+            buf_printf(b, "%s);\n", default_value(ltt));
+          } else {
+            emit_local_ref(c, id, lvn, b);
+            buf_printf(b, " = %s;\n", default_value(ltt));
+          }
         }
         continue;
       }
@@ -4746,19 +4771,33 @@ else {
         /* cell-aware lvalue: a target captured by a later lambda (doom's
            draw_automap `min_x`/`max_y`, closed over by the to_sx/to_sy
            procs) lives in a heap cell, not a plain lv_ slot -- writing
-           lv_<name> referenced an undeclared identifier. */
-        emit_local_ref(c, id, lvn, b);
-        buf_puts(b, " = ");
+           lv_<name> referenced an undeclared identifier. A captured TY_PROC
+           cell needs the raw int-laundered lvalue (emit_local_ref's cast form
+           is not assignable), mirroring emit_assign. */
+        int proc_cell = emit_proc_cell_lvalue(c, id, lvn, b);
+        if (!proc_cell) { emit_local_ref(c, id, lvn, b); buf_puts(b, " = "); }
         LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
         TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
         TyKind valt = comp_ntype(c, els[i]);
-        if (ltt == TY_POLY && valt != TY_POLY) {
+        if (proc_cell) {
+          /* The cell stores (mrb_int)(uintptr_t)sp_Proc*, so the value has to
+             be a bare pointer. But a nil/void element was pre-evaluated into a
+             boxed sp_RbVal temp, and a poly element into an sp_RbVal too --
+             casting that struct to (mrb_int) is invalid C. Extract the proc
+             pointer (NULL for nil, the .v.p slot for a poly) before laundering,
+             mirroring emit_assign's proc-cell write. */
+          if (valt == TY_NIL || valt == TY_VOID) buf_puts(b, "NULL");
+          else if (valt == TY_POLY) buf_printf(b, "_t%d.v.p", tmps[i]);
+          else buf_printf(b, "_t%d", tmps[i]);
+        }
+        else if (ltt == TY_POLY && valt != TY_POLY) {
           char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
           Buf bx; memset(&bx, 0, sizeof bx);
           emit_boxed_text(c, valt, expr, &bx);
           buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
         }
         else buf_printf(b, "_t%d", tmps[i]);
+        if (proc_cell) buf_puts(b, ")");
         buf_puts(b, ";\n");
       }
       else if (lty && (sp_streq(lty, "ConstantPathTargetNode") || sp_streq(lty, "ConstantTargetNode")) &&
