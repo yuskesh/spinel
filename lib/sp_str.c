@@ -304,13 +304,45 @@ mrb_int sp_str_count_chars(const char *s, size_t bl) {
   }
   return n;
 }
+/* Byte-length-bounded UTF-8 validity check. Used to decide char-count vs
+   byte-count semantics for String#length/size: a string with any invalid UTF-8
+   byte (near-certain for genuine binary data, e.g. a binary-mode File.read of a
+   WAD lump) is counted byte-for-byte instead of decoded, matching Ruby's
+   ASCII-8BIT semantics for binary I/O without a separate per-string encoding
+   tag. Valid UTF-8 (the common text case) still counts codepoints. */
+static mrb_bool sp_str_valid_utf8_bytes(const char *s, size_t bl) {
+  const unsigned char *p = (const unsigned char *)s, *end = p + bl;
+  while (p < end) {
+    unsigned c = *p;
+    if (c < 0x80) { p++; continue; }
+    int extra; unsigned cp, min;
+    if ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; min = 0x80; }
+    else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; min = 0x800; }
+    else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; min = 0x10000; }
+    else return FALSE;
+    p++;
+    if (p + extra > end) return FALSE;
+    for (int i = 0; i < extra; i++) {
+      if ((*p & 0xC0) != 0x80) return FALSE;
+      cp = (cp << 6) | (*p & 0x3F);
+      p++;
+    }
+    if (cp < min) return FALSE;
+    if (cp >= 0xD800 && cp <= 0xDFFF) return FALSE;
+    if (cp > 0x10FFFF) return FALSE;
+  }
+  return TRUE;
+}
+static mrb_int sp_str_count_units(const char *s, size_t bl) {
+  return sp_str_valid_utf8_bytes(s, bl) ? sp_str_count_chars(s, bl) : (mrb_int)bl;
+}
 mrb_int sp_str_length(const char*s){
   if (!s) return 0;
-  if (!sp_str_cacheable(s)) return sp_str_count_chars(s, sp_str_byte_len(s));
+  if (!sp_str_cacheable(s)) return sp_str_count_units(s, sp_str_byte_len(s));
   unsigned h = sp_str_lcache_hash(s);
   if (sp_str_lcache[h].s == s) return sp_str_lcache[h].char_len;
   size_t bl = sp_str_byte_len(s);
-  mrb_int n = sp_str_count_chars(s, bl);
+  mrb_int n = sp_str_count_units(s, bl);
   sp_str_lcache[h].s = s;
   sp_str_lcache[h].byte_len = bl;
   sp_str_lcache[h].char_len = n;
