@@ -4771,7 +4771,18 @@ else {
         LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
         TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
         TyKind valt = comp_ntype(c, els[i]);
-        if (!proc_cell && ltt == TY_POLY && valt != TY_POLY) {
+        if (proc_cell) {
+          /* The cell stores (mrb_int)(uintptr_t)sp_Proc*, so the value has to
+             be a bare pointer. But a nil/void element was pre-evaluated into a
+             boxed sp_RbVal temp, and a poly element into an sp_RbVal too --
+             casting that struct to (mrb_int) is invalid C. Extract the proc
+             pointer (NULL for nil, the .v.p slot for a poly) before laundering,
+             mirroring emit_assign's proc-cell write. */
+          if (valt == TY_NIL || valt == TY_VOID) buf_puts(b, "NULL");
+          else if (valt == TY_POLY) buf_printf(b, "_t%d.v.p", tmps[i]);
+          else buf_printf(b, "_t%d", tmps[i]);
+        }
+        else if (ltt == TY_POLY && valt != TY_POLY) {
           char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmps[i]);
           Buf bx; memset(&bx, 0, sizeof bx);
           emit_boxed_text(c, valt, expr, &bx);
