@@ -2044,6 +2044,9 @@ else {
                       block_param_name(c, blk, 0) && block_param_name(c, blk, 1);
       if (two_param && (sp_streq(name, "map") || sp_streq(name, "collect")))
         return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
+      /* filter_map collects the truthy block values (like map, then compact) */
+      if (two_param && sp_streq(name, "filter_map"))
+        return ty_array_of(bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN);
       if (sp_streq(name, "to_a") || sp_streq(name, "entries") ||
           (two_param && (sp_streq(name, "select") || sp_streq(name, "filter") || sp_streq(name, "reject"))))
         return TY_POLY_ARRAY;   /* an array of [element, index] pairs */

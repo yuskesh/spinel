@@ -3825,6 +3825,7 @@ int infer_block_params(Compiler *c) {
     if (block >= 0 &&
         (ty_iter_shape(name) == TY_ITER_MAP || ty_iter_shape(name) == TY_ITER_SELECT ||
          ty_iter_shape(name) == TY_ITER_REJECT || sp_streq(name, "each") ||
+         sp_streq(name, "filter_map") ||
          sp_streq(name, "count") || sp_streq(name, "any?") || sp_streq(name, "all?") ||
          sp_streq(name, "none?")) &&
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
