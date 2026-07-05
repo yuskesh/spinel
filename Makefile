@@ -601,6 +601,25 @@ regen-expected: $(EXPECTED_FILES)
 # stderr sidecars (e.g. while a developer is using stderr for debugging).
 regen-expected-err: $(ERR_EXPECTED_FILES)
 
+# Benchmark snapshots: `make bench` uses benchmark/<name>.rb.expected when it
+# exists and only falls back to running CRuby without one. The oracle runs
+# here, once, instead of on every bench invocation -- the CRuby leg was ~2/3
+# of bench wall time (bm_range_each alone spends ~25s in CRuby).
+BENCH_EXPECTED_FILES := $(patsubst %.rb,%.rb.expected,$(wildcard benchmark/*.rb))
+regen-bench-expected: $(BENCH_EXPECTED_FILES)
+# Not regen-snapshot: benches need the 60s oracle budget (bm_range_each runs
+# ~25s under CRuby), not the 10s test budget.
+benchmark/%.rb.expected: benchmark/%.rb
+	@rc=0; $(TIMEOUT60) $(REF_RUBY) $< >$@.tmp 2>/dev/null || rc=$$?; \
+	if [ $$rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
+	  rc=0; $(TIMEOUT60) ruby $< >$@.tmp 2>/dev/null || rc=$$?; \
+	fi; \
+	if [ $$rc -ne 0 ]; then \
+	  echo "regen-bench-expected: $< failed (rc=$$rc); skipping $@" >&2; rm -f $@.tmp; \
+	else \
+	  LC_ALL=C sed 's/\r$$//' $@.tmp > $@; rm -f $@.tmp; echo "regen $@"; \
+	fi
+
 # Regenerate $@ from the reference Ruby (falling back to a system ruby); $1 is
 # the redirection selecting which stream to capture into $@.tmp. A failing
 # oracle is skipped so a stale snapshot is kept rather than clobbered.
@@ -637,11 +656,15 @@ bench: $(SPINEL) $(SP_RT_LIB)
 	  $(CC) $(CFLAGS) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib -c /tmp/_sp_b.c -o /tmp/_sp_b.c.o 2>/dev/null && \
 	  $(CC) $(CFLAGS) /tmp/_sp_b.c.o $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o /tmp/_sp_b_bin 2>/dev/null; \
 	  if [ $$? -eq 0 ]; then \
+	    if [ -f "$$f.expected" ]; then \
+	      cp "$$f.expected" /tmp/_sp_b_exp; ruby_rc=0; \
+	    else \
 	    $(TIMEOUT60) $(REF_RUBY) "$$f" >/tmp/_sp_b_exp 2>/dev/null; \
 	    ruby_rc=$$?; \
 	    if [ $$ruby_rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
 	      $(TIMEOUT60) ruby "$$f" >/tmp/_sp_b_exp 2>/dev/null; \
 	      ruby_rc=$$?; \
+	    fi; \
 	    fi; \
 	    if [ $$ruby_rc -eq 124 ]; then \
 	      if [ "$$tty" = 1 ]; then printf '\r\033[K'; fi; \
