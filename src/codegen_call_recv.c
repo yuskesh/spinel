@@ -1243,6 +1243,18 @@ else {
     }
     /* poly (mixed-element) array methods: elements are boxed sp_RbVal */
     if (rt == TY_POLY_ARRAY) {
+      if (sp_streq(name, "[]") && argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
+        /* arr[a..b] / arr[a...b] -> subarray */
+        int rn = argv[0];
+        int excl = (int)(nt_int(nt, rn, "flags", 0) & 4) ? 1 : 0;
+        int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+        buf_puts(b, "sp_PolyArray_slice_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (lo >= 0) emit_int_expr(c, lo, b); else buf_puts(b, "0");
+        buf_puts(b, ", ");
+        if (hi >= 0) emit_int_expr(c, hi, b); else buf_puts(b, "-1");
+        buf_printf(b, ", %d)", hi >= 0 ? excl : 0);
+        return 1;
+      }
       if (sp_streq(name, "[]") && argc == 1) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", ");
         if (a0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
