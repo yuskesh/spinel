@@ -714,13 +714,8 @@ void emit_box_open(Compiler *c, TyKind t, Buf *b) {
   else if (t == TY_CLASS) buf_puts(b, "sp_box_class(");
   else if (t == TY_COMPLEX)  buf_puts(b, "sp_box_complex(");
   else if (t == TY_RATIONAL) buf_puts(b, "sp_box_rational(");
-  else if (t == TY_FIBER) buf_puts(b, "sp_box_obj((void *)(");
-  else if (t == TY_THREAD) buf_puts(b, "sp_box_obj((void *)(");
-  else if (t == TY_QUEUE) buf_puts(b, "sp_box_obj((void *)(");
-  else if (t == TY_MUTEX) buf_puts(b, "sp_box_obj((void *)(");
-  else if (t == TY_CONDVAR) buf_puts(b, "sp_box_obj((void *)(");
-  else if (t == TY_ENUMERATOR) buf_puts(b, "sp_box_obj((void *)(");
-  else if (t == TY_IO)    buf_puts(b, "sp_box_obj((void *)(");
+  /* Reference-backed builtins are nilable C pointers: box NULL as nil. */
+  else if (ty_nullable_builtin_id(t)) buf_puts(b, "sp_box_nullable_obj((void *)(");
   else if (ty_is_object(t)) {
     int cid = ty_object_class(t);
     buf_printf(b, "sp_box_obj((%s *)( ", c->classes[cid].name);
@@ -730,13 +725,8 @@ void emit_box_open(Compiler *c, TyKind t, Buf *b) {
 void emit_box_close(Compiler *c, TyKind t, Buf *b) {
   (void)c;
   if (t == TY_POLY || t == TY_UNKNOWN) return; /* no-op: already sp_RbVal */
-  if (t == TY_FIBER) { buf_puts(b, "), SP_BUILTIN_FIBER)"); return; }
-  if (t == TY_THREAD) { buf_puts(b, "), SP_BUILTIN_THREAD)"); return; }
-  if (t == TY_QUEUE) { buf_puts(b, "), SP_BUILTIN_QUEUE)"); return; }
-  if (t == TY_MUTEX) { buf_puts(b, "), SP_BUILTIN_MUTEX)"); return; }
-  if (t == TY_CONDVAR) { buf_puts(b, "), SP_BUILTIN_CONDVAR)"); return; }
-  if (t == TY_ENUMERATOR) { buf_puts(b, "), SP_BUILTIN_ENUMERATOR)"); return; }
-  if (t == TY_IO)    { buf_puts(b, "), SP_BUILTIN_IO)"); return; }
+  { const char *nbid = ty_nullable_builtin_id(t);
+    if (nbid) { buf_printf(b, "), %s)", nbid); return; } }
   if (ty_is_object(t))        { buf_printf(b, "), %d)", ty_object_class(t)); return; }
   buf_puts(b, ")");
 }
