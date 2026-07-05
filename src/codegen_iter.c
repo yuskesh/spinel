@@ -79,7 +79,16 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     }
   }
   Scope *m = &c->scopes[mi];
-  if (!m->yields || scope_has_return(c, mi)) return 0;
+  if (!m->yields) return 0;
+  /* A `return` inside the yielding method used to bail here -- but a bailed
+     block call falls back to a plain function call against a symbol that is
+     never emitted (yielding methods have no standalone function), an
+     undefined-symbol link error (doom's PlayerPhysics#each_nearby_linedef:
+     an early `@map.linedefs.each { |ld| yield ld }; return` branch). Inline
+     anyway, funneling the method's own returns to a per-inline exit label;
+     the caller block spliced at yield sites is exempted by
+     emit_block_invoke, which restores the real function's funnel. */
+  int m_has_ret = scope_has_return(c, mi);
   int block = nt_ref(nt, id, "block");   /* may be -1: no block passed */
   /* `inner(&)` / `inner(&block)`: a BlockArgumentNode forwards the block
      active at this (already-inlined) site, not a fresh literal. */
@@ -110,6 +119,12 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_block_fallback = saved_block;
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
+  /* the block being captured is caller code: record the caller's self so
+     emit_block_invoke can restore it around the spliced block body. */
+  const char *saved_self_fb = g_yield_self_fallback;
+  const char *saved_deref_fb = g_yield_self_deref_fallback;
+  g_yield_self_fallback = g_self;
+  g_yield_self_deref_fallback = g_self_deref;
   g_block_id = block;
   /* the literal block binds to THIS call site's break scope; a forwarded
      BlockArgumentNode block keeps its original definition-site scope */
@@ -173,7 +188,12 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     buf_printf(b, "lv__y%d_%s = ", tag, m->pnames[i]);
-    int sv = g_nren; g_nren = 0;
+    /* hide THIS inline's renames only: args are call-site expressions,
+       and the call site may itself be an outer inlined body whose locals
+       are renamed (nested yield-method inlines) -- zeroing the whole
+       table emitted the unrenamed lv_<name> (undeclared identifier, or a
+       silent capture of a same-named caller local). */
+    int sv = g_nren; g_nren = saved_nren;
     if (fwd_encl && i < fwd_encl->nparams) {
       LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[i]);
       LocalVar *mp = scope_local(m, m->pnames[i]);
@@ -192,6 +212,12 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     buf_puts(b, ";\n");
   }
 
+  /* per-inline return funnel (stack storage: the inliner recurses, and the
+     saved outer label pointer must stay valid across a nested inline). */
+  char inl_lbl[32];
+  const char *sv_prl = g_method_pr_label, *sv_prv = g_method_pr_var;
+  TyKind sv_prt = g_ret_type;
+  int sv_prexc = g_method_pr_exc_depth;
   if (as_expr) {
     /* Use a result var so the tail uses assignment, not `return`, in the
        GCC statement-expression ({ ... result_var; }) context. */
@@ -202,11 +228,40 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     buf_printf(b, " _t%d = %s;\n", rtag, default_value(rt));
     const char *sv_rv = g_result_var; g_result_var = rvbuf;
     int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
-    emit_stmts_tail(c, m->body, b, din);
+    if (m_has_ret) {
+      snprintf(inl_lbl, sizeof inl_lbl, "_yret%d", tag);
+      g_method_pr_label = inl_lbl; g_method_pr_var = rvbuf; g_ret_type = rt;
+      g_method_pr_exc_depth = g_exc_frame_depth;
+      /* body in its own scope: the funnel goto then EXITS the scopes of any
+         cleanup-attributed GC roots the body declares (legal, cleanups run)
+         instead of jumping over them in the same scope (a C error). */
+      emit_indent(b, din); buf_puts(b, "{\n");
+    }
+    emit_stmts_tail(c, m->body, b, m_has_ret ? din + 1 : din);
+    if (m_has_ret) {
+      g_method_pr_label = sv_prl; g_method_pr_var = sv_prv; g_ret_type = sv_prt;
+      g_method_pr_exc_depth = sv_prexc;
+      emit_indent(b, din); buf_puts(b, "}\n");
+      emit_indent(b, din); buf_printf(b, "_yret%d: ;\n", tag);
+    }
     g_result_var = sv_rv; g_result_poly = sp;
     emit_indent(b, din); buf_printf(b, "_t%d;\n", rtag);
   }
-  else emit_stmts(c, m->body, b, din);
+  else {
+    if (m_has_ret) {
+      snprintf(inl_lbl, sizeof inl_lbl, "_yret%d", tag);
+      g_method_pr_label = inl_lbl; g_method_pr_var = NULL;
+      g_method_pr_exc_depth = g_exc_frame_depth;
+      emit_indent(b, din); buf_puts(b, "{\n");   /* see expr-path comment */
+    }
+    emit_stmts(c, m->body, b, m_has_ret ? din + 1 : din);
+    if (m_has_ret) {
+      g_method_pr_label = sv_prl; g_method_pr_var = sv_prv;
+      g_method_pr_exc_depth = sv_prexc;
+      emit_indent(b, din); buf_puts(b, "}\n");
+      emit_indent(b, din); buf_printf(b, "_yret%d: ;\n", tag);
+    }
+  }
   if (as_expr) { emit_indent(b, indent); buf_puts(b, "})"); }
   else { emit_indent(b, indent); buf_puts(b, "}\n"); }
 
@@ -220,6 +275,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_self_deref = saved_deref;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
+  g_yield_self_fallback = saved_self_fb;
+  g_yield_self_deref_fallback = saved_deref_fb;
   return 1;
 }
 
@@ -384,7 +441,24 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   int svbexc = g_brk_exc_base; g_brk_exc_base = g_block_brk_exc_base;
   const char *svbbv = g_block_brk_var; g_block_brk_var = g_yield_blk_brk_fallback;
   int svbbe = g_block_brk_ebase; g_block_brk_ebase = g_yield_blk_brk_efallback;
+  /* The block body lexically belongs to the REAL enclosing function: a
+     `return` inside it exits that method, not the inlined region -- so the
+     inline funnel (if one is active) is suspended in favor of the real
+     function's own return funnel. */
+  const char *sv_bl = g_method_pr_label, *sv_bv = g_method_pr_var;
+  TyKind sv_bt = g_ret_type;
+  int sv_bexc = g_method_pr_exc_depth;
+  g_method_pr_label = g_fn_pr_label; g_method_pr_var = g_fn_pr_var;
+  g_ret_type = g_fn_ret_type;
+  g_method_pr_exc_depth = 0;   /* the real function's funnel sits at depth 0 */
+  /* likewise, the block body's `self` is the CALLER's (an ivar read inside
+     the block must not resolve against the inlined method's receiver). */
+  const char *sv_bself = g_self, *sv_bderef = g_self_deref;
+  if (g_yield_self_fallback) { g_self = g_yield_self_fallback; g_self_deref = g_yield_self_deref_fallback; }
   emit_stmts(c, bbody, b, as_expr ? 0 : indent);
+  g_self = sv_bself; g_self_deref = sv_bderef;
+  g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt;
+  g_method_pr_exc_depth = sv_bexc;
   g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc;
   g_block_brk_var = svbbv; g_block_brk_ebase = svbbe;
   g_block_id = svb; g_block_param_name = svbpn;

@@ -62,6 +62,8 @@ int subtree_may_allocate(const NodeTable *nt, int id);
    that was active in the CALLER's context so nested `yield`s inside the
    passed block can chain back to the outermost caller's block. */
 extern int  g_yield_block_fallback;
+extern const char *g_yield_self_fallback;        /* see codegen_util.c */
+extern const char *g_yield_self_deref_fallback;
 /* Name of the `&block` parameter of the method currently being inlined, so
    `<blk>.call(args)` inside it expands the active block like `yield args`. */
 extern const char *g_block_param_name;
@@ -139,6 +141,9 @@ extern int g_block_brk_exc_base;
 /* Return type of the method currently being emitted, so a tail/return value
    can be boxed when the method returns poly but the value is concrete. */
 extern TyKind g_ret_type;
+extern const char *g_fn_pr_label;   /* real function's return funnel (see codegen_util.c) */
+extern const char *g_fn_pr_var;
+extern TyKind g_fn_ret_type;
 /* Set while emitting a self-recursive yield method (is_lowered_yield=1).
    Persists into inner proc literal bodies so { yield } forwards __yblk__. */
 extern int g_current_scope_is_lowered;

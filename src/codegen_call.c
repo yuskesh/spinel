@@ -96,6 +96,12 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
   g_yield_block_fallback = saved_block;
+  /* the block being captured is caller code: record the caller's self so
+     emit_block_invoke can restore it around the spliced block body. */
+  const char *saved_self_fb = g_yield_self_fallback;
+  const char *saved_deref_fb = g_yield_self_deref_fallback;
+  g_yield_self_fallback = g_self;
+  g_yield_self_deref_fallback = g_self_deref;
   g_block_id = block;
   g_block_param_name = m->blk_param;
 
@@ -131,7 +137,12 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     buf_printf(b, "lv__y%d_%s = ", tag, m->pnames[i]);
-    int sv = g_nren; g_nren = 0;
+    /* hide THIS inline's renames only: args are call-site expressions,
+       and the call site may itself be an outer inlined body whose locals
+       are renamed (nested yield-method inlines) -- zeroing the whole
+       table emitted the unrenamed lv_<name> (undeclared identifier, or a
+       silent capture of a same-named caller local). */
+    int sv = g_nren; g_nren = saved_nren;
     emit_arg_or_default(c, m, i, i < argc2 ? argv2[i] : -1, b);
     g_nren = sv;
     buf_puts(b, ";\n");
@@ -149,6 +160,8 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_self = saved_self;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
+  g_yield_self_fallback = saved_self_fb;
+  g_yield_self_deref_fallback = saved_deref_fb;
   return 1;
 }
 
