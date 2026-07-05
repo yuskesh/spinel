@@ -695,11 +695,14 @@ else {
         buf_printf(b, " } } _t%d; })", tr);
         return 1;
       }
-      if (sp_streq(name, "repeated_combination") && argc == 1 && rt == TY_INT_ARRAY) {
+      if ((sp_streq(name, "repeated_combination") || sp_streq(name, "combination")) &&
+          argc == 1 && rt == TY_INT_ARRAY && nt_ref(nt, id, "block") < 0) {
+        const char *combfn = sp_streq(name, "combination")
+                             ? "sp_IntArray_combination" : "sp_IntArray_repeated_combination";
         int ta = ++g_tmp, tc = ++g_tmp, tout = ++g_tmp, ti = ++g_tmp;
         Buf ra = expr_buf(c, recv);
         buf_printf(b, "({ sp_IntArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
-        buf_printf(b, " sp_PtrArray *_t%d = sp_IntArray_repeated_combination(_t%d, ", tc, ta);
+        buf_printf(b, " sp_PtrArray *_t%d = %s(_t%d, ", tc, combfn, ta);
         emit_expr(c, argv[0], b);
         buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tout, tout);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti, ti, tc, ti);
