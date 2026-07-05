@@ -1995,7 +1995,8 @@ static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   int cid = comp_class_index(c, ci->name);
   if (ci->is_struct) {
-    int sinit = comp_method_in_chain(c, cid, "initialize", NULL);
+    int sinit_def = cid;
+    int sinit = comp_method_in_chain(c, cid, "initialize", &sinit_def);
     if (sinit >= 0 && c->scopes[sinit].reachable && !c->scopes[sinit].yields) {
       /* Custom `initialize` override (a `Struct.new(...) do def initialize ...
          super(...) end end` block, e.g. doom's Visplane): the constructor
@@ -2024,7 +2025,14 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_puts(b, "  SP_GC_ROOT(self);\n");
       buf_printf(b, "  self->cls_id = %d;\n", cid);
       emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
-      buf_printf(b, "  sp_%s_initialize(self", ci->name);
+      /* Call the initialize under the name of the class that actually defines
+         it: when it is inherited from an ancestor the C symbol is
+         sp_<ancestor>_initialize (not sp_<this>_initialize), and self must be
+         cast to the ancestor's struct type. (For a direct definition
+         sinit_def == cid and this is unchanged.) */
+      buf_printf(b, "  sp_%s_initialize(", c->classes[sinit_def].name);
+      if (sinit_def != cid) buf_printf(b, "(sp_%s *)", c->classes[sinit_def].name);
+      buf_puts(b, "self");
       for (int i = 0; i < si->nparams; i++) buf_printf(b, ", lv_%s", si->pnames[i]);
       buf_puts(b, ");\n");
       buf_puts(b, "  return self;\n}\n");
@@ -2495,22 +2503,39 @@ void emit_super(Compiler *c, int id, Buf *b) {
        Array.new, ...)`) stayed nil and later comparisons hit NilClass. */
     if (c->classes[s->class_id].is_struct && uname && sp_streq(uname, "initialize")) {
       ClassInfo *cls = &c->classes[s->class_id];
+      /* A bare `super` (ForwardingSuperNode) forwards the current initialize's
+         own params positionally into the members -- exactly what Struct's
+         initialize does with them. An explicit `super(...)` (SuperNode) uses its
+         argument list instead. Without the forwarding arm a bare super assigned
+         nothing and every member stayed nil. */
+      int is_fwd = ty && sp_streq(ty, "ForwardingSuperNode");
       int args_id = ty && sp_streq(ty, "SuperNode") ? nt_ref(c->nt, id, "arguments") : -1;
       int an = 0;
       const int *sargv = args_id >= 0 ? nt_arr(c->nt, args_id, "arguments", &an) : NULL;
+      int cnt = is_fwd ? s->nparams : an;
       buf_puts(b, "(");
-      for (int a = 0; a < cls->nivars && a < an; a++) {
+      for (int a = 0; a < cls->nivars && a < cnt; a++) {
         TyKind ivt = cls->ivar_types[a];
-        TyKind at = comp_ntype(c, sargv[a]);
         buf_printf(b, "%s->iv_%s = ", g_self, cls->ivars[a] + 1);
-        if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, sargv[a], b);
-        else if (ivt != TY_POLY && at == TY_POLY) {
-          /* poly arg (e.g. an initialize param that stayed poly) into a scalar
-             member slot: unbox to the member's C type. */
-          Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, sargv[a], &ex);
-          emit_unbox_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
+        if (is_fwd) {
+          LocalVar *pv = scope_local(s, s->pnames[a]);
+          TyKind at = pv && pv->type != TY_UNKNOWN ? pv->type : TY_POLY;
+          char src[64]; snprintf(src, sizeof src, "lv_%s", rename_local(s->pnames[a]));
+          if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
+          else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_text(c, ivt, src, b);
+          else buf_puts(b, src);
         }
-        else emit_expr(c, sargv[a], b);
+        else {
+          TyKind at = comp_ntype(c, sargv[a]);
+          if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, sargv[a], b);
+          else if (ivt != TY_POLY && at == TY_POLY) {
+            /* poly arg (e.g. an initialize param that stayed poly) into a scalar
+               member slot: unbox to the member's C type. */
+            Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, sargv[a], &ex);
+            emit_unbox_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
+          }
+          else emit_expr(c, sargv[a], b);
+        }
         buf_puts(b, ", ");
       }
       buf_printf(b, "%s)", default_value(comp_ntype(c, id)));
