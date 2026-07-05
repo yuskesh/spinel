@@ -64,6 +64,17 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
       sp_streq(ty, "InterpolatedStringNode") || sp_streq(ty, "SuperNode") ||
       sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode"))
     return 1;
+  /* A NUL-containing (binary) string literal does not lower to an immortal
+     rodata pointer: it allocates a heap string via sp_str_from_bytes (every
+     evaluation when unfrozen, or once to fill a call-site cache when frozen).
+     Either path can trigger a GC, so it must count as an allocating sibling
+     so the operand-rooting logic protects a fresh operand next to it. A plain
+     (NUL-free) literal is rodata and never allocates. */
+  if (sp_streq(ty, "StringNode")) {
+    const char *sc = nt_str(nt, id, "content");
+    if (sc && nt_str_len(nt, id, "content") > strlen(sc)) return 1;
+    return 0;
+  }
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++)
     if (subtree_may_allocate(nt, nt_ref_at(nt, id, i))) return 1;
@@ -764,11 +775,24 @@ void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
      The heap string it builds is writable (0xfe), so a frozen literal is
      sealed with sp_str_freeze_val (flips the heap marker to 0xf1 in place). */
   if (len > strlen(content)) {
-    if (frozen) buf_puts(b, "sp_str_freeze_val(");
+    /* A FROZEN NUL-containing literal is immortal (sp_str_sweep never frees a
+       0xf1 string), so build it once into a call-site-local static and reuse it.
+       This avoids re-allocating it on every evaluation -- which, besides the
+       churn, made the literal a GC-triggering sibling that could sweep an
+       unrooted operand mid-expression (e.g. the receiver in
+       `data[8, 8].delete("\0")`, a use-after-free in doom's WAD name parse). */
+    if (frozen) {
+      static int g_binlit_ctr = 0;
+      int id = g_binlit_ctr++;
+      buf_printf(b, "({ static const char *_binlit_%d; _binlit_%d ? _binlit_%d : "
+                    "(_binlit_%d = sp_str_freeze_val(sp_str_from_bytes(\"", id, id, id, id);
+      emit_c_escaped_n(b, content, len);
+      buf_printf(b, "\", %zu))); })", len);
+      return;
+    }
     buf_puts(b, "sp_str_from_bytes(\"");
     emit_c_escaped_n(b, content, len);
     buf_printf(b, "\", %zu)", len);
-    if (frozen) buf_puts(b, ")");
     return;
   }
   buf_printf(b, "(&(\"%s\" \"", mk);
