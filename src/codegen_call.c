@@ -1149,6 +1149,24 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Emit the else-branch of a poly-Hash `fetch` dispatched through the poly value
+   switch: the caller's default (fetch(k, dflt)) or a KeyError raise (fetch(k)),
+   coerced to the dispatch's result-temp representation (poly, or the scalar
+   `trt`). `argv1` is the default-argument node (only read when argc == 2). */
+static void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, int argv1,
+                                   TyKind ret, TyKind trt, Buf *b) {
+  if (argc == 2) {
+    char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
+    if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv1), dn, b);
+    else buf_puts(b, dn);
+  }
+  else {
+    buf_puts(b, "(sp_raise_cls(\"KeyError\", \"key not found\"), ");
+    buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
+    buf_puts(b, ")");
+  }
+}
+
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -1341,7 +1359,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        call collapsed to default_value (an empty string), dropping the lookup.
        The str/sym-keyed hash arms below handle it, so admit it here. */
     int is_fetch = sp_streq(name, "fetch") && (argc == 1 || argc == 2) &&
-                   (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_SYMBOL);
+                   (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_SYMBOL ||
+                    infer_type(c, argv[0]) == TY_POLY || infer_type(c, argv[0]) == TY_UNKNOWN);
     int is_include = (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                       sp_streq(name, "has_key?") || sp_streq(name, "key?")) && argc == 1;
     /* push/<</append on a poly value that is actually a builtin array: the
@@ -1610,6 +1629,28 @@ else {
           else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
           buf_puts(b, "; break;");
         }
+        /* the poly value may be a generic PolyPolyHash keyed by (boxed) strings
+           -- a `to_h { |x| [x.name, x] }` result widened to poly, indexed by a
+           string (doom's `@flats[anim_flat(name)]`). The STR_*_HASH arms above
+           only match native-string-keyed storage, so box the string key and
+           look it up in the poly-keyed storage. Only for `[]` (nil on miss);
+           `fetch` keeps falling through to its default-seed (a bare get would
+           drop the caller's supplied default). */
+        /* `[]` returns nil on a miss; `fetch` must return the present value or
+           fall back to its supplied default / raise KeyError -- so gate the get
+           on a has_key check (a bare get would drop the caller's default and
+           mistake a stored nil for absence). */
+        if (is_aref || is_fetch) {
+          char getx[220], hx[220];
+          snprintf(getx, sizeof getx, "sp_PolyPolyHash_get((sp_PolyPolyHash *)_t%d.v.p, sp_box_str(_t%d))", tv, atmp[0]);
+          snprintf(hx, sizeof hx, "sp_PolyPolyHash_has_key((sp_PolyPolyHash *)_t%d.v.p, sp_box_str(_t%d))", tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_POLY_POLY_HASH: _t%d = ", tr);
+          if (is_fetch) buf_printf(b, "%s ? ", hx);
+          if (ret == TY_POLY) buf_puts(b, getx);
+          else emit_unbox_text(c, trt, getx, b);
+          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, ret, trt, b); }
+          buf_puts(b, "; break;");
+        }
       }
       /* a symbol-keyed hash (`{ name: ... }`) reaches here as SymPolyHash; add
          its `[]` / `fetch` arm so a Hash receiver indexed by a symbol is not
@@ -1630,6 +1671,36 @@ else {
         }
         else if (is_fetch) { buf_puts(b, "(sp_raise_cls(\"KeyError\", \"key not found\"), "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
         else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
+        buf_puts(b, "; break;");
+      }
+      /* a poly-keyed `[]` on a poly value that is actually a Hash: dispatch to
+         the hash storage by the (boxed) poly key. The string/symbol-key arms
+         above only fire for a statically-typed key; a key that stayed poly
+         (a method param, e.g. `@textures[name]` in doom's TextureManager, where
+         @textures = result[:textures] widened the Hash to a poly local) has no
+         static key type, so without this arm the receiver switch fell through
+         every Hash cls_id and returned nil. */
+      /* fetch mirrors `[]` here: same runtime storage kinds, but gated on a
+         has_key check so a present key returns its value while an absent key
+         falls back to the supplied default / raises KeyError (a bare
+         sp_poly_index_poly returns nil on a miss, which fetch must not do). */
+      /* A TY_UNKNOWN key is held boxed-as-poly (atmp_ty == TY_POLY above), so
+         it flows through sp_poly_index_poly / sp_poly_has_key exactly like an
+         explicit poly key -- cover it here so a Hash reached by such a key is
+         not dropped to nil (gemini review). */
+      if ((is_aref || is_fetch) &&
+          (infer_type(c, argv[0]) == TY_POLY || infer_type(c, argv[0]) == TY_UNKNOWN)) {
+        TyKind ptrt = is_scalar_ret(ret) ? ret : TY_INT;
+        buf_puts(b, " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH:"
+                    " case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_STR_STR_HASH:"
+                    " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_INT_STR_HASH:");
+        char gx[64], hx[64]; snprintf(gx, sizeof gx, "sp_poly_index_poly(_t%d, _t%d)", tv, atmp[0]);
+        snprintf(hx, sizeof hx, "sp_poly_has_key(_t%d, _t%d)", tv, atmp[0]);
+        buf_printf(b, " _t%d = ", tr);
+        if (is_fetch) buf_printf(b, "%s ? ", hx);
+        if (ret == TY_POLY) buf_puts(b, gx);
+        else emit_unbox_text(c, ptrt, gx, b);
+        if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, ret, ptrt, b); }
         buf_puts(b, "; break;");
       }
       buf_printf(b, " } _t%d; })", tr);

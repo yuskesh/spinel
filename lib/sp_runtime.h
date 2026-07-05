@@ -3495,6 +3495,25 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   return sp_poly_arr_get_hash(recv, i);
 }
 
+/* Presence check for a Hash reached through a poly value, keyed by a poly key.
+   The dispatch mirrors sp_poly_index_poly's storage kinds so `fetch` can tell a
+   present key (return the value) from an absent one (default / KeyError) --
+   sp_poly_index_poly alone returns nil on a miss, indistinguishable from a key
+   legitimately mapped to nil. A key whose tag does not match the storage's key
+   kind can never be present, so it reports FALSE. */
+static mrb_bool sp_poly_has_key(sp_RbVal recv, sp_RbVal key) {
+  if (recv.tag != SP_TAG_OBJ) return FALSE;
+  switch (recv.cls_id) {
+    case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_has_key((sp_PolyPolyHash *)recv.v.p, key);
+    case SP_BUILTIN_STR_POLY_HASH:  return key.tag == SP_TAG_STR && sp_StrPolyHash_has_key((sp_StrPolyHash *)recv.v.p, key.v.s);
+    case SP_BUILTIN_STR_STR_HASH:   return key.tag == SP_TAG_STR && sp_StrStrHash_has_key((sp_StrStrHash *)recv.v.p, key.v.s);
+    case SP_BUILTIN_STR_INT_HASH:   return key.tag == SP_TAG_STR && sp_StrIntHash_has_key((sp_StrIntHash *)recv.v.p, key.v.s);
+    case SP_BUILTIN_SYM_POLY_HASH:  return key.tag == SP_TAG_SYM && sp_SymPolyHash_has_key((sp_SymPolyHash *)recv.v.p, (sp_sym)key.v.i);
+    case SP_BUILTIN_INT_STR_HASH:   return key.tag == SP_TAG_INT && sp_IntStrHash_has_key((sp_IntStrHash *)recv.v.p, key.v.i);
+    default: return FALSE;
+  }
+}
+
 /* Integer-returning counterpart of sp_poly_index_poly for `poly[int]` where
    the poly element holds an int-returning callable/container -- a bound
    method (called with the int arg, int ABI) or an int array. Used when
