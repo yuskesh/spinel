@@ -1179,10 +1179,31 @@ void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b) {
   }
 }
 
+/* Is this array-pattern required element a literal value (so it constrains the
+   element to equal it), rather than a binding/wildcard that matches anything? */
+static int pm_req_is_literal(const NodeTable *nt, int req) {
+  const char *rty = nt_type(nt, req);
+  return rty && (sp_streq(rty, "IntegerNode") || sp_streq(rty, "FloatNode") ||
+                 sp_streq(rty, "StringNode") || sp_streq(rty, "SymbolNode") ||
+                 sp_streq(rty, "TrueNode") || sp_streq(rty, "FalseNode") ||
+                 sp_streq(rty, "NilNode"));
+}
+/* AND in `element[i] == literal` checks for every required element that is a
+   literal, over the boxed array C-expr `boxedarr`. Binding/nested elements
+   constrain nothing here (they are bound / shape-checked elsewhere). */
+static void emit_pm_req_value_checks(Compiler *c, const int *reqs, int apn,
+                                     const char *boxedarr, Buf *b) {
+  for (int i = 0; i < apn; i++) {
+    if (!pm_req_is_literal(c->nt, reqs[i])) continue;
+    buf_printf(b, " && sp_poly_eq(sp_poly_index_poly(%s, sp_box_int(%dLL)), ", boxedarr, i);
+    emit_boxed(c, reqs[i], b);
+    buf_puts(b, ")");
+  }
+}
 /* Recursive match condition for a (possibly nested) array pattern over the
    boxed value `arr` (an sp_RbVal C-expression): `arr` is an array of the right
-   length, and each nested-array element is itself a correctly-shaped array.
-   Element value/type checks beyond shape are left to the flat path. */
+   length, each nested-array element is itself a correctly-shaped array, and
+   each required literal element equals its pattern. */
 static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
   const NodeTable *nt = c->nt;
   int apn = 0;
@@ -1209,6 +1230,7 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
       free(e.p);
     }
   }
+  emit_pm_req_value_checks(c, reqs, apn, arr, b);
   buf_puts(b, ")");
 }
 
@@ -1318,9 +1340,21 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   if (sp_streq(pty, "ArrayPatternNode")) {
     int apn = 0;
     const int *reqs = nt_arr(nt, pat, "requireds", &apn);
-    /* a nested array element needs a recursive shape check; route a poly array
-       through the boxed recursive condition so `[1,5,4]` does not match
-       `[a,[b,c],d]` on outer length alone. */
+    /* A poly scrutinee -- a bare sp_RbVal (TY_POLY) or a poly-array pointer
+       (TY_POLY_ARRAY) -- is matched by the poly-safe recursive condition, which
+       reads length/elements through sp_poly_length / sp_poly_index_poly behind a
+       SP_TAG_OBJ guard. This never emits `->len` on a non-array value and handles
+       nested sub-arrays and required literal element checks uniformly. */
+    if (pt == TY_POLY || pt == TY_POLY_ARRAY) {
+      char arr[48];
+      if (pt == TY_POLY_ARRAY) snprintf(arr, sizeof arr, "sp_box_poly_array(_t%d)", t);
+      else                     snprintf(arr, sizeof arr, "_t%d", t);
+      emit_pm_array_cond(c, pat, arr, b);
+      return 1;
+    }
+    /* From here the scrutinee is a typed (int/float/str) array pointer. A nested
+       array element can never match one, since a typed array cannot hold a
+       sub-array, so such a pattern is a guaranteed non-match. */
     int has_nested = 0;
     for (int i = 0; i < apn && !has_nested; i++) {
       const char *rty = nt_type(nt, reqs[i]);
@@ -1331,25 +1365,21 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
         if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) has_nested = 1;
       }
     }
-    if (has_nested) {
-      if (pt == TY_POLY_ARRAY) {
-        char box[48]; snprintf(box, sizeof box, "sp_box_poly_array(_t%d)", t);
-        emit_pm_array_cond(c, pat, box, b);
-        return 1;
-      }
-      /* a typed (int/float/str) array can't hold a sub-array element, so a
-         pattern with a nested array can never match it. */
-      buf_puts(b, "0");
-      return 1;
-    }
-    /* Length check */
+    if (has_nested) { buf_puts(b, "0"); return 1; }
+    /* Length check, then each required literal element must equal its pattern
+       (short-circuits after the length guard so element access is in-bounds). */
     int rest_nid = nt_ref(nt, pat, "rest");
     int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
                     sp_streq(nt_type(nt, rest_nid), "SplatNode"));
-    if (has_rest)
-      buf_printf(b, "(_t%d && _t%d->len >= %dLL)", t, t, (long long)apn);
-    else
-      buf_printf(b, "(_t%d && _t%d->len == %dLL)", t, t, (long long)apn);
+    buf_printf(b, "(_t%d && _t%d->len %s %dLL", t, t, has_rest ? ">=" : "==", (long long)apn);
+    const char *ak = array_kind(pt);
+    if (ak) {
+      const char *lo = sp_streq(ak, "Int") ? "int" : (sp_streq(ak, "Float") ? "float" : "str");
+      char boxed[64];
+      snprintf(boxed, sizeof boxed, "sp_box_%s_array(_t%d)", lo, t);
+      emit_pm_req_value_checks(c, reqs, apn, boxed, b);
+    }
+    buf_puts(b, ")");
     return 1;
   }
   if (sp_streq(pty, "CapturePatternNode")) {
@@ -1946,16 +1976,20 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
 
     /* --- ArrayPatternNode destructuring --- */
     if (!reject_arm && array_pat >= 0) {
-      TyKind arr_t = ty_is_array(arm_pt) ? arm_pt : TY_INT_ARRAY;
-      const char *k = (arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(arr_t);
-      if (!k) k = "Int";
-      if (sp_streq(k, "Poly")) {
-        /* poly array: bind (possibly nested) targets recursively, indexing
-           through the boxed receiver so nested typed sub-arrays read correctly */
-        char te[48]; snprintf(te, sizeof te, "sp_box_poly_array(_t%d)", arm_t);
+      /* A poly scrutinee -- a bare sp_RbVal (TY_POLY) or a poly-array pointer
+         (TY_POLY_ARRAY) -- binds (possibly nested) targets through the poly-safe
+         recursive path, indexing the boxed receiver so nested typed sub-arrays
+         read correctly. A bare value is already an sp_RbVal; a poly array is
+         boxed. Typed int/float/str arrays keep the direct accessor path. */
+      const char *k = (ty_is_array(arm_pt) && arm_pt != TY_POLY_ARRAY) ? array_kind(arm_pt) : NULL;
+      if (!k) {
+        char te[48];
+        if (arm_pt == TY_POLY_ARRAY) snprintf(te, sizeof te, "sp_box_poly_array(_t%d)", arm_t);
+        else                         snprintf(te, sizeof te, "_t%d", arm_t);
         emit_pm_bind_poly(c, array_pat, te, body_indent, b, comp_scope_of(c, id));
       }
       else {
+      TyKind arr_t = arm_pt;
       int apn = 0;
       const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
       int rest_nid = nt_ref(nt, array_pat, "rest");
