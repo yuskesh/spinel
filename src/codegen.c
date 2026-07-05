@@ -2012,10 +2012,14 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
        leaving a dangling pointer the collector later reads (use-after-free). */
     for (int i = 0; i < ci->nivars; i++) {
       TyKind mt = ci->ivar_types[i];
+      /* Gate on needs_root() -- the codebase's authoritative "this type is a
+         heap pointer the GC scans" predicate -- so EVERY heap-backed member
+         (bigint, obj_array, proc/method/exception, io/fiber/etc.) is rooted,
+         not just strings/poly/object/array/hash. A fresh bigint or obj_array
+         temporary is just as sweepable across SP_POOL_NEW's GC as a string. */
       if (mt == TY_STRING)      buf_printf(b, "  SP_GC_ROOT_STR(a%d);\n", i);
       else if (mt == TY_POLY)   buf_printf(b, "  SP_GC_ROOT_RBVAL(a%d);\n", i);
-      else if (ty_is_object(mt) || ty_is_array(mt) || ty_is_hash(mt))
-                                buf_printf(b, "  SP_GC_ROOT(a%d);\n", i);
+      else if (needs_root(mt))  buf_printf(b, "  SP_GC_ROOT(a%d);\n", i);
     }
     buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
               ci->name, ci->name,
@@ -2027,7 +2031,6 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     for (int i = 0; i < ci->nivars; i++)
       buf_printf(b, "  self->iv_%s = a%d;\n", ci->ivars[i] + 1, i);  /* skip leading '@' */
     buf_puts(b, "  return self;\n}\n");
-    struct_meta:;
     /* Struct/Data #inspect (== #to_s): `#<struct Name m=v, ...>` (Data uses
        `data`). Generated unless the user redefined the method, so a user
        override wins. to_s defers to inspect, which always exists here. */
