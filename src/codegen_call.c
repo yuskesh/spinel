@@ -1413,6 +1413,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = sp_box_int((_t%d.v.i >> %s) & 1); } else ", tv, tr, tv, idxref);
         else
           buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = (_t%d.v.i >> %s) & 1; } else ", tv, tr, tv, idxref);
+        /* String#[int]: a poly value that is really a String (e.g. a method
+           with multiple return paths widened to poly) answers `[]` with the
+           single character at the index, or nil. The cls_id switch below only
+           covers SP_TAG_OBJ variants, so without this tag arm a String receiver
+           fell through and returned the seed (nil/0). */
+        if (ret == TY_POLY)
+          buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_box_nullable_str(sp_str_char_at_or_nil(_t%d.v.s, %s)); } else ", tv, tr, tv, idxref);
+        else if (ret == TY_STRING)
+          buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = sp_str_char_at_or_nil(_t%d.v.s, %s); } else ", tv, tr, tv, idxref);
       }
       /* class 0 emits a `case 0:` arm here when it defines/inherits the method
          with its arity satisfied; guard the key so a boxed scalar (cls_id 0)
