@@ -6323,8 +6323,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int defcls = -1;
       int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
       if (mi >= 0) {
+        Scope *cm = &c->scopes[mi];
         buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+        /* Pass &block as sp_Proc * when the class method keeps a real &blk
+           param and isn't yield-inlined -- the instance-method and bare-call
+           paths already do this; a module/class-method call must too, or the
+           block is silently dropped and lv_blk dangles in the callee. */
+        if (cm->blk_param && cm->blk_param[0] && !cm->yields) {
+          int blk_node = nt_ref(nt, id, "block");
+          if (cm->nparams > 0) buf_puts(b, ", ");
+          if (blk_node >= 0) {
+            int blk_tmp = ++g_tmp;
+            Buf pb; memset(&pb, 0, sizeof pb);
+            emit_proc_literal(c, blk_node, &pb);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+            free(pb.p);
+            buf_printf(b, "_t%d", blk_tmp);
+          }
+          else buf_puts(b, "NULL");
+        }
         buf_puts(b, ")");
         return;
       }
