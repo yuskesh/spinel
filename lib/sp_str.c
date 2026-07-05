@@ -304,13 +304,51 @@ mrb_int sp_str_count_chars(const char *s, size_t bl) {
   }
   return n;
 }
+/* Length in "units" for String#length/size, validating and counting in a
+   single walk: count UTF-8 codepoints while the bytes stay valid UTF-8, but
+   fall back to the raw byte count the moment an invalid byte appears
+   (near-certain for genuine binary data, e.g. a binary-mode File.read of a WAD
+   lump) -- matching Ruby's ASCII-8BIT semantics for binary I/O without a
+   separate per-string encoding tag. Folding validation into the count keeps
+   String#length off a two-pass hot path; valid text still costs one walk. */
+static mrb_int sp_str_count_units(const char *s, size_t bl) {
+  const unsigned char *p = (const unsigned char *)s, *end = p + bl;
+  mrb_int n = 0;
+  for (;;) {
+    /* ASCII fast path: 8 bytes at a time, each a valid single-unit codepoint */
+    while (p + 8 <= end) {
+      uint64_t w;
+      memcpy(&w, p, sizeof(w));
+      if (w & 0x8080808080808080ULL) break;
+      p += 8; n += 8;
+    }
+    if (p >= end) break;
+    unsigned c = *p;
+    if (c < 0x80) { p++; n++; continue; }
+    int extra; unsigned cp, min;
+    if ((c & 0xE0) == 0xC0) { extra = 1; cp = c & 0x1F; min = 0x80; }
+    else if ((c & 0xF0) == 0xE0) { extra = 2; cp = c & 0x0F; min = 0x800; }
+    else if ((c & 0xF8) == 0xF0) { extra = 3; cp = c & 0x07; min = 0x10000; }
+    else return (mrb_int)bl;   /* invalid lead byte -> count bytes */
+    p++;
+    if (p + extra > end) return (mrb_int)bl;
+    for (int i = 0; i < extra; i++) {
+      if ((*p & 0xC0) != 0x80) return (mrb_int)bl;
+      cp = (cp << 6) | (*p & 0x3F);
+      p++;
+    }
+    if (cp < min || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) return (mrb_int)bl;
+    n++;
+  }
+  return n;
+}
 mrb_int sp_str_length(const char*s){
   if (!s) return 0;
-  if (!sp_str_cacheable(s)) return sp_str_count_chars(s, sp_str_byte_len(s));
+  if (!sp_str_cacheable(s)) return sp_str_count_units(s, sp_str_byte_len(s));
   unsigned h = sp_str_lcache_hash(s);
   if (sp_str_lcache[h].s == s) return sp_str_lcache[h].char_len;
   size_t bl = sp_str_byte_len(s);
-  mrb_int n = sp_str_count_chars(s, bl);
+  mrb_int n = sp_str_count_units(s, bl);
   sp_str_lcache[h].s = s;
   sp_str_lcache[h].byte_len = bl;
   sp_str_lcache[h].char_len = n;
