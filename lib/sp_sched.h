@@ -38,6 +38,11 @@ typedef struct sp_thread {
   unsigned char     wake_pending; /* a wake arrived while still on-cpu; the worker enqueues it */
   unsigned char     preempt_request; /* sysmon set this thread over its timeslice; it yields at its
                                         next safepoint poll (cooperative preemption, §5) */
+  short             home_wid;      /* worker this thread FIRST ran on, -1 before its first run.
+                                      A started green thread is pinned there: its live C frames
+                                      hold compiler-cached addresses of that worker's __thread
+                                      data (GC shadow stack, exception stack, ...), so resuming
+                                      it on another worker corrupts both workers' TLS. */
   struct sp_thread *rq_next;     /* run-queue link while RUNNABLE */
   struct sp_thread *joiners;     /* threads parked in #join/#value on this one */
   struct sp_thread *wait_next;   /* link within the wait list it is parked on */

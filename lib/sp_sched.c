@@ -267,10 +267,20 @@ static sp_thread *runq_pop(sp_runq *q) {
   if (t) { q->head = t->rq_next; if (!q->head) q->tail = NULL; t->rq_next = NULL; g_runnable--; }
   return t;
 }
-/* Spawn / wakeup: the shared global queue (no worker affinity). */
+/* Spawn: the shared global queue (no worker affinity yet). */
 static void rq_push(sp_thread *t)           { runq_push(&g_grq, t); }
 /* Rerun a thread on the worker that just ran it (locality). */
 static void lrq_push(int wid, sp_thread *t) { runq_push(&g_lrq[wid], t); }
+/* Requeue/wake a thread that may have already run. A STARTED thread must go
+   back to its home worker's local queue -- never the global queue -- because
+   its live frames cache that worker's __thread addresses (see home_wid). An
+   unstarted thread has no affinity and takes the global queue. */
+static void runq_requeue(sp_thread *t) {
+#ifdef SP_THREADS
+  if (t->home_wid >= 0) { runq_push(&g_lrq[t->home_wid], t); return; }
+#endif
+  runq_push(&g_grq, t);
+}
 /* Next thread for worker `wid`: its own queue, then the global queue, then steal
    one from another worker. Every 61st pick checks the global queue first so a
    worker that keeps refilling its own queue (e.g. a thread spawning in a loop)
@@ -286,8 +296,22 @@ static sp_thread *sched_pick(int wid) {
 #ifdef SP_THREADS
   for (int i = 0; i < g_nworkers; i++) {   /* steal one from a busier worker */
     if (i == wid) continue;
-    t = runq_pop(&g_lrq[i]);
-    if (t) return t;
+    /* Only an UNSTARTED thread may be stolen: a started one is pinned to its
+       home worker's TLS (home_wid) and must not resume elsewhere. Unstarted
+       spawns sit at most one-per-spawner ahead of pinned reruns, so scan the
+       queue rather than popping blindly. */
+    sp_thread **pp = &g_lrq[i].head;
+    while (*pp && (*pp)->home_wid >= 0) pp = &(*pp)->rq_next;
+    if (*pp) {
+      t = *pp;
+      *pp = t->rq_next;
+      if (g_lrq[i].tail == t) {
+        g_lrq[i].tail = NULL;
+        for (sp_thread *w = g_lrq[i].head; w; w = w->rq_next) g_lrq[i].tail = w;
+      }
+      t->rq_next = NULL; g_runnable--;
+      return t;
+    }
   }
 #endif
   return NULL;
@@ -382,6 +406,7 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
   g_nrunning++;
   t->state = SP_TH_RUNNING;
   t->off_cpu = 0;        /* on-cpu now: no other worker may pick it up */
+  if (t->home_wid < 0) t->home_wid = (short)g_worker_id;   /* pin to this worker (TLS affinity) */
 #ifdef SP_THREADS
   /* Publish to the monitor that this worker is now running t, and when -- it uses
      this to enforce the timeslice. Nudge the monitor if it is idle so it starts
@@ -434,13 +459,15 @@ static void run_thread_once(sp_thread *t) {   /* PRE/POST: sched lock held */
     if (t->wake_pending) {
       t->wake_pending = 0;
       t->state = SP_TH_RUNNABLE;
-      rq_push(t);
+      runq_requeue(t);
       SCHED_WAKE();
     }
   } else {
-    /* Thread.pass / preempt: requeue globally, NOT to our own local queue --
-       picking local-first would rerun us immediately and defeat the yield. */
-    rq_push(t);
+    /* Thread.pass / preempt: requeue. A started thread is pinned to its home
+       worker (TLS affinity), so it lands on our own local queue TAIL -- other
+       queued work still runs first, and the 61-tick global check keeps the
+       global queue from starving. */
+    runq_requeue(t);
     SCHED_WAKE();
   }
   g_nrunning--;
@@ -546,6 +573,7 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   SP_GC_ROOT_RBVAL(arg);
   sp_thread *volatile t = (sp_thread *)sp_gc_alloc(sizeof(sp_thread), NULL, sp_thread_scan);
   memset(t, 0, sizeof *t);
+  t->home_wid = -1;              /* not yet started: any worker may pick it up */
   t->fiber = f;
   t->arg = arg;
   t->retval = sp_box_nil();
@@ -741,7 +769,7 @@ static void *sp_sysmon_main(void *arg) {
       if (t->wake_deadline <= now) {
         *pp = t->wait_next; t->wait_next = NULL; t->wait_head = NULL;
         if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }  /* must reach main, not a helper */
-        else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); SCHED_WAKE(); }
+        else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); SCHED_WAKE(); }
         else t->wake_pending = 1;   /* mid-switch; its worker enqueues it (run_thread_once) */
       } else {
         if (nearest == 0.0 || t->wake_deadline < nearest) nearest = t->wake_deadline;
@@ -820,7 +848,7 @@ static void *sp_sysmon_main(void *arg) {
             if (*pp == t) { *pp = t->wait_next; break; }
           t->wait_next = NULL; t->wait_head = NULL; t->io_revents = g_pfds[i].revents; t->io_fd = -1;
           if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }
-          else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); SCHED_WAKE(); }
+          else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); SCHED_WAKE(); }
           else t->wake_pending = 1;
         }
       }
@@ -1054,7 +1082,7 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   t->wait_next = NULL;
   t->wait_head = NULL;
   if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); return t; }  /* broadcast: a signal could wake a helper instead of main */
-  if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); }   /* fully parked: enqueue now */
+  if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); }   /* fully parked: enqueue now */
   else { t->wake_pending = 1; }   /* still switching out: its worker enqueues it once off-cpu */
   SCHED_WAKE();   /* wake an idle worker to run it */
   return t;
