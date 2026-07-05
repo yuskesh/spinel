@@ -5935,7 +5935,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "); })");
       return;
     }
-    if (!ty_is_object(at)) {  /* other user objects have no JSON serializer yet */
+    /* non-struct arg: when `require "json"` registered packages/json, the
+       native binding (native_func generate/dump -> sp_json_val) emits this;
+       fall through to it. Keep the direct emission as a fallback for gate-off
+       programs that use JSON without the require, so nothing regresses. */
+    if (!ty_is_object(at) && comp_native_find(c, "JSON", name) < 0) {
       buf_puts(b, "sp_json_val("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return;
     }
@@ -6114,6 +6118,38 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       buf_puts(b, ")");
       return;
+    }
+  }
+
+  /* native binding dispatch (Path B): Module.func(...) where Module declared
+     native_func. Emit a direct C call to the declared symbol, passing each arg
+     in its runtime representation (any -> boxed sp_RbVal, string -> sp_Str*,
+     int/float/bool -> the scalar). No FFI boxing. */
+  if (recv >= 0) {
+    const char *rty_nv = nt_type(nt, recv);
+    const char *nvmod = NULL;
+    if (rty_nv && (sp_streq(rty_nv, "ConstantReadNode") || sp_streq(rty_nv, "ConstantPathNode")))
+      nvmod = nt_str(nt, recv, "name");
+    int nvi = nvmod ? comp_native_find(c, nvmod, name) : -1;
+    if (nvi >= 0) {
+      const char *feat = c->native_funcs[nvi].feat;
+      if (!feat || !feat[0] || sp_feature_enabled(feat)) {
+        NativeFunc *nf = &c->native_funcs[nvi];
+        buf_puts(b, nf->csym); buf_puts(b, "(");
+        for (int ai = 0; ai < nf->nargs && ai < argc; ai++) {
+          if (ai) buf_puts(b, ", ");
+          const char *spec = nf->args[ai];
+          TyKind at = comp_ntype(c, argv[ai]);
+          if (sp_streq(spec, "any")) emit_boxed(c, argv[ai], b);
+          else if (sp_streq(spec, "string")) {
+            if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
+            else emit_expr(c, argv[ai], b);
+          }
+          else emit_expr(c, argv[ai], b);
+        }
+        buf_puts(b, ")");
+        return;
+      }
     }
   }
 

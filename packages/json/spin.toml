@@ -1,0 +1,5 @@
+[package]
+name = "json"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# A typed native binding to lib/sp_json.c (see json.rb).

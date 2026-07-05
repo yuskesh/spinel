@@ -177,6 +177,20 @@ typedef struct { char *mod; char *name; int offset; char *kind; } FfiReader; /* 
 typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
 typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
 
+/* One `native_func` declaration (typed static binding to carried C). Unlike
+   FfiFunc, arg/ret specs are the spinel type language ("any"/"string"/"int"/
+   "float"/"bool") and csym is the C symbol to call. feat is the require-gate
+   feature name from the module's `native_lib`, or "" (always available). */
+typedef struct {
+  char *mod;       /* module name */
+  char *name;      /* Ruby method name */
+  char *ret;       /* return type spec */
+  char *csym;      /* C symbol to emit */
+  char *feat;      /* require-gate feature name, or "" */
+  char **args;     /* arg type specs (malloc'd) */
+  int nargs;
+} NativeFunc;
+
 typedef struct {
   const NodeTable *nt;
   TyKind *ntype;    /* [node_cap] node id -> inferred type */
@@ -232,6 +246,10 @@ typedef struct {
   /* FFI cflags per module (semicolon-separated) */
   FfiCflag *ffi_cflags;
   int n_ffi_cflags, c_ffi_cflags;
+
+  /* native-binding registry: native_func declarations (Path B) */
+  NativeFunc *native_funcs;
+  int n_native_funcs, c_native_funcs;
   /* body-node id -> enclosing BlockNode id (lazy; emit_stmts block-local
      resets). Sized nt->count; -1 = not a block body. */
   int *blk_body_map;
@@ -266,6 +284,11 @@ LocalVar *scope_local_intern(Scope *s, const char *name);
 
 /* Symbol intern table. comp_sym_intern returns the symbol's id. */
 int comp_sym_intern(Compiler *c, const char *name);
+
+/* native-binding registry (Path B): find a native_func by (module, name),
+   return its index in c->native_funcs or -1; map a spec to a TyKind. */
+int comp_native_find(Compiler *c, const char *mod, const char *name);
+TyKind native_spec_to_ty(const char *spec);
 
 /* Global variables and top-level constants. *_intern finds or creates. */
 LocalVar *comp_gvar(Compiler *c, const char *name);

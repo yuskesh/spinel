@@ -976,6 +976,14 @@ else {
     else if (sp_streq(rty_ffi, "ConstantPathNode"))
       rcmod = nt_str(nt, recv, "name");
     if (rcmod) {
+      /* native binding (Path B): a native_func returns its declared type,
+         gated by the module's require-gate feature. */
+      int nvi = comp_native_find(c, rcmod, name);
+      if (nvi >= 0) {
+        const char *feat = c->native_funcs[nvi].feat;
+        if (!feat || !feat[0] || sp_feature_enabled(feat))
+          return native_spec_to_ty(c->native_funcs[nvi].ret);
+      }
       int fi = ffi_find_func(c, rcmod, name);
       if (fi >= 0) return ffi_spec_to_ty(c->ffi_funcs[fi].ret);
       /* ffi_buffer: Module.buf_name returns the static char* (ptr type -> TY_POLY) */

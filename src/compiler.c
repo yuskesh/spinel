@@ -734,6 +734,28 @@ const char *comp_resolve_alias(Compiler *c, int class_id, const char *name) {
   return name;
 }
 
+/* native-binding registry (Path B): a native_func maps a Ruby Module.method to
+   a C symbol, with spinel-typed args/return. Lookup and the small type-spec
+   vocabulary live here so both analyze and codegen can reach them. */
+int comp_native_find(Compiler *c, const char *mod, const char *name) {
+  if (!mod || !name) return -1;
+  for (int i = 0; i < c->n_native_funcs; i++)
+    if (sp_streq(c->native_funcs[i].mod, mod) && sp_streq(c->native_funcs[i].name, name))
+      return i;
+  return -1;
+}
+
+TyKind native_spec_to_ty(const char *spec) {
+  if (!spec) return TY_UNKNOWN;
+  if (sp_streq(spec, "any"))    return TY_POLY;
+  if (sp_streq(spec, "string")) return TY_STRING;
+  if (sp_streq(spec, "int"))    return TY_INT;
+  if (sp_streq(spec, "float"))  return TY_FLOAT;
+  if (sp_streq(spec, "bool"))   return TY_BOOL;
+  if (sp_streq(spec, "nil") || sp_streq(spec, "void")) return TY_NIL;
+  return TY_UNKNOWN;
+}
+
 int comp_reader_in_chain(Compiler *c, int class_id, const char *name, int *def_class) {
   name = comp_resolve_alias(c, class_id, name);
   for (int cid = class_id; cid >= 0; cid = c->classes[cid].parent)

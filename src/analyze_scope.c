@@ -1461,6 +1461,23 @@ void register_ffi_decls(Compiler *c) {
     int body = nt_ref(nt, id, "body");
     int sn = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &sn) : NULL;
+    /* Pre-scan for `native_lib "feat"`: its require-gate feature name is
+       stamped onto every native_func of this module regardless of order. */
+    const char *mod_feat = NULL;
+    for (int k = 0; k < sn; k++) {
+      int s = stmts[k];
+      const char *sty = nt_type(nt, s);
+      if (!sty || !sp_streq(sty, "CallNode")) continue;
+      if (nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, s, "name");
+      if (dn && sp_streq(dn, "native_lib")) {
+        int a = nt_ref(nt, s, "arguments");
+        int na = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &na) : NULL;
+        if (na >= 1) mod_feat = ffi_arg_str(nt, av[0]);
+        break;
+      }
+    }
     for (int k = 0; k < sn; k++) {
       int s = stmts[k];
       const char *sty = nt_type(nt, s);
@@ -1471,6 +1488,37 @@ void register_ffi_decls(Compiler *c) {
       int anode = nt_ref(nt, s, "arguments");
       int an = 0;
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+
+      /* native_func :name, [arg_specs], ret_spec, "c_symbol" (Path B).
+         Specs are the spinel type language (any/string/int/float/bool). */
+      if (sp_streq(dname, "native_func")) {
+        if (an < 4) continue;
+        const char *fname = ffi_arg_str(nt, args[0]);
+        const char *arr_ty = nt_type(nt, args[1]);
+        const char *ret_spec = ffi_arg_str(nt, args[2]);
+        const char *csym = ffi_arg_str(nt, args[3]);
+        if (!fname || !ret_spec || !csym || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        int en = 0;
+        const int *elems = nt_arr(nt, args[1], "elements", &en);
+        char **arg_specs = malloc(sizeof(char *) * (size_t)(en + 1));
+        for (int ei = 0; ei < en; ei++) {
+          const char *spec = ffi_arg_str(nt, elems[ei]);
+          arg_specs[ei] = strdup(spec ? spec : "");
+        }
+        if (c->n_native_funcs >= c->c_native_funcs) {
+          c->c_native_funcs = c->c_native_funcs ? c->c_native_funcs * 2 : 16;
+          c->native_funcs = realloc(c->native_funcs, sizeof(NativeFunc) * (size_t)c->c_native_funcs);
+        }
+        int ni = c->n_native_funcs++;
+        c->native_funcs[ni].mod  = strdup(mname);
+        c->native_funcs[ni].name = strdup(fname);
+        c->native_funcs[ni].ret  = strdup(ret_spec);
+        c->native_funcs[ni].csym = strdup(csym);
+        c->native_funcs[ni].feat = strdup(mod_feat ? mod_feat : "");
+        c->native_funcs[ni].args = arg_specs;
+        c->native_funcs[ni].nargs = en;
+        continue;
+      }
 
       if (sp_streq(dname, "ffi_lib")) {
         if (an < 1) continue;
