@@ -1640,7 +1640,7 @@ else if (orecv >= 0 && onm) {
       if (k < 16) {
         if (!g_needs_proc_poly_argslot) {
           g_needs_proc_poly_argslot = 1;
-          buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_args[16];\n");
+          buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
         }
         buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
       }
@@ -1689,10 +1689,14 @@ else if (orecv >= 0 && onm) {
   else if (ret_poly || ret_fbox) {
     /* Store the result in the file-static _sp_proc_poly_ret slot (boxed:
        a float tail becomes sp_box_float via g_result_poly); the call site
-       reads it back after sp_proc_call returns. */
+       reads it back after sp_proc_call returns. Per-worker (SP_TLS) in the
+       threaded build: concurrent Proc#call from several threads would race
+       on a shared slot and corrupt each other's return values. The slot is
+       safe per-worker because no safepoint poll (the only migration /
+       preemption point) lies between the store and the call-site read. */
     if (!g_needs_proc_poly_retslot) {
       g_needs_proc_poly_retslot = 1;
-      buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_ret;\n");
+      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_ret;\n");
     }
     g_result_var = "_sp_proc_poly_ret"; g_result_poly = 1;
     if (tail_ret_arg >= 0) {

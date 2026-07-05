@@ -1876,7 +1876,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         if (vt == TY_POLY) {
           if (!g_needs_proc_poly_retslot) {
             g_needs_proc_poly_retslot = 1;
-            buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_ret;\n");
+            buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_ret;\n");
           }
           buf_printf(&g_procs, "  _sp_proc_poly_ret = sp_%sHash_get(_h, %s);\n  return 0;\n}\n", hn, keyexpr);
         }

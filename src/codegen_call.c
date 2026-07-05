@@ -416,7 +416,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
   if (any_poly) {
     if (!g_needs_proc_poly_argslot) {
       g_needs_proc_poly_argslot = 1;
-      buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_args[16];\n");
+      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
     }
     /* Each argument is evaluated once into a natural-typed temp so it can be
        published both unboxed (the mrb_int[] slot, for a concrete parameter)
@@ -3645,7 +3645,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
        (e.g. ivar-stored proc whose proc_ret is TY_UNKNOWN → TY_POLY at analysis). */
     if ((unbox_poly || unbox_float) && !g_needs_proc_poly_retslot) {
       g_needs_proc_poly_retslot = 1;
-      buf_puts(&g_proc_protos, "static sp_RbVal _sp_proc_poly_ret;\n");
+      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_ret;\n");
     }
     if (unbox_ptr) { buf_puts(b, "("); emit_ctype(c, rty, b); buf_puts(b, ")(uintptr_t)("); }
     /* poly/float return: proc stores the boxed result in _sp_proc_poly_ret;
