@@ -1,0 +1,6 @@
+["two", :three]
+[1, "two", :three, 4.5]
+["two", :three]
+[:three, 4.5, [5]]
+[]
+[:three, 4.5]
