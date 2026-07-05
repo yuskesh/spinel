@@ -59,3 +59,61 @@ module S
   end
 end
 puts S.calc { |i| i * 10 }             # 30
+
+# &blk read inside a block that is *lifted* to a standalone proc (passed to a
+# method that keeps a real &block param): the same capture-escape as the
+# Thread case, so the method must keep a heap &blk too
+def taker(&t)
+  t
+end
+
+def outer(&blk)
+  pr = taker { blk.call(4) }
+  pr.call
+end
+outer { |i| puts "lift #{i}" }         # lift 4
+
+# a class method reached through a module singleton accessor must also pass
+# the block proc -- Stage-1: the accessor is bound to exactly one constant
+module Reg1
+  class << self
+    attr_accessor :handler
+  end
+end
+
+class H1
+  def self.run(x, &blk)
+    t = Thread.new { blk.call(x) }
+    t.join
+  end
+end
+
+Reg1.handler = H1
+Reg1.handler.run(5) { |v| puts "reg1 #{v}" }   # reg1 5
+
+# Stage-2: the accessor is written with two distinct constants, so the call
+# dispatches over the stored class -- each branch passes the same block proc
+module Reg2
+  class << self
+    attr_accessor :handler
+  end
+end
+
+class H2a
+  def self.run(x, &blk)
+    t = Thread.new { blk.call(x + 1) }
+    t.join
+  end
+end
+
+class H2b
+  def self.run(x, &blk)
+    t = Thread.new { blk.call(x + 2) }
+    t.join
+  end
+end
+
+Reg2.handler = H2a
+Reg2.handler.run(10) { |v| puts "reg2a #{v}" } # reg2a 11
+Reg2.handler = H2b
+Reg2.handler.run(10) { |v| puts "reg2b #{v}" } # reg2b 12

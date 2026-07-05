@@ -2915,6 +2915,28 @@ static int class_responds_to(Compiler *c, int ci, const char *qm) {
   return 0;
 }
 
+/* Append the trailing `&block` argument (an sp_Proc *, or NULL) to a direct
+   class-method call when the callee keeps a real &blk param and isn't
+   yield-inlined -- otherwise the block is silently dropped and the callee's
+   lv_blk dangles. When blk_tmp >= 0 the caller already materialized the proc
+   temp (Stage-2 cascade: one proc shared by several candidate branches);
+   otherwise the call's literal block (if any) is lowered here. */
+static void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, Buf *b) {
+  if (!cm->blk_param || !cm->blk_param[0] || cm->yields) return;
+  int blk_node = nt_ref(c->nt, id, "block");
+  if (cm->nparams > 0) buf_puts(b, ", ");
+  if (blk_node < 0) { buf_puts(b, "NULL"); return; }
+  if (blk_tmp < 0) {
+    blk_tmp = ++g_tmp;
+    Buf pb; memset(&pb, 0, sizeof pb);
+    emit_proc_literal(c, blk_node, &pb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+    free(pb.p);
+  }
+  buf_printf(b, "_t%d", blk_tmp);
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -6260,6 +6282,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (mi >= 0) {
         buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+        emit_cmethod_block_arg(c, id, &c->scopes[mi], -1, b);
         buf_puts(b, ")");
         return;
       }
@@ -6274,6 +6297,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (valid > 0) {
         TyKind res = comp_ntype(c, id);
         int void_res = (res == TY_VOID || res == TY_UNKNOWN);
+        /* A literal block at the call site is lowered to one sp_Proc * temp
+           shared by every candidate branch (lowering it per-branch would
+           emit the proc function once per candidate). */
+        int blk_tmp = -1;
+        if (nt_ref(nt, id, "block") >= 0) {
+          for (int k = 0; k < ncand && blk_tmp < 0; k++) {
+            int mi = comp_cmethod_in_chain(c, cand[k], name, NULL);
+            if (mi < 0) continue;
+            Scope *cm = &c->scopes[mi];
+            if (cm->blk_param && cm->blk_param[0] && !cm->yields) {
+              blk_tmp = ++g_tmp;
+              Buf pb; memset(&pb, 0, sizeof pb);
+              emit_proc_literal(c, nt_ref(nt, id, "block"), &pb);
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+              free(pb.p);
+            }
+          }
+        }
         int tcid = ++g_tmp;
         buf_printf(b, "({ int _t%d = (", tcid); emit_expr(c, recv, b); buf_puts(b, ").cls_id; ");
         if (void_res) {
@@ -6283,6 +6325,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (mi < 0) continue;
             buf_printf(b, "if (_t%d == %d) sp_%s_s_%s(", tcid, cand[k], c->classes[defcls].name, mc(c->scopes[mi].name));
             emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+            emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, b);
             buf_puts(b, "); ");
           }
           buf_printf(b, "0; })");
@@ -6298,6 +6341,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             Buf cb; memset(&cb, 0, sizeof cb);
             buf_printf(&cb, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
             emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", &cb);
+            emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, &cb);
             buf_puts(&cb, ")");
             emit_boxed_text(c, c->scopes[mi].ret, cb.p ? cb.p : "0", b);
             free(cb.p);
@@ -6305,6 +6349,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           else {
             buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
             emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+            emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, b);
             buf_puts(b, ")");
           }
           buf_puts(b, "; ");
@@ -6323,27 +6368,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int defcls = -1;
       int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, &defcls) : -1;
       if (mi >= 0) {
-        Scope *cm = &c->scopes[mi];
         buf_printf(b, "sp_%s_s_%s(", c->classes[defcls].name, mc(c->scopes[mi].name));
         emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
         /* Pass &block as sp_Proc * when the class method keeps a real &blk
            param and isn't yield-inlined -- the instance-method and bare-call
-           paths already do this; a module/class-method call must too, or the
-           block is silently dropped and lv_blk dangles in the callee. */
-        if (cm->blk_param && cm->blk_param[0] && !cm->yields) {
-          int blk_node = nt_ref(nt, id, "block");
-          if (cm->nparams > 0) buf_puts(b, ", ");
-          if (blk_node >= 0) {
-            int blk_tmp = ++g_tmp;
-            Buf pb; memset(&pb, 0, sizeof pb);
-            emit_proc_literal(c, blk_node, &pb);
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
-            free(pb.p);
-            buf_printf(b, "_t%d", blk_tmp);
-          }
-          else buf_puts(b, "NULL");
-        }
+           paths already do this; a module/class-method call must too. */
+        emit_cmethod_block_arg(c, id, &c->scopes[mi], -1, b);
         buf_puts(b, ")");
         return;
       }

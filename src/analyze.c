@@ -2562,10 +2562,12 @@ void analyze_program(Compiler *c) {
     if (inproc_m) {
       for (int id = 0; id < c->nt->count; id++) {
         /* A Fiber/Enumerator/Thread `.new { }` block runs as an independent
-           closure on its own fiber stack, just like a proc literal: a blk_param
-           read inside it is a real capture-escape, so the method must keep a
-           heap-materialized &blk (not be yield-inlined). */
-        if (!is_proc_create(c, id) && !a_is_fiber_or_gen_create(c, id)) continue;
+           closure on its own fiber stack, and a `{ }` block lifted to a
+           standalone proc (passed to a method that keeps a real &block)
+           captures like a proc literal: a blk_param read inside either is a
+           real capture-escape, so the method must keep a heap-materialized
+           &blk (not be yield-inlined). */
+        if (!a_proc_create_or_lifted(c, id)) continue;
         if (comp_scope_of(c, id) != m) continue;
         int body = a_proc_body(c, id);
         if (body >= 0) a_mark_subtree(c, body, inproc_m);
