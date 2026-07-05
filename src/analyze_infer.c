@@ -2430,6 +2430,16 @@ else {
            sp_streq(name, "chomp") || sp_streq(name, "chop") ||
            sp_streq(name, "chr")))
         return TY_POLY;
+      /* poly.bytes / poly.codepoints on a value that is really a String (a
+         binary lump read whose method widened to poly): a concrete int array,
+         emitted via sp_str_bytes(sp_poly_to_s(...)) with no boxing. */
+      if ((sp_streq(name, "bytes") || sp_streq(name, "codepoints")) && argc == 0 &&
+          nt_ref(nt, id, "block") < 0)
+        return TY_INT_ARRAY;
+      /* poly.unpack1(fmt): String#unpack1 on a value that widened to poly
+         (pervasive in doom's binary WAD parsing). Mirrors the rt==TY_STRING
+         rule so a single-directive int format stays int, not poly. */
+      if (sp_streq(name, "unpack1") && argc == 1) return an_unpack1_lit_type(nt, argv[0]);
       /* poly.delete(chars): String#delete on a value that widened to poly
          (`data[offset, 8].delete("\x00").upcase` stripping NUL padding off a
          fixed-width WAD name field in doom's texture parser). Resolve it here
