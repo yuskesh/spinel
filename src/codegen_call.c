@@ -1244,6 +1244,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           TyKind ivt = ivx >= 0 ? c->classes[rdcls].ivar_types[ivx] : TY_INT;
           buf_printf(b, " case %d: _t%d = ", k, tr);
           if (ret == TY_POLY && ivt != TY_POLY) emit_boxed_text(c, ivt, fld, b);
+          /* The slot is scalar (e.g. a length dispatch fixed to mrb_int) but
+             this class's ivar widened to poly: coerce down. */
+          else if (ret != TY_POLY && ivt == TY_POLY)
+            emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, fld, b);
           else buf_puts(b, fld);
           buf_puts(b, "; break;");
         }
