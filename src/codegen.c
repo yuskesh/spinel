@@ -91,8 +91,20 @@ void emit_float_expr(Compiler *c, int node, Buf *b) {
 void emit_str_expr(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_POLY) {
     buf_puts(b, "sp_poly_to_s("); emit_expr(c, node, b); buf_puts(b, ")");
+    return;
   }
-  else emit_expr(c, node, b);
+  /* The unresolved-call gate's sp_raise_nomethod(...) is a side-effecting poly
+     value (it raises): coerce it to the const char* slot, keeping the call,
+     rather than passing the sp_RbVal through raw (doom's
+     `File.join(Dir.tmpdir, ...)`). A text match on the gate's own token is
+     reliable where comp_ntype is not (the node stays TY_UNKNOWN). */
+  Buf tmp; memset(&tmp, 0, sizeof tmp);
+  emit_expr(c, node, &tmp);
+  const char *txt = tmp.p ? tmp.p : "";
+  if (strncmp(txt, "sp_raise_nomethod(", 18) == 0)
+    buf_printf(b, "sp_poly_to_s(%s)", txt);
+  else buf_puts(b, txt);
+  free(tmp.p);
 }
 
 void emit_boxed(Compiler *c, int node, Buf *b) {
