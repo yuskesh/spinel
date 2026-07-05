@@ -653,6 +653,9 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
                   s->name && !sp_streq(s->name, "initialize")) ? "." : "->";
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
   g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
+  /* real-function funnel mirror: no proc-return frame yet (set below when
+     one exists); block bodies spliced by yield-inlines restore from these. */
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = g_ret_type;
   int is_void = method_is_void(s);
   /* A method that creates a non-lambda proc with a `return` owns a proc-return
      frame: a setjmp target the proc longjmps to. All returns funnel through a
@@ -691,6 +694,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     buf_puts(b, "    {\n");
     g_method_pr_label = "_pr_done"; g_method_pr_var = is_void ? NULL : "_prret";
     g_method_pr_exc_depth = 0;   /* _pr_done sits outside every begin frame */
+    g_fn_pr_label = g_method_pr_label; g_fn_pr_var = g_method_pr_var;
   }
   const char *sv_rv2 = g_result_var; int sv_rp2 = g_result_poly;
   if (pr_frame && !is_void) { g_result_var = "_prret"; g_result_poly = (s->ret == TY_POLY); }
@@ -715,6 +719,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   }
   g_result_var = sv_rv2; g_result_poly = sv_rp2;
   g_method_pr_label = NULL; g_method_pr_var = NULL;
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_UNKNOWN;
   g_self_deref = saved_deref;
   g_ret_type = saved_rt; g_ensure_depth = saved_ed;
   g_emitting_class_id = saved_emcls;
@@ -1120,6 +1125,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   g_block_param_name = bp0; g_self = sv_self;
   g_yielder_name = as_gen ? bp0 : NULL;   /* `y << v` -> Fiber.yield in the body */
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
+  const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type;
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY;
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
   int sv_fbskip = g_brk_skip_id; g_brk_skip_id = -1;
   int sv_fbexcd = g_exc_frame_depth, sv_fbprexcd = g_method_pr_exc_depth;
@@ -1238,6 +1245,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
+  g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
   g_exc_frame_depth = sv_fbexcd; g_method_pr_exc_depth = sv_fbprexcd;
 
@@ -1603,6 +1611,8 @@ else if (orecv >= 0 && onm) {
   g_method_pr_label = NULL; g_method_pr_var = NULL;
   int sv_excd = g_exc_frame_depth, sv_prexcd = g_method_pr_exc_depth;
   g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
+  const char *sv_fn_prl = g_fn_pr_label, *sv_fn_prv = g_fn_pr_var; TyKind sv_fn_rt = g_fn_ret_type;
+  g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = ret;
   char home_acc[48] = "";
   if (ret_proc) { snprintf(home_acc, sizeof home_acc, "((_proc_cap_%d *)_cap)->_home", pid); g_proc_return_home = home_acc; }
   else g_proc_return_home = NULL;
@@ -1752,6 +1762,7 @@ else if (orecv >= 0 && onm) {
   g_result_poly = sv_rp;
   g_method_pr_label = sv_pr_label; g_method_pr_var = sv_pr_var; g_proc_return_home = sv_prh;
   g_exc_frame_depth = sv_excd; g_method_pr_exc_depth = sv_prexcd;
+  g_fn_pr_label = sv_fn_prl; g_fn_pr_var = sv_fn_prv; g_fn_ret_type = sv_fn_rt;
 
   if (ncap == 0 && !cap_self && !ret_proc) {
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, %s, %d, %s)",

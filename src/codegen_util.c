@@ -82,6 +82,15 @@ char g_ren_to[MAX_RENAME][112];
 int  g_nren = 0;
 int  g_block_id = -1;
 int  g_yield_block_fallback = -1;
+/* The (g_self, g_self_deref) that were active when the current g_block_id
+   was captured -- i.e. the caller context of the innermost yield-method
+   inline. A block spliced at a `yield` is caller code: emit_block_invoke
+   emits its body under these instead of the inlined method's rebound self
+   (`@map.vertices[...]` inside a block passed to an inlined method must
+   read the CALLER's @map). Maintained by the inliners exactly like
+   g_yield_block_fallback. */
+const char *g_yield_self_fallback = NULL;
+const char *g_yield_self_deref_fallback = NULL;
 const char *g_block_param_name = NULL;
 /* Inside an Enumerator.new { |y| ... } generator body, the name of the yielder
    block param. A `y << v` / `y.yield(v)` on it lowers to a Fiber.yield. */
@@ -170,6 +179,14 @@ int g_method_pr_exc_depth = 0;
 const char *g_hoist_len_var = NULL;
 const char *g_hoist_len_recv = NULL;
 TyKind g_ret_type = TY_UNKNOWN;
+/* Mirror of the REAL enclosing function's return funnel: yield-method inlining
+   overrides g_method_pr_label/-_var/g_ret_type with a per-inline funnel, and a
+   spliced block body (which lexically belongs to the real function, so its
+   `return` exits that method) restores from these. Set wherever a fresh
+   function context installs (or clears) its funnel. */
+const char *g_fn_pr_label = NULL;
+const char *g_fn_pr_var = NULL;
+TyKind g_fn_ret_type = TY_UNKNOWN;
 int g_current_scope_is_lowered = 0;
 EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
 int       g_ensure_depth = 0;
