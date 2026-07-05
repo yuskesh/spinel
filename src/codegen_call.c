@@ -95,18 +95,24 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const char *saved_self = g_self;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
+  static char selfbuf[64];
   g_yield_block_fallback = saved_block;
   /* the block being captured is caller code: record the caller's self so
-     emit_block_invoke can restore it around the spliced block body. */
+     emit_block_invoke can restore it around the spliced block body. Copy the
+     STRING into a per-inline (stack) buffer: g_self may point at the shared
+     static selfbuf below, which a deeper nested inline overwrites -- aliasing
+     the fallback by pointer would then make the spliced block body read the
+     wrong (inner) receiver name. */
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
-  g_yield_self_fallback = g_self;
+  char self_fb_buf[sizeof selfbuf];
+  if (g_self) { snprintf(self_fb_buf, sizeof self_fb_buf, "%s", g_self); g_yield_self_fallback = self_fb_buf; }
+  else g_yield_self_fallback = NULL;
   g_yield_self_deref_fallback = g_self_deref;
   g_block_id = block;
   g_block_param_name = m->blk_param;
 
   int st = ++g_tmp;
-  static char selfbuf[64];
   buf_puts(b, "({\n");
   emit_indent(b, g_indent + 1);
   buf_printf(b, "sp_%s *_t%d = sp_%s_new(", c->classes[ci].name, st, c->classes[ci].name);

@@ -127,7 +127,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      wrong (inner) receiver name. */
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
-  char self_fb_buf[64];
+  char self_fb_buf[sizeof selfbuf];
   if (g_self) { snprintf(self_fb_buf, sizeof self_fb_buf, "%s", g_self); g_yield_self_fallback = self_fb_buf; }
   else g_yield_self_fallback = NULL;
   g_yield_self_deref_fallback = g_self_deref;
