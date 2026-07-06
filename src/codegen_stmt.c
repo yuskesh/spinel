@@ -1550,11 +1550,54 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
        it. arm_t/arm_pt shadow the scrutinee for just this arm. */
     int arm_t = t;
     TyKind arm_pt = pt;
+    int reject_arm = 0;
     if (pt == TY_MATCHDATA && sp_streq(pty, "HashPatternNode")) {
       char md[24]; snprintf(md, sizeof md, "_t%d", t);
       arm_t = emit_md_deconstruct_keys(b, indent + 1, md);
       arm_pt = TY_SYM_POLY_HASH;
     }
+    /* A user object scrutinee is asked to deconstruct itself: #deconstruct for an
+       array pattern, #deconstruct_keys for a hash pattern. Materialize the result
+       into a temp and match/bind against that (mirrors the MatchData path).
+       Value-type objects fall through to the reject path. */
+    else if (ty_is_object(pt) && !c->classes[ty_object_class(pt)].is_value_type &&
+             sp_streq(pty, "ArrayPatternNode")) {
+      int ddef = -1;
+      int dm = comp_method_in_chain(c, ty_object_class(pt), "deconstruct", &ddef);
+      if (dm >= 0) {
+        TyKind drt = (TyKind)c->scopes[dm].ret;
+        if (!ty_is_array(drt)) drt = TY_POLY_ARRAY;
+        const char *dcn = c->classes[ddef].name;
+        arm_t = ++g_tmp;
+        emit_indent(b, indent + 1); emit_ctype(c, drt, b);
+        buf_printf(b, " _t%d = sp_%s_deconstruct((sp_%s *)_t%d);\n", arm_t, dcn, dcn, t);
+        if (needs_root(drt)) { emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", arm_t); }
+        arm_pt = drt;
+      }
+    }
+    else if (ty_is_object(pt) && !c->classes[ty_object_class(pt)].is_value_type &&
+             sp_streq(pty, "HashPatternNode")) {
+      int ddef = -1;
+      int dm = comp_method_in_chain(c, ty_object_class(pt), "deconstruct_keys", &ddef);
+      if (dm >= 0) {
+        TyKind drt = (TyKind)c->scopes[dm].ret;
+        if (!ty_is_hash(drt)) drt = TY_SYM_POLY_HASH;
+        const char *dcn = c->classes[ddef].name;
+        arm_t = ++g_tmp;
+        emit_indent(b, indent + 1); emit_ctype(c, drt, b);
+        buf_printf(b, " _t%d = sp_%s_deconstruct_keys((sp_%s *)_t%d, sp_box_nil());\n", arm_t, dcn, dcn, t);
+        if (needs_root(drt)) { emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", arm_t); }
+        arm_pt = drt;
+      }
+    }
+    /* An array pattern needs an array scrutinee. After the deconstruct dispatch
+       above, arm_pt is an array type when #deconstruct matched; otherwise a
+       non-array, non-poly scrutinee (a value-type object, an object without
+       #deconstruct, or a scalar) can never match -- fail the arm closed rather
+       than emit `->len` / array accessors on a non-array pointer. (A hash
+       pattern already fails closed below via a null hash cname.) */
+    if (sp_streq(pty, "ArrayPatternNode") && !ty_is_array(arm_pt) && arm_pt != TY_POLY)
+      reject_arm = 1;
 
     /* --- compute match condition --- */
     Buf cond_buf = {NULL, 0, 0};
@@ -1670,8 +1713,12 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       buf_printf(&cond_buf, "_t%d", hcond);
       has_cond = 1;
     }
+    else if (reject_arm) {
+      buf_puts(&cond_buf, "0");
+      has_cond = 1;
+    }
     else {
-      has_cond = emit_pm_cond(c, pat, t, pt, &cond_buf);
+      has_cond = emit_pm_cond(c, pat, arm_t, arm_pt, &cond_buf);
     }
     /* For IfNode the pattern is always a binding (LV), guard is separate */
     if (sp_streq(pty, "IfNode")) has_cond = 0;
@@ -1777,14 +1824,14 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     /* IntegerNode/StringNode/SymbolNode/ConstantReadNode: value-only, no binding */
 
     /* --- ArrayPatternNode destructuring --- */
-    if (array_pat >= 0) {
-      TyKind arr_t = ty_is_array(pt) ? pt : TY_INT_ARRAY;
+    if (!reject_arm && array_pat >= 0) {
+      TyKind arr_t = ty_is_array(arm_pt) ? arm_pt : TY_INT_ARRAY;
       const char *k = (arr_t == TY_POLY_ARRAY) ? "Poly" : array_kind(arr_t);
       if (!k) k = "Int";
       if (sp_streq(k, "Poly")) {
         /* poly array: bind (possibly nested) targets recursively, indexing
            through the boxed receiver so nested typed sub-arrays read correctly */
-        char te[48]; snprintf(te, sizeof te, "sp_box_poly_array(_t%d)", t);
+        char te[48]; snprintf(te, sizeof te, "sp_box_poly_array(_t%d)", arm_t);
         emit_pm_bind_poly(c, array_pat, te, body_indent, b, comp_scope_of(c, id));
       }
       else {
@@ -1799,7 +1846,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         emit_indent(b, body_indent);
         buf_printf(b, "lv_%s = ", lnm);
         LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
-        char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, t, i);
+        char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, arm_t, i);
         if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) {
           Buf bx; memset(&bx, 0, sizeof bx);
           emit_boxed_text(c, ty_array_elem(arr_t), gx, &bx);
@@ -1817,7 +1864,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           if (rnm) {
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL);\n",
-                       rnm, k, t, (long long)apn, t, (long long)apn);
+                       rnm, k, arm_t, (long long)apn, arm_t, (long long)apn);
           }
         }
       }

@@ -89,6 +89,23 @@ void compute_reachable(Compiler *c) {
     }
   }
 
+  /* case/in array and hash patterns may call a user object's #deconstruct /
+     #deconstruct_keys, which have no explicit call site in the AST. If any such
+     pattern exists, mark those methods reachable (dead ones are stripped). */
+  {
+    int has_arr_pat = 0, has_hash_pat = 0;
+    for (int id = 0; id < c->nt->count; id++) {
+      const char *ty = nt_type(c->nt, id);
+      if (!ty) continue;
+      if (sp_streq(ty, "ArrayPatternNode") || sp_streq(ty, "FindPatternNode")) has_arr_pat = 1;
+      else if (sp_streq(ty, "HashPatternNode")) has_hash_pat = 1;
+    }
+    if (has_arr_pat) MARK_NAME("deconstruct");
+    if (has_hash_pat) MARK_NAME("deconstruct_keys");
+    if (has_arr_pat || has_hash_pat)
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+  }
+
   /* Alias/prep_to propagation: when alias_new (or alias_old) is in called_names,
      make the counterpart reachable too (aliases have no scope of their own). */
   int changed = 1;
