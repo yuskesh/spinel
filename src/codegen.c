@@ -1752,7 +1752,14 @@ else if (orecv >= 0 && onm) {
   if (ncap > 0) { snprintf(cap_struct_name, sizeof cap_struct_name, "_proc_cap_%d", pid); g_cap_struct = cap_struct_name; g_cap_names = &caps; }
   else { g_cap_struct = NULL; g_cap_names = NULL; }
 
-  Buf *pb = &g_procs;
+  /* Build the function into a LOCAL buffer and append it to g_procs only when
+     complete: a nested proc literal in this body re-enters this emitter, and
+     writing both straight into g_procs would splice the inner function into
+     the middle of ours (invalid C). Same shape as emit_fiber_new's nested-
+     Fiber fix: the inner body appends itself first, we follow -- both at file
+     scope, and the prototypes in g_proc_protos keep call order irrelevant. */
+  Buf proc_body_buf; memset(&proc_body_buf, 0, sizeof proc_body_buf);
+  Buf *pb = &proc_body_buf;
   buf_printf(pb, "static mrb_int _proc_%d(void *_cap, mrb_int argc, mrb_int *args) {\n", pid);
   buf_puts(pb, "    SP_GC_SAVE();\n");
   if (ncap == 0 && !cap_self && !ret_proc) buf_puts(pb, "    (void)_cap;\n");
@@ -1908,6 +1915,8 @@ else if (orecv >= 0 && onm) {
     buf_puts(pb, "  return 0;\n");
   }
   buf_puts(pb, "}\n");
+  buf_puts(&g_procs, proc_body_buf.p ? proc_body_buf.p : "");
+  free(proc_body_buf.p);
 
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
