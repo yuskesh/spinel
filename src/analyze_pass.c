@@ -3095,6 +3095,27 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
   return changed;
 }
 
+/* Register numbered params (_1.._9) used in a proc-literal body: they have
+   no parameters node, so derive them from the body's local reads. Poly-typed
+   boxed slots like every other first-class proc parameter. */
+static int register_proc_numbered(Compiler *c, int create) {
+  int body = a_proc_body(c, create);
+  if (body < 0) return 0;
+  ANameSet used = {0};
+  a_collect_used(c, body, &used);
+  Scope *bs = comp_scope_of(c, create);
+  int changed = 0;
+  for (int i = 0; i < used.n; i++) {
+    const char *nm = used.v[i];
+    if (!(nm && nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && nm[2] == '\0')) continue;
+    LocalVar *lv = scope_local_intern(bs, nm);
+    lv->is_block_param = 1;
+    if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+  }
+  free(used.v);
+  return changed;
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -3107,6 +3128,7 @@ int infer_block_params(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_LambdaNode, id) {
     if (1) {
       int create = id;
+      changed |= register_proc_numbered(c, create);
       int pn = a_proc_params_node(c, create);
       if (pn >= 0) {
         Scope *bs = comp_scope_of(c, create);
@@ -3141,6 +3163,7 @@ int infer_block_params(Compiler *c) {
     const char *cn2 = nt_str(nt, id, "name");
     if (!cn2 || (!sp_streq(cn2, "proc") && !sp_streq(cn2, "lambda"))) continue;
     if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") < 0) continue;
+    changed |= register_proc_numbered(c, id);
     int pn = a_proc_params_node(c, id);
     if (pn < 0) continue;
     Scope *bs = comp_scope_of(c, id);

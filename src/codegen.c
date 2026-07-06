@@ -937,6 +937,22 @@ const char *proc_post_name(Compiler *c, int create, int idx) {
   return idx < n ? nt_str(c->nt, posts[idx], "name") : NULL;
 }
 
+/* Numbered parameters (_1.._9): they surface as plain LocalVariableReadNodes
+   with no parameters node at all, so the classifier must derive them from the
+   used-name set. Returns the highest _N used (0 when none). Only meaningful
+   when the proc declares no explicit parameters (Ruby forbids mixing). */
+int proc_numbered_max(const NameSet *used) {
+  int mx = 0;
+  for (int i = 0; i < used->n; i++) {
+    const char *nm = used->v[i];
+    if (nm && nm[0] == '_' && nm[1] >= '1' && nm[1] <= '9' && nm[2] == '\0') {
+      int k = nm[1] - '0';
+      if (k > mx) mx = k;
+    }
+  }
+  return mx;
+}
+
 int proc_opt_count(Compiler *c, int create) {
   int pn = proc_params_node(c, create);
   if (pn < 0) return 0;
@@ -1503,6 +1519,17 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
     opt_kw_used = -nkw;   /* <0: pending keyword used-check */
   }
   proc_collect_used(c, body, &used);
+  int nnumbered = 0;
+  if (arity == 0 && nposts == 0 && !(restn && restn[0]) && nopts == 0) {
+    nnumbered = proc_numbered_max(&used);
+    for (int k = 1; k <= nnumbered; k++) {
+      /* NameSet stores the POINTER: use the scope-interned stable name, not
+         a stack buffer. The analyze pass interned _k on this scope already. */
+      char nb[4] = { '_', (char)('0' + k), 0, 0 };
+      LocalVar *nlv = scope_local_intern(bs, nb);
+      nameset_add(&params, nlv->name);
+    }
+  }
   if (opt_kw_used < 0) {
     int pn0 = proc_params_node(c, create);
     int nkw = 0;
@@ -1801,7 +1828,7 @@ else if (orecv >= 0 && onm) {
   /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
      widen the max, a splat rest lifts it entirely. */
   if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s);\n",
-                            arity + nposts, nopts, restn ? "TRUE" : "FALSE");
+                            arity + nposts + nnumbered, nopts, restn ? "TRUE" : "FALSE");
   for (int k = 0; k < arity; k++) {
     const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
@@ -1842,10 +1869,15 @@ else if (orecv >= 0 && onm) {
      callee's static types. CRuby non-lambda distribution: leading requireds
      from the front, posts from the back, the remainder (possibly empty) is
      the rest; missing posts bind nil. */
-  if ((restn && restn[0]) || nposts > 0 || nopts > 0) {
+  if ((restn && restn[0]) || nposts > 0 || nopts > 0 || nnumbered > 0) {
     if (!g_needs_proc_poly_argslot) {
       g_needs_proc_poly_argslot = 1;
       buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
+    }
+    for (int k = 0; k < nnumbered; k++) {
+      buf_printf(pb, "    sp_RbVal lv__%d = (argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n",
+                 k + 1, k, k);
+      buf_printf(pb, "    (void)lv__%d;\n", k + 1);
     }
     /* Optionals fill from the front with whatever arguments remain after the
        requireds and the trailing posts; a slot with no argument evaluates its
