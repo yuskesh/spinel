@@ -297,6 +297,12 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "fputs(sp_%s_inspect((sp_%s *)", cn, cn); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
   }
+  else if (t == TY_EXCEPTION) {
+    /* boxed-path inspect: NULL prints nil, else #<Class: message> */
+    int ev = ++g_tmp;
+    buf_printf(b, "{ sp_Exception *_t%d = (sp_Exception *)(", ev); emit_expr(c, arg, b);
+    buf_printf(b, "); fputs(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\", stdout); putchar('\\n'); }\n", ev, ev, ev);
+  }
   else {
     if (!diagnose_eval_call(c, arg))
       unsupported(c, arg, "p argument");
@@ -3123,8 +3129,24 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
                  nt_str(nt, ref, "name"), xn, xn, xn, rc, rc);
     }
     else
-      buf_printf(b, "lv_%s = sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", nt_str(nt, ref, "name"), rc, rc);
+      /* prefer the CARRIED object (raise <exception-object> / raise Cls.new):
+         the rescue variable, $!, and the raised object must be one identity;
+         synthesize only when nothing was carried (sp_raise_cls paths). */
+      buf_printf(b, "lv_%s = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", nt_str(nt, ref, "name"), rc, rc);
   }
+  /* $! tracks the exception this arm is handling; save/restore so nesting
+     and normal completion behave like CRuby (raise-continuation leaves it
+     set, which the next arm overwrites anyway). */
+  int bangs = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_Exception *volatile _svbang_%d = sp_bang_exc;\n", bangs);
+  emit_indent(b, indent);
+  if (ref >= 0 && nt_str(nt, ref, "name"))
+    buf_printf(b, "sp_bang_exc = (sp_Exception *)lv_%s;\n", nt_str(nt, ref, "name"));
+  else
+    buf_printf(b, "sp_bang_exc = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                  " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", rc, rc);
   if (resultvar) {
     const char *sv = g_result_var; g_result_var = resultvar;
     emit_stmts_tail(c, stmts, b, indent);
@@ -3133,6 +3155,8 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   else {
     emit_stmts(c, stmts, b, indent);
   }
+  emit_indent(b, indent);
+  buf_printf(b, "sp_bang_exc = _svbang_%d;\n", bangs);
   g_rescue_cls = save_cls; g_rescue_msg = save_msg;
 
   if (!catchall) {

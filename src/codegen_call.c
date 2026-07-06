@@ -4495,6 +4495,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* exception object methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION) {
+    /* equal? is pointer identity; == on exceptions is identity for our
+       carried objects too (same object flows from raise to rescue to $!). */
+    if ((sp_streq(name, "equal?") || sp_streq(name, "==")) && argc == 1 &&
+        comp_ntype(c, argv[0]) == TY_EXCEPTION) {
+      buf_puts(b, "(((sp_Exception *)("); emit_expr(c, recv, b);
+      buf_puts(b, ")) == ((sp_Exception *)("); emit_expr(c, argv[0], b); buf_puts(b, ")))");
+      return;
+    }
+    if (sp_streq(name, "nil?") && argc == 0) {
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == NULL)");
+      return;
+    }
+    if (sp_streq(name, "inspect") && argc == 0) {
+      int ei = ++g_tmp;
+      buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", ei); emit_expr(c, recv, b);
+      buf_printf(b, "); _t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))"
+                    " : (&(\"\\xff\" \"nil\")[1]); })", ei, ei, ei);
+      return;
+    }
     if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
       buf_puts(b, "sp_exc_message("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;

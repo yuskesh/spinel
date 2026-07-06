@@ -1096,7 +1096,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
     if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_status"); return; }
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
-    if (nm && (sp_streq(nm, "$!") || sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
+    if (nm && sp_streq(nm, "$!")) { buf_puts(b, "sp_bang_exc"); return; }
+    if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
     if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&")))  { buf_puts(b, "sp_re_match_str");  return; }
     if (nm && sp_streq(nm, "$`"))                          { buf_puts(b, "sp_re_match_pre");  return; }

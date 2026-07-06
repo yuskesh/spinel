@@ -3344,7 +3344,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (nm && sp_streq(nm, "$/")) return TY_STRING;
     if (nm && sp_streq(nm, "$?")) return TY_INT;  /* last child exit status */
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) return TY_STRING;
-    if (nm && (sp_streq(nm, "$!") || sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
+    if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;
+    if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
     /* regex match globals: nullable strings ($~ == $&, $`, $', $+) */
     if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&") || sp_streq(nm, "$`") ||
                sp_streq(nm, "$'") || sp_streq(nm, "$+"))) return TY_STRING;
