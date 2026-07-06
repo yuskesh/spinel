@@ -581,11 +581,21 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   if (!src_is_range && !src_is_intarr) return 0;
 
   int excl = 0, endless = 0, right = -1, left_n = -1;
+  int src_range_literal = 0, trange = -1;
   if (src_is_range) {
-    excl = (int)(nt_int(nt, lazy_src, "flags", 0) & 4) ? 1 : 0;
-    right = nt_ref(nt, lazy_src, "right");
-    endless = lazy_endpoint_is_infinite(c, right);
-    left_n = nt_ref(nt, lazy_src, "left");
+    src_range_literal = nt_type(nt, lazy_src) && sp_streq(nt_type(nt, lazy_src), "RangeNode");
+    if (src_range_literal) {
+      excl = (int)(nt_int(nt, lazy_src, "flags", 0) & 4) ? 1 : 0;
+      right = nt_ref(nt, lazy_src, "right");
+      endless = lazy_endpoint_is_infinite(c, right);
+      left_n = nt_ref(nt, lazy_src, "left");
+    } else {
+      /* a range held in a variable or returned from a method: materialize it
+         once and read the bounds from the runtime sp_Range value. */
+      Buf sb = expr_buf(c, lazy_src);
+      trange = ++g_tmp; emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Range _t%d = %s;\n", trange, sb.p ? sb.p : "(sp_Range){0}"); free(sb.p);
+    }
   }
   if (is_toa && (src_is_range && endless)) return 0;   /* would not terminate */
 
@@ -602,9 +612,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   }
   int thi = -1, tsrc = -1;
   if (src_is_range && !endless) {
-    Buf hb = expr_buf(c, right);
     thi = ++g_tmp; emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "mrb_int _t%d = %s;\n", thi, hb.p ? hb.p : "0"); free(hb.p);
+    if (src_range_literal) { Buf hb = expr_buf(c, right); buf_printf(g_pre, "mrb_int _t%d = %s;\n", thi, hb.p ? hb.p : "0"); free(hb.p); }
+    else buf_printf(g_pre, "mrb_int _t%d = _t%d.last;\n", thi, trange);
   }
   if (src_is_intarr) {
     Buf sb = expr_buf(c, lazy_src);
@@ -614,7 +624,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
 
   int tloop = ++g_tmp, tv = ++g_tmp;
   Buf lo_b; memset(&lo_b, 0, sizeof lo_b);
-  if (src_is_range) emit_expr(c, left_n, &lo_b);
+  if (src_is_range) { if (src_range_literal) emit_expr(c, left_n, &lo_b); else buf_printf(&lo_b, "_t%d.first", trange); }
   emit_indent(g_pre, g_indent);
   const char *climit = has_count ? "" : NULL;
   char cbuf[64]; cbuf[0] = 0;
@@ -623,9 +633,12 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   if (src_is_range) {
     if (endless)
       buf_printf(g_pre, "for (mrb_int _t%d = %s; 1%s; _t%d++) {\n", tloop, lo_b.p ? lo_b.p : "0", cbuf, tloop);
-    else
+    else if (src_range_literal)
       buf_printf(g_pre, "for (mrb_int _t%d = %s; _t%d %s _t%d%s; _t%d++) {\n",
                  tloop, lo_b.p ? lo_b.p : "0", tloop, excl ? "<" : "<=", thi, cbuf, tloop);
+    else
+      buf_printf(g_pre, "for (mrb_int _t%d = %s; _t%d <= _t%d - _t%d.excl%s; _t%d++) {\n",
+                 tloop, lo_b.p ? lo_b.p : "0", tloop, thi, trange, cbuf, tloop);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(_t%d);\n", tv, tloop);
   }
