@@ -1212,6 +1212,24 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
   buf_puts(b, ")");
 }
 
+/* Classify a hash-pattern value sub-node for the boolean pattern matcher:
+   returns the class ConstantReadNode id for `Class` / `Class => v`, -1 for a
+   presence-only value (`k:` bare or `k: v` binding, which imposes no value
+   constraint), or PM_HASH_VAL_REJECT for a shape we emit no check for (a
+   literal, range, pin, or nested pattern) so the caller can reject it. */
+#define PM_HASH_VAL_REJECT (-2)
+static int pm_hash_value_class(const NodeTable *nt, int vpat) {
+  if (vpat < 0 || !nt_type(nt, vpat)) return -1;
+  const char *vty = nt_type(nt, vpat);
+  if (sp_streq(vty, "ConstantReadNode")) return vpat;
+  if (sp_streq(vty, "ImplicitNode") || sp_streq(vty, "LocalVariableTargetNode")) return -1;
+  if (sp_streq(vty, "CapturePatternNode")) {
+    int cv = nt_ref(nt, vpat, "value");
+    if (cv >= 0 && nt_type(nt, cv) && sp_streq(nt_type(nt, cv), "ConstantReadNode")) return cv;
+  }
+  return PM_HASH_VAL_REJECT;
+}
+
 int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *pty = nt_type(nt, pat);
@@ -1339,6 +1357,62 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     int val = nt_ref(nt, pat, "value");
     if (val >= 0) return emit_pm_cond(c, val, t, pt, b);
     return 0;
+  }
+  if (sp_streq(pty, "HashPatternNode")) {
+    /* matches when the scrutinee is a hash with every key present and each value
+       matching its sub-pattern (a class check for `k: Class`). Only a statically
+       typed hash scrutinee and the value shapes classified by pm_hash_value_class
+       are handled; a poly/non-hash scrutinee, an unsupported value pattern, or an
+       unresolvable class returns 0 so the caller reports it unsupported rather
+       than emitting a silently-wrong match. Everything is validated before any
+       emit, so a reject never leaves half-built helper code in g_pre. */
+    const char *hn = ty_is_hash(pt) ? ty_hash_cname(pt) : NULL;
+    if (!hn) return 0;
+    TyKind hvt = ty_hash_val(pt);
+    int en = 0;
+    const int *elms = nt_arr(nt, pat, "elements", &en);
+    for (int i = 0; i < en; i++) {
+      if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) return 0;
+      if (nt_ref(nt, elms[i], "key") < 0) return 0;
+      int classpat = pm_hash_value_class(nt, nt_ref(nt, elms[i], "value"));
+      if (classpat == PM_HASH_VAL_REJECT) return 0;
+      if (classpat >= 0 && hvt == TY_POLY) {
+        Buf probe; memset(&probe, 0, sizeof probe);
+        int ok = emit_poly_class_when(c, classpat, "_v", &probe);
+        free(probe.p);
+        if (!ok) return 0;
+      }
+    }
+    int hcond = ++g_tmp;
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = 1;\n", hcond);
+    for (int i = 0; i < en; i++) {
+      int key = nt_ref(nt, elms[i], "key");
+      int classpat = pm_hash_value_class(nt, nt_ref(nt, elms[i], "value"));
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, t);
+      emit_expr(c, key, g_pre); buf_puts(g_pre, ");\n");
+      if (classpat < 0) continue;
+      if (hvt == TY_POLY) {
+        int vtmp = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+        emit_expr(c, key, g_pre); buf_puts(g_pre, "); ");
+        char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
+        Buf cw; memset(&cw, 0, sizeof cw);
+        emit_poly_class_when(c, classpat, vn, &cw);   /* validated to succeed above */
+        buf_printf(g_pre, "_t%d = _t%d && (%s);", hcond, hcond, cw.p ? cw.p : "1");
+        free(cw.p);
+        buf_puts(g_pre, " }\n");
+      }
+      else {
+        const char *cn = nt_str(nt, classpat, "name");
+        if (cn && ty_matches_class(hvt, cn, 0) <= 0) {
+          emit_indent(g_pre, g_indent); buf_printf(g_pre, "_t%d = 0;\n", hcond);
+        }
+      }
+    }
+    buf_printf(b, "_t%d", hcond);
+    return 1;
   }
   return 0;
 }
