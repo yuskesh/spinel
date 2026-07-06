@@ -93,7 +93,7 @@ static inline char *sp_str_alloc(size_t len) {
      for rooted locals; the codegen's SP_GC_ROOT discipline is what keeps them
      so. Threshold recompute mirrors sp_gc_alloc's. */
   if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_str_threshold = 2048; sp_str_threshold_init = 2048; } }
-  if (sp_str_heap_bytes > sp_str_threshold) {
+  if (SP_GC_CTR_GET(sp_str_heap_bytes) > sp_str_threshold) {
 #ifdef SP_THREADS
     /* Same as sp_gc_alloc: a string-heap collection must stop the world too,
        else a worker still mutating the object/string heap races the sweep.
@@ -112,7 +112,7 @@ static inline char *sp_str_alloc(size_t len) {
   h->len = (uint32_t)len;
   h->hash = 0;
   sp_str_heap = h;
-  sp_str_heap_bytes += total;
+  SP_GC_CTR_ADD(sp_str_heap_bytes, total);
   SP_HEAP_UNLOCK();
   /* Don't fold string-heap pressure into sp_gc_bytes: the threshold heuristic
      in sp_gc_alloc is keyed on object-heap survivors, and the str-heap sweep
@@ -275,8 +275,8 @@ static void __attribute__((noinline, cold)) sp_raise_frozen_array(void) { sp_rai
 /* sp_PolyArray: a growable array of boxed values. */
 typedef struct { sp_RbVal *data; mrb_int len; mrb_int cap; mrb_int frozen; } sp_PolyArray;
 static inline void sp_PolyArray_scan(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; for (mrb_int i = 0; i < a->len; i++) sp_mark_rbval(a->data[i]); }
-static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
-static inline sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } return a; }
-static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); sp_gc_bytes -= sizeof(sp_RbVal) * a->cap; h->size -= sizeof(sp_RbVal) * a->cap; a->cap = (a->cap * 2) + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; sp_gc_bytes += sizeof(sp_RbVal) * a->cap; } a->data[a->len++] = v; }
+static inline void sp_PolyArray_fin(void *p) { sp_PolyArray *a = (sp_PolyArray *)p; sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); SP_GC_CTR_SUB(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; free(a->data); }
+static inline sp_PolyArray *sp_PolyArray_new(void) { sp_PolyArray *a = (sp_PolyArray *)sp_gc_alloc(sizeof(sp_PolyArray), sp_PolyArray_fin, sp_PolyArray_scan); a->cap = 16; a->data = (sp_RbVal *)malloc(sizeof(sp_RbVal) * a->cap); if (!a->data) sp_oom_die(); a->len = 0; { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); h->size += sizeof(sp_RbVal) * a->cap; SP_GC_CTR_ADD(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); } return a; }
+static inline void sp_PolyArray_push(sp_PolyArray *a, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (a->len >= a->cap) { sp_gc_hdr *h = (sp_gc_hdr *)((char *)a - sizeof(sp_gc_hdr)); SP_GC_CTR_SUB(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); h->size -= sizeof(sp_RbVal) * a->cap; a->cap = (a->cap * 2) + 1; void *nd = realloc(a->data, sizeof(sp_RbVal) * a->cap); if (!nd) sp_oom_die(); a->data = (sp_RbVal *)nd; h->size += sizeof(sp_RbVal) * a->cap; SP_GC_CTR_ADD(sp_gc_bytes, sizeof(sp_RbVal) * a->cap); } a->data[a->len++] = v; }
 static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); return a->data[i]; }
 #endif /* SP_ALLOC_H */

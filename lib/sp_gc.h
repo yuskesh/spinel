@@ -92,6 +92,28 @@ extern size_t sp_gc_old_bytes;
 extern int sp_gc_cycle;
 extern void (*sp_gc_mark_suspended_fibers_hook)(void);
 
+/* Heap byte-counter accounting. The container growth paths (sp_array.h,
+   sp_alloc.h's PolyArray, the string builder) adjust sp_gc_bytes inline
+   WITHOUT the heap lock -- at N>1 workers that is a data race against the
+   locked allocators and against each other (torn counters skew the GC
+   trigger; TSan flags it). Under SP_THREADS every update and every
+   trigger-decision read goes through a relaxed atomic: the counter is a
+   heuristic (collection thresholds), so relaxed ordering is enough -- no
+   other data is published through it. Collector-side code that runs under
+   stop-the-world (sweep, retune) keeps plain accesses: every mutator is
+   parked at the barrier, which already gives the happens-before edge.
+   The single-threaded build expands to the exact plain +=/-= it had, so
+   that archive stays byte-identical. */
+#ifdef SP_THREADS
+#define SP_GC_CTR_ADD(ctr, n) __atomic_fetch_add(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
+#define SP_GC_CTR_SUB(ctr, n) __atomic_fetch_sub(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
+#define SP_GC_CTR_GET(ctr)    __atomic_load_n(&(ctr), __ATOMIC_RELAXED)
+#else
+#define SP_GC_CTR_ADD(ctr, n) ((ctr) += (size_t)(n))
+#define SP_GC_CTR_SUB(ctr, n) ((ctr) -= (size_t)(n))
+#define SP_GC_CTR_GET(ctr)    (ctr)
+#endif
+
 /* ---- Collector entry points (defined in lib/sp_gc.c) ---- */
 void sp_gc_mark(void *obj);
 void sp_gc_mark_all(void);

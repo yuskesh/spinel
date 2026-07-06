@@ -546,9 +546,14 @@ static void *sp_gc_alloc_pool(size_t sz, void(*scn)(void*), void(*recycle)(sp_gc
    free-list since the last sweep unlinked it from sp_gc_heap. */
 static void sp_gc_pool_relink(sp_gc_hdr *h) {
   h->marked = 0;
+  /* The heap list is shared across workers; a pooled re-link used to push
+     onto it bare, racing sp_gc_alloc's locked push at N>1 (a lost link is
+     a leaked-then-UAF header). No-op lock in the single-threaded build. */
+  SP_HEAP_LOCK();
   h->next = sp_gc_heap;
   sp_gc_heap = h;
-  sp_gc_bytes += h->size;
+  SP_GC_CTR_ADD(sp_gc_bytes, h->size);
+  SP_HEAP_UNLOCK();
 }
 
 /* Per-class free-list pool boilerplate. SP_POOL_DEFINE(CLS) goes at
@@ -559,14 +564,23 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
    (uniform across classes). SP_POOL_REPORT=1 dumps per-class stats
    at exit. */
 #define SP_POOL_DEFAULT_MAX 1048576L
+/* The free-list head/count (and stats) are per-worker (SP_TLS) in the
+   threaded build: pool pop (SP_POOL_NEW) runs on any worker with no lock,
+   and recycle runs on whichever worker triggered the collection, so a
+   shared list would race (lost pops / double-handed slots). Per-worker
+   lists mean recycled storage lands on the collector's pool -- other
+   workers just miss and fall through to sp_gc_alloc, which is correct,
+   merely less reused. pool_max stays shared: written once by the main
+   thread's constructor, read-only after. (The report destructor prints the
+   main thread's stats only.) Single-threaded: SP_TLS is empty, unchanged. */
 #define SP_POOL_DEFINE(CLS) \
-  static sp_gc_hdr *sp_##CLS##_pool_head = NULL; \
-  static long sp_##CLS##_pool_count = 0; \
+  static SP_TLS sp_gc_hdr *sp_##CLS##_pool_head = NULL; \
+  static SP_TLS long sp_##CLS##_pool_count = 0; \
   static long sp_##CLS##_pool_max = SP_POOL_DEFAULT_MAX; \
-  static long sp_##CLS##_pool_pushes = 0; \
-  static long sp_##CLS##_pool_pops = 0; \
-  static long sp_##CLS##_pool_freed = 0; \
-  static long sp_##CLS##_pool_hwm = 0; \
+  static SP_TLS long sp_##CLS##_pool_pushes = 0; \
+  static SP_TLS long sp_##CLS##_pool_pops = 0; \
+  static SP_TLS long sp_##CLS##_pool_freed = 0; \
+  static SP_TLS long sp_##CLS##_pool_hwm = 0; \
   __attribute__((constructor)) static void sp_##CLS##_pool_init(void) { \
     const char *m = getenv("SP_POOL_MAX"); \
     if (m && *m) { long v = atol(m); if (v >= 0) sp_##CLS##_pool_max = v; } \
@@ -718,7 +732,7 @@ static sp_StrIntHash*sp_gc_stat(void){
      Prototype: O(n) walk; a production version maintains a running counter. */
   size_t str_bytes=0; mrb_int str_count=0;
   for(sp_str_hdr*sh=sp_str_heap; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; }
-  sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)sp_gc_bytes);sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
+  sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)SP_GC_CTR_GET(sp_gc_bytes));sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
 
 static void sp_StrStrHash_fin(void*p){sp_StrStrHash*h=(sp_StrStrHash*)p;free(h->keys);free(h->vals);free(h->order);}
 static void sp_StrStrHash_scan(void*p){sp_StrStrHash*h=(sp_StrStrHash*)p;for(mrb_int i=0;i<h->cap;i++){if(h->keys[i]){sp_mark_string(h->keys[i]);sp_mark_string(h->vals[i]);}}if(h->default_v)sp_mark_string(h->default_v);}

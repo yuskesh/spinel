@@ -646,7 +646,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      cannot starve the collector. Emitted only when the program uses threads
      (sp_safepoint_flag is a threaded-runtime symbol); a non-threaded program is
      byte-identical. At N=1 the flag is never set -- a predicted-not-taken load. */
-  if (g_uses_threads) { emit_indent(b, indent); buf_puts(b, "if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();\n"); }
+  if (g_uses_threads) { emit_indent(b, indent); buf_puts(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint();\n"); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
   g_c_loop_depth--;

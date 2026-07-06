@@ -66,13 +66,19 @@ void sp_gc_collect_retune_all(void) {
 /* Either heap over its trigger? Used by sp_stw_collect to skip a redundant
    stop-the-world when another worker just collected. */
 int sp_gc_collection_wanted(void) {
-  return sp_gc_bytes > sp_gc_threshold || sp_str_heap_bytes > sp_str_threshold;
+  /* Read the counters atomically: this runs before the world is stopped
+     (sp_stw_collect's early-out), concurrent with other workers' relaxed
+     adds. The thresholds only change under STW or the heap lock's
+     one-shot stress check, and a stale read at worst skips one redundant
+     collection. */
+  return SP_GC_CTR_GET(sp_gc_bytes) > sp_gc_threshold ||
+         SP_GC_CTR_GET(sp_str_heap_bytes) > sp_str_threshold;
 }
 
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   SP_HEAP_LOCK();
   if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_gc_threshold = 2048; sp_gc_threshold_init = 2048; } }
-  if (sp_gc_bytes > sp_gc_threshold) {
+  if (SP_GC_CTR_GET(sp_gc_bytes) > sp_gc_threshold) {
 #ifdef SP_THREADS
     /* Drop the heap lock before stopping the world: a worker stalled here on the
        heap lock could never reach a safepoint, deadlocking the collector. */
@@ -87,7 +93,7 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
-  h->next = sp_gc_heap; sp_gc_heap = h; sp_gc_bytes += need;
+  h->next = sp_gc_heap; sp_gc_heap = h; SP_GC_CTR_ADD(sp_gc_bytes, need);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }
@@ -97,7 +103,7 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
   SP_HEAP_LOCK();
-  h->next = sp_gc_heap; sp_gc_heap = h; sp_gc_bytes += need;
+  h->next = sp_gc_heap; sp_gc_heap = h; SP_GC_CTR_ADD(sp_gc_bytes, need);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }

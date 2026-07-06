@@ -111,13 +111,13 @@ static int g_preempt_sig = SIGURG; /* the signal the monitor sends; SPINEL_PREEM
 typedef struct { pthread_t tid; sp_thread *cur; double since; int active; } sp_wslot;
 static sp_wslot   g_wslot[SP_MAX_WORKERS];   /* per-worker: the green thread it runs + when it started */
 static void sp_recompute_safepoint_flag(void) {   /* PRE: g_sched_lock held */
-  sp_safepoint_flag = (g_stw_active || g_npreempt > 0);
+  SP_SAFEPOINT_SET(g_stw_active || g_npreempt > 0);
 }
 /* The preemption signal lands on the target worker's own stack. Re-assert the
    flag so the worker sees it even if it was about to clear the lock-free read;
    the actual yield happens cooperatively at the next safepoint poll (kept minimal
-   and async-signal-safe -- a lone volatile store). */
-static void sp_preempt_handler(int sig) { (void)sig; sp_safepoint_flag = 1; }
+   and async-signal-safe -- a lone relaxed atomic store). */
+static void sp_preempt_handler(int sig) { (void)sig; SP_SAFEPOINT_SET(1); }
 #define SCHED_WAKE()    pthread_cond_signal(&g_sched_work)   /* nudge one idle worker after enqueue/wake */
 #define SCHED_WAKE_ALL() pthread_cond_broadcast(&g_sched_work)  /* wake every waiter to re-check state */
 
@@ -200,7 +200,7 @@ void sp_stw_collect(void) {
   g_stw_active = 1;
   g_stw_epoch++;     /* new epoch; a previous collection's stragglers won't be counted */
   g_nparked = 0;     /* this collection's park count starts fresh */
-  sp_safepoint_flag = 1;
+  SP_SAFEPOINT_SET(1);
   /* wake idle workers (and main waiting in its pump) so they park at the barrier
      rather than sit through the collection without publishing their roots. */
   pthread_cond_broadcast(&g_sched_work);
