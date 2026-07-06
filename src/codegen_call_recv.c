@@ -3096,6 +3096,42 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
+  /* Object#equal? -- reference identity. A heap instance IS its pointer, so
+     this is a plain pointer comparison; a poly argument unwraps to tag +
+     pointer; an argument of any other concrete type is never identical. A
+     value-type instance is copied inline and has no stable identity, so only
+     the reflexive same-lvalue read is knowably true (the string arm's rule). */
+  if (recv >= 0 && ty_is_object(rt) && argc == 1 && sp_streq(name, "equal?")) {
+    TyKind a0 = comp_ntype(c, argv[0]);
+    if (!c->classes[ty_object_class(rt)].is_value_type) {
+      if (a0 == rt) {
+        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+        emit_expr(c, argv[0], b); buf_puts(b, "))");
+      }
+      else if (a0 == TY_POLY) {
+        int te = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void*)(", te, te);
+        emit_expr(c, recv, b); buf_puts(b, "); })");
+      }
+      else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+      return 1;
+    }
+    if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
+    else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
+    return 1;
+  }
+
+  /* Object#freeze / #frozen? on a user instance: freeze is a no-op returning
+     self (matching the poly-receiver arm -- spinel has no per-object freeze
+     state), so frozen? consistently reports false. */
+  if (recv >= 0 && ty_is_object(rt) && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "freeze") || sp_streq(name, "frozen?"))) {
+    if (sp_streq(name, "freeze")) { emit_expr(c, recv, b); return 1; }
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+    return 1;
+  }
+
   /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
      correctness with module includes; falls back to constant for builtins. */
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
