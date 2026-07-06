@@ -899,6 +899,32 @@ const char *proc_param_name(Compiler *c, int create, int idx) {
   const int *reqs = nt_arr(c->nt, pn, "requireds", &n);
   return idx < n ? nt_str(c->nt, reqs[idx], "name") : NULL;
 }
+/* rest / post parameter accessors of a proc-creating node. A splat rest
+   (|*a, b|) and trailing post-required params were previously invisible to
+   the classifier, so their names were misdiagnosed as uncaptured OUTER
+   variables (the ruby/spec harness's biggest implementable cluster). */
+const char *proc_rest_name(Compiler *c, int create) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return NULL;
+  int r = nt_ref(c->nt, pn, "rest");
+  if (r < 0) return NULL;
+  const char *rt = nt_type(c->nt, r);
+  if (!rt || !sp_streq(rt, "RestParameterNode")) return NULL;
+  return nt_str(c->nt, r, "name");
+}
+int proc_post_count(Compiler *c, int create) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return 0;
+  int n = 0; nt_arr(c->nt, pn, "posts", &n);
+  return n;
+}
+const char *proc_post_name(Compiler *c, int create, int idx) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return NULL;
+  int n = 0; const int *posts = nt_arr(c->nt, pn, "posts", &n);
+  return idx < n ? nt_str(c->nt, posts[idx], "name") : NULL;
+}
+
 /* The StatementsNode body of a proc-creating node. */
 int proc_body_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
@@ -1418,7 +1444,54 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
      the fn; params come from args[]. */
   NameSet params = {0}, used = {0}, locals = {0}, caps = {0};
   for (int k = 0; k < arity; k++) nameset_add(&params, proc_param_name(c, create, k));
+  const char *restn = proc_rest_name(c, create);
+  int nposts = proc_post_count(c, create);
+  if (restn && restn[0]) nameset_add(&params, restn);
+  for (int j = 0; j < nposts; j++) {
+    const char *pp = proc_post_name(c, create, j);
+    if (pp) nameset_add(&params, pp);
+  }
+  /* optionals / keyword params: no binding yet. Their NAMES still join the
+     param set so they are never misdiagnosed as uncaptured outer variables,
+     and a proc that only carries them for its .arity metadata (never touching
+     them in the body) still compiles; a body that actually READS one gets the
+     precise diagnostic below. */
+  int opt_kw_used = 0;
+  { int pn0 = proc_params_node(c, create);
+    int nopt = 0, nkw = 0;
+    const int *opts = pn0 >= 0 ? nt_arr(nt, pn0, "optionals", &nopt) : NULL;
+    const int *kws  = pn0 >= 0 ? nt_arr(nt, pn0, "keywords", &nkw) : NULL;
+    for (int j = 0; j < nopt; j++) {
+      const char *on = nt_str(nt, opts[j], "name");
+      if (on) nameset_add(&params, on);
+    }
+    for (int j = 0; j < nkw; j++) {
+      const char *kn = nt_str(nt, kws[j], "name");
+      if (kn) nameset_add(&params, kn);
+    }
+    /* defer the used-check until `used` is populated below */
+    opt_kw_used = -(nopt + nkw);   /* <0: pending, count stashed */
+  }
   proc_collect_used(c, body, &used);
+  if (opt_kw_used < 0) {
+    int pn0 = proc_params_node(c, create);
+    int nopt = 0, nkw = 0;
+    const int *opts = pn0 >= 0 ? nt_arr(nt, pn0, "optionals", &nopt) : NULL;
+    const int *kws  = pn0 >= 0 ? nt_arr(nt, pn0, "keywords", &nkw) : NULL;
+    for (int j = 0; j < nopt && !opt_kw_used; j++) {
+      const char *on = nt_str(nt, opts[j], "name");
+      if (on && nameset_has(&used, on)) opt_kw_used = 1;
+    }
+    for (int j = 0; j < nkw && opt_kw_used <= 0; j++) {
+      const char *kn = nt_str(nt, kws[j], "name");
+      if (kn && nameset_has(&used, kn)) opt_kw_used = 1;
+    }
+    if (opt_kw_used == 1) {
+      free(params.v); free(used.v); free(locals.v); free(caps.v);
+      unsupported(c, create, "proc reading an optional or keyword parameter (later slice)");
+      return;
+    }
+  }
   /* deep: include nested blocks' params/locals so a name used only inside a
      nested block in the proc is classified as body-local, not flagged as an
      uncaptured outer variable. */
@@ -1691,8 +1764,10 @@ else if (orecv >= 0 && onm) {
     buf_printf(pb, "    sp_%s *self = (sp_%s *)((_proc_cap_%d *)_cap)->__self;\n", self_cls, self_cls, pid);
     buf_puts(pb, "    (void)self;\n");
   }
-  /* Lambda: enforce strict arity (required params only -- no optionals/rest yet). */
-  if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, 0, FALSE);\n", arity);
+  /* Lambda: strict arity -- requireds + trailing posts mandatory, a splat rest
+     lifts the upper bound. (Optionals/keywords are rejected above.) */
+  if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, 0, %s);\n",
+                            arity + nposts, restn ? "TRUE" : "FALSE");
   for (int k = 0; k < arity; k++) {
     const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
@@ -1725,6 +1800,32 @@ else if (orecv >= 0 && onm) {
                        : (pt == TY_SYMBOL) ? "((sp_sym)-1)" : NULL;
       if (nilv) buf_printf(pb, "(argc > %d) ? args[%d] : %s;\n", k, k, nilv);
       else buf_printf(pb, "args[%d];\n", k);
+    }
+  }
+  /* Splat rest and trailing post params. Both read the boxed side-channel:
+     every call path now publishes all args boxed (yield's lean ABI was
+     retired for this), so any position is recoverable regardless of the
+     callee's static types. CRuby non-lambda distribution: leading requireds
+     from the front, posts from the back, the remainder (possibly empty) is
+     the rest; missing posts bind nil. */
+  if ((restn && restn[0]) || nposts > 0) {
+    if (!g_needs_proc_poly_argslot) {
+      g_needs_proc_poly_argslot = 1;
+      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
+    }
+    if (restn && restn[0]) {
+      buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
+      buf_printf(pb, "    { mrb_int __k, __hi = argc - %d; if (__hi > 16) __hi = 16;\n", nposts);
+      buf_printf(pb, "      for (__k = %d; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n",
+                 arity, restn);
+    }
+    for (int j = 0; j < nposts; j++) {
+      const char *pp = proc_post_name(c, create, j);
+      if (!pp) continue;
+      buf_printf(pb, "    sp_RbVal lv_%s = ({ mrb_int __i = argc - %d + %d;\n", pp, nposts, j);
+      buf_printf(pb, "      (__i >= %d && __i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n",
+                 arity);
+      buf_printf(pb, "    (void)lv_%s;\n", pp);
     }
   }
   for (int i = 0; i < locals.n; i++) {

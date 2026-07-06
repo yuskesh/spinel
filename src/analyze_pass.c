@@ -3082,6 +3082,61 @@ int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
 
+  /* Splat-rest / trailing-post params of proc literals: register them on the
+     proc's scope so they are locals, not "uncaptured outer variables". The
+     rest binds as a PolyArray built from the boxed arg side-channel; posts
+     bind as boxed values -- both permanently poly (the callee cannot see its
+     call sites' element types through a first-class proc). */
+  NT_FOREACH_KIND(nt, NK_LambdaNode, id) {
+    if (1) {
+      int create = id;
+      int pn = a_proc_params_node(c, create);
+      if (pn >= 0) {
+        Scope *bs = comp_scope_of(c, create);
+        int r = nt_ref(nt, pn, "rest");
+        const char *rt = r >= 0 ? nt_type(nt, r) : NULL;
+        const char *rname = (rt && sp_streq(rt, "RestParameterNode")) ? nt_str(nt, r, "name") : NULL;
+        if (rname && rname[0]) {
+          LocalVar *lv = scope_local_intern(bs, rname);
+          lv->is_block_param = 1;
+          if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+        }
+        int np = 0; const int *posts = nt_arr(nt, pn, "posts", &np);
+        for (int j = 0; j < np; j++) {
+          const char *pname = nt_str(nt, posts[j], "name");
+          if (!pname) continue;
+          LocalVar *lv = scope_local_intern(bs, pname);
+          lv->is_block_param = 1;
+          if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+        }
+      }
+    }
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *cn2 = nt_str(nt, id, "name");
+    if (!cn2 || (!sp_streq(cn2, "proc") && !sp_streq(cn2, "lambda"))) continue;
+    if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") < 0) continue;
+    int pn = a_proc_params_node(c, id);
+    if (pn < 0) continue;
+    Scope *bs = comp_scope_of(c, id);
+    int r = nt_ref(nt, pn, "rest");
+    const char *rt = r >= 0 ? nt_type(nt, r) : NULL;
+    const char *rname = (rt && sp_streq(rt, "RestParameterNode")) ? nt_str(nt, r, "name") : NULL;
+    if (rname && rname[0]) {
+      LocalVar *lv = scope_local_intern(bs, rname);
+      lv->is_block_param = 1;
+      if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+    }
+    int np = 0; const int *posts = nt_arr(nt, pn, "posts", &np);
+    for (int j = 0; j < np; j++) {
+      const char *pname = nt_str(nt, posts[j], "name");
+      if (!pname) continue;
+      LocalVar *lv = scope_local_intern(bs, pname);
+      lv->is_block_param = 1;
+      if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    }
+  }
+
   /* `->(x, ...) {}` (LambdaNode): its params live in the enclosing scope (no
      separate scope), like block params. Register them here; the int default is
      applied later, AFTER the call-site arg-type seeding below, so a `->(t){...}`

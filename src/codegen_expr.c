@@ -915,7 +915,10 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_proc_call(");
       emit_yblk_ref(b);
       buf_puts(b, ", ");
-      emit_proc_call_args(c, yargc, yargv, b, 0);
+      /* force_poly=1: a rest/post-taking block recovers arguments from the boxed
+         side-channel, and this callee's signature is unknown here. The lean
+         unboxed ABI only ever served this self-recursive-yield path. */
+      emit_proc_call_args(c, yargc, yargv, b, 1);
       return;
     }
     if (g_block_id < 0) {  /* no block: yield is nil */
