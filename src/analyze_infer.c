@@ -696,6 +696,18 @@ TyKind infer_call(Compiler *c, int id) {
         rt = TY_POLY_ARRAY;
       }
     }
+    /* mirror for an empty HASH literal receiver (`{}.freeze`): without this
+       the identity `freeze` stays unresolved, so `CONST = {}.freeze` never
+       gets a type and the constant is dropped from codegen entirely -- reads
+       then raise "uninitialized constant" or break the C build when the
+       constant is a typed ivar's || fallback (#1758). Deliberately
+       TY_STR_POLY_HASH, the same C type codegen emits for a bare {}, so the
+       declaration, initializer, and readers agree (POLY_POLY would disagree
+       with sp_StrPolyHash_new and produce garbage). */
+    else if (rty && (sp_streq(rty, "HashNode") || sp_streq(rty, "KeywordHashNode"))) {
+      int en = 0; nt_arr(nt, recv, "elements", &en);
+      if (en == 0) rt = TY_STR_POLY_HASH;
+    }
   }
 
   /* `<&block-param>.call(...)` inside a yielding method: the explicit-call form
