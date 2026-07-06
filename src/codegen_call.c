@@ -5470,6 +5470,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n"); g_indent++;
           if (scalar_res) { snprintf(bvbuf, sizeof bvbuf, "_t%d", tres); g_loop_break_var = bvbuf; g_ie_next_var = bvbuf; }
           else { g_loop_break_var = NULL; g_ie_next_var = NULL; }
+          g_c_loop_depth++;   /* the do{} wrapper makes `continue` valid */
         }
         for (int j = 0; j < upto; j++) emit_stmt(c, ie_bb[j], g_pre, g_indent);
         if (!last_as_stmt) {
@@ -5488,6 +5489,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           free(vb.p);
         }
         if (ie_bn_wrap) {
+          g_c_loop_depth--;
           g_loop_break_var = sv_lb; g_ie_next_var = sv_nx;
           g_indent--; emit_indent(g_pre, g_indent); buf_puts(g_pre, "} while (0);\n");
         }

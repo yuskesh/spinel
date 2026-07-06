@@ -71,6 +71,8 @@ extern const char *g_yielder_name;
 /* Result temp for a do{}while(0)-wrapped instance_exec splice; a top-level
    `next <v>` captures into it before continuing out. NULL otherwise. */
 extern const char *g_ie_next_var;
+extern int g_c_loop_depth;   /* C-loop nesting inside the current fn body */
+extern int g_in_proc_body;   /* emitting a _proc_N function body */
 /* Set while the wrapped splice's result temp is poly, so a value-carrying
    break/next boxes a scalar value to match. */
 extern int g_ie_res_poly;
@@ -305,6 +307,7 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b);
 int  emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int  subtree_has_own_redo(const NodeTable *nt, int id);
+int  subtree_has_own_next(const NodeTable *nt, int id);
 int  emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 int  emit_inline_expr(Compiler *c, int id, Buf *b);
 void emit_cond(Compiler *c, int id, Buf *b);

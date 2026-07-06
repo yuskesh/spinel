@@ -3583,6 +3583,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     return hv;
   }
+  if (nk == NK_NextNode) {
+    /* `next v` produces the BLOCK's value: its type is v's type (nil when
+       bare). Leaving it untyped made a yield whose block ends in `next v`
+       infer nil, so the delivered value was discarded at the call site. */
+    int nargs = nt_ref(nt, id, "arguments");
+    int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;
+    return nvc > 0 ? infer_type(c, nv[0]) : TY_NIL;
+  }
   if (nk == NK_YieldNode)
     return yield_value_type(c, (int)(comp_scope_of(c, id) - c->scopes));
   if (nk == NK_SuperNode || nk == NK_ForwardingSuperNode) {

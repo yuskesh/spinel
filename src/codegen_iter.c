@@ -461,7 +461,69 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      the block must not resolve against the inlined method's receiver). */
   const char *sv_bself = g_self, *sv_bderef = g_self_deref;
   if (g_yield_self_fallback) { g_self = g_yield_self_fallback; g_self_deref = g_yield_self_deref_fallback; }
-  emit_stmts(c, bbody, b, as_expr ? 0 : indent);
+  /* A `next` in a yielded block leaves the BLOCK with its value -- but this
+     body is spliced inline (no _proc_ function, no loop), so a bare
+     `continue` is invalid C. Only when the body owns a `next`, wrap the
+     splice in do{}while(0) and route the value through a temp via the
+     inline-each next-var machinery; blocks without `next` keep their exact
+     previous emission. */
+  int nx_own = subtree_has_own_next(nt, bbody);
+  const char *sv_nx2 = g_ie_next_var; int sv_poly2 = g_ie_res_poly;
+  int sv_lexc2 = g_loop_exc_base;
+  char nxbuf[32]; int nx_tmp = 0;
+  int bn3 = 0; const int *bd3 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn3) : NULL;
+  TyKind nx_bt = TY_NIL; int nx_tail_stmt = 0;
+  if (nx_own) {
+    g_loop_exc_base = g_exc_frame_depth;
+    g_c_loop_depth++;
+    if (as_expr) {
+      nx_bt = bn3 > 0 ? comp_ntype(c, bd3[bn3 - 1]) : TY_NIL;
+      if (bn3 > 0) {
+        const char *tty3 = nt_type(nt, bd3[bn3 - 1]);
+        nx_tail_stmt = tty3 && (sp_streq(tty3, "IfNode") || sp_streq(tty3, "CaseNode") ||
+                                sp_streq(tty3, "WhileNode") || sp_streq(tty3, "UntilNode") ||
+                                sp_streq(tty3, "BeginNode") || sp_streq(tty3, "NextNode") ||
+                                sp_streq(tty3, "ReturnNode"));
+      }
+      nx_tmp = ++g_tmp;
+      snprintf(nxbuf, sizeof nxbuf, "_t%d", nx_tmp);
+      g_ie_next_var = nxbuf;
+      g_ie_res_poly = (nx_bt == TY_POLY);
+      if (nx_bt == TY_POLY) buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", nx_tmp);
+      else if (nx_bt == TY_INT || nx_bt == TY_BOOL || nx_bt == TY_SYMBOL)
+        buf_printf(b, "mrb_int _t%d = SP_INT_NIL; ", nx_tmp);
+      else if (proc_slot_is_ptr(nx_bt)) {
+        emit_ctype(c, nx_bt, b); buf_printf(b, " _t%d = NULL; ", nx_tmp);
+      }
+      else {
+        /* type-opaque tail (e.g. the body IS the `next`): ride the mrb_int
+           carrier with the nil sentinel; the next-var stays active so a
+           valued `next` still delivers. */
+        buf_printf(b, "mrb_int _t%d = SP_INT_NIL; ", nx_tmp);
+      }
+      buf_puts(b, "do { ");
+    }
+    else {
+      g_ie_next_var = NULL; g_ie_res_poly = 0;
+      emit_indent(b, indent); buf_puts(b, "do {\n");
+    }
+  }
+  if (nx_own && as_expr && g_ie_next_var && !nx_tail_stmt && bn3 > 0) {
+    for (int k3 = 0; k3 < bn3 - 1; k3++) emit_stmt(c, bd3[k3], b, 0);
+    buf_printf(b, "%s = ", nxbuf);
+    if (g_ie_res_poly) emit_boxed(c, bd3[bn3 - 1], b);
+    else emit_expr(c, bd3[bn3 - 1], b);
+    buf_puts(b, "; ");
+  }
+  else
+    emit_stmts(c, bbody, b, as_expr ? 0 : (nx_own ? indent + 1 : indent));
+  if (nx_own) {
+    g_c_loop_depth--;
+    g_loop_exc_base = sv_lexc2;
+    if (as_expr) buf_printf(b, "} while(0); %s; ", g_ie_next_var ? nxbuf : "(void)0");
+    else { emit_indent(b, indent); buf_puts(b, "} while(0);\n"); }
+    g_ie_next_var = sv_nx2; g_ie_res_poly = sv_poly2;
+  }
   g_self = sv_bself; g_self_deref = sv_bderef;
   g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt;
   g_method_pr_exc_depth = sv_bexc;
@@ -537,6 +599,29 @@ int subtree_has_own_redo(const NodeTable *nt, int id) {
   return 0;
 }
 
+/* Does the subtree contain a `next` that belongs to THIS block, i.e. one not
+   nested inside a deeper loop/block/def (which would own it instead)? Same
+   ownership rule as subtree_has_own_redo. */
+int subtree_has_own_next(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (sp_streq(ty, "NextNode")) return 1;
+  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
+      sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
+      sp_streq(ty, "LambdaNode"))
+    return 0;
+  if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0) return 0;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (subtree_has_own_next(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) if (subtree_has_own_next(nt, ids[k])) return 1;
+  }
+  return 0;
+}
+
 /* Emit a loop body, prefixing a `_redo_N:` label (and pushing it on the redo
    stack) when the body contains a `redo` that targets this loop. The label
    sits at the body top so `redo` re-runs the body without advancing. */
@@ -546,6 +631,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      frames opened inside the body (mirrors emit_return's accounting). */
   int sv_lexc = g_loop_exc_base;
   g_loop_exc_base = g_exc_frame_depth;
+  g_c_loop_depth++;
   int has_redo = subtree_has_own_redo(c->nt, body);
   int lbl = 0;
   if (has_redo) {
@@ -563,6 +649,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (g_uses_threads) { emit_indent(b, indent); buf_puts(b, "if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();\n"); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;
+  g_c_loop_depth--;
   g_loop_exc_base = sv_lexc;
 }
 

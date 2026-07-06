@@ -125,6 +125,11 @@ const char *g_loop_break_var = NULL;
    holds the C result temp so a top-level `next <v>` captures its value before
    continuing out of the splice (mirrors g_loop_break_var for `break`). */
 const char *g_ie_next_var = NULL;
+/* C-loop nesting depth within the current function body: `next` emits a plain
+   `continue` only when inside a C loop; at depth 0 inside a proc function it
+   is the proc's own return (Ruby block semantics), not a loop control. */
+int g_c_loop_depth = 0;
+int g_in_proc_body = 0;
 /* Set while emitting an instance_exec/eval splice whose result temp is poly:
    a `break <v>` / `next <v>` carrying a scalar value must box it to match. */
 int g_ie_res_poly = 0;

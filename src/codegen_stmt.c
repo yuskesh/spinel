@@ -5505,6 +5505,37 @@ else {
     buf_puts(b, "break;\n"); return;
   }
   if (sp_streq(ty, "NextNode")) {
+    /* `next` at C-loop depth 0 inside a _proc_N function is the proc's own
+       return (Ruby block semantics: next leaves the block with its value),
+       not a loop continue -- there is no enclosing C loop, and emitting
+       `continue` there is invalid C. Route it through the proc's return ABI:
+       the poly slot when one is active, else the direct mrb_int carrier. */
+    if (g_in_proc_body && g_c_loop_depth == 0) {
+      int nargs = nt_ref(nt, id, "arguments");
+      int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;
+      if (g_result_var && g_result_poly) {
+        emit_indent(b, indent); buf_printf(b, "%s = ", g_result_var);
+        if (nvc > 0) emit_boxed(c, nv[0], b); else buf_puts(b, "sp_box_nil()");
+        buf_puts(b, ";\n");
+        emit_indent(b, indent); buf_puts(b, "return 0;\n");
+      }
+      else if (nvc > 0 && (g_ret_type == TY_INT || g_ret_type == TY_BOOL || g_ret_type == TY_SYMBOL)) {
+        emit_indent(b, indent); buf_puts(b, "return ");
+        emit_expr(c, nv[0], b); buf_puts(b, ";\n");
+      }
+      else if (nvc > 0 && proc_slot_is_ptr(g_ret_type)) {
+        emit_indent(b, indent); buf_puts(b, "return (mrb_int)(uintptr_t)(");
+        emit_expr(c, nv[0], b); buf_puts(b, ");\n");
+      }
+      else if (nvc > 0) {
+        /* untypable slot: evaluate for effects, return nil */
+        emit_indent(b, indent); buf_puts(b, "(void)(");
+        emit_expr(c, nv[0], b); buf_puts(b, ");\n");
+        emit_indent(b, indent); buf_puts(b, "return 0;\n");
+      }
+      else { emit_indent(b, indent); buf_puts(b, "return 0;\n"); }
+      return;
+    }
     if (g_ie_next_var) {
       int nargs = nt_ref(nt, id, "arguments");
       int nvc = 0; const int *nv = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nvc) : NULL;

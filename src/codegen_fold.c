@@ -2683,6 +2683,7 @@ static void emit_block_value_into(Compiler *c, int block, const char *dest,
   const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly;
   int sv_lexc = g_loop_exc_base; g_loop_exc_base = g_exc_frame_depth;
   g_ie_next_var = dest; g_ie_res_poly = want_poly;
+  g_c_loop_depth++;   /* the do{}while(0) wrapper makes `continue` valid */
   int sd = g_indent;
   /* Wrap the body in do{}while(0): an interior or tail `next <v>` assigns
      `dest` (via g_ie_next_var) then emits `continue`, which against while(0)
@@ -2717,6 +2718,7 @@ static void emit_block_value_into(Compiler *c, int block, const char *dest,
   }
   g_indent = sd;
   emit_indent(g_pre, indent); buf_puts(g_pre, "} while (0);\n");
+  g_c_loop_depth--;
   g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_loop_exc_base = sv_lexc;
 }
 

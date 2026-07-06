@@ -1758,6 +1758,8 @@ else if (orecv >= 0 && onm) {
      the middle of ours (invalid C). Same shape as emit_fiber_new's nested-
      Fiber fix: the inner body appends itself first, we follow -- both at file
      scope, and the prototypes in g_proc_protos keep call order irrelevant. */
+  int sv_loopd = g_c_loop_depth, sv_inproc = g_in_proc_body;
+  g_c_loop_depth = 0; g_in_proc_body = 1;   /* fresh fn: outer loops don't count */
   Buf proc_body_buf; memset(&proc_body_buf, 0, sizeof proc_body_buf);
   Buf *pb = &proc_body_buf;
   buf_printf(pb, "static mrb_int _proc_%d(void *_cap, mrb_int argc, mrb_int *args) {\n", pid);
@@ -1917,6 +1919,7 @@ else if (orecv >= 0 && onm) {
   buf_puts(pb, "}\n");
   buf_puts(&g_procs, proc_body_buf.p ? proc_body_buf.p : "");
   free(proc_body_buf.p);
+  g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc;
 
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
