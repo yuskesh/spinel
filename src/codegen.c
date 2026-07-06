@@ -1490,11 +1490,11 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
     int nopt = 0, nkw = 0;
     const int *opts = pn0 >= 0 ? nt_arr(nt, pn0, "optionals", &nopt) : NULL;
     const int *kws  = pn0 >= 0 ? nt_arr(nt, pn0, "keywords", &nkw) : NULL;
-    for (int j = 0; j < nopt && !opt_kw_used; j++) {
+    for (int j = 0; j < nopt && opt_kw_used < 0; j++) {
       const char *on = nt_str(nt, opts[j], "name");
       if (on && nameset_has(&used, on)) opt_kw_used = 1;
     }
-    for (int j = 0; j < nkw && opt_kw_used <= 0; j++) {
+    for (int j = 0; j < nkw && opt_kw_used < 0; j++) {
       const char *kn = nt_str(nt, kws[j], "name");
       if (kn && nameset_has(&used, kn)) opt_kw_used = 1;
     }
