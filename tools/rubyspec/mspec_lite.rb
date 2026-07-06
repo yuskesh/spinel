@@ -84,6 +84,13 @@ class SpecExpectation
   end
 end
 
+# mspec's flunk: an unconditional failure marker ("this line must not be
+# reached", e.g. after a call that should have raised).
+def flunk(msg = "flunked")
+  $spec_fail += 1
+  puts "MSPEC-FAIL: #{msg}"
+end
+
 class Object
   def should
     SpecExpectation.new(self, false)
