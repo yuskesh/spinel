@@ -711,7 +711,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_self_deref = (s->class_id >= 0 && !s->is_cmethod && c->classes[s->class_id].is_value_type &&
                   s->name && !sp_streq(s->name, "initialize")) ? "." : "->";
   g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
-  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
+  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
   /* real-function funnel mirror: no proc-return frame yet (set below when
      one exists); block bodies spliced by yield-inlines restore from these. */
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = g_ret_type;
@@ -1250,7 +1250,8 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
   int sv_fbskip = g_brk_skip_id; g_brk_skip_id = -1;
   int sv_fbexcd = g_exc_frame_depth, sv_fbprexcd = g_method_pr_exc_depth;
-  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
+  int sv_fbrsd = g_rescue_save_depth;
+  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
 
   /* Unpack capture struct */
   if (ncap > 0 || cap_self) {
@@ -1368,6 +1369,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
   g_exc_frame_depth = sv_fbexcd; g_method_pr_exc_depth = sv_fbprexcd;
+  g_rescue_save_depth = sv_fbrsd;
 
   /* Emit creation expression:
      If there are captures, allocate a GC-managed capture struct, fill it,
@@ -1782,7 +1784,8 @@ else if (orecv >= 0 && onm) {
   const char *sv_pr_label = g_method_pr_label, *sv_pr_var = g_method_pr_var, *sv_prh = g_proc_return_home;
   g_method_pr_label = NULL; g_method_pr_var = NULL;
   int sv_excd = g_exc_frame_depth, sv_prexcd = g_method_pr_exc_depth;
-  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0;
+  int sv_rsd = g_rescue_save_depth;
+  g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
   const char *sv_fn_prl = g_fn_pr_label, *sv_fn_prv = g_fn_pr_var; TyKind sv_fn_rt = g_fn_ret_type;
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = ret;
   char home_acc[48] = "";
@@ -2017,6 +2020,7 @@ else if (orecv >= 0 && onm) {
   g_result_poly = sv_rp;
   g_method_pr_label = sv_pr_label; g_method_pr_var = sv_pr_var; g_proc_return_home = sv_prh;
   g_exc_frame_depth = sv_excd; g_method_pr_exc_depth = sv_prexcd;
+  g_rescue_save_depth = sv_rsd;
   g_fn_pr_label = sv_fn_prl; g_fn_pr_var = sv_fn_prv; g_fn_ret_type = sv_fn_rt;
 
   if (ncap == 0 && !cap_self && !ret_proc) {
@@ -2149,14 +2153,17 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
     /* An ivar-less exception subclass is forward-declared as
        `typedef sp_Exception` and needs no struct of its own. One with
        ivars gets a dedicated struct whose leading members mirror
-       sp_Exception (cls_name/parent_cls_name/msg) -- a common initial
+       sp_Exception (cls_name/parent_cls_name/msg/cause) -- a common initial
        sequence -- so every `(sp_Exception *)` cast in the raise/rescue
-       and message machinery stays valid, with the ivar fields after (#1415). */
+       and message machinery stays valid, with the ivar fields after (#1415).
+       cause must be mirrored too: the rescue machinery writes it through the
+       base cast, so omitting it would alias the first ivar. */
     if (ci->nivars == 0) return;
     buf_printf(b, "struct sp_%s_s {\n", ci->name);
     buf_puts(b, "  const char *cls_name;\n");
     buf_puts(b, "  const char *parent_cls_name;\n");
     buf_puts(b, "  const char *msg;\n");
+    buf_puts(b, "  struct sp_Exception_s *cause;\n");
     for (int i = 0; i < ci->nivars; i++) {
       TyKind t = ci->ivar_types[i];
       /* belt and suspenders: analyze widens void/nil ivar slots to poly

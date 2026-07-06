@@ -171,6 +171,23 @@ typedef struct { int lid; int has_retval; int exc_base; } EnsureCtx;
 extern EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
 extern int       g_ensure_depth;
 
+/* One entry per rescue body currently being emitted. exc_base records
+   g_exc_frame_depth at that body's entry so a non-local exit can tell which
+   rescue bodies it crosses (those with exc_base >= the exit's frame base) and
+   pop their sp_exc_handling entries (sp_rescue_sp). */
+typedef struct { int exc_base; } RescueSave;
+extern RescueSave g_rescue_save_stack[MAX_ENSURE_DEPTH];
+extern int        g_rescue_save_depth;
+/* Emit the pop that leaves the exception frames above pop_base AND pops the
+   sp_rescue_sp handler for each rescue body crossed. Replaces the bare
+   `sp_exc_top -= N;` emission at every non-local-exit site. When guard != NULL
+   (deferred return), both are wrapped in `if (guard) { ... }`. Returns 1 if it
+   emitted anything. */
+int emit_frame_unwind(Buf *b, int pop_base, const char *guard);
+/* Pop the sp_rescue_sp handlers crossed (no frame pop), for the begin..ensure
+   deferred return whose frame-pop text is special. */
+void emit_cur_exc_restore(Buf *b, int pop_base);
+
 /* First-class Proc support: each `proc {}` / `lambda {}` / `->{}` literal
    lowers to a standalone `static mrb_int _proc_N(void *cap, mrb_int *args)`
    function (the ABI sp_proc_call expects). Definitions accumulate in g_procs

@@ -3994,12 +3994,36 @@ static SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
    sp_pending_exc_obj is set by sp_raise_exc just before the longjmp and
    consumed into the per-frame slot by sp_raise_cls. */
 static SP_TLS void *sp_exc_obj[SP_EXC_STACK_MAX];
-/* Parallel save of the ENCLOSING context's $! at each frame push: a raise
-   into frame i overwrites sp_exc_obj[i] (the handler runs after the pop, at
-   the same index a nested begin will reuse), so the rescue arm restores the
-   outer value from here on normal completion. Indexed like sp_exc_obj. */
-static SP_TLS void *sp_bang_sv[SP_EXC_STACK_MAX];
 static SP_TLS void *sp_pending_exc_obj = NULL;
+/* The exception currently being handled (set by a rescue body), and the cause
+   captured for the next raised exception -- Exception#cause threads the former
+   into a newly raised exception's `cause` field. */
+static SP_TLS void *sp_pending_cause = NULL;
+/* The exception handled at each active rescue-body depth (CRuby's per-rescue
+   errinfo). The "currently handled" exception -- what Exception#cause threads --
+   is the innermost: sp_rescue_sp>0 ? sp_exc_handling[sp_rescue_sp-1] : NULL. A
+   depth stack, NOT indexed by sp_exc_top: a rescue body runs with its begin frame
+   already popped, so nested rescue bodies share an sp_exc_top. Pushed on rescue
+   entry; popped on every exit -- fall-through, return/break/next/retry (codegen
+   pops sp_rescue_sp), and raise-out (the landing restores sp_rescue_mark). */
+static SP_TLS void *sp_exc_handling[SP_EXC_STACK_MAX];
+static SP_TLS int sp_rescue_sp = 0;
+/* sp_rescue_sp captured at each begin frame's arm, restored on that frame's
+   exception landing so a rescue body that exits by raising doesn't leak its push
+   (a side array beside the handler stack, mirroring sp_exc_rootmark). */
+static SP_TLS int sp_rescue_mark[SP_EXC_STACK_MAX];
+#define sp_cur_handled() (sp_rescue_sp > 0 ? sp_exc_handling[sp_rescue_sp-1] : NULL)
+/* Push a handled exception. sp_rescue_sp grows with recursion *through* rescue
+   bodies (the handler stays pushed across the recursive call it makes, unlike a
+   begin frame which is popped first), so a fixed SP_EXC_STACK_MAX can be reached;
+   fail loudly rather than write past sp_exc_handling. */
+static void sp_rescue_push(void *e) {
+  if (sp_rescue_sp >= SP_EXC_STACK_MAX) {
+    fprintf(stderr, "rescue nesting too deep (> %d)\n", SP_EXC_STACK_MAX);
+    exit(1);
+  }
+  sp_exc_handling[sp_rescue_sp++] = e;
+}
 /* ---- Native backtrace formatting (spinel --debug) ---------------------- */
 /* True for sp_<name> symbols that are runtime helpers, not user Ruby methods.
    A denylist of the lowercase runtime prefixes; user methods are sp_<rubyname>
@@ -4172,7 +4196,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      inside an `ensure` running during a proc-return / throw): clear the unwind so
      an outer handler treats this as an exception, not a continued unwind. */
   sp_unwind_kind = SP_UNWIND_NONE;
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj ? sp_pending_exc_obj : (void *)sp_exc_new_for_catch(cls, msg); sp_pending_exc_obj = NULL; sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
+  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_cur_handled(); sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
 /* Issue #781: bridge between the regex compile-error path (which lives
@@ -4208,6 +4232,9 @@ static void sp_mark_in_flight_exceptions(void) {
     if (sp_exc_obj[i]) sp_gc_mark(sp_exc_obj[i]);  /* carried subclass object + its ivars */
   }
   if (sp_pending_exc_obj) sp_gc_mark(sp_pending_exc_obj);
+  if (sp_pending_cause) sp_gc_mark(sp_pending_cause);
+  for (int i = 0; i < sp_rescue_sp; i++)
+    if (sp_exc_handling[i]) sp_gc_mark(sp_exc_handling[i]);  /* handled exceptions */
 }
 
 /* sp_Exception: first-class exception object. cls_name is a pointer
@@ -4218,12 +4245,14 @@ typedef struct sp_Exception_s {
   const char *cls_name;
   const char *parent_cls_name; /* builtin ancestor for user subclasses, or NULL */
   const char *msg;
+  struct sp_Exception_s *cause; /* the exception being handled when this was raised, or NULL */
 } sp_Exception;
 /* Registered by the generated program to provide user exception hierarchy. */
 static const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
 static void sp_exc_gc_scan(void *p) {
   sp_Exception *e = (sp_Exception *)p;
   if (e->msg) sp_mark_string(e->msg);
+  if (e->cause) sp_gc_mark(e->cause);
   /* cls_name/parent_cls_name point into rodata -- not GC-managed strings */
 }
 static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
@@ -4231,6 +4260,7 @@ static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->parent_cls_name = NULL;
   e->msg = (msg && msg[0]) ? msg : (cls_name ? cls_name : "RuntimeError");
+  e->cause = NULL;  /* set all fields explicitly; sp_exc_gc_scan reads cause */
   return e;
 }
 static sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {
@@ -4282,6 +4312,11 @@ static sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
     if (par) e->parent_cls_name = par;
   }
   return e;
+}
+/* Exception#cause: the exception active when this one was raised, or NULL. */
+static sp_Exception *sp_exc_cause(volatile sp_Exception *ve) {
+  sp_Exception *e = (sp_Exception *)ve;
+  return e ? e->cause : NULL;
 }
 /* Exception#is_a?(ClassName): checks class name and known hierarchy. */
 static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
@@ -4599,6 +4634,9 @@ static void sp_mark_proc_homes(void) {
 static void sp_publish_worker_roots(void) {
   for (int i = 0; i < sp_exc_top; i++) if (sp_exc_obj[i]) _sp_gc_root_push((void **)&sp_exc_obj[i]);
   if (sp_pending_exc_obj) _sp_gc_root_push((void **)&sp_pending_exc_obj);
+  if (sp_pending_cause) _sp_gc_root_push((void **)&sp_pending_cause);
+  for (int i = 0; i < sp_rescue_sp; i++)
+    if (sp_exc_handling[i]) _sp_gc_root_push((void **)&sp_exc_handling[i]);
   for (sp_proc_home *h = sp_proc_ret_head; h; h = h->prev)
     _sp_gc_root_push((void **)((uintptr_t)&h->val | (uintptr_t)1));   /* sp_RbVal root */
   for (int i = 0; i < sp_brk_top; i++)
@@ -4635,6 +4673,8 @@ typedef struct {
   jmp_buf *bs; sp_RbVal *bv; mrb_int *bser; int *bet;     int bn, bcap;  /* break scopes */
   sp_proc_home *prhead;  /* this fiber's proc-return chain head (nodes on its C stack) */
   int uk, ut, ue; sp_proc_home *uh;  /* transient unwind state (in flight only while running ensures) */
+  void **shand; int rn, rcap;        /* sp_exc_handling prefix [0..sp_rescue_sp) */
+  void *pcause;                      /* sp_pending_cause */
 } sp_exc_ctx_t;
 
 void *sp_exc_ctx_new(void) { return calloc(1, sizeof(sp_exc_ctx_t)); }
@@ -4643,7 +4683,7 @@ void sp_exc_ctx_free(void *p) {
   if (!x) return;
   free(x->es); free(x->em); free(x->ec); free(x->eo);
   free(x->cs); free(x->ct); free(x->cv); free(x->cet);
-  free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x);
+  free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x->shand); free(x);
 }
 void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
@@ -4677,6 +4717,12 @@ void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   x->bn = bn;
   x->prhead = sp_proc_ret_head;
   x->uk = sp_unwind_kind; x->ut = sp_unwind_target; x->ue = sp_unwind_exc_top; x->uh = sp_unwind_home;
+  int rn = sp_rescue_sp;
+  if (rn > x->rcap) { x->rcap = rn;
+    x->shand = (void **)realloc(x->shand, sizeof(void *) * rn);
+    if (!x->shand) sp_oom_die(); }
+  for (int i = 0; i < rn; i++) x->shand[i] = sp_exc_handling[i];
+  x->rn = rn; x->pcause = sp_pending_cause;
 }
 void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
@@ -4691,6 +4737,8 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   sp_brk_top = x->bn;
   sp_proc_ret_head = x->prhead;
   sp_unwind_kind = x->uk; sp_unwind_target = x->ut; sp_unwind_exc_top = x->ue; sp_unwind_home = x->uh;
+  for (int i = 0; i < x->rn; i++) sp_exc_handling[i] = x->shand[i];
+  sp_rescue_sp = x->rn; sp_pending_cause = x->pcause;
 }
 void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carried exc objects */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
@@ -4700,6 +4748,7 @@ void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carri
      carry an in-flight return value; mark each so it survives a GC during yield. */
   for (sp_proc_home *h = x->prhead; h; h = h->prev) sp_mark_rbval(h->val);
   for (int i = 0; i < x->bn; i++) sp_mark_rbval(x->bv[i]);   /* carried break scopes */
+  for (int i = 0; i < x->rn; i++) if (x->shand[i]) sp_gc_mark(x->shand[i]);  /* handled excs */
 }
 /* Trampoline base handler (#1474): the fiber trampoline arms a copy of its own
    setjmp buffer as the fiber's lowest handler, so an otherwise-unhandled raise
