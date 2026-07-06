@@ -701,6 +701,23 @@ int infer_write_types(Compiler *c) {
             if (!lv || lv->is_param || lv->is_block_param) continue;
             lv->type = ty_unify(lv->type, st);
           }
+          /* the rest target under a scalar RHS collects [scalar] (or stays
+             empty when fixed targets consumed it): an ARRAY of the scalar. */
+          int rest_ms = nt_ref(nt, id, "rest");
+          if (rest_ms >= 0 && nt_type(nt, rest_ms) && sp_streq(nt_type(nt, rest_ms), "SplatNode")) {
+            int rin_ms = nt_ref(nt, rest_ms, "expression");
+            if (rin_ms >= 0 && nt_type(nt, rin_ms) &&
+                sp_streq(nt_type(nt, rin_ms), "LocalVariableTargetNode")) {
+              const char *rnm_ms = nt_str(nt, rin_ms, "name");
+              LocalVar *rlv_ms = rnm_ms ? scope_local(comp_scope_of(c, id), rnm_ms) : NULL;
+              if (rlv_ms && !rlv_ms->is_param && !rlv_ms->is_block_param) {
+                TyKind rat = ty_array_of(st);
+                if (rat == TY_UNKNOWN) rat = TY_POLY_ARRAY;
+                TyKind mg_r = ty_unify(rlv_ms->type, rat);
+                if (mg_r != rlv_ms->type) { rlv_ms->type = mg_r; changed = 1; }
+              }
+            }
+          }
         }
       }
       /* any expression returning a typed array: assign element types to targets */

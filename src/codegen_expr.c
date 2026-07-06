@@ -1339,6 +1339,9 @@ void emit_expr(Compiler *c, int id, Buf *b) {
                splice one level if it is an array, drop nil, else push as-is
                (CRuby splat semantics). */
             buf_printf(g_pre, "{ sp_RbVal _sv = %s; if (!sp_poly_nil_p(_sv)) sp_PolyArray_flatten_into_n(_t%d, _sv, 1); }\n", ep, t);
+          else if (it == TY_NIL)
+            /* a statically-nil splat contributes nothing (`[*nil]` == []) */
+            buf_printf(g_pre, ";\n");
           else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", t, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
           free(el.p);
         }
@@ -1390,6 +1393,9 @@ else {
           buf_printf(g_pre, "{ sp_IntArray *_sa = %s; if (_sa) for (mrb_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_sa->start+_si]); }\n", ep, k, t);
         else if (it == TY_STR_ARRAY && sp_streq(k, "Str"))
           buf_printf(g_pre, "{ sp_StrArray *_sa = %s; if (_sa) for (mrb_int _si = 0; _si < _sa->len; _si++) sp_%sArray_push(_t%d, _sa->data[_si]); }\n", ep, k, t);
+        else if (it == TY_NIL)
+          /* a statically-nil splat contributes nothing (`[*nil]` == []) */
+          buf_printf(g_pre, ";\n");
         else {
           /* Mismatched or unknown element type: emit_expr fallback */
           buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", k, t, ep);

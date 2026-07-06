@@ -4691,6 +4691,16 @@ else {
     }
     int en = 0;
     const int *els = (vty && sp_streq(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
+    /* A splat among the RHS elements (`*a = *x`, `a, b = 1, *rest`) makes the
+       tuple statically unsized: drop the per-element-temp tuple path and let
+       the runtime-destructure path evaluate the whole ArrayNode (the literal
+       emitter splices splats) and slice it. */
+    if (els) {
+      for (int i = 0; i < en; i++) {
+        const char *ety0 = nt_type(nt, els[i]);
+        if (ety0 && sp_streq(ety0, "SplatNode")) { els = NULL; en = 0; break; }
+      }
+    }
     int rn = 0;
     const int *rights = nt_arr(nt, id, "rights", &rn);
     int rest_nid = nt_ref(nt, id, "rest");
@@ -4716,6 +4726,12 @@ else {
          super / yield can return a multi-value tuple, so those are excluded
          and fall through to the tuple-destructuring path. */
       TyKind st = comp_ntype(c, value);
+      /* RHS `*expr` (a, *b = *x) builds an ARRAY (splat-to-array), but
+         comp_ntype answers a SplatNode with the ELEMENT type (that arm
+         serves array-literal splices) -- override so the destructure path
+         below runs; emit_expr's SplatNode arm already yields a normalized
+         sp_PolyArray*. */
+      if (vty && sp_streq(vty, "SplatNode")) st = TY_POLY_ARRAY;
       int multi_src = vty && (sp_streq(vty, "CallNode") || sp_streq(vty, "SuperNode") ||
                               sp_streq(vty, "ForwardingSuperNode") || sp_streq(vty, "YieldNode"));
       /* a TY_POLY value can hold an array at runtime (doom's
@@ -4723,6 +4739,29 @@ else {
          so it must take the runtime-destructure path below, not the
          scalar fill -- which handed the whole array to the first target. */
       if (vty && !multi_src && !ty_is_array(st) && !ty_is_hash(st) && st != TY_UNKNOWN && st != TY_POLY) {
+        /* rest target under a scalar RHS: `*a = 5` collects [5]; with fixed
+           targets present (`a, *r = 5`) the scalar goes to the first target
+           and the rest is empty. */
+        if (rest_var) {
+          Scope *rsc0 = comp_scope_of(c, id);
+          LocalVar *rlv0 = scope_local(rsc0, rest_var);
+          TyKind rat0 = rlv0 && ty_is_array(rlv0->type) ? rlv0->type : TY_POLY_ARRAY;
+          const char *rk0 = (rat0 == TY_POLY_ARRAY) ? "Poly" : array_kind(rat0);
+          if (!rk0) rk0 = "Poly";
+          int tr0 = ++g_tmp;
+          emit_indent(b, indent);
+          buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk0, tr0, rk0, tr0);
+          if (ln == 0) {
+            emit_indent(b, indent);
+            buf_printf(b, "sp_%sArray_push(_t%d, ", rk0, tr0);
+            if (rat0 == TY_POLY_ARRAY) emit_boxed(c, value, b);
+            else emit_expr(c, value, b);
+            buf_puts(b, ");\n");
+          }
+          emit_indent(b, indent);
+          buf_printf(b, "lv_%s = _t%d;\n", rest_var, tr0);
+          if (ln == 0) return;
+        }
         for (int i = 0; i < ln; i++) {
           const char *lty = nt_type(nt, lefts[i]);
           if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
