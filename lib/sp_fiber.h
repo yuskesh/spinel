@@ -83,6 +83,7 @@ void sp_mark_fiber_root_storage(void);
 void sp_fiber_set_raise_inject(sp_Fiber *f, const char *cls, const char *msg, void *obj);
 void sp_fiber_set_kill_inject(sp_Fiber *f);
 void sp_fiber_fire_inject_if_pending(void);
+int  sp_fiber_inject_pending(sp_Fiber *f);   /* lock-free acquire peek */
 SP_NORETURN void sp_fiber_raise_kill_self(void);
 
 #endif

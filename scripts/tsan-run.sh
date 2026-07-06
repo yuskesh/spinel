@@ -27,7 +27,10 @@ bin="$(mktemp /tmp/tsan-run-XXXXXX.bin)"
 trap 'rm -f "$c" "$bin"' EXIT
 
 "$SPINEL" "$rb" -S > "$c"
-cc -O1 -g -fsanitize=thread -DSP_THREADS -ftls-model=initial-exec \
+# -Wno-all matches the production cc driver (src/main.c): the generated C
+# carries benign patterns (e.g. a fiber body's dead deferred-return epilogue)
+# that newer clangs otherwise reject by default.
+cc -O1 -g -Wno-all -fsanitize=thread -DSP_THREADS -ftls-model=initial-exec \
    -Ilib -Ilib/regexp "$c" "$ARCHIVE" -lm -lpthread -o "$bin"
 
 # halt_on_error keeps the first race fatal (a clean exit means TSan saw none).

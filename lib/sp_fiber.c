@@ -261,29 +261,46 @@ void sp_Fiber_storage_set(sp_Fiber*f,sp_sym k,sp_RbVal v){if(!f->storage)f->stor
    codegen emits in src/codegen_stmt.c. */
 #define SP_FIBER_KILL_CLS "FiberKillSignal"
 
+/* The inject flag is written by another OS thread (Thread#kill/#raise under the
+   scheduler lock) but read lock-free by the target's own paths (the trampoline,
+   Fiber.yield, sp_fiber_fire_inject_if_pending after a park). Publish with
+   release (payload fields first) and read with acquire so the reader that sees
+   the flag also sees inj_cls/inj_msg/inj_obj. In the single-threaded build
+   these compile to plain loads/stores. */
+#define SP_INJECT_LOAD(f)     __atomic_load_n(&(f)->inject, __ATOMIC_ACQUIRE)
+#define SP_INJECT_STORE(f,v)  __atomic_store_n(&(f)->inject, (v), __ATOMIC_RELEASE)
+
 /* Raise the exception queued by sp_Fiber_raise / sp_Fiber_kill in the fiber's
    own context. Runs at the fiber's suspension point (sp_Fiber_yield) or, for an
    unstarted fiber, at body entry (the trampoline). inject==2 is a kill signal;
    inject==1 is an ordinary raise. Clears the slot first so a rescue/retry does
    not re-fire it. */
-static void sp_fiber_consume_inject(sp_Fiber*f){int kind=f->inject;const char*cl=f->inj_cls;const char*ms=f->inj_msg;void*ob=f->inj_obj;f->inject=0;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;if(kind==2)sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));else sp_fiber_reraise(cl,ms,ob);}
+static void sp_fiber_consume_inject(sp_Fiber*f){int kind=SP_INJECT_LOAD(f);const char*cl=f->inj_cls;const char*ms=f->inj_msg;void*ob=f->inj_obj;SP_INJECT_STORE(f,0);f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;if(kind==2)sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));else sp_fiber_reraise(cl,ms,ob);/* kind 1 (Fiber#raise) and 3 (Thread#raise) both re-raise */}
 
 /* Thread #kill / #raise support: the scheduler sets a pending inject on a target
    thread's fiber, then fires it (sp_fiber_fire_inject_if_pending) when that
    thread next runs -- in its own context, so its ensure blocks unwind on its own
    stack. sp_fiber_raise_kill_self raises the kill signal in the running fiber
-   (a thread killing itself). */
-void sp_fiber_set_raise_inject(sp_Fiber*f,const char*cls,const char*msg,void*obj){f->inject=1;f->inj_cls=cls;f->inj_msg=msg;f->inj_obj=obj;}
-void sp_fiber_set_kill_inject(sp_Fiber*f){f->inject=2;f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;}
-void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(f&&f->inject)sp_fiber_consume_inject(f);}
+   (a thread killing itself).
+   A thread raise is inject==3, NOT 1: the trampoline must not consume it at
+   body entry. A Thread#raise that lands before the body has run (the target
+   was picked up but not yet started) would otherwise raise ahead of the body's
+   own begin/rescue and escape as an unhandled thread exception; deferring it to
+   the thread's next suspension point (sp_sched_block / sleep / Thread.pass /
+   yield) delivers it inside the body, where its rescue/ensure can see it. */
+void sp_fiber_set_raise_inject(sp_Fiber*f,const char*cls,const char*msg,void*obj){f->inj_cls=cls;f->inj_msg=msg;f->inj_obj=obj;SP_INJECT_STORE(f,3);}
+void sp_fiber_set_kill_inject(sp_Fiber*f){f->inj_cls=NULL;f->inj_msg=NULL;f->inj_obj=NULL;SP_INJECT_STORE(f,2);}
+void sp_fiber_fire_inject_if_pending(void){sp_Fiber*f=sp_fiber_current;if(f&&SP_INJECT_LOAD(f))sp_fiber_consume_inject(f);}
+/* Lock-free peek for the scheduler's pre-park checks (sp_sched_block etc.). */
+int sp_fiber_inject_pending(sp_Fiber*f){return SP_INJECT_LOAD(f)!=0;}
 SP_NORETURN void sp_fiber_raise_kill_self(void){sp_raise_cls(SP_FIBER_KILL_CLS,(&("\xff")[1]));}
-static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);if(f->inject)sp_fiber_consume_inject(f);f->body(f);sp_exc_disarm();}else{const char*_cc=sp_exc_cur_cls();if(_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS)){/* killed: ensures already ran while unwinding; terminate without propagating */}else{f->raised=1;f->raised_cls=_cc;f->raised_msg=sp_exc_cur_msg();f->raised_obj=sp_exc_cur_obj();}}f->state=3;f->saved_nroots=0;/* dead: the snapshot points into unwound frames; never mark it */if(f->transferred){sp_fiber_current=&sp_fiber_root;SP_TSAN_SWITCH(&sp_fiber_root);sp_ctx_swap(&f->ctx,&sp_fiber_root.ctx);}else{SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);}}
+static void sp_fiber_trampoline(void){sp_Fiber*f=sp_fiber_current;jmp_buf base;if(setjmp(base)==0){sp_exc_arm(base);{int _inj=SP_INJECT_LOAD(f);if(_inj&&_inj!=3)sp_fiber_consume_inject(f);}/* a thread raise (3) defers to the body's first suspension point */f->body(f);sp_exc_disarm();}else{const char*_cc=sp_exc_cur_cls();if(_cc&&!strcmp(_cc,SP_FIBER_KILL_CLS)){/* killed: ensures already ran while unwinding; terminate without propagating */}else{f->raised=1;f->raised_cls=_cc;f->raised_msg=sp_exc_cur_msg();f->raised_obj=sp_exc_cur_obj();}}f->state=3;f->saved_nroots=0;/* dead: the snapshot points into unwound frames; never mark it */if(f->transferred){sp_fiber_current=&sp_fiber_root;SP_TSAN_SWITCH(&sp_fiber_root);sp_ctx_swap(&f->ctx,&sp_fiber_root.ctx);}else{SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);}}
 sp_RbVal sp_Fiber_resume(sp_Fiber*f,sp_RbVal val){if(f->state==3){sp_raise_cls("FiberError","attempt to resume a terminated fiber");}if(f->transferred){sp_raise_cls("FiberError","attempt to resume a transferred fiber");}if(f->state==1){sp_raise_cls("FiberError","attempt to resume a resumed fiber (double resume)");}f->resumed_value=val;sp_Fiber*prev=sp_fiber_current;sp_fiber_save_roots(prev);sp_fiber_restore_roots(f);if(!prev->exc_ctx)prev->exc_ctx=sp_exc_ctx_new();sp_exc_ctx_save(prev->exc_ctx);sp_exc_ctx_load(f->exc_ctx);sp_fiber_current=f;SP_TSAN_SET_CALLER(f,prev);SP_TSAN_SWITCH(f);if(f->state==0){f->state=1;sp_ctx_make(&f->ctx,f->stack+sp_fiber_guard(),SP_FIBER_STACK_SIZE,sp_fiber_trampoline);sp_ctx_swap(&f->caller_ctx,&f->ctx);}else{f->state=1;sp_ctx_swap(&f->caller_ctx,&f->ctx);}sp_exc_ctx_save(f->exc_ctx);sp_exc_ctx_load(prev->exc_ctx);if(f->state!=3)sp_fiber_save_roots(f);sp_fiber_restore_roots(prev);sp_fiber_current=prev;if(f->raised){f->raised=0;const char*rc=f->raised_cls;const char*rm=f->raised_msg;void*ro=f->raised_obj;f->raised_obj=NULL;sp_fiber_reraise(rc,rm,ro);}return f->yielded_value;}
 /* Fiber.yield is only valid inside a fiber entered via #resume. The root fiber
    was never resumed, and a fiber entered via #transfer has no resumer to return
    to (its caller_ctx is unset) -- yielding from either would swap to a garbage
    context, so raise instead (matching CRuby's FiberError). */
-sp_RbVal sp_Fiber_yield(sp_RbVal val){sp_Fiber*f=sp_fiber_current;if(f==&sp_fiber_root||f->transferred){sp_raise_cls("FiberError","attempt to yield on a not resumed fiber");}f->yielded_value=val;f->state=2;SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);if(f->inject)sp_fiber_consume_inject(f);return f->resumed_value;}
+sp_RbVal sp_Fiber_yield(sp_RbVal val){sp_Fiber*f=sp_fiber_current;if(f==&sp_fiber_root||f->transferred){sp_raise_cls("FiberError","attempt to yield on a not resumed fiber");}f->yielded_value=val;f->state=2;SP_TSAN_SWITCH(f->caller_fiber);sp_ctx_swap(&f->ctx,&f->caller_ctx);if(SP_INJECT_LOAD(f))sp_fiber_consume_inject(f);return f->resumed_value;}
 mrb_bool sp_Fiber_alive(sp_Fiber*f){return f->state!=3;}
 /* Fiber#raise: queue an exception, then resume the fiber so its suspension point
    (or body entry) raises it. An unhandled raise propagates to this caller via
