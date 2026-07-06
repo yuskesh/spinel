@@ -1281,7 +1281,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
           const char sg = gn[1];
           if (!gn[2] && (sg == '!' || sg == '~' || sg == '0' || sg == '$' ||
                          sg == '?' || sg == ';' || sg == ',' || sg == '/' ||
-                         sg == '\\' || sg == '*'))
+                         sg == '\\' || sg == '*' || sg == '&' ||
+                         sg == '\'' || sg == '`' || sg == '+'))
             res = "global-variable";
           else if (gn[2]) res = "global-variable";
         }
@@ -1308,6 +1309,16 @@ void emit_expr(Compiler *c, int id, Buf *b) {
               if (sp_streq(cn, builtins[bi])) { res = "constant"; break; }
           }
         }
+      }
+      else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") >= 0) {
+        /* an operator invocation on a defined receiver is a method call the
+           compiler always resolves (defined?(x == 2) -> "method") */
+        const char *on = nt_str(nt, v, "name");
+        static const char *const ops[] = { "==", "!=", "<", ">", "<=", ">=",
+          "<=>", "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^",
+          "=~", "[]", "!", NULL };
+        if (on) for (int oi = 0; ops[oi]; oi++)
+          if (sp_streq(on, ops[oi])) { res = "method"; break; }
       }
       else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
         const char *cn = nt_str(nt, v, "name");
@@ -1336,9 +1347,29 @@ void emit_expr(Compiler *c, int id, Buf *b) {
                sp_streq(vt, "LambdaNode") || sp_streq(vt, "IfNode") ||
                sp_streq(vt, "UnlessNode") || sp_streq(vt, "CaseNode") ||
                sp_streq(vt, "DefinedNode") || sp_streq(vt, "BeginNode") ||
-               sp_streq(vt, "ParenthesesNode"))
+               sp_streq(vt, "ParenthesesNode") ||
+               sp_streq(vt, "InterpolatedRegularExpressionNode") ||
+               sp_streq(vt, "SourceFileNode") || sp_streq(vt, "SourceLineNode") ||
+               sp_streq(vt, "SourceEncodingNode") || sp_streq(vt, "ForNode") ||
+               sp_streq(vt, "WhileNode") || sp_streq(vt, "UntilNode"))
         res = "expression";
       else if (sp_streq(vt, "YieldNode")) res = "yield";
+    }
+    /* dynamic cases: the answer depends on runtime state, so emit a
+       conditional instead of a compile-time label. */
+    if (!res && vt && sp_streq(vt, "BackReferenceReadNode")) {
+      /* $& / $~ / $` / $' / $+ are defined only after a successful match;
+         the backing slot is NULL before one. */
+      buf_puts(b, "(sp_re_match_str ? SPL(\"global-variable\") : NULL)");
+      return;
+    }
+    if (!res && vt && sp_streq(vt, "NumberedReferenceReadNode")) {
+      int refn = (int)nt_int(nt, v, "number", 0);
+      if (refn >= 1 && refn <= 9) {
+        /* value reads use sp_re_captures[n] directly ($N = captures[N]) */
+        buf_printf(b, "(sp_re_captures[%d] ? SPL(\"global-variable\") : NULL)", refn);
+        return;
+      }
     }
     if (res) buf_printf(b, "SPL(\"%s\")", res);
     else buf_puts(b, "NULL");
