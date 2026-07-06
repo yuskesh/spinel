@@ -3467,7 +3467,11 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (idx >= 0) return c->classes[cid].cvar_types[idx];
     return infer_type(c, nt_ref(nt, id, "value"));
   }
-  if (nk == NK_IndexOrWriteNode || nk == NK_IndexAndWriteNode) {
+  if (nk == NK_IndexOrWriteNode || nk == NK_IndexAndWriteNode ||
+      nk == NK_IndexOperatorWriteNode) {
+    /* all three yield the slot's (post-write) value, so the expression's type
+       is the slot type -- op-write included (`a[i] += x` used as a value, e.g.
+       the tail of a block whose proc result is consumed). */
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) return TY_UNKNOWN;
     TyKind rt = infer_type(c, recv);

@@ -371,6 +371,50 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
   emit_expr(c, nd, b);
 }
 
+/* Effect-free simple read whose re-evaluation is safe (and cheap): gates the
+   IndexOperatorWriteNode expression form below, which re-reads receiver and
+   key after the mutation. */
+static int idx_opw_node_is_cheap(const NodeTable *nt, int node) {
+  const char *t = nt_type(nt, node);
+  return t && (sp_streq(t, "LocalVariableReadNode") ||
+               sp_streq(t, "InstanceVariableReadNode") ||
+               sp_streq(t, "IntegerNode") || sp_streq(t, "FloatNode") ||
+               sp_streq(t, "StringNode") || sp_streq(t, "SymbolNode"));
+}
+
+/* Emit a read of recv[key] for the receiver shapes emit_index_op_write
+   handles, yielding the slot's static type (which the new infer rule reports
+   as the op-write expression's type, so the two always agree). */
+static void emit_index_get(Compiler *c, int recv, int key, Buf *b) {
+  TyKind rt = comp_ntype(c, recv);
+  if (ty_is_hash(rt) && ty_hash_cname(rt)) {
+    buf_printf(b, "sp_%sHash_get(", ty_hash_cname(rt));
+    emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_hash_key(c, key, ty_hash_key(rt), b);
+    buf_puts(b, ")");
+    return;
+  }
+  if (ty_is_array(rt)) {
+    const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+    buf_printf(b, "sp_%sArray_get(", k ? k : "Poly");
+    emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_int_expr(c, key, b);
+    buf_puts(b, ")");
+    return;
+  }
+  /* TY_POLY receiver: dispatch by key type, mirroring emit_index_op_write */
+  TyKind kt = comp_ntype(c, key);
+  const char *fn = kt == TY_SYMBOL ? "sp_poly_get_sym" :
+                   kt == TY_STRING ? "sp_poly_get_str" :
+                   kt == TY_INT    ? "sp_poly_arr_get_hash" : "sp_poly_index_poly";
+  buf_printf(b, "%s(", fn);
+  emit_expr(c, recv, b); buf_puts(b, ", ");
+  if (kt == TY_SYMBOL || kt == TY_STRING) emit_expr(c, key, b);
+  else if (kt == TY_INT) emit_int_expr(c, key, b);
+  else emit_boxed(c, key, b);
+  buf_puts(b, ")");
+}
+
 void emit_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -1804,6 +1848,32 @@ else {
     buf_puts(b, "))");
     return;
   }
+
+  /* a[i] op= v as an expression (e.g. the tail of a block whose proc result
+     is consumed): emit the mutation via the statement form, then read the
+     slot back as the value -- Ruby yields the stored (post-op) value. The
+     read-back re-evaluates receiver and key, so this path is gated on both
+     being effect-free simple reads; anything else keeps the clean reject. */
+  if (sp_streq(ty, "IndexOperatorWriteNode")) {
+    int ir = nt_ref(nt, id, "receiver");
+    int ia = nt_ref(nt, id, "arguments");
+    int iac = 0; const int *iav = ia >= 0 ? nt_arr(nt, ia, "arguments", &iac) : NULL;
+    if (ir >= 0 && iac == 1 &&
+        idx_opw_node_is_cheap(nt, ir) && idx_opw_node_is_cheap(nt, iav[0])) {
+      if (g_pre) {
+        emit_index_op_write(c, id, g_pre, g_indent);
+        emit_index_get(c, ir, iav[0], b);
+      }
+      else {
+        buf_puts(b, "({ ");
+        emit_index_op_write(c, id, b, 0);
+        emit_index_get(c, ir, iav[0], b);
+        buf_puts(b, "; })");
+      }
+      return;
+    }
+  }
+
   unsupported(c, id, "expression");
 }
 
