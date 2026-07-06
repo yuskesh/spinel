@@ -779,6 +779,26 @@ void emit_c_escaped(Buf *b, const char *s) {
    frozen: the pragma only affects literals written in the source. */
 void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
   const char *mk = frozen ? "\\xf1" : "\\xff";
+  /* A frozen literal must carry a REAL sp_str_hdr: the 0xf1 marker promises
+     one immediately in front of the data (sp_str_hash caches the FNV hash
+     through it, mutation guards and frozen? key off the marker). Baking the
+     marker onto a bare rodata literal made that header read/write land in
+     whatever rodata precedes the literal -- a garbage cached hash, so a
+     Hash#[] with the literal key missed entries whose equal-content keys
+     were built at runtime (#1749; ASAN: global-buffer-overflow). Emit a
+     static header+marker+data object instead: the layout matches a heap
+     string exactly (hdr | marker | bytes), the hash cache write hits our
+     own static storage, and next=NULL keeps it off the sweep list. */
+  if (frozen) {
+    static int g_fzl_ctr = 0;
+    int id = g_fzl_ctr++;
+    size_t dl = (content ? len : 0) + 1;
+    buf_printf(b, "({ static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
+                  "{ { NULL, %zu, %zu, 0 }, 0xf1, \"", dl, id, dl, (content ? len : 0));
+    if (content && len) emit_c_escaped_n(b, content, len);
+    buf_printf(b, "\" }; _fzl_%d.d; })", id);
+    return;
+  }
   if (!content || len == 0) { buf_printf(b, "(&(\"%s\")[1])", mk); return; }
   /* NUL-containing strings: use sp_str_from_bytes with explicit byte count.
      The heap string it builds is writable (0xfe), so a frozen literal is
