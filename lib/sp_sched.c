@@ -1156,6 +1156,11 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
   }
   SCHED_LOCK();
   if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); return; }   /* raced with its death: no-op */
+  /* #kill/#raise on the main thread from a sibling: main runs on the root
+     fiber (t->fiber == NULL), which has no inject delivery points, so this is
+     unsupported -- no-op rather than a NULL deref, matching the self-kill case
+     above. (CRuby delivers to main; see the Thread row in docs/limitations.md.) */
+  if (t == &g_main_thread || !t->fiber) { SCHED_UNLOCK(); return; }
   if (is_kill) sp_fiber_set_kill_inject(t->fiber);
   else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
   if (t->state == SP_TH_BLOCKED) {

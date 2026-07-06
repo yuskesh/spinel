@@ -105,6 +105,9 @@ Limited today, but additively fixable; listed roughly easiest-first.
   thread *interleaving* (and so the ordering of `Thread.pass`, `Thread.list`
   membership, and the exact moment a `Thread#raise`/`#kill` is delivered) is
   nondeterministic, where the single-worker model was deterministic.
+  `Thread#raise`/`#kill` targeting the **main** thread is a no-op (main runs on
+  the scheduler's root fiber, which has no inject delivery points); CRuby
+  delivers the exception to main.
 
 ### Intentional incompatibilities with CRuby
 
