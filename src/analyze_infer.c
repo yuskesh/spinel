@@ -3530,7 +3530,22 @@ TyKind infer_uncached(Compiler *c, int id) {
     const int *els = nt_arr(nt, id, "elements", &n);
     if (n == 0) return TY_UNKNOWN;  /* empty: element type comes from usage */
     TyKind e = TY_UNKNOWN;
-    for (int k = 0; k < n; k++) e = ty_unify(e, infer_type(c, els[k]));
+    for (int k = 0; k < n; k++) {
+      TyKind et = infer_type(c, els[k]);
+      /* A nested container literal whose own type is still open (an empty
+         `[]` / `{}` element) is a non-scalar value all the same: treat it as
+         poly, exactly like the HashNode arm below does for `{}`. Otherwise
+         UNKNOWN unifies away and `[[], 1]` collapses to an IntArray, whose
+         emit pushes the nested array POINTER as an int element (silent
+         garbage). */
+      if (et == TY_UNKNOWN) {
+        const char *ety = nt_type(nt, els[k]);
+        if (ety && (sp_streq(ety, "ArrayNode") || sp_streq(ety, "HashNode") ||
+                    sp_streq(ety, "KeywordHashNode")))
+          et = TY_POLY;
+      }
+      e = ty_unify(e, et);
+    }
     return ty_array_of(e);
   }
   if (nk == NK_HashNode || nk == NK_KeywordHashNode) {
