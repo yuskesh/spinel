@@ -3012,9 +3012,25 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               else {
                 const char *pair_p_wi = block_param_name(c, block, 0);
                 if (pair_p_wi) {
+                  Scope *bsc_wi = comp_scope_of(c, block);
+                  LocalVar *lvp_wi = bsc_wi ? scope_local(bsc_wi, pair_p_wi) : NULL;
+                  char slice_wi[80];
+                  snprintf(slice_wi, sizeof slice_wi, "sp_%sArray_slice(_t%d, _t%d, _t%d)",
+                           kwi, ta_wi, ti_wi, tn_wi);
                   emit_indent(g_pre, g_indent + 1);
-                  buf_printf(g_pre, "lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n",
-                             rename_local(pair_p_wi), kwi, ta_wi, ti_wi, tn_wi);
+                  /* When the window element type didn't resolve at analyze time
+                     the pair param is declared poly; box the typed slice so the
+                     assignment types match (a desugared |(x,y), i| destructure
+                     over a receiver like `n.times.map { ... }`). */
+                  if (lvp_wi && lvp_wi->type == TY_POLY && !sp_streq(kwi, "Poly")) {
+                    Buf bxs; memset(&bxs, 0, sizeof bxs);
+                    emit_boxed_text(c, arr_wi, slice_wi, &bxs);
+                    buf_printf(g_pre, "lv_%s = %s;\n", rename_local(pair_p_wi), bxs.p ? bxs.p : slice_wi);
+                    free(bxs.p);
+                  }
+                  else {
+                    buf_printf(g_pre, "lv_%s = %s;\n", rename_local(pair_p_wi), slice_wi);
+                  }
                 }
               }
               for (int j = 0; j < bn_wi - 1; j++) emit_stmt(c, bb_wi[j], g_pre, g_indent + 1);
@@ -4685,22 +4701,36 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     int body = nt_ref(nt, block, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     if (bn < 1) return 0;
-    /* Detect block param form: |(k,v), memo| (multi at idx 0) or |k, v, memo| (flat 3) */
+    /* Detect block param form: |(k,v), memo| (multi at idx 0), flat |k, v, memo|,
+       or |element, memo| where element is the [k,v] pair (the shape the destructure
+       desugar produces from |(k,v), memo|). */
     int is_multi = block_param_is_multi(c, block, 0);
-    const char *kname_orig = NULL, *vname_orig = NULL, *mname_orig = NULL;
+    const char *kname_orig = NULL, *vname_orig = NULL, *mname_orig = NULL, *pairname_orig = NULL;
+    int pair_mode = 0;
     if (is_multi) {
       kname_orig = block_param_multi_leaf(c, block, 0, 0);
       vname_orig = block_param_multi_leaf(c, block, 0, 1);
       mname_orig = block_param_name(c, block, 1);
     }
     else {
-      kname_orig = block_param_name(c, block, 0);
-      vname_orig = block_param_name(c, block, 1);
-      mname_orig = block_param_name(c, block, 2);
+      const char *p0n = block_param_name(c, block, 0);
+      const char *p1n = block_param_name(c, block, 1);
+      const char *p2n = block_param_name(c, block, 2);
+      if (p1n && !p2n) {
+        pair_mode = 1;
+        pairname_orig = p0n;
+        mname_orig = p1n;
+      }
+      else {
+        kname_orig = p0n;
+        vname_orig = p1n;
+        mname_orig = p2n;
+      }
     }
     const char *kname = kname_orig ? rename_local(kname_orig) : NULL;
     const char *vname = vname_orig ? rename_local(vname_orig) : NULL;
     const char *mname = mname_orig ? rename_local(mname_orig) : NULL;
+    const char *pairname = pairname_orig ? rename_local(pairname_orig) : NULL;
     TyKind accT = infer_type(c, argv[0]);
     if (accT == TY_UNKNOWN) {
       const char *a0ty = nt_type(nt, argv[0]);
@@ -4737,6 +4767,35 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     int ti = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
+    /* Bind the [k,v] pair for the |element, memo| form (CRuby yields the pair). */
+    if (pairname) {
+      char kexpr[96], vexpr[96];
+      if (rt == TY_POLY_POLY_HASH) {
+        snprintf(kexpr, sizeof kexpr, "_t%d->keys[_t%d->order[_t%d]]", trecv, trecv, ti);
+        snprintf(vexpr, sizeof vexpr, "_t%d->vals[_t%d->order[_t%d]]", trecv, trecv, ti);
+      }
+      else {
+        snprintf(kexpr, sizeof kexpr, "_t%d->order[_t%d]", trecv, ti);
+        snprintf(vexpr, sizeof vexpr, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, trecv, trecv, ti);
+      }
+      int tpair = ++g_tmp;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tpair, tpair);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tpair);
+      if (rt == TY_POLY_POLY_HASH) buf_puts(g_pre, kexpr);
+      else { Buf kb; memset(&kb, 0, sizeof kb); emit_boxed_text(c, ty_hash_key(rt), kexpr, &kb);
+             buf_puts(g_pre, kb.p ? kb.p : kexpr); free(kb.p); }
+      buf_puts(g_pre, ");\n");
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tpair);
+      if (rt == TY_POLY_POLY_HASH) buf_puts(g_pre, vexpr);
+      else { Buf vb; memset(&vb, 0, sizeof vb); emit_boxed_text(c, ty_hash_val(rt), vexpr, &vb);
+             buf_puts(g_pre, vb.p ? vb.p : vexpr); free(vb.p); }
+      buf_puts(g_pre, ");\n");
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "lv_%s = _t%d;\n", pairname, tpair);
+    }
     /* Assign key */
     if (kname) {
       emit_indent(g_pre, g_indent + 1);

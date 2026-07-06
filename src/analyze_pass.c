@@ -3154,6 +3154,192 @@ int desugar_value_callable_forwards(Compiler *c) {
   return changed;
 }
 
+/* ---- Destructuring block parameters -----------------------------------
+ * A parenthesized block parameter (`|a, (b, c), d|`, `|a, (*), b|`) is parsed
+ * as a MultiTargetNode in the requireds list. The per-iterator binding sites
+ * only bind plain named params, so a MultiTargetNode param silently bound its
+ * inner names to nil. Rather than teach every iterator emitter to destructure,
+ * desugar each such param to a fresh throwaway param plus a prepended
+ * destructuring assignment -- reusing the fully-working MultiWriteNode codegen
+ * (`b, c = __destr`). One rewrite covers every binding site (each/map/proc.call/
+ * yield/...). Runs before scope building so the new param and targets are
+ * interned normally. */
+
+static int bdp_fill_targets(NodeTable *nt, int src, int dst);
+
+/* Convert one param-side destructuring target to its assignment-side form:
+   RequiredParameterNode -> LocalVariableTargetNode, SplatNode's inner target
+   likewise, nested MultiTargetNode recursively. Other nodes pass through.
+   Returns the new node id, or -1 on node-table OOM. */
+static int bdp_convert_target(NodeTable *nt, int node) {
+  if (node < 0) return node;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return node;
+  if (sp_streq(ty, "RequiredParameterNode")) {
+    const char *nm = nt_str(nt, node, "name");
+    char *nmbuf = NULL;  /* copy: nt_new_node may realloc nm's storage */
+    if (nm) {
+      nmbuf = malloc(strlen(nm) + 1);
+      if (!nmbuf) return -1;
+      strcpy(nmbuf, nm);
+    }
+    int t = nt_new_node(nt, "LocalVariableTargetNode");
+    if (t < 0) { free(nmbuf); return -1; }
+    if (nmbuf) { nt_node_set_str(nt, t, "name", nmbuf); free(nmbuf); }
+    return t;
+  }
+  if (sp_streq(ty, "SplatNode")) {
+    int expr = nt_ref(nt, node, "expression");
+    int cv = expr >= 0 ? bdp_convert_target(nt, expr) : -1;
+    if (expr >= 0 && cv < 0) return -1;
+    int s = nt_new_node(nt, "SplatNode");
+    if (s < 0) return -1;
+    if (expr >= 0) nt_node_set_ref(nt, s, "expression", cv);
+    return s;
+  }
+  if (sp_streq(ty, "MultiTargetNode")) {
+    int m = nt_new_node(nt, "MultiTargetNode");
+    if (m < 0) return -1;
+    if (!bdp_fill_targets(nt, node, m)) return -1;
+    return m;
+  }
+  return node;
+}
+
+/* Copy the converted lefts/rest/rights of param-side MultiTargetNode `src` into
+   `dst` (a MultiWriteNode or nested MultiTargetNode). Array results from nt_arr
+   are copied before any node creation, since nt_new_node may realloc storage. */
+static int bdp_fill_targets(NodeTable *nt, int src, int dst) {
+  int nl = 0; const int *l0 = nt_arr(nt, src, "lefts", &nl);
+  int *lc = NULL;
+  if (nl > 0) { lc = malloc(sizeof(int) * nl); if (!lc) return 0; memcpy(lc, l0, sizeof(int) * nl); }
+  int rest = nt_ref(nt, src, "rest");
+  int nr = 0; const int *r0 = nt_arr(nt, src, "rights", &nr);
+  int *rc = NULL;
+  if (nr > 0) { rc = malloc(sizeof(int) * nr); if (!rc) { free(lc); return 0; } memcpy(rc, r0, sizeof(int) * nr); }
+  int ok = 1;
+  if (ok && nl > 0) {
+    for (int i = 0; i < nl && ok; i++) { lc[i] = bdp_convert_target(nt, lc[i]); if (lc[i] < 0) ok = 0; }
+    if (ok) nt_node_set_arr(nt, dst, "lefts", lc, nl);
+  }
+  if (ok && rest >= 0) {
+    int cr = bdp_convert_target(nt, rest);
+    if (cr < 0) ok = 0; else nt_node_set_ref(nt, dst, "rest", cr);
+  }
+  if (ok && nr > 0) {
+    for (int i = 0; i < nr && ok; i++) { rc[i] = bdp_convert_target(nt, rc[i]); if (rc[i] < 0) ok = 0; }
+    if (ok) nt_node_set_arr(nt, dst, "rights", rc, nr);
+  }
+  free(lc); free(rc);
+  return ok;
+}
+
+/* True if a param-side target binds at least one name (so an assignment is
+   worth prepending). A purely anonymous splat (`(*)`) binds nothing. */
+static int bdp_has_name(NodeTable *nt, int node) {
+  if (node < 0) return 0;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return 0;
+  if (sp_streq(ty, "RequiredParameterNode") || sp_streq(ty, "LocalVariableTargetNode"))
+    return nt_str(nt, node, "name") != NULL;
+  if (sp_streq(ty, "SplatNode")) return bdp_has_name(nt, nt_ref(nt, node, "expression"));
+  if (sp_streq(ty, "MultiTargetNode")) {
+    int n = 0; const int *l = nt_arr(nt, node, "lefts", &n);
+    for (int i = 0; i < n; i++) if (bdp_has_name(nt, l[i])) return 1;
+    if (bdp_has_name(nt, nt_ref(nt, node, "rest"))) return 1;
+    int r = 0; const int *rr = nt_arr(nt, node, "rights", &r);
+    for (int i = 0; i < r; i++) if (bdp_has_name(nt, rr[i])) return 1;
+    return 0;
+  }
+  /* Any other target (ivar/gvar/cvar/const/...) binds a name; bdp_fill_targets
+     passes it through unchanged to the MultiWriteNode codegen. */
+  return 1;
+}
+
+int desugar_block_destructure_params(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int L = 0; L < n0; L++) {
+    const char *ty = nt_type(nt, L);
+    if (!ty || (!sp_streq(ty, "BlockNode") && !sp_streq(ty, "LambdaNode"))) continue;
+    int bp = nt_ref(nt, L, "parameters");
+    if (bp < 0) continue;
+    const char *bpty = nt_type(nt, bp);
+    int pn = (bpty && sp_streq(bpty, "BlockParametersNode")) ? nt_ref(nt, bp, "parameters") : bp;
+    if (pn < 0) continue;
+    const char *pnty = nt_type(nt, pn);
+    if (!pnty || !sp_streq(pnty, "ParametersNode")) continue;
+    int nreq = 0; const int *reqs0 = nt_arr(nt, pn, "requireds", &nreq);
+    if (nreq == 0) continue;
+    int has_multi = 0;
+    for (int k = 0; k < nreq; k++) {
+      const char *rty = nt_type(nt, reqs0[k]);
+      if (rty && sp_streq(rty, "MultiTargetNode")) { has_multi = 1; break; }
+    }
+    if (!has_multi) continue;
+    /* copy requireds: nt_new_node below may realloc the node storage reqs0 points into */
+    int *reqs = malloc(sizeof(int) * nreq);
+    if (!reqs) continue;
+    memcpy(reqs, reqs0, sizeof(int) * nreq);
+    int body = nt_ref(nt, L, "body");
+
+    int *newreqs = malloc(sizeof(int) * nreq);
+    int *mws = malloc(sizeof(int) * nreq);
+    if (!newreqs || !mws) { free(reqs); free(newreqs); free(mws); continue; }
+    int nmw = 0, ok = 1;
+    for (int k = 0; k < nreq && ok; k++) {
+      const char *rty = nt_type(nt, reqs[k]);
+      if (!rty || !sp_streq(rty, "MultiTargetNode")) { newreqs[k] = reqs[k]; continue; }
+      int bind = bdp_has_name(nt, reqs[k]);
+      char nm[48]; snprintf(nm, sizeof nm, "__destr_%d_%d", L, k);
+      int rp = nt_new_node(nt, "RequiredParameterNode");
+      if (rp < 0) { ok = 0; break; }
+      nt_node_set_str(nt, rp, "name", nm);
+      newreqs[k] = rp;
+      if (!bind) continue;  /* anonymous splat: nothing to assign */
+      int rd = nt_new_node(nt, "LocalVariableReadNode");
+      int mw = nt_new_node(nt, "MultiWriteNode");
+      if (rd < 0 || mw < 0) { ok = 0; break; }
+      nt_node_set_str(nt, rd, "name", nm);
+      if (!bdp_fill_targets(nt, reqs[k], mw)) { ok = 0; break; }
+      nt_node_set_ref(nt, mw, "value", rd);
+      mws[nmw++] = mw;
+    }
+    if (!ok) { free(reqs); free(newreqs); free(mws); continue; }
+    /* prepend the destructuring assignments (in param order) to the block body */
+    if (nmw > 0) {
+      int is_stmts = body >= 0 && nt_type(nt, body) && sp_streq(nt_type(nt, body), "StatementsNode");
+      int obn = 0; const int *ob0 = is_stmts ? nt_arr(nt, body, "body", &obn) : NULL;
+      int keep_body = (!is_stmts && body >= 0) ? 1 : 0;
+      int cnt = nmw + (is_stmts ? obn : keep_body);
+      int *bb = malloc(sizeof(int) * (cnt > 0 ? cnt : 1));
+      if (!bb) ok = 0;
+      else {
+        for (int i = 0; i < nmw; i++) bb[i] = mws[i];
+        if (is_stmts) {
+          for (int i = 0; i < obn; i++) bb[nmw + i] = ob0[i];
+          nt_node_set_arr(nt, body, "body", bb, cnt);
+        } else {
+          if (keep_body) bb[nmw] = body;
+          int st = nt_new_node(nt, "StatementsNode");
+          if (st < 0) ok = 0;
+          else { nt_node_set_arr(nt, st, "body", bb, cnt); nt_node_set_ref(nt, L, "body", st); }
+        }
+        free(bb);
+      }
+    }
+    /* Only swap in the throwaway params once the assignments are prepended, so a
+       mid-transform OOM never leaves params rebound with nothing destructured. */
+    if (!ok) { free(reqs); free(newreqs); free(mws); continue; }
+    nt_node_set_arr(nt, pn, "requireds", newreqs, nreq);
+    changed = 1;
+    free(reqs); free(newreqs); free(mws);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* Desugar a blockless slicing enumerator materialized with `to_a` --
    `recv.each_slice(n).to_a` / `recv.each_cons(n).to_a` -- into the equivalent
    `recv.each_slice(n).map { |__s| __s }`, which the each_slice/each_cons map-fold
@@ -4347,6 +4533,25 @@ int infer_block_params(Compiler *c) {
           }
         }
       }
+      else if (sp_streq(name, "each_with_object") &&
+               block_param_name(c, block, 1) && !block_param_name(c, block, 2)) {
+        /* hash.each_with_object(seed) { |element, memo| }: CRuby yields the
+           [k,v] pair as the element (the desugared |__destr, memo| shape). */
+        if (p0) {
+          LocalVar *ep = scope_local_intern(hs, p0); ep->is_block_param = 1;
+          TyKind em = ty_unify(ep->type, TY_POLY_ARRAY);
+          if (em != ep->type) { ep->type = em; changed = 1; }
+        }
+        const char *mp = block_param_name(c, block, 1);
+        int ewo_args = nt_ref(nt, id, "arguments"); int ewo_argc = 0;
+        const int *ewo_argv = ewo_args >= 0 ? nt_arr(nt, ewo_args, "arguments", &ewo_argc) : NULL;
+        TyKind accT = (ewo_argc > 0 && ewo_argv) ? infer_type(c, ewo_argv[0]) : TY_UNKNOWN;
+        if (mp && accT != TY_UNKNOWN) {
+          LocalVar *mlv = scope_local_intern(hs, mp); mlv->is_block_param = 1;
+          TyKind mm = ty_unify(mlv->type, accT);
+          if (mm != mlv->type) { mlv->type = mm; changed = 1; }
+        }
+      }
       else {
         if (p0) {
           LocalVar *kp = scope_local_intern(hs, p0); kp->is_block_param = 1;
@@ -4411,6 +4616,10 @@ int infer_block_params(Compiler *c) {
           const char *pnj2 = block_param_name(c, block, pj2);
           if (!pnj2) continue;
           LocalVar *lp2 = scope_local_intern(s, pnj2); lp2->is_block_param = 1;
+          /* Don't widen a param already typed as a concrete array (e.g. a
+             desugared destructure temp bound to an each_cons/each_slice window)
+             down to a poly scalar; that mismatches the array the codegen binds. */
+          if (ty_is_array(lp2->type)) continue;
           TyKind m2 = ty_unify(lp2->type, TY_POLY);
           if (m2 != lp2->type) { lp2->type = m2; changed = 1; }
         }

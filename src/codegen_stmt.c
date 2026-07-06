@@ -5193,6 +5193,39 @@ else {
             buf_puts(b, ";\n");
           }
         }
+        /* rest (`b, *r = <poly>`) + post-splat rights, mirroring the typed-array
+           branch but reading the boxed value via sp_poly_arr_get / _len. */
+        if (rest_var || rn > 0) {
+          int tn = ++g_tmp;
+          emit_indent(b, indent);
+          buf_printf(b, "mrb_int _t%d = sp_poly_arr_len(_t%d);\n", tn, tarr);
+          if (rest_var) {
+            int tr = ++g_tmp, ti = ++g_tmp;
+            emit_indent(b, indent);
+            buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tr, tr);
+            emit_indent(b, indent);
+            buf_printf(b, "for (mrb_int _t%d = %dLL; _t%d < _t%d - %dLL; _t%d++) sp_PolyArray_push(_t%d, sp_poly_arr_get(_t%d, _t%d));\n",
+                       ti, ln, ti, tn, rn, ti, tr, tarr, ti);
+            emit_indent(b, indent);
+            buf_printf(b, "lv_%s = _t%d;\n", rename_local(rest_var), tr);
+          }
+          for (int j = 0; j < rn; j++) {
+            const char *lty = nt_type(nt, rights[j]);
+            if (!lty || !sp_streq(lty, "LocalVariableTargetNode")) continue;
+            const char *rlvn = nt_str(nt, rights[j], "name");
+            if (!rlvn) continue;
+            /* CRuby fills post-splat targets from the back; on underflow assign
+               left-to-right past the pre targets and nil-fill (max of the back-
+               and front-aligned index, a position at/past the end -> nil). */
+            int tix = ++g_tmp;
+            emit_indent(b, indent);
+            buf_printf(b, "mrb_int _t%d = (_t%d - %dLL + %dLL) > %dLL ? (_t%d - %dLL + %dLL) : %dLL;\n",
+                       tix, tn, rn, j, ln + j, tn, rn, j, ln + j);
+            emit_indent(b, indent);
+            buf_printf(b, "lv_%s = (_t%d >= _t%d ? sp_box_nil() : sp_poly_massign_get(_t%d, _t%d));\n",
+                       rename_local(rlvn), tix, tn, tarr, tix);
+          }
+        }
         return;
       }
       unsupported(c, id, "multiple assignment");
