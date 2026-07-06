@@ -3740,7 +3740,7 @@ char *codegen_program(const NodeTable *nt) {
      sp_poly_to_s SP_TAG_CLASS arms), so it is always emitted, independent of
      the gated introspection bank below. */
   {
-    buf_puts(&b, "static const char *sp_class_to_s(sp_Class c){switch(c.cls_id){");
+    buf_puts(&b, "static const char *sp_class_to_s(sp_Class c){if(c.name)return c.name;switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
       if (!is_builtin_reopen(c->classes[i].name)) {
         const char *qname = class_ruby_name(c, i);

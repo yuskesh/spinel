@@ -1,0 +1,11 @@
+[ArgumentError, "x"]
+ArgumentError
+ArgumentError
+ArgumentError
+true
+false
+[RuntimeError, "boom"]
+[MyErr, "oops"]
+true
+MyErr
+[1, TypeError, :ok]

@@ -4539,7 +4539,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
-      buf_puts(b, "sp_exc_message("); emit_expr(c, recv, b); buf_puts(b, ")");
+      /* NULL-guard: a nil $! (outside any rescue) has no message. */
+      int t = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
+      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      buf_printf(b, "(_t%d ? sp_exc_message(_t%d) : \"\")", t, t);
       return;
     }
     if (sp_streq(name, "full_message")) {
@@ -4562,17 +4568,43 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "inspect")) {
-      /* #<ClassName: message> */
+      /* #<ClassName: message>, or "nil" for a nil $! (outside any rescue). */
       int t = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      buf_printf(b, "sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d))", t, t);
+      buf_printf(b, "(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\")", t, t, t);
       return;
     }
-    if (sp_streq(name, "class")) {  /* used as .class.to_s / .class.name */
-      buf_puts(b, "sp_exc_class_name("); emit_expr(c, recv, b); buf_puts(b, ")");
+    if (sp_streq(name, "class")) {  /* a Class carried by name (complete for every exception class) */
+      /* a nil $! (outside any rescue) is NilClass, matching the sibling nil-guards. */
+      int t = ++g_tmp;
+      Buf rb = expr_buf(c, recv);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_Exception *_t%d = ", t);
+      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      buf_printf(b, "((sp_Class){0, _t%d ? sp_exc_class_name(_t%d) : \"NilClass\"})", t, t);
+      return;
+    }
+    /* object identity: the same raised object compares equal to $! / a `=> e`
+       binding, since both now point at the one materialized exception. */
+    if (argc == 1 && sp_streq(name, "equal?")) {
+      /* Only an exception arg can share identity with the receiver; nil compares
+         against a NULL pointer. Any other type is a struct or scalar that can't
+         be cast to void* (a -Werror break) and can never be the same object. */
+      TyKind at = comp_ntype(c, argv[0]);
+      if (at == TY_EXCEPTION) {
+        Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
+        buf_printf(b, "((void *)(%s) == (void *)(%s))", rb.p ? rb.p : "0", ab.p ? ab.p : "0");
+        free(rb.p); free(ab.p);
+      } else if (at == TY_NIL) {
+        Buf rb = expr_buf(c, recv);
+        buf_printf(b, "((void *)(%s) == NULL)", rb.p ? rb.p : "0");
+        free(rb.p);
+      } else {
+        buf_puts(b, "0");
+      }
       return;
     }
     if (sp_streq(name, "backtrace")) {
@@ -5099,7 +5131,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Class _cl%da = ", _clt); emit_expr(c, argv[0], b);
-        buf_printf(b, "; _cl%d.cls_id == _cl%da.cls_id; })", _clt, _clt);
+        buf_printf(b, "; sp_class_eq(_cl%d, _cl%da); })", _clt, _clt);
         return;
       }
     }
@@ -5108,7 +5140,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (at == TY_CLASS) {
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_Class _cl%da = ", _clt); emit_expr(c, argv[0], b);
-        buf_printf(b, "; _cl%d.cls_id != _cl%da.cls_id; })", _clt, _clt);
+        buf_printf(b, "; !sp_class_eq(_cl%d, _cl%da); })", _clt, _clt);
         return;
       }
     }

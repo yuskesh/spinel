@@ -1096,7 +1096,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
     if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_status"); return; }
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
-    if (nm && sp_streq(nm, "$!")) { buf_puts(b, "sp_bang_exc"); return; }
+    /* $! is the exception currently being handled -- the same real object the
+       enclosing `rescue` binds (sp_exc_obj[sp_exc_top] once the handler frame is
+       popped) -- or nil (a NULL sp_Exception*) outside any rescue body. */
+    if (nm && sp_streq(nm, "$!")) {
+      buf_puts(b, g_rescue_cls ? "((sp_Exception *)sp_exc_obj[sp_exc_top])" : "((sp_Exception *)0)");
+      return;
+    }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
     if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&")))  { buf_puts(b, "sp_re_match_str");  return; }

@@ -1,0 +1,18 @@
+true
+RuntimeError
+true
+"boom"
+#<RuntimeError: boom>
+nil
+ArgumentError
+true
+"arg"
+TypeError
+IndexError
+true
+MyErr
+"code 42"
+true
+NilClass
+false
+false

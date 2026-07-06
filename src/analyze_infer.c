@@ -2373,8 +2373,9 @@ else {
   if (recv >= 0 && exc_shaped) {
     if (sp_streq(name, "message") || sp_streq(name, "to_s") ||
         sp_streq(name, "to_str") || sp_streq(name, "inspect") ||
-        sp_streq(name, "full_message") || sp_streq(name, "detailed_message") ||
-        sp_streq(name, "class")) return TY_STRING;
+        sp_streq(name, "full_message") || sp_streq(name, "detailed_message"))
+      return TY_STRING;
+    if (sp_streq(name, "class")) return TY_CLASS;  /* a Class object, carried by name */
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
   }
 
@@ -3353,7 +3354,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (nm && sp_streq(nm, "$/")) return TY_STRING;
     if (nm && sp_streq(nm, "$?")) return TY_INT;  /* last child exit status */
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) return TY_STRING;
-    if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;
+    if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;  /* the exception being handled, or nil (NULL) outside a rescue */
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
     /* regex match globals: nullable strings ($~ == $&, $`, $', $+) */
     if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&") || sp_streq(nm, "$`") ||

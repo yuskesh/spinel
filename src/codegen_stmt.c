@@ -243,6 +243,13 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
   }
+  else if (t == TY_EXCEPTION) {
+    /* p of an exception inspects as #<ClassName: message>; a NULL receiver
+       (nil $! outside a rescue) prints "nil". */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_Exception *_t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "; fputs(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\", stdout); putchar('\\n'); }\n", tv, tv, tv);
+  }
   else if (ty_is_array(t) && array_kind(t)) {
     buf_printf(b, "fputs(sp_%sArray_inspect(", array_kind(t));
     emit_expr(c, arg, b);
@@ -3163,24 +3170,23 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
                  nt_str(nt, ref, "name"), xn, xn, xn, rc, rc);
     }
     else
-      /* prefer the CARRIED object (raise <exception-object> / raise Cls.new):
-         the rescue variable, $!, and the raised object must be one identity;
-         synthesize only when nothing was carried (sp_raise_cls paths). */
+      /* bind the actual raised object (materialized at the raise), so
+         `rescue => e` and `$!` share one identity; fall back to a fresh
+         reconstruction only if none was carried. */
       buf_printf(b, "lv_%s = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
-                    " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", nt_str(nt, ref, "name"), rc, rc);
+                    " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n",
+                 nt_str(nt, ref, "name"), rc, rc);
   }
-  /* $! tracks the exception this arm is handling; save/restore so nesting
-     and normal completion behave like CRuby (raise-continuation leaves it
-     set, which the next arm overwrites anyway). */
-  int bangs = ++g_tmp;
-  emit_indent(b, indent);
-  buf_printf(b, "sp_Exception *volatile _svbang_%d = sp_bang_exc;\n", bangs);
-  emit_indent(b, indent);
-  if (ref >= 0 && nt_str(nt, ref, "name"))
-    buf_printf(b, "sp_bang_exc = (sp_Exception *)lv_%s;\n", nt_str(nt, ref, "name"));
-  else
-    buf_printf(b, "sp_bang_exc = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
-                  " : sp_exc_new_for_catch(_rcls_%d, _rmsg_%d);\n", rc, rc);
+  /* Pin the slot to this arm's exception object (identical to the bound
+     variable when one exists, so the synthesized-object case keeps one
+     identity too). The OUTER value was saved at this begin's frame push
+     (see emit_begin); restore it when the arm completes normally -- a
+     nested begin inside the arm reuses this same frame index, so its raise
+     would otherwise leave the inner exception visible in $! afterwards. */
+  if (ref >= 0 && nt_str(nt, ref, "name")) {
+    emit_indent(b, indent);
+    buf_printf(b, "sp_exc_obj[sp_exc_top] = (void *)lv_%s;\n", nt_str(nt, ref, "name"));
+  }
   if (resultvar) {
     const char *sv = g_result_var; g_result_var = resultvar;
     emit_stmts_tail(c, stmts, b, indent);
@@ -3190,7 +3196,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
     emit_stmts(c, stmts, b, indent);
   }
   emit_indent(b, indent);
-  buf_printf(b, "sp_bang_exc = _svbang_%d;\n", bangs);
+  buf_puts(b, "sp_exc_obj[sp_exc_top] = sp_bang_sv[sp_exc_top];\n");
   g_rescue_cls = save_cls; g_rescue_msg = save_msg;
 
   if (!catchall) {
@@ -3248,6 +3254,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     }
     g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth };
 
+    emit_indent(b, indent);
+    buf_puts(b, "sp_bang_sv[sp_exc_top] = sp_exc_obj[sp_exc_top];\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
@@ -3377,6 +3385,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   const char *saved_retry = g_retry_label;
   if (has_retry) g_retry_label = retry_label;
 
+  emit_indent(b, indent);
+  buf_puts(b, "sp_bang_sv[sp_exc_top] = sp_exc_obj[sp_exc_top];\n");
   emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
   emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");

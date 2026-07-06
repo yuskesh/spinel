@@ -129,7 +129,11 @@ typedef mrb_int sp_sym;
 
 /* ---- Leaf value structs ---- */
 typedef struct{mrb_int first;mrb_int last;mrb_int excl;}sp_Range;
-typedef struct{mrb_int cls_id;}sp_Class;
+/* A class value. `name`, when non-NULL, is a rodata class name carried by a
+   class whose cls_id table entry may not exist (an exception's class -- the
+   Errno:: family and many builtin error classes have no assigned cls_id). It
+   takes precedence over cls_id for to_s / boxing / equality. */
+typedef struct{mrb_int cls_id;const char *name;}sp_Class;
 typedef struct{mrb_float re;mrb_float im;}sp_Complex;
 typedef struct{mrb_int num;mrb_int den;}sp_Rational;
 typedef struct{const char *name;}sp_Encoding;
