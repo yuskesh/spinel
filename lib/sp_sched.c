@@ -317,6 +317,18 @@ static sp_thread *sched_pick(int wid) {
   return NULL;
 }
 
+/* Wake worker(s) after enqueueing t. A STARTED thread is pinned to its home
+   worker (see home_wid) and sched_pick's stealing skips pinned threads -- yet
+   every idle worker waits on the one g_sched_work condvar, so a plain signal
+   could wake only a worker that cannot run t; it finds nothing and re-sleeps,
+   and the wakeup is lost while t's home worker stays parked. Broadcast for
+   pinned threads so the home worker always rechecks; an unstarted thread can
+   run anywhere, so a single signal suffices. PRE: sched lock held. */
+static void sp_sched_wake_for(sp_thread *t) {
+  if (t->home_wid >= 0) SCHED_WAKE_ALL();
+  else SCHED_WAKE();
+}
+
 static void reg_add(sp_thread *t) {
   t->all_prev = NULL; t->all_next = g_all;
   if (g_all) g_all->all_prev = t;
@@ -511,12 +523,22 @@ static void sp_sched_pump(sp_thread *target, int may_wait) {
     /* main blocked on a Queue/Mutex and a runnable thread just woke it */
     if (g_main_thread.state == SP_TH_RUNNABLE) { g_main_thread.state = SP_TH_RUNNING; return; }
     /* Run a green thread on the main worker only at N=1. With helpers present,
-       main does NOT pump green threads: running one means transferring off the
-       root and back, which leaves the root fiber's published top-level roots a
-       stale snapshot a collector could later mark. Main instead waits and lets a
-       helper run the work. At N=1 there are no helpers, so it must pump. */
+       main does NOT pump general green threads: running one means transferring
+       off the root and back, which leaves the root fiber's published top-level
+       roots a stale snapshot a collector could later mark. Main instead waits
+       and lets a helper run the work. At N=1 there are no helpers, so it must
+       pump. EXCEPTION: a thread pinned to main's worker (home_wid 0 -- it first
+       ran here via a Thread.pass sweep, sp_sched_pass) can run NOWHERE else:
+       helpers must not resume it (TLS affinity) and stealing skips it. If one
+       is requeued while main pumps (a #kill/#raise or Queue wake unblocked it),
+       main is the only worker that can finish it, so run it here -- otherwise
+       the pump and that thread deadlock waiting on each other. */
 #ifdef SP_THREADS
-    if (g_nworkers == 1)
+    if (g_nworkers > 1) {
+      sp_thread *t = runq_pop(&g_lrq[0]);
+      if (t) { run_thread_once(t); continue; }
+    }
+    else
 #endif
     {
       sp_thread *t = sched_pick(g_worker_id);
@@ -769,7 +791,7 @@ static void *sp_sysmon_main(void *arg) {
       if (t->wake_deadline <= now) {
         *pp = t->wait_next; t->wait_next = NULL; t->wait_head = NULL;
         if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }  /* must reach main, not a helper */
-        else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); SCHED_WAKE(); }
+        else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
         else t->wake_pending = 1;   /* mid-switch; its worker enqueues it (run_thread_once) */
       } else {
         if (nearest == 0.0 || t->wake_deadline < nearest) nearest = t->wake_deadline;
@@ -848,7 +870,7 @@ static void *sp_sysmon_main(void *arg) {
             if (*pp == t) { *pp = t->wait_next; break; }
           t->wait_next = NULL; t->wait_head = NULL; t->io_revents = g_pfds[i].revents; t->io_fd = -1;
           if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); }
-          else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); SCHED_WAKE(); }
+          else if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
           else t->wake_pending = 1;
         }
       }
@@ -869,6 +891,13 @@ void sp_sched_sleep(double seconds) {
   }
   SCHED_LOCK();
   sp_thread *self = g_current;
+  /* Same pending-inject check as sp_sched_block: a #kill/#raise that arrived
+     while we were RUNNING must fire now, not after the full sleep. */
+  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* raises; does not return */
+    SCHED_LOCK();
+  }
   self->wake_deadline = sp_monotonic_now() + seconds;
   self->state = SP_TH_BLOCKED;
   self->off_cpu = 0;
@@ -898,6 +927,12 @@ int sp_sched_wait_io(int fd, short events) {
   }
   SCHED_LOCK();
   sp_thread *self = g_current;
+  /* Same pending-inject check as sp_sched_block. */
+  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* raises; does not return */
+    SCHED_LOCK();
+  }
   self->io_fd = fd; self->io_events = events; self->io_revents = 0;
   self->state = SP_TH_BLOCKED;
   self->off_cpu = 0;
@@ -1042,6 +1077,16 @@ void sp_sched_drain(void) {
    root); a spawned thread transfers back to the scheduler hub. */
 static void sp_sched_block(sp_thread **waitlist) {   /* PRE/POST: sched lock held */
   sp_thread *self = g_current;
+  /* A #kill/#raise delivered while this thread was RUNNING left its inject
+     pending on the fiber (sp_thread_deliver found no wait list to unpark).
+     Parking now would sleep through it forever -- nobody will wake us. Fire it
+     here instead (it raises out of the blocking call, ensures running). The
+     deliver and this check both run under the sched lock, so no window. */
+  if (self != &g_main_thread && self->fiber && sp_fiber_inject_pending(self->fiber)) {
+    SCHED_UNLOCK();
+    sp_fiber_fire_inject_if_pending();   /* raises; does not return */
+    SCHED_LOCK();
+  }
   self->state = SP_TH_BLOCKED;
   self->off_cpu = 0;         /* still on-cpu until our worker confirms the switch-out */
   self->wake_pending = 0;
@@ -1084,7 +1129,7 @@ static sp_thread *sp_sched_wake_one(sp_thread **waitlist) {
   if (t == &g_main_thread) { t->state = SP_TH_RUNNABLE; SCHED_WAKE_ALL(); return t; }  /* broadcast: a signal could wake a helper instead of main */
   if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); }   /* fully parked: enqueue now */
   else { t->wake_pending = 1; }   /* still switching out: its worker enqueues it once off-cpu */
-  SCHED_WAKE();   /* wake an idle worker to run it */
+  sp_sched_wake_for(t);   /* wake an idle worker to run it (all of them if t is pinned) */
   return t;
 }
 
@@ -1110,23 +1155,34 @@ static void sp_thread_deliver(sp_thread *t, int is_kill,
     sp_fiber_reraise(cls, msg, obj);           /* noreturn */
   }
   SCHED_LOCK();
+  if (t->state == SP_TH_DEAD) { SCHED_UNLOCK(); return; }   /* raced with its death: no-op */
+  /* #kill/#raise on the main thread from a sibling: main runs on the root
+     fiber (t->fiber == NULL), which has no inject delivery points, so this is
+     unsupported -- no-op rather than a NULL deref, matching the self-kill case
+     above. (CRuby delivers to main; see the Thread row in docs/limitations.md.) */
+  if (t == &g_main_thread || !t->fiber) { SCHED_UNLOCK(); return; }
   if (is_kill) sp_fiber_set_kill_inject(t->fiber);
   else sp_fiber_set_raise_inject(t->fiber, cls, msg, obj);
   if (t->state == SP_TH_BLOCKED) {
     sp_sched_unpark(t);
-    if (t->off_cpu) { t->state = SP_TH_RUNNABLE; rq_push(t); SCHED_WAKE(); }
+    /* runq_requeue, not rq_push: a STARTED thread is pinned to its home
+       worker's TLS (home_wid) and must not resume on another worker. */
+    if (t->off_cpu) { t->state = SP_TH_RUNNABLE; runq_requeue(t); sp_sched_wake_for(t); }
     else { t->wake_pending = 1; }   /* mid-switch: its worker enqueues it (see run_thread_once) */
   }
   /* RUNNABLE threads are already queued; the inject fires when they run. */
   SCHED_UNLOCK();
 }
 
+/* The DEAD check lives inside sp_thread_deliver, under the sched lock: t may be
+   running on another worker and die concurrently, so an unlocked read here
+   would race with run_thread_once's state write. */
 sp_thread *sp_Thread_kill(sp_thread *t) {
-  if (t->state != SP_TH_DEAD) sp_thread_deliver(t, 1, NULL, NULL, NULL);
+  sp_thread_deliver(t, 1, NULL, NULL, NULL);
   return t;
 }
 sp_thread *sp_Thread_raise(sp_thread *t, const char *cls, const char *msg, void *obj) {
-  if (t->state != SP_TH_DEAD) sp_thread_deliver(t, 0, cls, msg, obj);
+  sp_thread_deliver(t, 0, cls, msg, obj);
   return t;
 }
 
