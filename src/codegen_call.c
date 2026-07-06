@@ -1353,12 +1353,43 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
                       " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_INT_STR_HASH:"
                       " _t%d = %s0%s; break;", tr, ebopen, ebclose);
       }
+      /* A method reopened on Object applies to ANY receiver -- boxed scalar
+         tags included; its generated self parameter is the boxed sp_RbVal
+         itself -- so it forms the switch's DEFAULT arm rather than a
+         per-class case. This also keeps the switch from being empty when no
+         user class is instantiated: an empty switch left the result NULL and
+         the next call on it segfaulted (ruby/spec's mspec `should` proxy on
+         a case/when result -- 133 of the harness's ERROR examples). */
+      int obj_default_done = 0;
+      { int obj_cls = comp_class_index(c, "Object");
+        if (obj_cls >= 0) {
+          int obj_def = -1;
+          int obj_mi = comp_method_in_chain(c, obj_cls, name, &obj_def);
+          if (obj_mi >= 0 && obj_def == obj_cls && c->scopes[obj_mi].nrequired == 0 &&
+              scope_has_callable_symbol(c, obj_mi)) {
+            char ocall[160];
+            snprintf(ocall, sizeof ocall, "sp_Object_%s(_t%d)", mc(c->scopes[obj_mi].name), tv);
+            buf_puts(b, " default: ");
+            if (method_is_void(&c->scopes[obj_mi])) buf_puts(b, ocall);
+            else {
+              TyKind oslot = is_scalar_ret(ret) ? ret : TY_INT;
+              buf_printf(b, "_t%d = ", tr);
+              if (ret == TY_POLY && c->scopes[obj_mi].ret != TY_POLY)
+                emit_boxed_text(c, c->scopes[obj_mi].ret, ocall, b);
+              else if (ret != TY_POLY && c->scopes[obj_mi].ret == TY_POLY)
+                emit_unbox_text(c, oslot, ocall, b);
+              else buf_puts(b, ocall);
+            }
+            buf_puts(b, "; break;");
+            obj_default_done = 1;
+          }
+        } }
       /* to_s / inspect are universal: a poly value that is a builtin scalar
          (int, float, string, ...) rather than one of the enumerated user
          classes still answers them. Without a default arm the result stayed
          the empty-string default, so `@x.to_s` on a poly-widened int printed
          blank. Route the fallthrough through the runtime poly converter. */
-      if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) {
+      if (!obj_default_done && (sp_streq(name, "to_s") || sp_streq(name, "inspect"))) {
         const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
         buf_printf(b, " default: _t%d = ", tr);
         if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s(_t%d))", pfn, tv);

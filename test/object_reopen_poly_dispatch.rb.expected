@@ -1,0 +1,4 @@
+tag(true)
+tag("str")
+tag(42)
+tag(nil)
