@@ -1230,6 +1230,17 @@ void emit_expr(Compiler *c, int id, Buf *b) {
                sp_streq(vt, "StringNode") || sp_streq(vt, "SymbolNode") || sp_streq(vt, "ArrayNode")) res = "expression";
       else if (sp_streq(vt, "GlobalVariableReadNode")) {
         const char *gn = nt_str(nt, v, "name");
+        /* runtime-provided special globals exist regardless of writes */
+        if (gn && gn[0] == '$' && gn[1] && (!gn[2] || sp_streq(gn + 1, "stdin") ||
+            sp_streq(gn + 1, "stdout") || sp_streq(gn + 1, "stderr") ||
+            sp_streq(gn + 1, "PROGRAM_NAME"))) {
+          const char sg = gn[1];
+          if (!gn[2] && (sg == '!' || sg == '~' || sg == '0' || sg == '$' ||
+                         sg == '?' || sg == ';' || sg == ',' || sg == '/' ||
+                         sg == '\\' || sg == '*'))
+            res = "global-variable";
+          else if (gn[2]) res = "global-variable";
+        }
         for (int kk = 0; kk < nt->count && !res; kk++) {
           const char *kt = nt_type(nt, kk);
           if (kt && (sp_streq(kt, "GlobalVariableWriteNode") || sp_streq(kt, "GlobalVariableOperatorWriteNode")) &&
@@ -1257,7 +1268,33 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
         const char *cn = nt_str(nt, v, "name");
         if (cn && comp_method_index(c, cn) >= 0) res = "method";
+        /* builtin kernel functions the compiler always resolves */
+        else if (cn) {
+          static const char *const kfns[] = {
+            "puts", "print", "p", "pp", "require", "require_relative", "raise",
+            "loop", "lambda", "proc", "rand", "srand", "gets", "sleep", "exit",
+            "format", "sprintf", "printf", "at_exit", "catch", "throw", NULL };
+          for (int bi = 0; kfns[bi]; bi++)
+            if (sp_streq(cn, kfns[bi])) { res = "method"; break; }
+        }
       }
+      /* An assignment of any kind (local/ivar/gvar/cvar/constant/index/attr,
+         plain or operator) answers "assignment" without evaluating. */
+      else if (strstr(vt, "WriteNode") || sp_streq(vt, "MultiWriteNode"))
+        res = "assignment";
+      /* A composite expression answers "expression" even when its OPERANDS
+         are undefined -- defined? never evaluates its argument. */
+      else if (sp_streq(vt, "AndNode") || sp_streq(vt, "OrNode") ||
+               sp_streq(vt, "NotNode") || sp_streq(vt, "RangeNode") ||
+               sp_streq(vt, "HashNode") || sp_streq(vt, "KeywordHashNode") ||
+               sp_streq(vt, "InterpolatedStringNode") ||
+               sp_streq(vt, "RegularExpressionNode") ||
+               sp_streq(vt, "LambdaNode") || sp_streq(vt, "IfNode") ||
+               sp_streq(vt, "UnlessNode") || sp_streq(vt, "CaseNode") ||
+               sp_streq(vt, "DefinedNode") || sp_streq(vt, "BeginNode") ||
+               sp_streq(vt, "ParenthesesNode"))
+        res = "expression";
+      else if (sp_streq(vt, "YieldNode")) res = "yield";
     }
     if (res) buf_printf(b, "SPL(\"%s\")", res);
     else buf_puts(b, "NULL");
