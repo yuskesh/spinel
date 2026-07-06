@@ -246,7 +246,11 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_CONDVAR       (-32)
 
 static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
-static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }
+/* A NULL char* IS Ruby nil throughout the string paths (the nullable-string
+   invariant); preserve that across the boxing boundary, or a boxed nil-string
+   carries SP_TAG_STR and fails tag-keyed comparisons -- `defined?(x).should
+   == nil` compared STR(NULL) against NIL and answered false. */
+static inline sp_RbVal sp_box_str(const char *v){ sp_RbVal r; if (!v) { r.tag = SP_TAG_NIL; r.cls_id = 0; r.v.s = NULL; return r; } r.tag = SP_TAG_STR;  r.cls_id = 0; r.v.s = v; return r; }
 static inline sp_RbVal sp_box_float(mrb_float v){ sp_RbVal r; r.tag = SP_TAG_FLT;  r.cls_id = 0; r.v.f = v; return r; }
 static inline sp_RbVal sp_box_bool(mrb_bool v)  { sp_RbVal r; r.tag = SP_TAG_BOOL; r.cls_id = 0; r.v.b = v; return r; }
 static inline sp_RbVal sp_box_nil(void)         { sp_RbVal r; r.tag = SP_TAG_NIL;  r.cls_id = 0; r.v.i = 0; return r; }
