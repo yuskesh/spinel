@@ -452,6 +452,159 @@ static TyKind splice_incoming_elem(Compiler *c, int rhs) {
   return t;   /* scalar (incl. TY_NIL, and TY_POLY = statically unknown) */
 }
 
+static int infer_case_pattern_locals(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  /* CaseMatchNode: `case X; in PATTERN; ...` — infer locals bound by pattern.
+     Handles: bare LV (`in x`), guard (`in x if cond`), capture (`in P => x`),
+     and array patterns (`in [first, *rest]` / `in Array(head, *tail)`). */
+  NT_FOREACH_KIND(nt, NK_CaseMatchNode, id) {
+    int pred = nt_ref(nt, id, "predicate");
+    if (pred < 0) continue;
+    TyKind scrutinee_t = infer_type(c, pred);
+    /* A local-variable scrutinee was just reset to TY_UNKNOWN at the top of
+       infer_write_types (its real type stashed in gc_root), so infer_type
+       reads back UNKNOWN this iteration. Recover the prior-iteration type from
+       gc_root -- same idiom the empty-collection promotion below uses -- so the
+       binding arms are typed before the result local unifies them. */
+    if (scrutinee_t == TY_UNKNOWN) {
+      const char *pty0 = nt_type(nt, pred);
+      if (pty0 && sp_streq(pty0, "LocalVariableReadNode")) {
+        const char *pnm = nt_str(nt, pred, "name");
+        LocalVar *plv = pnm ? scope_local(comp_scope_of(c, pred), pnm) : NULL;
+        if (plv && !plv->is_param && !plv->is_block_param &&
+            (TyKind)plv->gc_root != TY_UNKNOWN)
+          scrutinee_t = (TyKind)plv->gc_root;
+      }
+    }
+    int cn = 0;
+    const int *conds = nt_arr(nt, id, "conditions", &cn);
+    for (int ci = 0; ci < cn; ci++) {
+      const char *cty = nt_type(nt, conds[ci]);
+      if (!cty || !sp_streq(cty, "InNode")) continue;
+      int pat = nt_ref(nt, conds[ci], "pattern");
+      if (pat < 0) continue;
+      Scope *ms = comp_scope_of(c, conds[ci]);
+      const char *pty = nt_type(nt, pat);
+      if (!pty) continue;
+      int bind_lv_node = -1;
+      int array_pat = -1;
+      TyKind array_scrutinee = TY_UNKNOWN;
+      if (sp_streq(pty, "LocalVariableTargetNode")) {
+        /* in x */
+        bind_lv_node = pat;
+      }
+      else if (sp_streq(pty, "IfNode")) {
+        /* in x if guard — binding is in IfNode.statements body */
+        int stmts = nt_ref(nt, pat, "statements");
+        if (stmts >= 0 && nt_type(nt, stmts) &&
+            sp_streq(nt_type(nt, stmts), "StatementsNode")) {
+          int bn = 0;
+          const int *body = nt_arr(nt, stmts, "body", &bn);
+          for (int k = 0; k < bn; k++) {
+            const char *bty = nt_type(nt, body[k]);
+            if (bty && sp_streq(bty, "LocalVariableTargetNode")) {
+              bind_lv_node = body[k]; break;
+            }
+          }
+        }
+      }
+      else if (sp_streq(pty, "CapturePatternNode")) {
+        /* in PATTERN => var */
+        int tgt = nt_ref(nt, pat, "target");
+        if (tgt >= 0 && nt_type(nt, tgt) &&
+            sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+          bind_lv_node = tgt;
+        /* inner ArrayPatternNode also gets element-level types */
+        int val = nt_ref(nt, pat, "value");
+        if (val >= 0 && nt_type(nt, val) &&
+            sp_streq(nt_type(nt, val), "ArrayPatternNode")) {
+          array_pat = val; array_scrutinee = scrutinee_t;
+        }
+      }
+      else if (sp_streq(pty, "ArrayPatternNode")) {
+        /* in [first, *rest] or in Array(head, *tail) */
+        array_pat = pat; array_scrutinee = scrutinee_t;
+      }
+      else if (sp_streq(pty, "FindPatternNode")) {
+        /* in [*head, a, b, *tail] -- the two splats bind to arrays of the
+           scrutinee's element type; required LV targets bind to an element. */
+        TyKind arr_t = ty_is_array(scrutinee_t) ? scrutinee_t : TY_POLY_ARRAY;
+        TyKind elem_t = ty_is_array(scrutinee_t) ? ty_array_elem(scrutinee_t) : TY_POLY;
+        int sides[2] = { nt_ref(nt, pat, "left"), nt_ref(nt, pat, "right") };
+        for (int sidx = 0; sidx < 2; sidx++) {
+          int sp = sides[sidx];
+          if (sp < 0 || !nt_type(nt, sp) || !sp_streq(nt_type(nt, sp), "SplatNode")) continue;
+          int inner = nt_ref(nt, sp, "expression");
+          if (inner < 0 || !nt_type(nt, inner) ||
+              !sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) continue;
+          const char *snm = nt_str(nt, inner, "name");
+          LocalVar *lv = snm ? scope_local(ms, snm) : NULL;
+          if (!lv || lv->is_param || lv->is_block_param) continue;
+          TyKind mg = ty_unify(lv->type, arr_t);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+        int rn = 0;
+        const int *reqs = nt_arr(nt, pat, "requireds", &rn);
+        for (int k = 0; k < rn; k++) {
+          const char *lty2 = nt_type(nt, reqs[k]);
+          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, reqs[k], "name");
+          LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+          if (!lv || lv->is_param || lv->is_block_param) continue;
+          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_POLY;
+          TyKind mg = ty_unify(lv->type, et);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+      }
+      /* Bind simple LV target to scrutinee type */
+      if (bind_lv_node >= 0 && scrutinee_t != TY_UNKNOWN) {
+        const char *lnm = nt_str(nt, bind_lv_node, "name");
+        LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+        if (lv && !lv->is_param && !lv->is_block_param) {
+          TyKind mg = ty_unify(lv->type, scrutinee_t);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+      }
+      /* Handle ArrayPatternNode requireds and rest splat */
+      if (array_pat >= 0) {
+        TyKind elem_t = ty_is_array(array_scrutinee) ? ty_array_elem(array_scrutinee) : TY_UNKNOWN;
+        int apn = 0;
+        const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
+        for (int k = 0; k < apn; k++) {
+          const char *lty2 = nt_type(nt, reqs[k]);
+          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, reqs[k], "name");
+          LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+          if (!lv || lv->is_param || lv->is_block_param) continue;
+          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_INT;
+          TyKind mg = ty_unify(lv->type, et);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+        /* rest splat: *name gets array type */
+        int rest_nid = nt_ref(nt, array_pat, "rest");
+        if (rest_nid >= 0) {
+          const char *rsty2 = nt_type(nt, rest_nid);
+          int inner = -1;
+          if (rsty2 && sp_streq(rsty2, "SplatNode"))
+            inner = nt_ref(nt, rest_nid, "expression");
+          if (inner >= 0 && nt_type(nt, inner) &&
+              sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
+            const char *rnm = nt_str(nt, inner, "name");
+            LocalVar *lv = rnm ? scope_local(ms, rnm) : NULL;
+            if (lv && !lv->is_param && !lv->is_block_param) {
+              TyKind rest_arr = ty_is_array(array_scrutinee) ? array_scrutinee : TY_INT_ARRAY;
+              TyKind mg = ty_unify(lv->type, rest_arr);
+              if (mg != lv->type) { lv->type = mg; changed = 1; }
+            }
+          }
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -470,6 +623,10 @@ int infer_write_types(Compiler *c) {
   /* Re-seed loop-growth bigint locals inside the recompute frame (the
      reset above would otherwise wipe the promotion each iteration). */
   infer_bigint_loop_locals(c);
+  /* Seed pattern-bound case/in locals before the write-type loop reads
+     them: `r = case x; in n then n; end` needs `n` typed before the
+     result local unifies its arms, else it locks onto a stale estimate. */
+  changed |= infer_case_pattern_locals(c);
 
   /* Index local-write nodes by (scope, name) for the usage-driven promotion
      scans further down (see the per-scope write-site lookups below). */
@@ -1013,138 +1170,7 @@ int infer_write_types(Compiler *c) {
     }
   }
 
-  /* CaseMatchNode: `case X; in PATTERN; ...` — infer locals bound by pattern.
-     Handles: bare LV (`in x`), guard (`in x if cond`), capture (`in P => x`),
-     and array patterns (`in [first, *rest]` / `in Array(head, *tail)`). */
-  NT_FOREACH_KIND(nt, NK_CaseMatchNode, id) {
-    int pred = nt_ref(nt, id, "predicate");
-    if (pred < 0) continue;
-    TyKind scrutinee_t = infer_type(c, pred);
-    int cn = 0;
-    const int *conds = nt_arr(nt, id, "conditions", &cn);
-    for (int ci = 0; ci < cn; ci++) {
-      const char *cty = nt_type(nt, conds[ci]);
-      if (!cty || !sp_streq(cty, "InNode")) continue;
-      int pat = nt_ref(nt, conds[ci], "pattern");
-      if (pat < 0) continue;
-      Scope *ms = comp_scope_of(c, conds[ci]);
-      const char *pty = nt_type(nt, pat);
-      if (!pty) continue;
-      int bind_lv_node = -1;
-      int array_pat = -1;
-      TyKind array_scrutinee = TY_UNKNOWN;
-      if (sp_streq(pty, "LocalVariableTargetNode")) {
-        /* in x */
-        bind_lv_node = pat;
-      }
-      else if (sp_streq(pty, "IfNode")) {
-        /* in x if guard — binding is in IfNode.statements body */
-        int stmts = nt_ref(nt, pat, "statements");
-        if (stmts >= 0 && nt_type(nt, stmts) &&
-            sp_streq(nt_type(nt, stmts), "StatementsNode")) {
-          int bn = 0;
-          const int *body = nt_arr(nt, stmts, "body", &bn);
-          for (int k = 0; k < bn; k++) {
-            const char *bty = nt_type(nt, body[k]);
-            if (bty && sp_streq(bty, "LocalVariableTargetNode")) {
-              bind_lv_node = body[k]; break;
-            }
-          }
-        }
-      }
-      else if (sp_streq(pty, "CapturePatternNode")) {
-        /* in PATTERN => var */
-        int tgt = nt_ref(nt, pat, "target");
-        if (tgt >= 0 && nt_type(nt, tgt) &&
-            sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
-          bind_lv_node = tgt;
-        /* inner ArrayPatternNode also gets element-level types */
-        int val = nt_ref(nt, pat, "value");
-        if (val >= 0 && nt_type(nt, val) &&
-            sp_streq(nt_type(nt, val), "ArrayPatternNode")) {
-          array_pat = val; array_scrutinee = scrutinee_t;
-        }
-      }
-      else if (sp_streq(pty, "ArrayPatternNode")) {
-        /* in [first, *rest] or in Array(head, *tail) */
-        array_pat = pat; array_scrutinee = scrutinee_t;
-      }
-      else if (sp_streq(pty, "FindPatternNode")) {
-        /* in [*head, a, b, *tail] -- the two splats bind to arrays of the
-           scrutinee's element type; required LV targets bind to an element. */
-        TyKind arr_t = ty_is_array(scrutinee_t) ? scrutinee_t : TY_POLY_ARRAY;
-        TyKind elem_t = ty_is_array(scrutinee_t) ? ty_array_elem(scrutinee_t) : TY_POLY;
-        int sides[2] = { nt_ref(nt, pat, "left"), nt_ref(nt, pat, "right") };
-        for (int sidx = 0; sidx < 2; sidx++) {
-          int sp = sides[sidx];
-          if (sp < 0 || !nt_type(nt, sp) || !sp_streq(nt_type(nt, sp), "SplatNode")) continue;
-          int inner = nt_ref(nt, sp, "expression");
-          if (inner < 0 || !nt_type(nt, inner) ||
-              !sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) continue;
-          const char *snm = nt_str(nt, inner, "name");
-          LocalVar *lv = snm ? scope_local(ms, snm) : NULL;
-          if (!lv || lv->is_param || lv->is_block_param) continue;
-          TyKind mg = ty_unify(lv->type, arr_t);
-          if (mg != lv->type) { lv->type = mg; changed = 1; }
-        }
-        int rn = 0;
-        const int *reqs = nt_arr(nt, pat, "requireds", &rn);
-        for (int k = 0; k < rn; k++) {
-          const char *lty2 = nt_type(nt, reqs[k]);
-          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
-          const char *lnm = nt_str(nt, reqs[k], "name");
-          LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
-          if (!lv || lv->is_param || lv->is_block_param) continue;
-          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_POLY;
-          TyKind mg = ty_unify(lv->type, et);
-          if (mg != lv->type) { lv->type = mg; changed = 1; }
-        }
-      }
-      /* Bind simple LV target to scrutinee type */
-      if (bind_lv_node >= 0 && scrutinee_t != TY_UNKNOWN) {
-        const char *lnm = nt_str(nt, bind_lv_node, "name");
-        LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
-        if (lv && !lv->is_param && !lv->is_block_param) {
-          TyKind mg = ty_unify(lv->type, scrutinee_t);
-          if (mg != lv->type) { lv->type = mg; changed = 1; }
-        }
-      }
-      /* Handle ArrayPatternNode requireds and rest splat */
-      if (array_pat >= 0) {
-        TyKind elem_t = ty_is_array(array_scrutinee) ? ty_array_elem(array_scrutinee) : TY_UNKNOWN;
-        int apn = 0;
-        const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
-        for (int k = 0; k < apn; k++) {
-          const char *lty2 = nt_type(nt, reqs[k]);
-          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
-          const char *lnm = nt_str(nt, reqs[k], "name");
-          LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
-          if (!lv || lv->is_param || lv->is_block_param) continue;
-          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_INT;
-          TyKind mg = ty_unify(lv->type, et);
-          if (mg != lv->type) { lv->type = mg; changed = 1; }
-        }
-        /* rest splat: *name gets array type */
-        int rest_nid = nt_ref(nt, array_pat, "rest");
-        if (rest_nid >= 0) {
-          const char *rsty2 = nt_type(nt, rest_nid);
-          int inner = -1;
-          if (rsty2 && sp_streq(rsty2, "SplatNode"))
-            inner = nt_ref(nt, rest_nid, "expression");
-          if (inner >= 0 && nt_type(nt, inner) &&
-              sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
-            const char *rnm = nt_str(nt, inner, "name");
-            LocalVar *lv = rnm ? scope_local(ms, rnm) : NULL;
-            if (lv && !lv->is_param && !lv->is_block_param) {
-              TyKind rest_arr = ty_is_array(array_scrutinee) ? array_scrutinee : TY_INT_ARRAY;
-              TyKind mg = ty_unify(lv->type, rest_arr);
-              if (mg != lv->type) { lv->type = mg; changed = 1; }
-            }
-          }
-        }
-      }
-    }
-  }
+  changed |= infer_case_pattern_locals(c);
 
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
      its element / key+value type from how it is filled. `a << x` /
