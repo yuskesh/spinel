@@ -1865,10 +1865,22 @@ else {
         emit_index_get(c, ir, iav[0], b);
       }
       else {
+        /* No prelude buffer: statement-expression fallback. The RHS inside
+           the mutation may itself need a prelude, so redirect g_pre into a
+           local buffer and splice it in front, mirroring emit_with_prelude
+           (writing into a NULL g_pre would crash the compiler). */
+        Buf pre; memset(&pre, 0, sizeof pre);
+        Buf stmt; memset(&stmt, 0, sizeof stmt);
+        int sv_ind = g_indent;
+        g_pre = &pre; g_indent = 0;
+        emit_index_op_write(c, id, &stmt, 0);
+        g_pre = NULL; g_indent = sv_ind;
         buf_puts(b, "({ ");
-        emit_index_op_write(c, id, b, 0);
+        if (pre.p) buf_puts(b, pre.p);
+        if (stmt.p) buf_puts(b, stmt.p);
         emit_index_get(c, ir, iav[0], b);
         buf_puts(b, "; })");
+        free(pre.p); free(stmt.p);
       }
       return;
     }
