@@ -777,12 +777,34 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) {
-    /* A loop in value position runs for its side effects and evaluates to nil.
-       A valued `break` would instead make the loop yield that value; that is a
-       separate gap, so reject it here rather than silently producing nil. */
-    if (loop_has_valued_break(c, nt_ref(nt, id, "statements")))
-      unsupported(c, id, "valued break in loop used as a value");
-    /* Run the loop as a statement inside a GCC statement-expression, then
+    /* A loop in value position evaluates to nil, unless a valued `break`
+       supplies a value. When it can, declare a poly result temp defaulting to
+       nil, point the break-value target at it while emitting the loop, and yield
+       the temp. */
+    if (loop_has_valued_break(c, nt_ref(nt, id, "statements"))) {
+      int tr = ++g_tmp;
+      const char *saved_bv = g_loop_break_var;
+      int saved_rp = g_ie_res_poly;
+      char bvbuf[24]; snprintf(bvbuf, sizeof bvbuf, "_t%d", tr);
+      g_loop_break_var = bvbuf; g_ie_res_poly = 1;
+      if (g_pre) {
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tr, tr);
+        emit_while(c, id, g_pre, g_indent, sp_streq(ty, "UntilNode"));
+        buf_printf(b, "_t%d", tr);
+      }
+      else {
+        /* No prelude available (e.g. inside another expression's prelude): fall
+           back to a GCC statement expression, mirroring BeginNode. */
+        buf_puts(b, "({ ");
+        buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tr, tr);
+        emit_while(c, id, b, 0, sp_streq(ty, "UntilNode"));
+        buf_printf(b, "_t%d; })", tr);
+      }
+      g_loop_break_var = saved_bv; g_ie_res_poly = saved_rp;
+      return;
+    }
+    /* No valued break: run for side effects inside a statement-expression and
        yield the boxed nil. */
     buf_puts(b, "({ ");
     emit_while(c, id, b, 0, sp_streq(ty, "UntilNode"));
