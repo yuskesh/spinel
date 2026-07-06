@@ -66,18 +66,24 @@ void sp_gc_collect_retune_all(void) {
 /* Either heap over its trigger? Used by sp_stw_collect to skip a redundant
    stop-the-world when another worker just collected. */
 int sp_gc_collection_wanted(void) {
-  /* Read the counters atomically: this runs before the world is stopped
+  /* Everything read atomically: this runs before the world is stopped
      (sp_stw_collect's early-out), concurrent with other workers' relaxed
-     adds. The thresholds only change under STW or the heap lock's
-     one-shot stress check, and a stale read at worst skips one redundant
+     counter adds AND with the allocators' one-shot GC-stress threshold
+     write (heap-locked, but this reader holds only the sched lock). The
+     retune writes are plain but never overlap: they run while g_stw_active
+     is set, and this is only called with it clear, under the same lock
+     that publishes it. A stale read at worst skips one redundant
      collection. */
-  return SP_GC_CTR_GET(sp_gc_bytes) > sp_gc_threshold ||
-         SP_GC_CTR_GET(sp_str_heap_bytes) > sp_str_threshold;
+  return SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold) ||
+         SP_GC_CTR_GET(sp_str_heap_bytes) > SP_GC_CTR_GET(sp_str_threshold);
 }
 
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   SP_HEAP_LOCK();
-  if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_gc_threshold = 2048; sp_gc_threshold_init = 2048; } }
+  /* The threshold store is atomic: sp_gc_collection_wanted reads it without
+     the heap lock. threshold_init stays plain -- only retune reads it, under
+     stop-the-world, ordered after this by the writer's park. */
+  if (!sp_gc_stress_checked) { sp_gc_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_gc_threshold, 2048); sp_gc_threshold_init = 2048; } }
   if (SP_GC_CTR_GET(sp_gc_bytes) > sp_gc_threshold) {
 #ifdef SP_THREADS
     /* Drop the heap lock before stopping the world: a worker stalled here on the
@@ -93,7 +99,10 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
-  h->next = sp_gc_heap; sp_gc_heap = h; SP_GC_CTR_ADD(sp_gc_bytes, need);
+  /* CAS push, not a plain locked store: the pool-hit relink pushes onto the
+     same list head WITHOUT the heap lock, so every writer must use the same
+     atomic protocol (sp_gc.h). */
+  SP_GC_HEAP_PUSH(h); SP_GC_CTR_ADD(sp_gc_bytes, need);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }
@@ -103,7 +112,7 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   if (!h) sp_oom_die();
   h->finalize = fin; h->scan = scn; h->size = need; h->marked = 0;
   SP_HEAP_LOCK();
-  h->next = sp_gc_heap; sp_gc_heap = h; SP_GC_CTR_ADD(sp_gc_bytes, need);
+  SP_GC_HEAP_PUSH(h); SP_GC_CTR_ADD(sp_gc_bytes, need);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }

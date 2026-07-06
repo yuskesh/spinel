@@ -643,9 +643,11 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }
   /* Safepoint poll at the loop back-edge: a threaded program's worker checks
      here whether a GC stop-the-world wants it to park, so a long-running loop
-     cannot starve the collector. Emitted only when the program uses threads
-     (sp_safepoint_flag is a threaded-runtime symbol); a non-threaded program is
-     byte-identical. At N=1 the flag is never set -- a predicted-not-taken load. */
+     cannot starve the collector. SP_SAFEPOINT_POLL() (sp_sched.h) is a relaxed
+     atomic load of sp_safepoint_flag under SP_THREADS -- the collector writes
+     the flag from another thread -- and a plain load otherwise. Emitted only
+     when the program uses threads; a non-threaded program is byte-identical.
+     At N=1 the flag is never set -- a predicted-not-taken load. */
   if (g_uses_threads) { emit_indent(b, indent); buf_puts(b, "if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint();\n"); }
   emit_stmts(c, body, b, indent);
   if (has_redo) g_redo_depth--;

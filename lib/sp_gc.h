@@ -108,10 +108,35 @@ extern void (*sp_gc_mark_suspended_fibers_hook)(void);
 #define SP_GC_CTR_ADD(ctr, n) __atomic_fetch_add(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
 #define SP_GC_CTR_SUB(ctr, n) __atomic_fetch_sub(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
 #define SP_GC_CTR_GET(ctr)    __atomic_load_n(&(ctr), __ATOMIC_RELAXED)
+#define SP_GC_CTR_SET(ctr, n) __atomic_store_n(&(ctr), (size_t)(n), __ATOMIC_RELAXED)
 #else
 #define SP_GC_CTR_ADD(ctr, n) ((ctr) += (size_t)(n))
 #define SP_GC_CTR_SUB(ctr, n) ((ctr) -= (size_t)(n))
 #define SP_GC_CTR_GET(ctr)    (ctr)
+#define SP_GC_CTR_SET(ctr, n) ((ctr) = (size_t)(n))
+#endif
+
+/* Push a header onto the shared sp_gc_heap list. Under SP_THREADS this is a
+   lock-free CAS push so callers that hold no lock (the pool-hit relink) stay
+   off the heap mutex; the allocators, which hold the mutex anyway for the
+   collect trigger, use the same push so every writer to the list head agrees
+   on one protocol (a plain locked store racing an unlocked CAS would itself
+   be a race). The `next` store is atomic: a node being re-linked from a
+   shared pool free list may still have a stale pool popper reading its
+   `next` (that popper's CAS then fails and discards the value, but the read
+   itself must be defined). Removals happen only in the stop-the-world sweep
+   with every mutator parked, so the push never races a pop and needs no ABA
+   defense. Release order publishes the node's initialized header to the
+   collector. */
+#ifdef SP_THREADS
+#define SP_GC_HEAP_PUSH(hdr) do { \
+    sp_gc_hdr *_sp_old = __atomic_load_n(&sp_gc_heap, __ATOMIC_RELAXED); \
+    do { __atomic_store_n(&(hdr)->next, _sp_old, __ATOMIC_RELAXED); } \
+    while (!__atomic_compare_exchange_n(&sp_gc_heap, &_sp_old, (hdr), 1, \
+                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED)); \
+  } while (0)
+#else
+#define SP_GC_HEAP_PUSH(hdr) do { (hdr)->next = sp_gc_heap; sp_gc_heap = (hdr); } while (0)
 #endif
 
 /* ---- Collector entry points (defined in lib/sp_gc.c) ---- */

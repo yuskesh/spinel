@@ -92,7 +92,7 @@ static inline char *sp_str_alloc(size_t len) {
      arguments to sp_str_concat) must be reachable across this point -- they are
      for rooted locals; the codegen's SP_GC_ROOT discipline is what keeps them
      so. Threshold recompute mirrors sp_gc_alloc's. */
-  if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { sp_str_threshold = 2048; sp_str_threshold_init = 2048; } }
+  if (!sp_str_stress_checked) { sp_str_stress_checked = 1; const char *e = getenv("SPINEL_GC_STRESS"); if (e && *e && *e != '0') { SP_GC_CTR_SET(sp_str_threshold, 2048); sp_str_threshold_init = 2048; } }
   if (SP_GC_CTR_GET(sp_str_heap_bytes) > sp_str_threshold) {
 #ifdef SP_THREADS
     /* Same as sp_gc_alloc: a string-heap collection must stop the world too,
