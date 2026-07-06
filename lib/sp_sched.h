@@ -105,16 +105,30 @@ mrb_bool   sp_Thread_tls_key(sp_thread *t, sp_sym k);             /* Thread#key?
 void       sp_sched_drain(void);
 
 /* Safepoint (design 5.1). codegen emits, at loop back-edges of a threaded
-   program, `if (SP_UNLIKELY(sp_safepoint_flag)) sp_safepoint();` so a worker in
-   a long-running loop periodically checks whether a stop-the-world (GC) wants it
-   to park. The flag is set only in the threaded runtime while a collector has
-   requested STW; at N=1 it is never set, so the poll is a single
+   program, `if (SP_UNLIKELY(SP_SAFEPOINT_POLL())) sp_safepoint();` so a worker
+   in a long-running loop periodically checks whether a stop-the-world (GC)
+   wants it to park. The flag is set only in the threaded runtime while a
+   collector has requested STW; at N=1 it is never set, so the poll is a single
    predicted-not-taken load. Declared unconditionally (not under SP_THREADS) so
    the emitted poll also compiles when a threaded program's generated C is built
    against the single-threaded archive (e.g. the test harness's manual cc path),
    where it is an inert no-op. sp_safepoint() parks the worker at the GC barrier
-   (the real body lands with the workers + STW). */
+   (the real body lands with the workers + STW).
+
+   The flag is written by the collector (and the preempt signal handler) and
+   read bare by every mutator; under SP_THREADS both sides go through relaxed
+   atomics so the cross-thread poll is defined behavior (and TSan-clean).
+   Relaxed is enough: a mutator that misses one update just polls again next
+   back-edge, and sp_safepoint() itself acquires the sched lock, which orders
+   everything that matters. */
 extern volatile int sp_safepoint_flag;
+#ifdef SP_THREADS
+#define SP_SAFEPOINT_POLL() __atomic_load_n(&sp_safepoint_flag, __ATOMIC_RELAXED)
+#define SP_SAFEPOINT_SET(v) __atomic_store_n(&sp_safepoint_flag, (v), __ATOMIC_RELAXED)
+#else
+#define SP_SAFEPOINT_POLL() (sp_safepoint_flag)
+#define SP_SAFEPOINT_SET(v) (sp_safepoint_flag = (v))
+#endif
 void sp_safepoint(void);
 
 /* Optional hook the generated TU installs so a worker parking at a safepoint

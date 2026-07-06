@@ -544,11 +544,15 @@ static void *sp_gc_alloc_pool(size_t sz, void(*scn)(void*), void(*recycle)(sp_gc
    GC cycle visits it. Called by class _new functions when reusing
    a pooled instance. The storage was kept alive by the pool
    free-list since the last sweep unlinked it from sp_gc_heap. */
+/* The heap list is shared across workers; a pooled re-link used to push onto
+   it bare, racing sp_gc_alloc's push at N>1 (a lost link is a leaked-then-UAF
+   header). SP_GC_HEAP_PUSH is a lock-free CAS push in the threaded build --
+   the pool hit stays off the heap mutex -- and the exact plain push in the
+   single-threaded one (see sp_gc.h). */
 static void sp_gc_pool_relink(sp_gc_hdr *h) {
   h->marked = 0;
-  h->next = sp_gc_heap;
-  sp_gc_heap = h;
-  sp_gc_bytes += h->size;
+  SP_GC_HEAP_PUSH(h);
+  SP_GC_CTR_ADD(sp_gc_bytes, h->size);
 }
 
 /* Per-class free-list pool boilerplate. SP_POOL_DEFINE(CLS) goes at
@@ -559,6 +563,43 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
    (uniform across classes). SP_POOL_REPORT=1 dumps per-class stats
    at exit. */
 #define SP_POOL_DEFAULT_MAX 1048576L
+/* Pool concurrency (threaded build). The free lists stay SHARED across
+   workers -- pushes (recycle) happen only during the stop-the-world sweep,
+   where every mutator is parked, so they stay plain stores; pops run
+   concurrently on any worker and go through a lock-free CAS (below). A
+   concurrent-pop-only Treiber stack has no ABA window: a popped node can
+   only reappear on the list via the sweep, and no sweep can run while a
+   mutator is mid-pop (it is not at a safepoint). A shared list also keeps
+   recycled storage visible to every worker -- per-worker (TLS) lists would
+   strand the whole recycle crop on whichever worker ran the collection.
+   pool_count/pops are adjusted by concurrent poppers, so they use relaxed
+   atomics; pushes/freed/hwm are sweep-only (exclusive), so they stay plain.
+   Single-threaded: the macros expand to the exact plain code this had. */
+#ifdef SP_THREADS
+static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
+  sp_gc_hdr *old = __atomic_load_n(head, __ATOMIC_ACQUIRE);
+  while (old) {
+    /* A stale `old` may already belong to another worker, which is
+       concurrently rewriting old->next (its relink push). The atomic load
+       keeps that defined; the CAS below then fails and retries with a
+       fresh head, discarding the stale next. */
+    sp_gc_hdr *nxt = __atomic_load_n(&old->next, __ATOMIC_RELAXED);
+    if (__atomic_compare_exchange_n(head, &old, nxt, 1,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_ACQUIRE)) break;
+  }
+  return old;
+}
+#define SP_POOL_CTR_INC(c) __atomic_fetch_add(&(c), 1, __ATOMIC_RELAXED)
+#define SP_POOL_CTR_DEC(c) __atomic_fetch_sub(&(c), 1, __ATOMIC_RELAXED)
+#else
+static inline sp_gc_hdr *sp_pool_try_pop(sp_gc_hdr **head) {
+  sp_gc_hdr *old = *head;
+  if (old) *head = old->next;
+  return old;
+}
+#define SP_POOL_CTR_INC(c) ((c)++)
+#define SP_POOL_CTR_DEC(c) ((c)--)
+#endif
 #define SP_POOL_DEFINE(CLS) \
   static sp_gc_hdr *sp_##CLS##_pool_head = NULL; \
   static long sp_##CLS##_pool_count = 0; \
@@ -571,6 +612,8 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
     const char *m = getenv("SP_POOL_MAX"); \
     if (m && *m) { long v = atol(m); if (v >= 0) sp_##CLS##_pool_max = v; } \
   } \
+  /* Runs only from the sweep (stop-the-world in the threaded build), so the
+     list mutation needs no CAS -- no pop can run concurrently. */ \
   static void sp_##CLS##_pool_recycle(sp_gc_hdr *h) { \
     if (sp_##CLS##_pool_count >= sp_##CLS##_pool_max) { \
       free(h); sp_##CLS##_pool_freed++; return; \
@@ -591,11 +634,10 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
 
 #define SP_POOL_NEW(CLS, SCAN) (__extension__ ({ \
   sp_##CLS *_p; \
-  if (sp_##CLS##_pool_head) { \
-    sp_gc_hdr *_h = sp_##CLS##_pool_head; \
-    sp_##CLS##_pool_head = _h->next; \
-    sp_##CLS##_pool_count--; \
-    sp_##CLS##_pool_pops++; \
+  sp_gc_hdr *_h = sp_pool_try_pop(&sp_##CLS##_pool_head); \
+  if (_h) { \
+    SP_POOL_CTR_DEC(sp_##CLS##_pool_count); \
+    SP_POOL_CTR_INC(sp_##CLS##_pool_pops); \
     sp_gc_pool_relink(_h); \
     _h->recycle = sp_##CLS##_pool_recycle; \
     _p = (sp_##CLS *)((char *)_h + sizeof(sp_gc_hdr)); \
@@ -715,10 +757,16 @@ static sp_StrIntHash*sp_gc_stat(void){
   /* The string heap (sp_str_heap) is malloc'd separately and deliberately
      excluded from sp_gc_bytes (see sp_str_alloc). Surface its footprint so
      GC.stat can explain "RSS huge but bytes tiny" for string-heavy workloads.
-     Prototype: O(n) walk; a production version maintains a running counter. */
+     Prototype: O(n) walk; a production version maintains a running counter.
+     The walk holds the heap lock: sp_str_alloc pushes onto this list under
+     it from any worker, and an unlocked traversal could read a half-linked
+     node. Unlock before building the hash -- sp_gc_alloc takes the same
+     (non-recursive) lock. */
   size_t str_bytes=0; mrb_int str_count=0;
+  SP_HEAP_LOCK();
   for(sp_str_hdr*sh=sp_str_heap; sh; sh=sh->next){ str_bytes+=sh->size; str_count++; }
-  sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)sp_gc_bytes);sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
+  SP_HEAP_UNLOCK();
+  sp_StrIntHash*h=sp_StrIntHash_new();sp_StrIntHash_set(h,SPL("bytes"),(mrb_int)SP_GC_CTR_GET(sp_gc_bytes));sp_StrIntHash_set(h,SPL("old_bytes"),(mrb_int)sp_gc_old_bytes);sp_StrIntHash_set(h,SPL("threshold"),(mrb_int)sp_gc_threshold);sp_StrIntHash_set(h,SPL("cycle"),(mrb_int)sp_gc_cycle);sp_StrIntHash_set(h,SPL("full_runs"),(mrb_int)(sp_gc_cycle/SP_GC_FULL_INTERVAL));sp_StrIntHash_set(h,SPL("str_bytes"),(mrb_int)str_bytes);sp_StrIntHash_set(h,SPL("str_count"),str_count);return h;}
 
 static void sp_StrStrHash_fin(void*p){sp_StrStrHash*h=(sp_StrStrHash*)p;free(h->keys);free(h->vals);free(h->order);}
 static void sp_StrStrHash_scan(void*p){sp_StrStrHash*h=(sp_StrStrHash*)p;for(mrb_int i=0;i<h->cap;i++){if(h->keys[i]){sp_mark_string(h->keys[i]);sp_mark_string(h->vals[i]);}}if(h->default_v)sp_mark_string(h->default_v);}

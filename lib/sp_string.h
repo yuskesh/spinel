@@ -43,9 +43,9 @@ static inline int sp_fd_grow(sp_String *s, int64_t need){
   int64_t new_cap = (need * 2) + 16;
   char *raw = (char *)realloc(sp_fd_base(s->data), SP_FD_OVH + new_cap);
   if (!raw) return 0;
-  sp_gc_bytes -= s->cap + SP_FD_OVH; h->size -= s->cap + SP_FD_OVH;
+  SP_GC_CTR_SUB(sp_gc_bytes, s->cap + SP_FD_OVH); h->size -= s->cap + SP_FD_OVH;
   s->cap = new_cap; s->data = sp_fd_setup(raw);
-  h->size += s->cap + SP_FD_OVH; sp_gc_bytes += s->cap + SP_FD_OVH;
+  h->size += s->cap + SP_FD_OVH; SP_GC_CTR_ADD(sp_gc_bytes, s->cap + SP_FD_OVH);
   return 1;
 }
 static inline void sp_String_fin(void*p){free(sp_fd_base(((sp_String*)p)->data));}
@@ -60,7 +60,7 @@ static inline sp_String*sp_String_new(const char*s){
   memcpy(data,s,len);data[len]=0;
   sp_String*r=(sp_String*)sp_gc_alloc(sizeof(sp_String),sp_String_fin,NULL);
   r->len=len;r->cap=cap;r->data=data;
-  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+SP_FD_OVH;sp_gc_bytes+=r->cap+SP_FD_OVH;}
+  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+SP_FD_OVH;SP_GC_CTR_ADD(sp_gc_bytes,r->cap+SP_FD_OVH);}
   sp_fd_publish(r);
   return r;
 }
