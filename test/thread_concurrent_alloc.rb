@@ -5,6 +5,12 @@
 # pool free-list state used to race at N>1 workers, skewing GC triggers and
 # corrupting the heap. The final sum is a pure function of the inputs, so
 # any run-to-run variation means allocation state was corrupted.
+#
+# The threads write acc at DISJOINT indices (thread w owns i % nt == w) into
+# a preallocated Float array that never grows during the run: each slot is a
+# distinct memory location, so the writes are race-free by construction --
+# this is the documented "safe subset" pattern, and it mirrors how the race
+# was hit in the field. Allocation is the only shared state exercised.
 def alloc_work(i)
   a = Array.new(8, 0.0)
   j = 0
