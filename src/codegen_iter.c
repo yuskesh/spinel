@@ -1476,8 +1476,46 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* (a..b).each { |i| ... } -- any range-typed receiver */
+  /* ("a".."e").each { |s| ... } -- a string-endpoint range has no int sp_Range
+     representation, so materialize the succ-sequence as a StrArray and loop over
+     it. The block param is shadow-typed String for the body. */
   if (sp_streq(name, "each") && rt == TY_RANGE && p0) {
+    int rnode = unwrap_parens(c, recv);
+    if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
+      int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");
+      if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
+        int excl = (int)(nt_int(nt, rnode, "flags", 0) & 4) ? 1 : 0;
+        int ta = ++g_tmp, ti = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_StrArray *_t%d = sp_StrArray_from_string_range(", ta);
+        emit_expr(c, lo, b); buf_puts(b, ", "); emit_expr(c, hi, b); buf_printf(b, ", %d);\n", excl);
+        /* Root the materialized array: the loop body can allocate (and trigger
+           GC), which would otherwise sweep it out from under sp_StrArray_get. */
+        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
+        Scope *ssc = comp_scope_of(c, block);
+        LocalVar *slv = (ssc && p0_orig) ? scope_local(ssc, p0_orig) : NULL;
+        TyKind saved = slv ? slv->type : TY_UNKNOWN;
+        int use_shadow = slv && slv->type != TY_STRING;
+        emit_indent(b, indent);
+        buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
+        if (use_shadow) {
+          int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
+          slv->type = TY_STRING;
+          for (int j = 0; j < sbn; j++) infer_type(c, sbb[j]);
+          emit_indent(b, indent + 1);
+          buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
+          emit_loop_body(c, body, b, indent + 1);
+          slv->type = saved;
+        }
+        else {
+          emit_indent(b, indent + 1);
+          buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
+          emit_loop_body(c, body, b, indent + 1);
+        }
+        emit_indent(b, indent); buf_puts(b, "}\n");
+        return 1;
+      }
+    }
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
