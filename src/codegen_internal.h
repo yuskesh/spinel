@@ -423,6 +423,7 @@ int is_builtin_class_name(const char *n);
 const char *c_type_name(TyKind t);
 int is_scalar_ret(TyKind t);
 const char *ffi_c_type(const char *spec);
+const char *ffi_cb_arg_ctype(const char *spec);
 const char *native_c_type(const char *spec);
 const char *default_value(TyKind t);
 void emit_ctype(Compiler *c, TyKind t, Buf *b);

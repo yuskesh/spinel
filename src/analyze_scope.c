@@ -1779,8 +1779,46 @@ void register_ffi_decls(Compiler *c) {
         c->ffi_readers[ri].kind   = strdup(kind);
         continue;
       }
+
+      /* ffi_callback :name, [arg_specs], ret_spec -- declares a C
+         function-pointer type usable as an ffi_func arg spec. */
+      if (sp_streq(dname, "ffi_callback")) {
+        if (an < 3) continue;
+        const char *cbname = ffi_arg_str(nt, args[0]);
+        const char *arr_ty = nt_type(nt, args[1]);
+        const char *ret_spec = ffi_arg_str(nt, args[2]);
+        if (!cbname || !ret_spec || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        int en = 0; const int *elems = nt_arr(nt, args[1], "elements", &en);
+        char **arg_specs = malloc(sizeof(char *) * (size_t)(en + 1));
+        if (!arg_specs) { perror("malloc"); exit(1); }
+        for (int ei = 0; ei < en; ei++) {
+          const char *spec = ffi_arg_str(nt, elems[ei]);
+          arg_specs[ei] = strdup(spec ? spec : "");
+        }
+        if (c->n_ffi_callbacks >= c->c_ffi_callbacks) {
+          c->c_ffi_callbacks = c->c_ffi_callbacks ? c->c_ffi_callbacks * 2 : 8;
+          FfiCallback *grown = realloc(c->ffi_callbacks, sizeof(FfiCallback) * (size_t)c->c_ffi_callbacks);
+          if (!grown) { perror("realloc"); exit(1); }
+          c->ffi_callbacks = grown;
+        }
+        int ci = c->n_ffi_callbacks++;
+        c->ffi_callbacks[ci].mod       = strdup(mname);
+        c->ffi_callbacks[ci].name      = strdup(cbname);
+        c->ffi_callbacks[ci].arg_specs = arg_specs;
+        c->ffi_callbacks[ci].nargs     = en;
+        c->ffi_callbacks[ci].ret_spec  = strdup(ret_spec);
+        continue;
+      }
     }
   }
+}
+
+/* Look up an ffi_callback by (module, name). Returns index or -1. */
+int ffi_find_callback(Compiler *c, const char *mod, const char *name) {
+  for (int i = 0; i < c->n_ffi_callbacks; i++)
+    if (sp_streq(c->ffi_callbacks[i].mod, mod) && sp_streq(c->ffi_callbacks[i].name, name))
+      return i;
+  return -1;
 }
 
 /* Look up an FFI func by (module, name). Returns index or -1. */

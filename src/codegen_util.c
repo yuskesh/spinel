@@ -681,6 +681,16 @@ const char *ffi_c_type(const char *spec) {
   const FfiSpecInfo *info = ffi_spec_lookup(spec);
   return info ? info->c_type : "void";
 }
+
+/* The C type of one ffi_callback argument, used to build the trampoline's own
+   pointer type. A :ptr callback arg is `const void*` -- the near-universal shape
+   of C comparator/visitor callbacks (qsort, bsearch, ...) -- so the generated
+   trampoline's type matches the header's declaration exactly (no
+   incompatible-function-pointer error). */
+const char *ffi_cb_arg_ctype(const char *spec) {
+  if (sp_streq(spec, "ptr")) return "const void *";
+  return ffi_c_type(spec);
+}
 const char *default_value(TyKind t) {
   switch (t) {
     case TY_INT:    return "0";
