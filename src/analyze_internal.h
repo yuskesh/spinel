@@ -202,6 +202,7 @@ int desugar_implicit_send(Compiler *c);
 int desugar_dynamic_send(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);
+int desugar_step_kwargs(Compiler *c);
 int desugar_respond_to_probe(Compiler *c);
 int desugar_symbol_to_proc_call(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);

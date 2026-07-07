@@ -2584,6 +2584,53 @@ int desugar_implicit_send(Compiler *c) {
   return changed;
 }
 
+/* n.step(to: X[, by: Y]) is the keyword form of n.step(X, Y) (by defaults to 1).
+   The step passes read positional arguments, so a lone KeywordHashNode argument
+   is otherwise mis-read as an integer limit (an int-from-pointer miscompile).
+   Rewrite the to:/by: form into the positional list before those passes run. */
+int desugar_step_kwargs(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "step")) continue;
+    if (nt_ref(nt, id, "receiver") < 0) continue;         /* Numeric#step has a receiver */
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
+    if (ac != 1 || !av) continue;
+    int kh = av[0];
+    if (!nt_type(nt, kh) || !sp_streq(nt_type(nt, kh), "KeywordHashNode")) continue;
+    int to_v = -1, by_v = -1, other = 0;
+    int en = 0; const int *els = nt_arr(nt, kh, "elements", &en);
+    for (int i = 0; i < en; i++) {
+      if (!nt_type(nt, els[i]) || !sp_streq(nt_type(nt, els[i]), "AssocNode")) { other = 1; break; }
+      int key = nt_ref(nt, els[i], "key");
+      const char *kn = (key >= 0 && nt_type(nt, key) && sp_streq(nt_type(nt, key), "SymbolNode"))
+                       ? nt_str(nt, key, "value") : NULL;
+      if (kn && sp_streq(kn, "to")) to_v = nt_ref(nt, els[i], "value");
+      else if (kn && sp_streq(kn, "by")) by_v = nt_ref(nt, els[i], "value");
+      else { other = 1; break; }
+    }
+    if (other || to_v < 0) continue;   /* only the to:[/by:] form; `to` is required */
+    int sc = c->nscope[id];
+    int base = nt->count;
+    if (by_v < 0) {
+      by_v = nt_new_node(nt, "IntegerNode");
+      if (by_v < 0) continue;
+      nt_node_set_int(nt, by_v, "value", 1);
+    }
+    int pos[2] = { to_v, by_v };
+    nt_node_set_arr(nt, args, "arguments", pos, 2);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* A receiverless `instance_exec(&b)` at top level (or in a free function) has an
    implicit self, so instance_exec rebinds self to the current self -- i.e. it
    does not change self at all, and is exactly `<block>.call(<args>)`. Rewrite it
