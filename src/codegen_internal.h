@@ -4,6 +4,7 @@
  * file-static in the single file and is shared between the parts. */
 #ifndef SPINEL_CODEGEN_INTERNAL_H
 #define SPINEL_CODEGEN_INTERNAL_H
+#include "ffi_spec.h"
 /* M2 code generator: the M1 scalar/control-flow subset plus user-defined
  * methods (required params, inferred param/return types, recursion, tail-
  * position implicit returns). Emits the same runtime ABI as the legacy

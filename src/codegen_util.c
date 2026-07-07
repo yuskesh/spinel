@@ -678,27 +678,8 @@ const char *native_c_type(const char *spec) {
 }
 
 const char *ffi_c_type(const char *spec) {
-  if (!spec) return "void";
-  if (sp_streq(spec, "int"))    return "int";
-  if (sp_streq(spec, "uint32")) return "uint32_t";
-  if (sp_streq(spec, "int32"))  return "int32_t";
-  if (sp_streq(spec, "uint16")) return "uint16_t";
-  if (sp_streq(spec, "int16"))  return "int16_t";
-  if (sp_streq(spec, "uint8"))  return "uint8_t";
-  if (sp_streq(spec, "int8"))   return "int8_t";
-  if (sp_streq(spec, "size_t")) return "size_t";
-  if (sp_streq(spec, "long"))   return "long";
-  if (sp_streq(spec, "int64"))  return "int64_t";
-  if (sp_streq(spec, "float"))  return "float";
-  if (sp_streq(spec, "double")) return "double";
-  if (sp_streq(spec, "bool"))   return "int";
-  if (sp_streq(spec, "str"))    return "const char *";
-  if (sp_streq(spec, "binstr")) return "const char *";  /* bytes + sp_net_bin_len */
-  if (sp_streq(spec, "ptr"))    return "void *";
-  if (sp_streq(spec, "float_array")) return "const double *";
-  if (sp_streq(spec, "int_array"))   return "const int64_t *";
-  if (sp_streq(spec, "void"))   return "void";
-  return "void";
+  const FfiSpecInfo *info = ffi_spec_lookup(spec);
+  return info ? info->c_type : "void";
 }
 const char *default_value(TyKind t) {
   switch (t) {

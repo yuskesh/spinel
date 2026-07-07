@@ -1435,19 +1435,8 @@ int ffi_arg_int(const NodeTable *nt, int nid) {
 
 /* Map an FFI spec string to the Spinel TyKind used for return types. */
 TyKind ffi_spec_to_ty(const char *spec) {
-  if (!spec) return TY_UNKNOWN;
-  if (sp_streq(spec,"int")||sp_streq(spec,"uint32")||sp_streq(spec,"int32")||
-      sp_streq(spec,"uint16")||sp_streq(spec,"int16")||sp_streq(spec,"uint8")||
-      sp_streq(spec,"size_t")||sp_streq(spec,"long")||sp_streq(spec,"int64"))
-    return TY_INT;
-  if (sp_streq(spec,"float")||sp_streq(spec,"double")) return TY_FLOAT;
-  if (sp_streq(spec,"str")||sp_streq(spec,"binstr")) return TY_STRING;
-  if (sp_streq(spec,"bool")) return TY_BOOL;
-  if (sp_streq(spec,"ptr")) return TY_POLY;
-  if (sp_streq(spec,"void")) return TY_NIL;
-  if (sp_streq(spec,"float_array")) return TY_FLOAT_ARRAY;
-  if (sp_streq(spec,"int_array")) return TY_INT_ARRAY;
-  return TY_UNKNOWN;
+  const FfiSpecInfo *info = ffi_spec_lookup(spec);
+  return info ? info->ty : TY_UNKNOWN;
 }
 
 /* Register a ffi_func / ffi_const / ffi_buffer / ffi_read_* declared in
