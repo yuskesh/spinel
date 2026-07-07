@@ -1810,8 +1810,68 @@ void register_ffi_decls(Compiler *c) {
         c->ffi_callbacks[ci].ret_spec  = strdup(ret_spec);
         continue;
       }
+
+      /* ffi_struct :Name, [[:field, :spec], ...] -- a named C struct with
+         generated field accessors: Name_new / Name_get_<f> / Name_set_<f>. */
+      if (sp_streq(dname, "ffi_struct")) {
+        if (an < 2) continue;
+        const char *sname = ffi_arg_str(nt, args[0]);
+        const char *arr_ty = nt_type(nt, args[1]);
+        if (!sname || !arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
+        int en = 0; const int *elems = nt_arr(nt, args[1], "elements", &en);
+        FfiField *fields = malloc(sizeof(FfiField) * (size_t)(en > 0 ? en : 1));
+        if (!fields) { perror("malloc"); exit(1); }
+        int nf = 0;
+        for (int ei = 0; ei < en; ei++) {
+          const char *pty = nt_type(nt, elems[ei]);
+          if (!pty || !sp_streq(pty, "ArrayNode")) continue;
+          int pn = 0; const int *pair = nt_arr(nt, elems[ei], "elements", &pn);
+          if (pn < 2) continue;
+          const char *fn = ffi_arg_str(nt, pair[0]);
+          const char *fs = ffi_arg_str(nt, pair[1]);
+          if (!fn || !fs) continue;
+          fields[nf].name = strdup(fn);
+          fields[nf].spec = strdup(fs);
+          nf++;
+        }
+        if (nf == 0) { free(fields); continue; }
+        if (c->n_ffi_structs >= c->c_ffi_structs) {
+          c->c_ffi_structs = c->c_ffi_structs ? c->c_ffi_structs * 2 : 8;
+          FfiStruct *grown = realloc(c->ffi_structs, sizeof(FfiStruct) * (size_t)c->c_ffi_structs);
+          if (!grown) { perror("realloc"); exit(1); }
+          c->ffi_structs = grown;
+        }
+        int sidx = c->n_ffi_structs++;
+        c->ffi_structs[sidx].mod     = strdup(mname);
+        c->ffi_structs[sidx].name    = strdup(sname);
+        c->ffi_structs[sidx].fields  = fields;
+        c->ffi_structs[sidx].nfields = nf;
+        continue;
+      }
     }
   }
+}
+
+/* Resolve Module.<method> against ffi_struct declarations. See compiler.h. */
+int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si, int *fi) {
+  for (int i = 0; i < c->n_ffi_structs; i++) {
+    if (!sp_streq(c->ffi_structs[i].mod, mod)) continue;
+    const char *nm = c->ffi_structs[i].name;
+    size_t nl = strlen(nm);
+    if (strncmp(method, nm, nl) != 0 || method[nl] != '_') continue;
+    const char *rest = method + nl + 1;
+    if (sp_streq(rest, "new")) { *si = i; *fi = -1; return FFI_SM_NEW; }
+    int isget = !strncmp(rest, "get_", 4);
+    int isset = !strncmp(rest, "set_", 4);
+    if (isget || isset) {
+      const char *field = rest + 4;
+      for (int f = 0; f < c->ffi_structs[i].nfields; f++)
+        if (sp_streq(c->ffi_structs[i].fields[f].name, field)) {
+          *si = i; *fi = f; return isget ? FFI_SM_GET : FFI_SM_SET;
+        }
+    }
+  }
+  return FFI_SM_NONE;
 }
 
 /* Look up an ffi_callback by (module, name). Returns index or -1. */

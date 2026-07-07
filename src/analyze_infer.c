@@ -1027,6 +1027,13 @@ else {
         if (kind && sp_streq(kind, "ptr")) return TY_POLY;
         return TY_INT;
       }
+      /* ffi_struct: Name_new -> ptr, Name_get_<f> -> the field's type,
+         Name_set_<f> -> nil. */
+      int fsi, ffi;
+      int fsm = ffi_struct_method(c, rcmod, name, &fsi, &ffi);
+      if (fsm == FFI_SM_NEW) return TY_POLY;
+      if (fsm == FFI_SM_GET) return ffi_spec_to_ty(c->ffi_structs[fsi].fields[ffi].spec);
+      if (fsm == FFI_SM_SET) return TY_NIL;
     }
   }
 

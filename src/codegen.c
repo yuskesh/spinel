@@ -3947,6 +3947,16 @@ char *codegen_program(const NodeTable *nt) {
       buf_printf(&b, "static char sp_ffi_buf_%s_%s[%d];\n",
                  cf->ffi_bufs[bi].mod, cf->ffi_bufs[bi].name, cf->ffi_bufs[bi].size);
     }
+    /* ffi_struct typedefs: the C compiler owns the layout (offsets/padding),
+       so the generated accessors use plain member access, not manual offsets. */
+    for (int si = 0; si < cf->n_ffi_structs; si++) {
+      buf_puts(&b, "typedef struct { ");
+      for (int f = 0; f < cf->ffi_structs[si].nfields; f++)
+        buf_printf(&b, "%s %s; ", ffi_c_type(cf->ffi_structs[si].fields[f].spec),
+                   cf->ffi_structs[si].fields[f].name);
+      buf_printf(&b, "} sp_ffi_struct_%s_%s;\n",
+                 cf->ffi_structs[si].mod, cf->ffi_structs[si].name);
+    }
   }
   {
     int ns = c->nsymbols;
