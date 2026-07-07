@@ -1222,8 +1222,11 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
   int apn = 0;
   const int *reqs = nt_arr(nt, pat, "requireds", &apn);
   int rest_nid = nt_ref(nt, pat, "rest");
+  /* a trailing comma (`in [0, 1, ]`) is an ImplicitRestNode: same length
+     semantics as a splat rest (at-least), it just binds nothing. */
   int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
-                  sp_streq(nt_type(nt, rest_nid), "SplatNode"));
+                  (sp_streq(nt_type(nt, rest_nid), "SplatNode") ||
+                   sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
   buf_printf(b, "((%s).tag == SP_TAG_OBJ && sp_poly_length(%s) %s %dLL",
              arr, arr, has_rest ? ">=" : "==", apn);
   for (int i = 0; i < apn; i++) {
@@ -1322,6 +1325,19 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   if (sp_streq(pty, "PinnedVariableNode") || sp_streq(pty, "PinnedExpressionNode")) {
     int ex = nt_ref(nt, pat, "expression");
     if (ex < 0) return 0;
+    /* A pinned Regexp matches via === (Regexp#===), not equality: the pinned
+       expression is an mrb_regexp_pattern*, so run it against the scrutinee
+       string (a poly scrutinee matches only when it holds a string). */
+    if (comp_ntype(c, ex) == TY_REGEX && (pt == TY_STRING || pt == TY_POLY)) {
+      if (pt == TY_POLY)
+        buf_printf(b, "(_t%d.tag == SP_TAG_STR && sp_re_match_p(", t);
+      else
+        buf_puts(b, "sp_re_match_p(");
+      emit_expr(c, ex, b);
+      if (pt == TY_POLY) buf_printf(b, ", _t%d.v.s))", t);
+      else buf_printf(b, ", _t%d)", t);
+      return 1;
+    }
     emit_pm_eq(c, t, pt, ex, b);
     return 1;
   }
@@ -1383,7 +1399,8 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
        (short-circuits after the length guard so element access is in-bounds). */
     int rest_nid = nt_ref(nt, pat, "rest");
     int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
-                    sp_streq(nt_type(nt, rest_nid), "SplatNode"));
+                    (sp_streq(nt_type(nt, rest_nid), "SplatNode") ||
+                     sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
     buf_printf(b, "(_t%d && _t%d->len %s %dLL", t, t, has_rest ? ">=" : "==", (long long)apn);
     const char *ak = array_kind(pt);
     if (ak) {
