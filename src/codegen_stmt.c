@@ -6242,6 +6242,14 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   if (rt == TY_POLY_ARRAY) {
     if (sp_streq(name, "[]=") && argc == 2) {
+      /* a splatted index (`recv[*args] = v`) has runtime arity -- it selects
+         between element-set and slice-splice per call. Not lowered yet; the
+         splat value-position support would otherwise feed the built ARRAY
+         pointer in as the element index (a resize loop on a garbage index). */
+      if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode")) {
+        unsupported(c, id, "splatted index in []= (later slice)");
+        return 1;
+      }
       /* arr[range] = rhs : a splice over the range's (start, length). */
       if (comp_ntype(c, argv[0]) == TY_RANGE) {
         emit_indent(b, indent);
@@ -6294,6 +6302,12 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (!k) return 0;
 
   if (sp_streq(name, "[]=") && argc == 2) {
+    /* a splatted index (`recv[*args] = v`) has runtime arity; see the guard
+       on the other []= arm. */
+    if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "SplatNode")) {
+      unsupported(c, id, "splatted index in []= (later slice)");
+      return 1;
+    }
     /* arr[range] = rhs : a splice over the range's (start, length). */
     if (comp_ntype(c, argv[0]) == TY_RANGE) {
       emit_indent(b, indent);
