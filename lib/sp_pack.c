@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 /* The shared runtime types (sp_RbVal, sp_IntArray, sp_sym, mrb_*, SP_TAG_*) and
    the string allocator (sp_str_alloc / _set_len / _byte_len / sp_str_empty) come
@@ -193,11 +194,32 @@ static double uk_get_flt(char spec, const unsigned char *u) {
   float v; memcpy(&v, &bits, 4); return (double)v;
 }
 
+/* Truncate a double toward zero for the integer directives with CRuby's
+   Array#pack semantics: NaN / +-Infinity raise FloatDomainError, and finite
+   values outside the int64 range wrap modulo 2^64 (CRuby coerces through an
+   exact Integer, and the directive's byte mask keeps only the low bits). A
+   plain (int64_t) cast is undefined C for anything outside
+   [INT64_MIN, INT64_MAX], including NaN. */
+static int64_t pk_flt_to_int(double dv) {
+  if (isnan(dv)) sp_raise_cls("FloatDomainError", "NaN");
+  if (isinf(dv)) sp_raise_cls("FloatDomainError", dv > 0 ? "Infinity" : "-Infinity");
+  if (dv >= -9223372036854775808.0 && dv < 9223372036854775808.0)
+    return (int64_t)dv;
+  /* Out-of-range finite: |dv| >= 2^63, so the mantissa is shifted left by
+     its (positive) binary exponent; the unsigned shift wraps mod 2^64. */
+  double a = dv < 0 ? -dv : dv;
+  uint64_t bits; memcpy(&bits, &a, 8);
+  int sh = (int)((bits >> 52) & 0x7FF) - 1075;   /* a = mant * 2^sh */
+  uint64_t mant = (bits & 0xFFFFFFFFFFFFFULL) | (1ULL << 52);
+  uint64_t u = sh >= 64 ? 0 : mant << sh;
+  return (int64_t)(dv < 0 ? 0 - u : u);
+}
+
 static int64_t pk_poly_to_int(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT:  return v.v.i;
     case SP_TAG_BOOL: return v.v.i ? 1 : 0;
-    case SP_TAG_FLT:  return (int64_t)v.v.f;
+    case SP_TAG_FLT:  return pk_flt_to_int(v.v.f);
     case SP_TAG_STR:  return v.v.s ? strtoll(v.v.s, NULL, 0) : 0;
     case SP_TAG_NIL:  return 0;
     default:          return 0;
@@ -449,9 +471,10 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
 
 /* Pack a Float array: the float/double directives pack the element's
    IEEE-754 encoding directly; the integer directives truncate toward zero
-   (CRuby coerces Float through NUM2LONG the same way, so [1.5].pack("C")
-   is "\x01"). Mirrors sp_IntArray_pack otherwise -- note sp_FloatArray has
-   no `start` offset field. */
+   via pk_flt_to_int (CRuby coerces Float through an exact Integer the same
+   way, so [1.5].pack("C") is "\x01" and NaN/Infinity raise
+   FloatDomainError). Mirrors sp_IntArray_pack otherwise -- note
+   sp_FloatArray has no `start` offset field. */
 const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
   if (!arr || !fmt) return sp_str_empty;
   size_t cap = 64;
@@ -476,7 +499,7 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
       continue;
     }
     for (int64_t k = 0; k < count; k++) {
-      int64_t v = (idx < arr->len) ? (int64_t)arr->data[idx] : 0;
+      int64_t v = (idx < arr->len) ? pk_flt_to_int(arr->data[idx]) : 0;
       idx++;
       char tmp[8];
       switch (spec) {

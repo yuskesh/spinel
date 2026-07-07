@@ -42,3 +42,20 @@ pair = [1.5, 2.25].pack("G2")
 v = pair.unpack1("G")
 puts (v * 2).inspect
 puts pair.unpack1("G", offset: 8).inspect
+
+# NaN / Infinity under an integer directive raise FloatDomainError, and a
+# finite double beyond the int64 range wraps modulo 2**64 (CRuby coerces
+# through an exact Integer; a plain C cast would be undefined behaviour)
+begin
+  [Float::NAN].pack("C")
+rescue FloatDomainError => e
+  puts "nan: #{e}"
+end
+begin
+  [-Float::INFINITY].pack("q")
+rescue FloatDomainError => e
+  puts "inf: #{e}"
+end
+puts [2.0e19].pack("Q").unpack1("Q")
+puts [-2.0e19].pack("q").unpack1("q")
+puts [1.0e300].pack("Q").unpack1("Q")
