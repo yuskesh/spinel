@@ -1,0 +1,23 @@
+42
+-7
+1.5
+true
+false
+nil
+"hi\nthere"
+[]
+[1, 2, 3]
+["a", true, nil, 2.5]
+1
+[2, 3]
+true
+nil
+["a", "b", "c"]
+3
+0
+1
+2
+"{\"name\":\"spinel\",\"nums\":[1,2,3],\"ok\":true}"
+"é"
+JSON::ParserError
+JSON::ParserError

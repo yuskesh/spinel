@@ -12,6 +12,7 @@
 
 const char *sp_json_str(const char *s);   /* quote + escape a string */
 const char *sp_json_val(sp_RbVal v);      /* serialize any boxed value */
+sp_RbVal sp_json_parse(const char *s);    /* parse JSON text into a boxed value */
 /* A plain object (Struct) is serialized by reflecting it into a hash via the
    generic sp_obj_to_hash_fn hook (declared in sp_gc.h, installed by the
    generated program); sp_json_val then serializes that hash. */

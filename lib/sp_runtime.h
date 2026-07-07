@@ -3971,12 +3971,24 @@ static void sp_poly_hash_pair(sp_RbVal v, mrb_int i, sp_RbVal *k, sp_RbVal *out)
     default: break;
   }
 }
+/* JSON.parse object builders: a string-keyed poly hash (the parser owns the
+   key strings; StrPolyHash stores the pointer without copying). */
+static sp_RbVal sp_json_new_strhash(void) {
+  return sp_box_obj(sp_StrPolyHash_new(), SP_BUILTIN_STR_POLY_HASH);
+}
+static void sp_json_strhash_set(sp_RbVal h, const char *k, sp_RbVal v) {
+  sp_StrPolyHash_set((sp_StrPolyHash *)h.v.p, k, v);
+}
 __attribute__((constructor)) static void sp_json_install_hooks(void) {
   sp_json_kind_fn = sp_json_kind;
   sp_json_len_fn = sp_poly_length;
   sp_json_aref_fn = sp_poly_arr_get;
   sp_json_hpair_fn = sp_poly_hash_pair;
   sp_poly_inspect_fn = sp_poly_inspect;
+  /* JSON.parse builds objects as string-keyed hashes (CRuby returns String
+     keys, and this matches a `{ "k" => v }` literal for equality). */
+  sp_json_mk_hash_fn = sp_json_new_strhash;
+  sp_json_hash_set_fn = sp_json_strhash_set;
 }
 
 #include <setjmp.h>

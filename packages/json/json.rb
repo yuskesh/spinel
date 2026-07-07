@@ -15,4 +15,5 @@ module JSON
   native_obj_reflect                     # serialize a Struct via generic obj->hash reflection
   native_func :generate, [:any], :string, "sp_json_val"
   native_func :dump,     [:any], :string, "sp_json_val"
+  native_func :parse,    [:string], :any,  "sp_json_parse"
 end

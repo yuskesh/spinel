@@ -173,6 +173,12 @@ extern int (*sp_json_kind_fn)(sp_RbVal);
 extern mrb_int (*sp_json_len_fn)(sp_RbVal);
 extern sp_RbVal (*sp_json_aref_fn)(sp_RbVal, mrb_int);
 extern void (*sp_json_hpair_fn)(sp_RbVal, mrb_int, sp_RbVal *, sp_RbVal *);
+/* Container BUILDERS for JSON.parse (installed by the generated TU, which owns
+   the hash type): make an empty string-keyed hash, and set a (key, value) pair
+   -- CRuby's JSON.parse returns String keys. Arrays are built directly from the
+   package ABI (sp_PolyArray). */
+extern sp_RbVal (*sp_json_mk_hash_fn)(void);
+extern void (*sp_json_hash_set_fn)(sp_RbVal, const char *, sp_RbVal);
 /* Recursive #inspect of a boxed value, for lib/sp_inspect.c's container walker
    (set to sp_poly_inspect; same idiom as the JSON hooks). */
 extern const char *(*sp_poly_inspect_fn)(sp_RbVal);
