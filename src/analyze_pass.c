@@ -2614,6 +2614,55 @@ int desugar_toplevel_instance_exec(Compiler *c) {
   return changed;
 }
 
+/* `binding.local_variable_get(:name)` with a literal symbol naming an in-scope
+   local is the idiom for reading a reserved-word parameter (`def f(then:);
+   binding.local_variable_get(:then); end`), the only way to reference such a
+   name -- a bare `then` is a keyword. An AOT compiler has no reified Binding, but
+   this statically-decidable form is exactly the value of that local, so rewrite
+   it to `<local>.itself` (an identity that yields the local's value). Other
+   binding uses have no static answer and are rejected in codegen. */
+int desugar_binding_lvget(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "local_variable_get")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) continue;
+    if (nt_ref(nt, recv, "receiver") >= 0) continue;      /* binding must be receiverless */
+    const char *rnm = nt_str(nt, recv, "name");
+    if (!rnm || !sp_streq(rnm, "binding")) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac != 1 || !av || !nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "SymbolNode")) continue;
+    const char *vn = nt_str(nt, av[0], "value");
+    if (!vn) continue;
+    int sc = c->nscope[id];
+    if (sc < 0 || sc >= c->nscopes || !scope_local(&c->scopes[sc], vn)) continue;
+    char *vnbuf = malloc(strlen(vn) + 1);   /* copy before nt_new_node may realloc vn's storage */
+    if (!vnbuf) continue;
+    strcpy(vnbuf, vn);
+    int base = nt->count;
+    int lread = nt_new_node(nt, "LocalVariableReadNode");
+    if (lread < 0) { free(vnbuf); continue; }
+    nt_node_set_str(nt, lread, "name", vnbuf);
+    free(vnbuf);
+    nt_node_set_ref(nt, id, "receiver", lread);            /* <local>.itself */
+    nt_node_set_str(nt, id, "name", "itself");
+    nt_node_set_ref(nt, id, "arguments", -1);
+    /* The `binding` receiver is now orphaned; rename it to a sentinel no pass
+       matches so the binding reject (which scans all nodes, including
+       unreferenced ones) does not fire on it. */
+    nt_node_set_str(nt, recv, "name", "__orphaned__");
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = sc;
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `recv.send(name_expr, args)` with a NON-literal name and an explicit receiver:
    lower it to a static dispatch over the method names that appear as symbol
    literals in the program. For each candidate name `m` we synthesize an ordinary
