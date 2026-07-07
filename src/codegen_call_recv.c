@@ -3717,23 +3717,18 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "to_s"))       buf_printf(b, "sp_MatchData_to_s(%s)", r);
     else if ((sp_streq(name, "length") || sp_streq(name, "size")) && argc == 0)
       buf_printf(b, "sp_MatchData_length(%s)", r);
-    else if (sp_streq(name, "begin") && argc == 1) {
-      buf_printf(b, "sp_MatchData_begin(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "end") && argc == 1) {
-      buf_printf(b, "sp_MatchData_end(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "offset") && argc == 1) {
-      buf_printf(b, "sp_MatchData_offset(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "bytebegin") && argc == 1) {
-      buf_printf(b, "sp_MatchData_bytebegin(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "byteend") && argc == 1) {
-      buf_printf(b, "sp_MatchData_byteend(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
-    }
-    else if (sp_streq(name, "byteoffset") && argc == 1) {
-      buf_printf(b, "sp_MatchData_byteoffset(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    /* begin/end/offset/byte* accept a group NAME (String/Symbol) as well as an
+       index; route those to the _name variant, which resolves the name like #[].
+       A Symbol argument is passed as its interned string. */
+    else if ((sp_streq(name, "begin") || sp_streq(name, "end") || sp_streq(name, "offset") ||
+              sp_streq(name, "bytebegin") || sp_streq(name, "byteend") || sp_streq(name, "byteoffset")) &&
+             argc == 1) {
+      TyKind kt2 = comp_ntype(c, argv[0]);
+      int by_name = (kt2 == TY_STRING || kt2 == TY_SYMBOL);
+      buf_printf(b, "sp_MatchData_%s%s(%s, ", name, by_name ? "_name" : "", r);
+      if (kt2 == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
     }
     else if (sp_streq(name, "values_at") && argc >= 1) {
       /* values_at(i, ...) -> a poly array of the selected groups (nil when a

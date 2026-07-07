@@ -636,6 +636,20 @@ sp_IntArray *sp_MatchData_byteoffset(sp_MatchData *m, mrb_int i) {
   sp_IntArray_push(a, m->caps[(i * 2) + 1]);
   return a;
 }
+/* begin/end/offset/byte* by capture NAME (`md.begin("a")` / `:a`): resolve the
+   name to its group index like MatchData#[], then defer to the index form. An
+   unknown name raises IndexError, matching MRI. */
+static int sp_md_group_by_name(sp_MatchData *m, const char *name) {
+  int g = m ? re_named_group(m->pat, name) : -1;
+  if (g < 0) sp_raise_cls("IndexError", sp_sprintf("undefined group name reference: %s", name));
+  return g;
+}
+mrb_int sp_MatchData_begin_name(sp_MatchData *m, const char *name) { return sp_MatchData_begin(m, sp_md_group_by_name(m, name)); }
+mrb_int sp_MatchData_end_name(sp_MatchData *m, const char *name) { return sp_MatchData_end(m, sp_md_group_by_name(m, name)); }
+sp_IntArray *sp_MatchData_offset_name(sp_MatchData *m, const char *name) { return sp_MatchData_offset(m, sp_md_group_by_name(m, name)); }
+mrb_int sp_MatchData_bytebegin_name(sp_MatchData *m, const char *name) { return sp_MatchData_bytebegin(m, sp_md_group_by_name(m, name)); }
+mrb_int sp_MatchData_byteend_name(sp_MatchData *m, const char *name) { return sp_MatchData_byteend(m, sp_md_group_by_name(m, name)); }
+sp_IntArray *sp_MatchData_byteoffset_name(sp_MatchData *m, const char *name) { return sp_MatchData_byteoffset(m, sp_md_group_by_name(m, name)); }
 /* whole-match string (group 0) — also MatchData#to_s */
 const char *sp_MatchData_to_s(sp_MatchData *m) { const char *r = sp_MatchData_aref(m, 0); return r ? r : sp_str_empty; }
 /* captures: groups 1..n-1 as a poly array (nil for non-participating) */
