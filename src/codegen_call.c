@@ -2092,27 +2092,25 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               int vtmp = ++g_tmp;
               /* Emit the value via a side-buffer so any hoisted prelude (e.g.
                  an instance-method call needing arg temps) lands on its own
-                 lines before this assignment, not spliced mid-line. */
+                 lines before this assignment, not spliced mid-line. Box into an
+                 sp_RbVal temp rather than a comp_ntype-typed one: a container
+                 literal like `[]` infers TY_UNKNOWN, whose emit_ctype is `void`
+                 -- `void _t = sp_IntArray_new()` doesn't compile. The boxed
+                 value is set into the hash and returned (the block's value). */
               Buf vexpr; memset(&vexpr, 0, sizeof vexpr);
               Buf vpre; memset(&vpre, 0, sizeof vpre);
               Buf *svp = g_pre; g_pre = &vpre;
-              emit_expr(c, sav[1], &vexpr);
+              emit_boxed(c, sav[1], &vexpr);
               g_pre = svp;
               if (vpre.p) buf_puts(pb, vpre.p);
               free(vpre.p);
-              emit_indent(pb, 1); emit_ctype(c, comp_ntype(c, sav[1]), pb);
-              buf_printf(pb, " _t%d = %s;\n", vtmp, vexpr.p ? vexpr.p : "0");
+              emit_indent(pb, 1);
+              buf_printf(pb, "sp_RbVal _t%d = %s;\n", vtmp, vexpr.p ? vexpr.p : "sp_box_nil()");
               free(vexpr.p);
               emit_indent(pb, 1); buf_puts(pb, "sp_StrPolyHash_set(");
               emit_expr(c, srecv, pb); buf_puts(pb, ", ");
-              emit_expr(c, sav[0], pb); buf_puts(pb, ", ");
-              { Buf bx; memset(&bx, 0, sizeof bx); char vb[32]; snprintf(vb, sizeof vb, "_t%d", vtmp);
-                emit_boxed_text(c, comp_ntype(c, sav[1]), vb, &bx); buf_puts(pb, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
-              buf_puts(pb, ");\n");
-              emit_indent(pb, 1); buf_puts(pb, "return ");
-              { Buf bx; memset(&bx, 0, sizeof bx); char vb[32]; snprintf(vb, sizeof vb, "_t%d", vtmp);
-                emit_boxed_text(c, comp_ntype(c, sav[1]), vb, &bx); buf_puts(pb, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
-              buf_puts(pb, ";\n");
+              emit_expr(c, sav[0], pb); buf_printf(pb, ", _t%d);\n", vtmp);
+              emit_indent(pb, 1); buf_printf(pb, "return _t%d;\n", vtmp);
             }
           }
           else {
