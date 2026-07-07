@@ -3124,7 +3124,7 @@ static int class_responds_to(Compiler *c, int ci, const char *qm) {
    otherwise the call's literal block (if any) is lowered here. */
 static void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, Buf *b) {
   if (!cm->blk_param || !cm->blk_param[0] || cm->yields) return;
-  int blk_node = nt_ref(c->nt, id, "block");
+  int blk_node = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
   if (cm->nparams > 0) buf_puts(b, ", ");
   if (blk_node < 0) { buf_puts(b, "NULL"); return; }
   if (blk_tmp < 0) {
@@ -6568,7 +6568,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            shared by every candidate branch (lowering it per-branch would
            emit the proc function once per candidate). */
         int blk_tmp = -1;
-        if (nt_ref(nt, id, "block") >= 0) {
+        int casc_blk = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+        if (casc_blk >= 0) {
           for (int k = 0; k < ncand && blk_tmp < 0; k++) {
             int mi = comp_cmethod_in_chain(c, cand[k], name, NULL);
             if (mi < 0) continue;
@@ -6576,7 +6577,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (cm->blk_param && cm->blk_param[0] && !cm->yields) {
               blk_tmp = ++g_tmp;
               Buf pb; memset(&pb, 0, sizeof pb);
-              emit_proc_literal(c, nt_ref(nt, id, "block"), &pb);
+              emit_proc_literal(c, casc_blk, &pb);
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
               free(pb.p);

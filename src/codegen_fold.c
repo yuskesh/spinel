@@ -6,6 +6,27 @@
 static void emit_block_value_into(Compiler *c, int block, const char *dest,
                                   int want_poly, int indent);
 
+int resolve_forwarded_block(Compiler *c, int block) {
+  const NodeTable *nt = c->nt;
+  if (block < 0) return block;
+  const char *type = nt_type(nt, block);
+  if (!type || !sp_streq(type, "BlockArgumentNode")) return block;
+  int fwd_expr = nt_ref(nt, block, "expression");
+  int forwards_param = 0;
+  if (fwd_expr < 0) {
+    forwards_param = 1;  /* anonymous `&` */
+  } else if (g_block_param_name) {
+    const char *fwd_type = nt_type(nt, fwd_expr);
+    if (fwd_type && sp_streq(fwd_type, "LocalVariableReadNode")) {
+      const char *en = nt_str(nt, fwd_expr, "name");
+      forwards_param = en && sp_streq(en, g_block_param_name);
+    }
+  }
+  /* g_block_id is -1 when the caller passed no block, so a forwarded nil block
+     falls through to a NULL argument (the callee's own nil-check handles it). */
+  return forwards_param ? g_block_id : block;
+}
+
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -15,7 +36,11 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   /* pass &block as sp_Proc * when the callee has a blk_param and isn't inlined */
   if (m && m->blk_param && m->blk_param[0] && !m->yields) {
-    int blk_node = nt_ref(nt, id, "block");
+    /* A forwarded `&blk` can't be materialized directly by emit_proc_literal;
+       resolve it to the caller's inlined block. Without this, forwarding `&blk`
+       into a callee that keeps a real proc param (e.g. one that nil-checks the
+       block) is rejected as "proc literal without a block". */
+    int blk_node = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
     int wrote_args = m->nparams > 0;
     if (wrote_args) buf_puts(b, ", ");
     if (blk_node >= 0) {
@@ -4397,6 +4422,7 @@ else {
      When the call site has no block, blk_tmp stays -1 and we pass NULL. */
   int blk_tmp = -1;
   int needs_blk_arg = m && m->blk_param && m->blk_param[0] && !m->yields;
+  if (needs_blk_arg) blk_node = resolve_forwarded_block(c, blk_node);
   if (needs_blk_arg && blk_node >= 0) {
     blk_tmp = ++g_tmp;
     Buf pb; memset(&pb, 0, sizeof pb);
