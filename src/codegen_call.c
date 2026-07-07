@@ -3611,7 +3611,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
                          ? nt_str(nt, _pr_recv, "name") : NULL;
       if (_rnm && sp_streq(_rnm, "Proc")) is_literal = 1;
     }
-    if (is_literal) { emit_proc_literal(c, id, b); return; }
+    if (is_literal) {
+      /* proc(&x) / Proc.new(&x): the block is a forwarded proc, not a literal.
+         Ruby returns that proc as-is (preserving its lambda? flag), so emit the
+         forwarded expression directly rather than wrapping it in a fresh
+         non-lambda proc. */
+      int _blk = nt_ref(nt, id, "block");
+      const char *_bty = nt_type(nt, _blk);
+      if (_bty && sp_streq(_bty, "BlockArgumentNode")) {
+        int _fwd = nt_ref(nt, _blk, "expression");
+        if (_fwd >= 0 && comp_ntype(c, _fwd) == TY_PROC) { emit_expr(c, _fwd, b); return; }
+      }
+      emit_proc_literal(c, id, b); return;
+    }
   }
 
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
