@@ -3133,6 +3133,9 @@ else {
       (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
        sp_streq(name, "<<") || sp_streq(name, ">>")))
     return TY_BIGINT;
+  /* Integer#bit_length on a Bignum answers an int (the bit count fits int64). */
+  if (recv >= 0 && argc == 0 && rt == TY_BIGINT && sp_streq(name, "bit_length"))
+    return TY_INT;
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&
       (sp_streq(name, ">>") || sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))

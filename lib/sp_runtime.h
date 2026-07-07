@@ -1558,6 +1558,7 @@ static const char *sp_exc_message(volatile struct sp_Exception_s *ve);
    full prototypes live further down (near the bigint runtime block). */
 typedef struct sp_Bigint sp_Bigint;
 const char *sp_bigint_to_s(sp_Bigint *b);
+mrb_int sp_bigint_bit_length(sp_Bigint *b);
 int64_t sp_bigint_to_int(sp_Bigint *b);
 int sp_bigint_cmp(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_new_int(int64_t v);
