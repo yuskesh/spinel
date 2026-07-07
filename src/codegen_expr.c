@@ -630,7 +630,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (c->nilnarrow[id] != TY_UNKNOWN) {
       Buf rb2; memset(&rb2, 0, sizeof rb2);
       emit_local_ref(c, id, lrn, &rb2);
-      emit_unbox_text(c, c->nilnarrow[id], rb2.p ? rb2.p : "", b);
+      /* An `is_a?(Array)`-narrowed read: a boxed array can be any element-typed
+         representation (Int/Float/Str/Poly array), so normalize to a PolyArray
+         at runtime rather than casting the raw .v.p to one kind. */
+      if (c->nilnarrow[id] == TY_POLY_ARRAY)
+        buf_printf(b, "sp_poly_to_poly_array(%s)", rb2.p ? rb2.p : "");
+      else
+        emit_unbox_text(c, c->nilnarrow[id], rb2.p ? rb2.p : "", b);
       free(rb2.p);
       return;
     }
