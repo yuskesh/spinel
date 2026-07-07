@@ -3539,6 +3539,32 @@ static void scan_prologue_features(Compiler *c) {
    turn the opaque downstream reject (or silent nil-stub) into one actionable
    diagnostic anchored to the call site. Skipped entirely if the program defines
    its own method by that name, since then the call resolves normally. */
+/* A reified Binding (name->slot local environment) does not exist in an AOT
+   binary. The one statically-decidable use, `binding.local_variable_get(:name)`
+   for an in-scope name, is rewritten to a direct read in analyze; any binding
+   call that survives (local_variable_set, local_variables, a non-literal name, a
+   name that is not in scope, a bare `binding` value, ...) has no static answer,
+   so reject it loudly at build time instead of aborting at runtime. */
+static void reject_binding(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].name && sp_streq(c->scopes[s].name, "binding")) return;  /* user-defined */
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "binding")) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;             /* Kernel#binding is receiverless */
+    int args = nt_ref(nt, id, "arguments");
+    if (args >= 0) { int ac = 0; nt_arr(nt, args, "arguments", &ac); if (ac > 0) continue; }
+    int sc = c->nscope[id];
+    if (sc < 0 || sc >= c->nscopes || !c->scopes[sc].reachable) continue;
+    unsupported(c, id, "binding is unsupported (no reified local environment in an "
+                       "AOT binary; only binding.local_variable_get(:name) for an "
+                       "in-scope name is)");
+  }
+}
+
 static void reject_runtime_send(Compiler *c) {
   const NodeTable *nt = c->nt;
   static const char *const names[] = { "send", "__send__", "public_send", NULL };
@@ -3626,6 +3652,7 @@ char *codegen_program(const NodeTable *nt) {
   /* Reject runtime-name send before any emission so the diagnostic fires
      regardless of how the call's result is later consumed. */
   reject_runtime_send(c);
+  reject_binding(c);
 
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);
