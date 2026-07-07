@@ -5068,6 +5068,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (sp_streq(name, "nil?")) { buf_puts(b, "0"); return; }
+    /* const_defined?(:NAME) with a literal name answers at compile time from
+       the (flat) constant and class tables -- constants carry no class
+       qualifier in the registry, so this is the same namespace a read
+       resolves against. */
+    if (sp_streq(name, "const_defined?") && argc == 1) {
+      const char *a0ty = nt_type(nt, argv[0]);
+      const char *cn0 = NULL;
+      if (a0ty && sp_streq(a0ty, "SymbolNode")) cn0 = nt_str(nt, argv[0], "value");
+      else if (a0ty && sp_streq(a0ty, "StringNode")) cn0 = nt_str(nt, argv[0], "unescaped");
+      if (cn0) {
+        int yes = (comp_const(c, cn0) != NULL) || comp_class_index(c, cn0) >= 0;
+        buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
+        return;
+      }
+    }
     if (sp_streq(name, "class")) {
       buf_printf(b, "({ sp_Class _cl%da = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_is_module_val(_cl%da)?SPL(\"Module\"):SPL(\"Class\"); })", _clt);
