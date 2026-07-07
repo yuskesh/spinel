@@ -1996,10 +1996,13 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           /* remaining keys via sp_poly_get_sym / sp_poly_get_str / sp_poly_arr_get */
           for (int di = 1; di < argc; di++) {
             int tk = ++g_tmp;
-            /* For poly-keyed hashes (e.g. PolyPolyHash), infer sub-key type
-               from the argument itself rather than from the parent key type. */
-            TyKind dkt = (kt == TY_POLY || kt == TY_UNKNOWN)
-                         ? comp_ntype(c, argv[di]) : kt;
+            /* Past the first key the receiver `_tr` is whatever the previous
+               step returned (a nested hash, an Array element, ...), whose key
+               type is not the top hash's key type. So `{a:[10,20]}.dig(:a,1)`
+               must index the Array with `1`, not look up symbol `1`. Infer the
+               sub-key type from the argument node itself; sp_poly_arr_get_hash
+               then dispatches on the runtime receiver (array/hash/etc.). */
+            TyKind dkt = comp_ntype(c, argv[di]);
             if (dkt == TY_SYMBOL) {
               buf_printf(b, " sp_sym _t%d = ", tk);
               emit_expr(c, argv[di], b);
