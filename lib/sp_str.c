@@ -21,6 +21,18 @@ static int sp_char_cache_init = 0;
 /* Hex-digit value, used by sp_str_undump's \xNN / \uNNNN unescape. */
 static int _sp_hexval(unsigned char d){return (d<='9')?(d-'0'):(tolower(d)-'a'+10);}
 
+/* Byte-oriented substring search (NUL-transparent). spinel Strings can carry
+   embedded NULs (pack, socket reads), so the search family must use the header
+   byte length rather than strstr's C-string scan, which stops at the first NUL
+   and diverges from CRuby's byte-based #include?/#index (issue #1778). Returns
+   a pointer into `hay`, or NULL. An empty needle matches at the start. */
+static const char *sp_bytestr(const char *hay, size_t hn, const char *need, size_t nn) {
+  if (nn == 0) return hay;
+  if (nn > hn) return NULL;
+  for (size_t i = 0; i + nn <= hn; i++)
+    if (hay[i] == need[0] && memcmp(hay + i, need, nn) == 0) return hay + i;
+  return NULL;
+}
 int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp){for(size_t i=0;i<n;i++)if(cps[i]==cp)return 1;return 0;}
 mrb_int sp_str_casecmp(const char*a,const char*b){if(!a)sp_nil_recv("casecmp");if(!b)return 1;for(;;){int ca=tolower((unsigned char)*a),cb=tolower((unsigned char)*b);if(ca!=cb)return ca<cb?-1:1;if(!*a)return 0;a++;b++;}}
 mrb_bool sp_str_valid_encoding(const char*s){if(!s)sp_nil_recv("valid_encoding?");const unsigned char*p=(const unsigned char*)s;while(*p){unsigned c=*p;if(c<0x80){p++;continue;}int extra;unsigned cp;unsigned min;if((c&0xE0)==0xC0){extra=1;cp=c&0x1F;min=0x80;}else if((c&0xF0)==0xE0){extra=2;cp=c&0x0F;min=0x800;}else if((c&0xF8)==0xF0){extra=3;cp=c&0x07;min=0x10000;}else return FALSE;p++;for(int i=0;i<extra;i++){if((*p&0xC0)!=0x80)return FALSE;cp=(cp<<6)|(*p&0x3F);p++;}if(cp<min)return FALSE;if(cp>=0xD800&&cp<=0xDFFF)return FALSE;if(cp>0x10FFFF)return FALSE;}return TRUE;}
@@ -193,7 +205,7 @@ else {
 const char*sp_str_chop(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("chop");size_t l=strlen(s);if(l>0){if(l>=2&&s[l-2]=='\r'&&s[l-1]=='\n')l-=2;else l--;}char*r=sp_str_alloc_raw(l+1);memcpy(r,s,l);r[l]=0;return r;}
 /* Issue #797: NULL guards on receiver + needle for the chunk of
    string functions that read directly into a non-checked strlen. */
-mrb_bool sp_str_include(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)sp_nil_recv("include?");return strstr(s,sub)!=NULL;}
+mrb_bool sp_str_include(const char*s,const char*sub){if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)sp_nil_recv("include?");return sp_bytestr(s,sp_str_byte_len(s),sub,sp_str_byte_len(sub))!=NULL;}
 mrb_bool sp_str_start_with(const char*s,const char*p){if(!p)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)sp_nil_recv("start_with?");return strncmp(s,p,strlen(p))==0;}
 mrb_bool sp_str_end_with(const char*s,const char*suf){if(!suf)sp_raise_cls("TypeError","no implicit conversion of nil into String");if(!s)sp_nil_recv("end_with?");size_t ls=strlen(s),lsuf=strlen(suf);if(lsuf>ls)return FALSE;return strcmp(s+ls-lsuf,suf)==0;}
 /* partition: [before, sep, after] at the first sep; no match -> [s, "", ""]. */
@@ -605,16 +617,16 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
 }
 /* `s.index(sub)` — leftmost occurrence; returns a codepoint offset (not a
    byte offset), or -1 if not found. */
-mrb_int sp_str_index(const char*s,const char*sub){if(!s)sp_nil_recv("index");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*f=strstr(s,sub);if(!f)return -1;mrb_int n=0;const char*p=s;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
+mrb_int sp_str_index(const char*s,const char*sub){if(!s)sp_nil_recv("index");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*f=sp_bytestr(s,sp_str_byte_len(s),sub,sp_str_byte_len(sub));if(!f)return -1;mrb_int n=0;const char*p=s;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
 /* Issue #758: NULL guard + bound the start so a negative result from
    sp_str_index doesn't underflow the source pointer. */
-mrb_int sp_str_index_from(const char*s,const char*sub,mrb_int start){if(!s)sp_nil_recv("index");mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>cl)return -1;size_t boff=sp_utf8_byte_offset(s,start);const char*f=strstr(s+boff,sub);if(!f)return -1;mrb_int n=start;const char*p=s+boff;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
+mrb_int sp_str_index_from(const char*s,const char*sub,mrb_int start){if(!s)sp_nil_recv("index");mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>cl)return -1;size_t boff=sp_utf8_byte_offset(s,start);const char*f=sp_bytestr(s+boff,sp_str_byte_len(s)-boff,sub,sp_str_byte_len(sub));if(!f)return -1;mrb_int n=start;const char*p=s+boff;while(p<f){p+=sp_utf8_advance(p);n++;}return n;}
 /* `s.rindex(sub)` — rightmost occurrence of sub; returns a codepoint
    offset, or -1 if not found. Empty sub matches at the end. */
-mrb_int sp_str_rindex(const char*s,const char*sub){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t sl=strlen(sub);if(sl==0)return sp_str_length(s);const char*last=NULL;const char*p=s;while((p=strstr(p,sub))){last=p;p++;}if(!last)return -1;mrb_int n=0;const char*q=s;while(q<last){q+=sp_utf8_advance(q);n++;}return n;}
+mrb_int sp_str_rindex(const char*s,const char*sub){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t sl=sp_str_byte_len(sub);if(sl==0)return sp_str_length(s);size_t hn=sp_str_byte_len(s);const char*end=s+hn;const char*last=NULL;const char*p=s;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;last=f;p=f+1;}if(!last)return -1;mrb_int n=0;const char*q=s;while(q<last){q+=sp_utf8_advance(q);n++;}return n;}
 /* `s.rindex(sub, pos)` — rightmost occurrence at or before codepoint pos.
    Negative pos counts back from the char length; nil (SP_INT_NIL) on miss. */
-mrb_int sp_str_rindex_from(const char*s,const char*sub,mrb_int pos){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");mrb_int cl=sp_str_length(s);if(pos<0)pos=cl+pos;if(pos<0)return SP_INT_NIL;size_t sl=strlen(sub);if(sl==0){if(pos>=cl)return cl;return pos;}const char*p=s;mrb_int best=-1;const char*r=s;mrb_int cur_n=0;while((p=strstr(p,sub))!=NULL){while(r<p){r+=sp_utf8_advance(r);cur_n++;}if(cur_n>pos)break;best=cur_n;p++;}return best<0?SP_INT_NIL:best;}
+mrb_int sp_str_rindex_from(const char*s,const char*sub,mrb_int pos){if(!s)sp_nil_recv("rindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");mrb_int cl=sp_str_length(s);if(pos<0)pos=cl+pos;if(pos<0)return SP_INT_NIL;size_t sl=sp_str_byte_len(sub);if(sl==0){if(pos>=cl)return cl;return pos;}size_t hn=sp_str_byte_len(s);const char*end=s+hn;const char*p=s;mrb_int best=-1;const char*r=s;mrb_int cur_n=0;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;while(r<f){r+=sp_utf8_advance(r);cur_n++;}if(cur_n>pos)break;best=cur_n;p=f+1;}return best<0?SP_INT_NIL:best;}
 /* start/len are codepoint indices/counts. */
 /* `s[start, len]` char-indexed slice (UTF-8 aware). Negative start counts
    back from the char length. A single-char ASCII result aliases the
