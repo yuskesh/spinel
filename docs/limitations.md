@@ -215,6 +215,7 @@ Where Spinel returns `nil` but CRuby returns a label:
 | `{a: 1}`, `1..3` (hash/range and other general expressions) | `"expression"` | `nil` |
 | `x = 1` (assignment) | `"assignment"` | `nil` |
 | `yield`, `super` | `"yield"` / `"super"` | `nil` |
+| Multi-encoding strings | Strings are UTF-8, always: `Encoding` conversion tables, `force_encoding` to non-UTF-8 encodings, and per-string encoding state are out of scope. A compiled binary's string paths (indexing, regexp, hashing) assume one encoding, and that assumption is load-bearing for their performance | write UTF-8; transcode at the boundary before the data enters the program |
 
 Two forms report a label where CRuby would report `nil`, because the check is
 syntactic rather than runtime:
