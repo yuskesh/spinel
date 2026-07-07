@@ -2835,7 +2835,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int one = sp_streq(name, "unpack1");
         TyKind u1t = one ? comp_ntype(c, id) : TY_POLY;
         if (one && u1t == TY_INT)        buf_puts(b, "sp_poly_to_i(sp_PolyArray_get(");
-        else if (one && u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f(sp_PolyArray_get(");
+        else if (one && u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(sp_PolyArray_get(");
         else if (one)                    buf_puts(b, "sp_PolyArray_get(");
         buf_printf(b, "sp_str_unpack_off(%s, ", r); emit_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, offv, b); buf_puts(b, ")");
@@ -2844,10 +2844,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "unpack1") && argc == 1) {
         /* A literal single-directive numeric format fixes the value's type
            (the analyzer's an_unpack1_lit_type): unbox the extracted element
-           (int or float). */
+           (int, or float? -- the _opt keeps a padded nil from short input
+           as float-nil instead of 0.0). */
         TyKind u1t = comp_ntype(c, id);
         if (u1t == TY_INT)        buf_printf(b, "sp_poly_to_i(sp_PolyArray_get(sp_str_unpack(%s, ", r);
-        else if (u1t == TY_FLOAT) buf_printf(b, "sp_poly_to_f(sp_PolyArray_get(sp_str_unpack(%s, ", r);
+        else if (u1t == TY_FLOAT) buf_printf(b, "sp_poly_to_f_opt(sp_PolyArray_get(sp_str_unpack(%s, ", r);
         else                      buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r);
         emit_expr(c, argv[0], b);
         buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? "), 0))" : "), 0)");
@@ -4210,7 +4211,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "unpack1") && argc == 1) {
     TyKind u1t = comp_ntype(c, id);
     if (u1t == TY_INT)        buf_puts(b, "sp_poly_to_i(");
-    else if (u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f(");
+    else if (u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(");
     buf_puts(b, "sp_PolyArray_get(sp_str_unpack(sp_poly_to_s(");
     emit_expr(c, recv, b); buf_puts(b, "), ");
     emit_expr(c, argv[0], b); buf_puts(b, "), 0)");

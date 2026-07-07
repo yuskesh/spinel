@@ -59,3 +59,9 @@ end
 puts [2.0e19].pack("Q").unpack1("Q")
 puts [-2.0e19].pack("q").unpack1("q")
 puts [1.0e300].pack("Q").unpack1("Q")
+
+# unpack1 with a literal float directive on too-short input returns nil
+# (not 0.0): sp_str_unpack pads with nil and the unboxing must preserve it
+puts "".unpack1("G").inspect
+puts "\x00\x00".unpack1("e").inspect
+puts [9.5].pack("G").unpack1("G").inspect

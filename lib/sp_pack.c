@@ -127,13 +127,18 @@ static int64_t pk_parse_count(const char **pp) {
 }
 /* Serialize / deserialize an integer as `n` bytes, little- or
    big-endian, via shifts (host-endianness independent, like the
-   n/N/v/V paths). */
-static void pk_put_int(char *out, int64_t v, size_t n, int big) {
-  uint64_t uv = (uint64_t)v;
+   n/N/v/V paths). pk_put_bits takes the raw unsigned pattern so the
+   float directives can pass IEEE-754 bits without a narrowing
+   uint64 -> int64 conversion (implementation-defined for values with
+   the sign bit set). */
+static void pk_put_bits(char *out, uint64_t uv, size_t n, int big) {
   for (size_t i = 0; i < n; i++) {
     size_t sh = big ? (n - 1 - i) : i;
     out[i] = (char)((uv >> (8 * sh)) & 0xff);
   }
+}
+static void pk_put_int(char *out, int64_t v, size_t n, int big) {
+  pk_put_bits(out, (uint64_t)v, n, big);
 }
 static uint64_t pk_get_int(const unsigned char *u, size_t n, int big) {
   uint64_t v = 0;
@@ -162,7 +167,7 @@ static void pk_flt_directive(char spec, double v, char **buf, size_t *len, size_
       break;
     case 'E': case 'G': {
       uint64_t bits; memcpy(&bits, &v, 8);
-      pk_put_int(tmp, (int64_t)bits, 8, spec == 'G');
+      pk_put_bits(tmp, bits, 8, spec == 'G');
       pk_append(buf, len, cap, tmp, 8);
       break;
     }
@@ -175,7 +180,7 @@ static void pk_flt_directive(char spec, double v, char **buf, size_t *len, size_
     case 'e': case 'g': {
       float f = (float)v;
       uint32_t bits; memcpy(&bits, &f, 4);
-      pk_put_int(tmp, (int64_t)bits, 4, spec == 'g');
+      pk_put_bits(tmp, bits, 4, spec == 'g');
       pk_append(buf, len, cap, tmp, 4);
       break;
     }
@@ -218,7 +223,7 @@ static int64_t pk_flt_to_int(double dv) {
 static int64_t pk_poly_to_int(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT:  return v.v.i;
-    case SP_TAG_BOOL: return v.v.i ? 1 : 0;
+    case SP_TAG_BOOL: return v.v.b ? 1 : 0;
     case SP_TAG_FLT:  return pk_flt_to_int(v.v.f);
     case SP_TAG_STR:  return v.v.s ? strtoll(v.v.s, NULL, 0) : 0;
     case SP_TAG_NIL:  return 0;
@@ -230,7 +235,7 @@ static double pk_poly_to_flt(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_FLT:  return v.v.f;
     case SP_TAG_INT:  return (double)v.v.i;
-    case SP_TAG_BOOL: return v.v.i ? 1.0 : 0.0;
+    case SP_TAG_BOOL: return v.v.b ? 1.0 : 0.0;
     case SP_TAG_STR:  return v.v.s ? strtod(v.v.s, NULL) : 0.0;
     default:          return 0.0;
   }
