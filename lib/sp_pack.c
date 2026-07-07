@@ -464,6 +464,65 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
 
 /* ---------- Unpack entry point ---------- */
 
+/* base64 sextet value for an ASCII byte, or -1 for a non-alphabet char. */
+static int uk_b64val(unsigned char ch) {
+  if (ch >= 'A' && ch <= 'Z') return ch - 'A';
+  if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
+  if (ch >= '0' && ch <= '9') return ch - '0' + 52;
+  if (ch == '+') return 62;
+  if (ch == '/') return 63;
+  return -1;
+}
+/* Decode `n` base64 bytes from `src` into a fresh GC string (the `m` directive).
+   Non-alphabet bytes (whitespace, newlines) are skipped; `=` ends the data. */
+static char *uk_b64_decode(const char *src, size_t n) {
+  char *out = sp_str_alloc(n);   /* decoded size <= input size */
+  size_t o = 0;
+  int quad[4], qi = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char ch = (unsigned char)src[i];
+    if (ch == '=') break;
+    int val = uk_b64val(ch);
+    if (val < 0) continue;
+    quad[qi++] = val;
+    if (qi == 4) {
+      out[o++] = (char)((quad[0] << 2) | (quad[1] >> 4));
+      out[o++] = (char)((quad[1] << 4) | (quad[2] >> 2));
+      out[o++] = (char)((quad[2] << 6) | quad[3]);
+      qi = 0;
+    }
+  }
+  if (qi >= 2) {
+    out[o++] = (char)((quad[0] << 2) | (quad[1] >> 4));
+    if (qi >= 3) out[o++] = (char)((quad[1] << 4) | (quad[2] >> 2));
+  }
+  out[o] = 0; sp_str_set_len(out, o);
+  return out;
+}
+/* Decode `n` quoted-printable bytes into a fresh GC string (the `M` directive):
+   `=XX` is a hex byte, `=\n` (soft line break) is dropped, everything else is
+   literal. */
+static char *uk_qp_decode(const char *src, size_t n) {
+  char *out = sp_str_alloc(n);
+  size_t o = 0;
+  for (size_t i = 0; i < n; i++) {
+    unsigned char ch = (unsigned char)src[i];
+    if (ch == '=' && i + 2 < n) {
+      char h1 = src[i + 1], h2 = src[i + 2];
+      int d1 = (h1 >= '0' && h1 <= '9') ? h1 - '0' : (h1 >= 'A' && h1 <= 'F') ? h1 - 'A' + 10
+             : (h1 >= 'a' && h1 <= 'f') ? h1 - 'a' + 10 : -1;
+      int d2 = (h2 >= '0' && h2 <= '9') ? h2 - '0' : (h2 >= 'A' && h2 <= 'F') ? h2 - 'A' + 10
+             : (h2 >= 'a' && h2 <= 'f') ? h2 - 'a' + 10 : -1;
+      if (d1 >= 0 && d2 >= 0) { out[o++] = (char)((d1 << 4) | d2); i += 2; continue; }
+    }
+    if (ch == '=' && i + 1 < n && (src[i + 1] == '\n')) { i += 1; continue; }
+    if (ch == '=' && i + 2 < n && src[i + 1] == '\r' && src[i + 2] == '\n') { i += 2; continue; }
+    out[o++] = (char)ch;
+  }
+  out[o] = 0; sp_str_set_len(out, o);
+  return out;
+}
+
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
   if (!str) sp_nil_recv("unpack");
   /* Root the source string across every allocation below: `str` is very often a
@@ -533,6 +592,77 @@ else if (spec == 'Z') {
         sp_str_set_len(s, real);
         sp_PolyArray_push(out, sp_box_str(s));
         off += take;
+      }
+      continue;
+    }
+    /* H/h: hex-nibble string (H high nibble first, h low first). `count` is a
+       nibble (hex-digit) count; `*` takes every remaining nibble. */
+    if (spec == 'H' || spec == 'h') {
+      size_t avail = (slen - off) * 2;
+      size_t n = count < 0 ? avail : (size_t)count;
+      if (n > avail) n = avail;
+      char *s = sp_str_alloc(n);
+      for (size_t i = 0; i < n; i++) {
+        unsigned char byte = (unsigned char)str[off + i / 2];
+        int nib = (spec == 'H') ? ((i & 1) ? (byte & 15) : (byte >> 4))
+                                : ((i & 1) ? (byte >> 4) : (byte & 15));
+        s[i] = "0123456789abcdef"[nib];
+      }
+      s[n] = 0; sp_str_set_len(s, n);
+      sp_PolyArray_push(out, sp_box_str(s));
+      off += (n + 1) / 2;
+      continue;
+    }
+    /* B/b: bit string (B MSB first, b LSB first). `count` is a bit count. */
+    if (spec == 'B' || spec == 'b') {
+      size_t avail = (slen - off) * 8;
+      size_t n = count < 0 ? avail : (size_t)count;
+      if (n > avail) n = avail;
+      char *s = sp_str_alloc(n);
+      for (size_t i = 0; i < n; i++) {
+        unsigned char byte = (unsigned char)str[off + i / 8];
+        int bit = (spec == 'B') ? ((byte >> (7 - (i & 7))) & 1) : ((byte >> (i & 7)) & 1);
+        s[i] = (char)('0' + bit);
+      }
+      s[n] = 0; sp_str_set_len(s, n);
+      sp_PolyArray_push(out, sp_box_str(s));
+      off += (n + 7) / 8;
+      continue;
+    }
+    /* m: base64, M: quoted-printable. Both decode the whole remaining input into
+       one string (the count/`0` modifier only tweaks strictness, not framing). */
+    if (spec == 'm' || spec == 'M') {
+      size_t avail = slen - off;
+      char *s = (spec == 'm') ? uk_b64_decode(str + off, avail) : uk_qp_decode(str + off, avail);
+      sp_PolyArray_push(out, sp_box_str(s));
+      off = slen;
+      continue;
+    }
+    /* U: UTF-8 codepoints as integers. `count` codepoints, `*` all remaining. */
+    if (spec == 'U') {
+      int64_t got = 0;
+      while ((count < 0 || got < count) && off < slen) {
+        unsigned char b0 = (unsigned char)str[off];
+        int len = b0 < 0x80 ? 1 : (b0 >> 5) == 0x6 ? 2 : (b0 >> 4) == 0xE ? 3 : (b0 >> 3) == 0x1E ? 4 : 1;
+        int64_t cp = len == 1 ? b0 : (b0 & (0x7F >> len));
+        for (int j = 1; j < len && off + j < slen; j++) cp = (cp << 6) | ((unsigned char)str[off + j] & 0x3F);
+        sp_PolyArray_push(out, sp_box_int((mrb_int)cp));
+        off += len; got++;
+      }
+      continue;
+    }
+    /* w: BER-compressed integers (base-128, high bit = continuation). */
+    if (spec == 'w') {
+      int64_t got = 0;
+      while ((count < 0 || got < count) && off < slen) {
+        int64_t v = 0;
+        while (off < slen) {
+          unsigned char c = (unsigned char)str[off++];
+          v = (v << 7) | (c & 0x7F);
+          if (!(c & 0x80)) break;
+        }
+        sp_PolyArray_push(out, sp_box_int((mrb_int)v));
+        got++;
       }
       continue;
     }
