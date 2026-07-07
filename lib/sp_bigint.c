@@ -5514,3 +5514,24 @@ const char *sp_bigint_to_s(sp_Bigint *b) {
   free(buf);
   return result;
 }
+
+/* Integer#bit_length: the number of bits in the two's-complement representation
+   excluding the sign bit -- i.e. the magnitude's bit count for a non-negative
+   value, and (|self| - 1)'s bit count for a negative one (a magnitude that is an
+   exact power of two loses a bit). Zero has bit_length 0. */
+mrb_int sp_bigint_bit_length(sp_Bigint *b) {
+  if (!b) return 0;
+  sp_bigint_init_ctx();
+  mpz_t *z = &b->mpz;
+  if (z->sn == 0) return 0;
+  size_t n = digits(z);                 /* significant limbs (mpz_sizeinbase over-estimates) */
+  if (n == 0) return 0;
+  mp_limb top = z->p[n - 1];
+  int topbits = 0;
+  for (mp_limb t = top; t; t >>= 1) topbits++;
+  /* Receiver is always a non-negative bignum today: a bignum +/- result isn't
+     yet typed as TY_BIGINT, so no negative value can reach bit_length. CRuby's
+     (-m).bit_length == (m-1).bit_length rule belongs with the change that closes
+     that gap, so it and its test land together. */
+  return (mrb_int)(n - 1) * (mrb_int)DIG_SIZE + topbits;
+}
