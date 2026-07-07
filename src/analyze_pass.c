@@ -2584,6 +2584,36 @@ int desugar_implicit_send(Compiler *c) {
   return changed;
 }
 
+/* A receiverless `instance_exec(&b)` at top level (or in a free function) has an
+   implicit self, so instance_exec rebinds self to the current self -- i.e. it
+   does not change self at all, and is exactly `<block>.call(<args>)`. Rewrite it
+   so the value form (`x = run { }`) lowers like any block-call forward instead of
+   stranding an un-emittable top-level instance_exec (which links to an undefined
+   function). Class-level instance_exec forwarders DO rebind self to the instance
+   and are handled by their own trampoline splice, so they are left untouched. */
+int desugar_toplevel_instance_exec(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;         /* implicit self only */
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "instance_exec")) continue;
+    int sc = c->nscope[id];
+    if (sc < 0 || sc >= c->nscopes || c->scopes[sc].class_id >= 0) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int bexpr = nt_ref(nt, blk, "expression");
+    if (bexpr < 0) continue;                               /* anonymous `&`: no name to call */
+    nt_node_set_ref(nt, id, "receiver", bexpr);            /* receiver = forwarded block */
+    nt_node_set_str(nt, id, "name", "call");
+    nt_node_set_ref(nt, id, "block", -1);                  /* the block is now the receiver */
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `recv.send(name_expr, args)` with a NON-literal name and an explicit receiver:
    lower it to a static dispatch over the method names that appear as symbol
    literals in the program. For each candidate name `m` we synthesize an ordinary
