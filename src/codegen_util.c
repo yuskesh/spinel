@@ -408,6 +408,7 @@ int g_uses_argv = 0;
 int g_uses_random = 0;
 int g_uses_threads = 0;
 int g_has_user_cmp = 0;
+int g_gen_obj_hashkey = 0;
 int g_re_init_needed = 0;
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
   if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, name)) {

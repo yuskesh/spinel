@@ -7674,6 +7674,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* #hash: box the receiver and run it through sp_rbval_hash_key -- the same
+     hashing the Hash container uses to bucket keys, so `h[k]` and `k.hash`
+     agree. A boxed user object routes through sp_obj_hash_hook, which dispatches
+     to a user-defined #hash (or pointer identity as Object#hash's default). */
+  if (sp_streq(name, "hash") && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
+    buf_puts(b, "sp_rbval_hash_key("); emit_boxed(c, recv, b); buf_puts(b, ")");
+    return;
+  }
+
   /* nil? on an integer: a nullable int carries the SP_INT_NIL sentinel
      (e.g. an int-valued hash miss). A plain int is never the sentinel, so
      `5.nil?` constant-folds to false; a missing-key value reads true. */

@@ -255,6 +255,7 @@ extern int g_uses_argv;
 extern int g_uses_random;
 extern int g_uses_threads;
 extern int g_has_user_cmp;
+extern int g_gen_obj_hashkey; /* >=1 instantiated class defines #hash + #eql?: emit + install the obj hash/eql key hooks */
 extern int g_re_init_needed;
 
 const char *rename_local(const char *nm);

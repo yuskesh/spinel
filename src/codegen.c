@@ -2970,6 +2970,82 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "  }\n  *comparable = FALSE; return 0;\n}\n");
 }
 
+/* 1 if instantiated class k defines both #hash and #eql? with emittable shapes --
+   the Ruby idiom for a custom Hash key. Validates BOTH signatures here so the two
+   hooks are generated all-or-nothing: a class that passes gets both a hash arm and
+   an eql arm, one that fails gets neither and falls through to pointer identity.
+   #eql?'s typed-object param must be class k itself (the hook only ever compares
+   two keys of the same cls_id), so the arg cast is never to an unrelated struct. */
+static int class_is_hashkey(Compiler *c, int k) {
+  if (!c->classes[k].instantiated) return 0;
+  int h_mi = comp_method_in_chain(c, k, "hash", NULL);
+  int e_mi = comp_method_in_chain(c, k, "eql?", NULL);
+  if (h_mi < 0 || e_mi < 0) return 0;
+
+  Scope *h_m = &c->scopes[h_mi];
+  if (h_m->nparams > 0 || (h_m->ret != TY_INT && h_m->ret != TY_POLY)) return 0;
+
+  Scope *e_m = &c->scopes[e_mi];
+  if (e_m->nparams < 1 || e_m->rest_idx >= 0 || (e_m->ret != TY_BOOL && e_m->ret != TY_POLY)) return 0;
+  LocalVar *pp = scope_local(e_m, e_m->pnames[0]);
+  TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
+  if (ty_is_object(pt)) { if (ty_object_class(pt) != k) return 0; }
+  else if (pt != TY_POLY) return 0;
+  return 1;
+}
+
+/* Generate sp_gen_obj_hash / sp_gen_obj_eql: cls_id switches calling each such
+   class's user #hash / #eql?, installed as sp_obj_hash_hook / sp_obj_eql_hook so
+   the PolyPolyHash key machinery honors value semantics for user objects (two
+   value-equal keys collide and compare equal). A class whose methods have an
+   unusable shape omits its arm and falls through to pointer identity (the
+   Object#hash / equal? default). The eql hook is only reached for two keys of
+   the same cls_id (the runtime pre-filters), so both pointers are that class. */
+static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static mrb_int sp_gen_obj_hash(int cls_id, void *p) {\n  switch (cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!class_is_hashkey(c, k)) continue;
+    int defcls = -1;
+    int mi = comp_method_in_chain(c, k, "hash", &defcls);
+    Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
+    const char *dcn = c->classes[defcls].name;
+    const char *slf = c->classes[defcls].is_value_type ? "*" : "";
+    buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
+    if (m->ret == TY_INT)
+      buf_printf(b, "return (mrb_int)sp_%s_%s(%s(sp_%s *)p);\n", dcn, mc("hash"), slf, dcn);
+    else
+      buf_printf(b, "return sp_rbval_hash_key(sp_%s_%s(%s(sp_%s *)p));\n", dcn, mc("hash"), slf, dcn);
+  }
+  buf_puts(b, "    default: break;\n  }\n  return (mrb_int)(uintptr_t)p;\n}\n");
+
+  buf_puts(b, "static mrb_bool sp_gen_obj_eql(int cls_id, void *a, void *b_) {\n  switch (cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!class_is_hashkey(c, k)) continue;
+    int defcls = -1;
+    int mi = comp_method_in_chain(c, k, "eql?", &defcls);
+    Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
+    LocalVar *pp = scope_local(m, m->pnames[0]);
+    TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
+    char argbuf[160];
+    if (ty_is_object(pt)) {
+      /* class_is_hashkey guarantees this object class == k, and b_ is a k key */
+      int pcls = ty_object_class(pt);
+      snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b_",
+               c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].name);
+    } else {
+      snprintf(argbuf, sizeof argbuf, "sp_box_obj(b_, cls_id)");
+    }
+    const char *dcn = c->classes[defcls].name;
+    const char *slf = c->classes[defcls].is_value_type ? "*" : "";
+    buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
+    if (m->ret == TY_BOOL)
+      buf_printf(b, "return sp_%s_%s(%s(sp_%s *)a, %s);\n", dcn, mc("eql?"), slf, dcn, argbuf);
+    else
+      buf_printf(b, "return sp_poly_truthy(sp_%s_%s(%s(sp_%s *)a, %s));\n", dcn, mc("eql?"), slf, dcn, argbuf);
+  }
+  buf_puts(b, "    default: break;\n  }\n  return a == b_;\n}\n");
+}
+
 /* Emit the static regex-literal globals and, when g_re_init_needed, the
    sp_re_init() that installs the symbol/regex/class/global-mark hooks and
    compiles the literals at startup. */
@@ -2995,11 +3071,16 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "static mrb_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, mrb_bool *comparable);\n");
   if (g_gen_obj_hash)
     buf_puts(b, "static sp_RbVal sp_obj_to_hash(sp_RbVal v);\n");
+  if (g_gen_obj_hashkey)
+    buf_puts(b, "static mrb_int sp_gen_obj_hash(int cls_id, void *p);\n"
+                "static mrb_bool sp_gen_obj_eql(int cls_id, void *a, void *b_);\n");
   buf_puts(b, "static void sp_re_init(void) {\n");
   if (g_uses_symbols)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
   if (g_has_user_cmp)
     buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
+  if (g_gen_obj_hashkey)
+    buf_puts(b, "  sp_obj_hash_hook = sp_gen_obj_hash;\n  sp_obj_eql_hook = sp_gen_obj_eql;\n");
   if (g_needs_class_machinery)
     buf_puts(b, "  sp_user_exc_parent_fn = sp_user_exc_parent;\n");
   /* Replace the runtime's hook with the superset that also marks this
@@ -4245,10 +4326,13 @@ char *codegen_program(const NodeTable *nt) {
     if (!c->classes[k].instantiated) continue;
     if (comp_method_in_chain(c, k, "<=>", NULL) >= 0) { g_has_user_cmp = 1; break; }
   }
+  g_gen_obj_hashkey = 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (class_is_hashkey(c, k)) { g_gen_obj_hashkey = 1; break; }
 
   /* sp_re_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
-                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash;
+                     g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_hashkey;
 
   /* Constructor defs, method defs, and main go into a separate buffer. Any
      proc literals they contain accumulate static functions into g_procs /
@@ -4266,6 +4350,8 @@ char *codegen_program(const NodeTable *nt) {
   }
   /* Comparable cmp-hook dispatcher (after the user `<=>` definitions it calls). */
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
+  /* Hash-key hooks (after the user #hash/#eql? definitions they call). */
+  if (g_gen_obj_hashkey) emit_obj_hashkey_dispatch(c, body);
 
   /* Emit END block static functions for atexit registration */
   int end_count = 0;

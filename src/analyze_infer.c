@@ -3058,6 +3058,12 @@ else {
   }
   if (sp_streq(name, "nil?") && recv >= 0 && argc == 0) return TY_BOOL;
   if (sp_streq(name, "object_id") && recv >= 0 && argc == 0) return TY_INT;
+  /* #hash on a primitive returns an Integer (CRuby's any_hash contract): the
+     value is the receiver boxed through sp_rbval_hash_key, the same hashing the
+     Hash container uses, so a user `def hash = v.hash` composes consistently. A
+     concrete user object is left to its own #hash method dispatch (which may
+     return any type -- honored via the sp_obj_hash_hook for keys). */
+  if (sp_streq(name, "hash") && recv >= 0 && argc == 0 && !ty_is_object(rt)) return TY_INT;
   if (sp_streq(name, "between?") && argc == 2 && (rt == TY_STRING || ty_is_numeric(rt))) return TY_BOOL;
   if ((sp_streq(name, "match?") || sp_streq(name, "!~")) && recv >= 0) return TY_BOOL;
   if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
