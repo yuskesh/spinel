@@ -1,5 +1,38 @@
 #include "codegen_internal.h"
 
+/* defined? support: does this subtree reference a constant the compiler
+   cannot resolve? Any such reference makes the whole defined? answer nil
+   (CRuby checks every reference without evaluating). */
+static int subtree_has_unresolved_const(Compiler *c, int id) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(c->nt, id);
+  if (!ty) return 0;
+  if (sp_streq(ty, "ConstantReadNode")) {
+    const char *cn = nt_str(c->nt, id, "name");
+    if (!cn) return 0;
+    if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) return 0;
+    static const char *const wellknown[] = {
+      "Object", "BasicObject", "Kernel", "Module", "Class", "Array", "Hash",
+      "String", "Integer", "Float", "Symbol", "Regexp", "Range", "NilClass",
+      "TrueClass", "FalseClass", "Numeric", "Comparable", "Enumerable",
+      "IO", "File", "Dir", "Math", "GC", "Process", "ENV", "ARGV",
+      "STDOUT", "STDERR", "STDIN", NULL };
+    for (int bi = 0; wellknown[bi]; bi++)
+      if (sp_streq(cn, wellknown[bi])) return 0;
+    return 1;
+  }
+  int nr = nt_num_refs(c->nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_has_unresolved_const(c, nt_ref_at(c->nt, id, i))) return 1;
+  int na = nt_num_arrs(c->nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n);
+    for (int k = 0; k < n; k++)
+      if (subtree_has_unresolved_const(c, ids[k])) return 1;
+  }
+  return 0;
+}
+
 /* Adjacent string literals joined by `\`-continuation (or `+`-folded at parse
    time) produce an InterpolatedStringNode whose own parts are themselves
    InterpolatedStringNodes. Flatten the part tree into one list of leaf parts
@@ -1250,6 +1283,9 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (sp_streq(ty, "DefinedNode")) {
+    /* defined? examines its argument recursively without evaluating: any
+       unresolvable constant anywhere in the subtree makes the whole answer
+       nil (CRuby re-checks each reference). */
     /* compile-time defined? -> a label string, or nil (NULL) when undefined */
     int v = nt_ref(nt, id, "value");
     const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
@@ -1356,6 +1392,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
         res = "expression";
       else if (sp_streq(vt, "YieldNode")) res = "yield";
     }
+    /* a CONTAINER literal builds its elements, so an unresolvable constant
+       anywhere inside nils the answer; short-circuiting forms (&&/||) do
+       not examine their operands (CRuby). */
+    if (res && v >= 0 && vt &&
+        (sp_streq(vt, "ArrayNode") || sp_streq(vt, "HashNode") ||
+         sp_streq(vt, "KeywordHashNode")) &&
+        subtree_has_unresolved_const(c, v)) res = NULL;
     /* dynamic cases: the answer depends on runtime state, so emit a
        conditional instead of a compile-time label. */
     if (!res && vt && sp_streq(vt, "BackReferenceReadNode")) {
