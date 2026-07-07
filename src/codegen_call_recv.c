@@ -4,6 +4,26 @@
 
 #include "codegen_internal.h"
 
+/* Receiver type with the empty-container-literal coercion the inference
+   layer applies (`[].m` -> poly array, `{}.m` -> str-keyed poly hash, the
+   same C type the emitters build for the bare literals): comp_ntype answers
+   UNKNOWN for them, which stranded direct calls like `{}.size`. */
+static TyKind comp_recv_type(Compiler *c, int recv) {
+  TyKind t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  if (t != TY_UNKNOWN || recv < 0) return t;
+  const char *ty = nt_type(c->nt, recv);
+  int en = 0;
+  if (ty && sp_streq(ty, "ArrayNode")) {
+    nt_arr(c->nt, recv, "elements", &en);
+    if (en == 0) return TY_POLY_ARRAY;
+  }
+  else if (ty && (sp_streq(ty, "HashNode") || sp_streq(ty, "KeywordHashNode"))) {
+    nt_arr(c->nt, recv, "elements", &en);
+    if (en == 0) return TY_STR_POLY_HASH;
+  }
+  return t;
+}
+
 /* Boxing function that lifts an array of kind `kk` ("Int"/"Str"/"Float"/"Poly")
    into a poly sp_RbVal. */
 static const char *array_box_fn(const char *kk) {
@@ -43,7 +63,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = comp_recv_type(c, recv);
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
   /* Homogeneous object array (sp_PtrArray of unboxed sp_X*), produced by the
@@ -1786,7 +1806,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = comp_recv_type(c, recv);
   if (recv >= 0 && ty_is_hash(rt)) {
     /* compare_by_identity? is always false for a value-keyed hash; the mutating
        compare_by_identity cannot be honored (keys are compared by value) and is
@@ -2525,7 +2545,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = comp_recv_type(c, recv);
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   /* scalar receiver methods: evaluate the receiver once into rs, then
      splice its text (so a literal/complex receiver isn't rebuilt). */
@@ -3094,7 +3114,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = comp_recv_type(c, recv);
   TyKind res = comp_ntype(c, id);
   /* Object#equal? -- reference identity. A heap instance IS its pointer, so
      this is a plain pointer comparison; a poly argument unwraps to tag +
@@ -3619,7 +3639,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = comp_recv_type(c, recv);
   /* Time instance methods: sp_Time is a value -- splice the receiver once. */
   if (recv >= 0 && rt == TY_TIME) {
     Buf rs = expr_buf(c, recv);
@@ -3785,7 +3805,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = comp_recv_type(c, recv);
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {
     int block = nt_ref(nt, id, "block");
@@ -3960,7 +3980,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  TyKind rt = comp_recv_type(c, recv);
   /* Hash#compare_by_identity switches a hash to identity (equal?/object_id)
      key comparison. Spinel's hash machinery compares keys by value, so the
      mutator can't take effect; emitting it as a no-op would silently diverge
