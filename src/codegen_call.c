@@ -3738,15 +3738,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", .last = "); emit_expr(c, argv[0], b); buf_puts(b, ", .excl = 0 }");
       return;
     }
-  }
-
-  /* hi.downto(lo) without a block: a DESCENDING int array (a plain ascending
-     sp_Range cannot carry the direction, so its .to_a came out ascending). */
-  if (recv >= 0 && nt_ref(nt, id, "block") < 0 && comp_ntype(c, recv) == TY_INT &&
-      sp_streq(name, "downto") && argc == 1 && comp_ntype(c, id) == TY_INT_ARRAY) {
-    buf_puts(b, "sp_IntArray_from_range_step("); emit_expr(c, recv, b);
-    buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ", -1LL, 0)");
-    return;
+    if (sp_streq(name, "downto") && argc == 1) {
+      buf_puts(b, "(sp_Range){ .first = "); emit_expr(c, argv[0], b);
+      buf_puts(b, ", .last = "); emit_expr(c, recv, b); buf_puts(b, ", .excl = 0 }");
+      return;
+    }
   }
 
   /* poly_val.call — the poly value is a proc; unbox then call.
