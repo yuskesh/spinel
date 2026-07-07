@@ -7,6 +7,11 @@
 # is only as precise as Array#include?'s element comparison.
 
 class Set
+  # Set[1, 2, 3] builds a Set from the given elements (CRuby's Set.[]).
+  def self.[](*args)
+    new(args)
+  end
+
   def initialize(enum = nil)
     @data = []
     enum.each { |x| add(x) } if enum
