@@ -542,6 +542,15 @@ TyKind infer_call(Compiler *c, int id) {
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   if (!name) return TY_UNKNOWN;
 
+  /* $~'s MatchData face over the match registers (codegen reads the same
+     backing the back-references use): nullable strings. */
+  if (recv >= 0 && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "GlobalVariableReadNode") ||
+       sp_streq(nt_type(nt, recv), "BackReferenceReadNode")) &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "$~") &&
+      (sp_streq(name, "pre_match") || sp_streq(name, "post_match") || sp_streq(name, "to_s")))
+    return TY_STRING;
+
   /* A block with a top-level `break <v>` makes this call return <v>, so its
      result is the union of the normal result and the break value -- poly. The
      break wrapper suppresses this (g_infer_ignore_brk) to recover the normal

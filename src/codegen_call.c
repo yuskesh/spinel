@@ -3227,12 +3227,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* $~[N]: the Nth regexp group of the last match (0 = the whole match), read
      from the match registers. $~ is a special regexp accessor rather than
      stored MatchData, so index it directly instead of char-indexing a string. */
-  if (recv >= 0 && sp_streq(name, "[]") && argc == 1 &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "GlobalVariableReadNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "$~")) {
-    buf_puts(b, "({ mrb_int _mi = "); emit_int_expr(c, argv[0], b);
-    buf_puts(b, "; _mi == 0 ? sp_re_match_str : (_mi >= 1 && _mi <= 9 ? sp_re_captures[_mi] : (const char *)0); })");
-    return;
+  {
+    const char *rvty0 = recv >= 0 ? nt_type(nt, recv) : NULL;
+    int recv_is_tilde = rvty0 &&
+        (sp_streq(rvty0, "GlobalVariableReadNode") || sp_streq(rvty0, "BackReferenceReadNode")) &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "$~");
+    if (recv_is_tilde && sp_streq(name, "[]") && argc == 1) {
+      buf_puts(b, "({ mrb_int _mi = "); emit_int_expr(c, argv[0], b);
+      buf_puts(b, "; _mi == 0 ? sp_re_match_str : (_mi >= 1 && _mi <= 9 ? sp_re_captures[_mi] : (const char *)0); })");
+      return;
+    }
+    /* $~'s MatchData face over the match registers: pre/post_match and to_s
+       read the same backing the $` / $' / $& back-references use. */
+    if (recv_is_tilde && argc == 0) {
+      if (sp_streq(name, "pre_match"))  { buf_puts(b, "sp_re_match_pre");  return; }
+      if (sp_streq(name, "post_match")) { buf_puts(b, "sp_re_match_post"); return; }
+      if (sp_streq(name, "to_s"))       { buf_puts(b, "sp_re_match_str");  return; }
+    }
   }
 
   /* `@nested[i]` inferred as an int array (poly array of int arrays): unbox
