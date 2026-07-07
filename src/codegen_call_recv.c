@@ -4020,6 +4020,24 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* poly receiver `.to_i(base)`: only String#to_i takes a radix. When the value
+     is a String at runtime, parse it (mirroring String#to_i(base)); any other
+     type -- Integer/Float/nil -- has a zero-arity to_i, so CRuby raises
+     ArgumentError. Guard on the tag rather than blindly sp_poly_to_s'ing, which
+     would silently parse "42".to_i(16) => 66 instead of raising. The no-arg
+     conversions live in the argc == 0 block below, which this form would skip.
+     Receiver then argument are bound in that order to keep CRuby's evaluation
+     order (both are evaluated before the call raises). */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && sp_streq(name, "to_i")) {
+    int tr = ++g_tmp, tb = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_str_to_i_base(_t%d.v.s, _t%d)"
+                  " : (sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected 0)\"), (mrb_int)0); })",
+               tr, tr, tb);
+    return 1;
+  }
+
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
