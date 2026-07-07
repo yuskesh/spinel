@@ -1095,6 +1095,10 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         (sp_streq(name, "rationalize") && argc <= 1)) && argc <= 1) {
       buf_puts(b, "sp_rational_new((mrb_int)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return 1;
     }
+    /* n.to_c is Complex(n, 0) for an Integer or Float receiver. */
+    if ((crt == TY_INT || crt == TY_FLOAT) && sp_streq(name, "to_c") && argc == 0) {
+      buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, recv, b); buf_puts(b, "), 0})"); return 1;
+    }
     if (crt == TY_RATIONAL) {
       if (sp_streq(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return 1; }
       if (sp_streq(name, "denominator")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").den"); return 1; }

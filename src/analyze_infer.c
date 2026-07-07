@@ -2961,6 +2961,7 @@ else {
     if ((sp_streq(name, "numerator") || sp_streq(name, "denominator")) && argc == 0) return TY_INT;
     if ((sp_streq(name, "to_r") && argc == 0) ||
         (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
+    if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
     /* times/upto/downto/step with a block return the receiver (self) */
     if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto") ||
          sp_streq(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;
@@ -2995,6 +2996,7 @@ else {
   }
   /* float receiver methods */
   if (recv >= 0 && rt == TY_FLOAT) {
+    if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
     if (sp_streq(name, "coerce") && argc == 1) return TY_FLOAT_ARRAY;  /* [Float(other), self] */
     if (sp_streq(name, "divmod") && argc == 1) return TY_POLY_ARRAY;  /* [Integer, Float] */
     if (sp_streq(name, "infinite?")) return TY_INT;   /* nil / 1 / -1 (nullable int) */
