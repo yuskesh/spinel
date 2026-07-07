@@ -61,6 +61,42 @@ class SpecExpectation
   def be_kind_of(cls)
     report(@v.is_a?(cls), "expected kind of #{cls}")
   end
+  # Chain-predicate form (modern ruby/spec): `x.should.eql?(y)` sends the
+  # predicate to the wrapped value and reports its truthiness -- exactly what
+  # real mspec's chained matcher does. After `==` and `raise` this is the
+  # dominant matcher in core/ (eql? ~570, instance_of? ~740, include? ~620,
+  # is_a? ~420, equal? ~910 uses). Each delegates to @v with the SAME call the
+  # be_*/matcher forms already compile, so no new spinel surface is exercised;
+  # should_not.<pred> negates through @neg in report. Without these the call
+  # falls to Object#<pred> on the SpecExpectation wrapper -- a vacuous check
+  # that records nothing and (on spinel) rejects as an unsupported call.
+  def eql?(o)
+    report(@v.eql?(o), "expected #{@v.inspect}.eql?(#{o.inspect})")
+  end
+  def equal?(o)
+    report(@v.equal?(o), "expected same object as #{o.inspect}")
+  end
+  def instance_of?(cls)
+    report(@v.instance_of?(cls), "expected instance of #{cls}")
+  end
+  def is_a?(cls)
+    report(@v.is_a?(cls), "expected kind of #{cls}")
+  end
+  def kind_of?(cls)
+    report(@v.is_a?(cls), "expected kind of #{cls}")
+  end
+  def include?(o)
+    report(@v.include?(o), "expected #{@v.inspect} to include #{o.inspect}")
+  end
+  def frozen?
+    report(@v.frozen?, "expected #{@v.inspect} to be frozen")
+  end
+  def nil?
+    report(@v.nil?, "expected nil, got #{@v.inspect}")
+  end
+  def empty?
+    report(@v.empty?, "expected #{@v.inspect} to be empty")
+  end
   # Chain form (modern ruby/spec): -> { }.should.raise(E) is the same check.
   def raise(cls = nil, msg = nil)
     raise_error(cls, msg)
