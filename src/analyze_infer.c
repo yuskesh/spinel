@@ -112,11 +112,12 @@ int call_breaks(Compiler *c, int id) {
   return block_has_top_break(c, nt_ref(nt, block, "body"));
 }
 
-/* str.unpack1(fmt) with a literal single-directive integer format: the
+/* str.unpack1(fmt) with a literal single-directive numeric format: the
    directive fixes the extracted value's type, so the result does not need
    to stay poly (`data[4, 4].unpack1('V')` reading a WAD header count in
    doom). Count/endian suffixes ("V2", "l<", "q>*") keep the first value's
-   type. Only the integer directives sp_str_unpack decodes qualify;
+   type. Only the numeric directives sp_str_unpack decodes qualify --
+   integers to TY_INT, the float/double directives to TY_FLOAT;
    multi-directive, interpolated, and other formats stay TY_POLY. */
 static TyKind an_unpack1_lit_type(const NodeTable *nt, int arg) {
   const char *aty = nt_type(nt, arg);
@@ -130,6 +131,7 @@ static TyKind an_unpack1_lit_type(const NodeTable *nt, int arg) {
   if (*p == '*') p++;
   if (*p) return TY_POLY;  /* further directives: not this one's type */
   if (strchr("cCsSlLqQnNvV", d)) return TY_INT;
+  if (strchr("dDfFeEgG", d)) return TY_FLOAT;
   return TY_POLY;
 }
 

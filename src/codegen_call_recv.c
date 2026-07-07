@@ -133,8 +133,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   }
   if (recv >= 0 && ty_is_array(rt)) {
     if (sp_streq(name, "pack") && argc == 1 &&
-        (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY)) {
-      const char *kind = rt == TY_POLY_ARRAY ? "Poly" : (rt == TY_STR_ARRAY ? "Str" : "Int");
+        (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY)) {
+      const char *kind = rt == TY_POLY_ARRAY ? "Poly"
+                       : rt == TY_STR_ARRAY  ? "Str"
+                       : rt == TY_FLOAT_ARRAY ? "Float" : "Int";
       buf_printf(b, "sp_%sArray_pack(", kind);
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
@@ -2832,20 +2834,23 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int offv = struct_kwarg_value(c, argv[1], "offset");
         int one = sp_streq(name, "unpack1");
         TyKind u1t = one ? comp_ntype(c, id) : TY_POLY;
-        if (one && u1t == TY_INT) buf_puts(b, "sp_poly_to_i(sp_PolyArray_get(");
-        else if (one)             buf_puts(b, "sp_PolyArray_get(");
+        if (one && u1t == TY_INT)        buf_puts(b, "sp_poly_to_i(sp_PolyArray_get(");
+        else if (one && u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f(sp_PolyArray_get(");
+        else if (one)                    buf_puts(b, "sp_PolyArray_get(");
         buf_printf(b, "sp_str_unpack_off(%s, ", r); emit_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, offv, b); buf_puts(b, ")");
-        if (one) buf_puts(b, u1t == TY_INT ? ", 0))" : ", 0)");
+        if (one) buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? ", 0))" : ", 0)");
       }
       else if (sp_streq(name, "unpack1") && argc == 1) {
-        /* A literal single-directive integer format fixes the value's type
-           (the analyzer's an_unpack1_lit_type): unbox the extracted element. */
+        /* A literal single-directive numeric format fixes the value's type
+           (the analyzer's an_unpack1_lit_type): unbox the extracted element
+           (int or float). */
         TyKind u1t = comp_ntype(c, id);
-        if (u1t == TY_INT) buf_printf(b, "sp_poly_to_i(sp_PolyArray_get(sp_str_unpack(%s, ", r);
-        else               buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r);
+        if (u1t == TY_INT)        buf_printf(b, "sp_poly_to_i(sp_PolyArray_get(sp_str_unpack(%s, ", r);
+        else if (u1t == TY_FLOAT) buf_printf(b, "sp_poly_to_f(sp_PolyArray_get(sp_str_unpack(%s, ", r);
+        else                      buf_printf(b, "sp_PolyArray_get(sp_str_unpack(%s, ", r);
         emit_expr(c, argv[0], b);
-        buf_puts(b, u1t == TY_INT ? "), 0))" : "), 0)");
+        buf_puts(b, (u1t == TY_INT || u1t == TY_FLOAT) ? "), 0))" : "), 0)");
       }
       else if (sp_streq(name, "sum") && argc == 0) {
         /* default 16-bit byte checksum: sum of byte values modulo 2**16 */
@@ -4200,14 +4205,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      String value that widened to poly (doom's binary WAD/texture parsing)
      was entirely unhandled here and hit the generic poly method dispatch,
      raising "undefined method 'unpack1' for poly". Mirrors the rt==TY_STRING
-     codegen and its inference rule (a single-directive int format stays int). */
+     codegen and its inference rule (a single-directive numeric format
+     yields an unboxed int or float). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "unpack1") && argc == 1) {
-    int is_int = comp_ntype(c, id) == TY_INT;
-    if (is_int) buf_puts(b, "sp_poly_to_i(");
+    TyKind u1t = comp_ntype(c, id);
+    if (u1t == TY_INT)        buf_puts(b, "sp_poly_to_i(");
+    else if (u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f(");
     buf_puts(b, "sp_PolyArray_get(sp_str_unpack(sp_poly_to_s(");
     emit_expr(c, recv, b); buf_puts(b, "), ");
     emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
-    if (is_int) buf_puts(b, ")");
+    if (u1t == TY_INT || u1t == TY_FLOAT) buf_puts(b, ")");
     return 1;
   }
   /* poly receiver: arr[start, len] = src -- 3-arg splice assign

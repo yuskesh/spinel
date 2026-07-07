@@ -5661,6 +5661,7 @@ sp_Bigint *sp_bigint_not(sp_Bigint *a);
    below call into the static GC helpers in this header via the
    sp_ext_* shims defined further down. */
 const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt);
+const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt);
 const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt);
 const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt);
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt);
@@ -5671,6 +5672,8 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, mrb_int byteof
 static inline const char *sp_poly_pack(sp_RbVal recv, const char *fmt) {
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_INT_ARRAY)
     return sp_IntArray_pack((sp_IntArray *)recv.v.p, fmt);
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_FLT_ARRAY)
+    return sp_FloatArray_pack((sp_FloatArray *)recv.v.p, fmt);
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_POLY_ARRAY)
     return sp_PolyArray_pack((sp_PolyArray *)recv.v.p, fmt);
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_STR_ARRAY)
