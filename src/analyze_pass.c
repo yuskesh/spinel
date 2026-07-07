@@ -452,6 +452,16 @@ static TyKind splice_incoming_elem(Compiler *c, int rhs) {
   return t;   /* scalar (incl. TY_NIL, and TY_POLY = statically unknown) */
 }
 
+/* The array type an array-pattern scrutinee deconstructs to. A Struct/Data
+   object has no member array of its own; #deconstruct boxes its members into a
+   poly array, so its element/rest bindings are poly (not the parent's int
+   default). Any other scrutinee keeps its own type. */
+static TyKind pm_deconstruct_arr_ty(Compiler *c, TyKind scrutinee_t) {
+  if (ty_is_object(scrutinee_t) && c->classes[ty_object_class(scrutinee_t)].is_struct)
+    return TY_POLY_ARRAY;
+  return scrutinee_t;
+}
+
 static int infer_case_pattern_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -519,12 +529,12 @@ static int infer_case_pattern_locals(Compiler *c) {
         int val = nt_ref(nt, pat, "value");
         if (val >= 0 && nt_type(nt, val) &&
             sp_streq(nt_type(nt, val), "ArrayPatternNode")) {
-          array_pat = val; array_scrutinee = scrutinee_t;
+          array_pat = val; array_scrutinee = pm_deconstruct_arr_ty(c, scrutinee_t);
         }
       }
       else if (sp_streq(pty, "ArrayPatternNode")) {
         /* in [first, *rest] or in Array(head, *tail) */
-        array_pat = pat; array_scrutinee = scrutinee_t;
+        array_pat = pat; array_scrutinee = pm_deconstruct_arr_ty(c, scrutinee_t);
       }
       else if (sp_streq(pty, "FindPatternNode")) {
         /* in [*head, a, b, *tail] -- the two splats bind to arrays of the
@@ -1120,7 +1130,10 @@ int infer_write_types(Compiler *c) {
       int en = 0;
       const int *els = (vty && sp_streq(vty, "ArrayNode")) ? nt_arr(nt, value, "elements", &en) : NULL;
       TyKind arr_elem = TY_UNKNOWN;
-      if (ty_is_array(infer_type(c, value))) arr_elem = ty_array_elem(infer_type(c, value));
+      TyKind vinf_a = infer_type(c, value);
+      if (ty_is_array(vinf_a)) arr_elem = ty_array_elem(vinf_a);
+      else if (ty_is_object(vinf_a) && c->classes[ty_object_class(vinf_a)].is_struct)
+        arr_elem = TY_POLY;   /* Struct/Data #deconstruct boxes members to poly */
       for (int i = 0; i < rn; i++) {
         const char *lty2 = nt_type(nt, reqs[i]);
         if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
@@ -1162,6 +1175,11 @@ int infer_write_types(Compiler *c) {
             const char *vkval = (vkty && sp_streq(vkty, "SymbolNode")) ? nt_str(nt, vkey, "value") : NULL;
             if (vkval && sp_streq(vkval, pkey_val)) { et = infer_type(c, nt_ref(nt, velms[j], "value")); break; }
           }
+        }
+        if (et == TY_UNKNOWN) {
+          /* Struct/Data #deconstruct_keys yields a poly-valued hash. */
+          TyKind vinf_h = infer_type(c, value);
+          if (ty_is_object(vinf_h) && c->classes[ty_object_class(vinf_h)].is_struct) et = TY_POLY;
         }
         if (et == TY_UNKNOWN || et == TY_NIL) continue;
         TyKind mg = ty_unify(lv->type, et);
