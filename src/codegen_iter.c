@@ -113,23 +113,24 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int saved_bbe = g_block_brk_ebase, saved_yfbe = g_yield_blk_brk_efallback;
   int saved_bbexc = g_block_brk_exc_base, saved_bexc = g_brk_exc_base;
   int saved_ebase = g_brk_ensure_base;
-  static char selfbuf[64];
+  /* Stack-local, not static: emit_inline_call_x recurses (a yielded block can
+     call the same yielding method), and g_self points into this buffer. A
+     shared static would be clobbered by the nested inline, so the outer frame's
+     ensure/trailing-self would emit the inner receiver temp (undeclared here). */
+  char selfbuf[64];
   /* Nested `yield` inside the block body should chain to the block that was
      active before this inline, not to the inner block. */
   g_yield_block_fallback = saved_block;
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
   /* the block being captured is caller code: record the caller's self so
-     emit_block_invoke can restore it around the spliced block body. Copy the
-     STRING into a per-inline (stack) buffer: g_self may point at the shared
-     static selfbuf below, which a deeper nested inline overwrites -- aliasing
-     the fallback by pointer would then make the spliced block body read the
-     wrong (inner) receiver name. */
+     emit_block_invoke can restore it around the spliced block body. Aliasing
+     g_self by pointer is safe now that selfbuf is stack-local: it names an
+     ancestor frame's selfbuf, which stays live and unmodified for the whole
+     nested emission (a frame only ever writes its own selfbuf). */
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
-  char self_fb_buf[sizeof selfbuf];
-  if (g_self) { snprintf(self_fb_buf, sizeof self_fb_buf, "%s", g_self); g_yield_self_fallback = self_fb_buf; }
-  else g_yield_self_fallback = NULL;
+  g_yield_self_fallback = g_self;
   g_yield_self_deref_fallback = g_self_deref;
   g_block_id = block;
   /* the literal block binds to THIS call site's break scope; a forwarded
