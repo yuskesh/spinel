@@ -3692,6 +3692,40 @@ static void reject_binding(Compiler *c) {
   }
 }
 
+/* A method result (`.to_sym`, `.join`, ...) or a string/symbol interpolation
+   produces a fresh value that need not appear anywhere as a source literal. */
+static int node_is_computed_name(const NodeTable *nt, int n) {
+  const char *ty = n >= 0 ? nt_type(nt, n) : NULL;
+  if (!ty) return 0;
+  return sp_streq(ty, "CallNode") || sp_streq(ty, "InterpolatedStringNode") ||
+         sp_streq(ty, "InterpolatedSymbolNode");
+}
+
+/* A dynamic-send name is genuinely runtime-computed -- and so cannot be covered
+   by desugar_dynamic_send's literal-derived arm set -- when it is a computed
+   expression directly, or a local assigned such a computation. A bare variable
+   or block parameter whose values are the program's symbol/string literals
+   (`m = :upcase; x.send(m)`, `%w[a b].each { |k| x.send(k) }`) is NOT computed:
+   its runtime value is one of those literals, which the arm set already covers.
+   Only a computed name is rejected, so it fails loudly at build time rather than
+   silently raising the wrong NoMethodError for a method the arms never built. */
+static int send_name_is_computed(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  if (node_is_computed_name(nt, arg)) return 1;
+  const char *aty = arg >= 0 ? nt_type(nt, arg) : NULL;
+  if (!aty || !sp_streq(aty, "LocalVariableReadNode")) return 0;
+  const char *vn = nt_str(nt, arg, "name");
+  int scope = (arg >= 0 && arg < nt->count) ? c->nscope[arg] : -1;
+  if (!vn) return 0;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    if (c->nscope[id] != scope) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    if (node_is_computed_name(nt, nt_ref(nt, id, "value"))) return 1;
+  }
+  return 0;
+}
+
 static void reject_runtime_send(Compiler *c) {
   const NodeTable *nt = c->nt;
   static const char *const names[] = { "send", "__send__", "public_send", NULL };
@@ -3717,8 +3751,11 @@ static void reject_runtime_send(Compiler *c) {
     /* a literal name should have been rewritten already; only a runtime name
        (a variable, a method result, an interpolated string, ...) reaches here */
     if (a0 && (sp_streq(a0, "SymbolNode") || sp_streq(a0, "StringNode"))) continue;
-    /* lowered to a static name-dispatch (desugar_dynamic_send): handled, not rejected */
-    { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn); if (dn > 0) continue; }
+    /* lowered to a static name-dispatch (desugar_dynamic_send): the arm set can
+       only cover a name that is provably one of the program's literals; a
+       genuinely runtime-computed name falls through to the loud reject below. */
+    { int dn = 0; nt_arr(nt, id, "dyn_send_arms", &dn);
+      if (dn > 0 && !send_name_is_computed(c, av[0])) continue; }
     /* Only diagnose a send that codegen will actually emit. A send in a dead
        (unreachable) method is pruned before emission, so rejecting it would
        fail otherwise-valid programs that merely contain an unused method.
