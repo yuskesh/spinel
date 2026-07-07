@@ -238,6 +238,51 @@ static void pk_str_directive(char spec, int64_t count, const char *s, size_t sl,
   else             pk_emit_qp(buf, len, cap, (const unsigned char *)s, sl, count);
 }
 
+/* Pack a string element under a byte-producing directive: H/h (hex nibbles),
+   B/b (bit string), u (uuencode). Shared by the typed-array and poly-array pack
+   entry points. `sl` is the source byte length; `count` (< 0 means `*`) is a
+   nibble/bit count for H/h/B/b and unused for u. */
+static void pk_str_bytes_directive(char spec, int64_t count, const char *s, size_t sl,
+                                   char **buf, size_t *len, size_t *cap) {
+  if (spec == 'H' || spec == 'h') {
+    size_t n = (count < 0) ? sl : (size_t)count;
+    for (size_t bi = 0; bi < (n + 1) / 2; bi++) {
+      char c0 = (2 * bi < n && 2 * bi < sl) ? s[2 * bi] : '0';
+      char c1 = (2 * bi + 1 < n && 2 * bi + 1 < sl) ? s[2 * bi + 1] : '0';
+      int hi = (c0 >= '0' && c0 <= '9') ? c0 - '0' : (c0 | 0x20) - 'a' + 10;
+      int lo = (c1 >= '0' && c1 <= '9') ? c1 - '0' : (c1 | 0x20) - 'a' + 10;
+      char byte = (char)((spec == 'H') ? ((hi << 4) | lo) : ((lo << 4) | hi));
+      pk_append(buf, len, cap, &byte, 1);
+    }
+  } else if (spec == 'B' || spec == 'b') {
+    size_t n = (count < 0) ? sl : (size_t)count;
+    for (size_t bi = 0; bi < (n + 7) / 8; bi++) {
+      unsigned char byte = 0;
+      for (int j = 0; j < 8; j++) {
+        size_t k = bi * 8 + j;
+        int bit = (k < n && k < sl) ? (s[k] & 1) : 0;
+        byte |= (unsigned char)(bit << ((spec == 'B') ? (7 - j) : j));
+      }
+      pk_append(buf, len, cap, (char *)&byte, 1);
+    }
+  } else if (spec == 'u') {
+    size_t pos = 0;
+    while (pos < sl) {
+      size_t ll = sl - pos; if (ll > 45) ll = 45;
+      char lc = (char)(ll + 0x20); pk_append(buf, len, cap, &lc, 1);
+      for (size_t i = 0; i < ll; i += 3) {
+        unsigned char b0 = (unsigned char)s[pos + i];
+        unsigned char b1 = (i + 1 < ll) ? (unsigned char)s[pos + i + 1] : 0;
+        unsigned char b2 = (i + 2 < ll) ? (unsigned char)s[pos + i + 2] : 0;
+        int e[4] = { b0 >> 2, ((b0 << 4) | (b1 >> 4)) & 0x3F, ((b1 << 2) | (b2 >> 6)) & 0x3F, b2 & 0x3F };
+        for (int j = 0; j < 4; j++) { char ch = (char)(e[j] ? e[j] + 0x20 : 0x60); pk_append(buf, len, cap, &ch, 1); }
+      }
+      char nl = '\n'; pk_append(buf, len, cap, &nl, 1);
+      pos += ll;
+    }
+  }
+}
+
 
 /* ---------- Pack entry points ---------- */
 
@@ -254,6 +299,18 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
+    /* w: BER-compressed integers (base-128, high bit = continuation). */
+    if (spec == 'w') {
+      int64_t wc = count < 0 ? arr->len - idx : count;
+      for (int64_t k = 0; k < wc; k++) {
+        uint64_t v = (uint64_t)((idx < arr->len) ? arr->data[arr->start + idx] : 0); idx++;
+        unsigned char tmp[10]; int ti = 0;
+        tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
+        while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
+        for (int j = ti - 1; j >= 0; j--) pk_append(&buf, &len, &cap, (char *)&tmp[j], 1);
+      }
+      continue;
+    }
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
     for (int64_t k = 0; k < count; k++) {
@@ -357,6 +414,24 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
       pk_str_directive(spec, count, s, sl, &buf, &len, &cap);
       continue;
     }
+    /* H/h (hex), B/b (bit), u (uuencode): consume one string element. */
+    if (spec == 'H' || spec == 'h' || spec == 'B' || spec == 'b' || spec == 'u') {
+      const char *s = (idx < arr->len) ? pk_poly_to_str(arr->data[idx]) : ""; idx++;
+      pk_str_bytes_directive(spec, count, s, strlen(s), &buf, &len, &cap);
+      continue;
+    }
+    /* w: BER-compressed integers (base-128, high bit = continuation). */
+    if (spec == 'w') {
+      int64_t wc = count < 0 ? arr->len - idx : count;
+      for (int64_t k = 0; k < wc; k++) {
+        uint64_t v = (uint64_t)((idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0); idx++;
+        unsigned char tmp[10]; int ti = 0;
+        tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
+        while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
+        for (int j = ti - 1; j >= 0; j--) pk_append(&buf, &len, &cap, (char *)&tmp[j], 1);
+      }
+      continue;
+    }
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
     for (int64_t k = 0; k < count; k++) {
@@ -453,6 +528,8 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
       }
     } else if (spec == 'm' || spec == 'M') {
       pk_str_directive(spec, count, s, sl, &buf, &len, &cap);
+    } else if (spec == 'H' || spec == 'h' || spec == 'B' || spec == 'b' || spec == 'u') {
+      pk_str_bytes_directive(spec, count, s, sl, &buf, &len, &cap);
     }
   }
   char *r = sp_str_alloc(len);
