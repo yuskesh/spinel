@@ -282,6 +282,21 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "; fputs(sp_time_inspect_v(_t%d), stdout); putchar('\\n'); }\n", tv);
   }
   else if (t == TY_RANGE) {   /* a Range inspects as "first..last" / "first...last" */
+    /* A string-endpoint range has no int sp_Range value; inspect its literal
+       endpoints directly (each String quoted), e.g. `"a".."c"`. */
+    int rn = unwrap_parens(c, arg);
+    if (rn >= 0 && nt_type(c->nt, rn) && sp_streq(nt_type(c->nt, rn), "RangeNode")) {
+      int lo = nt_ref(c->nt, rn, "left"), hi = nt_ref(c->nt, rn, "right");
+      if (lo >= 0 && hi >= 0 && comp_ntype(c, lo) == TY_STRING && comp_ntype(c, hi) == TY_STRING) {
+        int excl = (int)(nt_int(c->nt, rn, "flags", 0) & 4) ? 1 : 0;
+        buf_puts(b, "fputs(sp_sprintf(\"%s");
+        buf_puts(b, excl ? "..." : "..");
+        buf_puts(b, "%s\", sp_str_inspect("); emit_expr(c, lo, b);
+        buf_puts(b, "), sp_str_inspect("); emit_expr(c, hi, b);
+        buf_puts(b, ")), stdout); putchar('\\n');\n");
+        return;
+      }
+    }
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); putchar('\\n'); }\n", tv);
