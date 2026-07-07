@@ -1789,11 +1789,30 @@ else {
     int left = nt_ref(nt, id, "left"), right = nt_ref(nt, id, "right");
     TyKind lt = comp_ntype(c, left), res = comp_ntype(c, id);
     if (lt == TY_BOOL && comp_ntype(c, right) == TY_BOOL) {
-      buf_puts(b, "(");
-      emit_expr(c, left, b);
-      buf_puts(b, is_and ? " && " : " || ");
-      emit_expr(c, right, b);
-      buf_puts(b, ")");
+      /* Capture the right operand's prelude: an object subexpression there
+         (`a && b.c == x`) hoists a GC-rooted temp that must run inside the
+         short-circuit, not above the whole chain (issue #1773). No prelude ->
+         the flat C `&&`/`||`; otherwise a real branch scopes it. */
+      Buf rarm; memset(&rarm, 0, sizeof rarm);
+      Buf rpre; memset(&rpre, 0, sizeof rpre);
+      { Buf *sv_pre2 = g_pre; g_pre = &rpre; emit_expr(c, right, &rarm); g_pre = sv_pre2; }
+      if (!(rpre.p && rpre.p[0])) {
+        buf_puts(b, "(");
+        emit_expr(c, left, b);
+        buf_puts(b, is_and ? " && " : " || ");
+        buf_puts(b, rarm.p ? rarm.p : "0");
+        buf_puts(b, ")");
+      }
+      else {
+        int tr = ++g_tmp;
+        buf_printf(b, "({ mrb_bool _t%d; if (", tr);
+        emit_expr(c, left, b);
+        if (is_and) buf_printf(b, ") {\n%s_t%d = %s;\n} else { _t%d = 0; } _t%d; })",
+                               rpre.p, tr, rarm.p ? rarm.p : "0", tr, tr);
+        else        buf_printf(b, ") { _t%d = 1; } else {\n%s_t%d = %s;\n} _t%d; })",
+                               tr, rpre.p, tr, rarm.p ? rarm.p : "0", tr);
+      }
+      free(rarm.p); free(rpre.p);
       return;
     }
     /* value form: a || b  ->  truthy(a) ? a : b ;  a && b -> truthy(a) ? b : a.
@@ -1814,43 +1833,64 @@ else {
     else if (lt == TY_UNKNOWN && res == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, left, b); buf_puts(b, ")"); }
     else emit_expr(c, left, b);
     buf_puts(b, "; ");
-    if (lt == TY_POLY)      buf_printf(b, "sp_poly_truthy(_t%d)", t);
-    else if (lt == TY_BOOL) buf_printf(b, "_t%d", t);
-    else if (lt_falsy_const) buf_puts(b, "0");
-    else if (lt == TY_INT)  buf_printf(b, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel; a plain int is always truthy */
-    else if (lt == TY_FLOAT) buf_printf(b, "(!sp_float_is_nil(_t%d))", t);
+    /* Truthiness of the left, built into its own buffer so the arms can be
+       captured before it is committed to `b`. */
+    Buf tcond; memset(&tcond, 0, sizeof tcond);
+    if (lt == TY_POLY)      buf_printf(&tcond, "sp_poly_truthy(_t%d)", t);
+    else if (lt == TY_BOOL) buf_printf(&tcond, "_t%d", t);
+    else if (lt_falsy_const) buf_puts(&tcond, "0");
+    else if (lt == TY_INT)  buf_printf(&tcond, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel; a plain int is always truthy */
+    else if (lt == TY_FLOAT) buf_printf(&tcond, "(!sp_float_is_nil(_t%d))", t);
     else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
              lt == TY_PROC || lt == TY_MATCHDATA || lt == TY_EXCEPTION)
-      buf_printf(b, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
-    else if (lt == TY_SYMBOL) buf_printf(b, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
-    else                    buf_puts(b, "1");  /* concrete value: always truthy */
-    buf_puts(b, " ? ");
-    /* the "kept-left" arm and the "right" arm, each widened to res */
-    #define EMIT_ARM(IS_RIGHT) do { \
-      if (IS_RIGHT) { if (res == TY_POLY && comp_ntype(c, right) != TY_POLY) emit_boxed(c, right, b); else emit_expr(c, right, b); } \
+      buf_printf(&tcond, "(_t%d != 0)", t);  /* nullable pointer: NULL reads falsy */
+    else if (lt == TY_SYMBOL) buf_printf(&tcond, "(_t%d != (sp_sym)-1)", t);  /* nilable symbol sentinel */
+    else                    buf_puts(&tcond, "1");  /* concrete value: always truthy */
+    /* Capture each arm (widened to res). The RIGHT arm's prelude is captured
+       separately: an object subexpression there (`a && b.c`) hoists a GC-rooted
+       temp, which must be evaluated INSIDE the short-circuit -- after the left,
+       and only when the left is truthy -- not lifted above the whole chain
+       (issue #1773). The kept-left arm is pure temp/box and never hoists. */
+    Buf larm; memset(&larm, 0, sizeof larm);
+    Buf rarm; memset(&rarm, 0, sizeof rarm);
+    Buf rpre; memset(&rpre, 0, sizeof rpre);
+    #define EMIT_ARM(IS_RIGHT, TB) do { \
+      if (IS_RIGHT) { if (res == TY_POLY && comp_ntype(c, right) != TY_POLY) emit_boxed(c, right, (TB)); else emit_expr(c, right, (TB)); } \
       else { if (res == TY_POLY && lt != TY_POLY) { /* box the temp by left type */ \
-               if (lt==TY_INT) buf_printf(b, "sp_box_int(_t%d)", t); \
-               else if (lt==TY_STRING) buf_printf(b, "sp_box_nullable_str(_t%d)", t); \
-               else if (lt==TY_FLOAT) buf_printf(b, "sp_box_float(_t%d)", t); \
-               else if (lt==TY_BOOL) buf_printf(b, "sp_box_bool(_t%d)", t); \
-               else if (lt==TY_SYMBOL) buf_printf(b, "(_t%d != (sp_sym)-1 ? sp_box_sym(_t%d) : sp_box_nil())", t, t); \
-               else if (ty_is_object(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
-               /* a nullable hash/array pointer boxes like an object: NULL is \
-                  nil (the AND kept-left arm only runs when the temp IS NULL). \
-                  Previously these fell to the raw pointer temp, yielding a \
-                  ternary with mismatched C operand types (sp_RbVal vs \
-                  sp_PolyPolyHash *, e.g. doom's `picked && picked[idx]`). */ \
-               else if (ty_is_hash(lt) && hash_box_cls(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %s)", t, hash_box_cls(lt)); \
-               else if (ty_is_array(lt)) buf_printf(b, "sp_box_nullable_obj((void *)_t%d, %s)", t, \
+               if (lt==TY_INT) buf_printf((TB), "sp_box_int(_t%d)", t); \
+               else if (lt==TY_STRING) buf_printf((TB), "sp_box_nullable_str(_t%d)", t); \
+               else if (lt==TY_FLOAT) buf_printf((TB), "sp_box_float(_t%d)", t); \
+               else if (lt==TY_BOOL) buf_printf((TB), "sp_box_bool(_t%d)", t); \
+               else if (lt==TY_SYMBOL) buf_printf((TB), "(_t%d != (sp_sym)-1 ? sp_box_sym(_t%d) : sp_box_nil())", t, t); \
+               else if (ty_is_object(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %d)", t, ty_object_class(lt)); \
+               else if (ty_is_hash(lt) && hash_box_cls(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, hash_box_cls(lt)); \
+               else if (ty_is_array(lt)) buf_printf((TB), "sp_box_nullable_obj((void *)_t%d, %s)", t, \
                         lt==TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : lt==TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" : \
                         lt==TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : "SP_BUILTIN_POLY_ARRAY"); \
-               else buf_printf(b, "_t%d", t); } \
-             else buf_printf(b, "_t%d", t); } \
+               else buf_printf((TB), "_t%d", t); } \
+             else buf_printf((TB), "_t%d", t); } \
     } while (0)
-    if (is_and) { EMIT_ARM(1); buf_puts(b, " : "); EMIT_ARM(0); }
-    else        { EMIT_ARM(0); buf_puts(b, " : "); EMIT_ARM(1); }
+    EMIT_ARM(0, &larm);
+    { Buf *sv_pre2 = g_pre; g_pre = &rpre; EMIT_ARM(1, &rarm); g_pre = sv_pre2; }
     #undef EMIT_ARM
-    buf_printf(b, "; })");
+    int rhoists = rpre.p && rpre.p[0];
+    if (!rhoists) {
+      buf_printf(b, "%s ? %s : %s; })", tcond.p ? tcond.p : "1",
+                 is_and ? (rarm.p ? rarm.p : "0") : (larm.p ? larm.p : "0"),
+                 is_and ? (larm.p ? larm.p : "0") : (rarm.p ? rarm.p : "0"));
+    }
+    else {
+      /* Right arm hoists: run it inside a real branch so its prelude is scoped
+         and short-circuited. `res` may be void/nil (a writer arm) -- hold poly. */
+      TyKind rres = (res == TY_VOID || res == TY_NIL) ? TY_POLY : res;
+      int tr = ++g_tmp;
+      emit_ctype(c, rres, b); buf_printf(b, " _t%d = {0}; if (%s) {\n", tr, tcond.p ? tcond.p : "1");
+      if (is_and) buf_printf(b, "%s_t%d = %s;\n} else { _t%d = %s; } _t%d; })",
+                             rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr, larm.p ? larm.p : "0", tr);
+      else        buf_printf(b, "_t%d = %s;\n} else { %s_t%d = %s; } _t%d; })",
+                             tr, larm.p ? larm.p : "0", rpre.p ? rpre.p : "", tr, rarm.p ? rarm.p : "0", tr);
+    }
+    free(tcond.p); free(larm.p); free(rarm.p); free(rpre.p);
     return;
   }
 
