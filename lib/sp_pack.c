@@ -303,7 +303,9 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
     if (spec == 'w') {
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
-        uint64_t v = (uint64_t)((idx < arr->len) ? arr->data[arr->start + idx] : 0); idx++;
+        int64_t sv = (idx < arr->len) ? arr->data[arr->start + idx] : 0; idx++;
+        if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
+        uint64_t v = (uint64_t)sv;
         unsigned char tmp[10]; int ti = 0;
         tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
         while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
@@ -424,7 +426,9 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
     if (spec == 'w') {
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
-        uint64_t v = (uint64_t)((idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0); idx++;
+        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0; idx++;
+        if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
+        uint64_t v = (uint64_t)sv;
         unsigned char tmp[10]; int ti = 0;
         tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
         while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
@@ -752,9 +756,17 @@ else if (spec == 'Z') {
       int64_t got = 0;
       while ((count < 0 || got < count) && off < slen) {
         unsigned char b0 = (unsigned char)str[off];
-        int len = b0 < 0x80 ? 1 : (b0 >> 5) == 0x6 ? 2 : (b0 >> 4) == 0xE ? 3 : (b0 >> 3) == 0x1E ? 4 : 1;
+        int len = b0 < 0x80 ? 1 : (b0 >> 5) == 0x6 ? 2 : (b0 >> 4) == 0xE ? 3 : (b0 >> 3) == 0x1E ? 4 : 0;
+        /* A lead byte with no valid length, or a truncated / mis-continued
+           sequence, is malformed UTF-8 -- ArgumentError, as in MRI. */
+        if (len == 0 || off + (size_t)len > slen)
+          sp_raise_cls("ArgumentError", "malformed UTF-8 character");
         int64_t cp = len == 1 ? b0 : (b0 & (0x7F >> len));
-        for (int j = 1; j < len && off + j < slen; j++) cp = (cp << 6) | ((unsigned char)str[off + j] & 0x3F);
+        for (int j = 1; j < len; j++) {
+          unsigned char cb = (unsigned char)str[off + j];
+          if ((cb & 0xC0) != 0x80) sp_raise_cls("ArgumentError", "malformed UTF-8 character");
+          cp = (cp << 6) | (cb & 0x3F);
+        }
         sp_PolyArray_push(out, sp_box_int((mrb_int)cp));
         off += len; got++;
       }
