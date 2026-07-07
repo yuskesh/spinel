@@ -699,9 +699,15 @@ else if (spec == 'Z') {
       continue;
     }
     if (fsize == 0) continue;
-    if (count < 0) count = (slen - off) / fsize;
+    /* `*` count is exactly what remains; an explicit count that runs off the end
+       pads the remaining slots with nil (MRI: "a".unpack("CC") == [97, nil]). */
+    int star = count < 0;
+    if (star) count = (slen - off) / fsize;
     for (int64_t k = 0; k < count; k++) {
-      if (off + fsize > slen) break;
+      if (off + fsize > slen) {
+        if (spec != 'x') sp_PolyArray_push(out, sp_box_nil());
+        continue;
+      }
       int64_t v = 0;
       const unsigned char *u = (const unsigned char *)(str + off);
       switch (spec) {
