@@ -3862,6 +3862,23 @@ char *codegen_program(const NodeTable *nt) {
     for (int fi = 0; fi < cf->n_ffi_funcs; fi++) {
       const char *ret = cf->ffi_funcs[fi].ret;
       if (sp_streq(ret, "binstr")) any_binstr = 1;
+      /* A function taking a callback (e.g. qsort, bsearch) is declared by a
+         system header; emitting our own extern -- whose array/pointer specs may
+         not match the header's void* -- conflicts under gcc. Skip it and call
+         the header-declared symbol directly (implicit pointer conversions). */
+      int has_cb = 0;
+      for (int ai = 0; ai < cf->ffi_funcs[fi].nargs; ai++)
+        if (ffi_find_callback(cf, cf->ffi_funcs[fi].mod, cf->ffi_funcs[fi].args[ai]) >= 0) { has_cb = 1; break; }
+      if (has_cb) continue;
+      int na = cf->ffi_funcs[fi].nargs;
+      /* A variadic function (trailing :varargs) gets NO extern: redeclaring a
+         libc variadic already declared by a system header -- e.g. printf, which
+         glibc declares with fortify attributes/inlines -- conflicts under some
+         libc + compiler combinations (notably gcc + glibc _FORTIFY_SOURCE). The
+         call site instead casts the header-declared symbol to a variadic
+         function pointer, which cannot conflict. A user (non-libc) variadic
+         function must be declared via a header supplied through ffi_cflags. */
+      if (na > 0 && sp_streq(cf->ffi_funcs[fi].args[na - 1], "varargs")) continue;
       buf_puts(&b, "extern ");
       buf_puts(&b, ffi_c_type(ret));
       buf_puts(&b, " ");

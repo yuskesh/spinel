@@ -188,6 +188,11 @@ typedef struct {
 typedef struct { char *mod; char *name; int val; } FfiConst;     /* ffi_const */
 typedef struct { char *mod; char *name; int size; } FfiBuf;      /* ffi_buffer */
 typedef struct { char *mod; char *name; int offset; char *kind; } FfiReader; /* ffi_read_* ("u32"/"i32"/"ptr") */
+/* ffi_callback :name, [arg_specs], ret_spec -- a C function-pointer type. A
+   method(:sym) / non-capturing lambda passed to an arg of this type becomes a
+   compile-time trampoline that boxes the C args, calls the compiled method, and
+   converts the result back. */
+typedef struct { char *mod; char *name; char **arg_specs; int nargs; char *ret_spec; } FfiCallback;
 typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
 typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
 
@@ -274,6 +279,10 @@ typedef struct {
   FfiReader *ffi_readers;
   int n_ffi_readers, c_ffi_readers;
 
+  /* FFI registry: ffi_callback declarations (C function-pointer types) */
+  FfiCallback *ffi_callbacks;
+  int n_ffi_callbacks, c_ffi_callbacks;
+
   /* FFI library names per module (semicolon-separated) */
   FfiLib *ffi_libs;
   int n_ffi_libs, c_ffi_libs;
@@ -333,6 +342,9 @@ LocalVar *scope_local_intern(Scope *s, const char *name);
 
 /* Symbol intern table. comp_sym_intern returns the symbol's id. */
 int comp_sym_intern(Compiler *c, const char *name);
+
+/* Look up an ffi_callback type by (module, name); returns index or -1. */
+int ffi_find_callback(Compiler *c, const char *mod, const char *name);
 
 /* native-binding registry (Path B): find a native_func by (module, name),
    return its index in c->native_funcs or -1; map a spec to a TyKind. */
