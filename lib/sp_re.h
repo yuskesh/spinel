@@ -65,6 +65,7 @@ mrb_int sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str);
 sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str);
 sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str);
 mrb_int sp_re_index_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start);
+mrb_int sp_re_rindex_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start);
 sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str);
 const char *sp_re_named_capture(const mrb_regexp_pattern *pat, const char *name);
 const char *sp_re_escape(const char *src);
