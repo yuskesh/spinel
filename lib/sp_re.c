@@ -397,6 +397,20 @@ sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str) {
 mrb_int sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str)  { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? SP_INT_NIL : n; }
 sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_rindex(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
+/* String#index(regexp, start): first match at or after char position `start`,
+   as a char index -- SP_INT_NIL on miss / out-of-range (a nullable int, matching
+   sp_str_index_from_opt's ABI). */
+mrb_int sp_re_index_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start) {
+  if (!str) return SP_INT_NIL;
+  mrb_int cl = sp_str_length(str);
+  if (start < 0) start += cl;
+  if (start < 0 || start > cl) return SP_INT_NIL;
+  size_t boff = sp_utf8_byte_offset(str, start);
+  int caps[64];
+  int n = re_exec(pat, str, (int64_t)strlen(str), (mrb_int)boff, caps, 64);
+  if (n <= 0 || caps[0] < 0) return SP_INT_NIL;
+  return sp_str_count_chars(str, (size_t)caps[0]);
+}
 sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
 /* Value of the named group `name` from the most recent match registers (set by
    sp_re_match / sp_re_match_poly). NULL (nil) when the last match failed, the

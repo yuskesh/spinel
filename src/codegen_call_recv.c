@@ -2676,6 +2676,10 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
         buf_printf(b, "sp_str_index_opt(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
+      else if (sp_streq(name, "index") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_index_from_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
+        emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "index") && argc == 2) {
         buf_printf(b, "sp_str_index_from_opt(%s, ", r);
         emit_expr(c, argv[0], b); buf_puts(b, ", ");
