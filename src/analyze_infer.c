@@ -2959,9 +2959,13 @@ else {
     /* times/upto/downto/step with a block return the receiver (self) */
     if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto") ||
          sp_streq(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;
-    /* times/upto/downto without a block return a range-like enumerator */
-    if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto")) &&
+    /* times/upto without a block are ascending, faithfully a range-like
+       enumerator. downto is DESCENDING, which an ascending sp_Range cannot
+       represent (its .to_a would come out ascending), so materialize it to a
+       descending int array instead. */
+    if ((sp_streq(name, "times") || sp_streq(name, "upto")) &&
         nt_ref(nt, id, "block") < 0) return TY_RANGE;
+    if (sp_streq(name, "downto") && argc == 1 && nt_ref(nt, id, "block") < 0) return TY_INT_ARRAY;
     if (sp_streq(name, "chr")) return TY_STRING;
     if (sp_streq(name, "[]") && argc == 1) return TY_INT;  /* bit access */
     if (sp_streq(name, "bit_length") && argc == 0) return TY_INT;
