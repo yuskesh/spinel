@@ -661,6 +661,16 @@ compile_atom(re_compiler *c)
       uint16_t cap_name_len = 0;
 
       if (peek(c) == '?' && c->p + 1 < c->src_end) {
+        if (c->p[1] == '#') {
+          /* (?#comment): skip to the group-closing ')' -- comments cannot
+             contain one (Ruby allows no escaping inside (?#...)) -- and
+             continue with the NEXT atom; this group emits nothing. */
+          next_char(c); next_char(c);  /* skip ?# */
+          while (c->p < c->src_end && peek(c) != ')') next_char(c);
+          if (peek(c) != ')') compile_error(c, "unterminated (?#comment");
+          next_char(c);
+          return;  /* an empty atom: emits nothing */
+        }
         if (c->p[1] == ':') {
           next_char(c); next_char(c);  /* skip ?: */
           capturing = FALSE;
