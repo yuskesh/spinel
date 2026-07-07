@@ -2897,6 +2897,7 @@ else {
     if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
+    if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
     if (sp_streq(name, "each_char") && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
@@ -2956,6 +2957,10 @@ else {
     if ((sp_streq(name, "ceildiv") || sp_streq(name, "pow")) && argc >= 1) return TY_INT;
     if ((sp_streq(name, "pred") || sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) return TY_INT;
     if (sp_streq(name, "nonzero?") && argc == 0) return TY_INT;  /* self or nil (nullable int) */
+    /* Integer as a Rational: numerator is self, denominator is 1. */
+    if ((sp_streq(name, "numerator") || sp_streq(name, "denominator")) && argc == 0) return TY_INT;
+    if ((sp_streq(name, "to_r") && argc == 0) ||
+        (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
     /* times/upto/downto/step with a block return the receiver (self) */
     if ((sp_streq(name, "times") || sp_streq(name, "upto") || sp_streq(name, "downto") ||
          sp_streq(name, "step")) && nt_ref(nt, id, "block") >= 0) return TY_INT;

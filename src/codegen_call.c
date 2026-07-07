@@ -1084,6 +1084,17 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
+    /* An Integer viewed as a Rational: numerator is self, denominator is 1. */
+    if (crt == TY_INT && sp_streq(name, "numerator") && argc == 0) {
+      buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
+    }
+    if (crt == TY_INT && sp_streq(name, "denominator") && argc == 0) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return 1;
+    }
+    if (crt == TY_INT && (sp_streq(name, "to_r") ||
+        (sp_streq(name, "rationalize") && argc <= 1)) && argc <= 1) {
+      buf_puts(b, "sp_rational_new((mrb_int)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return 1;
+    }
     if (crt == TY_RATIONAL) {
       if (sp_streq(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return 1; }
       if (sp_streq(name, "denominator")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").den"); return 1; }

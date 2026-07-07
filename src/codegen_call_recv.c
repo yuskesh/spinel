@@ -2771,6 +2771,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "oct") && argc == 0) buf_printf(b, "sp_str_oct(%s)", r);
       else if (sp_streq(name, "hex") && argc == 0) buf_printf(b, "sp_str_to_i_base(%s, 16)", r);
+      else if (sp_streq(name, "to_r") && argc == 0) buf_printf(b, "sp_str_to_r(%s)", r);
       else if (sp_streq(name, "ord") && argc == 0) buf_printf(b, "sp_str_ord(%s)", r);
       else if ((sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) && argc <= 1) buf_printf(b, "(%s)", r);
       else if (sp_streq(name, "encoding") && argc == 0) buf_printf(b, "((void)(%s), sp_box_encoding(sp_encoding_utf8()))", r);

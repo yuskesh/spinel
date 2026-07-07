@@ -34,6 +34,7 @@ mrb_float sp_complex_abs2(sp_Complex a);
 mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b);
 
 sp_Rational sp_rational_new(mrb_int n, mrb_int d);
+sp_Rational sp_str_to_r(const char *s);
 sp_Rational sp_rational_add(sp_Rational a, sp_Rational b);
 sp_Rational sp_rational_sub(sp_Rational a, sp_Rational b);
 sp_Rational sp_rational_mul(sp_Rational a, sp_Rational b);

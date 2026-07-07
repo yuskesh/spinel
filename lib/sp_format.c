@@ -133,6 +133,31 @@ sp_Rational sp_rational_new(mrb_int n, mrb_int d) {
   r.den = d / g;
   return r;
 }
+/* String#to_r: parse a leading numeric of the form [ws][sign]digits[.digits][/digits],
+   stopping at the first non-numeric byte; an unparseable string is 0/1 (MRI). */
+sp_Rational sp_str_to_r(const char *s) {
+  if (!s) return sp_rational_new(0, 1);
+  const char *p = s;
+  while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v') p++;
+  mrb_int sign = 1;
+  if (*p == '+') p++;
+  else if (*p == '-') { sign = -1; p++; }
+  mrb_int num = 0, den = 1;
+  int any = 0;
+  while (*p >= '0' && *p <= '9') { num = num * 10 + (*p - '0'); p++; any = 1; }
+  if (*p == '.') {
+    p++;
+    while (*p >= '0' && *p <= '9') { num = num * 10 + (*p - '0'); den *= 10; p++; any = 1; }
+  }
+  if (*p == '/') {
+    p++;
+    mrb_int d2 = 0; int anyd = 0;
+    while (*p >= '0' && *p <= '9') { d2 = d2 * 10 + (*p - '0'); p++; anyd = 1; }
+    if (anyd && d2 != 0) den *= d2;
+  }
+  if (!any) return sp_rational_new(0, 1);
+  return sp_rational_new(sign * num, den);
+}
 #if INTPTR_MAX > 0x7fffffff
 typedef __int128 sp_rat_wide;
 #else
