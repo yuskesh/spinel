@@ -24,6 +24,10 @@
  * don't trample each other.
  */
 #include "sp_crypto.h"
+#include "sp_alloc.h"   /* sp_str_byte_len: hash/HMAC/PBKDF2 inputs are spinel
+                           Strings that can carry embedded NULs (binary keys,
+                           salts, digests), so use the header byte length rather
+                           than strlen, which truncates at the first NUL (#1779). */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,7 +178,7 @@ static char sp_crypto_sha256_hex_buf[65];
    sibling helpers. */
 const char *sp_crypto_sha256_hex(const char *msg) {
     uint8_t out[32];
-    sp_crypto_sha256((const uint8_t *)msg, strlen(msg), out);
+    sp_crypto_sha256((const uint8_t *)msg, sp_str_byte_len(msg), out);
     static const char H[] = "0123456789abcdef";
     int i;
     for (i = 0; i < 32; i++) {
@@ -189,7 +193,7 @@ static char sp_crypto_sha1_hex_buf[41];
 
 const char *sp_crypto_sha1_hex(const char *msg) {
     uint8_t out[20];
-    sp_crypto_sha1((const uint8_t *)msg, strlen(msg), out);
+    sp_crypto_sha1((const uint8_t *)msg, sp_str_byte_len(msg), out);
     static const char H[] = "0123456789abcdef";
     int i;
     for (i = 0; i < 20; i++) {
@@ -323,8 +327,8 @@ static char sp_crypto_hmac_hex_buf[65];
 
 const char *sp_crypto_hmac_sha256_hex(const char *key, const char *msg) {
     uint8_t out[32];
-    sp_crypto_hmac_sha256((const uint8_t *)key, strlen(key),
-                          (const uint8_t *)msg, strlen(msg),
+    sp_crypto_hmac_sha256((const uint8_t *)key, sp_str_byte_len(key),
+                          (const uint8_t *)msg, sp_str_byte_len(msg),
                           out);
     static const char H[] = "0123456789abcdef";
     int i;
@@ -345,8 +349,8 @@ static char sp_crypto_hmac_b64url_buf[44];
 
 const char *sp_crypto_hmac_sha256_b64url(const char *key, const char *msg) {
     uint8_t out[32];
-    sp_crypto_hmac_sha256((const uint8_t *)key, strlen(key),
-                          (const uint8_t *)msg, strlen(msg),
+    sp_crypto_hmac_sha256((const uint8_t *)key, sp_str_byte_len(key),
+                          (const uint8_t *)msg, sp_str_byte_len(msg),
                           out);
     int i, j = 0;
     for (i = 0; i + 3 <= 32; i += 3) {
@@ -375,7 +379,7 @@ const char *sp_crypto_hmac_sha256_b64url(const char *key, const char *msg) {
 static char sp_crypto_b64url_buf[SPC_B64U_BUFSIZE];
 
 const char *sp_crypto_b64url_encode(const char *src) {
-    size_t n = strlen(src);
+    size_t n = sp_str_byte_len(src);
     size_t i = 0, j = 0;
     if (4 * ((n + 2) / 3) + 1 > SPC_B64U_BUFSIZE) {
         sp_crypto_b64url_buf[0] = '\0';
@@ -470,8 +474,8 @@ static char sp_crypto_pbkdf2_b64url_buf[44];
 
 const char *sp_crypto_pbkdf2_sha256_b64url(const char *password, const char *salt, int iters) {
     if (iters < 1) iters = 1;
-    size_t plen = strlen(password);
-    size_t slen = strlen(salt);
+    size_t plen = sp_str_byte_len(password);
+    size_t slen = sp_str_byte_len(salt);
     uint8_t salted[256];
     if (slen + 4 > sizeof(salted)) {
         sp_crypto_pbkdf2_b64url_buf[0] = '\0';
