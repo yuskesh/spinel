@@ -2815,6 +2815,19 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "bytes") && argc == 0)   buf_printf(b, "sp_str_bytes(%s)", r);
       else if (sp_streq(name, "codepoints") && argc == 0) buf_printf(b, "sp_str_codepoints(%s)", r);
       else if (sp_streq(name, "unpack") && argc == 1)  { buf_printf(b, "sp_str_unpack(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      /* unpack(fmt, offset: n): a trailing KeywordHashNode carries the offset. */
+      else if ((sp_streq(name, "unpack") || sp_streq(name, "unpack1")) && argc == 2 &&
+               nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") &&
+               struct_kwarg_value(c, argv[1], "offset") >= 0) {
+        int offv = struct_kwarg_value(c, argv[1], "offset");
+        int one = sp_streq(name, "unpack1");
+        TyKind u1t = one ? comp_ntype(c, id) : TY_POLY;
+        if (one && u1t == TY_INT) buf_puts(b, "sp_poly_to_i(sp_PolyArray_get(");
+        else if (one)             buf_puts(b, "sp_PolyArray_get(");
+        buf_printf(b, "sp_str_unpack_off(%s, ", r); emit_expr(c, argv[0], b);
+        buf_puts(b, ", "); emit_int_expr(c, offv, b); buf_puts(b, ")");
+        if (one) buf_puts(b, u1t == TY_INT ? ", 0))" : ", 0)");
+      }
       else if (sp_streq(name, "unpack1") && argc == 1) {
         /* A literal single-directive integer format fixes the value's type
            (the analyzer's an_unpack1_lit_type): unbox the extracted element. */

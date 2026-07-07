@@ -523,7 +523,12 @@ static char *uk_qp_decode(const char *src, size_t n) {
   return out;
 }
 
-sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
+sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, mrb_int byteoff);
+sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) { return sp_str_unpack_off(str, fmt, 0); }
+
+/* String#unpack(fmt, offset: n): decode starting at byte offset n. A negative
+   offset or one past the end raises ArgumentError, matching MRI. */
+sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, mrb_int byteoff) {
   if (!str) sp_nil_recv("unpack");
   /* Root the source string across every allocation below: `str` is very often a
      fresh, otherwise-unrooted substring (`data[4, 4].unpack1('V')` in doom's
@@ -541,7 +546,9 @@ sp_PolyArray *sp_str_unpack(const char *str, const char *fmt) {
   /* sp_ext_str_byte_len honors the heap-string header so embedded
      NULs (binary data) don't truncate the source. */
   size_t slen = sp_str_byte_len(str);
-  size_t off = 0;
+  if (byteoff < 0) sp_raise_cls("ArgumentError", "offset can't be negative");
+  if ((size_t)byteoff > slen) sp_raise_cls("ArgumentError", "offset outside of string");
+  size_t off = (size_t)byteoff;
   const char *p = fmt;
   while (*p) {
     char spec = *p++;

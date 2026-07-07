@@ -2892,7 +2892,7 @@ else {
         sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
     if (sp_streq(name, "scrub") || sp_streq(name, "crypt")) return TY_STRING;
     if (sp_streq(name, "sum") && argc == 0) return TY_INT;
-    if (sp_streq(name, "unpack1") && argc == 1) return an_unpack1_lit_type(nt, argv[0]);
+    if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) return an_unpack1_lit_type(nt, argv[0]);
     if (sp_streq(name, "rindex")) return TY_INT;
     if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
@@ -2914,7 +2914,7 @@ else {
     }
     if (sp_streq(name, "upto") && argc == 1) return TY_STR_ARRAY;  /* blockless: materialized sequence */
     if (sp_streq(name, "bytes") || sp_streq(name, "codepoints")) return TY_INT_ARRAY;
-    if (sp_streq(name, "unpack") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "unpack") && (argc == 1 || argc == 2)) return TY_POLY_ARRAY;
     if (sp_streq(name, "chars")) return TY_STR_ARRAY;
     if (sp_streq(name, "gsub") || sp_streq(name, "sub") || sp_streq(name, "tr") ||
         sp_streq(name, "center") || sp_streq(name, "ljust") || sp_streq(name, "rjust"))

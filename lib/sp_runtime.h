@@ -5667,6 +5667,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt);
 const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt);
 const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt);
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt);
+sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, mrb_int byteoff);
 
 /* Array#pack on a poly (nullable-array) receiver: dispatch on the runtime tag.
    A nil/non-array recv packs to the empty string. */
