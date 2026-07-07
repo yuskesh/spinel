@@ -276,7 +276,11 @@ sp_FloatArray*sp_FloatArray_from_step(mrb_float beg,mrb_float end,mrb_float step
 }
 mrb_float sp_FloatArray_min(sp_FloatArray*a){if(a->len==0)return 0;mrb_float m=a->data[0];for(mrb_int i=1;i<a->len;i++)if(a->data[i]<m)m=a->data[i];return m;}
 mrb_float sp_FloatArray_max(sp_FloatArray*a){if(a->len==0)return 0;mrb_float m=a->data[0];for(mrb_int i=1;i<a->len;i++)if(a->data[i]>m)m=a->data[i];return m;}
-mrb_float sp_FloatArray_sum(sp_FloatArray*a,mrb_float init){mrb_float s=init;for(mrb_int i=0;i<a->len;i++)s+=a->data[i];return s;}
+/* Array#sum for floats: Kahan-Babuska-Neumaier compensated summation,
+   matching CRuby (float addition isn't associative, so a naive fold of
+   [0.1,0.2,0.3] yields 0.6000000000000001 instead of 0.6). `c` accumulates
+   the low-order bits dropped at each add and is folded back at the end. */
+mrb_float sp_FloatArray_sum(sp_FloatArray*a,mrb_float init){mrb_float s=init,c=0.0;for(mrb_int i=0;i<a->len;i++){mrb_float x=a->data[i],t=s+x;if(fabs(s)>=fabs(x))c+=(s-t)+x;else c+=(x-t)+s;s=t;}return s+c;}
 void sp_FloatArray_replace(sp_FloatArray*dst,sp_FloatArray*src){dst->len=0;if(src->len>dst->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)dst-sizeof(sp_gc_hdr));SP_GC_CTR_SUB(sp_gc_bytes,sizeof(mrb_float)*dst->cap);h->size-=sizeof(mrb_float)*dst->cap;void*nd=realloc(dst->data,sizeof(mrb_float)*src->len);if(!nd){perror("realloc");exit(1);}dst->data=(mrb_float*)nd;dst->cap=src->len;h->size+=sizeof(mrb_float)*dst->cap;SP_GC_CTR_ADD(sp_gc_bytes,sizeof(mrb_float)*dst->cap);}memcpy(dst->data,src->data,sizeof(mrb_float)*src->len);dst->len=src->len;}
 /* a[start, len] / a[start..end] for FloatArray. Same negative-start and
    length-clamping semantics as sp_IntArray_slice. */
