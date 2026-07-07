@@ -1856,6 +1856,11 @@ static const char *sp_poly_class_name(sp_RbVal v) {
     default: return SPL("Object");
   }
 }
+/* .class as a first-class value: name-backed for every receiver kind, so it
+   compares via sp_class_eq (name identity) and prints via sp_class_to_s. */
+static sp_Class sp_poly_class_val(sp_RbVal v) {
+  sp_Class r; r.cls_id = -1; r.name = sp_poly_class_name(v); return r;
+}
 /* Raise TypeError "no implicit conversion of <class> into String" for a poly
    value, naming its actual runtime class (the statically-typed path bakes the
    class name into a literal; the poly path resolves it here). */

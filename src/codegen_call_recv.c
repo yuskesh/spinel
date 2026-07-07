@@ -8,7 +8,7 @@
    layer applies (`[].m` -> poly array, `{}.m` -> str-keyed poly hash, the
    same C type the emitters build for the bare literals): comp_ntype answers
    UNKNOWN for them, which stranded direct calls like `{}.size`. */
-static TyKind comp_recv_type(Compiler *c, int recv) {
+TyKind comp_recv_type(Compiler *c, int recv) {
   TyKind t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
   if (t != TY_UNKNOWN || recv < 0) return t;
   const char *ty = nt_type(c->nt, recv);
@@ -3668,7 +3668,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
     else if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) buf_printf(b, "sp_time_iso8601(%s)", r);
     else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
-    else if (sp_streq(name, "class")) buf_puts(b, "SPL(\"Time\")");
+    else if (sp_streq(name, "class")) buf_puts(b, "((sp_Class){(mrb_int)-1, \"Time\"})");
     else if (sp_streq(name, "strftime") && argc == 1) { buf_printf(b, "sp_time_strftime(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     else if ((sp_streq(name, "+") || sp_streq(name, "-")) && argc == 1) {
       buf_printf(b, "sp_time_add(%s, %s(mrb_float)(", r, name[0] == '-' ? "-" : "");

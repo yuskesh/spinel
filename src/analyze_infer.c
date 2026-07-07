@@ -893,7 +893,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 0 && (sp_streq(name, "to_s") || sp_streq(name, "name") || sp_streq(name, "inspect")))
       return TY_STRING;
     if (argc == 0 && sp_streq(name, "nil?")) return TY_BOOL;
-    if (argc == 0 && sp_streq(name, "class")) return TY_STRING;
+    if (argc == 0 && sp_streq(name, "class")) return TY_CLASS;
     if (argc == 0 && sp_streq(name, "superclass")) return TY_CLASS;
     if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "eql?") || sp_streq(name, "!="))) return TY_BOOL;
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">="))) return TY_BOOL;
@@ -920,14 +920,22 @@ TyKind infer_call(Compiler *c, int id) {
        sp_streq(name, "dup") || sp_streq(name, "clone")))
     return rt;
 
-  /* x.class -> a class-name string (for known builtin receivers) or TY_CLASS (user objects) */
+  /* x.class -> a first-class Class value for every known receiver kind
+     (name-backed for builtins, id-backed for user objects) */
   if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
-    if (ty_is_object(rt)) return TY_CLASS;  /* user object: return sp_Class value */
+    /* empty container literal receivers coerce like everywhere else */
+    if (rt == TY_UNKNOWN && nt_type(nt, recv)) {
+      const char *rty0 = nt_type(nt, recv);
+      int en0 = 0;
+      if (sp_streq(rty0, "ArrayNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
+      if (sp_streq(rty0, "HashNode") || sp_streq(rty0, "KeywordHashNode")) { nt_arr(nt, recv, "elements", &en0); if (!en0) return TY_CLASS; }
+    }
+    if (ty_is_object(rt)) return TY_CLASS;
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
         rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
         rt == TY_FIBER || rt == TY_ENUMERATOR || ty_is_array(rt) || ty_is_hash(rt))
-      return TY_STRING;
+      return TY_CLASS;
   }
 
   /* X.class.name / .to_s -> the class-name string (X.class is already that) */

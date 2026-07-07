@@ -4700,20 +4700,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "class")) {
     if (comp_ntype(c, recv) == TY_CLASS) {
-      /* When emitting a builtin-reopen method, the inner .class emits
-         sp_poly_class_name (returns const char *), not sp_Class — no wrapper needed. */
-      int _inner = nt_ref(nt, recv, "receiver");
-      int _is_poly_ov = (_inner >= 0 && g_emitting_class_id >= 0 &&
-        nt_type(nt, _inner) && sp_streq(nt_type(nt, _inner), "SelfNode") &&
-        is_builtin_reopen(c->classes[g_emitting_class_id].name));
-      if (_is_poly_ov) {
-        emit_expr(c, recv, b);
-      }
-      else {
-        int _clt = ++g_tmp;
-        buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_class_to_s(_cl%d); })", _clt);
-      }
+      /* every .class now yields an sp_Class (the poly path included, via
+         sp_poly_class_val): stringify uniformly. */
+      int _clt = ++g_tmp;
+      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_class_to_s(_cl%d); })", _clt);
     }
     else emit_expr(c, recv, b);
     return;
@@ -5008,7 +4999,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* x.class -> the class-name string (compile-time for known types) */
   if (recv >= 0 && sp_streq(name, "class") && argc == 0) {
-    TyKind rt = comp_ntype(c, recv);
+    TyKind rt = comp_recv_type(c, recv);  /* empty-literal receivers coerce */
     /* When emitting a scope transplanted from a builtin-reopen class (Object/Array/
        Numeric), self is sp_RbVal even if the nscope-based type says otherwise.
        Override the inferred type to TY_POLY so we get sp_poly_class_name(self).
@@ -5048,13 +5039,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "((sp_Class){_t%d ? _t%d->cls_id : %d})", _tobj, _tobj, _cidx);
       return;
     }
-    if (cn) { buf_printf(b, "SPL(\"%s\")", cn); return; }
+    if (cn) {
+      /* a first-class name-backed Class value; the receiver is side-effect-
+         evaluated when it is not a plain read */
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_printf(b, "), ((sp_Class){(mrb_int)-1, \"%s\"}))", cn);
+      return;
+    }
     if (rt == TY_BOOL) {
-      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SPL(\"TrueClass\") : SPL(\"FalseClass\"))");
+      buf_puts(b, "(("); emit_expr(c, recv, b);
+      buf_puts(b, ") ? ((sp_Class){(mrb_int)-1, \"TrueClass\"}) : ((sp_Class){(mrb_int)-1, \"FalseClass\"}))");
       return;
     }
     if (rt == TY_POLY) {
-      buf_puts(b, "sp_poly_class_name("); emit_expr(c, recv, b); buf_puts(b, ")");
+      buf_puts(b, "sp_poly_class_val("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
   }
@@ -5085,7 +5083,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (sp_streq(name, "class")) {
       buf_printf(b, "({ sp_Class _cl%da = ", _clt); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_class_is_module_val(_cl%da)?SPL(\"Module\"):SPL(\"Class\"); })", _clt);
+      buf_printf(b, "; sp_class_is_module_val(_cl%da)"
+                    "?((sp_Class){(mrb_int)-1, \"Module\"})"
+                    ":((sp_Class){(mrb_int)-1, \"Class\"}); })", _clt);
       return;
     }
     if (sp_streq(name, "superclass") && argc == 0) {

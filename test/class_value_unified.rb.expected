@@ -1,0 +1,11 @@
+Integer
+String
+Symbol
+NilClass
+Array
+Hash
+true
+"String"
+"foo"
+Integer
+cls: Integer
