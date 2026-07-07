@@ -5599,58 +5599,7 @@ static const char *sp_Random_bytes(sp_Random *r, mrb_int n) {
 
 /* StringIO is a native-bound spin package (packages/stringio). */
 
-/* ---- Lambda/closure runtime (sp_Val) ---- */
-typedef struct sp_Val sp_Val;
-typedef sp_Val *(*sp_fn_t)(sp_Val *self, sp_Val *arg);
-struct sp_Val { enum { SP_PROC2, SP_INT2, SP_BOOL2, SP_NIL2 } tag; union { struct { sp_fn_t fn; int ncaptures; } proc; mrb_int ival; mrb_bool bval; } u; sp_Val *captures[]; };
-#define SP_ARENA_SIZE ((size_t)16ULL * 1024 * 1024 * 1024)
-static char *sp_arena = NULL; static size_t sp_arena_pos = 0;
-static void *sp_lam_alloc(size_t sz) { sz = (sz + 7) & ~(size_t)7; if (!sp_arena) { sp_arena = (char *)mmap(NULL, SP_ARENA_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0); if (sp_arena == MAP_FAILED) { perror("mmap"); exit(1); } sp_arena_pos = 0; } if (sp_arena_pos + sz > SP_ARENA_SIZE) { fprintf(stderr, "arena exhausted\n"); exit(1); } void *p = sp_arena + sp_arena_pos; sp_arena_pos += sz; return p; }
-static sp_Val *sp_lam_proc(sp_fn_t fn, int ncap) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val) + (sizeof(sp_Val *) * ncap)); v->tag = SP_PROC2; v->u.proc.fn = fn; v->u.proc.ncaptures = ncap; return v; }
-static sp_Val *sp_lam_int(mrb_int n) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_INT2; v->u.ival = n; return v; }
-static sp_Val *sp_lam_bool(mrb_bool b) { sp_Val *v = (sp_Val *)sp_lam_alloc(sizeof(sp_Val)); v->tag = SP_BOOL2; v->u.bval = b; return v; }
-static sp_Val sp_lam_nil_val = { .tag = SP_NIL2 };
-static sp_Val *sp_lam_call(sp_Val *f, sp_Val *arg) { return f->u.proc.fn(f, arg); }
-/* Multi-arg lambda dispatch . The fn pointer is stored
-   typed as `sp_fn_t` (1-arg) so re-cast at the call site to the
-   right arity. The generated lambda body is declared with the
-   matching arity so the actual ABI matches. */
-typedef sp_Val *(*sp_fn2_t)(sp_Val *self, sp_Val *a, sp_Val *b);
-typedef sp_Val *(*sp_fn3_t)(sp_Val *self, sp_Val *a, sp_Val *b, sp_Val *c);
-typedef sp_Val *(*sp_fn4_t)(sp_Val *self, sp_Val *a, sp_Val *b, sp_Val *c, sp_Val *d);
-static sp_Val *sp_lam_call2(sp_Val *f, sp_Val *a, sp_Val *b) { return ((sp_fn2_t)(uintptr_t)f->u.proc.fn)(f, a, b); }
-static sp_Val *sp_lam_call3(sp_Val *f, sp_Val *a, sp_Val *b, sp_Val *c) { return ((sp_fn3_t)(uintptr_t)f->u.proc.fn)(f, a, b, c); }
-static sp_Val *sp_lam_call4(sp_Val *f, sp_Val *a, sp_Val *b, sp_Val *c, sp_Val *d) { return ((sp_fn4_t)(uintptr_t)f->u.proc.fn)(f, a, b, c, d); }
-/* lambda#<< / #>> composition over the sp_Val * representation.
-   captures[0] = outer, captures[1] = inner; `(f << g).(x)` == f(g(x)).
-   The codegen swaps operands for `>>`. */
-static sp_Val *sp_lam_compose_fn(sp_Val *self, sp_Val *arg) { return sp_lam_call(self->captures[0], sp_lam_call(self->captures[1], arg)); }
-static sp_Val *sp_lam_compose(sp_Val *outer, sp_Val *inner) { sp_Val *v = sp_lam_proc(sp_lam_compose_fn, 2); v->captures[0] = outer; v->captures[1] = inner; return v; }
-/* Proc#curry over the sp_Val * representation. The curried value is a
-   proc whose captures are [target, arity, arg0, arg1, ...]; applying
-   one more arg either returns a fresh curried proc (still short of
-   arity) or invokes the target with the full argument list. Each `[]`
-   application supplies a single argument. */
-static sp_Val *sp_lam_curry_fn(sp_Val *self, sp_Val *arg) {
-  sp_Val *target = self->captures[0];
-  mrb_int arity = self->captures[1]->u.ival;
-  int have = self->u.proc.ncaptures - 2;
-  if (have + 1 < arity) {
-    sp_Val *v = sp_lam_proc(sp_lam_curry_fn, self->u.proc.ncaptures + 1);
-    v->captures[0] = target;
-    v->captures[1] = self->captures[1];
-    for (int i = 0; i < have; i++) v->captures[2 + i] = self->captures[2 + i];
-    v->captures[2 + have] = arg;
-    return v;
-  }
-  if (arity == 1) return sp_lam_call(target, arg);
-  if (arity == 2) return sp_lam_call2(target, self->captures[2], arg);
-  if (arity == 3) return sp_lam_call3(target, self->captures[2], self->captures[3], arg);
-  if (arity == 4) return sp_lam_call4(target, self->captures[2], self->captures[3], self->captures[4], arg);
-  return &sp_lam_nil_val;
-}
-static sp_Val *sp_lam_curry(sp_Val *f, mrb_int arity) { sp_Val *v = sp_lam_proc(sp_lam_curry_fn, 2); v->captures[0] = f; v->captures[1] = sp_lam_int(arity); return v; }
-static mrb_int sp_lam_to_int(sp_Val *v) { return v->u.ival; }
+/* (the unused sp_Val lambda-closure runtime was removed: it was dead code   and its `sp_Val` typedef collided with a user class named Val -- issue #1774) */
 
 
 /* Bigint (linked from sp_bigint.o) */
