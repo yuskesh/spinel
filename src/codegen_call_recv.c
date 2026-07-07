@@ -3927,7 +3927,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "(_t%d.last)", t);
       }
       else if (sp_streq(name, "size") || sp_streq(name, "count"))
-        buf_printf(b, "(_t%d.last - _t%d.excl - _t%d.first + 1)", t, t, t);
+        /* an empty (first > last) range has size 0, not a negative count */
+        buf_printf(b, "({ mrb_int _sz = (_t%d.last - _t%d.excl - _t%d.first + 1); _sz < 0 ? 0 : _sz; })", t, t, t);
       else if (sp_streq(name, "sum"))
         buf_printf(b, "sp_IntArray_sum(sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl), 0)", t, t, t);
       else if (sp_streq(name, "exclude_end?"))
