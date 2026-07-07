@@ -2350,6 +2350,9 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             if (sp_in2 >= 0) emit_boxed(c, sp_in2, b); else buf_puts(b, "sp_box_nil()");
             buf_puts(b, ")");
           }
+          else if (pt == TY_BIGINT && comp_ntype(c, conds[j]) == TY_BIGINT) {
+            buf_printf(b, "(sp_bigint_cmp(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ") == 0)");
+          }
           else if (pt == TY_STRING) {
             buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")");
           }
@@ -2516,6 +2519,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           buf_puts(b, ", ");
           if (sp_in3 >= 0) emit_boxed(c, sp_in3, b); else buf_puts(b, "sp_box_nil()");
           buf_puts(b, ")");
+        }
+        else if (pt == TY_BIGINT && comp_ntype(c, conds[j]) == TY_BIGINT) {
+          buf_printf(b, "(sp_bigint_cmp(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ") == 0)");
         }
         else if (pt == TY_STRING) { buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
         else if (pt == TY_POLY) { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
@@ -2785,6 +2791,52 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
+  }
+  /* for over a hash: materialize [key, value] pairs in insertion order (the
+     shared Hash#to_a walk) and iterate; `for k, v in h` destructures each
+     pair, `for pair in h` binds the boxed pair itself. */
+  if (ty_is_hash(ct)) {
+    const char *hn2 = ty_hash_cname(ct);
+    if (hn2) {
+      int ta = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_PolyArray *_t%d = ", ta);
+      emit_hash_pairs_expr(c, coll, ct, hn2, b);
+      buf_puts(b, ";\n");
+      emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
+      const char *idx_ty2 = nt_type(nt, idx);
+      if (idx_ty2 && sp_streq(idx_ty2, "MultiTargetNode")) {
+        int ln = 0;
+        const int *lefts = nt_arr(nt, idx, "lefts", &ln);
+        emit_indent(b, indent + 2);
+        buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", tv, ta, ti);
+        for (int i = 0; i < ln; i++) {
+          const char *lnm = nt_str(nt, lefts[i], "name");
+          if (!lnm) continue;
+          TyKind vt2 = scope_local(comp_scope_of(c, idx), lnm) ?
+                       scope_local(comp_scope_of(c, idx), lnm)->type : TY_POLY;
+          emit_indent(b, indent + 2);
+          if (vt2 == TY_INT || vt2 == TY_UNKNOWN)
+            buf_printf(b, "lv_%s = sp_unbox_int(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          else if (vt2 == TY_FLOAT)
+            buf_printf(b, "lv_%s = sp_unbox_float(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          else if (vt2 == TY_STRING)
+            buf_printf(b, "lv_%s = sp_unbox_str(sp_poly_massign_get(_t%d, %d));\n", lnm, tv, i);
+          else
+            buf_printf(b, "lv_%s = sp_poly_massign_get(_t%d, %d);\n", lnm, tv, i);
+        }
+      }
+      else {
+        emit_indent(b, indent + 2);
+        buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", vn, ta, ti);
+      }
+      emit_loop_body(c, body, b, indent + 2);
+      emit_indent(b, indent + 1); buf_puts(b, "}\n");
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return;
+    }
   }
   emit_indent(b, indent); buf_puts(b, "/* unsupported for-loop collection */\n");
 }

@@ -1772,7 +1772,7 @@ else {
    [key, value] poly pairs in insertion order. The source hash is GC-rooted
    because each pair allocates inside the walk. Shared by Hash#to_a/#entries and
    Hash#sort. */
-static void emit_hash_pairs_expr(Compiler *c, int recv, TyKind rt, const char *hn, Buf *b) {
+void emit_hash_pairs_expr(Compiler *c, int recv, TyKind rt, const char *hn, Buf *b) {
   int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
   TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
   buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b);
