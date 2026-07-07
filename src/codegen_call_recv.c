@@ -3319,8 +3319,29 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         int val = wkwh >= 0 ? kwh_lookup(nt, wkwh, sc->ivars[i] + 1) : -1;
         if (val >= 0) {
           TyKind mt = sc->ivar_types[i];
-          if (mt == TY_POLY && comp_ntype(c, val) != TY_POLY) emit_boxed(c, val, b);
-          else emit_expr(c, val, b);
+          TyKind vt = comp_ntype(c, val);
+          if (mt == TY_POLY && vt != TY_POLY) {
+            emit_boxed(c, val, b);  /* box a concrete value into a poly member */
+          } else if (mt != TY_POLY && vt == TY_POLY) {
+            /* A poly (sp_RbVal) value into a concrete member: coerce it, mirroring
+               the poly-arg path in emit_arg_or_default. The regular `.new` call
+               goes through that path; this hand-rolled constructor call did not,
+               so it assigned an sp_RbVal straight into a const char* / mrb_int /
+               sp_<T>* slot (a C type error). */
+            const char *mtn = c_type_name(mt);
+            if (mt == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, val, b); buf_puts(b, ")"); }
+            else if (mt == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, val, b); buf_puts(b, ")"); }
+            else if (mt == TY_SYMBOL) { buf_puts(b, "(sp_sym)sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
+            else if (mt == TY_BOOL) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, val, b); buf_puts(b, ")"); }
+            else if (mt == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, val, b); buf_puts(b, ")"); }
+            else if (ty_is_object(mt) || (mtn && mtn[0] && mtn[strlen(mtn) - 1] == '*')) {
+              Buf ub = expr_buf(c, val);
+              emit_unbox_text(c, mt, ub.p ? ub.p : "", b); free(ub.p);
+            }
+            else emit_expr(c, val, b);
+          } else {
+            emit_expr(c, val, b);
+          }
         } else {
           buf_printf(b, "_t%d->iv_%s", t, sc->ivars[i] + 1);
         }
