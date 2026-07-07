@@ -1574,6 +1574,20 @@ sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, siz
    than a boxed INT_MIN. Used when an int? value (hash miss, rindex, nonzero?,
    ...) flows into a poly slot. */
 static sp_RbVal sp_box_int_or_nil(mrb_int v) { return v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v); }
+/* Ruby integer shifts: a negative count shifts the other way, and a count at or
+   beyond the word width saturates (arithmetic for a right shift of a negative).
+   A bare C shift by a negative or >= width count is undefined behaviour, so any
+   non-constant / possibly-negative shift routes through these. (A left shift
+   past the word width truly overflows to a Bignum in Ruby; int mode can't hold
+   it, so it saturates to 0 -- the Bignum-promotion path handles the real case.) */
+static inline mrb_int sp_int_shl(mrb_int a, mrb_int n) {
+  if (n < 0) { mrb_int s = -n; return s >= 64 ? (a < 0 ? -1 : 0) : (a >> s); }
+  return n >= 64 ? 0 : (a << n);
+}
+static inline mrb_int sp_int_shr(mrb_int a, mrb_int n) {
+  if (n < 0) { mrb_int s = -n; return s >= 64 ? 0 : (a << s); }
+  return n >= 64 ? (a < 0 ? -1 : 0) : (a >> n);
+}
 /* A class known only by name (an exception's cls_name -- the id table covers
    only a few exception classes, but the name is complete for all of them,
    including the open-ended Errno:: family). Marked with a sentinel cls_id so

@@ -301,8 +301,19 @@ static int fold_int_node(Compiler *c, int id, long long *out, int depth) {
     if (sp_streq(nm, "+")) { *out = a + bb2; return 1; }
     if (sp_streq(nm, "-")) { *out = a - bb2; return 1; }
     if (sp_streq(nm, "*")) { *out = a * bb2; return 1; }
-    if (sp_streq(nm, "<<")) { *out = a << bb2; return 1; }
-    if (sp_streq(nm, ">>")) { *out = a >> bb2; return 1; }
+    /* Ruby shifts by a negative count shift the other way; a C shift by a
+       negative (or >= width) count is UB. Fold the direction-flipped and
+       saturated cases explicitly; bail on a large `<<` (Ruby promotes to
+       Bignum -- not representable as a folded int). */
+    if (sp_streq(nm, "<<")) {
+      if (bb2 < 0) { long long s = -bb2; *out = s >= 64 ? (a < 0 ? -1 : 0) : (a >> s); return 1; }
+      if (bb2 >= 64) return 0;
+      *out = a << bb2; return 1;
+    }
+    if (sp_streq(nm, ">>")) {
+      if (bb2 < 0) { long long s = -bb2; if (s >= 64) return 0; *out = a << s; return 1; }
+      *out = bb2 >= 64 ? (a < 0 ? -1 : 0) : (a >> bb2); return 1;
+    }
     if (sp_streq(nm, "&")) { *out = a & bb2; return 1; }
     if (sp_streq(nm, "|")) { *out = a | bb2; return 1; }
     if (sp_streq(nm, "^")) { *out = a ^ bb2; return 1; }

@@ -7455,6 +7455,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        (rt == TY_POLY && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
                           sp_streq(name, ">>"))))) {
     TyKind at0 = comp_ntype(c, argv[0]);
+    /* A `<<`/`>>` by a NEGATIVE (or >= word width) count is UB as a bare C shift
+       -- Ruby shifts the other way for a negative count. Only a constant literal
+       in that range takes the sp_int_shl/shr path; a non-constant count stays a
+       direct C shift (the hot idiom, e.g. optcarrot's `hi << sweep_shift`, whose
+       counts are always small and non-negative -- routing it through a branchy
+       helper cost ~4% fps). */
+    int is_shift = sp_streq(name, "<<") || sp_streq(name, ">>");
+    const char *aty0 = nt_type(nt, argv[0]);
+    int lit_shift = aty0 && sp_streq(aty0, "IntegerNode");
+    long long litc = lit_shift ? nt_int(nt, argv[0], "value", 0) : 0;
+    if (is_shift && lit_shift && (litc < 0 || litc >= 64)) {
+      buf_printf(b, "sp_int_%s(", sp_streq(name, "<<") ? "shl" : "shr");
+      if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+      buf_printf(b, ", %lldLL)", litc);
+      return;
+    }
     buf_puts(b, "(");
     if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else emit_expr(c, recv, b);
