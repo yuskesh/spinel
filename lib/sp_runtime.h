@@ -1794,7 +1794,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
     case SP_TAG_SYM: { const char *_ss = sp_sym_to_s((sp_sym)v.v.i); fputs(_ss, stdout); putchar('\n'); break; }
     case SP_TAG_ENCODING: { const char *_es = v.v.s ? v.v.s : sp_str_empty; fputs(_es, stdout); putchar('\n'); break; }
     case SP_TAG_CLASS: { fputs(sp_class_val_name(v), stdout); putchar('\n'); break; }
-    case SP_TAG_BIGINT: { fputs(sp_bigint_to_s((sp_Bigint *)v.v.p), stdout); putchar('\n'); break; }
+    case SP_TAG_BIGINT: { const char *_bs = sp_bigint_to_s((sp_Bigint *)v.v.p); if (_bs) { fputs(_bs, stdout); free((void *)_bs); } putchar('\n'); break; }
     case SP_TAG_OBJ: {
       /* MRI's `puts arr` iterates an Array, printing one element per
          line (using to_s on each); a non-Array OBJ falls back to
