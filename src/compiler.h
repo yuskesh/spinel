@@ -291,6 +291,10 @@ typedef struct {
   FfiStruct *ffi_structs;
   int n_ffi_structs, c_ffi_structs;
 
+  /* FFI registry: ffi_write_* declarations (symmetric to ffi_read_*) */
+  FfiReader *ffi_writers;
+  int n_ffi_writers, c_ffi_writers;
+
   /* FFI library names per module (semicolon-separated) */
   FfiLib *ffi_libs;
   int n_ffi_libs, c_ffi_libs;

@@ -6710,6 +6710,43 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           return;
         }
       }
+      /* ffi_write_* access: Module.writer_name(buf, val) stores val at
+         `offset` bytes into buf and returns the written value. Symmetric to
+         the reader branch above; the `+ off` applies to the char* byte view. */
+      {
+        int wi = -1;
+        for (int fwi = 0; fwi < c->n_ffi_writers; fwi++)
+          if (sp_streq(c->ffi_writers[fwi].mod, rcmod) && sp_streq(c->ffi_writers[fwi].name, name)) {
+            wi = fwi; break;
+          }
+        if (wi >= 0 && argc >= 2) {
+          const char *kind = c->ffi_writers[wi].kind;
+          int off = c->ffi_writers[wi].offset;
+          int tv = ++g_tmp;
+          if (kind && sp_streq(kind, "ptr")) {
+            TyKind vt = comp_ntype(c, argv[1]);
+            buf_printf(b, "({ void *_t%d = ", tv);
+            if (vt == TY_POLY) { buf_puts(b, "(void *)("); emit_expr(c, argv[1], b); buf_puts(b, ").v.p"); }
+            else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+            buf_puts(b, "; *(void **)((char *)(");
+            TyKind bt = comp_ntype(c, argv[0]);
+            if (bt == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+            else { emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+            buf_printf(b, " + %d) = _t%d; sp_box_foreign_ptr(_t%d); })", off, tv, tv);
+          }
+          else {
+            const char *ctype = (kind && sp_streq(kind, "i32")) ? "int32_t" : "uint32_t";
+            buf_printf(b, "({ %s _t%d = (%s)(", ctype, tv, ctype);
+            emit_int_expr(c, argv[1], b);
+            buf_printf(b, "); *(%s *)((char *)(", ctype);
+            TyKind bt = comp_ntype(c, argv[0]);
+            if (bt == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+            else { emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+            buf_printf(b, " + %d) = _t%d; (mrb_int)_t%d; })", off, tv, tv);
+          }
+          return;
+        }
+      }
     }
   }
 

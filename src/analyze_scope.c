@@ -1847,6 +1847,29 @@ void register_ffi_decls(Compiler *c) {
         c->ffi_structs[sidx].nfields = nf;
         continue;
       }
+
+      /* ffi_write_u32/i32/ptr :name, <offset> -- symmetric to ffi_read_*:
+         Module.name(buf, val) stores val at `offset` bytes into buf. */
+      if (!strncmp(dname, "ffi_write_", 10)) {
+        if (an < 2) continue;
+        const char *wname = ffi_arg_str(nt, args[0]);
+        if (!wname) continue;
+        int woff = ffi_arg_int(nt, args[1]);
+        if (woff < 0) woff = 0;
+        const char *kind = dname + 10;  /* "u32", "i32", "ptr" */
+        if (c->n_ffi_writers >= c->c_ffi_writers) {
+          c->c_ffi_writers = c->c_ffi_writers ? c->c_ffi_writers * 2 : 8;
+          FfiReader *grown = realloc(c->ffi_writers, sizeof(FfiReader) * (size_t)c->c_ffi_writers);
+          if (!grown) { perror("realloc"); exit(1); }
+          c->ffi_writers = grown;
+        }
+        int wi = c->n_ffi_writers++;
+        c->ffi_writers[wi].mod    = strdup(mname);
+        c->ffi_writers[wi].name   = strdup(wname);
+        c->ffi_writers[wi].offset = woff;
+        c->ffi_writers[wi].kind   = strdup(kind);
+        continue;
+      }
     }
   }
 }
@@ -1877,6 +1900,14 @@ int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si,
 int ffi_find_callback(Compiler *c, const char *mod, const char *name) {
   for (int i = 0; i < c->n_ffi_callbacks; i++)
     if (sp_streq(c->ffi_callbacks[i].mod, mod) && sp_streq(c->ffi_callbacks[i].name, name))
+      return i;
+  return -1;
+}
+
+/* Look up an FFI writer by (module, name). Returns index or -1. */
+int ffi_find_writer(Compiler *c, const char *mod, const char *name) {
+  for (int i = 0; i < c->n_ffi_writers; i++)
+    if (sp_streq(c->ffi_writers[i].mod, mod) && sp_streq(c->ffi_writers[i].name, name))
       return i;
   return -1;
 }

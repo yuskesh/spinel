@@ -1034,6 +1034,13 @@ else {
       if (fsm == FFI_SM_NEW) return TY_POLY;
       if (fsm == FFI_SM_GET) return ffi_spec_to_ty(c->ffi_structs[fsi].fields[ffi].spec);
       if (fsm == FFI_SM_SET) return TY_NIL;
+      /* ffi_write_*: Module.writer_name(buf, val) returns the written value */
+      int wi = ffi_find_writer(c, rcmod, name);
+      if (wi >= 0) {
+        const char *kind = c->ffi_writers[wi].kind;
+        if (kind && sp_streq(kind, "ptr")) return TY_POLY;
+        return TY_INT;
+      }
     }
   }
 
