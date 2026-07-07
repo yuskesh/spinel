@@ -638,6 +638,31 @@ else if (spec == 'Z') {
       off = slen;
       continue;
     }
+    /* u: uuencode. Each line begins with a length byte ((c-0x20)&0x3F decoded
+       bytes) followed by 4-char groups that each yield 3 bytes; a zero length
+       (or end of input) terminates. */
+    if (spec == 'u') {
+      char *s = sp_str_alloc(slen - off);   /* decoded <= input */
+      size_t o = 0, i = off;
+      while (i < slen) {
+        int L = (((unsigned char)str[i++]) - 0x20) & 0x3F;
+        if (L == 0) break;
+        int produced = 0;
+        while (produced < L && i < slen) {
+          int c[4];
+          for (int j = 0; j < 4; j++) c[j] = i < slen ? ((((unsigned char)str[i++]) - 0x20) & 0x3F) : 0;
+          if (produced < L) { s[o++] = (char)((c[0] << 2) | (c[1] >> 4)); produced++; }
+          if (produced < L) { s[o++] = (char)((c[1] << 4) | (c[2] >> 2)); produced++; }
+          if (produced < L) { s[o++] = (char)((c[2] << 6) | c[3]); produced++; }
+        }
+        while (i < slen && str[i] != '\n') i++;   /* skip to end of line */
+        if (i < slen) i++;
+      }
+      s[o] = 0; sp_str_set_len(s, o);
+      sp_PolyArray_push(out, sp_box_str(s));
+      off = slen;
+      continue;
+    }
     /* U: UTF-8 codepoints as integers. `count` codepoints, `*` all remaining. */
     if (spec == 'U') {
       int64_t got = 0;
