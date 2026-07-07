@@ -2531,6 +2531,7 @@ void analyze_program(Compiler *c) {
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
 
   rename_shadowing_block_params(c);
+  desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
   walk_scope(c, c->nt->root_id, 0, -1);
