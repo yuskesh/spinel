@@ -79,7 +79,13 @@ static int re_src_has_backref(const char *s) {
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  /* A block, when present, must be a literal BlockNode (a forwarded &proc is a
+     different shape handled elsewhere). block < 0 is the no-block construction:
+     still inline the yielding initialize body so its ivar writes run -- the
+     emitted constructor skips a yielding initialize, so without this the body
+     (including @ivar = ...) would vanish. With g_block_id < 0 a `yield` is dead
+     code and `block_given?` folds to false, matching a blockless `new`. */
+  if (block >= 0 && (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode"))) return 0;
   int mi = comp_method_in_chain(c, ci, "initialize", NULL);
   if (mi < 0 || !c->scopes[mi].yields) return 0;
   Scope *m = &c->scopes[mi];
@@ -93,8 +99,10 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int tag = ++g_tmp;
   int saved_nren = g_nren, saved_block = g_block_id;
   const char *saved_self = g_self;
+  const char *saved_self_deref = g_self_deref;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
+  int is_val = c->classes[ci].is_value_type;
   /* stack-local: this ctor inliner recurses (a constructor's block may itself
      construct), and g_self points into this buffer -- a shared static would be
      clobbered by the nested inline. */
@@ -115,11 +123,16 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int st = ++g_tmp;
   buf_puts(b, "({\n");
   emit_indent(b, g_indent + 1);
-  buf_printf(b, "sp_%s *_t%d = sp_%s_new(", c->classes[ci].c_name, st, c->classes[ci].c_name);
+  /* A value-type class returns sp_X by value from sp_X_new; a heap class returns
+     sp_X *. The inlined body reaches its ivars through g_self + g_self_deref, so
+     match the deref to the storage: "." for a value-type local, "->" for a
+     pointer. */
+  buf_printf(b, "sp_%s %s_t%d = sp_%s_new(", c->classes[ci].c_name, is_val ? "" : "*", st, c->classes[ci].c_name);
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   buf_puts(b, ");\n");
   snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
   g_self = selfbuf;
+  g_self_deref = is_val ? "." : "->";
   int din = g_indent + 1;
 
   /* declare the initialize body's locals under renamed names */
@@ -164,6 +177,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_nren = saved_nren;
   g_block_id = saved_block;
   g_self = saved_self;
+  g_self_deref = saved_self_deref;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
   g_yield_self_fallback = saved_self_fb;
