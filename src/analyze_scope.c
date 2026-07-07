@@ -1450,6 +1450,36 @@ TyKind ffi_spec_to_ty(const char *spec) {
   return TY_UNKNOWN;
 }
 
+/* Loud reject of an FFI declaration called with too few arguments. Arity is
+   purely syntactic, so unlike a non-literal argument (which the DSL may fold
+   from a compile-time string/int form -- see test/i1011.rb) a missing argument
+   is always an author error: report it against its source line and stop,
+   instead of silently dropping the decl and surfacing an opaque `unsupported`
+   at the eventual call site. This is an analyze-phase error -- `unsupported`
+   is a codegen primitive whose recovery context is not armed here. */
+__attribute__((noreturn)) static void ffi_decl_error(Compiler *c, int node, const char *msg) {
+  const NodeTable *nt = c->nt;
+  int ln  = (int)nt_int(nt, node, "node_line", 0);
+  int fid = (int)nt_int(nt, node, "node_file", 0);
+  const char *file = nt_file_path(nt, fid);
+  if (!file || !*file) file = nt->source_file;
+  if (!file || !*file) file = "source.rb";
+  fprintf(stderr, "spinel: %s:%d: %s\n", file, ln, msg);
+  exit(1);
+}
+
+/* Append `add` to a semicolon-joined per-module list, allocating the string or
+   growing it in place. The ffi_lib and ffi_cflags merges share this. */
+static void ffi_semi_append(char **slot, const char *add) {
+  if (!*slot) { *slot = strdup(add); if (!*slot) { perror("strdup"); exit(1); } return; }
+  size_t n = strlen(*slot) + 1 + strlen(add) + 1;
+  char *merged = malloc(n);
+  if (!merged) { perror("malloc"); exit(1); }
+  snprintf(merged, n, "%s;%s", *slot, add);
+  free(*slot);
+  *slot = merged;
+}
+
 /* Register a ffi_func / ffi_const / ffi_buffer / ffi_read_* declared in
    module bodies. Called during analyze_program before fixpoint. */
 void register_ffi_decls(Compiler *c) {
@@ -1607,66 +1637,56 @@ void register_ffi_decls(Compiler *c) {
       }
 
       if (sp_streq(dname, "ffi_lib")) {
-        if (an < 1) continue;
+        if (an < 1) ffi_decl_error(c, s, "`ffi_lib` needs a library name");
         const char *libname = ffi_arg_str(nt, args[0]);
-        if (!libname) continue;
-        /* find or create lib entry */
+        if (!libname) continue;  /* non-literal (e.g. a compile-time fold): tolerate */
+        /* find or create the per-module lib entry, then semicolon-merge */
         int mi = -1;
         for (int li = 0; li < c->n_ffi_libs; li++)
           if (sp_streq(c->ffi_libs[li].mod, mname)) { mi = li; break; }
         if (mi < 0) {
           if (c->n_ffi_libs >= c->c_ffi_libs) {
             c->c_ffi_libs = c->c_ffi_libs ? c->c_ffi_libs * 2 : 8;
-            c->ffi_libs = realloc(c->ffi_libs, sizeof(FfiLib) * (size_t)c->c_ffi_libs);
+            FfiLib *tmp = realloc(c->ffi_libs, sizeof(FfiLib) * (size_t)c->c_ffi_libs);
+            if (!tmp) { perror("realloc"); exit(1); }
+            c->ffi_libs = tmp;
           }
-          c->ffi_libs[c->n_ffi_libs].mod  = strdup(mname);
+          c->ffi_libs[c->n_ffi_libs].mod   = strdup(mname);
           c->ffi_libs[c->n_ffi_libs].names = strdup(libname);
-          mi = c->n_ffi_libs++;
+          c->n_ffi_libs++;
         }
-        else {
-          /* append with semicolon */
-          size_t old_len = strlen(c->ffi_libs[mi].names);
-          size_t new_len = old_len + 1 + strlen(libname) + 1;
-          char *merged = malloc(new_len);
-          snprintf(merged, new_len, "%s;%s", c->ffi_libs[mi].names, libname);
-          free(c->ffi_libs[mi].names);
-          c->ffi_libs[mi].names = merged;
-        }
+        else ffi_semi_append(&c->ffi_libs[mi].names, libname);
         continue;
       }
 
       if (sp_streq(dname, "ffi_cflags")) {
-        if (an < 1) continue;
+        if (an < 1) ffi_decl_error(c, s, "`ffi_cflags` needs a flag string");
         const char *cflag = ffi_arg_str(nt, args[0]);
-        if (!cflag) continue;
-        /* find or create cflag entry, semicolon-merged per module */
+        if (!cflag) continue;  /* non-literal (e.g. "-I" + File.expand_path): tolerate */
+        /* find or create the per-module cflag entry, then semicolon-merge */
         int mi = -1;
         for (int ci = 0; ci < c->n_ffi_cflags; ci++)
           if (sp_streq(c->ffi_cflags[ci].mod, mname)) { mi = ci; break; }
         if (mi < 0) {
           if (c->n_ffi_cflags >= c->c_ffi_cflags) {
             c->c_ffi_cflags = c->c_ffi_cflags ? c->c_ffi_cflags * 2 : 8;
-            c->ffi_cflags = realloc(c->ffi_cflags, sizeof(FfiCflag) * (size_t)c->c_ffi_cflags);
+            FfiCflag *tmp = realloc(c->ffi_cflags, sizeof(FfiCflag) * (size_t)c->c_ffi_cflags);
+            if (!tmp) { perror("realloc"); exit(1); }
+            c->ffi_cflags = tmp;
           }
           c->ffi_cflags[c->n_ffi_cflags].mod = strdup(mname);
           c->ffi_cflags[c->n_ffi_cflags].val = strdup(cflag);
-          mi = c->n_ffi_cflags++;
+          c->n_ffi_cflags++;
         }
-        else {
-          size_t old_len = strlen(c->ffi_cflags[mi].val);
-          size_t new_len = old_len + 1 + strlen(cflag) + 1;
-          char *merged = malloc(new_len);
-          snprintf(merged, new_len, "%s;%s", c->ffi_cflags[mi].val, cflag);
-          free(c->ffi_cflags[mi].val);
-          c->ffi_cflags[mi].val = merged;
-        }
+        else ffi_semi_append(&c->ffi_cflags[mi].val, cflag);
         continue;
       }
 
       if (sp_streq(dname, "ffi_func")) {
-        if (an < 3) continue;
+        if (an < 3)
+          ffi_decl_error(c, s, "`ffi_func` needs a name, an argument-type array, and a return type");
         const char *fname = ffi_arg_str(nt, args[0]);
-        if (!fname) continue;
+        if (!fname) continue;  /* non-literal name: tolerate */
         /* arg type array */
         int arr_id = args[1];
         const char *arr_ty = nt_type(nt, arr_id);
@@ -1674,6 +1694,7 @@ void register_ffi_decls(Compiler *c) {
         int en = 0;
         const int *elems = nt_arr(nt, arr_id, "elements", &en);
         char **arg_specs = malloc(sizeof(char*) * (size_t)(en + 1));
+        if (!arg_specs) { perror("malloc"); exit(1); }
         for (int ei = 0; ei < en; ei++) {
           const char *spec = ffi_arg_str(nt, elems[ei]);
           arg_specs[ei] = strdup(spec ? spec : "");
@@ -1683,7 +1704,9 @@ void register_ffi_decls(Compiler *c) {
         /* grow array */
         if (c->n_ffi_funcs >= c->c_ffi_funcs) {
           c->c_ffi_funcs = c->c_ffi_funcs ? c->c_ffi_funcs * 2 : 16;
-          c->ffi_funcs = realloc(c->ffi_funcs, sizeof(FfiFunc) * (size_t)c->c_ffi_funcs);
+          FfiFunc *tmp = realloc(c->ffi_funcs, sizeof(FfiFunc) * (size_t)c->c_ffi_funcs);
+          if (!tmp) { perror("realloc"); exit(1); }
+          c->ffi_funcs = tmp;
         }
         int fi = c->n_ffi_funcs++;
         c->ffi_funcs[fi].mod  = strdup(mname);
@@ -1695,13 +1718,15 @@ void register_ffi_decls(Compiler *c) {
       }
 
       if (sp_streq(dname, "ffi_const")) {
-        if (an < 2) continue;
+        if (an < 2) ffi_decl_error(c, s, "`ffi_const` needs a name and an integer value");
         const char *kname = ffi_arg_str(nt, args[0]);
-        if (!kname) continue;
+        if (!kname) continue;  /* non-literal name: tolerate */
         int val = ffi_arg_int(nt, args[1]);
         if (c->n_ffi_consts >= c->c_ffi_consts) {
           c->c_ffi_consts = c->c_ffi_consts ? c->c_ffi_consts * 2 : 16;
-          c->ffi_consts = realloc(c->ffi_consts, sizeof(FfiConst) * (size_t)c->c_ffi_consts);
+          FfiConst *tmp = realloc(c->ffi_consts, sizeof(FfiConst) * (size_t)c->c_ffi_consts);
+          if (!tmp) { perror("realloc"); exit(1); }
+          c->ffi_consts = tmp;
         }
         int ci2 = c->n_ffi_consts++;
         c->ffi_consts[ci2].mod  = strdup(mname);
@@ -1711,14 +1736,16 @@ void register_ffi_decls(Compiler *c) {
       }
 
       if (sp_streq(dname, "ffi_buffer")) {
-        if (an < 2) continue;
+        if (an < 2) ffi_decl_error(c, s, "`ffi_buffer` needs a name and a byte size");
         const char *bname = ffi_arg_str(nt, args[0]);
-        if (!bname) continue;
+        if (!bname) continue;  /* non-literal name: tolerate */
         int bsize = ffi_arg_int(nt, args[1]);
-        if (bsize <= 0) continue;
+        if (bsize <= 0) continue;  /* non-literal or non-positive size: tolerate */
         if (c->n_ffi_bufs >= c->c_ffi_bufs) {
           c->c_ffi_bufs = c->c_ffi_bufs ? c->c_ffi_bufs * 2 : 8;
-          c->ffi_bufs = realloc(c->ffi_bufs, sizeof(FfiBuf) * (size_t)c->c_ffi_bufs);
+          FfiBuf *tmp = realloc(c->ffi_bufs, sizeof(FfiBuf) * (size_t)c->c_ffi_bufs);
+          if (!tmp) { perror("realloc"); exit(1); }
+          c->ffi_bufs = tmp;
         }
         int bi = c->n_ffi_bufs++;
         c->ffi_bufs[bi].mod  = strdup(mname);
@@ -1728,15 +1755,17 @@ void register_ffi_decls(Compiler *c) {
       }
 
       if (!strncmp(dname, "ffi_read_", 9)) {
-        if (an < 2) continue;
+        if (an < 2) ffi_decl_error(c, s, "`ffi_read_*` needs a name and a byte offset");
         const char *rname = ffi_arg_str(nt, args[0]);
-        if (!rname) continue;
+        if (!rname) continue;  /* non-literal name: tolerate */
         int roff = ffi_arg_int(nt, args[1]);
-        if (roff < 0) roff = 0;
+        if (roff < 0) roff = 0;  /* non-literal or negative offset: clamp (pre-existing) */
         const char *kind = dname + 9;  /* "u32", "i32", "ptr" */
         if (c->n_ffi_readers >= c->c_ffi_readers) {
           c->c_ffi_readers = c->c_ffi_readers ? c->c_ffi_readers * 2 : 8;
-          c->ffi_readers = realloc(c->ffi_readers, sizeof(FfiReader) * (size_t)c->c_ffi_readers);
+          FfiReader *tmp = realloc(c->ffi_readers, sizeof(FfiReader) * (size_t)c->c_ffi_readers);
+          if (!tmp) { perror("realloc"); exit(1); }
+          c->ffi_readers = tmp;
         }
         int ri = c->n_ffi_readers++;
         c->ffi_readers[ri].mod    = strdup(mname);
