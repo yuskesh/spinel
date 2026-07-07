@@ -1775,6 +1775,23 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         if (needs_root(drt)) { emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", arm_t); }
         arm_pt = drt;
       }
+      else if (c->classes[ty_object_class(pt)].is_struct) {
+        /* Struct/Data classes have no explicit #deconstruct method, but pattern
+           matching still requires one. Synthesize it inline: the members boxed
+           into a PolyArray, in declaration order (same shape as Struct#to_a). */
+        ClassInfo *sc = &c->classes[ty_object_class(pt)];
+        arm_t = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
+        for (int i = 0; i < sc->nivars; i++) {
+          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->name, t, sc->ivars[i] + 1);
+          emit_indent(b, indent + 1);
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", arm_t);
+          emit_boxed_text(c, sc->ivar_types[i], fb, b);
+          buf_puts(b, ");\n");
+        }
+        arm_pt = TY_POLY_ARRAY;
+      }
     }
     else if (ty_is_object(pt) && !c->classes[ty_object_class(pt)].is_value_type &&
              sp_streq(pty, "HashPatternNode")) {
@@ -1789,6 +1806,22 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, " _t%d = sp_%s_deconstruct_keys((sp_%s *)_t%d, sp_box_nil());\n", arm_t, dcn, dcn, t);
         if (needs_root(drt)) { emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", arm_t); }
         arm_pt = drt;
+      }
+      else if (c->classes[ty_object_class(pt)].is_struct) {
+        /* Struct/Data #deconstruct_keys synthesized inline: members keyed by
+           their symbol names into a SymPolyHash (same shape as Struct#to_h). */
+        ClassInfo *sc = &c->classes[ty_object_class(pt)];
+        arm_t = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
+        for (int i = 0; i < sc->nivars; i++) {
+          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->name, t, sc->ivars[i] + 1);
+          emit_indent(b, indent + 1);
+          buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", arm_t, comp_sym_intern(c, sc->ivars[i] + 1));
+          emit_boxed_text(c, sc->ivar_types[i], fb, b);
+          buf_puts(b, ");\n");
+        }
+        arm_pt = TY_SYM_POLY_HASH;
       }
     }
     /* An array pattern needs an array scrutinee. After the deconstruct dispatch
@@ -4781,14 +4814,38 @@ else {
       int rn = 0;
       const int *reqs = nt_arr(nt, pattern, "requireds", &rn);
       TyKind vt = comp_ntype(c, value);
-      const char *k = ty_is_array(vt) ? ((vt == TY_POLY_ARRAY) ? "Poly" : array_kind(vt)) : NULL;
-      if (!k) k = "Int";
       int tarr = ++g_tmp;
-      emit_indent(b, indent);
-      emit_ctype(c, vt != TY_UNKNOWN ? vt : TY_INT_ARRAY, b);
-      buf_printf(b, " _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
-      emit_indent(b, indent);
-      buf_printf(b, "SP_GC_ROOT(_t%d);\n", tarr);
+      const char *k;
+      if (ty_is_object(vt) && c->classes[ty_object_class(vt)].is_struct) {
+        /* Struct/Data has no member array; synthesize #deconstruct inline as a
+           PolyArray of its (boxed) members, then match against that. */
+        ClassInfo *sc = &c->classes[ty_object_class(vt)];
+        int tobj = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_%s *_t%d = ", sc->name, tobj); emit_expr(c, value, b); buf_puts(b, ";\n");
+        /* Root the object: its members are read after sp_PolyArray_new and the
+           per-member boxing below, both of which can trigger a GC. */
+        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tobj);
+        emit_indent(b, indent);
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tarr, tarr);
+        for (int j = 0; j < sc->nivars; j++) {
+          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", tobj, sc->ivars[j] + 1);
+          emit_indent(b, indent);
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", tarr);
+          emit_boxed_text(c, sc->ivar_types[j], fb, b);
+          buf_puts(b, ");\n");
+        }
+        vt = TY_POLY_ARRAY; k = "Poly";
+      }
+      else {
+        k = ty_is_array(vt) ? ((vt == TY_POLY_ARRAY) ? "Poly" : array_kind(vt)) : NULL;
+        if (!k) k = "Int";
+        emit_indent(b, indent);
+        emit_ctype(c, vt != TY_UNKNOWN ? vt : TY_INT_ARRAY, b);
+        buf_printf(b, " _t%d = ", tarr); emit_expr(c, value, b); buf_puts(b, ";\n");
+        emit_indent(b, indent);
+        buf_printf(b, "SP_GC_ROOT(_t%d);\n", tarr);
+      }
       /* Length check: raise NoMatchingPatternError if sizes differ. */
       emit_indent(b, indent);
       buf_printf(b, "if (!_t%d || _t%d->len != %dLL) sp_raise_cls(\"NoMatchingPatternError\", \"[array pattern mismatch]\");\n", tarr, tarr, (long long)rn);
@@ -4827,6 +4884,28 @@ else {
         emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", mdt);
         char md[24]; snprintf(md, sizeof md, "_t%d", mdt);
         thash = emit_md_deconstruct_keys(b, indent, md);
+        hn = "SymPoly";
+        vt = TY_SYM_POLY_HASH;
+      }
+      else if (ty_is_object(vt) && c->classes[ty_object_class(vt)].is_struct) {
+        /* `struct => {x:}`: synthesize #deconstruct_keys inline as a SymPolyHash
+           of the (boxed) members, then bind through it (like the MatchData path). */
+        ClassInfo *sc = &c->classes[ty_object_class(vt)];
+        int tobj = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_%s *_t%d = ", sc->name, tobj); emit_expr(c, value, b); buf_puts(b, ";\n");
+        /* Root the object: its members are read after sp_SymPolyHash_new and the
+           per-member boxing below, both of which can trigger a GC. */
+        emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tobj);
+        emit_indent(b, indent);
+        buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", thash, thash);
+        for (int j = 0; j < sc->nivars; j++) {
+          char fb[300]; snprintf(fb, sizeof fb, "_t%d->iv_%s", tobj, sc->ivars[j] + 1);
+          emit_indent(b, indent);
+          buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", thash, comp_sym_intern(c, sc->ivars[j] + 1));
+          emit_boxed_text(c, sc->ivar_types[j], fb, b);
+          buf_puts(b, ");\n");
+        }
         hn = "SymPoly";
         vt = TY_SYM_POLY_HASH;
       }
