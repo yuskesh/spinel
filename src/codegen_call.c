@@ -430,7 +430,13 @@ int diagnose_eval_call(Compiler *c, int id) {
 void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int force_poly) {
   int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at mrb_int[16] */
   int any_poly = force_poly;
-  for (int k = 0; k < nargs && !any_poly; k++) if (comp_ntype(c, argv[k]) == TY_POLY) any_poly = 1;
+  /* A float arg also forces the boxed side-channel: an mrb_float placed in the
+     mrb_int[] slot is value-truncated (0.7 -> 0), so it must be published boxed
+     like a poly and read back with sp_poly_to_f in the callee. */
+  for (int k = 0; k < nargs && !any_poly; k++) {
+    TyKind at = comp_ntype(c, argv[k]);
+    if (at == TY_POLY || at == TY_FLOAT) any_poly = 1;
+  }
   buf_printf(b, "%d, ", argc);
   if (any_poly) {
     if (!g_needs_proc_poly_argslot) {
@@ -474,6 +480,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
       if (k) buf_puts(b, ", ");
       if (at == TY_POLY) buf_printf(b, "sp_poly_to_i(_t%d)", atmp[k]);
       else if (proc_slot_is_ptr(at)) buf_printf(b, "(mrb_int)(uintptr_t)_t%d", atmp[k]);
+      else if (at == TY_FLOAT) buf_puts(b, "0");  /* float rides the boxed side-channel; the mrb_int slot is dead */
       else buf_printf(b, "_t%d", atmp[k]);
     }
     if (nargs == 0) buf_puts(b, "0");  /* C99: no empty initializer list */

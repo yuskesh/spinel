@@ -1901,16 +1901,23 @@ else if (orecv >= 0 && onm) {
     /* A param past the supplied argument count binds nil, not the typed zero
        (CRuby fills missing block/proc params with nil). The body is already
        nil-aware for these slots; supply the matching nil sentinel. */
-    if (pt == TY_POLY) {
-      /* the side-channel array holds 16 slots (the proc-call ABI cap) */
+    if (pt == TY_POLY || pt == TY_FLOAT) {
+      /* A poly param doesn't fit the mrb_int slot, so it rides the
+         _sp_proc_poly_args side-channel the call site published. A float rides
+         it too: a raw mrb_float in the slot is value-truncated (0.7 -> 0), so
+         read the boxed value back, unboxing a float with sp_poly_to_f. The
+         side-channel array holds 16 slots (the proc-call ABI cap). */
       if (k < 16) {
         if (!g_needs_proc_poly_argslot) {
           g_needs_proc_poly_argslot = 1;
           buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
         }
-        buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
+        if (pt == TY_FLOAT)
+          buf_printf(pb, "(argc > %d) ? sp_poly_to_f(_sp_proc_poly_args[%d]) : sp_float_nil();\n", k, k);
+        else
+          buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
       }
-      else buf_puts(pb, "0;\n");
+      else buf_puts(pb, pt == TY_FLOAT ? "sp_float_nil();\n" : "0;\n");
     }
     else if (proc_slot_is_ptr(pt)) {
       buf_printf(pb, "(argc > %d) ? (", k); emit_ctype(c, pt, pb);
