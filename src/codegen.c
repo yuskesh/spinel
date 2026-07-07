@@ -3870,16 +3870,25 @@ char *codegen_program(const NodeTable *nt) {
       for (int ai = 0; ai < cf->ffi_funcs[fi].nargs; ai++)
         if (ffi_find_callback(cf, cf->ffi_funcs[fi].mod, cf->ffi_funcs[fi].args[ai]) >= 0) { has_cb = 1; break; }
       if (has_cb) continue;
+      int na = cf->ffi_funcs[fi].nargs;
+      /* A variadic function (trailing :varargs) gets NO extern: redeclaring a
+         libc variadic already declared by a system header -- e.g. printf, which
+         glibc declares with fortify attributes/inlines -- conflicts under some
+         libc + compiler combinations (notably gcc + glibc _FORTIFY_SOURCE). The
+         call site instead casts the header-declared symbol to a variadic
+         function pointer, which cannot conflict. A user (non-libc) variadic
+         function must be declared via a header supplied through ffi_cflags. */
+      if (na > 0 && sp_streq(cf->ffi_funcs[fi].args[na - 1], "varargs")) continue;
       buf_puts(&b, "extern ");
       buf_puts(&b, ffi_c_type(ret));
       buf_puts(&b, " ");
       buf_puts(&b, cf->ffi_funcs[fi].name);
       buf_puts(&b, "(");
-      for (int ai = 0; ai < cf->ffi_funcs[fi].nargs; ai++) {
+      for (int ai = 0; ai < na; ai++) {
         if (ai) buf_puts(&b, ", ");
         buf_puts(&b, ffi_c_type(cf->ffi_funcs[fi].args[ai]));
       }
-      if (cf->ffi_funcs[fi].nargs == 0) buf_puts(&b, "void");
+      if (na == 0) buf_puts(&b, "void");
       buf_puts(&b, ");\n");
     }
     /* Byte count for the :binstr return mode (defined in sp_net.c). */

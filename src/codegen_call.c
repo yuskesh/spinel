@@ -6511,11 +6511,29 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int hdr_call = 0;
         for (int hi = 0; hi < call_argc; hi++)
           if (ffi_find_callback(c, rcmod, c->ffi_funcs[fi].args[hi]) >= 0) { hdr_call = 1; break; }
+        /* A trailing :varargs spec: the declared specs cover only the fixed
+           leading args; every extra actual arg is passed through with C's
+           default argument promotions. No extern is emitted for a variadic
+           function (see codegen.c); the call casts the header-declared symbol
+           to a variadic function pointer -- `((ret (*)(fixed..., ...))name)` --
+           which cannot conflict with a fortified libc declaration and carries
+           no `format` attribute, so gcc does not format-check the call. */
+        int is_vararg = call_argc > 0 && sp_streq(c->ffi_funcs[fi].args[call_argc - 1], "varargs");
+        int fixed_argc = is_vararg ? call_argc - 1 : call_argc;
         /* Build the raw C call */
         Buf call_buf; memset(&call_buf, 0, sizeof call_buf);
-        buf_puts(&call_buf, c->ffi_funcs[fi].name);
+        if (is_vararg) {
+          buf_printf(&call_buf, "((%s (*)(", ffi_c_type(ret_spec));
+          for (int ai = 0; ai < fixed_argc; ai++) {
+            if (ai) buf_puts(&call_buf, ", ");
+            buf_puts(&call_buf, ffi_c_type(c->ffi_funcs[fi].args[ai]));
+          }
+          if (fixed_argc) buf_puts(&call_buf, ", ");
+          buf_printf(&call_buf, "...))%s)", c->ffi_funcs[fi].name);
+        }
+        else buf_puts(&call_buf, c->ffi_funcs[fi].name);
         buf_puts(&call_buf, "(");
-        for (int ai = 0; ai < call_argc && ai < argc; ai++) {
+        for (int ai = 0; ai < fixed_argc && ai < argc; ai++) {
           if (ai) buf_puts(&call_buf, ", ");
           const char *spec = c->ffi_funcs[fi].args[ai];
           TyKind at = comp_ntype(c, argv[ai]);
@@ -6582,6 +6600,32 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
           if (voidp) buf_puts(&call_buf, ")");
+        }
+        /* Extra variadic args: promote by inferred type (int->long long,
+           float->double, str->const char*, ptr->void*). A poly-typed vararg
+           has no compile-time C type to promote to, so reject it loudly. */
+        if (is_vararg) {
+          for (int ai = fixed_argc; ai < argc; ai++) {
+            if (ai) buf_puts(&call_buf, ", ");
+            TyKind at = comp_ntype(c, argv[ai]);
+            if (at == TY_INT || at == TY_BOOL) {
+              buf_puts(&call_buf, "((long long)("); emit_int_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
+            }
+            else if (at == TY_FLOAT) {
+              buf_puts(&call_buf, "((double)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
+            }
+            else if (at == TY_STRING) {
+              emit_expr(c, argv[ai], &call_buf);
+            }
+            else {
+              /* A poly (or otherwise non-scalar) vararg has no compile-time C
+                 type -- int vs string is indistinguishable in a C varargs call,
+                 so promoting it would be a silent-wrong. Reject loudly. */
+              free(call_buf.p);
+              unsupported(c, argv[ai], "ffi variadic argument (needs a concrete int/float/str type)");
+              return;
+            }
+          }
         }
         buf_puts(&call_buf, ")");
         if (is_void_ret) {
