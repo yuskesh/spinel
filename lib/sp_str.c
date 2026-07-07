@@ -383,20 +383,22 @@ size_t sp_utf8_byte_offset(const char*s,mrb_int char_idx){
   return (size_t)(p - s);
 }
 uint32_t*sp_utf8_decode_all(const char*s,size_t*out_n){size_t cap=8,n=0;uint32_t*cps=(uint32_t*)malloc(cap*sizeof(uint32_t));if(!cps){*out_n=0;return NULL;}const char*p=s;while(s&&*p){if(n>=cap){size_t nc=cap*2;uint32_t*nx=(uint32_t*)realloc(cps,nc*sizeof(uint32_t));if(!nx){free(cps);*out_n=0;return NULL;}cps=nx;cap=nc;}uint32_t cp;p+=sp_utf8_decode(p,&cp);cps[n++]=cp;}*out_n=n;return cps;}
-uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n){
+/* Length-aware variant: honors `bl` bytes so a NUL in the charset (e.g.
+   `"a\0b".count(itself)`) is a real member rather than a terminator. */
+uint32_t*sp_utf8_decode_charset_n(const char*s,size_t bl,size_t*out_n){
   size_t cap=16,n=0;
   uint32_t*cps=(uint32_t*)malloc(cap*sizeof(uint32_t));
   if(!cps){*out_n=0;return NULL;}
-  const char*p=s;
+  const char*p=s; const char*end=s+bl;
   uint32_t prev=0; int has_prev=0;
-  while(s&&*p){
+  while(s&&p<end){
     uint32_t cp;
     int len=sp_utf8_decode(p,&cp);
     p+=len;
     /* Detect range: prev '-' next  (but leading or trailing '-'
        is literal). When current char is '-' and there's a next
        non-'-' char and we have a prev, expand. */
-    if(cp=='-' && has_prev && *p){
+    if(cp=='-' && has_prev && p<end){
       uint32_t hi;
       int hi_len=sp_utf8_decode(p,&hi);
       p+=hi_len;
@@ -420,6 +422,7 @@ uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n){
   *out_n=n;
   return cps;
 }
+uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n){return sp_utf8_decode_charset_n(s,s?strlen(s):0,out_n);}
 /* Reuse an existing StrArray for split, avoiding GC alloc.
    Clears a->len and refills.  Substring strings are still malloc'd. */
 void sp_str_split_into(sp_StrArray*a,const char*s,const char*sep){
@@ -623,8 +626,8 @@ const char*sp_str_sub_range_len(const char*s,mrb_int cl,mrb_int start,mrb_int le
 const char*sp_str_sub_range_r(const char*s,mrb_int start,mrb_int end_,mrb_int excl){if(!s)sp_nil_recv("[]");mrb_int cl=sp_str_length(s);if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 const char*sp_str_sub_range_len_r(const char*s,mrb_int cl,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 const char*sp_str_reverse(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("reverse");size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t end=bl;const char*p=s;while(*p){int cn=sp_utf8_advance(p);end-=cn;memcpy(r+end,p,cn);p+=cn;}r[bl]=0;return r;}
-mrb_int sp_str_count(const char*s,const char*chars){if(!chars)sp_raise_cls("TypeError","no implicit conversion of nil into String");int negate=0;const char*csp=chars;if(*csp=='^'&&*(csp+1)){negate=1;csp++;}size_t setn;uint32_t*set=sp_utf8_decode_charset(csp,&setn);mrb_int c=0;const char*p=s;while(*p){uint32_t cp;p+=sp_utf8_decode(p,&cp);int in_set=sp_utf8_set_has(set,setn,cp);if(negate)in_set=!in_set;if(in_set)c++;}free(set);return c;}
-mrb_int sp_str_count_n(const char*s,const char**chars,mrb_int n){if(n<=0)return 0;size_t*setns=(size_t*)malloc(n*sizeof(size_t));uint32_t**sets=(uint32_t**)malloc(n*sizeof(uint32_t*));int*negs=(int*)malloc(n*sizeof(int));for(mrb_int i=0;i<n;i++){if(!chars[i])sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*cs=chars[i];negs[i]=0;if(*cs=='^'&&*(cs+1)){negs[i]=1;cs++;}sets[i]=sp_utf8_decode_charset(cs,&setns[i]);}mrb_int c=0;const char*p=s;while(*p){uint32_t cp;p+=sp_utf8_decode(p,&cp);int all=1;for(mrb_int i=0;i<n;i++){int in_set=sp_utf8_set_has(sets[i],setns[i],cp);if(negs[i])in_set=!in_set;if(!in_set){all=0;break;}}if(all)c++;}for(mrb_int i=0;i<n;i++)free(sets[i]);free(sets);free(setns);free(negs);return c;}
+mrb_int sp_str_count(const char*s,const char*chars){if(!chars)sp_raise_cls("TypeError","no implicit conversion of nil into String");int negate=0;const char*csp=chars;if(*csp=='^'&&*(csp+1)){negate=1;csp++;}size_t setn;uint32_t*set=sp_utf8_decode_charset_n(csp,sp_str_byte_len(chars)-(size_t)(csp-chars),&setn);mrb_int c=0;const char*p=s;const char*end=s+sp_str_byte_len(s);while(p<end){uint32_t cp;p+=sp_utf8_decode(p,&cp);int in_set=sp_utf8_set_has(set,setn,cp);if(negate)in_set=!in_set;if(in_set)c++;}free(set);return c;}
+mrb_int sp_str_count_n(const char*s,const char**chars,mrb_int n){if(n<=0)return 0;size_t*setns=(size_t*)malloc(n*sizeof(size_t));uint32_t**sets=(uint32_t**)malloc(n*sizeof(uint32_t*));int*negs=(int*)malloc(n*sizeof(int));for(mrb_int i=0;i<n;i++){if(!chars[i])sp_raise_cls("TypeError","no implicit conversion of nil into String");const char*cs=chars[i];negs[i]=0;if(*cs=='^'&&*(cs+1)){negs[i]=1;cs++;}sets[i]=sp_utf8_decode_charset(cs,&setns[i]);}mrb_int c=0;const char*p=s;const char*end=s+sp_str_byte_len(s);while(p<end){uint32_t cp;p+=sp_utf8_decode(p,&cp);int all=1;for(mrb_int i=0;i<n;i++){int in_set=sp_utf8_set_has(sets[i],setns[i],cp);if(negs[i])in_set=!in_set;if(!in_set){all=0;break;}}if(all)c++;}for(mrb_int i=0;i<n;i++)free(sets[i]);free(sets);free(setns);free(negs);return c;}
 sp_IntArray*sp_str_codepoints(const char*s){SP_GC_ROOT_STR(s);sp_IntArray*a=sp_IntArray_new();if(!s)sp_nil_recv("codepoints");const char*p=s;while(*p){uint32_t cp;int n=sp_utf8_decode(p,&cp);sp_IntArray_push(a,(mrb_int)cp);p+=n;}return a;}
 sp_StrArray*sp_str_chars(const char*s){sp_StrArray*a=sp_StrArray_new();if(!s)sp_nil_recv("chars");SP_GC_ROOT(a);SP_GC_ROOT_STR(s);const char*p=s;while(*p){int n=sp_utf8_advance(p);char*c=sp_str_alloc(n);memcpy(c,p,n);c[n]=0;sp_StrArray_push(a,c);p+=n;}return a;}
 /* Issue #798: guard NULL inputs (CRuby treats nil/no-op gracefully). */
