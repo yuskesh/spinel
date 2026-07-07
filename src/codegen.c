@@ -155,7 +155,7 @@ static int call_returns_nullable_int(Compiler *c, int node) {
   if (!nm) return 0;
   int blk = nt_ref(nt, node, "block");
   if ((sp_streq(nm, "bsearch") || sp_streq(nm, "bsearch_index")) && blk >= 0) return 1;
-  if (sp_streq(nm, "nonzero?") || sp_streq(nm, "infinite?")) return 1;
+  if (sp_streq(nm, "nonzero?") || sp_streq(nm, "infinite?") || sp_streq(nm, "getbyte")) return 1;
   /* String#index/rindex (search miss -> nil) and Array element removers
      (delete_at/pop/shift/delete out of range / not found -> nil) are typed
      TY_INT when the element/position is an int; box_int_or_nil is a no-op on a

@@ -952,6 +952,15 @@ static inline mrb_int sp_str_getbyte(const char *s, mrb_int i) {
   if (i < 0 || i >= bl) return 0;
   return (mrb_int)(unsigned char)s[i];
 }
+/* String#getbyte: a negative index counts from the end, and an out-of-range
+   index is nil (SP_INT_NIL, a nullable int) -- not 0 or an adjacent byte. */
+static inline mrb_int sp_str_getbyte_opt(const char *s, mrb_int i) {
+  if (!s) sp_nil_recv("getbyte");
+  mrb_int bl = (mrb_int)sp_str_byte_len(s);
+  if (i < 0) i += bl;
+  if (i < 0 || i >= bl) return SP_INT_NIL;
+  return (mrb_int)(unsigned char)s[i];
+}
 
 static inline mrb_int sp_str_setbyte(const char *s, mrb_int i, mrb_int v) {
   if (!s) sp_nil_recv("setbyte");
