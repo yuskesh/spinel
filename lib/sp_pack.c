@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 /* The shared runtime types (sp_RbVal, sp_IntArray, sp_sym, mrb_*, SP_TAG_*) and
    the string allocator (sp_str_alloc / _set_len / _byte_len / sp_str_empty) come
@@ -126,13 +127,18 @@ static int64_t pk_parse_count(const char **pp) {
 }
 /* Serialize / deserialize an integer as `n` bytes, little- or
    big-endian, via shifts (host-endianness independent, like the
-   n/N/v/V paths). */
-static void pk_put_int(char *out, int64_t v, size_t n, int big) {
-  uint64_t uv = (uint64_t)v;
+   n/N/v/V paths). pk_put_bits takes the raw unsigned pattern so the
+   float directives can pass IEEE-754 bits without a narrowing
+   uint64 -> int64 conversion (implementation-defined for values with
+   the sign bit set). */
+static void pk_put_bits(char *out, uint64_t uv, size_t n, int big) {
   for (size_t i = 0; i < n; i++) {
     size_t sh = big ? (n - 1 - i) : i;
     out[i] = (char)((uv >> (8 * sh)) & 0xff);
   }
+}
+static void pk_put_int(char *out, int64_t v, size_t n, int big) {
+  pk_put_bits(out, (uint64_t)v, n, big);
 }
 static uint64_t pk_get_int(const unsigned char *u, size_t n, int big) {
   uint64_t v = 0;
@@ -143,14 +149,95 @@ static uint64_t pk_get_int(const unsigned char *u, size_t n, int big) {
   return v;
 }
 
+/* Float/double directives: D/d/F/f native byte order, E/e explicit
+   little-endian, G/g explicit big-endian (double for the uppercase-native/
+   E/G forms, single precision for f/e/g). The IEEE-754 bit pattern round-
+   trips through an integer so the endian-explicit forms can reuse the
+   shift-based byte writer (host-endianness independent). */
+static int pk_is_flt_spec(char spec) {
+  return spec == 'D' || spec == 'd' || spec == 'F' || spec == 'f' ||
+         spec == 'E' || spec == 'e' || spec == 'G' || spec == 'g';
+}
+static void pk_flt_directive(char spec, double v, char **buf, size_t *len, size_t *cap) {
+  char tmp[8];
+  switch (spec) {
+    case 'D': case 'd':
+      memcpy(tmp, &v, 8);
+      pk_append(buf, len, cap, tmp, 8);
+      break;
+    case 'E': case 'G': {
+      uint64_t bits; memcpy(&bits, &v, 8);
+      pk_put_bits(tmp, bits, 8, spec == 'G');
+      pk_append(buf, len, cap, tmp, 8);
+      break;
+    }
+    case 'F': case 'f': {
+      float f = (float)v;
+      memcpy(tmp, &f, 4);
+      pk_append(buf, len, cap, tmp, 4);
+      break;
+    }
+    case 'e': case 'g': {
+      float f = (float)v;
+      uint32_t bits; memcpy(&bits, &f, 4);
+      pk_put_bits(tmp, bits, 4, spec == 'g');
+      pk_append(buf, len, cap, tmp, 4);
+      break;
+    }
+  }
+}
+/* Decode one float/double element on unpack (4 bytes for f/F/e/g, 8 for
+   d/D/E/G -- the caller sizes the read via fsize). */
+static double uk_get_flt(char spec, const unsigned char *u) {
+  if (spec == 'D' || spec == 'd') { double v; memcpy(&v, u, 8); return v; }
+  if (spec == 'F' || spec == 'f') { float v; memcpy(&v, u, 4); return (double)v; }
+  if (spec == 'E' || spec == 'G') {
+    uint64_t bits = pk_get_int(u, 8, spec == 'G');
+    double v; memcpy(&v, &bits, 8); return v;
+  }
+  uint32_t bits = (uint32_t)pk_get_int(u, 4, spec == 'g');
+  float v; memcpy(&v, &bits, 4); return (double)v;
+}
+
+/* Truncate a double toward zero for the integer directives with CRuby's
+   Array#pack semantics: NaN / +-Infinity raise FloatDomainError, and finite
+   values outside the int64 range wrap modulo 2^64 (CRuby coerces through an
+   exact Integer, and the directive's byte mask keeps only the low bits). A
+   plain (int64_t) cast is undefined C for anything outside
+   [INT64_MIN, INT64_MAX], including NaN. */
+static int64_t pk_flt_to_int(double dv) {
+  if (isnan(dv)) sp_raise_cls("FloatDomainError", "NaN");
+  if (isinf(dv)) sp_raise_cls("FloatDomainError", dv > 0 ? "Infinity" : "-Infinity");
+  if (dv >= -9223372036854775808.0 && dv < 9223372036854775808.0)
+    return (int64_t)dv;
+  /* Out-of-range finite: |dv| >= 2^63, so the mantissa is shifted left by
+     its (positive) binary exponent; the unsigned shift wraps mod 2^64. */
+  double a = dv < 0 ? -dv : dv;
+  uint64_t bits; memcpy(&bits, &a, 8);
+  int sh = (int)((bits >> 52) & 0x7FF) - 1075;   /* a = mant * 2^sh */
+  uint64_t mant = (bits & 0xFFFFFFFFFFFFFULL) | (1ULL << 52);
+  uint64_t u = sh >= 64 ? 0 : mant << sh;
+  return (int64_t)(dv < 0 ? 0 - u : u);
+}
+
 static int64_t pk_poly_to_int(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT:  return v.v.i;
-    case SP_TAG_BOOL: return v.v.i ? 1 : 0;
-    case SP_TAG_FLT:  return (int64_t)v.v.f;
+    case SP_TAG_BOOL: return v.v.b ? 1 : 0;
+    case SP_TAG_FLT:  return pk_flt_to_int(v.v.f);
     case SP_TAG_STR:  return v.v.s ? strtoll(v.v.s, NULL, 0) : 0;
     case SP_TAG_NIL:  return 0;
     default:          return 0;
+  }
+}
+
+static double pk_poly_to_flt(sp_RbVal v) {
+  switch (v.tag) {
+    case SP_TAG_FLT:  return v.v.f;
+    case SP_TAG_INT:  return (double)v.v.i;
+    case SP_TAG_BOOL: return v.v.b ? 1.0 : 0.0;
+    case SP_TAG_STR:  return v.v.s ? strtod(v.v.s, NULL) : 0.0;
+    default:          return 0.0;
   }
 }
 
@@ -315,6 +402,14 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
     }
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
+    if (pk_is_flt_spec(spec)) {
+      for (int64_t k = 0; k < count; k++) {
+        double dv = (idx < arr->len) ? (double)arr->data[arr->start + idx] : 0.0;
+        idx++;
+        pk_flt_directive(spec, dv, &buf, &len, &cap);
+      }
+      continue;
+    }
     for (int64_t k = 0; k < count; k++) {
       int64_t v = (idx < arr->len) ? arr->data[arr->start + idx] : 0;
       idx++;
@@ -372,6 +467,97 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {
   }
   /* Hand back via GC-tracked sp_str_alloc so the main file's GC
      can free the buffer. */
+  char *r = sp_str_alloc(len);
+  memcpy(r, buf, len);
+  sp_str_set_len(r, len);
+  free(buf);
+  return r;
+}
+
+/* Pack a Float array: the float/double directives pack the element's
+   IEEE-754 encoding directly; the integer directives truncate toward zero
+   via pk_flt_to_int (CRuby coerces Float through an exact Integer the same
+   way, so [1.5].pack("C") is "\x01" and NaN/Infinity raise
+   FloatDomainError). Mirrors sp_IntArray_pack otherwise -- note
+   sp_FloatArray has no `start` offset field. */
+const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
+  if (!arr || !fmt) return sp_str_empty;
+  size_t cap = 64;
+  char *buf = (char *)malloc(cap);
+  if (!buf) { perror("malloc"); exit(1); }
+  size_t len = 0;
+  mrb_int idx = 0;
+  const char *p = fmt;
+  while (*p) {
+    char spec = *p++;
+    if (spec == ' ' || spec == '\t' || spec == '\n') continue;
+    int big = 0;
+    int64_t count = pk_parse_count_mods(&p, &big);
+    if (count < 0) count = arr->len - idx;
+    if (count < 0) count = 0;
+    if (pk_is_flt_spec(spec)) {
+      for (int64_t k = 0; k < count; k++) {
+        double dv = (idx < arr->len) ? arr->data[idx] : 0.0;
+        idx++;
+        pk_flt_directive(spec, dv, &buf, &len, &cap);
+      }
+      continue;
+    }
+    for (int64_t k = 0; k < count; k++) {
+      int64_t v = (idx < arr->len) ? pk_flt_to_int(arr->data[idx]) : 0;
+      idx++;
+      char tmp[8];
+      switch (spec) {
+        case 'C': case 'c':
+          tmp[0] = (char)(v & 0xff);
+          pk_append(&buf, &len, &cap, tmp, 1);
+          break;
+        case 'n':
+          tmp[0] = (char)((v >> 8) & 0xff); tmp[1] = (char)(v & 0xff);
+          pk_append(&buf, &len, &cap, tmp, 2);
+          break;
+        case 'N':
+          tmp[0] = (char)((v >> 24) & 0xff); tmp[1] = (char)((v >> 16) & 0xff);
+          tmp[2] = (char)((v >> 8) & 0xff);  tmp[3] = (char)(v & 0xff);
+          pk_append(&buf, &len, &cap, tmp, 4);
+          break;
+        case 'v':
+          tmp[0] = (char)(v & 0xff); tmp[1] = (char)((v >> 8) & 0xff);
+          pk_append(&buf, &len, &cap, tmp, 2);
+          break;
+        case 'V':
+          tmp[0] = (char)(v & 0xff);        tmp[1] = (char)((v >> 8) & 0xff);
+          tmp[2] = (char)((v >> 16) & 0xff); tmp[3] = (char)((v >> 24) & 0xff);
+          pk_append(&buf, &len, &cap, tmp, 4);
+          break;
+        case 's': case 'S':
+          pk_put_int(tmp, v, 2, big);
+          pk_append(&buf, &len, &cap, tmp, 2);
+          break;
+        case 'l': case 'L':
+          pk_put_int(tmp, v, 4, big);
+          pk_append(&buf, &len, &cap, tmp, 4);
+          break;
+        case 'q': case 'Q':
+          pk_put_int(tmp, v, 8, big);
+          pk_append(&buf, &len, &cap, tmp, 8);
+          break;
+        case 'x':
+          tmp[0] = 0;
+          pk_append(&buf, &len, &cap, tmp, 1);
+          idx--;
+          break;
+        case 'U': {
+          unsigned char ub[6];
+          int ulen = pk_utf8(ub, v);
+          pk_append(&buf, &len, &cap, (const char *)ub, (size_t)ulen);
+          break;
+        }
+        default:
+          break;
+      }
+    }
+  }
   char *r = sp_str_alloc(len);
   memcpy(r, buf, len);
   sp_str_set_len(r, len);
@@ -438,6 +624,14 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {
     }
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
+    if (pk_is_flt_spec(spec)) {
+      for (int64_t k = 0; k < count; k++) {
+        double dv = (idx < arr->len) ? pk_poly_to_flt(arr->data[idx]) : 0.0;
+        idx++;
+        pk_flt_directive(spec, dv, &buf, &len, &cap);
+      }
+      continue;
+    }
     for (int64_t k = 0; k < count; k++) {
       int64_t v = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0;
       idx++;
@@ -644,7 +838,9 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, mrb_int byteof
       case 'C': case 'c': case 'x': fsize = 1; break;
       case 'n': case 'v': case 's': case 'S': fsize = 2; break;
       case 'N': case 'V': case 'l': case 'L': fsize = 4; break;
+      case 'f': case 'F': case 'e': case 'g': fsize = 4; break;
       case 'q': case 'Q': fsize = 8; break;
+      case 'd': case 'D': case 'E': case 'G': fsize = 8; break;
       default: fsize = 0; break;
     }
     if (spec == 'a' || spec == 'A' || spec == 'Z') {
@@ -802,8 +998,13 @@ else if (spec == 'Z') {
         if (spec != 'x') sp_PolyArray_push(out, sp_box_nil());
         continue;
       }
-      int64_t v = 0;
       const unsigned char *u = (const unsigned char *)(str + off);
+      if (pk_is_flt_spec(spec)) {
+        sp_PolyArray_push(out, sp_box_float((mrb_float)uk_get_flt(spec, u)));
+        off += fsize;
+        continue;
+      }
+      int64_t v = 0;
       switch (spec) {
         case 'C': v = u[0]; break;
         case 'c': v = (int8_t)u[0]; break;
