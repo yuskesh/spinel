@@ -53,6 +53,7 @@ Compiler *comp_new(const NodeTable *nt) {
   c->nscope = calloc((size_t)n, sizeof(int));   /* default scope 0 */
   c->node_cbody = malloc((size_t)n * sizeof(int));   /* enclosing class-body, -1 = none */
   for (int i = 0; i < n; i++) c->node_cbody[i] = -1;
+  c->empty_arr_recv = calloc((size_t)n, 1);
   c->node_cap = n;
   return c;
 }
@@ -66,7 +67,8 @@ void comp_grow_node_arrays(Compiler *c) {
   c->nilnarrow = realloc(c->nilnarrow, sizeof(TyKind) * (size_t)n);
   c->nscope = realloc(c->nscope, sizeof(int) * (size_t)n);
   c->node_cbody = realloc(c->node_cbody, sizeof(int) * (size_t)n);
-  for (int i = c->node_cap; i < n; i++) { c->ntype[i] = TY_UNKNOWN; c->nilnarrow[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; }
+  c->empty_arr_recv = realloc(c->empty_arr_recv, (size_t)n);
+  for (int i = c->node_cap; i < n; i++) { c->ntype[i] = TY_UNKNOWN; c->nilnarrow[i] = TY_UNKNOWN; c->nscope[i] = 0; c->node_cbody[i] = -1; c->empty_arr_recv[i] = 0; }
   c->node_cap = n;
 }
 
@@ -119,6 +121,7 @@ void comp_free(Compiler *c) {
   free(c->nscope);
   free(c->ntype);
   free(c->node_cbody);
+  free(c->empty_arr_recv);
   free(c);
 }
 

@@ -3576,7 +3576,15 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_ArrayNode) {
     int n = 0;
     const int *els = nt_arr(nt, id, "elements", &n);
-    if (n == 0) return TY_UNKNOWN;  /* empty: element type comes from usage */
+    if (n == 0) {
+      /* An empty `[]` used as a whitelisted iterator's receiver must still
+         dispatch (`[].each { }`): type it as an empty poly array. Elsewhere it
+         stays UNKNOWN so `x = []; x << 1` can back-fill the element type and the
+         non-block empty-literal folds keep working. */
+      if (c->empty_arr_recv && id < c->node_cap && c->empty_arr_recv[id])
+        return TY_POLY_ARRAY;
+      return TY_UNKNOWN;  /* empty: element type comes from usage */
+    }
     TyKind e = TY_UNKNOWN;
     for (int k = 0; k < n; k++) {
       TyKind et = infer_type(c, els[k]);

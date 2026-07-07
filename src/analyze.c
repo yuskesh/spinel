@@ -2524,6 +2524,38 @@ static void narrow_nil_guard_params(Compiler *c) {
   }
 }
 
+/* Mark every empty `[]` literal used as the receiver of a whitelisted iterator
+   (`[].each { }`, `[].map { }`, ...), so infer_uncached types it TY_POLY_ARRAY
+   and the iterator dispatches over an empty poly array instead of aborting on an
+   unresolved receiver. Restricted to iterators whose empty-poly-array codegen is
+   known-good; the non-block empty-literal folds (`[].sum(n)`, `[].reduce(i,:s)`)
+   and the `x = []` element back-fill are on other nodes, so both are untouched. */
+static int empty_arr_iter_ok(const char *nm) {
+  static const char *const ok[] = {
+    "each", "map", "collect", "select", "filter", "reject", "filter_map",
+    "find", "detect", "each_with_object",
+    "group_by", "sort_by", "min_by", "max_by", "flat_map", NULL };
+  for (int i = 0; ok[i]; i++) if (sp_streq(nm, ok[i])) return 1;
+  return 0;
+}
+static void mark_empty_array_receivers(Compiler *c) {
+  if (!c->empty_arr_recv) return;
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    if (nt_ref(nt, id, "block") < 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !empty_arr_iter_ok(nm)) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || recv >= c->node_cap) continue;
+    const char *rty = nt_type(nt, recv);
+    if (!rty || !sp_streq(rty, "ArrayNode")) continue;
+    int en = 0; nt_arr(nt, recv, "elements", &en);
+    if (en == 0) c->empty_arr_recv[recv] = 1;
+  }
+}
+
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
@@ -3663,6 +3695,7 @@ void analyze_program(Compiler *c) {
     for (int i = 0; i < c->scopes[s].nlocals; i++)
       c->scopes[s].locals[i].gc_root = (c->scopes[s].locals[i].type == TY_STRING);
 
+  mark_empty_array_receivers(c);
   for (int id = 0; id < c->nt->count; id++)
     infer_type(c, id);
 

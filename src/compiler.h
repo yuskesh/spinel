@@ -228,6 +228,7 @@ typedef struct {
                         slot at the read site); TY_UNKNOWN = not narrowed */
   int *nscope;      /* [node_cap] node id -> owning scope index */
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
+  char *empty_arr_recv; /* [node_cap] empty `[]` used as a safe-iterator receiver -> TY_POLY_ARRAY */
   int node_cap;     /* allocated length of ntype/nscope (>= nt->count) */
 
   Scope *scopes;    /* scope[0] = top level */
