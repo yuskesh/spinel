@@ -555,8 +555,10 @@ static int uk_b64val(unsigned char ch) {
   return -1;
 }
 /* Decode `n` base64 bytes from `src` into a fresh GC string (the `m` directive).
-   Non-alphabet bytes (whitespace, newlines) are skipped; `=` ends the data. */
-static char *uk_b64_decode(const char *src, size_t n) {
+   Non-alphabet bytes (whitespace, newlines) are skipped; `=` ends the data. In
+   `strict` mode (the `m0` count) any non-alphabet byte is an ArgumentError, as
+   RFC 4648 requires. */
+static char *uk_b64_decode_strict(const char *src, size_t n, int strict) {
   char *out = sp_str_alloc(n);   /* decoded size <= input size */
   size_t o = 0;
   int quad[4], qi = 0;
@@ -564,7 +566,7 @@ static char *uk_b64_decode(const char *src, size_t n) {
     unsigned char ch = (unsigned char)src[i];
     if (ch == '=') break;
     int val = uk_b64val(ch);
-    if (val < 0) continue;
+    if (val < 0) { if (strict) sp_raise_cls("ArgumentError", "invalid base64"); continue; }
     quad[qi++] = val;
     if (qi == 4) {
       out[o++] = (char)((quad[0] << 2) | (quad[1] >> 4));
@@ -580,6 +582,7 @@ static char *uk_b64_decode(const char *src, size_t n) {
   out[o] = 0; sp_str_set_len(out, o);
   return out;
 }
+static char *uk_b64_decode(const char *src, size_t n) { return uk_b64_decode_strict(src, n, 0); }
 /* Decode `n` quoted-printable bytes into a fresh GC string (the `M` directive):
    `=XX` is a hex byte, `=\n` (soft line break) is dropped, everything else is
    literal. */
@@ -721,7 +724,9 @@ else if (spec == 'Z') {
        one string (the count/`0` modifier only tweaks strictness, not framing). */
     if (spec == 'm' || spec == 'M') {
       size_t avail = slen - off;
-      char *s = (spec == 'm') ? uk_b64_decode(str + off, avail) : uk_qp_decode(str + off, avail);
+      /* `m0` is strict RFC 4648: reject any non-alphabet byte. */
+      char *s = (spec == 'm') ? uk_b64_decode_strict(str + off, avail, count == 0)
+                              : uk_qp_decode(str + off, avail);
       sp_PolyArray_push(out, sp_box_str(s));
       off = slen;
       continue;
