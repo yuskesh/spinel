@@ -3330,7 +3330,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       TyKind bt = comp_ntype(c, id);
-      if (bt == TY_UNKNOWN || bt == TY_VOID) bt = TY_INT;
+      /* NIL: a body whose tail is a break-less loop; ride the int slot (0). */
+      if (bt == TY_UNKNOWN || bt == TY_VOID || bt == TY_NIL) bt = TY_INT;
       int ptr = proc_slot_is_ptr(bt);
       int t = ++g_tmp;
       emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
@@ -3357,7 +3358,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
         const char *lnm = (lty && sp_streq(lty, "CallNode")) ? nt_str(nt, last, "name") : NULL;
         int last_throw = (lnm && sp_streq(lnm, "throw") && nt_ref(nt, last, "receiver") < 0);
         TyKind lt = comp_ntype(c, last);
-        if (last_throw || lt == TY_VOID || lt == TY_UNKNOWN) {
+        /* TY_NIL includes a tail `loop { throw ... }` (a break-less loop
+           infers nil): it produces no value to store, only effects. */
+        if (last_throw || lt == TY_VOID || lt == TY_UNKNOWN || lt == TY_NIL) {
           emit_stmt(c, last, g_pre, g_indent + 1);
         }
         else {

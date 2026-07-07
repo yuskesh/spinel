@@ -786,6 +786,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_puts(b, "else {\n");
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
     emit_indent(b, indent + 1); buf_printf(b, "sp_gc_nroots = _gcb%d;\n", gcl);
+    /* a non-local unwind (throw / valued break) lands here only because this
+       frame sits between the thrower and its target -- pass it through, like
+       every begin/rescue handler does. */
+    emit_indent(b, indent + 1);
+    buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
     emit_indent(b, indent + 1);
     buf_puts(b, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
