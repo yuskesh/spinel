@@ -355,6 +355,7 @@ int proc_opt_count(Compiler *c, int create);
 const char *proc_opt_name(Compiler *c, int create, int idx);
 int proc_opt_value(Compiler *c, int create, int idx);
 int proc_numbered_max(const NameSet *used);
+int proc_has_rest(Compiler *c, int create);
 int proc_slot_is_ptr(TyKind t);
 int cell_is_typed_ptr(Compiler *c, LocalVar *lv);
 void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b);

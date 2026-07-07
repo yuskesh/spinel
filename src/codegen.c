@@ -924,6 +924,14 @@ const char *proc_rest_name(Compiler *c, int create) {
   if (!rt || !sp_streq(rt, "RestParameterNode")) return NULL;
   return nt_str(c->nt, r, "name");
 }
+int proc_has_rest(Compiler *c, int create) {
+  int pn = proc_params_node(c, create);
+  if (pn < 0) return 0;
+  int r = nt_ref(c->nt, pn, "rest");
+  if (r < 0) return 0;
+  const char *rt = nt_type(c->nt, r);
+  return rt && sp_streq(rt, "RestParameterNode");
+}
 int proc_post_count(Compiler *c, int create) {
   int pn = proc_params_node(c, create);
   if (pn < 0) return 0;
@@ -1831,7 +1839,8 @@ else if (orecv >= 0 && onm) {
   /* Lambda: strict arity -- requireds + trailing posts mandatory, optionals
      widen the max, a splat rest lifts it entirely. */
   if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s);\n",
-                            arity + nposts + nnumbered, nopts, restn ? "TRUE" : "FALSE");
+                            arity + nposts + nnumbered, nopts,
+                            proc_has_rest(c, create) ? "TRUE" : "FALSE");
   for (int k = 0; k < arity; k++) {
     const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
