@@ -3087,6 +3087,35 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
      dangle into this soon-dead C frame and the next raise longjmps into
      garbage (doom's SoundManager#[] early cache returns). Also restores
      the sp_rescue_sp handler for every rescue body this return leaves. */
+  /* When live begin/rescue frames must be popped, the return VALUE has to be
+     evaluated while they are still live: a `return <expr>` where <expr> raises
+     (`return boom` inside begin/rescue) must unwind INTO the enclosing handler,
+     not past a frame already popped (issue #1775). So for a value return that
+     crosses frames, compute the value into a temp first, then pop, then return
+     it. With no frames to pop the order is immaterial -- keep the flat form. */
+  int ret_has_frames = (g_exc_frame_depth > 0) || (rescues_crossed(0) > 0);
+  if (ret_has_frames && n >= 1 && !(n == 1 && g_ret_type == TY_VOID)) {
+    if (n > 1) {
+      int ta = ++g_tmp;
+      buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+      for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+      buf_puts(b, " ");
+      emit_frame_unwind(b, 0, NULL);
+      buf_printf(b, " return _t%d; }\n", ta);
+      return;
+    }
+    int tr = ++g_tmp;
+    TyKind r0 = comp_ntype(c, a[0]);
+    buf_puts(b, "{ "); emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
+    buf_printf(b, " _t%d = ", tr);
+    if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+    else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
+    else emit_tail_value(c, a[0], b);
+    buf_puts(b, "; ");
+    emit_frame_unwind(b, 0, NULL);
+    buf_printf(b, "return _t%d; }\n", tr);
+    return;
+  }
   emit_frame_unwind(b, 0, NULL);
   if (n > 1) {
     int ta = ++g_tmp;

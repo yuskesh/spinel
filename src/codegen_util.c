@@ -211,7 +211,7 @@ int        g_rescue_save_depth = 0;
 
 /* rescue bodies crossed by an exit to frame-depth pop_base: those entered at or
    deeper than pop_base (their exc_base >= pop_base). */
-static int rescues_crossed(int pop_base) {
+int rescues_crossed(int pop_base) {
   int k = 0;
   for (int i = 0; i < g_rescue_save_depth; i++)
     if (g_rescue_save_stack[i].exc_base >= pop_base) k++;
