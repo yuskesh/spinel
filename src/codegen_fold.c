@@ -1221,8 +1221,7 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
     int trng = ++g_tmp;
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = %s;\n", trng, rb.p ? rb.p : "");
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl);\n",
-               trecv, trng, trng, trng);
+    buf_printf(g_pre, "sp_IntArray *_t%d = sp_range_to_ia(_t%d);\n", trecv, trng);
     /* freshly allocated and held only here; root it before the block walk,
        whose body may allocate and trigger a collection */
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv);
@@ -3177,7 +3176,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     int tr = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_Range _t%d = ", tr); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-    buf_printf(&rb, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", tr, tr, tr);
+    buf_printf(&rb, "sp_range_to_ia(_t%d)", tr);
     rt = TY_INT_ARRAY;
   }
   else emit_expr(c, recv, &rb);
@@ -3437,7 +3436,7 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
     int tr = ++g_tmp;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_Range _t%d = ", tr); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
-    buf_printf(&rb, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", tr, tr, tr);
+    buf_printf(&rb, "sp_range_to_ia(_t%d)", tr);
     rt = TY_INT_ARRAY;
   }
   else emit_expr(c, recv, &rb);

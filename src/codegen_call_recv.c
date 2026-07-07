@@ -3836,12 +3836,12 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       int t = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       if (comp_ntype(c, id) == TY_ENUMERATOR) {
-        buf_printf(b, "sp_Enumerator_new_from(sp_box_int_array(({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })))",
-                   t, rb.p ? rb.p : "", t, t, t);
+        buf_printf(b, "sp_Enumerator_new_from(sp_box_int_array(({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); })))",
+                   t, rb.p ? rb.p : "", t);
       }
       else {
-        buf_printf(b, "({ sp_Range _t%d = %s; sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); })",
-                   t, rb.p ? rb.p : "", t, t, t);
+        buf_printf(b, "({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); })",
+                   t, rb.p ? rb.p : "", t);
       }
       free(rb.p);
       return 1;
@@ -3872,7 +3872,7 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_Range _t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
       if (sp_streq(name, "to_a"))
-        buf_printf(b, "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl)", t, t, t);
+        buf_printf(b, "sp_range_to_ia(_t%d)", t);
       else if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                sp_streq(name, "cover?") || sp_streq(name, "===")) {
         /* cover?(range) checks that both endpoints of the arg fit inside self */
@@ -3899,20 +3899,23 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, ")");
         }
       }
-      else if (sp_streq(name, "first") || sp_streq(name, "min") || sp_streq(name, "begin")) {
+      else if (sp_streq(name, "min"))  /* smallest enumerated element (direction-aware) */
+        buf_printf(b, "sp_range_min_v(_t%d)", t);
+      else if (sp_streq(name, "first") || sp_streq(name, "begin")) {
         if (argc == 1) {
-          /* first(n): collect up to n elements starting at first */
-          int tf = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
+          /* first(n): the first n elements from `first`, walking by step. */
+          int tf = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tc = ++g_tmp;
           buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); mrb_int _t%d = ", tf, tn);
           emit_expr(c, argv[0], b);
-          buf_printf(b, "; for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl && _t%d - _t%d.first < _t%d; _t%d++)"
-                        " sp_IntArray_push(_t%d, _t%d); _t%d; })",
-                     ti, t, ti, t, t, ti, t, tn, ti, tf, ti, tf);
+          buf_printf(b, "; mrb_int _t%d = sp_range_count(_t%d); mrb_int _t%d = sp_range_step(_t%d);"
+                        " for (mrb_int _i%d = 0; _i%d < _t%d && _i%d < _t%d; _i%d++)"
+                        " sp_IntArray_push(_t%d, _t%d.first + _i%d * _t%d); _t%d; })",
+                     tc, t, ti, t, tf, tf, tn, tf, tc, tf, tf, t, tf, ti, tf);
         }
         else buf_printf(b, "(_t%d.first)", t);
       }
-      else if (sp_streq(name, "max"))  /* max element: end minus the exclusive bound */
-        buf_printf(b, "(_t%d.last - _t%d.excl)", t, t);
+      else if (sp_streq(name, "max"))  /* largest enumerated element (direction-aware) */
+        buf_printf(b, "sp_range_max_v(_t%d)", t);
       else if (sp_streq(name, "last") || sp_streq(name, "end")) {
         if (argc == 1 && sp_streq(name, "last")) {
           /* last(n): collect up to n elements ending at last */
@@ -3927,10 +3930,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "(_t%d.last)", t);
       }
       else if (sp_streq(name, "size") || sp_streq(name, "count"))
-        /* an empty (first > last) range has size 0, not a negative count */
-        buf_printf(b, "({ mrb_int _sz = (_t%d.last - _t%d.excl - _t%d.first + 1); _sz < 0 ? 0 : _sz; })", t, t, t);
+        buf_printf(b, "sp_range_count(_t%d)", t);
       else if (sp_streq(name, "sum"))
-        buf_printf(b, "sp_IntArray_sum(sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl), 0)", t, t, t);
+        buf_printf(b, "sp_IntArray_sum(sp_range_to_ia(_t%d), 0)", t);
       else if (sp_streq(name, "exclude_end?"))
         buf_printf(b, "(_t%d.excl != 0)", t);
       else if (sp_streq(name, "eql?")) {
@@ -3944,8 +3946,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "minmax")) {
         int ma = ++g_tmp;
-        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, _t%d.first);"
-                      " sp_IntArray_push(_t%d, _t%d.last - _t%d.excl); _t%d; })", ma, ma, t, ma, t, t, ma);
+        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_range_min_v(_t%d));"
+                      " sp_IntArray_push(_t%d, sp_range_max_v(_t%d)); _t%d; })", ma, ma, t, ma, t, ma);
       }
       return 1;
     }
@@ -3960,9 +3962,8 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     int ta = ++g_tmp, tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; "
-                      "sp_IntArray_from_range(_t%d.first, _t%d.last - _t%d.excl); }); SP_GC_ROOT(_t%d);\n",
-               ta, tr, rb.p ? rb.p : "", tr, tr, tr, ta);
+    buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
+               ta, tr, rb.p ? rb.p : "", tr, ta);
     free(rb.p);
     g_argov_node[g_n_argov] = recv;
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);

@@ -3739,8 +3739,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     if (sp_streq(name, "downto") && argc == 1) {
-      buf_puts(b, "(sp_Range){ .first = "); emit_expr(c, argv[0], b);
-      buf_puts(b, ", .last = "); emit_expr(c, recv, b); buf_puts(b, ", .excl = 0 }");
+      /* descending: first=hi(recv), last=lo(arg), step=-1 -- an ascending range
+         cannot carry the direction, which its .to_a would lose. */
+      buf_puts(b, "sp_range_new_step("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ", 0, -1LL)");
       return;
     }
   }

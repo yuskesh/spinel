@@ -128,7 +128,11 @@ typedef mrb_int sp_sym;
 #endif
 
 /* ---- Leaf value structs ---- */
-typedef struct{mrb_int first;mrb_int last;mrb_int excl;}sp_Range;
+/* `step` carries the iteration direction/stride for the enumerator forms that a
+   plain ascending range cannot express: n.downto(m) is {first:n,last:m,step:-1}.
+   A zero step (every range built by the literal `a..b` / sp_range_new path) is
+   treated as +1, so existing constructions need no change. */
+typedef struct{mrb_int first;mrb_int last;mrb_int excl;mrb_int step;}sp_Range;
 /* A class value. `name`, when non-NULL, is a rodata class name carried by a
    class whose cls_id table entry may not exist (an exception's class -- the
    Errno:: family and many builtin error classes have no assigned cls_id). It

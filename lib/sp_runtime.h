@@ -289,7 +289,34 @@ static inline mrb_float sp_math_atanh(mrb_float x){if(x<-1.0||x>1.0)sp_raise_cls
    tgamma already yields); negative non-integers are in-domain. */
 static inline mrb_float sp_math_gamma(mrb_float x){if(x<0.0&&x==floor(x))sp_raise_cls("Math_DomainError","Numerical argument is out of domain - gamma");return tgamma(x);}
 
-static sp_Range sp_range_new(mrb_int f,mrb_int l,mrb_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;return r;}
+static sp_Range sp_range_new(mrb_int f,mrb_int l,mrb_int e){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=0;return r;}
+static sp_Range sp_range_new_step(mrb_int f,mrb_int l,mrb_int e,mrb_int s){sp_Range r;r.first=f;r.last=l;r.excl=e;r.step=s;return r;}
+/* The effective stride: a literal `a..b` range stores 0, which iterates by +1. */
+static inline mrb_int sp_range_step(sp_Range r){return r.step==0?1:r.step;}
+/* Number of elements the range enumerates (0 for an empty one), honoring step. */
+static inline mrb_int sp_range_count(sp_Range r){
+  mrb_int s=sp_range_step(r);
+  mrb_int lastv=r.excl?(r.last-(s>0?1:-1)):r.last;
+  mrb_int n=(lastv-r.first)/s+1;
+  return n<0?0:n;
+}
+/* Materialize the range into an int array (ascending or descending per step).
+   The +1 stride (every literal `a..b` range) keeps the tight from_range loop; a
+   real step only appears for downto / explicit step, so it pays the general
+   path only then. */
+static inline sp_IntArray *sp_range_to_ia(sp_Range r){
+  mrb_int s=sp_range_step(r);
+  if(s==1)return sp_IntArray_from_range(r.first,r.last-r.excl);
+  return sp_IntArray_from_range_step(r.first,r.last,s,r.excl);
+}
+/* Last enumerated element (== first for an empty range), and the min/max of the
+   enumerated set -- direction-aware, so a descending range reports them right. */
+static inline mrb_int sp_range_last_elem(sp_Range r){
+  mrb_int n=sp_range_count(r);
+  return n<=0?r.first:r.first+(n-1)*sp_range_step(r);
+}
+static inline mrb_int sp_range_min_v(sp_Range r){ mrb_int a=r.first,b=sp_range_last_elem(r); return a<b?a:b; }
+static inline mrb_int sp_range_max_v(sp_Range r){ mrb_int a=r.first,b=sp_range_last_elem(r); return a>b?a:b; }
 static mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.last==b.last&&a.excl==b.excl;}
 /* `Range#include?`/`#cover?` on the boxed (SP_TAG_OBJ cls_id
    SP_BUILTIN_RANGE) Range value. The direct sp_Range typed path
@@ -298,7 +325,7 @@ static mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.la
    emit_poly_builtin_dispatch can land on a single C expression. An
    exclusive range stops one short of `last`, so the upper bound is
    `last - excl` (excl is 0 or 1). */
-static mrb_bool sp_range_include(sp_Range *r, mrb_int x){return r->first<=x && x<=r->last-r->excl;}
+static mrb_bool sp_range_include(sp_Range *r, mrb_int x){mrb_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);return sp_range_count(*r)>0 && lo<=x && x<=hi;}
 
 /* ---- Class object ----
    Value-type Class reference: a single class id that indexes into

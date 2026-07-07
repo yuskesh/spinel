@@ -1487,11 +1487,17 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
        loop with a fresh mrb_int temp and re-box the counter each iteration
        (mirrors emit_for's poly-counter arm). */
     LocalVar *clv = p0_orig ? scope_local(comp_scope_of(c, block), p0_orig) : NULL;
+    /* Direction-aware bounds: a descending range (n.downto(m)) walks by its
+       negative step, which the plain ascending loop would skip entirely. */
+    int ts = ++g_tmp, te = ++g_tmp;
+    emit_indent(b, indent);
+    buf_printf(b, "mrb_int _t%d = sp_range_step(_t%d); mrb_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
+               ts, t, te, t, t, ts);
     if (clv && clv->type == TY_POLY) {
       int tc = ++g_tmp;
       emit_indent(b, indent);
-      buf_printf(b, "for (mrb_int _t%d = _t%d.first; _t%d <= _t%d.last - _t%d.excl; _t%d++) {\n",
-                 tc, t, tc, t, t, tc);
+      buf_printf(b, "for (mrb_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
+                 tc, t, ts, tc, te, tc, te, tc, ts);
       emit_indent(b, indent + 1);
       buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p0, tc);
       emit_loop_body(c, body, b, indent + 1);
@@ -1499,8 +1505,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       return 1;
     }
     emit_indent(b, indent);
-    buf_printf(b, "for (lv_%s = _t%d.first; lv_%s <= _t%d.last - _t%d.excl; lv_%s++) {\n",
-               p0, t, p0, t, t, p0);
+    buf_printf(b, "for (lv_%s = _t%d.first; _t%d > 0 ? lv_%s <= _t%d : lv_%s >= _t%d; lv_%s += _t%d) {\n",
+               p0, t, ts, p0, te, p0, te, p0, ts);
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
