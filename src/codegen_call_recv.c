@@ -2013,6 +2013,13 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
               emit_expr(c, argv[di], b);
               buf_printf(b, "; _t%d = sp_poly_get_str(_t%d, _t%d);", tr, tr, tk);
             }
+            else if (dkt == TY_POLY) {
+              /* A poly sub-key is stored as sp_RbVal, not mrb_int; dispatch on
+                 both the runtime receiver and key kind. */
+              buf_printf(b, " sp_RbVal _t%d = ", tk);
+              emit_expr(c, argv[di], b);
+              buf_printf(b, "; _t%d = sp_poly_index_poly(_t%d, _t%d);", tr, tr, tk);
+            }
             else {
               buf_printf(b, " mrb_int _t%d = ", tk);
               emit_expr(c, argv[di], b);

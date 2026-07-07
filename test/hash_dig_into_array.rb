@@ -10,3 +10,8 @@ p({ a: [{ c: 9 }] }.dig(:a, 0, :c))
 p({ a: 1 }.dig(:a))
 p({ a: [1, 2] }.dig(:a, 5))   # out of range -> nil
 p({ a: [10, 20] }.dig(:b, 1)) # missing first key -> nil
+# a sub-key whose static type is poly (a non-constant index into a mixed
+# array) dispatches on both the runtime receiver and key kind.
+keys = [:b, 1, "c"]
+i = keys.length - 2
+p({ a: [10, 20] }.dig(:a, keys[i]))   # keys[1] == 1 -> [10, 20][1] -> 20
