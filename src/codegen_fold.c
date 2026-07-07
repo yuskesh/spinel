@@ -1453,6 +1453,11 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
      rather than truncating the init into an integer accumulator. */
   if (argc == 1 && argv && comp_ntype(c, argv[0]) == TY_FLOAT) acct = TY_FLOAT;
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
+  /* Float accumulation uses Kahan-Babuska-Neumaier compensation (matches
+     CRuby's Array#sum), so it needs a running compensation temp plus
+     per-iteration x/t temps. Integer sums use none of them. */
+  int tc = -1, tx = -1, tt = -1;
+  if (acct == TY_FLOAT) { tc = ++g_tmp; tx = ++g_tmp; tt = ++g_tmp; }
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
   buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d); ", tn, k, ta);
   emit_ctype(c, acct, b); buf_printf(b, " _t%d = ", tacc);
@@ -1474,6 +1479,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   else {
     buf_puts(b, acct == TY_FLOAT ? "0.0" : "0");
   }
+  if (acct == TY_FLOAT) buf_printf(b, "; mrb_float _t%d = 0.0", tc);
   buf_printf(b, "; for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) { ", ti, ti, tn, ti);
   if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
   /* The block's value expression may spill setup statements to g_pre (e.g.
@@ -1484,14 +1490,25 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     Buf inner; memset(&inner, 0, sizeof inner);
     Buf valb; memset(&valb, 0, sizeof valb);
     Buf *saved_pre = g_pre; g_pre = &inner;
-    if (acct == TY_INT) { buf_printf(&valb, "sp_int_add(_t%d, ", tacc); emit_expr(c, bb[bn - 1], &valb); buf_puts(&valb, ")"); }
-    else { buf_printf(&valb, "_t%d + ", tacc); emit_expr(c, bb[bn - 1], &valb); }
+    emit_expr(c, bb[bn - 1], &valb);
     g_pre = saved_pre;
     if (inner.p) buf_puts(b, inner.p);
-    buf_printf(b, "_t%d = %s", tacc, valb.p ? valb.p : "0");
+    if (acct == TY_INT) {
+      buf_printf(b, "_t%d = sp_int_add(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "0");
+    }
+    else {
+      /* KBN step: fold the low-order bits dropped by _tacc + _tx into _tc. */
+      buf_printf(b, "mrb_float _t%d = %s; mrb_float _t%d = _t%d + _t%d; "
+                    "if (fabs(_t%d) >= fabs(_t%d)) _t%d += (_t%d - _t%d) + _t%d; "
+                    "else _t%d += (_t%d - _t%d) + _t%d; _t%d = _t%d",
+                 tx, valb.p ? valb.p : "0.0", tt, tacc, tx,
+                 tacc, tx, tc, tacc, tt, tx,
+                 tc, tx, tt, tacc, tacc, tt);
+    }
     free(inner.p); free(valb.p);
   }
-  buf_printf(b, "; } _t%d; })", tacc);
+  if (acct == TY_FLOAT) buf_printf(b, "; } _t%d + _t%d; })", tacc, tc);
+  else buf_printf(b, "; } _t%d; })", tacc);
   return 1;
 }
 
