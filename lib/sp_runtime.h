@@ -1850,6 +1850,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_TIME: return SPL("Time");
         case SP_BUILTIN_COMPLEX: return SPL("Complex");
         case SP_BUILTIN_RATIONAL: return SPL("Rational");
+        case SP_BUILTIN_OBJECT: return SPL("Object");   /* a bare Object.new instance */
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
       }
@@ -3636,6 +3637,71 @@ static inline mrb_bool sp_poly_frozen(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s ? sp_str_is_frozen_val(v.v.s) : TRUE;
   if (v.tag == SP_TAG_OBJ) return sp_gc_is_frozen(v.v.p);
   return TRUE;
+}
+/* eql? for a poly value: like == but without cross-kind numeric coercion, so
+   1.eql?(1.0) is false while 1 == 1.0 is true. Every other type answers as ==.
+   Backs the universal `x.should.eql?(y)` matcher on a poly receiver. */
+static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
+  int a_int = (a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT);
+  int b_int = (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT);
+  if ((a_int && b.tag == SP_TAG_FLT) || (a.tag == SP_TAG_FLT && b_int)) return FALSE;
+  return sp_poly_eq(a, b);
+}
+/* equal? for a poly value: object identity. Immediates (int, symbol, nil,
+   bool, flonum) are their own identity by value; everything heap-backed
+   (string buffer, boxed object, bignum) compares by pointer. */
+static mrb_bool sp_poly_equal(sp_RbVal a, sp_RbVal b) {
+  if (a.tag != b.tag) return FALSE;
+  switch (a.tag) {
+    case SP_TAG_INT: return a.v.i == b.v.i;
+    case SP_TAG_SYM: return a.v.i == b.v.i;
+    case SP_TAG_BOOL: return a.v.b == b.v.b;
+    case SP_TAG_NIL: return TRUE;
+    case SP_TAG_FLT: return a.v.f == b.v.f;
+    case SP_TAG_STR: return a.v.s == b.v.s;
+    /* Class objects are their own identity: two references to Object are the
+       same object. Spinel's classes are name-backed, so compare by name. */
+    case SP_TAG_CLASS: { const char *an = sp_class_val_name(a), *bn = sp_class_val_name(b);
+                         return (an && bn) ? strcmp(an, bn) == 0 : an == bn; }
+    default: return a.v.p == b.v.p;
+  }
+}
+/* is_a?/kind_of? for a poly value against a BUILTIN class named `cn`. The
+   caller (codegen) routes here only when `cn` is a known builtin; a user-class
+   target is resolved inline via sp_class_le on the boxed object's cls_id. */
+static mrb_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
+  if (!cn) return FALSE;
+  if (strcmp(cn, "Object") == 0 || strcmp(cn, "BasicObject") == 0 || strcmp(cn, "Kernel") == 0)
+    return TRUE;
+  if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;  /* exact builtin class */
+  int is_int = (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT);
+  int is_flt = (v.tag == SP_TAG_FLT);
+  int is_rat = (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL);
+  int is_cpx = (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX);
+  int is_arr = (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id));
+  int is_range = (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE);
+  int is_hash = (v.tag == SP_TAG_OBJ &&
+                 (v.cls_id == SP_BUILTIN_POLY_POLY_HASH || v.cls_id == SP_BUILTIN_SYM_POLY_HASH ||
+                  v.cls_id == SP_BUILTIN_STR_POLY_HASH || v.cls_id == SP_BUILTIN_STR_STR_HASH ||
+                  v.cls_id == SP_BUILTIN_STR_INT_HASH || v.cls_id == SP_BUILTIN_INT_STR_HASH));
+  if (strcmp(cn, "Numeric") == 0) return is_int || is_flt || is_rat || is_cpx;
+  if (strcmp(cn, "Integer") == 0) return is_int;
+  if (strcmp(cn, "Float") == 0) return is_flt;
+  if (strcmp(cn, "Comparable") == 0) return is_int || is_flt || is_rat ||
+                                             v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM;
+  if (strcmp(cn, "Enumerable") == 0) return is_arr || is_range || is_hash;
+  return FALSE;
+}
+/* is_a?/instance_of? for a poly value against a RUNTIME class value `cls` (a
+   method param or other non-literal). The class's name drives the check: exact
+   name match for instance_of? (and same-class is_a?), plus the builtin-ancestry
+   table for is_a?. A dynamic user-class ancestor is out of reach here, so this
+   under-reports at worst (never a false positive) -- the safe direction. */
+static mrb_bool sp_poly_is_a_dyn(sp_RbVal v, sp_RbVal cls, int exact) {
+  const char *cn = sp_poly_to_s(cls);
+  if (!cn) return FALSE;
+  if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;
+  return exact ? FALSE : sp_poly_kind_of_builtin(v, cn);
 }
 static inline mrb_int sp_poly_index_int(sp_RbVal a, mrb_int i) {
   if (a.tag == SP_TAG_INT) return (a.v.i >> i) & 1;

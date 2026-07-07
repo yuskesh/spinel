@@ -1180,6 +1180,71 @@ static void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, int a
   }
 }
 
+/* Names of the universal Object/Kernel predicates the poly switch supplies a
+   builtin default arm for (eql?, equal?, is_a?, kind_of?, instance_of?,
+   frozen?, nil?). Every value answers these, but the generic poly dispatch only
+   emits a user `case` arm per class that defines the name -- a poly value that
+   is a builtin scalar (or an object of a class without the override) otherwise
+   fell through to "undefined method '<m>' for poly" at runtime, the dominant
+   real gap under the ruby/spec harness (`x.should.eql?(y)` and friends). */
+static int poly_pred_kind(const char *name, int argc) {
+  if (!name) return 0;
+  if (argc == 0) return (sp_streq(name, "frozen?") || sp_streq(name, "nil?")) ? 1 : 0;
+  if (argc == 1) return (sp_streq(name, "eql?") || sp_streq(name, "equal?") ||
+                         sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+                         sp_streq(name, "instance_of?")) ? 1 : 0;
+  return 0;
+}
+
+/* Emit the boolean VALUE of a universal predicate on a poly receiver already
+   held in `tvref` (an sp_RbVal lvalue like "_t42"). `argref` is the BOXED
+   argument expression for the binary forms (eql?/equal?); the class forms read
+   their class straight from the call's argument node. Returns 1 on success.
+   Consumed as the switch's default arm so builtin scalars and un-overridden
+   objects answer these alongside the per-class user arms. */
+static int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
+                                const char *argref, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
+  if (argc == 0 && sp_streq(name, "frozen?")) { buf_printf(b, "sp_poly_frozen(%s)", tvref); return 1; }
+  if (argc == 0 && sp_streq(name, "nil?"))    { buf_printf(b, "sp_poly_nil_p(%s)", tvref); return 1; }
+  if (argc == 1 && sp_streq(name, "eql?"))    { buf_printf(b, "sp_poly_eql(%s, %s)", tvref, argref); return 1; }
+  if (argc == 1 && sp_streq(name, "equal?"))  { buf_printf(b, "sp_poly_equal(%s, %s)", tvref, argref); return 1; }
+  int is_isa = argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?"));
+  int is_iof = argc == 1 && sp_streq(name, "instance_of?");
+  if (is_isa || is_iof) {
+    int arg = argv[0];
+    const char *cn = nt_type(nt, arg) && sp_streq(nt_type(nt, arg), "ConstantReadNode")
+                     ? nt_str(nt, arg, "name") : NULL;
+    if (cn) {
+      if (is_iof) {   /* exact class match by name (builtin or user class) */
+        buf_printf(b, "(strcmp(sp_poly_class_name(%s), \"%s\") == 0)", tvref, cn);
+        return 1;
+      }
+      int target = comp_class_index(c, cn);   /* a user class in this program? */
+      if (target >= 0) {   /* user-class target: chain check on the object cls_id */
+        buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id >= 0 && "
+                      "sp_class_le((sp_Class){%s.cls_id}, (sp_Class){%d}))",
+                   tvref, tvref, tvref, target);
+        return 1;
+      }
+      buf_printf(b, "sp_poly_kind_of_builtin(%s, \"%s\")", tvref, cn);   /* builtin target */
+      return 1;
+    }
+    /* Runtime class value (a method param, a non-literal): resolve by the
+       class's name at runtime. `argref` is the boxed class; when absent (the
+       standalone caller), box the arg node here. */
+    buf_printf(b, "sp_poly_is_a_dyn(%s, ", tvref);
+    if (argref) buf_puts(b, argref);
+    else emit_boxed(c, arg, b);
+    buf_printf(b, ", %d)", is_iof ? 1 : 0);
+    return 1;
+  }
+  return 0;
+}
+
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -1193,11 +1258,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     int is_lengthlike = sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count");
     int is_empty = sp_streq(name, "empty?");
+    int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, 0);
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
           (c->classes[k].is_native_class && comp_native_method_find(c, k, name, 0, 0) >= 0)) ncand++;
-    if (ncand > 0 || is_lengthlike) {
+    if (ncand > 0 || is_lengthlike || is_pred) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -1409,6 +1475,15 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         else buf_printf(b, "%s(_t%d)", pfn, tv);
         buf_puts(b, "; break;");
       }
+      /* frozen?/nil? on a builtin-scalar (or un-overridden object) poly value:
+         the switch default answers via the runtime predicate. */
+      if (!obj_default_done && is_pred) {
+        char tvref[24]; snprintf(tvref, sizeof tvref, "_t%d", tv);
+        buf_printf(b, " default: _t%d = ", tr);
+        if (ret == TY_POLY) { buf_puts(b, "sp_box_bool("); emit_poly_pred_value(c, id, tvref, NULL, b); buf_puts(b, ")"); }
+        else emit_poly_pred_value(c, id, tvref, NULL, b);
+        buf_puts(b, "; break;");
+      }
       buf_printf(b, " } _t%d; })", tr);
       return 1;
     }
@@ -1444,13 +1519,14 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        `data[offset, 8].delete("\x00").upcase` WAD name fields). */
     int is_strdel = sp_streq(name, "delete") && argc == 1 &&
                     infer_type(c, argv[0]) == TY_STRING;
+    int is_pred = nt_ref(nt, id, "block") < 0 && poly_pred_kind(name, argc);
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       int mi = comp_method_in_chain(c, k, name, NULL);
       /* Include if call supplies all required params (pad defaults / truncate extras) */
       if (mi >= 0 && argc >= c->scopes[mi].nrequired) ncand++;
     }
-    if (ncand > 0 || is_index || is_include || is_fetch || is_push) {
+    if (ncand > 0 || is_index || is_include || is_fetch || is_push || is_pred) {
       TyKind ret = comp_ntype(c, id);
       int tv = ++g_tmp, tr = ++g_tmp;
       int *atmp = malloc(sizeof(int) * argc);
@@ -1771,6 +1847,21 @@ else {
         else emit_unbox_text(c, ptrt, gx, b);
         if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, ret, ptrt, b); }
         buf_puts(b, "; break;");
+      }
+      /* eql?/equal?/is_a?/kind_of?/instance_of? on a builtin-scalar (or
+         un-overridden object) poly value: the switch default answers via the
+         universal predicate, with the (boxed) argument reused from atmp. */
+      if (is_pred) {
+        char tvref[24]; snprintf(tvref, sizeof tvref, "_t%d", tv);
+        Buf ab; memset(&ab, 0, sizeof ab);
+        if (atmp_ty[0] == TY_POLY) buf_printf(&ab, "_t%d", atmp[0]);
+        else { char at[24]; snprintf(at, sizeof at, "_t%d", atmp[0]); emit_boxed_text(c, atmp_ty[0], at, &ab); }
+        const char *argref = ab.p ? ab.p : "sp_box_nil()";
+        buf_printf(b, " default: _t%d = ", tr);
+        if (ret == TY_POLY) { buf_puts(b, "sp_box_bool("); emit_poly_pred_value(c, id, tvref, argref, b); buf_puts(b, ")"); }
+        else emit_poly_pred_value(c, id, tvref, argref, b);
+        buf_puts(b, "; break;");
+        free(ab.p);
       }
       buf_printf(b, " } _t%d; })", tr);
       free(atmp);
@@ -5032,6 +5123,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int _cidx = ty_object_class(rt);
       /* a value-type instance has the class's static cls_id (no NULL case) */
       if (comp_ty_value_obj(c, rt)) { buf_printf(b, "((sp_Class){%d})", _cidx); return; }
+      /* A bare Object/BasicObject instance uses the runtime sp_Object struct
+         ({uint8_t _pad}) -- it has no cls_id field to read (every generated
+         user-class struct does). Its class is statically that base, so emit the
+         name-backed value and side-effect-eval the receiver. */
+      const char *_ocn = _cidx >= 0 && _cidx < c->nclasses ? c->classes[_cidx].name : NULL;
+      if (_ocn && (sp_streq(_ocn, "Object") || sp_streq(_ocn, "BasicObject"))) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b);
+        buf_printf(b, "), ((sp_Class){(mrb_int)-1, \"%s\"}))", _ocn);
+        return;
+      }
       int _tobj = ++g_tmp;
       emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _tobj);
       Buf _rb = expr_buf(c, recv);

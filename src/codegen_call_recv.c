@@ -3123,7 +3123,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      pointer; an argument of any other concrete type is never identical. A
      value-type instance is copied inline and has no stable identity, so only
      the reflexive same-lvalue read is knowably true (the string arm's rule). */
-  if (recv >= 0 && ty_is_object(rt) && argc == 1 && sp_streq(name, "equal?")) {
+  if (recv >= 0 && ty_is_object(rt) && argc == 1 && sp_streq(name, "equal?") &&
+      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
     TyKind a0 = comp_ntype(c, argv[0]);
     if (!c->classes[ty_object_class(rt)].is_value_type) {
       if (a0 == rt) {
@@ -3148,7 +3149,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
      self (matching the poly-receiver arm -- spinel has no per-object freeze
      state), so frozen? consistently reports false. */
   if (recv >= 0 && ty_is_object(rt) && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "freeze") || sp_streq(name, "frozen?"))) {
+      (sp_streq(name, "freeze") || sp_streq(name, "frozen?")) &&
+      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
     if (sp_streq(name, "freeze")) { emit_expr(c, recv, b); return 1; }
     buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
     return 1;
@@ -3157,7 +3159,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   /* obj.is_a?/kind_of?/instance_of?(Class): resolved via sp_class_le for
      correctness with module includes; falls back to constant for builtins. */
   if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
-      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?")) &&
+      comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
     const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
                      ? nt_str(nt, argv[0], "name") : NULL;
     if (cn) {
