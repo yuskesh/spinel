@@ -1616,6 +1616,9 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
      proc is lenient about optional positionals, so they keep the positive count
      (`proc { |a, b=1| }.arity == 1`, while `->(a, b=1){}.arity == -2`). */
   int meta_arity = arity;
+  /* numbered params have no parameters node; the highest _N used is the
+     mandatory count (-> { _2 }.arity == 2). */
+  if (nnumbered > 0) meta_arity = nnumbered;
   {
     int pn = proc_params_node(c, create);
     if (pn >= 0) {

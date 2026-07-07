@@ -2318,6 +2318,11 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             int yes = (tcid >= 0) && (cid == tcid || is_descendant(c, cid, tcid));
             buf_printf(b, "%d", yes ? 1 : 0);
           }
+          else if (cn2 && pt == TY_CLASS) {
+            /* `when <ClassName>` is ===: a Class VALUE is an instance only
+               of Class/Module, never of the named class itself. */
+            buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
+          }
           else if (cn2) {
             int yes = ty_matches_class(pt, cn2, 0);
             buf_printf(b, "%d", yes > 0 ? 1 : 0);
@@ -2496,6 +2501,11 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
           int cid = ty_object_class(pt); int tcid = comp_class_index(c, cn2);
           int yes = (tcid >= 0) && (cid == tcid || is_descendant(c, cid, tcid));
           buf_printf(b, "%d", yes ? 1 : 0);
+        }
+        else if (cn2 && pt == TY_CLASS) {
+          /* a Class VALUE is an instance only of Class/Module (see the
+             statement chain's arm) */
+          buf_printf(b, "%d", (sp_streq(cn2, "Class") || sp_streq(cn2, "Module")) ? 1 : 0);
         }
         else if (cn2) { int yes = ty_matches_class(pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
         else {
