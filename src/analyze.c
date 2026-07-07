@@ -1192,6 +1192,97 @@ void qualify_colliding_classes(Compiler *c) {
   free(ws);
 }
 
+/* True if `name` is used as a local write or block parameter OUTSIDE the given
+   block body (stamp `gen`) -- i.e. a block-local of that name would shadow a
+   real enclosing use, so it must be split into its own slot. */
+static int name_written_outside(const NodeTable *nt, const char *name,
+                                const int *wp, int wpn, const int *inbody, int gen) {
+  for (int wi = 0; wi < wpn; wi++) {
+    int w = wp[wi];
+    if (inbody[w] == gen) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (wn && sp_streq(wn, name)) return 1;
+  }
+  return 0;
+}
+
+/* True if `name` is bound as a parameter anywhere in the params subtree
+   (leading / optional / rest / keyword / post / destructured), as opposed to a
+   block-local (`; x`) shadow declaration. Block-locals share the BlockNode's
+   comma-joined `locals` string with the real params, so the two must be told
+   apart before a locals entry is treated as a shadow. */
+static int params_bind_name(const NodeTable *nt, int id, const char *name) {
+  if (id < 0) return 0;
+  const char *ty = nt_type(nt, id);
+  if (ty && (strstr(ty, "ParameterNode") || sp_streq(ty, "LocalVariableTargetNode"))) {
+    const char *pn = nt_str(nt, id, "name");
+    if (pn && sp_streq(pn, name)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (params_bind_name(nt, nt_ref_at(nt, id, i), name)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (params_bind_name(nt, ids[j], name)) return 1;
+  }
+  return 0;
+}
+
+/* Rename any block-local (`; x`) whose name collides with a local used outside
+   the block body so the shadow becomes a distinct slot, mirroring the block
+   parameter rename below. The declaration lives only in the BlockNode's
+   comma-joined `locals` string (spinel's parser carries no BlockLocalVariableNode
+   array), which is rewritten in lock-step so emit_block_locals_reset nils the
+   renamed slot rather than the enclosing one. */
+static void rename_shadowing_block_locals(Compiler *c, int L, int pn, int body,
+                                          const int *inbody, int gen,
+                                          const int *wp, int wpn) {
+  const NodeTable *nt = c->nt;
+  const char *locs0 = nt_str(nt, L, "locals");
+  if (!locs0 || !*locs0) return;
+  /* copy: nt_set_str below frees locs0's storage while we still read it */
+  size_t llen = strlen(locs0);
+  char *locs = malloc(llen + 1);
+  if (!locs) return;
+  memcpy(locs, locs0, llen + 1);
+  size_t ocap = llen + 32;
+  char *out = malloc(ocap);
+  if (!out) { free(locs); return; }
+  out[0] = 0;
+  size_t out_len = 0;
+  int changed = 0;
+  char *save = NULL;
+  for (char *tok = strtok_r(locs, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+    char newn[176];
+    const char *emit = tok;
+    if (!params_bind_name(nt, pn, tok) &&
+        name_written_outside(nt, tok, wp, wpn, inbody, gen)) {
+      snprintf(newn, sizeof newn, "%s__bp%d", tok, L);
+      blkp_rewrite_refs(c, body, tok, newn);
+      emit = newn;
+      changed = 1;
+    }
+    /* track out_len + memcpy so the append is O(1), keeping the whole rebuild
+       O(N) rather than rescanning `out` with strlen/strcat each iteration. */
+    size_t emit_len = strlen(emit);
+    size_t need = out_len + emit_len + 2;
+    if (need > ocap) {
+      ocap = need * 2;
+      char *t = realloc(out, ocap);
+      if (!t) { free(out); free(locs); return; }
+      out = t;
+    }
+    if (out_len > 0) out[out_len++] = ',';
+    memcpy(out + out_len, emit, emit_len);
+    out_len += emit_len;
+    out[out_len] = '\0';
+  }
+  if (changed) nt_set_str((NodeTable *)nt, L, "locals", out);
+  free(out);
+  free(locs);
+}
+
 void rename_shadowing_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
@@ -1237,7 +1328,11 @@ void rename_shadowing_block_params(Compiler *c) {
     const char *pty = nt_type(nt, pn);
     if (!pty || !sp_streq(pty, "ParametersNode")) continue;  /* numbered params handled elsewhere */
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
-    if (rn == 0) continue;
+    /* block-locals (`; a, b`) live only in the BlockNode's comma-joined `locals`
+       string; a block may carry them with no required params (`{ |; x| ... }`). */
+    const char *locs = nt_str(nt, L, "locals");
+    int have_locals = locs && *locs;
+    if (rn == 0 && !have_locals) continue;
     int body = nt_ref(nt, L, "body");
     if (body < 0) continue;
     gen++;
@@ -1271,6 +1366,8 @@ void rename_shadowing_block_params(Compiler *c) {
       nt_set_str((NodeTable *)nt, reqs[i], "name", newn);
       blkp_rewrite_refs(c, body, oldn, newn);
     }
+    if (have_locals)
+      rename_shadowing_block_locals(c, L, pn, body, inbody, gen, wp, wpn);
   }
   free(wp);
   free(inbody);
