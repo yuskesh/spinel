@@ -3884,11 +3884,11 @@ char *codegen_program(const NodeTable *nt) {
       buf_puts(&b, " ");
       buf_puts(&b, cf->ffi_funcs[fi].name);
       buf_puts(&b, "(");
-      for (int ai = 0; ai < cf->ffi_funcs[fi].nargs; ai++) {
+      for (int ai = 0; ai < na; ai++) {
         if (ai) buf_puts(&b, ", ");
         buf_puts(&b, ffi_c_type(cf->ffi_funcs[fi].args[ai]));
       }
-      if (cf->ffi_funcs[fi].nargs == 0) buf_puts(&b, "void");
+      if (na == 0) buf_puts(&b, "void");
       buf_puts(&b, ");\n");
     }
     /* Byte count for the :binstr return mode (defined in sp_net.c). */
