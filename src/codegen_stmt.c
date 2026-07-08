@@ -1233,6 +1233,19 @@ static void emit_pm_req_value_checks(Compiler *c, const int *reqs, int apn,
     buf_puts(b, ")");
   }
 }
+/* Like emit_pm_req_value_checks, but for the `posts` of a splat pattern
+   (`[*rest, a, b]`): a post sits at index `len - (npost - j)` from the front,
+   so index it relative to the boxed array's runtime length. */
+static void emit_pm_post_value_checks(Compiler *c, const int *posts, int npost,
+                                      const char *boxedarr, Buf *b) {
+  for (int j = 0; j < npost; j++) {
+    if (!pm_req_is_literal(c->nt, posts[j])) continue;
+    buf_printf(b, " && sp_poly_eq(sp_poly_index_poly(%s, sp_box_int(sp_poly_length(%s) - %dLL)), ",
+               boxedarr, boxedarr, (long long)(npost - j));
+    emit_boxed(c, posts[j], b);
+    buf_puts(b, ")");
+  }
+}
 /* Recursive match condition for a (possibly nested) array pattern over the
    boxed value `arr` (an sp_RbVal C-expression): `arr` is an array of the right
    length, each nested-array element is itself a correctly-shaped array, and
@@ -1247,8 +1260,12 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
   int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
                   (sp_streq(nt_type(nt, rest_nid), "SplatNode") ||
                    sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
+  int npost = 0;
+  const int *posts = nt_arr(nt, pat, "posts", &npost);
+  /* With a rest the array need only be long enough to hold the leading
+     requireds and the trailing posts; without a rest posts do not occur. */
   buf_printf(b, "((%s).tag == SP_TAG_OBJ && sp_poly_length(%s) %s %dLL",
-             arr, arr, has_rest ? ">=" : "==", apn);
+             arr, arr, has_rest ? ">=" : "==", apn + npost);
   for (int i = 0; i < apn; i++) {
     int sub = -1;
     const char *rty = nt_type(nt, reqs[i]);
@@ -1266,7 +1283,26 @@ static void emit_pm_array_cond(Compiler *c, int pat, const char *arr, Buf *b) {
       free(e.p);
     }
   }
+  /* a nested array pattern among the posts is shape-checked from the tail, just
+     as the requireds are from the front (post j sits at len - (npost - j)). */
+  for (int j = 0; j < npost; j++) {
+    int sub = -1;
+    const char *rty = nt_type(nt, posts[j]);
+    if (rty && sp_streq(rty, "ArrayPatternNode")) sub = posts[j];
+    else if (rty && sp_streq(rty, "CapturePatternNode")) {
+      int val = nt_ref(nt, posts[j], "value");
+      if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) sub = val;
+    }
+    if (sub >= 0) {
+      Buf e; memset(&e, 0, sizeof e);
+      buf_printf(&e, "sp_poly_index_poly(%s, sp_box_int(sp_poly_length(%s) - %dLL))",
+                 arr, arr, (long long)(npost - j));
+      buf_puts(b, " && "); emit_pm_array_cond(c, sub, e.p, b);
+      free(e.p);
+    }
+  }
   emit_pm_req_value_checks(c, reqs, apn, arr, b);
+  emit_pm_post_value_checks(c, posts, npost, arr, b);
   buf_puts(b, ")");
 }
 
@@ -1421,13 +1457,27 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     int has_rest = (rest_nid >= 0 && nt_type(nt, rest_nid) &&
                     (sp_streq(nt_type(nt, rest_nid), "SplatNode") ||
                      sp_streq(nt_type(nt, rest_nid), "ImplicitRestNode")));
-    buf_printf(b, "(_t%d && _t%d->len %s %dLL", t, t, has_rest ? ">=" : "==", (long long)apn);
+    int npost = 0;
+    const int *posts = nt_arr(nt, pat, "posts", &npost);
+    /* likewise a nested-array post can never sit inside a typed array. */
+    for (int i = 0; i < npost && !has_nested; i++) {
+      const char *rty = nt_type(nt, posts[i]);
+      if (!rty) continue;
+      if (sp_streq(rty, "ArrayPatternNode")) has_nested = 1;
+      else if (sp_streq(rty, "CapturePatternNode")) {
+        int val = nt_ref(nt, posts[i], "value");
+        if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) has_nested = 1;
+      }
+    }
+    if (has_nested) { buf_puts(b, "0"); return 1; }
+    buf_printf(b, "(_t%d && _t%d->len %s %dLL", t, t, has_rest ? ">=" : "==", (long long)(apn + npost));
     const char *ak = array_kind(pt);
     if (ak) {
       const char *lo = sp_streq(ak, "Int") ? "int" : (sp_streq(ak, "Float") ? "float" : "str");
       char boxed[64];
       snprintf(boxed, sizeof boxed, "sp_box_%s_array(_t%d)", lo, t);
       emit_pm_req_value_checks(c, reqs, apn, boxed, b);
+      emit_pm_post_value_checks(c, posts, npost, boxed, b);
     }
     buf_puts(b, ")");
     return 1;
@@ -1605,18 +1655,59 @@ static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr, int indent,
     }
     free(src.p);
   }
+  int npost = 0;
+  const int *posts = nt_arr(nt, pat, "posts", &npost);
   int rest_nid = nt_ref(nt, pat, "rest");
   if (rest_nid >= 0 && nt_type(nt, rest_nid) && sp_streq(nt_type(nt, rest_nid), "SplatNode")) {
     int inner = nt_ref(nt, rest_nid, "expression");
     if (inner >= 0 && nt_type(nt, inner) && sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
       const char *rnm = nt_str(nt, inner, "name");
       if (rnm) {
+        /* the rest captures the middle: elements after the requireds and before
+           the posts, i.e. length - apn - npost of them starting at apn. */
         Buf rsrc; memset(&rsrc, 0, sizeof rsrc);
-        buf_printf(&rsrc, "sp_poly_slice(%s, %dLL, sp_poly_length(%s) - %dLL)", arr, apn, arr, apn);
+        buf_printf(&rsrc, "sp_poly_slice(%s, %dLL, sp_poly_length(%s) - %dLL)",
+                   arr, apn, arr, (long long)(apn + npost));
         emit_pm_typed_assign(sc, rnm, rsrc.p, b, indent);
         free(rsrc.p);
       }
     }
+  }
+  /* posts bind from the tail: post j is at index len - (npost - j). */
+  for (int j = 0; j < npost; j++) {
+    const char *rty = nt_type(nt, posts[j]);
+    if (!rty) continue;
+    Buf src; memset(&src, 0, sizeof src);
+    buf_printf(&src, "sp_poly_index_poly(%s, sp_box_int(sp_poly_length(%s) - %dLL))",
+               arr, arr, (long long)(npost - j));
+    if (sp_streq(rty, "LocalVariableTargetNode")) {
+      const char *lnm = nt_str(nt, posts[j], "name");
+      if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+    }
+    else if (sp_streq(rty, "CapturePatternNode")) {
+      int tgt = nt_ref(nt, posts[j], "target");
+      if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) {
+        const char *lnm = nt_str(nt, tgt, "name");
+        if (lnm) emit_pm_typed_assign(sc, lnm, src.p, b, indent);
+      }
+      /* `[a, b] => cap`: also bind the names inside the captured sub-pattern. */
+      int val = nt_ref(nt, posts[j], "value");
+      if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) {
+        int sub = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "sp_RbVal _t%d = %s;\n", sub, src.p);
+        char se[24]; snprintf(se, sizeof se, "_t%d", sub);
+        emit_pm_bind_poly(c, val, se, indent, b, sc);
+      }
+    }
+    else if (sp_streq(rty, "ArrayPatternNode")) {
+      int sub = ++g_tmp;
+      emit_indent(b, indent);
+      buf_printf(b, "sp_RbVal _t%d = %s;\n", sub, src.p);
+      char se[24]; snprintf(se, sizeof se, "_t%d", sub);
+      emit_pm_bind_poly(c, posts[j], se, indent, b, sc);
+    }
+    free(src.p);
   }
 }
 
@@ -2083,6 +2174,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
       int apn = 0;
       const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
       int rest_nid = nt_ref(nt, array_pat, "rest");
+      int npost = 0;
+      const int *posts = nt_arr(nt, array_pat, "posts", &npost);
       for (int i = 0; i < apn; i++) {
         const char *lty2 = nt_type(nt, reqs[i]);
         if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
@@ -2107,11 +2200,35 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
             sp_streq(nt_type(nt, inner), "LocalVariableTargetNode")) {
           const char *rnm = nt_str(nt, inner, "name");
           if (rnm) {
+            /* the rest is the middle: skip apn leading, drop npost trailing. */
             emit_indent(b, body_indent);
             buf_printf(b, "lv_%s = sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL);\n",
-                       rnm, k, arm_t, (long long)apn, arm_t, (long long)apn);
+                       rnm, k, arm_t, (long long)apn, arm_t, (long long)(apn + npost));
           }
         }
+      }
+      /* posts bind from the tail: post j is at index len - (npost - j). */
+      for (int j = 0; j < npost; j++) {
+        const char *pty2 = nt_type(nt, posts[j]);
+        const char *lnm = NULL;
+        if (pty2 && sp_streq(pty2, "LocalVariableTargetNode")) lnm = nt_str(nt, posts[j], "name");
+        else if (pty2 && sp_streq(pty2, "CapturePatternNode")) {
+          int tgt = nt_ref(nt, posts[j], "target");
+          if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+            lnm = nt_str(nt, tgt, "name");
+        }
+        if (!lnm) continue;
+        emit_indent(b, body_indent);
+        buf_printf(b, "lv_%s = ", lnm);
+        LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
+        char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d->len - %dLL)", k, arm_t, arm_t, (long long)(npost - j));
+        if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) {
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, ty_array_elem(arr_t), gx, &bx);
+          buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        }
+        else buf_puts(b, gx);
+        buf_puts(b, ";\n");
       }
       }
     }
@@ -2134,15 +2251,47 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           }
         }
       }
-      /* required LV targets = the matched window elements */
+      /* window targets = the matched elements; a `lit => x` capture binds its
+         target (the literal was already checked in the window scan). */
       for (int j = 0; j < rn; j++) {
         const char *lty2 = nt_type(nt, reqs[j]);
-        if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
-        const char *lnm = nt_str(nt, reqs[j], "name");
-        if (!lnm) continue;
-        emit_indent(b, body_indent);
-        buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d + %dLL);\n",
-                   lnm, find_k, find_arr, find_pos, j);
+        if (!lty2) continue;
+        char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d + %dLL)", find_k, find_arr, find_pos, j);
+        const char *lnm = NULL;
+        if (sp_streq(lty2, "LocalVariableTargetNode")) lnm = nt_str(nt, reqs[j], "name");
+        else if (sp_streq(lty2, "CapturePatternNode")) {
+          int tgt = nt_ref(nt, reqs[j], "target");
+          if (tgt >= 0 && nt_type(nt, tgt) && sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode"))
+            lnm = nt_str(nt, tgt, "name");
+        }
+        if (lnm) {
+          emit_indent(b, body_indent);
+          buf_printf(b, "lv_%s = ", lnm);
+          LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
+          if (plv && plv->type == TY_POLY && !sp_streq(find_k, "Poly")) {
+            Buf bx; memset(&bx, 0, sizeof bx);
+            emit_boxed_text(c, ty_array_elem(pt), gx, &bx);
+            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+          }
+          else buf_puts(b, gx);
+          buf_puts(b, ";\n");
+        }
+        /* a nested array window element (`[*, [a, b], *]`) or a `[a, b] => cap`
+           capture binds the names inside it from the same element (poly only:
+           a typed array cannot hold a sub-array). */
+        int sub = -1;
+        if (sp_streq(lty2, "ArrayPatternNode")) sub = reqs[j];
+        else if (sp_streq(lty2, "CapturePatternNode")) {
+          int val = nt_ref(nt, reqs[j], "value");
+          if (val >= 0 && nt_type(nt, val) && sp_streq(nt_type(nt, val), "ArrayPatternNode")) sub = val;
+        }
+        if (sub >= 0 && sp_streq(find_k, "Poly")) {
+          int st = ++g_tmp;
+          emit_indent(b, body_indent);
+          buf_printf(b, "sp_RbVal _t%d = %s;\n", st, gx);
+          char se[24]; snprintf(se, sizeof se, "_t%d", st);
+          emit_pm_bind_poly(c, sub, se, body_indent, b, comp_scope_of(c, id));
+        }
       }
       /* trailing `*tail` = elements after the matched window */
       int right = nt_ref(nt, find_pat, "right");
