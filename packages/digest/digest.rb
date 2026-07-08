@@ -7,10 +7,12 @@
 module Digest
   module SHA256
     native_lib "digest"
-    native_func :hexdigest, [:string], :string, "sp_crypto_sha256_hex"
+    # :cstring return: sp_crypto's static-buffer contract (the next call
+    # clobbers the buffer), so codegen dups the result onto the GC heap.
+    native_func :hexdigest, [:string], :cstring, "sp_crypto_sha256_hex"
   end
   module SHA1
     native_lib "digest"
-    native_func :hexdigest, [:string], :string, "sp_crypto_sha1_hex"
+    native_func :hexdigest, [:string], :cstring, "sp_crypto_sha1_hex"
   end
 end
