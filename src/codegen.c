@@ -202,9 +202,11 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      int-block site into sp_box_str(int) -- a segfault). Box by the CURRENT
      block's inferred result instead. */
   if (nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode") && g_block_id < 0) {
-    /* no block at this call site: the yield arm is dead; a boxed nil keeps the
-       C well-typed (the cached node type would box the SP_INT_NIL sentinel). */
-    buf_puts(b, "sp_box_nil()");
+    /* An unguarded yield with no block raises LocalJumpError. A guarded yield
+       folds its guard to a compile-time false and sits inside an `if (0)`, so
+       the raise never executes there; the boxed nil keeps the comma expression
+       well-typed for the value position. */
+    buf_puts(b, "(sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\"), sp_box_nil())");
     return;
   }
   if (g_block_id >= 0 && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode")) {

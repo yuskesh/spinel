@@ -1015,10 +1015,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       emit_proc_call_args(c, yargc, yargv, b, 1);
       return;
     }
-    if (g_block_id < 0) {  /* no block: yield is nil */
-      /* box the sentinel when the yield value feeds a poly slot (its method
-         return widened to poly in promote mode) */
-      buf_puts(b, comp_ntype(c, id) == TY_POLY ? "sp_box_nil()" : "SP_INT_NIL");
+    if (g_block_id < 0) {
+      /* An unguarded yield with no block raises LocalJumpError. A guarded yield
+         (`block_given? ? yield : x`) folds its guard to a compile-time false and
+         sits inside an `if (0)`, so the raise never executes there. The trailing
+         sentinel keeps the comma expression well-typed for the value position. */
+      buf_puts(b, "(sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\"), ");
+      buf_puts(b, comp_ntype(c, id) == TY_POLY ? "sp_box_nil())" : "SP_INT_NIL)");
       return;
     }
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
