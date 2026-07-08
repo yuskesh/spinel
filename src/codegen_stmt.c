@@ -3115,6 +3115,21 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
   if (g_ret_type == TY_POLY || (g_result_var && g_result_poly)) { emit_expr(c, node, b); return; }
+  /* A poly-array value returned through a slot pinned (e.g. by RBS) to a concrete
+     typed array is a layout error, not a coercion: sp_PolyArray holds boxed
+     elements while sp_StrArray/sp_IntArray/... hold raw unboxed storage, so the
+     caller reads boxed words as the wrong C type and crashes (SIGSEGV). Array
+     literals are context-coerced to the slot's element type above/in emit_expr,
+     so exclude them; a local/call/ivar read has no such coercion and is the real
+     contradiction. Surface it as a compile-time diagnostic rather than emitting
+     the incompatible pointer. */
+  {
+    const char *vnty = nt_type(c->nt, node);
+    if (comp_ntype(c, node) == TY_POLY_ARRAY && vnty && !sp_streq(vnty, "ArrayNode") &&
+        (g_ret_type == TY_INT_ARRAY || g_ret_type == TY_FLOAT_ARRAY ||
+         g_ret_type == TY_STR_ARRAY || ty_is_obj_array(g_ret_type)))
+      unsupported(c, node, "declared return type is a typed array but the body infers a poly array");
+  }
   /* An empty `{}` literal defaults to StrPolyHash, but in a hash-returning tail
      it must take the return type (e.g. a SymPolyHash-returning method whose
      other branch is `{ a: 1 }`); otherwise the StrPolyHash* return is an

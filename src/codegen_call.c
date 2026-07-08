@@ -7215,6 +7215,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
+    /* poly receiver `poly =~ /re/`: String#=~ when it holds a string at runtime
+       (e.g. an element read out of an array that widened to poly); any other tag
+       has no =~ (Object#=~ was removed) -> NoMethodError, matching CRuby. */
+    if (are >= 0 && sp_streq(name, "=~") && rt == TY_POLY) {
+      int tv = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+      buf_printf(b, "(_t%d.tag == SP_TAG_STR ? sp_re_match_poly(sp_re_pat_%d, _t%d.v.s)"
+                    " : sp_raise_nomethod(\"undefined method '=~' for poly\"))",
+                 tv, are, tv);
+      return;
+    }
     if (are >= 0 && sp_streq(name, "!~")) {
       buf_printf(b, "(!sp_re_match_p(sp_re_pat_%d, ", are); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
@@ -7288,6 +7300,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           }
           if (sp_streq(name, "=~") && rt == TY_STRING) {
             buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, recv, b); buf_puts(b, ")");
+            free(rp.p); return;
+          }
+          /* poly receiver `poly =~ /re/`: String#=~ when it holds a string at
+             runtime (e.g. an element read out of an array that widened to poly);
+             any other tag has no =~ (Object#=~ was removed) -> NoMethodError,
+             matching CRuby. */
+          if (sp_streq(name, "=~") && rt == TY_POLY) {
+            int tv = ++g_tmp;
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, recv, g_pre); buf_puts(g_pre, ";\n");
+            buf_printf(b, "(_t%d.tag == SP_TAG_STR ? sp_re_match_poly(%s, _t%d.v.s)"
+                          " : sp_raise_nomethod(\"undefined method '=~' for poly\"))",
+                       tv, rp.p, tv);
             free(rp.p); return;
           }
           if (sp_streq(name, "!~")) {
