@@ -4519,6 +4519,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* Bareword Object#freeze (implicit self) inside an instance method: freeze is
+     a no-op returning self, which is behaviorally faithful for the common
+     defensive-freeze idiom (`def initialize; ...; freeze; end`) since nothing
+     downstream can observe the difference without a frozen-state query. The
+     companion frozen? (and FrozenError on mutation) needs per-object frozen
+     state spinel does not track, so a bareword frozen? deliberately stays a
+     loud reject rather than silently reporting false. A class that defines its
+     own freeze keeps its method. */
+  if (recv < 0 && argc == 0 && nt_ref(nt, id, "block") < 0 && sp_streq(name, "freeze")) {
+    Scope *s = comp_scope_of(c, id);
+    int scid = s ? s->class_id : -1;
+    if (scid >= 0 && comp_method_in_chain(c, scid, name, NULL) < 0) {
+      buf_puts(b, g_self ? g_self : "self");
+      return;
+    }
+  }
+
   /* block_given? / self.block_given? -> true inside an inlined yielding
      method (we only inline when a block is present). In a lowered yielding
      method the block is the `__yblk__` proc parameter, which is non-NULL

@@ -922,6 +922,15 @@ TyKind infer_call(Compiler *c, int id) {
        sp_streq(name, "dup") || sp_streq(name, "clone")))
     return rt;
 
+  /* bareword freeze (implicit self) returns self, so `def seal = freeze` and
+     other freeze-as-value uses stay typed as the instance. (Matches the
+     codegen arm that lowers bareword freeze to self.) */
+  if (recv < 0 && argc == 0 && nt_ref(c->nt, id, "block") < 0 && sp_streq(name, "freeze")) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id >= 0 && comp_method_in_chain(c, s->class_id, name, NULL) < 0)
+      return ty_object(s->class_id);
+  }
+
   /* x.class -> a first-class Class value for every known receiver kind
      (name-backed for builtins, id-backed for user objects) */
   if (recv >= 0 && argc == 0 && sp_streq(name, "class")) {
