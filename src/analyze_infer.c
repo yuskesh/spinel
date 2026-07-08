@@ -681,10 +681,12 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "respond_to?")) return TY_BOOL;
   }
 
-  /* int_array.chunk_while { |a, b| } .to_a -> a poly array of int-array runs */
+  /* int_array.chunk_while/chunk { |...| } .to_a -> a poly array (runs / pairs) */
   if (recv >= 0 && sp_streq(name, "to_a") &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "chunk_while") &&
+      nt_str(nt, recv, "name") &&
+      (sp_streq(nt_str(nt, recv, "name"), "chunk_while") ||
+       sp_streq(nt_str(nt, recv, "name"), "chunk")) &&
       nt_ref(nt, recv, "block") >= 0) {
     int pr = nt_ref(nt, recv, "receiver");
     if (pr >= 0 && infer_type(c, pr) == TY_INT_ARRAY) return TY_POLY_ARRAY;
