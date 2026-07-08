@@ -3950,7 +3950,16 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, ";\n");
       return;
     }
-    if (g_block_id < 0) return;  /* inlined without block: yield is dead code */
+    if (g_block_id < 0) {
+      /* Reaching a yield emission with no block means the yield is unguarded --
+         a `yield if block_given?` folds its guard to a compile-time false and
+         is never emitted here. An unguarded yield with no block raises
+         LocalJumpError (a guarded one that still reaches codegen sits inside an
+         `if (0)` and never executes the raise). */
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\");\n");
+      return;
+    }
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0);
     return;
   }
