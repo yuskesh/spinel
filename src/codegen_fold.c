@@ -3974,11 +3974,16 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
           ds_hash_type = comp_ntype(c, inner2);
           if (ty_is_hash(ds_hash_type)) {
             ds_hash_tmp = ++g_tmp;
+            /* Render the source into a side buffer first: a hash LITERAL
+               (`**{ ... }`) drains its own construction into g_pre, which must
+               land before -- not inside -- this temp's declaration line. A bare
+               variable emits with no prelude, so this is a no-op there. */
+            Buf hb; memset(&hb, 0, sizeof hb);
+            emit_expr(c, inner2, &hb);
             emit_indent(g_pre, g_indent);
             emit_ctype(c, ds_hash_type, g_pre);
-            buf_printf(g_pre, " _t%d = ", ds_hash_tmp);
-            emit_expr(c, inner2, g_pre);
-            buf_puts(g_pre, ";\n");
+            buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
+            free(hb.p);
           }
         }
         break;
