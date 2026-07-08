@@ -3504,14 +3504,17 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   g_rescue_save_stack[g_rescue_save_depth++] = (RescueSave){ g_exc_frame_depth };
   if (has_bind) {
     emit_indent(b, indent);
+    /* rename_local: inside a yield-inlined method body the binding local was
+       declared under its per-inline name (lv__yN_e); the bare name here left
+       the assignment referencing an undeclared lv_e. */
     if (spec_cid >= 0)
-      buf_printf(b, "lv_%s = (sp_%s *)_ce_%d;\n", nt_str(nt, ref, "name"), c->classes[spec_cid].c_name, rc);
+      buf_printf(b, "lv_%s = (sp_%s *)_ce_%d;\n", rename_local(nt_str(nt, ref, "name")), c->classes[spec_cid].c_name, rc);
     else
       /* bind the materialized object (which already prefers the CARRIED object
          from `raise <exception-object>` / `raise Cls.new`): the rescue variable,
          $!, and the raised object are one identity, since $! reads the same
          sp_exc_handling top this arm just pushed. */
-      buf_printf(b, "lv_%s = _ce_%d;\n", nt_str(nt, ref, "name"), rc);
+      buf_printf(b, "lv_%s = _ce_%d;\n", rename_local(nt_str(nt, ref, "name")), rc);
   }
   if (resultvar) {
     const char *sv = g_result_var; g_result_var = resultvar;

@@ -116,7 +116,17 @@ static inline mrb_int sp_imod(mrb_int a, mrb_int b) {
 }
 /* Float#% (and Integer % Float): floored modulo whose result takes the sign of
    the divisor, unlike C fmod which follows the dividend (-5.5 % 2 == 0.5). */
+/* float %% with an INTEGER zero divisor raises in CRuby (5.0 %% 0), while a
+   float zero divisor yields NaN (5.0 %% 0.0) -- the int-divisor emit routes
+   here so the check costs nothing on the float-divisor path. */
+static inline double sp_fmod_intdiv(double a, mrb_int b) {
+  if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  double r = fmod(a, (double)b);
+  if (r != 0 && ((r < 0) != (b < 0))) r += (double)b;
+  return r;
+}
 static inline double sp_fmod(double a, double b) {
+  if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");  /* 5.0 % 0.0 raises in CRuby */
   double r = fmod(a, b);
   if (r != 0.0 && ((r < 0.0) != (b < 0.0))) r += b;
   return r;
@@ -2113,7 +2123,7 @@ static void sp_sort_idx_by_poly(mrb_int *idx, const sp_RbVal *keys, mrb_int n) {
   free(tmp);
 }
 static sp_RbVal sp_poly_div(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_poly_to_f(a) / sp_poly_to_f(b)); return sp_box_int(sp_idiv(sp_poly_to_i(a), sp_poly_to_i(b))); }
-static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(fmod(sp_poly_to_f(a), sp_poly_to_f(b))); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }
+static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_fmod(sp_poly_to_f(a), sp_poly_to_f(b))); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }  /* sp_fmod: CRuby divisor-sign result + zero-divisor raise */
 /* Comparable#clamp on boxed numerics, faithful to CRuby: the result is the
    applied operand returned UNCHANGED, so an in-range Integer receiver stays
    Integer while a Float bound that clamps stays Float (5.clamp(1.0, 3.0) is

@@ -3102,12 +3102,13 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     }
     if (eff_res == TY_FLOAT && sp_streq(name, "%") && rt != TY_TIME && argc == 1) {
       TyKind at0 = comp_ntype(c, argv[0]);
-      buf_puts(b, "sp_fmod(");
+      /* an integer zero divisor raises (5.0 % 0), a float one is NaN (5.0 % 0.0):
+         route the int-divisor form through the checking helper. */
+      buf_puts(b, at0 == TY_INT ? "sp_fmod_intdiv(" : "sp_fmod(");
       if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);
       buf_puts(b, ", ");
-      if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else emit_expr(c, argv[0], b);
+      emit_expr(c, argv[0], b);
       buf_puts(b, ")");
       return 1;
     }

@@ -1150,15 +1150,21 @@ else {
         return 1;
       }
       if (sp_streq(name, "first") && argc == 1) {
-        buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", 0, ");
-        emit_expr(c, argv[0], b); buf_puts(b, ")");
+        /* first(-1) is an ArgumentError in CRuby, not an empty slice */
+        int tn0 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", tn0); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_%sArray_slice(", tn0, k);
+        emit_expr(c, recv, b);
+        buf_printf(b, ", 0, _t%d); })", tn0);
         return 1;
       }
       if (sp_streq(name, "last") && argc == 1) {
-        /* slice's negative start counts from the end -> the last n elements */
+        /* slice's negative start counts from the end -> the last n elements;
+           a negative count is an ArgumentError in CRuby */
         int tn = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-        buf_printf(b, "; sp_%sArray_slice(", k); emit_expr(c, recv, b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_%sArray_slice(", tn, k);
+        emit_expr(c, recv, b);
         buf_printf(b, ", -_t%d, _t%d); })", tn, tn);
         return 1;
       }
