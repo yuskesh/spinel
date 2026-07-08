@@ -2322,6 +2322,39 @@ static const char *isa_guard_local(Compiler *c, int pred, Scope *s, TyKind *out_
   return pn;
 }
 
+/* Like nng_mark_reads, but a bare read that is a direct ELEMENT of an array
+   or hash literal stays unnarrowed: narrowing it retypes the container literal
+   (`[v]` becomes a typed array), which cascades into the container's consumers
+   and is layout-hostile on hot programs (optcarrot's add_mappings ternary cost
+   ~2-3%% fps) -- the array-typing lesson. Dispatch on v itself still narrows. */
+static void isa_mark_reads(Compiler *c, int root, Scope *s, const char *pn, TyKind t) {
+  if (root < 0) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty && sp_streq(ty, "LocalVariableReadNode")) {
+    const char *nm = nt_str(nt, root, "name");
+    if (nm && sp_streq(nm, pn) && comp_scope_of(c, root) == s)
+      c->nilnarrow[root] = t;
+    return;
+  }
+  int is_container = ty && (sp_streq(ty, "ArrayNode") || sp_streq(ty, "HashNode"));
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) isa_mark_reads(c, nt_ref_at(nt, root, i), s, pn, t);
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0;
+    const int *a = nt_arr_at(nt, root, i, &n2);
+    for (int j = 0; j < n2; j++) {
+      if (is_container && a[j] >= 0 && nt_type(nt, a[j]) &&
+          sp_streq(nt_type(nt, a[j]), "LocalVariableReadNode")) {
+        const char *enm = nt_str(nt, a[j], "name");
+        if (enm && sp_streq(enm, pn)) continue;  /* bare element read: keep poly */
+      }
+      isa_mark_reads(c, a[j], s, pn, t);
+    }
+  }
+}
+
 /* Walk statements; for each `if v.is_a?(K)` narrow reads of v in the then-arm
    (v provably IS K there) unless the arm rewrites v. Recurses so nested and
    `elsif v.is_a?(K2)` chains each narrow their own arm. */
@@ -2335,7 +2368,7 @@ static void isa_mark_guards(Compiler *c, int root, Scope *s) {
     if (pn) {
       int branch = nt_ref(nt, root, "statements");  /* the then-arm: v IS K */
       if (branch >= 0 && !nng_has_write(c, branch, pn))
-        nng_mark_reads(c, branch, s, pn, t);
+        isa_mark_reads(c, branch, s, pn, t);
     }
   }
   int nr = nt_num_refs(nt, root);
