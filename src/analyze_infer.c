@@ -3632,6 +3632,25 @@ TyKind infer_uncached(Compiler *c, int id) {
     TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
     for (int k = 0; k < n; k++) {
       const char *aty = nt_type(nt, els[k]);
+      if (aty && sp_streq(aty, "AssocSplatNode")) {
+        /* `{ **h, ... }`: merge the spread source's key/value types so the
+           rebuilt literal keeps a concrete typed-hash variant instead of
+           erasing to UNKNOWN. */
+        int src = nt_ref(nt, els[k], "value");
+        TyKind sh = src >= 0 ? infer_type(c, src) : TY_UNKNOWN;
+        if (ty_is_hash(sh)) {
+          kt = ty_unify(kt, ty_hash_key(sh));
+          vt = ty_unify(vt, ty_hash_val(sh));
+        } else if (sh == TY_POLY) {
+          /* a poly spread source (a hash reached through a poly binding) merges
+             at runtime into a fully-poly hash. */
+          kt = ty_unify(kt, TY_POLY);
+          vt = ty_unify(vt, TY_POLY);
+        } else {
+          return TY_UNKNOWN;  /* unresolved or non-hash splat */
+        }
+        continue;
+      }
       if (!aty || !sp_streq(aty, "AssocNode")) return TY_UNKNOWN;
       kt = ty_unify(kt, infer_type(c, nt_ref(nt, els[k], "key")));
       int vnode = nt_ref(nt, els[k], "value");

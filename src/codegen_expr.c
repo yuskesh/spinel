@@ -1601,6 +1601,39 @@ else {
     int sym_poly = (ht == TY_SYM_POLY_HASH || ht == TY_STR_POLY_HASH);
     int poly_poly = (ht == TY_POLY_POLY_HASH);
     for (int j = 0; j < n; j++) {
+      const char *ety = nt_type(nt, els[j]);
+      if (ety && sp_streq(ety, "AssocSplatNode")) {
+        /* `**h`: merge the spread hash into the fresh literal. In `{ **h, k: v }`
+           the splat is emitted before the explicit assocs, so a following key
+           overrides the merged one (Ruby's last-wins). Only a same-variant
+           source merges directly; a differently-typed spread is rejected loudly
+           rather than emitting a layout-mismatching update. */
+        int src = nt_ref(nt, els[j], "value");
+        TyKind sh = src >= 0 ? comp_ntype(c, src) : TY_UNKNOWN;
+        const char *shn = ty_hash_cname(sh);
+        if (shn && sp_streq(shn, hn)) {
+          /* same-variant source: a direct typed merge. */
+          Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, src, &sb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_%sHash_update(_t%d, %s);\n", hn, t, sb.p ? sb.p : "");
+          free(sb.p);
+        } else if (sh == TY_POLY && poly_poly) {
+          /* a poly spread source into a poly-poly literal: iterate its boxed
+             (key,value) pairs at runtime (any hash variant) and set them. */
+          int st = ++g_tmp;
+          Buf sb; memset(&sb, 0, sizeof sb); emit_expr(c, src, &sb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
+          free(sb.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "for (mrb_int _si = 0, _sn = sp_poly_length(_t%d); _si < _sn; _si++) "
+                            "{ sp_RbVal _sk, _sv; sp_poly_hash_pair(_t%d, _si, &_sk, &_sv); "
+                            "sp_PolyPolyHash_set(_t%d, _sk, _sv); }\n", st, st, t);
+        } else {
+          unsupported(c, id, "hash double-splat of an unmergeable source"); return;
+        }
+        continue;
+      }
       int key = nt_ref(nt, els[j], "key");
       int val = nt_ref(nt, els[j], "value");
       Buf kb; memset(&kb, 0, sizeof kb);
