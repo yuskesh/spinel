@@ -1775,10 +1775,14 @@ else if (orecv >= 0 && onm) {
      statement and fall through to `return 0`. */
   int ret_no_value = (ret == TY_VOID || ret == TY_NIL);
   int ret_poly = (ret == TY_POLY);
-  int ret_fbox = (ret == TY_FLOAT);  /* boxed through the poly return slot */
+  /* boxed through the poly return slot: a float unboxes via sp_poly_to_f at the
+     call site; a range/time (by-value structs that don't fit the mrb_int
+     carrier) box via sp_box_range/sp_box_time and the call site dereferences
+     the heap copy back to the value. */
+  int ret_fbox = (ret == TY_FLOAT || ret == TY_RANGE || ret == TY_TIME);
   if (!proc_slot_is_direct(ret) && !ret_ptr && !ret_no_value && !ret_poly && !ret_fbox) {
     free(params.v); free(used.v); free(locals.v); free(caps.v);
-    unsupported(c, create, "proc with range/time return (later slice)");
+    unsupported(c, create, "proc with unsupported return kind");
     return;
   }
 
