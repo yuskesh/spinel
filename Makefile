@@ -773,6 +773,14 @@ install: all bin/spin
 	install -d $(SPNLDIR)/lib
 	install -m 755 $(SPINEL)            $(SPNLDIR)/spinel
 	install -m 755 bin/spin             $(SPNLDIR)/spin
+	@# spinel_rbs_extract is a sibling of spinel at runtime (main.c looks for it
+	@# there for --rbs). spin now passes --rbs for .rbs-carrying packages, so
+	@# omitting it here silently drops seeds on installed toolchains (#1792).
+	@if [ -x "$(RBS_EXTRACT_BIN)" ]; then \
+	  install -m 755 $(RBS_EXTRACT_BIN) $(SPNLDIR)/spinel_rbs_extract; \
+	else \
+	  echo "note: spinel_rbs_extract not built (RBS parser absent via 'make deps'); --rbs seeds will be unavailable in this install"; \
+	fi
 	install -m 644 lib/libspinel_rt.a    $(SPNLDIR)/lib/
 	install -m 644 lib/libspinel_rt_mt.a $(SPNLDIR)/lib/
 	install -m 644 lib/sp_runtime.h      $(SPNLDIR)/lib/

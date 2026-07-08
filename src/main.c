@@ -314,13 +314,19 @@ int main(int argc, char **argv) {
   }
 
   /* --rbs: extract advisory seeds via the sibling spinel_rbs_extract binary
-     and hand them to the analyzer through SPINEL_RBS_SEED. A missing extractor
-     or empty result is a silent no-op. */
+     and hand them to the analyzer through SPINEL_RBS_SEED. An empty result is a
+     silent no-op; a missing extractor is warned about, since --rbs was asked for
+     explicitly and the seeds would otherwise vanish without a trace (#1792). */
   char seed_path[4096] = {0};
   if (rbs_dir && *rbs_dir) {
     char dir[4096], extractor[4096];
     exe_dir(argv[0], dir, sizeof dir);
     snprintf(extractor, sizeof extractor, "%s%cspinel_rbs_extract%s", dir, PATH_SEP, EXE_SUFFIX);
+    if (!file_exists(extractor)) {
+      fprintf(stderr, "spinel: warning: --rbs %s requested but spinel_rbs_extract "
+              "was not found beside the compiler; .rbs type seeds are unavailable "
+              "(rebuild with `make deps`, or reinstall a toolchain that ships it)\n", rbs_dir);
+    }
     if (file_exists(extractor)) {
       make_temp_path(seed_path, sizeof seed_path, "seed", 0, ".txt");
       Str cmd = {0};
