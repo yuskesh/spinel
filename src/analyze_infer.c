@@ -681,6 +681,18 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "respond_to?")) return TY_BOOL;
   }
 
+  /* <array>.cycle.first(n) / .take(n) -> same array kind (bounded consumer of the
+     infinite cycle; the unbounded forms stay a loud reject). */
+  if (recv >= 0 && (sp_streq(name, "first") || sp_streq(name, "take")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "cycle") &&
+      nt_ref(nt, recv, "block") < 0) {
+    int cargs = nt_ref(nt, recv, "arguments");
+    int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
+    int pr = nt_ref(nt, recv, "receiver");
+    if (cac == 0 && pr >= 0) { TyKind rt2 = infer_type(c, pr); if (ty_is_array(rt2)) return rt2; }
+  }
+
   /* int_array.chunk_while { |a, b| } .to_a -> a poly array of int-array runs */
   if (recv >= 0 && sp_streq(name, "to_a") &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
