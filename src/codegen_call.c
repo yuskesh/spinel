@@ -2037,8 +2037,29 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             !c->scopes[initm].yields) {
           if (c->scopes[initm].nparams > 0) buf_puts(b, ", ");
           int blk = nt_ref(nt, id, "block");
-          if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockNode"))
+          const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
+          int bexpr = (bty && sp_streq(bty, "BlockArgumentNode")) ? nt_ref(nt, blk, "expression") : -1;
+          if (bty && sp_streq(bty, "BlockNode"))
             emit_proc_literal(c, blk, b);
+          /* A forwarded `&proc` (BlockArgumentNode) threads the proc value
+             itself into the stored `&blk`. This is faithful now that every proc
+             publishes its result on the boxed return channel, so a later
+             `@blk.call` reads it back correctly regardless of the proc's body
+             type (the reason this once had to be a loud reject). */
+          else if (bexpr >= 0 && comp_ntype(c, bexpr) == TY_PROC)
+            emit_expr(c, bexpr, b);
+          /* A poly-carried proc (a proc pulled from a poly slot -- a container
+             element, an untyped ivar/return) arrives boxed; unbox it to the
+             sp_Proc*, mirroring the poly `.call` site's `(sp_Proc *)v.v.p`. */
+          else if (bexpr >= 0 && comp_ntype(c, bexpr) == TY_POLY) {
+            buf_puts(b, "(sp_Proc *)("); emit_expr(c, bexpr, b); buf_puts(b, ").v.p");
+          }
+          /* A forwarded block of an unmodeled static type: refuse loudly rather
+             than silently thread a NULL block (a later @blk.call would misfire
+             -- the silent-wrong outcome). block omitted (bexpr < 0) is the real
+             NULL case below. */
+          else if (bexpr >= 0)
+            unsupported(c, id, "forwarding a block of this type into a stored-block initialize");
           else buf_puts(b, "NULL");
         }
         buf_puts(b, ")");
