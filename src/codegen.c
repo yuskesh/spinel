@@ -2338,13 +2338,16 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   if (ci->is_struct) {
     int sinit_def = cid;
     int sinit = comp_method_in_chain(c, cid, "initialize", &sinit_def);
-    if (sinit >= 0 && c->scopes[sinit].reachable && !c->scopes[sinit].yields) {
+    if (sinit >= 0 && c->scopes[sinit].reachable) {
       /* Custom `initialize` override (a `Struct.new(...) do def initialize ...
          super(...) end end` block, e.g. doom's Visplane): the constructor
          allocates a blank instance and delegates to the user initialize -- the
          member ivars are set by its own super(...) call (see emit_super's
          is_struct branch), not positionally here, since the args at the .new
-         site are the custom initialize's own params, not one-per-member. */
+         site are the custom initialize's own params, not one-per-member.
+         A yielding initialize has no standalone C symbol (its body runs inlined
+         at the .new site); the constructor just allocates blank and the inliner
+         runs the body -- so skip the sp_X_initialize call for that case. */
       Scope *si = &c->scopes[sinit];
       buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
       buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
@@ -2371,11 +2374,17 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          sp_<ancestor>_initialize (not sp_<this>_initialize), and self must be
          cast to the ancestor's struct type. (For a direct definition
          sinit_def == cid and this is unchanged.) */
-      buf_printf(b, "  sp_%s_initialize(", c->classes[sinit_def].c_name);
-      if (sinit_def != cid) buf_printf(b, "(sp_%s *)", c->classes[sinit_def].c_name);
-      buf_puts(b, "self");
-      for (int i = 0; i < si->nparams; i++) buf_printf(b, ", lv_%s", si->pnames[i]);
-      buf_puts(b, ");\n");
+      if (!si->yields) {
+        buf_printf(b, "  sp_%s_initialize(", c->classes[sinit_def].c_name);
+        if (sinit_def != cid) buf_printf(b, "(sp_%s *)", c->classes[sinit_def].c_name);
+        buf_puts(b, "self");
+        for (int i = 0; i < si->nparams; i++) buf_printf(b, ", lv_%s", si->pnames[i]);
+        buf_puts(b, ");\n");
+      } else {
+        /* The body runs inlined at the .new site, so these params are unused
+           here; the signature exists only to match the inliner's call. */
+        for (int i = 0; i < si->nparams; i++) buf_printf(b, "  (void)lv_%s;\n", si->pnames[i]);
+      }
       buf_puts(b, "  return self;\n}\n");
       goto struct_meta;
     }
@@ -4383,7 +4392,9 @@ char *codegen_program(const NodeTable *nt) {
       /* struct constructor takes typed member params -- the prototype must
          match the definition (an empty () prototype + a _Bool param differ) */
       int scust = comp_method_in_chain(c, i, "initialize", NULL);
-      int has_custom = scust >= 0 && c->scopes[scust].reachable && !c->scopes[scust].yields;
+      /* a custom initialize -- yielding or not -- gives sp_X_new the init's own
+         param signature (a yielding one is run inlined; see emit_class_new). */
+      int has_custom = scust >= 0 && c->scopes[scust].reachable;
       buf_printf(&b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
       if (has_custom) {
         /* custom initialize: the .new params are its params, not one-per-member */

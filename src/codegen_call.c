@@ -153,16 +153,29 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int args = nt_ref(nt, id, "arguments");
   int argc2 = 0;
   const int *argv2 = args >= 0 ? nt_arr(nt, args, "arguments", &argc2) : NULL;
+  /* A trailing keyword-hash arg (a Data class's `new(x: .., y: ..)` into a
+     keyword-param initialize) binds each keyword param by name, not by
+     position -- otherwise the whole hash lands in the first param's slot. */
+  const char *last_ty = argc2 > 0 ? nt_type(nt, argv2[argc2 - 1]) : NULL;
+  int kwh = (last_ty && sp_streq(last_ty, "KeywordHashNode")) ? argv2[argc2 - 1] : -1;
+  int pos_argc = kwh >= 0 ? argc2 - 1 : argc2;
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     buf_printf(b, "lv__y%d_%s = ", tag, m->pnames[i]);
+    int provided = i < pos_argc ? argv2[i] : -1;
+    /* Only bind from the keyword hash when the param was not already filled
+       positionally -- otherwise a same-named key would clobber the positional. */
+    if (kwh >= 0 && i >= pos_argc) {
+      int kv = kwh_lookup(nt, kwh, m->pnames[i]);
+      if (kv >= 0) provided = kv;
+    }
     /* hide THIS inline's renames only: args are call-site expressions,
        and the call site may itself be an outer inlined body whose locals
        are renamed (nested yield-method inlines) -- zeroing the whole
        table emitted the unrenamed lv_<name> (undeclared identifier, or a
        silent capture of a same-named caller local). */
     int sv = g_nren; g_nren = saved_nren;
-    emit_arg_or_default(c, m, i, i < argc2 ? argv2[i] : -1, b);
+    emit_arg_or_default(c, m, i, provided, b);
     g_nren = sv;
     buf_puts(b, ";\n");
   }
@@ -1955,6 +1968,16 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            .new args are that initialize's params (not one-per-member), so call
            the constructor with the args filled to its signature. */
         int scust = comp_method_in_chain(c, ci, "initialize", NULL);
+        if (scust >= 0 && c->scopes[scust].reachable && c->scopes[scust].yields) {
+          /* a yielding custom initialize (yield / block_given? / a called &blk)
+             runs its body inlined at the .new site -- the body drives the block
+             and calls super to set the members. Without this the member-wise
+             path below runs on the raw args, dropping the block and the body. */
+          if (emit_ctor_yield_inline(c, id, ci, b)) return 1;
+          /* a declined inline must not silently fall through to member-wise
+             construction (which drops the block); reject loudly instead. */
+          unsupported(c, id, "yielding Struct/Data initialize with a non-inlinable body");
+        }
         if (scust >= 0 && c->scopes[scust].reachable && !c->scopes[scust].yields) {
           buf_printf(b, "sp_%s_new(", cls->c_name);
           emit_args_filled(c, scust, nt_ref(nt, id, "arguments"), "", b);
