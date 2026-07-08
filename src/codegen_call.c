@@ -3209,6 +3209,21 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
    class object inherits (`new` answered by classes, not modules). Shared
    by the explicit `Const.respond_to?(:m)` fold and the receiverless form
    inside a `def self.x` method (implicit self = the class object). */
+/* Does any user class's chain define qm (instance method, attr reader, or a
+   `m=` attr writer)? Lets a poly respond_to?(:qm) decide whether a runtime
+   cls_id check is needed instead of the union-wide static probe answer. */
+static int any_class_defines(Compiler *c, const char *qm) {
+  size_t ql = strlen(qm);
+  char wbase[256]; wbase[0] = '\0';
+  int is_wr = ql > 0 && qm[ql - 1] == '=' && ql - 1 < sizeof wbase;
+  if (is_wr) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, qm, NULL) >= 0 ||
+        comp_reader_in_chain(c, k, qm, NULL) ||
+        (is_wr && comp_writer_in_chain(c, k, wbase, NULL)))
+      return 1;
+  return 0;
+}
 static int class_responds_to(Compiler *c, int ci, const char *qm) {
   const NodeTable *nt = c->nt;
   if (comp_cmethod_in_chain(c, ci, qm, NULL) >= 0) return 1;
@@ -7199,14 +7214,40 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             }
           }
         }
+        else if ((rt == TY_POLY || rt == TY_UNKNOWN) && any_class_defines(c, qm)) {
+          /* poly receiver + a user protocol method (some user class defines qm):
+             the analyze probe answers "SOME union member responds", which
+             mis-decides per value -- a String member of String|UserClass would
+             report true for the user's method and take the wrong branch. Emit a
+             runtime check against the exact user classes that define qm; a
+             builtin value (which cannot define a user protocol method) answers
+             false. This mirrors the poly is_a? runtime cls_id check. */
+          int tv = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b); buf_puts(b, "; ");
+          buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && (", tv, tv);
+          size_t ql = strlen(qm);
+          char wbase[256]; wbase[0] = '\0';
+          int is_wr = ql > 0 && qm[ql - 1] == '=' && ql - 1 < sizeof wbase;
+          if (is_wr) { memcpy(wbase, qm, ql - 1); wbase[ql - 1] = '\0'; }
+          int first = 1;
+          for (int k = 0; k < c->nclasses; k++) {
+            int has = comp_method_in_chain(c, k, qm, NULL) >= 0 ||
+                      comp_reader_in_chain(c, k, qm, NULL) ||
+                      (is_wr && comp_writer_in_chain(c, k, wbase, NULL));
+            if (has) { buf_printf(b, "%s_t%d.cls_id == %d", first ? "" : " || ", tv, k); first = 0; }
+          }
+          if (first) buf_puts(b, "0");
+          buf_printf(b, "); })");
+          return;
+        }
         else {
           /* primitive/builtin receiver (String/Integer/Array/...): consult the
              analyze-time probe -- a synthesized `recv.<qm>` call whose inferred
              type says whether spinel can actually dispatch the method. This
              derives the answer from the same resolver that types a real call,
              so it never drifts from what a real `recv.qm` would compile to. A
-             poly/unknown receiver gets no probe and stays unresolved (falls
-             through) rather than answering a possibly-wrong false. */
+             poly/unknown receiver with no user protocol method falls through
+             here (the builtin probe answer) rather than a possibly-wrong false. */
           int pn = 0; const int *probes = nt_arr(nt, id, "rt_probes", &pn);
           if (probes && pn > 0) {
             resolved = 1; yes = 0;
