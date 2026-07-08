@@ -1446,6 +1446,13 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "_fib_cap_%d *_t%d = (_fib_cap_%d *)sp_gc_alloc(sizeof(_fib_cap_%d), NULL, _fib_cap_scan_%d);\n",
                fid, tc, fid, fid, fid);
+    /* Root the capture struct before it is handed off: for a generator it goes
+       straight into sp_Enumerator_new_gen, whose enumerator allocation can
+       trigger a GC while the struct is reachable only through this unrooted C
+       local (the !as_gen path links it into the already-rooted fiber below, but
+       rooting here covers both uniformly). */
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tc);
     if (cap_self) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "_t%d->self_ptr = %s;\n", tc, sv_self ? sv_self : "self");
