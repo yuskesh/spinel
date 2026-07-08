@@ -605,6 +605,16 @@ int builtin_class_id(const char *name) {
   if (sp_streq(name, "StopIteration")) return -129;
   if (sp_streq(name, "Math"))        return -130;
   if (sp_streq(name, "Complex"))     return -131;
+  if (sp_streq(name, "IndexError"))  return -132;
+  if (sp_streq(name, "KeyError"))    return -133;
+  if (sp_streq(name, "RangeError"))  return -134;
+  if (sp_streq(name, "FloatDomainError")) return -135;
+  if (sp_streq(name, "ZeroDivisionError")) return -136;
+  if (sp_streq(name, "FrozenError")) return -137;
+  if (sp_streq(name, "IOError"))     return -138;
+  if (sp_streq(name, "LocalJumpError")) return -139;
+  if (sp_streq(name, "NotImplementedError")) return -140;
+  if (sp_streq(name, "ScriptError")) return -141;
   return 0;
 }
 const char *c_type_name(TyKind t) {

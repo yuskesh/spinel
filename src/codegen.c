@@ -4027,6 +4027,11 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "case -126:return SPL(\"ArgumentError\");case -127:return SPL(\"NameError\");");
     buf_puts(&b, "case -128:return SPL(\"NoMethodError\");case -129:return SPL(\"StopIteration\");");
     buf_puts(&b, "case -130:return SPL(\"Math\");case -131:return SPL(\"Complex\");");
+    buf_puts(&b, "case -132:return SPL(\"IndexError\");case -133:return SPL(\"KeyError\");");
+    buf_puts(&b, "case -134:return SPL(\"RangeError\");case -135:return SPL(\"FloatDomainError\");");
+    buf_puts(&b, "case -136:return SPL(\"ZeroDivisionError\");case -137:return SPL(\"FrozenError\");");
+    buf_puts(&b, "case -138:return SPL(\"IOError\");case -139:return SPL(\"LocalJumpError\");");
+    buf_puts(&b, "case -140:return SPL(\"NotImplementedError\");case -141:return SPL(\"ScriptError\");");
     buf_puts(&b, "default:return \"\";} }\n\n");
   }
   g_needs_class_machinery = program_needs_class_machinery(c);
@@ -4108,10 +4113,20 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(&b, "  case -102:case -103:case -104:case -105:case -106:case -107:case -113: return ((sp_Class){-116});\n");
   /* Exception -> Object */
   buf_puts(&b, "  case -122: return ((sp_Class){-116});\n");
-  /* StandardError, RuntimeError -> Exception */
-  buf_puts(&b, "  case -123:case -124: return ((sp_Class){-122});\n");
-  /* TypeError, ArgumentError, NameError, StopIteration -> StandardError */
-  buf_puts(&b, "  case -125:case -126:case -127:case -129: return ((sp_Class){-123});\n");
+  /* StandardError, ScriptError -> Exception */
+  buf_puts(&b, "  case -123:case -141: return ((sp_Class){-122});\n");
+  /* TypeError, ArgumentError, NameError, StopIteration, RuntimeError,
+     IndexError, RangeError, ZeroDivisionError, IOError, LocalJumpError
+     -> StandardError (RuntimeError previously said Exception; CRuby says
+     StandardError) */
+  buf_puts(&b, "  case -124:case -125:case -126:case -127:case -129:"
+               "case -132:case -134:case -136:case -138:case -139: return ((sp_Class){-123});\n");
+  /* KeyError -> IndexError; FloatDomainError -> RangeError; FrozenError ->
+     RuntimeError; NotImplementedError -> ScriptError */
+  buf_puts(&b, "  case -133: return ((sp_Class){-132});\n");
+  buf_puts(&b, "  case -135: return ((sp_Class){-134});\n");
+  buf_puts(&b, "  case -137: return ((sp_Class){-124});\n");
+  buf_puts(&b, "  case -140: return ((sp_Class){-141});\n");
   /* NoMethodError -> NameError */
   buf_puts(&b, "  case -128: return ((sp_Class){-127});\n");
   /* NilClass, TrueClass, FalseClass, Proc -> Object */
