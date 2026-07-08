@@ -2281,6 +2281,81 @@ static const char *nng_guard_param(Compiler *c, Scope *s, int st) {
   return pn;
 }
 
+/* ---- `if v.is_a?(K)` occurrence typing ------------------------------------
+   A poly local/param unioned across several concrete types cannot dispatch a
+   method that only SOME members define -- `v.to_a` where v is Array | String
+   aborts at runtime "undefined method 'to_a' for poly". An `is_a?(K)` guard
+   proves the runtime type inside its then-branch, so reads of v there can be
+   narrowed to K's concrete type (unboxed at the read site, the same machinery
+   `return .. if p.nil?` uses). The runtime is_a? check makes the unbox sound. */
+
+/* Map a guard class name to the concrete narrowed type, or TY_UNKNOWN. */
+static TyKind isa_narrow_type(const char *cn) {
+  if (!cn) return TY_UNKNOWN;
+  if (sp_streq(cn, "Array")) return TY_POLY_ARRAY;
+  if (sp_streq(cn, "String")) return TY_STRING;
+  if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) return TY_INT;
+  if (sp_streq(cn, "Float")) return TY_FLOAT;
+  if (sp_streq(cn, "Symbol")) return TY_SYMBOL;
+  return TY_UNKNOWN;
+}
+
+/* predicate `v.is_a?(K)` / `v.kind_of?(K)` on a poly local v of scope s:
+   returns v's name and sets *out_t to the narrowed type, else NULL. */
+static const char *isa_guard_local(Compiler *c, int pred, Scope *s, TyKind *out_t) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0 || !nt_type(nt, pred) || !sp_streq(nt_type(nt, pred), "CallNode")) return NULL;
+  const char *cn = nt_str(nt, pred, "name");
+  if (!cn || (!sp_streq(cn, "is_a?") && !sp_streq(cn, "kind_of?"))) return NULL;
+  int recv = nt_ref(nt, pred, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return NULL;
+  const char *pn = nt_str(nt, recv, "name");
+  if (!pn || comp_scope_of(c, recv) != s) return NULL;
+  LocalVar *lv = scope_local(s, pn);
+  if (!lv || lv->type != TY_POLY) return NULL;   /* only a poly local narrows */
+  int args = nt_ref(nt, pred, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || !av || !nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "ConstantReadNode")) return NULL;
+  TyKind t = isa_narrow_type(nt_str(nt, av[0], "name"));
+  if (t == TY_UNKNOWN) return NULL;
+  *out_t = t;
+  return pn;
+}
+
+/* Walk statements; for each `if v.is_a?(K)` narrow reads of v in the then-arm
+   (v provably IS K there) unless the arm rewrites v. Recurses so nested and
+   `elsif v.is_a?(K2)` chains each narrow their own arm. */
+static void isa_mark_guards(Compiler *c, int root, Scope *s) {
+  if (root < 0) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, root);
+  if (ty && sp_streq(ty, "IfNode")) {
+    TyKind t = TY_UNKNOWN;
+    const char *pn = isa_guard_local(c, nt_ref(nt, root, "predicate"), s, &t);
+    if (pn) {
+      int branch = nt_ref(nt, root, "statements");  /* the then-arm: v IS K */
+      if (branch >= 0 && !nng_has_write(c, branch, pn))
+        nng_mark_reads(c, branch, s, pn, t);
+    }
+  }
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) isa_mark_guards(c, nt_ref_at(nt, root, i), s);
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n2 = 0;
+    const int *a = nt_arr_at(nt, root, i, &n2);
+    for (int j = 0; j < n2; j++) isa_mark_guards(c, a[j], s);
+  }
+}
+
+static void narrow_isa_guards(Compiler *c) {
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *s = &c->scopes[mi];
+    if (s->body < 0 || s->cs_synth) continue;
+    isa_mark_guards(c, s->body, s);
+  }
+}
+
 /* ---- caller-side narrowing of a nil-guarded poly LOCAL (#1675) ------------
    `a = m()` where m's value is `nil | Time` types `a` poly (Time has no
    first-class nullable slot). When a branch is guarded by `a.nil?` or `a`
@@ -3186,6 +3261,10 @@ void analyze_program(Compiler *c) {
      narrowed tails type the enclosing method's return. */
   narrow_nil_guard_params(c);
   narrow_nil_guard_locals(c);
+  /* `if v.is_a?(K)` occurrence typing: reads of a poly v inside the guard's
+     then-arm narrow to K's concrete type (post-fixpoint, same read-site unbox
+     as the nil guards above). */
+  narrow_isa_guards(c);
   /* Post-backstop: re-run write type inference so multi-write locals whose
      RHS chains through a now-typed ivar (e.g. @h[bank][idx] where @h was
      just promoted from UNKNOWN to POLY) get their types resolved. */
