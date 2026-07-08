@@ -188,6 +188,15 @@ typedef struct {
 typedef struct { char *mod; char *name; int val; } FfiConst;     /* ffi_const */
 typedef struct { char *mod; char *name; int size; } FfiBuf;      /* ffi_buffer */
 typedef struct { char *mod; char *name; int offset; char *kind; } FfiReader; /* ffi_read_* ("u32"/"i32"/"ptr") */
+/* ffi_callback :name, [arg_specs], ret_spec -- a C function-pointer type. A
+   method(:sym) / non-capturing lambda passed to an arg of this type becomes a
+   compile-time trampoline that boxes the C args, calls the compiled method, and
+   converts the result back. */
+typedef struct { char *mod; char *name; char **arg_specs; int nargs; char *ret_spec; } FfiCallback;
+typedef struct { char *name; char *spec; } FfiField;                 /* one ffi_struct member */
+typedef struct { char *mod; char *name; FfiField *fields; int nfields; } FfiStruct; /* ffi_struct */
+/* ffi_struct method dispatch (see ffi_struct_method, declared below Compiler). */
+enum { FFI_SM_NONE = 0, FFI_SM_NEW, FFI_SM_GET, FFI_SM_SET };
 typedef struct { char *mod; char *names; } FfiLib;   /* names: ;-separated lib names, or "" */
 typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags, or "" */
 
@@ -274,6 +283,18 @@ typedef struct {
   FfiReader *ffi_readers;
   int n_ffi_readers, c_ffi_readers;
 
+  /* FFI registry: ffi_callback declarations (C function-pointer types) */
+  FfiCallback *ffi_callbacks;
+  int n_ffi_callbacks, c_ffi_callbacks;
+
+  /* FFI registry: ffi_struct declarations (named C structs + field accessors) */
+  FfiStruct *ffi_structs;
+  int n_ffi_structs, c_ffi_structs;
+
+  /* FFI registry: ffi_write_* declarations (symmetric to ffi_read_*) */
+  FfiReader *ffi_writers;
+  int n_ffi_writers, c_ffi_writers;
+
   /* FFI library names per module (semicolon-separated) */
   FfiLib *ffi_libs;
   int n_ffi_libs, c_ffi_libs;
@@ -333,6 +354,14 @@ LocalVar *scope_local_intern(Scope *s, const char *name);
 
 /* Symbol intern table. comp_sym_intern returns the symbol's id. */
 int comp_sym_intern(Compiler *c, const char *name);
+
+/* Look up an ffi_callback type by (module, name); returns index or -1. */
+int ffi_find_callback(Compiler *c, const char *mod, const char *name);
+
+/* Resolve Module.<method> against ffi_struct declarations: <Name>_new,
+   <Name>_get_<field>, <Name>_set_<field>. Returns an FFI_SM_* op kind and,
+   via out params, the struct and field indices (field -1 for _new). */
+int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si, int *fi);
 
 /* native-binding registry (Path B): find a native_func by (module, name),
    return its index in c->native_funcs or -1; map a spec to a TyKind. */

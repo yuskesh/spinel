@@ -13,6 +13,16 @@
 /* The receiver class for a node inside an instance_eval/exec block, or -1. */
 int ie_class_of(Compiler *c, int node);
 
+/* Forward declarations for FFI helpers defined later in this file. */
+const char *ffi_arg_str(const NodeTable *nt, int nid);
+int ffi_arg_int(const NodeTable *nt, int nid);
+TyKind ffi_spec_to_ty(const char *spec);
+int ffi_find_func(Compiler *c, const char *mod, const char *name);
+int ffi_find_buf(Compiler *c, const char *mod, const char *name);
+int ffi_find_reader(Compiler *c, const char *mod, const char *name);
+int ffi_find_writer(Compiler *c, const char *mod, const char *name);
+
+
 
 /* Returns 1 if user class ci (or any ancestor in user chain) has a builtin
    exception as direct superclass (per its ClassNode superclass field). */
@@ -151,6 +161,7 @@ void register_ffi_decls(Compiler *c);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);
+int ffi_find_writer(Compiler *c, const char *mod, const char *name);
 int infer_global_const_types(Compiler *c);
 int infer_multiwrite_const_types(Compiler *c);
 void resolve_parents(Compiler *c);

@@ -3278,6 +3278,83 @@ static void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, 
   buf_printf(b, "_t%d", blk_tmp);
 }
 
+/* Emit a compile-time trampoline that lets a compiled Ruby method be passed as
+   an ffi_callback C function pointer. It takes the C-ABI args the callback
+   declares, converts each to the target method's inferred parameter type
+   (boxing a poly param, casting a scalar one), calls the compiled method, and
+   converts the result to the callback's return type. The definition is appended
+   to g_procs; returns the trampoline's unique id. */
+static int emit_ffi_cb_trampoline(Compiler *c, int cbidx, int mi) {
+  FfiCallback *k = &c->ffi_callbacks[cbidx];
+  Scope *ts = &c->scopes[mi];
+  int tid = ++g_proc_counter;
+  Buf *pb = &g_procs;
+  buf_printf(pb, "static %s __sp_ffi_cb_%d(", ffi_c_type(k->ret_spec), tid);
+  for (int i = 0; i < k->nargs; i++) {
+    if (i) buf_puts(pb, ", ");
+    buf_printf(pb, "%s _a%d", ffi_cb_arg_ctype(k->arg_specs[i]), i);
+  }
+  if (k->nargs == 0) buf_puts(pb, "void");
+  buf_puts(pb, ") {\n  ");
+  /* sp_<target>(converted args) */
+  Buf call; memset(&call, 0, sizeof call);
+  emit_method_cname(c, ts, &call);
+  buf_puts(&call, "(");
+  for (int i = 0; i < k->nargs; i++) {
+    if (i) buf_puts(&call, ", ");
+    const char *spec = k->arg_specs[i];
+    TyKind p = TY_UNKNOWN;
+    if (i < ts->nparams && ts->pnames[i]) {
+      LocalVar *lv = scope_local(ts, ts->pnames[i]);
+      if (lv) p = lv->type;
+    }
+    char a[16]; snprintf(a, sizeof a, "_a%d", i);
+    if (p == TY_POLY || p == TY_UNKNOWN) {           /* param is sp_RbVal: box it */
+      if (sp_streq(spec, "ptr"))                          buf_printf(&call, "sp_box_foreign_ptr((void *)%s)", a);
+      else if (sp_streq(spec, "str"))                     buf_printf(&call, "sp_box_str(%s)", a);
+      else if (sp_streq(spec, "float") || sp_streq(spec, "double")) buf_printf(&call, "sp_box_float(%s)", a);
+      else                                                buf_printf(&call, "sp_box_int((mrb_int)%s)", a);
+    }
+    else if (p == TY_INT)    buf_printf(&call, sp_streq(spec, "ptr") ? "(mrb_int)(uintptr_t)%s" : "(mrb_int)%s", a);
+    else if (p == TY_STRING) buf_printf(&call, "(const char *)%s", a);
+    else if (p == TY_FLOAT)  buf_printf(&call, "(mrb_float)%s", a);
+    else                     buf_printf(&call, "(mrb_int)%s", a);
+  }
+  buf_puts(&call, ")");
+  /* convert the result to the callback's return type */
+  if (sp_streq(k->ret_spec, "void")) {
+    buf_printf(pb, "%s;\n}\n", call.p ? call.p : "");
+  }
+  else {
+    const char *rc = ffi_c_type(k->ret_spec);
+    TyKind rt = method_is_void(ts) ? TY_NIL : ts->ret;
+    if (rt == TY_POLY || rt == TY_UNKNOWN) {
+      if (sp_streq(k->ret_spec, "ptr"))                             buf_printf(pb, "return (%s)(%s).v.p;\n}\n", rc, call.p);
+      else if (sp_streq(k->ret_spec, "float") || sp_streq(k->ret_spec, "double")) buf_printf(pb, "return (%s)(%s).v.f;\n}\n", rc, call.p);
+      else                                                          buf_printf(pb, "return (%s)(%s).v.i;\n}\n", rc, call.p);
+    }
+    else if (rt == TY_NIL) buf_printf(pb, "%s; return (%s)0;\n}\n", call.p, rc);
+    else                   buf_printf(pb, "return (%s)(%s);\n}\n", rc, call.p);
+  }
+  free(call.p);
+  return tid;
+}
+
+/* Emit a callback-typed ffi argument. It must be a statically resolvable
+   method(:name); anything else is rejected loudly (never a silent NULL). */
+static void emit_ffi_callback_arg(Compiler *c, int cbidx, int argnode, Buf *out) {
+  if (is_method_obj_call(c, argnode)) {
+    int mi = method_obj_target_mi(c, argnode);
+    if (mi >= 0) {
+      int tid = emit_ffi_cb_trampoline(c, cbidx, mi);
+      buf_printf(out, "&__sp_ffi_cb_%d", tid);
+      return;
+    }
+  }
+  unsupported(c, argnode, "ffi callback argument (need a statically resolvable method(:name))");
+  buf_puts(out, "NULL");
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -6452,14 +6529,51 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         int is_str_ret  = sp_streq(ret_spec, "str");
         int is_binstr_ret = sp_streq(ret_spec, "binstr");
         int call_argc = c->ffi_funcs[fi].nargs;
+        /* A function taking an ffi_callback has its extern skipped (codegen.c):
+           the symbol is declared by a system header whose per-argument const
+           qualification we can't reproduce, so we call the header prototype
+           directly. That means pointer-data args carry our own (const) element
+           types; cast them to void* at the call site so the implicit conversion
+           to the header's real parameter type is warning-free under -Werror on
+           both clang and gcc. An explicit (void*) cast also legally drops the
+           const our array/string types carry. */
+        int hdr_call = 0;
+        for (int hi = 0; hi < call_argc; hi++)
+          if (ffi_find_callback(c, rcmod, c->ffi_funcs[fi].args[hi]) >= 0) { hdr_call = 1; break; }
+        /* A trailing :varargs spec: the declared specs cover only the fixed
+           leading args; every extra actual arg is passed through with C's
+           default argument promotions. No extern is emitted for a variadic
+           function (see codegen.c); the call casts the header-declared symbol
+           to a variadic function pointer -- `((ret (*)(fixed..., ...))name)` --
+           which cannot conflict with a fortified libc declaration and carries
+           no `format` attribute, so gcc does not format-check the call. */
+        int is_vararg = call_argc > 0 && sp_streq(c->ffi_funcs[fi].args[call_argc - 1], "varargs");
+        int fixed_argc = is_vararg ? call_argc - 1 : call_argc;
         /* Build the raw C call */
         Buf call_buf; memset(&call_buf, 0, sizeof call_buf);
-        buf_puts(&call_buf, c->ffi_funcs[fi].name);
+        if (is_vararg) {
+          buf_printf(&call_buf, "((%s (*)(", ffi_c_type(ret_spec));
+          for (int ai = 0; ai < fixed_argc; ai++) {
+            if (ai) buf_puts(&call_buf, ", ");
+            buf_puts(&call_buf, ffi_c_type(c->ffi_funcs[fi].args[ai]));
+          }
+          if (fixed_argc) buf_puts(&call_buf, ", ");
+          buf_printf(&call_buf, "...))%s)", c->ffi_funcs[fi].name);
+        }
+        else buf_puts(&call_buf, c->ffi_funcs[fi].name);
         buf_puts(&call_buf, "(");
-        for (int ai = 0; ai < call_argc && ai < argc; ai++) {
+        for (int ai = 0; ai < fixed_argc && ai < argc; ai++) {
           if (ai) buf_puts(&call_buf, ", ");
           const char *spec = c->ffi_funcs[fi].args[ai];
           TyKind at = comp_ntype(c, argv[ai]);
+          int cbidx = ffi_find_callback(c, rcmod, spec);
+          if (cbidx >= 0) { emit_ffi_callback_arg(c, cbidx, argv[ai], &call_buf); continue; }
+          /* :ptr already emits a void*; str/int_array/float_array carry a const
+             element pointer that must be genericized for the header call. */
+          int voidp = hdr_call && (sp_streq(spec, "str") ||
+                                   sp_streq(spec, "int_array") ||
+                                   sp_streq(spec, "float_array"));
+          if (voidp) buf_puts(&call_buf, "(void *)(");
           if (sp_streq(spec, "str")) {
             if (at == TY_POLY) {
               buf_puts(&call_buf, "("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ").v.s");
@@ -6513,6 +6627,33 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
             }
             else { buf_puts(&call_buf, "(("); buf_puts(&call_buf, ffi_c_type(spec)); buf_puts(&call_buf, ")("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
+          }
+          if (voidp) buf_puts(&call_buf, ")");
+        }
+        /* Extra variadic args: promote by inferred type (int->long long,
+           float->double, str->const char*, ptr->void*). A poly-typed vararg
+           has no compile-time C type to promote to, so reject it loudly. */
+        if (is_vararg) {
+          for (int ai = fixed_argc; ai < argc; ai++) {
+            if (ai) buf_puts(&call_buf, ", ");
+            TyKind at = comp_ntype(c, argv[ai]);
+            if (at == TY_INT || at == TY_BOOL) {
+              buf_puts(&call_buf, "((long long)("); emit_int_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
+            }
+            else if (at == TY_FLOAT) {
+              buf_puts(&call_buf, "((double)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
+            }
+            else if (at == TY_STRING) {
+              emit_expr(c, argv[ai], &call_buf);
+            }
+            else {
+              /* A poly (or otherwise non-scalar) vararg has no compile-time C
+                 type -- int vs string is indistinguishable in a C varargs call,
+                 so promoting it would be a silent-wrong. Reject loudly. */
+              free(call_buf.p);
+              unsupported(c, argv[ai], "ffi variadic argument (needs a concrete int/float/str type)");
+              return;
+            }
           }
         }
         buf_puts(&call_buf, ")");
@@ -6578,10 +6719,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (kind && sp_streq(kind, "ptr")) {
               int rt3 = ++g_tmp;
               buf_printf(b, "({ void *_t%d = (*(void **)((char *)(", rt3);
-              /* unbox if poly */
+              /* unbox a poly buffer to its void*; a non-poly arg (e.g. a
+                 pointer passed as mrb_int through a callback param) is cast
+                 directly -- close its wrapping paren the same way .v.p does. */
               TyKind at = comp_ntype(c, argv[0]);
               if (at == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
-              else emit_expr(c, argv[0], b);
+              else { emit_expr(c, argv[0], b); buf_puts(b, ")"); }
               buf_printf(b, " + %d)); sp_box_foreign_ptr(_t%d); })", off, rt3);
             }
             else {
@@ -6590,9 +6733,89 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               buf_printf(b, "((mrb_int)(*(%s *)((char *)(", ctype);
               TyKind at = comp_ntype(c, argv[0]);
               if (at == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
-              else emit_expr(c, argv[0], b);
+              else { emit_expr(c, argv[0], b); buf_puts(b, ")"); }
               buf_printf(b, " + %d)))", off);
             }
+          }
+          return;
+        }
+      }
+      /* ffi_struct accessors: Module.Name_new (alloc, boxed ptr),
+         Module.Name_get_<f>(ptr) (read field, boxed by type),
+         Module.Name_set_<f>(ptr, val) (write field, returns nil). */
+      {
+        int fsi, ffi;
+        int fsm = ffi_struct_method(c, rcmod, name, &fsi, &ffi);
+        if (fsm == FFI_SM_NEW) {
+          buf_printf(b, "sp_box_foreign_ptr(calloc(1, sizeof(sp_ffi_struct_%s_%s)))",
+                     c->ffi_structs[fsi].mod, c->ffi_structs[fsi].name);
+          return;
+        }
+        if (fsm == FFI_SM_GET && argc >= 1) {
+          const char *sm2 = c->ffi_structs[fsi].mod, *sn2 = c->ffi_structs[fsi].name;
+          const char *spec = c->ffi_structs[fsi].fields[ffi].spec;
+          const char *fname = c->ffi_structs[fsi].fields[ffi].name;
+          TyKind rt2 = ffi_spec_to_ty(spec);
+          buf_puts(b, rt2 == TY_POLY ? "sp_box_foreign_ptr((void *)("
+                    : rt2 == TY_FLOAT ? "((mrb_float)(" : "((mrb_int)(");
+          buf_printf(b, "((sp_ffi_struct_%s_%s *)", sm2, sn2);
+          if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+          else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          buf_printf(b, ")->%s))", fname);
+          return;
+        }
+        if (fsm == FFI_SM_SET && argc >= 2) {
+          const char *sm2 = c->ffi_structs[fsi].mod, *sn2 = c->ffi_structs[fsi].name;
+          const char *spec = c->ffi_structs[fsi].fields[ffi].spec;
+          const char *fname = c->ffi_structs[fsi].fields[ffi].name;
+          TyKind rt2 = ffi_spec_to_ty(spec);
+          buf_printf(b, "(((sp_ffi_struct_%s_%s *)", sm2, sn2);
+          if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+          else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+          buf_printf(b, ")->%s = (%s)", fname, ffi_c_type(spec));
+          if (rt2 == TY_POLY) {
+            if (comp_ntype(c, argv[1]) == TY_POLY) { buf_puts(b, "("); emit_expr(c, argv[1], b); buf_puts(b, ").v.p"); }
+            else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+          }
+          else if (rt2 == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+          else { buf_puts(b, "("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+          buf_puts(b, ", sp_box_nil())");
+          return;
+        }
+      }
+      /* ffi_write_* access: Module.writer_name(buf, val) stores val at
+         `offset` bytes into buf and returns the written value. Symmetric to
+         the reader branch above; the `+ off` applies to the char* byte view. */
+      {
+        int wi = -1;
+        for (int fwi = 0; fwi < c->n_ffi_writers; fwi++)
+          if (sp_streq(c->ffi_writers[fwi].mod, rcmod) && sp_streq(c->ffi_writers[fwi].name, name)) {
+            wi = fwi; break;
+          }
+        if (wi >= 0 && argc >= 2) {
+          const char *kind = c->ffi_writers[wi].kind;
+          int off = c->ffi_writers[wi].offset;
+          int tv = ++g_tmp;
+          if (kind && sp_streq(kind, "ptr")) {
+            TyKind vt = comp_ntype(c, argv[1]);
+            buf_printf(b, "({ void *_t%d = ", tv);
+            if (vt == TY_POLY) { buf_puts(b, "(void *)("); emit_expr(c, argv[1], b); buf_puts(b, ").v.p"); }
+            else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+            buf_puts(b, "; *(void **)((char *)(");
+            TyKind bt = comp_ntype(c, argv[0]);
+            if (bt == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+            else { emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+            buf_printf(b, " + %d) = _t%d; sp_box_foreign_ptr(_t%d); })", off, tv, tv);
+          }
+          else {
+            const char *ctype = (kind && sp_streq(kind, "i32")) ? "int32_t" : "uint32_t";
+            buf_printf(b, "({ %s _t%d = (%s)(", ctype, tv, ctype);
+            emit_int_expr(c, argv[1], b);
+            buf_printf(b, "); *(%s *)((char *)(", ctype);
+            TyKind bt = comp_ntype(c, argv[0]);
+            if (bt == TY_POLY) { emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
+            else { emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+            buf_printf(b, " + %d) = _t%d; (mrb_int)_t%d; })", off, tv, tv);
           }
           return;
         }
