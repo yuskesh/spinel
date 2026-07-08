@@ -199,6 +199,7 @@ int first_yield(Compiler *c, int si);
 int first_block_call_args(Compiler *c, int si);
 int a_proc_params_node(Compiler *c, int create);
 int infer_block_params(Compiler *c);
+int desugar_to_proc_block_arg(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_enum_chain_to_a(Compiler *c);
 int desugar_block_destructure_params(Compiler *c);

@@ -3222,6 +3222,104 @@ int desugar_to_h_block(Compiler *c) {
   return changed;
 }
 
+/* Descend `root`'s subtree (bounded to scope `sc`) tracking the nearest enclosing
+   StatementsNode entry (curr_st/curr_idx). On reaching `target`, report that entry
+   -- the innermost same-scope top-level statement whose subtree contains target.
+   A single O(N) pass that prunes at nested scope boundaries. */
+static int tp_find_stmt(Compiler *c, int root, int target, int sc,
+                        int curr_st, int curr_idx, int *out_st, int *out_idx) {
+  if (root < 0 || c->nscope[root] != sc) return 0;   /* out of scope -> prune */
+  if (root == target) {
+    if (curr_st < 0) return 0;                        /* no enclosing statement */
+    *out_st = curr_st; *out_idx = curr_idx; return 1;
+  }
+  NodeTable *nt = (NodeTable *)c->nt;
+  int is_stmt = nt_type(nt, root) && sp_streq(nt_type(nt, root), "StatementsNode");
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, root, i);
+    if (ch >= 0 && tp_find_stmt(c, ch, target, sc, curr_st, curr_idx, out_st, out_idx)) return 1;
+  }
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, root, i, &n);
+    for (int k = 0; k < n; k++) {
+      if (a[k] < 0) continue;
+      int nst = is_stmt ? root : curr_st, nidx = is_stmt ? k : curr_idx;
+      if (tp_find_stmt(c, a[k], target, sc, nst, nidx, out_st, out_idx)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Locate the innermost same-scope StatementsNode and the index of the top-level
+   statement whose subtree contains `id`. Returns 1 with *out_st/*out_idx set. */
+static int tp_enclosing_stmt(Compiler *c, int id, int *out_st, int *out_idx) {
+  int sc = c->nscope[id];
+  if (sc < 0 || sc >= c->nscopes) return 0;
+  return tp_find_stmt(c, c->scopes[sc].body, id, sc, -1, -1, out_st, out_idx);
+}
+
+/* `recv.iter(&obj)` where obj is a user object defining `to_proc`: Ruby calls
+   obj.to_proc exactly ONCE to obtain the block. Hoist `__tproc_N = obj.to_proc`
+   to the statement enclosing the call and rewrite the block argument to the
+   hoisted local, so the value-callable desugar below forwards the once-computed
+   proc (mirroring Ruby's `&obj` => `obj.to_proc` model, evaluated once). Declines
+   -- leaving a loud reject -- when the enclosing statement can't be located. */
+int desugar_to_proc_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0) continue;
+    const char *exty = nt_type(nt, ex);
+    if (!exty || sp_streq(exty, "SymbolNode")) continue;  /* &:sym lowers separately */
+    /* Only a user object defining #to_proc (not a Proc/Method value or symbol). */
+    TyKind ct = infer_type(c, ex);
+    if (!ty_is_object(ct)) continue;
+    int cid = ty_object_class(ct);
+    if (cid < 0 || comp_method_in_chain(c, cid, "to_proc", NULL) < 0) continue;
+    int st = -1, idx = -1;
+    if (!tp_enclosing_stmt(c, id, &st, &idx)) continue;  /* can't hoist -> leave (reject) */
+    int encl = c->nscope[id];
+    int base = nt->count;
+    int exclone = nt_clone_subtree(nt, ex);
+    int tpcall = nt_new_node(nt, "CallNode");
+    int wnode = nt_new_node(nt, "LocalVariableWriteNode");
+    int rd = nt_new_node(nt, "LocalVariableReadNode");
+    if (exclone < 0 || tpcall < 0 || wnode < 0 || rd < 0) continue;
+    char tpname[48];
+    snprintf(tpname, sizeof tpname, "__tproc_%d", id);
+    nt_node_set_ref(nt, tpcall, "receiver", exclone);
+    nt_node_set_str(nt, tpcall, "name", "to_proc");
+    nt_node_set_ref(nt, tpcall, "arguments", -1);
+    nt_node_set_ref(nt, tpcall, "block", -1);
+    nt_node_set_str(nt, wnode, "name", tpname);
+    nt_node_set_ref(nt, wnode, "value", tpcall);
+    nt_node_set_str(nt, rd, "name", tpname);
+    nt_node_set_ref(nt, blk, "expression", rd);  /* block arg now &__tproc_N */
+    /* insert `wnode` before body[idx] in the enclosing StatementsNode */
+    int bn = 0; const int *body = nt_arr(nt, st, "body", &bn);
+    int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < idx; k++) nb[k] = body[k];
+    nb[idx] = wnode;
+    for (int k = idx; k < bn; k++) nb[k + 1] = body[k];
+    nt_node_set_arr(nt, st, "body", nb, bn + 1);
+    free(nb);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    LocalVar *lv = scope_local_intern(comp_scope_of(c, id), tpname);
+    lv->type = TY_PROC;
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
