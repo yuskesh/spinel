@@ -104,6 +104,10 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
     const char *kwrpty = nt_type(c->nt, kwrp);
     if (kwrpty && sp_streq(kwrpty, "KeywordRestParameterNode")) {
       const char *kwrname = nt_str(c->nt, kwrp, "name");
+      /* An anonymous `**` (`def m(**) = f(**)`) has no name; give it a synthetic
+         one so it is a real kwrest local that the anonymous `**` at the forwarding
+         call site resolves to (mirrors __anon_rest for positional `*`). */
+      if (!kwrname) kwrname = "__anon_kwrest";
       if (kwrname) {
         LocalVar *lv = scope_local_intern(s, kwrname);
         lv->is_param = 1;

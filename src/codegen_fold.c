@@ -3754,6 +3754,16 @@ static int emit_anon_rest_ref(Compiler *c, int splat, Buf *buf) {
   return 1;
 }
 
+/* An anonymous `**` at a forwarding call site (`f(**)`) is an AssocSplatNode with
+   no value; it forwards the enclosing method's anonymous kwrest local. Returns
+   that local's name, or NULL if `node` is not inside a scope with an anon kwrest. */
+static const char *anon_kwrest_name(Compiler *c, int node) {
+  Scope *sc = comp_scope_of(c, node);
+  if (!sc || sc->kwrest_idx < 0 || sc->kwrest_idx >= sc->nparams || !sc->pnames) return NULL;
+  const char *nm = sc->pnames[sc->kwrest_idx];
+  return (nm && sp_streq(nm, "__anon_kwrest")) ? nm : NULL;
+}
+
 void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b) {
   const NodeTable *nt = c->nt;
   /* Optimize: single pure-splat → direct conversion */
@@ -3999,6 +4009,17 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
             buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
             free(hb.p);
           }
+        } else {
+          /* Anonymous `**`: materialize the enclosing __anon_kwrest (SymPolyHash)
+             so the per-param extraction and kwrest collection below can read it. */
+          const char *akw = anon_kwrest_name(c, elems2[e]);
+          if (akw) {
+            ds_hash_type = TY_SYM_POLY_HASH;
+            ds_hash_tmp = ++g_tmp;
+            emit_indent(g_pre, g_indent);
+            emit_ctype(c, ds_hash_type, g_pre);
+            buf_printf(g_pre, " _t%d = lv_%s;\n", ds_hash_tmp, akw);
+          }
         }
         break;
       }
@@ -4207,7 +4228,15 @@ else {
                  (later entries win, so order with literals is preserved). Only
                  a symbol-keyed hash can flow into a keyword-rest parameter. */
               int inner3 = nt_ref(nt, elems3[e3], "value");
-              if (inner3 < 0) continue;
+              if (inner3 < 0) {
+                /* Anonymous `**`: merge the enclosing __anon_kwrest directly. */
+                const char *akw = anon_kwrest_name(c, elems3[e3]);
+                if (!akw) continue;
+                splat_seen = 1;
+                emit_indent(g_pre, g_indent);
+                buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, akw);
+                continue;
+              }
               const char *shn = ty_hash_cname(comp_ntype(c, inner3));
               if (!shn || !sp_streq(shn, "SymPoly")) {
                 unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");

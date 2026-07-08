@@ -1702,6 +1702,16 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
         if (inner >= 0) {
           TyKind ht = infer_type(c, inner);
           if (ty_is_hash(ht)) ds_val = ty_hash_val(ht);
+        } else {
+          /* Anonymous `**` forwards the enclosing __anon_kwrest (a SymPolyHash
+             with poly values). Bind the callee's keyword params as poly rather
+             than falling through to the no-keyword backstop, which would mis-seed
+             the callee's first positional param with a hash type. */
+          Scope *esc = comp_scope_of(c, elems[e]);
+          if (esc && esc->kwrest_idx >= 0 && esc->kwrest_idx < esc->nparams &&
+              esc->pnames && esc->pnames[esc->kwrest_idx] &&
+              sp_streq(esc->pnames[esc->kwrest_idx], "__anon_kwrest"))
+            ds_val = TY_POLY;
         }
         break;
       }
