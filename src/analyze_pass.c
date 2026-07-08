@@ -4710,8 +4710,8 @@ int infer_block_params(Compiler *c) {
       }
     }
 
-    /* array.combination(k) { |c| } binds the k-element sub-array (same kind) */
-    if (sp_streq(name, "combination") && ty_is_array(rt)) {
+    /* array.combination(k)/permutation(k) { |c| } binds the k-element sub-array */
+    if ((sp_streq(name, "combination") || sp_streq(name, "permutation")) && ty_is_array(rt)) {
       LocalVar *lp = scope_local_intern(comp_scope_of(c, block), p0); lp->is_block_param = 1;
       TyKind m = ty_unify(lp->type, rt);
       if (m != lp->type) { lp->type = m; changed = 1; }

@@ -1398,16 +1398,21 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* int_array.combination(k) { |c| ... } -- yield each k-combination as a
-     fresh int_array */
-  if (sp_streq(name, "combination") && rt == TY_INT_ARRAY) {
+  /* int_array.combination(k)/permutation(k) { |c| ... } -- yield each k-element
+     sub-array as a fresh int_array. permutation also accepts the argless
+     (full-length) form. */
+  if ((sp_streq(name, "combination") || sp_streq(name, "permutation")) && rt == TY_INT_ARRAY) {
+    int is_perm = sp_streq(name, "permutation");
+    const char *genfn = is_perm ? "sp_IntArray_permutation" : "sp_IntArray_combination";
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-    if (ac != 1) return 0;
+    if (ac != 1 && !(is_perm && ac == 0)) return 0;
     int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); buf_printf(b, "{ sp_IntArray *_t%d = ", ta); buf_puts(b, rb.p ? rb.p : ""); buf_puts(b, ";\n"); free(rb.p);
-    emit_indent(b, indent + 1); buf_printf(b, "sp_PtrArray *_t%d = sp_IntArray_combination(_t%d, ", tc, ta); emit_expr(c, av[0], b); buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
+    emit_indent(b, indent + 1); buf_printf(b, "sp_PtrArray *_t%d = %s(_t%d, ", tc, genfn, ta);
+    if (ac == 1) emit_expr(c, av[0], b); else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
+    buf_puts(b, "); SP_GC_ROOT(_t"); buf_printf(b, "%d);\n", tc);
     emit_indent(b, indent + 1); buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tc, ti);
     if (p0) {
       Scope *cbsc = comp_scope_of(c, block);
