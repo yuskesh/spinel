@@ -1884,6 +1884,34 @@ else {
       if (imi >= 0) return method_call_ret(c, imi, id);
     }
   }
+  /* Kernel conversion with an explicit user-object receiver: obj.send(:Float, x)
+     desugars to obj.Float(x); the private Kernel method is available on every
+     object, so it types like the receiverless form when the receiver's chain
+     does not define the name (mirrors the codegen dispatch). */
+  if (recv >= 0 && (argc == 1 || argc == 2)) {
+    TyKind krt = infer_type(c, recv);
+    int kdisp = (ty_is_object(krt) &&
+                 comp_method_in_chain(c, ty_object_class(krt), name, NULL) < 0) ||
+                ((krt == TY_NIL || krt == TY_POLY || krt == TY_UNKNOWN) &&
+                 comp_method_index(c, name) < 0);
+    if (kdisp) {
+      if (sp_streq(name, "Integer") && (argc == 1 || argc == 2)) return TY_INT;
+      if (argc == 1) {
+        if (sp_streq(name, "Float"))    return TY_FLOAT;
+        if (sp_streq(name, "String"))   return TY_STRING;
+        if (sp_streq(name, "Rational")) return TY_RATIONAL;
+        if (sp_streq(name, "Complex"))  return TY_COMPLEX;
+        if (sp_streq(name, "Array")) {
+          TyKind kat = infer_type(c, argv[0]);
+          if (ty_is_array(kat)) return kat;
+          if (kat == TY_INT)    return TY_INT_ARRAY;
+          if (kat == TY_FLOAT)  return TY_FLOAT_ARRAY;
+          if (kat == TY_STRING) return TY_STR_ARRAY;
+        }
+      }
+    }
+  }
+
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
     int mi = comp_method_index(c, name);

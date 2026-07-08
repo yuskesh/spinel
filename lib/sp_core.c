@@ -1,6 +1,7 @@
 /* sp_core.c -- runtime helpers split out of sp_runtime.h into
  * libspinel_rt.a. See sp_core.h for the rationale. */
 #include "sp_core.h"
+#include "sp_alloc.h"   /* sp_str_byte_len: embedded-NUL detection in Integer()/Float() */
 #include <stdlib.h>
 #include <ctype.h>
 #include <errno.h>
@@ -136,30 +137,14 @@ else if (*p == '0' && p[1] != 0) {
    rejects trailing junk. Accepts an optional leading `+` / `-`. */
 mrb_int sp_str_to_i_strict(const char *s) {
   if (!s) sp_raise_cls("ArgumentError", "invalid value for Integer(): nil");
-  const char *p = s;
-  while (isspace((unsigned char)*p)) p++;
-  if (*p == '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  char *endptr;
-  errno = 0;
-  long long v = strtoll(p, &endptr, 10);
-  if (endptr == p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  /* strtoll signals overflow via errno=ERANGE and clamps to
-     LLONG_MAX/MIN -- raise rather than silently saturate so the
-     caller can distinguish "fits in int64" from "too big". */
-  if (errno == ERANGE) sp_raise_cls("RangeError", sp_sprintf("integer overflow parsing \"%s\"", s));
-  while (isspace((unsigned char)*endptr)) endptr++;
-  if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
-  /* On 32-bit mrb_int, a value that fit int64 (strtoll) may not fit the
-     Ruby Integer; raise rather than silently truncate. No-op on 64-bit. */
-#if INTPTR_MAX != INT64_MAX
-  if (v < (long long)INTPTR_MIN || v > (long long)INTPTR_MAX)
-    sp_raise_cls("RangeError", sp_sprintf("integer %lld out of range for 32-bit Integer", v));
-#endif
-  /* INTPTR_MIN == SP_INT_NIL is the int-nil sentinel; that value cannot
-     be represented as a Ruby Integer in Spinel. */
-  if ((mrb_int)v == (mrb_int)INTPTR_MIN)
-    sp_raise_cls("RangeError", sp_sprintf("integer %lld out of Spinel representable range", v));
-  return (mrb_int)v;
+  /* an embedded NUL makes the Ruby string longer than its C prefix: CRuby
+     rejects it, a C-string scan would silently parse the prefix. */
+  if (strlen(s) != sp_str_byte_len(s))
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
+  /* Delegate to the base-aware parser with auto-detection: unlike a bare
+     strtoll it handles digit-separating underscores ("1_000") and CRuby's
+     prefix bases ("0x1A", "0b101", and leading-0 octal "077" -> 63). */
+  return sp_str_to_i_strict_base(s, 0);
 }
 
 /* `Integer(s, base)` with explicit base. Bases 2..36, MRI-compatible
@@ -167,6 +152,10 @@ mrb_int sp_str_to_i_strict(const char *s) {
    ArgumentError on invalid input or unsupported base. Issue #887. */
 mrb_int sp_str_to_i_strict_base(const char *s, mrb_int base) {
   if (!s) sp_raise_cls("ArgumentError", "invalid value for Integer(): nil");
+  /* an embedded NUL makes the Ruby string longer than its C prefix: CRuby
+     rejects it, a C-string scan would silently parse the prefix. */
+  if (strlen(s) != sp_str_byte_len(s))
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Integer(): \"%s\"", s));
   if (base == 0) {
     /* auto-detect the base from the literal's prefix */
     const char *q = s;
@@ -234,15 +223,61 @@ mrb_int sp_str_to_i_strict_base(const char *s, mrb_int base) {
    junk. Whitespace flanking is fine. Issue #888. */
 mrb_float sp_str_to_f_strict(const char *s) {
   if (!s) sp_raise_cls("ArgumentError", "invalid value for Float(): nil");
-  const char *p = s;
-  while (isspace((unsigned char)*p)) p++;
-  if (*p == '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
-  char *endptr;
-  double v = strtod(p, &endptr);
-  if (endptr == p) sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
-  while (isspace((unsigned char)*endptr)) endptr++;
-  if (*endptr != '\0') sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
-  return (mrb_float)v;
+  /* embedded NUL: the Ruby string extends past its C prefix -- reject rather
+     than silently parsing the prefix ("1\\0" is not a float in CRuby). */
+  size_t blen = sp_str_byte_len(s);
+  if (strlen(s) != blen) goto bad0;
+  {
+    /* Clean into a buffer, enforcing CRuby's shape rules that strtod is looser
+       about: an '_' only BETWEEN two digits of the active base (stripped);
+       a '.' only when followed by a digit ("5." and "0x1_1.0" are invalid);
+       a hex literal is integral (hex digits only after 0x); at least one real
+       digit must appear (rejects "inf"/"nan", which strtod would parse). */
+    size_t n = strlen(s);
+    char sbuf[256];
+    char *buf = n < sizeof sbuf ? sbuf : (char *)malloc(n + 1);
+    if (!buf) { perror("malloc"); exit(1); }
+    size_t o = 0;
+    int hex = 0, sawdigit = 0;
+    const char *q = s;
+    while (isspace((unsigned char)*q)) q++;
+    const char *start = q;
+    if (*q == '+' || *q == '-') buf[o++] = *q++;
+    if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) { hex = 1; buf[o++] = *q++; buf[o++] = *q++; }
+    for (; *q && !isspace((unsigned char)*q); q++) {
+      char ch = *q;
+      if (ch == '_') {
+        int pd = q > start && (hex ? isxdigit((unsigned char)q[-1]) : isdigit((unsigned char)q[-1]));
+        int nd = hex ? isxdigit((unsigned char)q[1]) : isdigit((unsigned char)q[1]);
+        if (!(pd && nd)) goto bad;
+        continue;                         /* a valid digit separator: strip */
+      }
+      if (hex) {
+        if (!isxdigit((unsigned char)ch)) goto bad;
+        sawdigit = 1;
+      }
+      else {
+        if (ch == '.' && !isdigit((unsigned char)q[1])) goto bad;
+        if (isdigit((unsigned char)ch)) sawdigit = 1;
+      }
+      buf[o++] = ch;
+    }
+    while (isspace((unsigned char)*q)) q++;
+    if (*q || !sawdigit) goto bad;        /* junk after spaces / no digits */
+    buf[o] = '\0';
+    {
+      char *endptr;
+      double v = strtod(buf, &endptr);
+      if (endptr == buf || *endptr != '\0') goto bad;
+      if (buf != sbuf) free(buf);
+      return (mrb_float)v;
+    }
+  bad:
+    if (buf != sbuf) free(buf);
+  }
+bad0:
+  sp_raise_cls("ArgumentError", sp_sprintf("invalid value for Float(): \"%s\"", s));
+  return 0.0;  /* unreachable */
 }
 
 /* Cold integer-math and String#oct helpers, moved out of sp_runtime.h

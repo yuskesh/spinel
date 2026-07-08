@@ -4619,8 +4619,34 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
-  /* Kernel conversions */
-  if (recv < 0 && comp_method_index(c, name) < 0) {
+  /* Kernel conversions. These are private Kernel methods available on every
+     object, so an explicit-receiver form (obj.send(:Float, x), desugared to
+     obj.Float(x)) dispatches here too when the receiver is a plain user object
+     whose chain does not define the name. Only a side-effect-free receiver
+     (a local/ivar read or self) is accepted, since it is discarded. */
+  int kconv = (recv < 0 && comp_method_index(c, name) < 0);
+  if (!kconv && recv >= 0) {
+    TyKind krt = comp_ntype(c, recv);
+    const char *krty = nt_type(nt, recv);
+    int krecv_ok = krty &&
+        (sp_streq(krty, "LocalVariableReadNode") ||
+         sp_streq(krty, "InstanceVariableReadNode") || sp_streq(krty, "SelfNode"));
+    int kname_ok = sp_streq(name, "Integer") || sp_streq(name, "Float") ||
+        sp_streq(name, "String") || sp_streq(name, "Array") ||
+        sp_streq(name, "Rational") || sp_streq(name, "Complex");
+    if (krecv_ok && kname_ok) {
+      if (ty_is_object(krt) &&
+          comp_method_in_chain(c, ty_object_class(krt), name, NULL) < 0)
+        kconv = 1;
+      /* a nil/poly/untyped receiver (e.g. an unassigned @object in specs)
+         still reaches Kernel in CRuby; require that NO user class defines the
+         name so a real method can never be shadowed. */
+      else if ((krt == TY_NIL || krt == TY_POLY || krt == TY_UNKNOWN) &&
+               comp_method_index(c, name) < 0)
+        kconv = 1;
+    }
+  }
+  if (kconv) {
     int args = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (sp_streq(name, "Integer") && ac == 1) {
