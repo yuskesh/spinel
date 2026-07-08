@@ -3171,6 +3171,47 @@ int curry_apply_info(Compiler *c, int node, int *out_complete, TyKind *out_ret) 
   return 1;
 }
 
+/* `recv.to_h { |e| [k, v] }` -> `recv.map { |e| [k, v] }.to_h`. The block-taking
+   to_h maps each element to a [key, value] pair and collects the pairs into a
+   hash; map already lowers the block for any iterable and the blockless to_h
+   already builds a typed hash from an array of pairs, so rewriting onto that
+   pair reuses both instead of adding a bespoke hash-building iterator. */
+int desugar_to_h_block(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "to_h")) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int blk = nt_ref(nt, id, "block");
+    if (recv < 0 || blk < 0) continue;                 /* need a receiver and a block */
+    if (!nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockNode")) continue;
+    /* Only builtin iterables lower onto map{}.to_h. A Struct/Data or other user
+       object with a block-taking to_h has its own member-pair path; rewriting it
+       onto map would change the element protocol and mistype the result. */
+    TyKind rt = infer_type(c, recv);
+    if (!ty_is_array(rt) && !ty_is_hash(rt) && rt != TY_RANGE && rt != TY_ENUMERATOR) continue;
+    int base = nt->count;
+    int mapargs = nt_new_node(nt, "ArgumentsNode");
+    int mapcall = nt_new_node(nt, "CallNode");
+    if (mapargs < 0 || mapcall < 0) continue;          /* node-table OOM: leave as-is */
+    nt_node_set_arr(nt, mapargs, "arguments", NULL, 0); /* map takes no positional args */
+    nt_node_set_ref(nt, mapcall, "receiver", recv);
+    nt_node_set_str(nt, mapcall, "name", "map");
+    nt_node_set_ref(nt, mapcall, "arguments", mapargs);
+    nt_node_set_ref(nt, mapcall, "block", blk);
+    nt_node_set_ref(nt, id, "receiver", mapcall);      /* to_h now consumes the mapped pairs */
+    nt_node_set_ref(nt, id, "block", -1);              /* and no longer carries the block */
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl; /* new nodes share the scope */
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
