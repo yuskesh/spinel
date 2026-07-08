@@ -3784,7 +3784,7 @@ int infer_block_params(Compiler *c) {
     for (int k = 0; k < rnp; k++) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
-      TyKind want = (k == 0) ? TY_STR_POLY_HASH : TY_STRING;
+      TyKind want = (k == 0) ? TY_POLY_POLY_HASH : TY_POLY;
       LocalVar *lv = scope_local_intern(bs, p); lv->is_block_param = 1;
       if (lv->type != want) { lv->type = want; changed = 1; }
     }

@@ -633,7 +633,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   }
   else if (is_hash_new && nt_ref(c->nt, v, "block") >= 0) {
     /* Hash.new { |hash, key| ... }: emit through emit_call so the dproc
-       function + sp_StrPolyHash_new_dproc path runs. */
+       function + sp_PolyPolyHash_new_dproc path runs. */
     emit_expr(c, v, b);
   }
   else if ((is_empty_hash || is_hash_new) && lv && ty_hash_cname(lv->type)) {
