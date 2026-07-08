@@ -1704,7 +1704,14 @@ static void synth_enum_to_a(Compiler *c) {
   for (int s = 0; s < c->nscopes; s++) {
     Scope *m = &c->scopes[s];
     if (!m->name || m->is_cmethod || m->class_id < 0) continue;
-    if (!sp_streq(m->name, "each") || !m->yields) continue;
+    /* an each that drives the block via `yield`, or one that forwards an
+       explicit `&blk` to an inner iterator (`def each(&b) = @xs.each(&b)`):
+       both invoke the synthesized `each { |e| acc << e }` block per element.
+       An anonymous `&` forward is excluded (blk_param is "") -- forwarding an
+       anonymous block through the synthesized materializer is not yet wired and
+       would yield an empty result, so it stays a loud reject. */
+    if (!sp_streq(m->name, "each") ||
+        !(m->yields || (m->blk_param && m->blk_param[0]))) continue;
     if (comp_method_in_class(c, m->class_id, "__enum_to_a") >= 0) continue;
     int dup = 0;
     for (int k = 0; k < ncls; k++) if (cls[k] == m->class_id) { dup = 1; break; }
