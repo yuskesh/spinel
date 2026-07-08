@@ -3742,6 +3742,18 @@ int kwh_lookup(const NodeTable *nt, int kwh, const char *kname) {
 
 /* Emit a PolyArray expression that collects call args[from..pos_argc-1].
    SplatNode arguments are expanded element-by-element into the array. */
+/* An anonymous `*` at a forwarding call site (`f(a, *)`) is a SplatNode with no
+   expression; it forwards the enclosing method's anonymous rest local. Returns
+   that local's poly-array C expression into `buf` and 1, or 0 if `splat` is not
+   an anonymous forward. */
+static int emit_anon_rest_ref(Compiler *c, int splat, Buf *buf) {
+  if (nt_ref(c->nt, splat, "expression") >= 0) return 0;
+  Scope *sc = comp_scope_of(c, splat);
+  if (!sc || sc->rest_idx < 0 || sc->rest_idx >= sc->nparams) return 0;
+  buf_printf(buf, "lv_%s", sc->pnames[sc->rest_idx]);
+  return 1;
+}
+
 void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b) {
   const NodeTable *nt = c->nt;
   /* Optimize: single pure-splat → direct conversion */
@@ -3780,9 +3792,11 @@ void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b
     const char *aty = nt_type(nt, argv[i]);
     if (aty && sp_streq(aty, "SplatNode")) {
       int inner = nt_ref(nt, argv[i], "expression");
-      TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
       Buf arr; memset(&arr, 0, sizeof arr);
-      emit_expr(c, inner, &arr);
+      TyKind at;
+      if (inner >= 0) { at = comp_ntype(c, inner); emit_expr(c, inner, &arr); }
+      else if (emit_anon_rest_ref(c, argv[i], &arr)) at = TY_POLY_ARRAY;  /* anonymous `*` */
+      else at = TY_UNKNOWN;
       const char *ap = arr.p ? arr.p : "NULL";
       if (at == TY_INT_ARRAY)
         buf_printf(b, " { sp_IntArray *_sa = %s; for (mrb_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_int(_sa->data[_sa->start+_si])); }", ap, t);
