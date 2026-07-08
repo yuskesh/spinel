@@ -3601,6 +3601,35 @@ static int register_proc_numbered(Compiler *c, int create) {
   return changed;
 }
 
+/* A proc/lambda literal that is passed as a positional call argument escapes
+   into an opaque method parameter: the callee invokes it through the generic
+   type-erased sp_Proc* ABI (`pr.call(x)`), where every argument rides the boxed
+   _sp_proc_poly_args side-channel. Its own arg types are therefore not knowable
+   at the definition, so its un-typed params must default to poly (read the
+   boxed slot) rather than int -- an int slot value-truncates a float arg to 0. */
+static const NodeTable *ple_nt = NULL;
+static int ple_ntc = -1;
+static char *ple_escaped = NULL;
+static void ple_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  free(ple_escaped);
+  ple_escaped = calloc((size_t)(n > 0 ? n : 1), 1);
+  ple_nt = nt; ple_ntc = n;
+  if (!ple_escaped) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int ca = nt_ref(nt, id, "arguments");
+    if (ca < 0) continue;
+    int an = 0; const int *av = nt_arr(nt, ca, "arguments", &an);
+    for (int k = 0; k < an; k++) if (av[k] >= 0 && av[k] < n) ple_escaped[av[k]] = 1;
+  }
+}
+static int proc_literal_escapes_as_arg(Compiler *c, int lit) {
+  const NodeTable *nt = c->nt;
+  if (ple_nt != nt || ple_ntc != nt->count) ple_build(c);
+  return ple_escaped && lit >= 0 && lit < nt->count && ple_escaped[lit];
+}
+
 int infer_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -3929,11 +3958,12 @@ int infer_block_params(Compiler *c) {
     if (pn < 0) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
     Scope *bs = comp_scope_of(c, id);
+    TyKind deflt = proc_literal_escapes_as_arg(c, id) ? TY_POLY : TY_INT;
     for (int k = 0; k < rn; k++) {
       const char *p = nt_str(nt, reqs[k], "name");
       if (!p) continue;
       LocalVar *lv = scope_local(bs, p);
-      if (lv && lv->type == TY_UNKNOWN) { lv->type = TY_INT; changed = 1; }
+      if (lv && lv->type == TY_UNKNOWN) { lv->type = deflt; changed = 1; }
     }
   }
 
@@ -3950,11 +3980,12 @@ int infer_block_params(Compiler *c) {
        by any stronger inference that runs first. */
     if (is_proc_literal(c, id)) {
       Scope *bs = comp_scope_of(c, block);
+      TyKind deflt = proc_literal_escapes_as_arg(c, id) ? TY_POLY : TY_INT;
       for (int k = 0; ; k++) {
         const char *bp = block_param_name(c, block, k);
         if (!bp) break;
         LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-        if (lv->type == TY_UNKNOWN) { lv->type = TY_INT; changed = 1; }
+        if (lv->type == TY_UNKNOWN) { lv->type = deflt; changed = 1; }
       }
       continue;
     }
