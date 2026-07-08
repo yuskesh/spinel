@@ -2013,6 +2013,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
+        /* An explicit `&blk` on a non-yielding initialize is threaded as a
+           trailing sp_Proc* (the constructor accepts + forwards it). Pass the
+           call's block, or NULL when the block is omitted. */
+        if (initm >= 0 && c->scopes[initm].blk_param && c->scopes[initm].blk_param[0] &&
+            !c->scopes[initm].yields) {
+          if (c->scopes[initm].nparams > 0) buf_puts(b, ", ");
+          int blk = nt_ref(nt, id, "block");
+          if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockNode"))
+            emit_proc_literal(c, blk, b);
+          else buf_puts(b, "NULL");
+        }
         buf_puts(b, ")");
         return 1;
       }

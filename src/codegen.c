@@ -2443,10 +2443,15 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   }
   int initcls = cid;
   int init = comp_method_in_chain(c, cid, "initialize", &initcls);
+  /* An explicit `&blk` block parameter on a non-yielding initialize is a real
+     sp_Proc* the constructor must accept and forward (a yielding initialize is
+     inlined at the call site instead, see emit_ctor_yield_inline). */
+  int init_has_blk = init >= 0 && c->scopes[init].blk_param &&
+                     c->scopes[init].blk_param[0] && !c->scopes[init].yields;
   if (ci->is_value_type) {
     /* value-type: build on the stack and return by value (no heap / GC) */
     buf_printf(b, "static sp_%s sp_%s_new(", ci->c_name, ci->c_name);
-    if (init >= 0 && c->scopes[init].nparams > 0) {
+    if (init >= 0 && (c->scopes[init].nparams > 0 || init_has_blk)) {
       Scope *s = &c->scopes[init];
       for (int i = 0; i < s->nparams; i++) {
         if (i) buf_puts(b, ", ");
@@ -2454,6 +2459,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
         emit_ctype(c, pt, b);
         buf_printf(b, " lv_%s", s->pnames[i]);
+      }
+      if (init_has_blk) {
+        if (s->nparams > 0) buf_puts(b, ", ");
+        buf_printf(b, "sp_Proc *lv_%s", s->blk_param);
       }
     }
     else buf_puts(b, "void");
@@ -2463,6 +2472,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, "  sp_%s_initialize(&self", c->classes[initcls].c_name);
       Scope *s = &c->scopes[init];
       for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
+      if (init_has_blk) buf_printf(b, ", lv_%s", s->blk_param);
       buf_puts(b, ");\n");
     }
     buf_puts(b, "  return self;\n}\n");
@@ -2474,7 +2484,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
      subclasses use sp_exc_new_sub storage, so they are not pooled. */
   if (!class_is_exc_subclass(c, cid)) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
   buf_printf(b, "static sp_%s *sp_%s_new(", ci->c_name, ci->c_name);
-  if (init >= 0 && c->scopes[init].nparams > 0) {
+  if (init >= 0 && (c->scopes[init].nparams > 0 || init_has_blk)) {
     Scope *s = &c->scopes[init];
     for (int i = 0; i < s->nparams; i++) {
       if (i) buf_puts(b, ", ");
@@ -2482,6 +2492,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
       emit_ctype(c, pt, b);
       buf_printf(b, " lv_%s", s->pnames[i]);
+    }
+    if (init_has_blk) {
+      if (s->nparams > 0) buf_puts(b, ", ");
+      buf_printf(b, "sp_Proc *lv_%s", s->blk_param);
     }
   }
   else {
@@ -2531,6 +2545,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_puts(b, "self");
     Scope *s = &c->scopes[init];
     for (int i = 0; i < s->nparams; i++) buf_printf(b, ", lv_%s", s->pnames[i]);
+    if (init_has_blk) buf_printf(b, ", lv_%s", s->blk_param);
     buf_puts(b, ");\n");
   }
   buf_puts(b, "  return self;\n}\n");
@@ -4376,7 +4391,9 @@ char *codegen_program(const NodeTable *nt) {
       int icid = i;
       int init = comp_method_in_chain(c, i, "initialize", &icid);
       const char *star = ci->is_value_type ? "" : "*";
-      if (init >= 0 && c->scopes[init].nparams > 0) {
+      int p_has_blk = init >= 0 && c->scopes[init].blk_param &&
+                      c->scopes[init].blk_param[0] && !c->scopes[init].yields;
+      if (init >= 0 && (c->scopes[init].nparams > 0 || p_has_blk)) {
         buf_printf(&b, "static sp_%s %ssp_%s_new(", ci->c_name, star, ci->c_name);
         Scope *s = &c->scopes[init];
         for (int m = 0; m < s->nparams; m++) {
@@ -4385,6 +4402,7 @@ char *codegen_program(const NodeTable *nt) {
           TyKind pm = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
           emit_ctype(c, pm, &b);
         }
+        if (p_has_blk) { if (s->nparams > 0) buf_puts(&b, ", "); buf_puts(&b, "sp_Proc *"); }
         buf_puts(&b, ");\n");
       }
       else buf_printf(&b, "static sp_%s %ssp_%s_new(void);\n", ci->c_name, star, ci->c_name);
