@@ -63,6 +63,11 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
     const char *rpty = nt_type(c->nt, rp);
     if (rpty && sp_streq(rpty, "RestParameterNode")) {
       const char *rname = nt_str(c->nt, rp, "name");
+      /* An anonymous `*` (Ruby 3.0 `def m(a, *) = f(a, *)`) has no name; give it
+         a synthetic one so it is a real rest local, and the anonymous `*` at the
+         forwarding call site resolves to it (the same name-independent model the
+         anonymous `&` block forward uses). */
+      if (!rname) rname = "__anon_rest";
       if (rname) {
         if (s->nparams % 8 == 0) {
           s->pnames  = realloc(s->pnames,  sizeof(char *) * (size_t)(s->nparams + 8));
