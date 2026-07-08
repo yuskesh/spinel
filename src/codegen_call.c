@@ -6557,6 +6557,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *feat = c->native_funcs[nvi].feat;
       if (!feat || !feat[0] || sp_feature_enabled(feat)) {
         NativeFunc *nf = &c->native_funcs[nvi];
+        /* a `cstring` return is a borrowed C string (typically the callee's
+           static buffer, e.g. sp_crypto's per-function buffers): the next call
+           to the same symbol clobbers it, so dup onto the GC string heap
+           before the value escapes into Ruby. */
+        int nv_cstr_ret = sp_streq(nf->ret, "cstring");
+        if (nv_cstr_ret) buf_puts(b, "sp_str_dup_external(");
         buf_puts(b, nf->csym); buf_puts(b, "(");
         for (int ai = 0; ai < nf->nargs && ai < argc; ai++) {
           if (ai) buf_puts(b, ", ");
@@ -6570,6 +6576,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           else emit_expr(c, argv[ai], b);
         }
         buf_puts(b, ")");
+        if (nv_cstr_ret) buf_puts(b, ")");
         return;
       }
     }

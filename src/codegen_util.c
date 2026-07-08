@@ -669,6 +669,7 @@ const char *native_c_type(const char *spec) {
   if (sp_streq(spec, "string")) return "const char *";
   if (sp_streq(spec, "string?")) return "const char *";  /* nullable; call site wraps */
   if (sp_streq(spec, "nstring")) return "const char *";   /* NULL-able string, unboxed */
+  if (sp_streq(spec, "cstring")) return "const char *";   /* borrowed C string; call site dups */
   if (sp_streq(spec, "regexp")) return "mrb_regexp_pattern *";
   if (sp_streq(spec, "int"))    return "mrb_int";
   if (sp_streq(spec, "float"))  return "double";

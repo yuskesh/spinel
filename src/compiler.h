@@ -202,8 +202,10 @@ typedef struct { char *mod; char *val; } FfiCflag;   /* val: ;-separated cflags,
 
 /* One `native_func` declaration (typed static binding to carried C). Unlike
    FfiFunc, arg/ret specs are the spinel type language ("any"/"string"/"int"/
-   "float"/"bool") and csym is the C symbol to call. feat is the require-gate
-   feature name from the module's `native_lib`, or "" (always available). */
+   "float"/"bool"; ret also takes "cstring" -- a borrowed C string, e.g. a
+   static buffer, that the call site dups onto the GC heap) and csym is the
+   C symbol to call. feat is the require-gate feature name from the module's
+   `native_lib`, or "" (always available). */
 typedef struct {
   char *mod;       /* module name */
   char *name;      /* Ruby method name */
