@@ -1,0 +1,4 @@
+sptest_glob_rec/a/b/z.rbs,sptest_glob_rec/a/y.rbs,sptest_glob_rec/x.rbs
+3
+sptest_glob_rec/x.rbs
+sptest_glob_rec/a/keep.txt

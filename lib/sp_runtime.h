@@ -5111,13 +5111,75 @@ else {
   }
   return *str == 0;
 }
+/* Recursive helper for a double-star glob: visit `fsdir` and every descendant,
+   and in each match `tail` (a single-component pattern) against the directory's
+   entries. `outprefix` is prepended to a match to reproduce the path shape Ruby
+   returns (the text before the double-star is preserved verbatim; a cwd-anchored
+   pattern yields bare names). Symlinked directories are not traversed, matching
+   CRuby's default and avoiding cycles. Hidden entries are skipped unless `tail`
+   starts with a dot; hidden directories are never descended. */
+static void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
+                            const char *tail, sp_StrArray *a) {
+  DIR *d = opendir(fsdir);
+  if (!d) return;
+  struct dirent *e;
+  while ((e = readdir(d)) != NULL) {
+    const char *name = e->d_name;
+    if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
+    char fspath[2048], outpath[2048];
+    snprintf(fspath, sizeof fspath, "%s/%s", fsdir, name);
+    snprintf(outpath, sizeof outpath, "%s%s", outprefix, name);
+    if (!(name[0] == '.' && tail[0] != '.') && sp_fnmatch1(tail, name)) {
+      char *copy = sp_str_alloc(strlen(outpath));
+      strcpy(copy, outpath);
+      sp_StrArray_push(a, copy);
+    }
+    if (name[0] != '.') {
+      struct stat st;
+      if (lstat(fspath, &st) == 0 && S_ISDIR(st.st_mode)) {
+        char subprefix[2048];
+        snprintf(subprefix, sizeof subprefix, "%s%s/", outprefix, name);
+        sp_dir_glob_rec(fspath, subprefix, tail, a);
+      }
+    }
+  }
+  closedir(d);
+}
 /* Dir.glob(pattern): list directory entries matching the last component
-   of `pattern` (an optional leading `dir/` selects the directory). Hidden
-   entries match only when the pattern itself begins with `.`. Results are
-   sorted, matching Ruby 3.0+ default glob ordering. */
+   of `pattern` (an optional leading `dir/` selects the directory). A recursive
+   double-star component walks that subtree (the tail after it matches per
+   directory). Hidden entries match only when the pattern itself begins with
+   `.`. Results are sorted, matching Ruby 3.0+ default glob ordering. */
 static sp_StrArray *sp_dir_glob(const char *pattern) {
   sp_StrArray *a = sp_StrArray_new();
   if (!pattern) return a;
+  /* Recursive double-star form: split at the double-star component. Everything
+     before it is the output prefix (and, minus the trailing slash, the directory
+     to walk); the component after it is the per-directory tail pattern. */
+  const char *ss = strstr(pattern, "**");
+  if (ss) {
+    size_t plen = (size_t)(ss - pattern);
+    if (plen >= 1024) return a;
+    const char *after = ss + 2;
+    if (*after == '/') after++;
+    const char *tail = after;
+    char outprefix[1024];
+    memcpy(outprefix, pattern, plen);
+    outprefix[plen] = 0;
+    char fsdir[1024];
+    if (plen == 0) {
+      strcpy(fsdir, ".");
+    }
+    else {
+      memcpy(fsdir, pattern, plen);
+      fsdir[plen] = 0;
+      if (fsdir[plen - 1] == '/') fsdir[plen - 1] = 0;
+      if (fsdir[0] == 0) strcpy(fsdir, "/");
+    }
+    sp_dir_glob_rec(fsdir, outprefix, tail, a);
+    sp_StrArray_sort_bang(a);
+    return a;
+  }
   const char *slash = strrchr(pattern, '/');
   char dirbuf[1024];
   const char *dirpath;
