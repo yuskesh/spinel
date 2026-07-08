@@ -56,7 +56,31 @@ void sp_mar_long(sp_mar_buf *b, long n) {
   sp_mar_raw(b, (char *)buf, (size_t)i + 1);
 }
 static void sp_mar_bytes(sp_mar_buf *b, const char *s, size_t n) { sp_mar_long(b, (long)n); sp_mar_raw(b, s, n); }
-void sp_mar_sym(sp_mar_buf *b, const char *name) { sp_mar_b(b, ':'); sp_mar_bytes(b, name, strlen(name)); }
+void sp_mar_sym(sp_mar_buf *b, const char *name) {
+  for (int i = 0; i < b->nws; i++)
+    if (!strcmp(b->wsyms[i], name)) { sp_mar_b(b, ';'); sp_mar_long(b, i); return; }
+  if (b->nws >= b->cws) { b->cws = b->cws ? b->cws * 2 : 8; b->wsyms = (char **)realloc(b->wsyms, sizeof(char *) * (size_t)b->cws); if (!b->wsyms) sp_oom_die(); }
+  b->wsyms[b->nws++] = strdup(name);
+  sp_mar_b(b, ':'); sp_mar_bytes(b, name, strlen(name));
+}
+/* CRuby's Marshal float text: the shortest %.g that round-trips, exponent
+   normalized ("1e+02" -> "1e2"); 0.0 is "0", 100.0 is "1e2", 0.1 is "0.1". */
+static const char *sp_mar_float_str(double f, char *buf, size_t bufsz) {
+  for (int prec = 1; prec <= 17; prec++) {
+    snprintf(buf, bufsz, "%.*g", prec, f);
+    if (strtod(buf, NULL) == f) break;
+  }
+  char *e = strchr(buf, 'e');
+  if (e) {                       /* drop '+' and leading exponent zeros */
+    char *d = e + 1; int neg = 0;
+    if (*d == '+') d++;
+    else if (*d == '-') { neg = 1; d++; }
+    while (*d == '0' && d[1]) d++;
+    char tail[32]; snprintf(tail, sizeof tail, "%s%s", neg ? "-" : "", d);
+    snprintf(e + 1, bufsz - (size_t)(e + 1 - buf), "%s", tail);
+  }
+  return buf;
+}
 /* If `ptr` (object identity; NULL for an identity-less linkable like Float) was
    already written, emit `@id` and return 1; else reserve the next id, return 0. */
 static int sp_mar_seen(sp_mar_buf *b, void *ptr) {
@@ -85,10 +109,10 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
     case SP_TAG_FLT: {
       if (sp_mar_seen(b, NULL)) break;
       sp_mar_b(b, 'f');
-      mrb_float f = v.v.f; const char *fs;
+      mrb_float f = v.v.f; const char *fs; char fbuf[64];
       if (isnan(f)) fs = "nan";
       else if (isinf(f)) fs = f < 0 ? "-inf" : "inf";
-      else fs = sp_float_to_s(f);
+      else fs = sp_mar_float_str((double)f, fbuf, sizeof fbuf);
       sp_mar_bytes(b, fs, strlen(fs));
       break;
     }
@@ -163,6 +187,8 @@ const char *sp_marshal_dump(sp_RbVal v) {
   char *out = sp_str_alloc_raw(b.len + 1);
   memcpy(out, b.p, b.len); out[b.len] = 0;
   sp_str_set_len(out, b.len);
+  for (int i = 0; i < b.nws; i++) free(b.wsyms[i]);
+  free(b.wsyms);
   free(b.p); free(b.lptr); free(b.lid);
   return out;
 }

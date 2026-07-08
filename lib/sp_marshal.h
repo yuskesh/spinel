@@ -21,6 +21,9 @@ typedef struct sp_mar_buf_s {
   char *p; size_t len, cap;
   /* object-link table: pointer identity -> link id, plus the next id. */
   void **lptr; int *lid; int nl, cl; int link_next;
+  /* symbol-link table: every symbol is written in full once; a repeat emits
+     `;<index>` (indices count symbols only, separate from object links). */
+  char **wsyms; int nws, cws;
 } sp_mar_buf;
 void sp_mar_b(sp_mar_buf *b, unsigned char c);
 void sp_mar_sym(sp_mar_buf *b, const char *name);
