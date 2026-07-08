@@ -2822,6 +2822,10 @@ else {
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         TyKind nkt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
+        /* Symbol keys have no scalar-valued hash variant, so keys becoming
+           symbols (e.g. transform_keys(&:to_sym)) yield a SymPolyHash regardless
+           of the value type. */
+        if (nkt == TY_SYMBOL) return TY_SYM_POLY_HASH;
         TyKind r = ty_hash_of(nkt, ty_hash_val(rt));
         return r != TY_UNKNOWN ? r : rt;
       }
