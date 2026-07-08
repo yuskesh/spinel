@@ -1759,10 +1759,11 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
     }
     /* A user object scrutinee is asked to deconstruct itself: #deconstruct for an
        array pattern, #deconstruct_keys for a hash pattern. Materialize the result
-       into a temp and match/bind against that (mirrors the MatchData path).
-       Value-type objects fall through to the reject path. */
-    else if (ty_is_object(pt) && !c->classes[ty_object_class(pt)].is_value_type &&
-             sp_streq(pty, "ArrayPatternNode")) {
+       into a temp and match/bind against that (mirrors the MatchData path). A
+       value-type object is passed to #deconstruct by value; a heap object by
+       pointer. */
+    else if (ty_is_object(pt) && sp_streq(pty, "ArrayPatternNode")) {
+      int isv = c->classes[ty_object_class(pt)].is_value_type;
       int ddef = -1;
       int dm = comp_method_in_chain(c, ty_object_class(pt), "deconstruct", &ddef);
       if (dm >= 0) {
@@ -1771,7 +1772,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         const char *dcn = c->classes[ddef].name;
         arm_t = ++g_tmp;
         emit_indent(b, indent + 1); emit_ctype(c, drt, b);
-        buf_printf(b, " _t%d = sp_%s_deconstruct((sp_%s *)_t%d);\n", arm_t, dcn, dcn, t);
+        if (isv) buf_printf(b, " _t%d = sp_%s_deconstruct(_t%d);\n", arm_t, dcn, t);
+        else     buf_printf(b, " _t%d = sp_%s_deconstruct((sp_%s *)_t%d);\n", arm_t, dcn, dcn, t);
         if (needs_root(drt)) { emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", arm_t); }
         arm_pt = drt;
       }
@@ -1784,7 +1786,9 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         emit_indent(b, indent + 1);
         buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
         for (int i = 0; i < sc->nivars; i++) {
-          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
+          char fb[300];
+          if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, sc->ivars[i] + 1);
+          else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
           emit_indent(b, indent + 1);
           buf_printf(b, "sp_PolyArray_push(_t%d, ", arm_t);
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
@@ -1793,8 +1797,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         arm_pt = TY_POLY_ARRAY;
       }
     }
-    else if (ty_is_object(pt) && !c->classes[ty_object_class(pt)].is_value_type &&
-             sp_streq(pty, "HashPatternNode")) {
+    else if (ty_is_object(pt) && sp_streq(pty, "HashPatternNode")) {
+      int isv = c->classes[ty_object_class(pt)].is_value_type;
       int ddef = -1;
       int dm = comp_method_in_chain(c, ty_object_class(pt), "deconstruct_keys", &ddef);
       if (dm >= 0) {
@@ -1803,7 +1807,8 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         const char *dcn = c->classes[ddef].name;
         arm_t = ++g_tmp;
         emit_indent(b, indent + 1); emit_ctype(c, drt, b);
-        buf_printf(b, " _t%d = sp_%s_deconstruct_keys((sp_%s *)_t%d, sp_box_nil());\n", arm_t, dcn, dcn, t);
+        if (isv) buf_printf(b, " _t%d = sp_%s_deconstruct_keys(_t%d, sp_box_nil());\n", arm_t, dcn, t);
+        else     buf_printf(b, " _t%d = sp_%s_deconstruct_keys((sp_%s *)_t%d, sp_box_nil());\n", arm_t, dcn, dcn, t);
         if (needs_root(drt)) { emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", arm_t); }
         arm_pt = drt;
       }
@@ -1815,7 +1820,9 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         emit_indent(b, indent + 1);
         buf_printf(b, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);\n", arm_t, arm_t);
         for (int i = 0; i < sc->nivars; i++) {
-          char fb[300]; snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
+          char fb[300];
+          if (isv) snprintf(fb, sizeof fb, "(_t%d).iv_%s", t, sc->ivars[i] + 1);
+          else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, sc->ivars[i] + 1);
           emit_indent(b, indent + 1);
           buf_printf(b, "sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", arm_t, comp_sym_intern(c, sc->ivars[i] + 1));
           emit_boxed_text(c, sc->ivar_types[i], fb, b);
