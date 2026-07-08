@@ -3167,6 +3167,15 @@ else {
       if (rt == TY_BIGINT || a0 == TY_BIGINT) return TY_BIGINT;
       return TY_INT;
     }
+    /* numeric receiver <op> a coercing user object: the result is what the
+       object's own <op> returns (coerce yields a pair of that class). */
+    if ((rt == TY_INT || rt == TY_FLOAT) && ty_is_object(a0)) {
+      int acls = ty_object_class(a0);
+      if (comp_method_in_chain(c, acls, "coerce", NULL) >= 0) {
+        int op_mi = comp_method_in_chain(c, acls, name, NULL);
+        if (op_mi >= 0) return (TyKind)c->scopes[op_mi].ret;
+      }
+    }
     /* a poly operand makes the +,-,*,/ result poly: codegen lowers these to
        sp_poly_<op>, which returns a (boxed) poly, so the static type must agree. */
     if ((rt == TY_POLY || a0 == TY_POLY) &&

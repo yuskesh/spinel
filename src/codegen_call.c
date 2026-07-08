@@ -2959,6 +2959,45 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
+  /* Numeric coerce protocol: `recv <op> arg` where recv is a builtin numeric
+     (Integer/Float) and arg is a user object defining coerce. CRuby asks the
+     object to coerce: `a, b = arg.coerce(recv)` then computes `a.<op>(b)`. The
+     standard `coerce` returns a pair of the object's own class, so dispatch the
+     op on that class with both pair elements. */
+  if (recv >= 0 && argc == 1 && (rt == TY_INT || rt == TY_FLOAT) &&
+      ty_is_object(a0) && is_arith_op(name)) {
+    int acls = ty_object_class(a0);
+    int coerce_def = -1, op_def = -1;
+    int coerce_mi = comp_method_in_chain(c, acls, "coerce", &coerce_def);
+    int op_mi = comp_method_in_chain(c, acls, name, &op_def);
+    if (coerce_mi >= 0 && op_mi >= 0) {
+      int tp = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_%s_coerce(", tp, c->classes[coerce_def].c_name);
+      emit_expr(c, argv[0], b);          /* the coercing object = coerce's self */
+      buf_puts(b, ", ");
+      emit_boxed(c, recv, b);            /* the numeric receiver, boxed as `other` */
+      buf_printf(b, "); SP_GC_ROOT(_t%d); ", tp);
+      /* a = pair[0] (the coercing class); dispatch a.<op>(b). */
+      buf_printf(b, "sp_%s_%s((sp_%s *)_t%d->data[0].v.p, ",
+                 c->classes[op_def].c_name, mc(name), c->classes[op_def].c_name, tp);
+      /* b = pair[1], coerced to the op method's first parameter type. */
+      TyKind pt = TY_POLY;
+      if (c->scopes[op_mi].nparams > 0) {
+        LocalVar *pv = scope_local(&c->scopes[op_mi], c->scopes[op_mi].pnames[0]);
+        if (pv) pt = pv->type;
+      }
+      char pair1[64]; snprintf(pair1, sizeof pair1, "_t%d->data[1]", tp);
+      if (ty_is_object(pt))
+        buf_printf(b, "(sp_%s *)_t%d->data[1].v.p", c->classes[ty_object_class(pt)].c_name, tp);
+      else if (pt == TY_POLY || pt == TY_UNKNOWN)
+        buf_puts(b, pair1);
+      else
+        emit_unbox_text(c, pt, pair1, b);
+      buf_puts(b, "); })");
+      return 1;
+    }
+  }
+
   if (recv >= 0 && argc == 1 && !ty_is_object(rt) && !ty_is_array(rt) &&
       (int_arith_fn(name) ||
        /* bigint shifts aren't "int arith" ops but lower through the same
