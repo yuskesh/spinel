@@ -6757,6 +6757,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           const char *fname = c->ffi_structs[fsi].fields[ffi].name;
           TyKind rt2 = ffi_spec_to_ty(spec);
           buf_puts(b, rt2 == TY_POLY ? "sp_box_foreign_ptr((void *)("
+                    : rt2 == TY_STRING ? "((const char *)("
                     : rt2 == TY_FLOAT ? "((mrb_float)(" : "((mrb_int)(");
           buf_printf(b, "((sp_ffi_struct_%s_%s *)", sm2, sn2);
           if (comp_ntype(c, argv[0]) == TY_POLY) { buf_puts(b, "("); emit_expr(c, argv[0], b); buf_puts(b, ").v.p"); }
@@ -6777,6 +6778,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (comp_ntype(c, argv[1]) == TY_POLY) { buf_puts(b, "("); emit_expr(c, argv[1], b); buf_puts(b, ").v.p"); }
             else { buf_puts(b, "(void *)(uintptr_t)("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
           }
+          else if (rt2 == TY_STRING) { buf_puts(b, "("); emit_str_expr(c, argv[1], b); buf_puts(b, ")"); }
           else if (rt2 == TY_FLOAT) { buf_puts(b, "("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
           else { buf_puts(b, "("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
           buf_puts(b, ", sp_box_nil())");

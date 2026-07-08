@@ -1795,6 +1795,7 @@ void register_ffi_decls(Compiler *c) {
           const char *spec = ffi_arg_str(nt, elems[ei]);
           arg_specs[ei] = strdup(spec ? spec : "");
         }
+        arg_specs[en] = NULL;  /* the allocated sentinel slot */
         if (c->n_ffi_callbacks >= c->c_ffi_callbacks) {
           c->c_ffi_callbacks = c->c_ffi_callbacks ? c->c_ffi_callbacks * 2 : 8;
           FfiCallback *grown = realloc(c->ffi_callbacks, sizeof(FfiCallback) * (size_t)c->c_ffi_callbacks);
@@ -1857,6 +1858,9 @@ void register_ffi_decls(Compiler *c) {
         int woff = ffi_arg_int(nt, args[1]);
         if (woff < 0) woff = 0;
         const char *kind = dname + 10;  /* "u32", "i32", "ptr" */
+        /* reject a typoed/unsupported suffix rather than silently registering
+           it and falling back to some default store at codegen. */
+        if (!sp_streq(kind, "u32") && !sp_streq(kind, "i32") && !sp_streq(kind, "ptr")) continue;
         if (c->n_ffi_writers >= c->c_ffi_writers) {
           c->c_ffi_writers = c->c_ffi_writers ? c->c_ffi_writers * 2 : 8;
           FfiReader *grown = realloc(c->ffi_writers, sizeof(FfiReader) * (size_t)c->c_ffi_writers);

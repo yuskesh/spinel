@@ -7,6 +7,7 @@ module M
   ffi_struct :Point, [[:x, :long], [:y, :long]]
   ffi_struct :Mix,   [[:a, :int], [:d, :double]]
   ffi_struct :Node,  [[:val, :int], [:next, :ptr]]
+  ffi_struct :Named, [[:label, :str], [:n, :int]]
 
   # a C function can fill our struct through its :ptr
   ffi_func :gettimeofday, [:ptr, :ptr], :int
@@ -41,3 +42,10 @@ puts(M.Node_get_next(b) == nil)
 tv = M.Timeval_new
 M.gettimeofday(tv, nil)
 puts(M.Timeval_get_tv_sec(tv) > 0)
+
+# a :str field round-trips through const char* (set stores the pointer, get boxes it)
+nm = M.Named_new
+M.Named_set_label(nm, "hello")
+M.Named_set_n(nm, 5)
+puts M.Named_get_label(nm)
+puts M.Named_get_n(nm)
