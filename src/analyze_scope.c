@@ -1047,8 +1047,19 @@ void register_structs(Compiler *c) {
       const char *cname = nt_str(nt, id, "name");
       int val = nt_ref(nt, id, "value");
       if (!cname || !is_c_ident(cname) || !is_struct_call(c, val)) continue;
-      if (comp_class_index(c, cname) >= 0) continue;
-      register_struct_members(c, comp_class_new(c, cname, id), val);
+      int ci = comp_class_index(c, cname);
+      if (ci >= 0) {
+        /* A `class D` reopening this constant pre-created a memberless class
+           (walk_scope runs first and does not know D is a Struct/Data), so its
+           methods could not resolve the generated readers. Register the members
+           onto that existing class instead of skipping it; guard against
+           re-registering an already-populated Struct/Data class. */
+        ClassInfo *ex = &c->classes[ci];
+        if (!ex->is_struct && !ex->is_data)
+          register_struct_members(c, ex, val);
+      } else {
+        register_struct_members(c, comp_class_new(c, cname, id), val);
+      }
     }
     /* class X < Struct.new(:a, :b); ... end */
     else if (sp_streq(ty, "ClassNode")) {
