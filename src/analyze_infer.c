@@ -1150,9 +1150,12 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY; /* Array.new / Array.new(n) */
       if (cn && sp_streq(cn, "Object")) return TY_POLY;  /* identity sentinel */
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      /* Hash.new { |hash, key| default } : a string-keyed poly hash with a
-         default-proc (the block computes the missing-key value). */
-      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_STR_POLY_HASH;
+      /* Hash.new { |hash, key| default } : a poly-keyed poly hash with a
+         default-proc (the block computes the missing-key value). A default-block
+         hash is polymorphic by nature (keys are populated dynamically), so the
+         faithful PolyPoly variant boxes each key by value -- inspect then renders
+         symbol keys as `a:`, string keys as `"a"=>`, etc., all correctly. */
+      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_POLY_POLY_HASH;
       if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN; /* hash type determined by key usage */
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */

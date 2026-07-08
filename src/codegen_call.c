@@ -2085,8 +2085,11 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
         return 1;
       }
-      /* Hash.new { |hash, key| default } -> a StrPolyHash with a default-proc
-         function computing the missing-key value. */
+      /* Hash.new { |hash, key| default } -> a PolyPolyHash with a default-proc
+         function computing the missing-key value. PolyPoly boxes each key by
+         value, so a symbol key round-trips as a symbol (inspect renders `a:`),
+         a string as a string, etc. -- faithful for the dynamically-keyed hash a
+         default block implies. */
       if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) {
         int hblk = nt_ref(nt, id, "block");
         int hbody = nt_ref(nt, hblk, "body");
@@ -2102,11 +2105,11 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         int dp_self = (g_emitting_class_id >= 0 && g_self && sp_streq(g_self, "self") &&
                        g_self_deref && sp_streq(g_self_deref, "->"));
         const char *dp_cls = dp_self ? c->classes[g_emitting_class_id].name : NULL;
-        buf_printf(pb, "static sp_RbVal _sp_hash_dproc_%d(sp_StrPolyHash *_self_h, const char *_key, void *_dproc_self) {\n", dn);
+        buf_printf(pb, "static sp_RbVal _sp_hash_dproc_%d(sp_PolyPolyHash *_self_h, sp_RbVal _key, void *_dproc_self) {\n", dn);
         if (dp_self) buf_printf(pb, "  sp_%s *self = (sp_%s *)_dproc_self; (void)self;\n", dp_cls, dp_cls);
         else buf_puts(pb, "  (void)_dproc_self;\n");
-        if (hp) buf_printf(pb, "  sp_StrPolyHash *lv_%s = _self_h; (void)lv_%s;\n", rename_local(hp), rename_local(hp));
-        if (kp) buf_printf(pb, "  const char *lv_%s = _key; (void)lv_%s;\n", rename_local(kp), rename_local(kp));
+        if (hp) buf_printf(pb, "  sp_PolyPolyHash *lv_%s = _self_h; (void)lv_%s;\n", rename_local(hp), rename_local(hp));
+        if (kp) buf_printf(pb, "  sp_RbVal lv_%s = _key; (void)lv_%s;\n", rename_local(kp), rename_local(kp));
         Buf *sv_pre = g_pre; int sv_ind = g_indent; const char *sv_self = g_self;
         g_pre = pb; g_indent = 1;
         int bn = 0; const int *bb = hbody >= 0 ? nt_arr(nt, hbody, "body", &bn) : NULL;
@@ -2139,9 +2142,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
               emit_indent(pb, 1);
               buf_printf(pb, "sp_RbVal _t%d = %s;\n", vtmp, vexpr.p ? vexpr.p : "sp_box_nil()");
               free(vexpr.p);
-              emit_indent(pb, 1); buf_puts(pb, "sp_StrPolyHash_set(");
+              Buf kexpr; memset(&kexpr, 0, sizeof kexpr);
+              Buf kpre; memset(&kpre, 0, sizeof kpre);
+              Buf *svk = g_pre; g_pre = &kpre;
+              emit_boxed(c, sav[0], &kexpr);
+              g_pre = svk;
+              if (kpre.p) buf_puts(pb, kpre.p);
+              free(kpre.p);
+              emit_indent(pb, 1); buf_puts(pb, "sp_PolyPolyHash_set(");
               emit_expr(c, srecv, pb); buf_puts(pb, ", ");
-              emit_expr(c, sav[0], pb); buf_printf(pb, ", _t%d);\n", vtmp);
+              buf_printf(pb, "%s, _t%d);\n", kexpr.p ? kexpr.p : "sp_box_nil()", vtmp);
+              free(kexpr.p);
               emit_indent(pb, 1); buf_printf(pb, "return _t%d;\n", vtmp);
             }
           }
@@ -2162,8 +2173,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         else { emit_indent(pb, 1); buf_puts(pb, "return sp_box_nil();\n"); }
         g_pre = sv_pre; g_indent = sv_ind; g_self = sv_self;
         buf_puts(pb, "}\n");
-        if (dp_self) buf_printf(b, "sp_StrPolyHash_new_dproc(_sp_hash_dproc_%d, (void *)self)", dn);
-        else buf_printf(b, "sp_StrPolyHash_new_dproc(_sp_hash_dproc_%d, NULL)", dn);
+        if (dp_self) buf_printf(b, "sp_PolyPolyHash_new_dproc(_sp_hash_dproc_%d, (void *)self)", dn);
+        else buf_printf(b, "sp_PolyPolyHash_new_dproc(_sp_hash_dproc_%d, NULL)", dn);
         return 1;
       }
       if (cn && sp_streq(cn, "Regexp") && argc >= 1) {
