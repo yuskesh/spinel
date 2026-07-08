@@ -95,19 +95,19 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const char *saved_self = g_self;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
-  static char selfbuf[64];
+  /* stack-local: this ctor inliner recurses (a constructor's block may itself
+     construct), and g_self points into this buffer -- a shared static would be
+     clobbered by the nested inline. */
+  char selfbuf[64];
   g_yield_block_fallback = saved_block;
   /* the block being captured is caller code: record the caller's self so
-     emit_block_invoke can restore it around the spliced block body. Copy the
-     STRING into a per-inline (stack) buffer: g_self may point at the shared
-     static selfbuf below, which a deeper nested inline overwrites -- aliasing
-     the fallback by pointer would then make the spliced block body read the
-     wrong (inner) receiver name. */
+     emit_block_invoke can restore it around the spliced block body. Aliasing
+     g_self by pointer is safe now that selfbuf is stack-local: it names an
+     ancestor frame's selfbuf, which stays live and unmodified for the whole
+     nested emission (a frame only ever writes its own selfbuf). */
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
-  char self_fb_buf[sizeof selfbuf];
-  if (g_self) { snprintf(self_fb_buf, sizeof self_fb_buf, "%s", g_self); g_yield_self_fallback = self_fb_buf; }
-  else g_yield_self_fallback = NULL;
+  g_yield_self_fallback = g_self;
   g_yield_self_deref_fallback = g_self_deref;
   g_block_id = block;
   g_block_param_name = m->blk_param;
@@ -1372,7 +1372,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(&cb, "sp_%s_%s(%s", _dcn, mc(c->scopes[mi].name), _dself);
           if (c->scopes[mi].nparams > 0) {
             const char *saved_self = g_self;
-            static char selfpbuf[64];
+            char selfpbuf[64];  /* stack-local: nested inlines each need their own receiver buffer */
             snprintf(selfpbuf, sizeof selfpbuf, "%s", _dself);
             g_self = selfpbuf;
             for (int a = 0; a < c->scopes[mi].nparams; a++) {
@@ -1665,7 +1665,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         buf_printf(&cb, "sp_%s_%s((sp_%s *)_t%d.v.p", c->classes[defcls].c_name,
                    mc(c->scopes[mi].name), c->classes[defcls].c_name, tv);
         const char *saved_self = g_self;
-        static char selfpbuf2[64];
+        char selfpbuf2[64];  /* stack-local: nested inlines each need their own receiver buffer */
         snprintf(selfpbuf2, sizeof selfpbuf2, "(sp_%s *)_t%d.v.p", c->classes[defcls].c_name, tv);
         for (int a = 0; a < mnp; a++) {
           /* box the call-site arg if this candidate's parameter is poly;
