@@ -2874,6 +2874,7 @@ else {
     }
     if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "compact") && argc == 0) return rt;
+    if (sp_streq(name, "except")) return rt;  /* a copy minus the given keys */
   }
 
   /* <str>.encoding.name -> the encoding name string */

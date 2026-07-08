@@ -2365,6 +2365,23 @@ else {
         buf_puts(b, ")");
         return 1;
       }
+      /* except(*keys): a copy of the hash without the given keys (the variants
+         that have a runtime delete: str/sym/poly-keyed). */
+      if (sp_streq(name, "except") && hn &&
+          (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_STR_STR_HASH ||
+           rt == TY_STR_INT_HASH || rt == TY_POLY_POLY_HASH)) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_%sHash *_t%d = sp_%sHash_dup(", hn, t, hn);
+        emit_expr(c, recv, b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d);", t);
+        for (int i = 0; i < argc; i++) {
+          buf_printf(b, " sp_%sHash_delete(_t%d, ", hn, t);
+          if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[i], b); else emit_hash_key(c, argv[i], ty_hash_key(rt), b);
+          buf_puts(b, ");");
+        }
+        buf_printf(b, " _t%d; })", t);
+        return 1;
+      }
       if (sp_streq(name, "invert") && argc == 0) {
         if (rt == TY_STR_STR_HASH) {
           buf_printf(b, "sp_StrStrHash_invert("); emit_expr(c, recv, b); buf_puts(b, ")");
