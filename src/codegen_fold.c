@@ -1663,6 +1663,76 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* int_array.chunk { |x| int_key }.to_a -> a poly array of [key, [members]] pairs
+   (each a 2-element poly array), first-class so p/indexing/iteration work.
+   Integer keys only, matching the chunk inspect path. Returns 1 if handled. */
+int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "to_a")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
+  const char *m = nt_str(nt, recv, "name");
+  if (!m || !sp_streq(m, "chunk")) return 0;
+  int block = nt_ref(nt, recv, "block");
+  if (block < 0) return 0;
+  int pr = nt_ref(nt, recv, "receiver");
+  if (pr < 0 || comp_ntype(c, pr) != TY_INT_ARRAY) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  const char *p0n = block_param_name(c, block, 0);
+  if (!p0n) return 0;
+  const char *p0 = rename_local(p0n);
+
+  int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, tpk = ++g_tmp, ti = ++g_tmp, thas = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_IntArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta); free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_IntArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tcur, tcur);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_tpair_%d = NULL; SP_GC_ROOT(_tpair_%d);\n", ta, ta);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_int _t%d = 0; int _t%d = 0;\n", tpk, thas);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "lv_%s = sp_IntArray_get(_t%d, _t%d);\n", p0, ta, ti);
+  Scope *bsc = comp_scope_of(c, block);
+  LocalVar *lv0 = bsc ? scope_local(bsc, p0n) : NULL;
+  TyKind pt0 = lv0 ? lv0->type : TY_UNKNOWN;
+  if (lv0) lv0->type = TY_INT;
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  int save = g_indent; g_indent++;
+  Buf kb; memset(&kb, 0, sizeof kb); emit_expr(c, bb[bn - 1], &kb); g_indent = save;
+  if (lv0) lv0->type = pt0;
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "mrb_int _tkey_%d = %s;\n", ta, kb.p ? kb.p : "0"); free(kb.p);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "if (!_t%d || _tkey_%d != _t%d) {\n", thas, ta, tpk);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "_t%d = sp_IntArray_new();\n", tcur);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "_tpair_%d = sp_PolyArray_new();\n", ta);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "sp_PolyArray_push(_tpair_%d, sp_box_int(_tkey_%d));\n", ta, ta);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "sp_PolyArray_push(_tpair_%d, sp_box_int_array(_t%d));\n", ta, tcur);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_tpair_%d));\n", tout, ta);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "_t%d = _tkey_%d; _t%d = 1;\n", tpk, ta, thas);
+  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_IntArray_push(_t%d, lv_%s);\n", tcur, p0);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tout);
+  return 1;
+}
+
 /* int_array.chunk_while { |a, b| cond }.to_a -> array of runs. Adjacent elements
    stay in one run while the block is true; a boundary falls where it is false
    (the inverse of slice_when). Materialized as a poly array of boxed int arrays
