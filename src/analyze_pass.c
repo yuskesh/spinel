@@ -3331,6 +3331,52 @@ int desugar_to_proc_block_arg(Compiler *c) {
   return changed;
 }
 
+/* `f(**obj)` where obj is a user object defining `#to_hash`: Ruby converts it
+   through to_hash. Rewrite the splat's value from `obj` to `obj.to_hash` so the
+   existing double-splat machinery (which pre-evaluates the source hash into a
+   temp -- once) forwards the converted hash. Mirrors the `to_ary` splice
+   coercion; once rewritten the value is a to_hash call and is not revisited. */
+int desugar_to_hash_splat(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "AssocSplatNode")) continue;
+    int val = nt_ref(nt, id, "value");
+    if (val < 0) continue;
+    if (nt_type(nt, val) && sp_streq(nt_type(nt, val), "CallNode") &&
+        nt_str(nt, val, "name") && sp_streq(nt_str(nt, val, "name"), "to_hash")) continue;
+    TyKind t = infer_type(c, val);
+    if (!ty_is_object(t)) continue;
+    int cid = ty_object_class(t);
+    if (cid < 0 || comp_method_in_chain(c, cid, "to_hash", NULL) < 0) continue;
+    int base = nt->count;
+    int clone = nt_clone_subtree(nt, val);
+    int call = nt_new_node(nt, "CallNode");
+    if (clone < 0 || call < 0) {
+      /* A partial allocation (clone appended nodes but the call node failed)
+         leaves nodes past `base` whose c->nscope would otherwise stay
+         uninitialized, desyncing the arrays from nt->count for later passes. */
+      if (nt->count > base) {
+        comp_grow_node_arrays(c);
+        int encl = c->nscope[id];
+        for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+      }
+      continue;
+    }
+    nt_node_set_ref(nt, call, "receiver", clone);
+    nt_node_set_str(nt, call, "name", "to_hash");
+    nt_node_set_ref(nt, call, "arguments", -1);
+    nt_node_set_ref(nt, call, "block", -1);
+    nt_node_set_ref(nt, id, "value", call);
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
 int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
