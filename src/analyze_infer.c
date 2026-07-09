@@ -2967,7 +2967,8 @@ else {
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
     if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
-    if (sp_streq(name, "each_char") && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
+    if ((sp_streq(name, "each_char") || sp_streq(name, "each_line")) && argc == 0 &&
+        nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
       if (blk >= 0 && (sp_streq(name, "chars") || sp_streq(name, "lines"))) return TY_STRING;

@@ -4271,10 +4271,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return;
   }
-  /* str.each_char with no block -> an Enumerator over the string's characters. */
+  /* str.each_char / each_line with no block -> an Enumerator over the string's
+     characters / lines. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 0 &&
-      nt_ref(nt, id, "block") < 0 && sp_streq(name, "each_char")) {
-    buf_puts(b, "sp_Enumerator_new_from_items(sp_str_chars_poly(");
+      nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "each_char") || sp_streq(name, "each_line"))) {
+    const char *itemfn = sp_streq(name, "each_char") ? "sp_str_chars_poly" : "sp_str_lines_poly";
+    buf_printf(b, "sp_Enumerator_new_from_items(%s(", itemfn);
     emit_expr(c, recv, b); buf_puts(b, "))");
     return;
   }

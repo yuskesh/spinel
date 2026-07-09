@@ -5492,6 +5492,17 @@ static sp_PolyArray *sp_str_chars_poly(const char *s) {
   }
   return a;
 }
+static sp_PolyArray *sp_str_lines_poly(const char *s) {
+  sp_StrArray *ls = sp_str_lines(s); SP_GC_ROOT(ls);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  if (ls) {
+    mrb_int len = sp_StrArray_length(ls);
+    for (mrb_int i = 0; i < len; i++) {
+      sp_PolyArray_push(a, sp_box_str(sp_StrArray_get(ls, i)));
+    }
+  }
+  return a;
+}
 static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap) {
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
   e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE;
