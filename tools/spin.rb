@@ -4,6 +4,8 @@
 
 require_relative "spin/toml"
 
+$spin_hasher = ""   # memoized content-hasher command (native_hasher)
+
 SPIN_USAGE = <<USAGE
 usage: spin <command> [args]
   new <name> [--lib]   scaffold an application (or a library with --lib)
@@ -15,6 +17,8 @@ usage: spin <command> [args]
   build [target..]     build bin/ executables into build/bin/
   run [target] [-- a]  build, then run one executable
   test [file..]        build and run test/*.rb against expectations
+  trust <name>         always allow <name>'s declared native build steps
+                       (one run: --allow-native-build / SPIN_ALLOW_NATIVE_BUILD=1)
   clean                remove build/
   list [--json]        resolved dependency set (name, version, source)
   tree [--json]        dependency tree from this package
@@ -274,6 +278,184 @@ def native_objs_for(name, dir, version)
   objs
 end
 
+# --- declared native build steps ([[build]]) ----------------------------------
+#
+# A package may vendor an external project with its own build system (cmake,
+# make) that carried-C's per-file CC cannot express. `[[build]]` entries in
+# its spin.toml declare the step: a command run in a scratch copy of
+# `workdir`, optional `patches` applied to that copy first, and `artifacts`
+# the run must produce. Entries run at DEPENDENT-APPLICATION BUILD TIME only
+# (never at fetch, preserving R2), are consented explicitly, and cache into
+# the shared content-keyed native cache. Artifacts reach the link line via
+# `[native] libs` entries, where `${build.out}` expands to the package's
+# artifact directory -- linking stays on the existing shape-2 surface.
+
+def spin_config_dir
+  base = ENV["XDG_CONFIG_HOME"].to_s
+  base = File.join(ENV["HOME"].to_s, ".config") if base == ""
+  Dir.mkdir(base) unless Dir.exist?(base)
+  d = File.join(base, "spin")
+  Dir.mkdir(d) unless Dir.exist?(d)
+  d
+end
+
+def native_trust_file
+  File.join(spin_config_dir, "trust")
+end
+
+def native_trusted?(name)
+  f = native_trust_file
+  return false unless File.exist?(f)
+  File.read(f).split("\n").include?(name)
+end
+
+def native_trust!(name)
+  f = native_trust_file
+  have = File.exist?(f) ? File.read(f) : ""
+  return if have.split("\n").include?(name)
+  File.write(f, have + name + "\n")
+end
+
+# A package running an external build system is a trust decision the consumer
+# makes once, explicitly: the flag/env for this run, or a recorded `spin
+# trust <name>`. There is deliberately no silent default (cargo's build.rs
+# runs unprompted; we don't copy that).
+def ensure_native_allowed(name, command)
+  return if ENV["SPIN_ALLOW_NATIVE_BUILD"].to_s != ""
+  return if native_trusted?(name)
+  $stderr.puts "spin: package '#{name}' declares a native build step:"
+  $stderr.puts "  #{command}"
+  $stderr.puts "Allow it with --allow-native-build (this run),"
+  $stderr.puts "SPIN_ALLOW_NATIVE_BUILD=1 (CI), or `spin trust #{name}` (always)."
+  exit 1
+end
+
+# Content hasher: prefer sha256, fall back for platforms without coreutils
+# naming (macOS ships shasum). cksum is the POSIX floor -- weak, but this is
+# a cache key, not a security boundary.
+def native_hasher
+  return $spin_hasher if $spin_hasher != ""
+  ["sha256sum", "shasum -a 256", "cksum"].each do |h|
+    probe = sh_read("command -v " + h.split(" ")[0])
+    if probe != ""
+      $spin_hasher = h
+      return h
+    end
+  end
+  $spin_hasher = "cksum"
+  "cksum"
+end
+
+def native_hash_pipe(shell_producer)
+  out = sh_read("(" + shell_producer + ") | " + native_hasher)
+  out.split(" ")[0].to_s
+end
+
+# Content hash of a directory tree: the sorted file list plus every file's
+# bytes. Rename-only changes and content changes both move the key.
+def native_tree_hash(dir)
+  lst = "cd #{dir} && find . -type f | LC_ALL=C sort"
+  native_hash_pipe(lst + " ; (" + lst + ") | while read f; do cat \"$f\"; done")
+end
+
+def native_out_dir(name, version, key)
+  native_cache_dir(name + "-" + version + "-build-" + key)
+end
+
+# Run one package's [[build]] entries (consented, content-cached) and return
+# its `[native] libs` for the link line, newline-packed, with ${build.out}
+# expanded to the artifact directory. "" when the package declares no build.
+# Entries gated on `features` run only when every named feature is in the
+# package's own `[features] default` set (consumer-side enablement is a
+# later slice); a lib entry whose artifact was feature-skipped is dropped.
+def native_build_libs_for(name, dir, version)
+  mf = File.join(dir, "spin.toml")
+  return "" unless File.exist?(mf)
+  toml = TomlDoc.parse(File.read(mf))
+  n = toml.array_len("build")
+  return "" if n == 0
+  enabled = toml.get_array("features", "default")
+
+  # one artifact dir per package, keyed over every entry's inputs
+  keysrc = "cc=" + File.basename(native_cc) + "\nfeatures=" + enabled
+  i = 0
+  while i < n
+    t = "build." + i.to_s
+    wd = toml.get(t, "workdir")
+    spin_die("[[build]] entry #{i} of #{name}: workdir is required") if wd == ""
+    wdir = File.join(dir, wd)
+    spin_die("[[build]] entry #{i} of #{name}: no such workdir #{wd}") unless File.directory?(wdir)
+    keysrc += "\nworkdir=" + wd + "@" + native_tree_hash(wdir)
+    keysrc += "\ncommand=" + toml.get(t, "command")
+    keysrc += "\nartifacts=" + toml.get_array(t, "artifacts")
+    keysrc += "\nfeatures=" + toml.get_array(t, "features")
+    toml.get_array(t, "patches").split("\n").each do |pg|
+      Dir.glob(File.join(dir, pg)).sort.each do |pf|
+        keysrc += "\npatch=" + File.basename(pf) + "@" + native_hash_pipe("cat #{pf}")
+      end
+    end
+    i += 1
+  end
+  keyf = "/tmp/spin_key_#{Process.pid}"
+  File.write(keyf, keysrc)
+  key = native_hash_pipe("cat " + keyf)[0..15]
+  File.delete(keyf)
+  out = native_out_dir(name, version, key)
+
+  i = 0
+  while i < n
+    t = "build." + i.to_s
+    gates = toml.get_array(t, "features")
+    skip = false
+    gates.split("\n").each { |g| skip = true unless enabled.split("\n").include?(g) }
+    if skip
+      i += 1
+      next
+    end
+    arts = toml.get_array(t, "artifacts")
+    spin_die("[[build]] entry #{i} of #{name}: artifacts is required") if arts == ""
+    missing = false
+    arts.split("\n").each { |a| missing = true unless File.exist?(File.join(out, File.basename(a))) }
+    unless missing
+      i += 1
+      next   # cached: every artifact already present for this key
+    end
+    cmdline = toml.get(t, "command")
+    spin_die("[[build]] entry #{i} of #{name}: command is required") if cmdline == ""
+    ensure_native_allowed(name, cmdline)
+    # scratch copy: the vendored tree stays a read-only input
+    scratch = out + ".scratch"
+    system("rm -rf #{scratch}")
+    spin_die("native build: cannot copy #{name}'s workdir") unless system("cp -R #{File.join(dir, toml.get(t, 'workdir'))} #{scratch}")
+    toml.get_array(t, "patches").split("\n").each do |pg|
+      Dir.glob(File.join(dir, pg)).sort.each do |pf|
+        spin_die("native build: patch failed: #{File.basename(pf)} (#{name})") unless system("patch -s -p1 -d #{scratch} < #{pf}")
+      end
+    end
+    puts "native #{name}: #{cmdline}"
+    unless system("cd #{scratch} && ( #{cmdline} )")
+      system("rm -rf #{scratch}")
+      spin_die("native build failed (#{name})")
+    end
+    arts.split("\n").each do |a|
+      built = File.join(scratch, a)
+      spin_die("native build of #{name} did not produce declared artifact: #{a}") unless File.exist?(built)
+      system("cp #{built} #{File.join(out, File.basename(a))}")
+    end
+    system("rm -rf #{scratch}")
+    i += 1
+  end
+
+  libs = ""
+  toml.get_array("native", "libs").split("\n").each do |l|
+    path = l.gsub("${build.out}", out)
+    next unless File.exist?(path)   # a feature-skipped artifact drops out
+    libs += "\n" unless libs == ""
+    libs += path
+  end
+  libs
+end
+
 # --- shared cache & git sources (M1) -----------------------------------------
 
 def cache_packages_dir
@@ -495,6 +677,25 @@ class Project
     objs
   end
 
+  # declared [[build]] steps across the root package and every resolved dep:
+  # runs (or reuses) each package's native build and returns the expanded
+  # `[native] libs` link inputs, newline-packed. Memoized -- the staleness
+  # check and compile() both consult it, and a cached build is cheap but a
+  # cold one is not.
+  def native_build_libs
+    return @native_build_libs if @native_build_libs != nil
+    libs = ""
+    @dep_srcs.split("\n").each do |s|
+      f = s.split("\t")
+      got = native_build_libs_for(f[0], f[1], f[2])
+      next if got == ""
+      libs += "\n" unless libs == ""
+      libs += got
+    end
+    @native_build_libs = libs
+    libs
+  end
+
   def dep_records
     @dep_records
   end
@@ -565,6 +766,7 @@ def compile(prj, entry, out, extra)
     cmd += " --rbs #{prj.root}"
   end
   prj.native_objs.each { |o| cmd += " --link #{o}" }
+  prj.native_build_libs.split("\n").each { |l| cmd += " --link #{l}" if l != "" }
   cmd += " #{extra}" if extra != ""
   cmd += " -o #{out}"
   ok = system(cmd)
@@ -580,6 +782,13 @@ def cmd_build(prj, targets, extra)
   spin_die("no bin/*.rb executables to build (a library is exercised via `spin test`)") if bins.empty?
   targets = bins if targets.empty?
   need = inputs_mtime(prj)
+  # Declared native builds run first (vendor/ is excluded from the mtime
+  # sweep, so a rebuilt artifact's own mtime is what re-triggers the link).
+  prj.native_build_libs.split("\n").each do |l|
+    next if l == ""
+    m = File.mtime(l).to_i
+    need = m if m > need
+  end
   Dir.mkdir(File.join(prj.root, "build")) unless Dir.exist?(File.join(prj.root, "build"))
   bindir = File.join(prj.root, "build/bin")
   Dir.mkdir(bindir) unless Dir.exist?(bindir)
@@ -1142,9 +1351,17 @@ when "list", "tree"
   json = rest.include?("--json")
   cmd_list(prj, json) if cmd == "list"
   cmd_tree(prj, json) if cmd == "tree"
+when "trust"
+  spin_die("usage: spin trust <name>") if rest.empty?
+  native_trust!(rest[0])
+  puts "trusted: #{rest[0]} (native build steps run without prompting)"
 when "build", "run", "test", "clean"
   root = find_root(Dir.pwd)
   spin_die("no spin.toml found (run `spin init`, or `spin new <name>`)") if root == ""
+  if rest.include?("--allow-native-build")
+    ENV["SPIN_ALLOW_NATIVE_BUILD"] = "1"
+    rest = rest.reject { |a| a == "--allow-native-build" }
+  end
   prj = Project.new(root)
   case cmd
   when "build"

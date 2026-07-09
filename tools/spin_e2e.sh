@@ -231,4 +231,87 @@ expect "installed binary runs" "$WANT_OUT
 "$SPIN" install --uninstall --prefix "$WORK/binhome" >/dev/null
 [ -e "$WORK/binhome/app" ] && fail "uninstall left the binary"
 
+# --- [[build]]: declared native build steps (#1820) ------------------------------
+# A package vendoring a project with its own build system declares the step;
+# it runs at dependent-application build time only (never at fetch), needs
+# explicit consent, caches by content key, applies declared patches to a
+# scratch copy, and feature-gated entries stay off by default. The same
+# package works as the build root (app) and as a path dependency (lib).
+export XDG_CONFIG_HOME="$WORK/config"
+cd "$WORK"
+mkdir -p spinel-mathx/vendor/mx spinel-mathx/patches spinel-mathx/bin
+cat > spinel-mathx/spin.toml <<'EOF'
+[package]
+name = "mathx"
+version = "0.1.0"
+
+[[build]]
+workdir   = "vendor/mx"
+patches   = ["patches/*.patch"]
+command   = "${CC:-cc} -O2 -c mx.c -o mx.o && ar rcs libmx.a mx.o"
+artifacts = ["libmx.a"]
+
+[[build]]
+features  = ["cuda"]
+workdir   = "vendor/mx"
+command   = "${CC:-cc} -O2 -DCUDA -c mx.c -o mxc.o && ar rcs libmx-cuda.a mxc.o"
+artifacts = ["libmx-cuda.a"]
+
+[native]
+libs = ["${build.out}/libmx.a", "${build.out}/libmx-cuda.a"]
+EOF
+printf 'int mx_add(int a, int b) { return a + b; }\n' > spinel-mathx/vendor/mx/mx.c
+cat > spinel-mathx/patches/01-bias.patch <<'EOF'
+--- a/mx.c
++++ b/mx.c
+@@ -1 +1 @@
+-int mx_add(int a, int b) { return a + b; }
++int mx_add(int a, int b) { return a + b + 1; }
+EOF
+printf 'module Mathx\n  ffi_func :mx_add, [:int, :int], :int\nend\n' > spinel-mathx/mathx.rb
+printf 'require "mathx"\nputs Mathx.mx_add(20, 21)\n' > spinel-mathx/bin/mxdemo.rb
+
+# app-as-root: unconsented build is refused with instructions
+cd spinel-mathx
+OUT=$("$SPIN" build 2>&1) && fail "unconsented native build must be refused"
+echo "$OUT" | grep -q "declares a native build step" || fail "refusal message"
+echo "$OUT" | grep -q "allow-native-build" || fail "refusal hint"
+# consented: the patch applied to the scratch copy biases the sum by one
+OUT=$("$SPIN" run --allow-native-build 2>&1)
+expect "native app-as-root run (patched)" "42" "$(echo "$OUT" | tail -1)"
+echo "$OUT" | grep -q '^native mathx:' || fail "native build step didn't run"
+# the vendored tree is a read-only input: the patch never touches it
+grep -q 'a + b + 1' vendor/mx/mx.c && fail "patch leaked into the vendored tree"
+# feature-gated entry stays off by default: only the default artifact exists
+N_ART=$(find "$XDG_CACHE_HOME/spin/native" -name 'libmx*.a' | wc -l | tr -d ' ')
+expect "feature-gated artifact count" "1" "$N_ART"
+# second build reuses the content-keyed cache (no native line)
+"$SPIN" clean >/dev/null
+OUT=$("$SPIN" run --allow-native-build 2>&1)
+echo "$OUT" | grep -q '^native mathx:' && fail "cached native build re-ran"
+expect "native cached rerun" "42" "$(echo "$OUT" | tail -1)"
+# a content change moves the key and rebuilds
+printf 'int mx_add(int a, int b) { return a + b; }\nint mx_two(void) { return 2; }\n' > vendor/mx/mx.c
+printf -- '--- a/mx.c\n+++ b/mx.c\n@@ -1,2 +1,2 @@\n-int mx_add(int a, int b) { return a + b; }\n+int mx_add(int a, int b) { return a + b + 1; }\n int mx_two(void) { return 2; }\n' > patches/01-bias.patch
+OUT=$("$SPIN" run --allow-native-build 2>&1)
+echo "$OUT" | grep -q '^native mathx:' || fail "content change didn't rebuild the native step"
+expect "native rebuild after change" "42" "$(echo "$OUT" | tail -1)"
+
+# lib case: a consumer app pulls mathx as a path dependency. A fresh cache:
+# a cached artifact skips consent by design (the consented command already
+# ran on this machine), so refusal is only observable on a cold cache.
+export XDG_CACHE_HOME="$WORK/cache-nb"
+cd "$WORK"
+mkdir -p nbconsumer/bin
+printf '[package]\nname = "nbconsumer"\n\n[dependencies]\nmathx = { path = "../spinel-mathx" }\n' > nbconsumer/spin.toml
+printf 'require "mathx"\nputs Mathx.mx_add(100, 100)\n' > nbconsumer/bin/app.rb
+cd nbconsumer
+# fetch never runs a native build (R2: packages compute nothing at fetch)
+"$SPIN" fetch >/dev/null 2>&1
+# unconsented dependent build is refused; `spin trust` records durable consent
+OUT=$("$SPIN" build 2>&1) && fail "unconsented dependent native build must be refused"
+"$SPIN" trust mathx | grep -q '^trusted: mathx' || fail "spin trust"
+OUT=$("$SPIN" run 2>&1)
+expect "native lib-dependency run (patched)" "201" "$(echo "$OUT" | tail -1)"
+
 echo "spin-e2e: ALL GREEN"

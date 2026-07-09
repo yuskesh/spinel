@@ -82,6 +82,24 @@ class TomlDoc
     @vals[k]
   end
 
+  # `key = ["a", "b"]` string-array value -> newline-packed string ("" when
+  # absent or not an array). Raw array text passes through remember/unquote
+  # untouched (it neither starts with `{` nor is a bare quoted string), so
+  # the bracket text is intact here. Newline packing over a String[] return
+  # keeps the value monomorphic for spinel (house style, cf. dep_srcs).
+  def get_array(table, key)
+    raw = get(table, key)
+    return "" unless raw.start_with?("[") && raw.end_with?("]")
+    out = ""
+    raw[1..-2].split(",").each do |part|
+      v = unquote(part.strip)
+      next if v == ""
+      out += "\n" unless out == ""
+      out += v
+    end
+    out
+  end
+
   # inline-table member, "" when absent
   def get_inline(table, key, ik)
     k = table + "\x01" + key + "\x01" + ik
