@@ -1905,8 +1905,16 @@ else {
   /* Kernel conversion with an explicit user-object receiver: obj.send(:Float, x)
      desugars to obj.Float(x); the private Kernel method is available on every
      object, so it types like the receiverless form when the receiver's chain
-     does not define the name (mirrors the codegen dispatch). */
-  if (recv >= 0 && (argc == 1 || argc == 2)) {
+     does not define the name (mirrors the codegen dispatch).
+     The NAME gate must come first: inferring the receiver for every 1/2-arg
+     call added an infer_call<->infer_type recursion edge that other arms
+     avoid structurally, and looped forever on whole-program shapes with
+     zero conversion calls (the tep regression). Only the six capitalized
+     conversion names ever pay the receiver inference. */
+  if (recv >= 0 && (argc == 1 || argc == 2) && name[0] >= 'A' && name[0] <= 'Z' &&
+      (sp_streq(name, "Integer") || sp_streq(name, "Float") ||
+       sp_streq(name, "String") || sp_streq(name, "Rational") ||
+       sp_streq(name, "Complex") || sp_streq(name, "Array"))) {
     TyKind krt = infer_type(c, recv);
     int kdisp = (ty_is_object(krt) &&
                  comp_method_in_chain(c, ty_object_class(krt), name, NULL) < 0) ||
