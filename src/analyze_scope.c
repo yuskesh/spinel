@@ -2653,7 +2653,13 @@ void inherit_members(Compiler *c) {
     }
     for (int k = 0; k < oldn; k++) {
       int idx = comp_ivar_intern(ci, old[k]);
-      ci->ivar_types[idx] = ty_unify(ci->ivar_types[idx], oldt[k]);
+      /* an --rbs-pinned slot keeps its pinned type verbatim through the
+         layout rebuild (this runs again AFTER seeds apply; unifying with the
+         parent's inferred type here would overwrite the pin) */
+      if (class_ivar_pinned(ci, old[k]))
+        ci->ivar_types[idx] = oldt[k];
+      else
+        ci->ivar_types[idx] = ty_unify(ci->ivar_types[idx], oldt[k]);
       free(old[k]);
     }
     free(old); free(oldt);
@@ -2673,6 +2679,7 @@ int infer_inherited_ivars(Compiler *c) {
     for (int k = 0; k < pc->nivars; k++) {
       int idx = comp_ivar_index(ci, pc->ivars[k]);
       if (idx < 0) continue;
+      if (class_ivar_pinned(ci, pc->ivars[k])) continue;  /* --rbs seed pins are authoritative */
       TyKind merged = ty_unify(ci->ivar_types[idx], pc->ivar_types[k]);
       if (merged != ci->ivar_types[idx]) { ci->ivar_types[idx] = merged; changed = 1; }
     }

@@ -1,0 +1,12 @@
+class PinBox
+  @kids: Array[untyped]
+  @meta: Hash[String, untyped]
+  def kids: () -> Array[untyped]
+  def kids!: () -> Array[untyped]
+end
+
+class PinItem
+  @label: String
+  def initialize: (String label) -> void
+  def label: () -> String
+end
