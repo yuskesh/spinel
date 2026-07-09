@@ -4919,7 +4919,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   if (recv < 0 && (sp_streq(name, "exit") || sp_streq(name, "exit!"))) {
     if (argc == 0) { buf_puts(b, "({ exit(0); (mrb_int)0; })"); return; }
-    buf_puts(b, "({ exit((int)("); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })");
+    /* a poly status (e.g. a widened attr read or poly-hash get) must be
+       unboxed -- (int)(sp_RbVal) is a struct cast, a cc error. */
+    TyKind xt = comp_ntype(c, argv[0]);
+    if (xt == TY_POLY) { buf_puts(b, "({ exit((int)sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })"); }
+    else { buf_puts(b, "({ exit((int)("); emit_expr(c, argv[0], b); buf_puts(b, ")); (mrb_int)0; })"); }
     return;
   }
   if (recv < 0 && sp_streq(name, "abort")) {
@@ -4958,7 +4962,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_args_filled(c, ic, -1, "", b);
         buf_puts(b, "))");
       }
-      else buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", cn ? cn : "");
+      else {
+        /* a known user class raises under its qualified Ruby name (matching
+           the constructor emission and the rescue-arm canonicalization) */
+        const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
+        buf_printf(b, "sp_raise_cls(\"%s\", (&(\"\\xff\")[1]))", rn ? rn : (cn ? cn : ""));
+      }
     }
     else if (ac >= 2 && nt_type(nt, av[0]) &&
              (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode"))) {
@@ -4973,16 +4982,26 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         ic = comp_method_in_chain(c, xc, "initialize", NULL);
       if (xc >= 0 && ic >= 0 && c->scopes[ic].nparams >= 1) {
         buf_printf(b, "sp_raise_exc((sp_Exception *)sp_%s_new(", c->classes[xc].c_name);
-        /* match the constructor's first-param type, which falls back to poly
-           when unknown (same rule emit_class_new uses for the signature). */
-        LocalVar *p0 = scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]);
-        TyKind pt0 = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
-        if (pt0 == TY_POLY) emit_boxed(c, av[1], b);
-        else emit_expr(c, av[1], b);
+        /* `raise Cls, msg` only ever supplies the message, but the generated
+           constructor keeps its full signature (defaulted positionals and
+           keywords included) -- fill param 0 with the message and every
+           remaining param from its default, or the call is emitted with too
+           few arguments. emit_arg_or_default also boxes/coerces the message
+           to the first param's type (poly when unknown, same rule
+           emit_class_new uses for the signature). */
+        Scope *im = &c->scopes[ic];
+        emit_arg_or_default(c, im, 0, av[1], b);
+        for (int pk = 1; pk < im->nparams; pk++) {
+          buf_puts(b, ", ");
+          emit_arg_or_default(c, im, pk, -1, b);
+        }
         buf_puts(b, "))");
       }
       else {
-        buf_printf(b, "sp_raise_cls(\"%s\", ", cn);
+        /* a known user class raises under its qualified Ruby name (matching
+           the constructor emission and the rescue-arm canonicalization) */
+        const char *rn = (xc >= 0) ? class_ruby_name(c, xc) : NULL;
+        buf_printf(b, "sp_raise_cls(\"%s\", ", rn ? rn : cn);
         emit_expr(c, av[1], b); buf_puts(b, ")");
       }
     }

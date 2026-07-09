@@ -423,7 +423,13 @@ else {
   if (sp_streq(name, "exit") || sp_streq(name, "exit!")) {
     emit_indent(b, indent);
     if (argc == 0) buf_puts(b, "exit(0);\n");
-    else { buf_puts(b, "exit((int)("); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
+    else {
+      /* a poly status (e.g. a widened attr read or poly-hash get) must be
+         unboxed -- (int)(sp_RbVal) is a struct cast, a cc error. */
+      TyKind xt = comp_ntype(c, argv[0]);
+      if (xt == TY_POLY) { buf_puts(b, "exit((int)sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
+      else { buf_puts(b, "exit((int)("); emit_expr(c, argv[0], b); buf_puts(b, "));\n"); }
+    }
     return 1;
   }
   if (sp_streq(name, "abort")) {
@@ -3501,10 +3507,21 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
           if (is_exc_name(enbuf)) ename = enbuf;
         }
       }
+      /* A user exception class is raised under its QUALIFIED Ruby name
+         (self->cls_name = "App::Error" -- the exception-subclass constructor
+         emission uses class_ruby_name). Canonicalize the rescue target
+         through the (leaf-keyed) class table so both a namespaced arm
+         (`rescue App::Error`, whose AST name is the leaf) and a
+         leaf-referenced arm inside the module match the raised name. Resolve
+         the index BEFORE swapping in the qualified name. */
+      int uci = (ename && !is_exc_name(ename)) ? comp_class_index(c, ename) : -1;
+      if (uci >= 0) {
+        const char *qn = class_ruby_name(c, uci);
+        if (qn) ename = qn;
+      }
       /* use hierarchy-aware check for exception classes */
       int is_exc_cls = (ename && is_exc_name(ename)) ||
-                       (ename && comp_class_index(c, ename) >= 0 &&
-                        class_is_exc_subclass(c, comp_class_index(c, ename)));
+                       (uci >= 0 && class_is_exc_subclass(c, uci));
       if (is_exc_cls)
         buf_printf(b, "sp_exc_cls_matches(_rcls_%d, \"%s\")", rc, ename);
       else
