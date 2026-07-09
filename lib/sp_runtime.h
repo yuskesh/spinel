@@ -2297,6 +2297,30 @@ static const double *sp_PolyArray_ffi_float_data(sp_PolyArray *a) {
   for (mrb_int i = 0; i < a->len; i++) buf[i] = (double)a->data[i].v.f;
   return buf;
 }
+/* FFI array hand-off from a POLY slot: dispatch on the RUNTIME storage kind.
+   A poly value may hold any array variant -- an int array that poly-collapsed
+   still boxes an sp_IntArray (cls_id INT_ARRAY), and reinterpreting its .v.p
+   as sp_PolyArray* read garbage lengths and marshalled NULL (the toy LoRA
+   flatline). nil passes as NULL (the C idiom for an absent array); any other
+   runtime kind raises loudly rather than silently handing the callee NULL. */
+static const int64_t *sp_ffi_int_array_data(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY)
+    return sp_IntArray_ffi_data((sp_IntArray *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
+    return sp_PolyArray_ffi_int_data((sp_PolyArray *)v.v.p);
+  if (v.tag == SP_TAG_NIL) return (const int64_t *)0;
+  sp_raise_cls("TypeError", "no implicit conversion into an FFI :int_array");
+  return (const int64_t *)0;  /* unreached */
+}
+static const double *sp_ffi_float_array_data(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLT_ARRAY)
+    return sp_FloatArray_ffi_data((sp_FloatArray *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
+    return sp_PolyArray_ffi_float_data((sp_PolyArray *)v.v.p);
+  if (v.tag == SP_TAG_NIL) return (const double *)0;
+  sp_raise_cls("TypeError", "no implicit conversion into an FFI :float_array");
+  return (const double *)0;  /* unreached */
+}
 /* MatchData — holds the source string and the per-group byte offsets
    the engine produced. `[]`/captures extract substrings on demand;
    offset/begin/end report CHARACTER offsets (CRuby semantics), so
