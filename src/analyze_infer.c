@@ -2370,7 +2370,8 @@ else {
     if (sp_streq(name, "tally") && argc == 0) {
       if (rt == TY_INT_ARRAY) return TY_INT_INT_HASH;
       if (rt == TY_STR_ARRAY) return TY_STR_INT_HASH;
-      if (rt == TY_POLY_ARRAY) return TY_SYM_POLY_HASH;
+      /* poly array: keys are the elements (any type), counts are ints. */
+      if (rt == TY_POLY_ARRAY) return TY_POLY_POLY_HASH;
     }
     if (sp_streq(name, "group_by") && block >= 0 && ty_is_array(rt))
       return TY_POLY_POLY_HASH;
