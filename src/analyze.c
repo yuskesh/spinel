@@ -1638,42 +1638,64 @@ static int reset_locked_iter_block_params(Compiler *c) {
   return n;
 }
 
-/* Is `id` a `recv.enum_for` / `recv.to_enum` call that materializes the
-   receiver's `#each` (no args, or a single literal `:each`), with no block?
-   These are the forms we lower to an eager `#each`-into-array helper. */
-static int is_enum_for_each(const Compiler *c, int id) {
+/* If `id` is a `to_enum`/`enum_for` call, resolve the target method name into
+   `buf` (the literal first symbol, `:each` by default, or the enclosing method
+   name for `__method__`) and report the count of forwarded args after the
+   symbol plus whether a size block is present. Returns 1 for a handled call.
+   `recv.to_enum(:m, *a)` defers `recv.m(*a)`; the internal iterator is lowered
+   per receiver kind by desugar_to_enum. */
+static int to_enum_target(Compiler *c, int id, char *buf, int buflen,
+                          int *out_extra, int *out_has_block) {
   const NodeTable *nt = c->nt;
+  if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) return 0;
   const char *nm = nt_str(nt, id, "name");
   if (!nm || (!sp_streq(nm, "enum_for") && !sp_streq(nm, "to_enum"))) return 0;
-  if (nt_ref(nt, id, "receiver") < 0) return 0;       /* need a receiver to drive */
-  if (nt_ref(nt, id, "block") >= 0) return 0;         /* a size block is unsupported */
+  if (out_has_block) *out_has_block = nt_ref(nt, id, "block") >= 0;
   int args = nt_ref(nt, id, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-  if (ac == 0) return 1;                               /* enum_for defaults to :each */
-  if (ac != 1 || !av) return 0;
-  if (!nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "SymbolNode")) return 0;
-  const char *s = nt_str(nt, av[0], "value");
-  return s && sp_streq(s, "each");
+  const char *mname = NULL; int extra = 0;
+  if (ac == 0) { mname = "each"; }             /* to_enum/enum_for default to :each */
+  else {
+    const char *aty = nt_type(nt, av[0]);
+    if (aty && sp_streq(aty, "SymbolNode")) mname = nt_str(nt, av[0], "value");
+    else if (aty && sp_streq(aty, "CallNode") && nt_ref(nt, av[0], "receiver") < 0) {
+      const char *an = nt_str(nt, av[0], "name");
+      if (an && sp_streq(an, "__method__")) {  /* enum_for(__method__) -> this method */
+        Scope *es = comp_scope_of(c, id);
+        mname = es ? es->name : NULL;
+      }
+    }
+    if (!mname) return 0;                       /* a dynamic method symbol: not handled */
+    extra = ac - 1;
+  }
+  if (!mname) return 0;
+  snprintf(buf, buflen, "%s", mname);
+  if (out_extra) *out_extra = extra;
+  return 1;
 }
 
-/* Rewrite every `recv.enum_for(:each)` / `recv.to_enum` into a call to the
-   synthesized `recv.__enum_to_a`, which materializes `#each` into an array.
-   Purely syntactic (no receiver type needed); the per-class helper is
-   synthesized separately and pruned by reachability when unused. */
-static void rewrite_enum_for_each(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  /* snapshot the count: synthesis below appends nodes, which must not be rescanned */
-  int count = nt->count;
-  for (int id = 0; id < count; id++) {
-    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
-    if (!is_enum_for_each(c, id)) continue;
-    int empty = nt_new_node(nt, "ArgumentsNode");
-    nt_node_set_arr(nt, empty, "arguments", NULL, 0);
-    nt_node_set_str(nt, id, "name", "__enum_to_a");
-    nt_node_set_ref(nt, id, "arguments", empty);
-    comp_grow_node_arrays(c);
-    c->nscope[empty] = c->nscope[id];
-  }
+/* Small synthetic-AST constructors for the to_enum generator helper. */
+static int te_lvread(NodeTable *nt, const char *name) {
+  int n = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, n, "name", name); return n;
+}
+static int te_int(NodeTable *nt, long long v) {
+  int n = nt_new_node(nt, "IntegerNode"); nt_node_set_int(nt, n, "value", v); return n;
+}
+static int te_const(NodeTable *nt, const char *name) {
+  int n = nt_new_node(nt, "ConstantReadNode"); nt_node_set_str(nt, n, "name", name); return n;
+}
+static int te_args1(NodeTable *nt, int a) {
+  int n = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, n, "arguments", &a, 1); return n;
+}
+static int te_call(NodeTable *nt, int recv, const char *name, int argsnode, int block) {
+  int n = nt_new_node(nt, "CallNode"); nt_node_set_str(nt, n, "name", name);
+  if (recv >= 0) nt_node_set_ref(nt, n, "receiver", recv);
+  if (argsnode >= 0) nt_node_set_ref(nt, n, "arguments", argsnode);
+  if (block >= 0) nt_node_set_ref(nt, n, "block", block);
+  return n;
+}
+static int te_stmts1(NodeTable *nt, int s) {
+  int n = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, n, "body", &s, 1); return n;
 }
 
 /* Synthesize, on every class that defines an instance `#each` that yields, a
@@ -1769,6 +1791,130 @@ static void synth_enum_to_a(Compiler *c) {
   free(cls); free(eachdef);
 }
 
+/* Blockless builtin iterators that already lower to a materialized Enumerator;
+   a builtin-receiver `to_enum(:m)` retargets to the plain blockless `recv.m`. */
+static int to_enum_builtin_method(const char *m) {
+  static const char *const ok[] = {
+    "each", "reverse_each", "each_with_index", "each_index",
+    "each_char", "each_line", "each_slice", "each_cons", "each_pair", NULL };
+  for (int k = 0; ok[k]; k++) if (sp_streq(m, ok[k])) return 1;
+  return 0;
+}
+
+/* Synthesize, on each user class whose yielding instance method `m` is the
+   target of a `to_enum(:m)`/`enum_for(:m)` call, a lazy generator helper
+
+       def __to_enum_m
+         Enumerator.new do |__ey|
+           m do |*__ev|
+             Fiber.yield(__ev.length <= 1 ? __ev[0] : __ev)
+           end
+         end
+       end
+
+   so `recv.to_enum(:m)` (rewritten to `recv.__to_enum_m` by desugar_to_enum)
+   yields a real fiber-backed Enumerator. `m`'s yields flow through the rest
+   param `__ev`; the `length<=1 ? [0] : self` collapse is CRuby's ary2sv
+   (`[][0]` is nil), and `y << v` is emitted as a direct `Fiber.yield` so the
+   inner block captures nothing (no proc-in-proc capture). The method call is
+   the construction-time snapshot of the receiver (recv -> self via cap_self).
+   Runs pre-fixpoint like synth_enum_to_a; unused helpers prune by reachability. */
+static void synth_to_enum_generators(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (c->nscopes == 0) return;
+  /* Collect the set of target method names across all to_enum/enum_for calls. */
+  int nnames = 0, cnames = 8;
+  char **names = malloc(sizeof(char *) * (size_t)cnames);
+  if (!names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    char buf[128];
+    if (!to_enum_target(c, id, buf, sizeof buf, NULL, NULL)) continue;
+    int dup = 0;
+    for (int k = 0; k < nnames; k++) if (sp_streq(names[k], buf)) { dup = 1; break; }
+    if (dup) continue;
+    if (nnames >= cnames) {
+      cnames *= 2; char **tmp = realloc(names, sizeof(char *) * (size_t)cnames);
+      if (!tmp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      names = tmp;
+    }
+    names[nnames++] = strdup(buf);
+  }
+  if (nnames == 0) { free(names); return; }
+
+  /* Collect (class, method-name, def_node) triples: a yielding instance method
+     whose name is a to_enum target. Snapshot before synthesis grows c->scopes. */
+  int ntr = 0, ctr = c->nscopes;
+  int *tc = malloc(sizeof(int) * (size_t)ctr);
+  int *tdef = malloc(sizeof(int) * (size_t)ctr);
+  char **tm = malloc(sizeof(char *) * (size_t)ctr);
+  if (!tc || !tdef || !tm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *m = &c->scopes[s];
+    if (!m->name || m->is_cmethod || m->class_id < 0) continue;
+    if (!(m->yields || (m->blk_param && m->blk_param[0]))) continue;
+    int hit = 0;
+    for (int k = 0; k < nnames; k++) if (sp_streq(names[k], m->name)) { hit = 1; break; }
+    if (!hit) continue;
+    char hname[160]; snprintf(hname, sizeof hname, "__to_enum_%s", m->name);
+    if (comp_method_in_class(c, m->class_id, hname) >= 0) continue;   /* already synthesized */
+    int dup = 0;
+    for (int k = 0; k < ntr; k++)
+      if (tc[k] == m->class_id && sp_streq(tm[k], m->name)) { dup = 1; break; }
+    if (dup) continue;
+    tc[ntr] = m->class_id; tdef[ntr] = m->def_node; tm[ntr] = strdup(m->name); ntr++;
+  }
+
+  for (int k = 0; k < ntr; k++) {
+    int ci = tc[k];
+    const char *m = tm[k];   /* stable strdup: survives nt_new_node reallocs */
+    char hname[160]; snprintf(hname, sizeof hname, "__to_enum_%s", m);
+
+    /* __ev.length <= 1 ? __ev[0] : __ev */
+    int lencall = te_call(nt, te_lvread(nt, "__ev"), "length", -1, -1);
+    int cmp = te_call(nt, lencall, "<=", te_args1(nt, te_int(nt, 1)), -1);
+    int idx = te_call(nt, te_lvread(nt, "__ev"), "[]", te_args1(nt, te_int(nt, 0)), -1);
+    int elsenode = nt_new_node(nt, "ElseNode");
+    nt_node_set_ref(nt, elsenode, "statements", te_stmts1(nt, te_lvread(nt, "__ev")));
+    int ifn = nt_new_node(nt, "IfNode");
+    nt_node_set_ref(nt, ifn, "predicate", cmp);
+    nt_node_set_ref(nt, ifn, "statements", te_stmts1(nt, idx));
+    nt_node_set_ref(nt, ifn, "subsequent", elsenode);
+    /* Fiber.yield(<collapse>) */
+    int fyield = te_call(nt, te_const(nt, "Fiber"), "yield", te_args1(nt, ifn), -1);
+    /* inner block: m { |*__ev| Fiber.yield(...) } */
+    int evrest = nt_new_node(nt, "RestParameterNode"); nt_node_set_str(nt, evrest, "name", "__ev");
+    int inner_params = nt_new_node(nt, "ParametersNode"); nt_node_set_ref(nt, inner_params, "rest", evrest);
+    int inner_bp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, inner_bp, "parameters", inner_params);
+    int inner_blk = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, inner_blk, "parameters", inner_bp);
+    nt_node_set_ref(nt, inner_blk, "body", te_stmts1(nt, fyield));
+    int mcall = te_call(nt, -1, m, -1, inner_blk);   /* implicit self.m -> cap_self */
+    /* outer block: Enumerator.new { |__ey| <mcall> } */
+    int eyreq = nt_new_node(nt, "RequiredParameterNode"); nt_node_set_str(nt, eyreq, "name", "__ey");
+    int outer_params = nt_new_node(nt, "ParametersNode"); nt_node_set_arr(nt, outer_params, "requireds", &eyreq, 1);
+    int outer_bp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, outer_bp, "parameters", outer_params);
+    int outer_blk = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, outer_blk, "parameters", outer_bp);
+    nt_node_set_ref(nt, outer_blk, "body", te_stmts1(nt, mcall));
+    int enumnew = te_call(nt, te_const(nt, "Enumerator"), "new", -1, outer_blk);
+    int mbody = te_stmts1(nt, enumnew);
+
+    Scope *ms = comp_scope_new(c, hname, tdef[k]);
+    ms->class_id = ci;
+    ms->body = mbody;
+    int ms_idx = c->nscopes - 1;
+    LocalVar *ey = scope_local_intern(ms, "__ey"); if (ey) ey->is_block_param = 1;
+    LocalVar *ev = scope_local_intern(ms, "__ev"); if (ev) ev->is_block_param = 1;
+    comp_grow_node_arrays(c);
+    walk_scope(c, mbody, ms_idx, ci);
+  }
+
+  for (int k = 0; k < nnames; k++) free(names[k]);
+  for (int k = 0; k < ntr; k++) free(tm[k]);
+  free(names); free(tc); free(tdef); free(tm);
+}
+
 /* Enumerable methods that work on an array receiver in Spinel; a bare call to
    one of these on a user `#each` class (that does not define it) is redirected
    through the materialized array. Kept to methods the array path supports. */
@@ -1824,8 +1970,20 @@ int desugar_enum_method_recv(Compiler *c) {
                                   sp_streq(rn, "each_index") || sp_streq(rn, "with_index") ||
                                   sp_streq(rn, "each_slice") || sp_streq(rn, "each_cons"));
     }
-    if (rt == TY_ENUMERATOR && nt_ref(nt, id, "block") >= 0 && !recv_is_index_enum &&
-        !sp_streq(nm, "to_a") && !sp_streq(nm, "entries")) {
+    /* Blockless Enumerable terminals a materialized enumerator does not lower
+       natively (unlike to_a/next/peek/size/first/take/with_index) also delegate
+       through the element array: `enum.count` -> `enum.to_a.count`. */
+    int enum_terminal = 0;
+    if (nt_ref(nt, id, "block") < 0) {
+      static const char *const term[] = {
+        "count", "include?", "member?", "sum", "min", "max", "minmax",
+        "sort", "reduce", "inject", "tally", "to_h", "uniq", "reverse",
+        "find_index", "index", "join", NULL };
+      for (int t = 0; term[t]; t++) if (sp_streq(nm, term[t])) { enum_terminal = 1; break; }
+    }
+    if (rt == TY_ENUMERATOR && !recv_is_index_enum &&
+        !sp_streq(nm, "to_a") && !sp_streq(nm, "entries") &&
+        (nt_ref(nt, id, "block") >= 0 || enum_terminal)) {
       int wrap = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, wrap, "name", "to_a");
       nt_node_set_ref(nt, wrap, "receiver", recv);
@@ -1846,6 +2004,89 @@ int desugar_enum_method_recv(Compiler *c) {
     comp_grow_node_arrays(c);
     c->nscope[wrap] = c->nscope[id];
     changed = 1;
+  }
+  return changed;
+}
+
+/* Rewrite `recv.to_enum(:m, *a)` / `enum_for(:m, *a)` into a real Enumerator,
+   dispatched on the receiver kind (needs the receiver type, so it runs in the
+   fixpoint). A user-class receiver whose class defines a yielding `m` becomes
+   `recv.__to_enum_m` (the synthesized generator helper); a builtin receiver
+   becomes the plain blockless `recv.m(*a)`, which already lowers to a
+   materialized Enumerator. Un-resolved or unsupported receivers are left
+   untouched -- a leftover to_enum/enum_for is loudly rejected downstream (no
+   silent-wrong). Returns 1 if anything changed. */
+static int desugar_to_enum(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    char m[128]; int extra = 0, has_block = 0;
+    if (!to_enum_target(c, id, m, sizeof m, &extra, &has_block)) continue;
+    if (has_block) continue;                 /* size-callable block: PR follow-up */
+    int recv = nt_ref(nt, id, "receiver");
+    /* receiver type: an explicit receiver's inferred type, else the enclosing
+       self (implicit-self `enum_for(:m)` inside an instance method). */
+    TyKind rt;
+    if (recv >= 0) rt = infer_type(c, recv);
+    else {
+      Scope *es = comp_scope_of(c, id);
+      rt = (es && es->class_id >= 0 && !es->is_cmethod) ? ty_object(es->class_id) : TY_UNKNOWN;
+    }
+
+    if (ty_is_object(rt)) {
+      int cid = ty_object_class(rt);
+      char hname[160]; snprintf(hname, sizeof hname, "__to_enum_%s", m);
+      if (comp_method_in_chain(c, cid, hname, NULL) < 0) continue;  /* no yielding m: leave */
+      if (extra > 0) continue;   /* user-class to_enum with args: PR follow-up (loud downstream) */
+      /* `return enum_for(:m) unless block_given?` inside method m: a blockless
+         call to m returns the Enumerator (with a block m runs the body and its
+         return is ignored). Pin m's return type so the blockless call site does
+         not inherit the polluted union of the enumerator and the yield path. */
+      Scope *es = comp_scope_of(c, id);
+      int self_recv = recv < 0 ||
+                      (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"));
+      if (self_recv && es && es->name && sp_streq(es->name, m) &&
+          es->ret != TY_ENUMERATOR) {
+        es->ret = TY_ENUMERATOR;
+        es->ret_specialized = 1;
+        changed = 1;
+      }
+      nt_node_set_str(nt, id, "name", hname);
+      int empty = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, empty, "arguments", NULL, 0);
+      nt_node_set_ref(nt, id, "arguments", empty);
+      comp_grow_node_arrays(c);
+      c->nscope[empty] = c->nscope[id];
+      changed = 1;
+      continue;
+    }
+
+    /* Builtin receiver: retarget to the blockless iterator (drops the leading
+       method symbol, keeps any trailing args). */
+    int is_builtin = ty_is_array(rt) || ty_is_hash(rt) || rt == TY_STRING ||
+                     rt == TY_RANGE || rt == TY_INT;
+    if (is_builtin && recv >= 0 && to_enum_builtin_method(m)) {
+      int args = nt_ref(nt, id, "arguments");
+      int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      int *rest = NULL;
+      if (ac > 1) {
+        rest = malloc(sizeof(int) * (size_t)(ac - 1));
+        if (!rest) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int j = 1; j < ac; j++) rest[j - 1] = av[j];   /* snapshot before realloc */
+      }
+      nt_node_set_str(nt, id, "name", m);
+      int newargs = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, newargs, "arguments", rest, ac > 1 ? ac - 1 : 0);
+      nt_node_set_ref(nt, id, "arguments", newargs);
+      comp_grow_node_arrays(c);
+      c->nscope[newargs] = c->nscope[id];
+      free(rest);
+      changed = 1;
+      continue;
+    }
+    /* else: unresolved/unsupported receiver -- leave for a later iteration or a
+       downstream loud reject. */
   }
   return changed;
 }
@@ -2815,12 +3056,14 @@ void analyze_program(Compiler *c) {
     }
   }
 
-  /* Eager Enumerable-via-#each: rewrite `enum_for(:each)`/`to_enum` to a
-     synthesized per-class `__enum_to_a` helper that materializes #each into an
-     array. Done before the inference fixpoint so the helper's body is typed,
-     and before reachability so the helper is kept only when actually called. */
-  rewrite_enum_for_each(c);
+  /* Bare-Enumerable-via-#each: synthesize a per-class `__enum_to_a` helper that
+     materializes #each into an array, used by desugar_enum_method_recv for bare
+     Enumerable calls (`obj.map{}`). Done before the fixpoint so the helper body
+     is typed, and before reachability so it is kept only when actually called.
+     Explicit `to_enum`/`enum_for` no longer route here -- synth_to_enum_generators
+     builds a real lazy Enumerator helper, retargeted by desugar_to_enum. */
   synth_enum_to_a(c);
+  synth_to_enum_generators(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
@@ -2966,6 +3209,7 @@ void analyze_program(Compiler *c) {
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
+    ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
     ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
