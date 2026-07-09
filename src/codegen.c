@@ -1254,15 +1254,19 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   /* Capture self if the body accesses ivars or dispatches to self implicitly */
   int cap_self = 0;
   const char *cap_self_class = NULL;
+  int self_is_value = 0;   /* value-type self is captured by value (sp_X), not sp_X* */
+  int self_is_ptr = 1;     /* but a value-type `initialize` still receives self as sp_X* */
   if (encl && encl->class_id >= 0 && !encl->is_cmethod && body >= 0 && fiber_body_uses_self(c, body)) {
     cap_self = 1;
     cap_self_class = c->classes[encl->class_id].c_name;
+    self_is_value = c->classes[encl->class_id].is_value_type;
+    self_is_ptr = !self_is_value || (encl->name && sp_streq(encl->name, "initialize"));
   }
 
   /* Emit capture struct + GC scan function when there are captured vars or self */
   if (ncap > 0 || cap_self) {
     buf_printf(&g_proc_protos, "typedef struct {");
-    if (cap_self) buf_printf(&g_proc_protos, " sp_%s *self_ptr;", cap_self_class);
+    if (cap_self) buf_printf(&g_proc_protos, self_is_value ? " sp_%s self_val;" : " sp_%s *self_ptr;", cap_self_class);
     for (int i = 0; i < ncap; i++) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
       if (lv && lv->is_cell) {
@@ -1281,7 +1285,10 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
     buf_printf(&g_proc_protos, "static void _fib_cap_scan_%d(void *p) {\n", fid);
     buf_printf(&g_proc_protos, "  sp_gc_mark(p);\n");
     buf_printf(&g_proc_protos, "  _fib_cap_%d *_c = (_fib_cap_%d *)p;\n", fid, fid);
-    if (cap_self) buf_printf(&g_proc_protos, "  if (_c->self_ptr) sp_gc_mark((void *)_c->self_ptr);\n");
+    if (cap_self && !self_is_value)
+      buf_printf(&g_proc_protos, "  if (_c->self_ptr) sp_gc_mark((void *)_c->self_ptr);\n");
+    else if (cap_self && class_needs_scan(&c->classes[encl->class_id]))
+      buf_printf(&g_proc_protos, "  sp_%s_scan(&_c->self_val);\n", cap_self_class);
     for (int i = 0; i < ncap; i++) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
       TyKind ct = lv ? lv->type : TY_POLY;
@@ -1331,7 +1338,13 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
   /* Unpack capture struct */
   if (ncap > 0 || cap_self) {
     buf_printf(pb, "    _fib_cap_%d *_fc = (_fib_cap_%d *)_fb->user_data;\n", fid, fid);
-    if (cap_self) {
+    if (cap_self && self_is_value) {
+      /* value-type self: a by-value copy; its heap fields stay reachable through
+         the rooted capture struct (scanned above), so no separate root. */
+      const char *svar = sv_self ? sv_self : "self";
+      buf_printf(pb, "    sp_%s %s = _fc->self_val;\n", cap_self_class, svar);
+    }
+    else if (cap_self) {
       const char *svar = sv_self ? sv_self : "self";
       buf_printf(pb, "    sp_%s *%s = _fc->self_ptr;\n", cap_self_class, svar);
       buf_printf(pb, "    SP_GC_ROOT(%s);\n", svar);
@@ -1473,7 +1486,10 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
     buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tc);
     if (cap_self) {
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "_t%d->self_ptr = %s;\n", tc, sv_self ? sv_self : "self");
+      buf_printf(g_pre, self_is_value ? (self_is_ptr ? "_t%d->self_val = *%s;\n"
+                                                      : "_t%d->self_val = %s;\n")
+                                      : "_t%d->self_ptr = %s;\n",
+                 tc, sv_self ? sv_self : "self");
     }
     for (int i = 0; i < ncap; i++) {
       LocalVar *lv = encl ? scope_local(encl, caps.v[i]) : NULL;
