@@ -2789,7 +2789,7 @@ else {
     }
     if (ok && saw_op && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
-      if (st == TY_RANGE || st == TY_INT_ARRAY) return TY_POLY_ARRAY;
+      if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR) return TY_POLY_ARRAY;
     }
   }
 

@@ -629,7 +629,8 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
 
   TyKind st = infer_type(c, lazy_src);
   int src_is_range = (st == TY_RANGE), src_is_intarr = (st == TY_INT_ARRAY);
-  if (!src_is_range && !src_is_intarr) return 0;
+  int src_is_enum = (st == TY_ENUMERATOR);
+  if (!src_is_range && !src_is_intarr && !src_is_enum) return 0;
 
   int excl = 0, endless = 0, right = -1, left_n = -1;
   int src_range_literal = 0, trange = -1;
@@ -676,12 +677,10 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   int tloop = ++g_tmp, tv = ++g_tmp;
   Buf lo_b; memset(&lo_b, 0, sizeof lo_b);
   if (src_is_range) { if (src_range_literal) emit_expr(c, left_n, &lo_b); else buf_printf(&lo_b, "_t%d.first", trange); }
-  emit_indent(g_pre, g_indent);
-  const char *climit = has_count ? "" : NULL;
   char cbuf[64]; cbuf[0] = 0;
   if (has_count) snprintf(cbuf, sizeof cbuf, " && sp_PolyArray_length(_t%d) < _t%d", tres, tn);
-  (void)climit;
   if (src_is_range) {
+    emit_indent(g_pre, g_indent);
     if (endless)
       buf_printf(g_pre, "for (mrb_int _t%d = %s; 1%s; _t%d++) {\n", tloop, lo_b.p ? lo_b.p : "0", cbuf, tloop);
     else if (src_range_literal)
@@ -693,11 +692,43 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(_t%d);\n", tv, tloop);
   }
-  else {
+  else if (src_is_intarr) {
+    emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_IntArray_length(_t%d)%s; _t%d++) {\n",
                tloop, tloop, tsrc, cbuf, tloop);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(sp_IntArray_get(_t%d, _t%d)); SP_GC_ROOT_RBVAL(_t%d);\n", tv, tsrc, tloop, tv);
+  }
+  else {
+    /* Enumerator source: drive a fresh run one value at a time -- a generator
+       via its fiber, a materialized enumerator via a local cursor -- so an
+       infinite generator streams through first(n) without materializing. */
+    int te = ++g_tmp, tf = ++g_tmp, tidx = ++g_tmp;
+    Buf sb = expr_buf(c, lazy_src);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "0", te); free(sb.p);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Fiber *_t%d = (_t%d && _t%d->gen) ? sp_Fiber_new(_t%d->gen) : NULL; SP_GC_ROOT(_t%d);\n", tf, te, te, te, tf);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "if (_t%d && _t%d->gen_cap) _t%d->user_data = _t%d->gen_cap;\n", tf, te, tf, te);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_int _t%d = 0;\n", tidx);
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, "for (;;) {\n");
+    if (has_count) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) >= _t%d) break;\n", tres, tn);
+    }
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d;\n", tv);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, sp_box_nil()); if (!sp_Fiber_alive(_t%d)) break; }\n",
+               tf, tf, tv, tf, tf);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "else { if (!_t%d || !_t%d->items || _t%d >= _t%d->items->len) break; _t%d = _t%d->items->data[_t%d++]; }\n",
+               te, te, tidx, te, tv, te, tidx);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tv);
   }
   free(lo_b.p);
 
