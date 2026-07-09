@@ -587,7 +587,12 @@ static int infer_case_pattern_locals(Compiler *c) {
           const char *lnm = nt_str(nt, reqs[k], "name");
           LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
-          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_INT;
+          /* A poly/untyped VALUE scrutinee yields boxed elements, so a required
+             binding is poly -- not int. TY_INT here reinterpreted a boxed
+             element's bits and produced garbage. Object scrutinees keep the
+             legacy default (their members/#deconstruct are usually int-typed). */
+          TyKind et = (elem_t != TY_UNKNOWN) ? elem_t
+                    : ty_is_object(array_scrutinee) ? TY_INT : TY_POLY;
           TyKind mg = ty_unify(lv->type, et);
           if (mg != lv->type) { lv->type = mg; changed = 1; }
         }
@@ -603,7 +608,12 @@ static int infer_case_pattern_locals(Compiler *c) {
             const char *rnm = nt_str(nt, inner, "name");
             LocalVar *lv = rnm ? scope_local(ms, rnm) : NULL;
             if (lv && !lv->is_param && !lv->is_block_param) {
-              TyKind rest_arr = ty_is_array(array_scrutinee) ? array_scrutinee : TY_INT_ARRAY;
+              /* A poly/untyped VALUE scrutinee deconstructs to a boxed (poly)
+                 array, so its rest slice is a poly array -- not an int array.
+                 TY_INT_ARRAY reinterpreted sp_poly_slice's boxed poly array and
+                 rendered garbage. Object scrutinees keep the legacy default. */
+              TyKind rest_arr = ty_is_array(array_scrutinee) ? array_scrutinee
+                              : ty_is_object(array_scrutinee) ? TY_INT_ARRAY : TY_POLY_ARRAY;
               TyKind mg = ty_unify(lv->type, rest_arr);
               if (mg != lv->type) { lv->type = mg; changed = 1; }
             }

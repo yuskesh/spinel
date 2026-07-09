@@ -1811,7 +1811,13 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
   buf_puts(b, sb.p ? sb.p : default_value(pt));
   free(sb.p);
   buf_puts(b, ";\n");
-  if (needs_root(pt)) { emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", t); }
+  if (needs_root(pt)) {
+    /* A boxed-poly (sp_RbVal) scrutinee must be rooted as an rbval so the GC
+       marks its tagged value, not its bits as a raw pointer (SEGV under GC
+       pressure). Mirrors the lv rooting in codegen_call.c. */
+    emit_indent(b, indent);
+    buf_printf(b, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d);\n" : "SP_GC_ROOT(_t%d);\n", t);
+  }
 
   for (int w = 0; w < cn; w++) {
     const char *cty = nt_type(nt, conds[w]);
