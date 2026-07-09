@@ -1339,6 +1339,11 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   g_block_param_name = bp0; g_self = sv_self;
   g_yielder_name = as_gen ? bp0 : NULL;   /* `y << v` -> Fiber.yield in the body */
   g_ret_type = TY_POLY; g_result_poly = 0; g_result_var = NULL;
+  /* Value-type self is captured by value (sp_X self), so ivar access in the
+     body uses `.`; a pointer self uses `->`. Override the global for the body
+     (restored below). */
+  const char *sv_fbderef = g_self_deref;
+  g_self_deref = (cap_self && self_is_value) ? "." : "->";
   const char *sv_fn_prl2 = g_fn_pr_label, *sv_fn_prv2 = g_fn_pr_var; TyKind sv_fn_rt2 = g_fn_ret_type;
   g_fn_pr_label = NULL; g_fn_pr_var = NULL; g_fn_ret_type = TY_POLY;
   const char *sv_fbser = g_brk_ser_var; g_brk_ser_var = NULL;   /* fresh function context */
@@ -1465,6 +1470,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   /* Restore emission state */
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_ret_type = sv_rt;
+  g_self_deref = sv_fbderef;
   g_result_poly = sv_rp; g_result_var = sv_rv; g_yielder_name = sv_yld;
   g_fn_pr_label = sv_fn_prl2; g_fn_pr_var = sv_fn_prv2; g_fn_ret_type = sv_fn_rt2;
   g_brk_ser_var = sv_fbser; g_brk_skip_id = sv_fbskip;
@@ -1857,11 +1863,12 @@ else if (orecv >= 0 && onm) {
   int pid = ++g_proc_counter;
   int ncap = caps.n;
   /* A block that references self and escapes into a real proc must capture self
-     through _cap (#1436). Only for a pointer (heap-object) instance self -- a
-     class-method self or a by-value self is a different shape, left as-is. */
+     through _cap (#1436). A heap-object self is captured by pointer; a
+     value-type (by-value) self is captured by value in a `sp_X __self_val`
+     field. A class-method self has no instance and is left as-is. */
   int cap_self = bs && bs->class_id >= 0 && !bs->is_cmethod &&
-                 !c->classes[bs->class_id].is_value_type &&
                  proc_body_uses_self(c, body, bs->class_id);
+  int self_is_value = cap_self && c->classes[bs->class_id].is_value_type;
   const char *self_cls = cap_self ? c->classes[bs->class_id].c_name : NULL;
 
   /* parameter metadata for Proc#parameters: kinds (:req for lambdas, :opt for
@@ -1891,14 +1898,19 @@ else if (orecv >= 0 && onm) {
       buf_puts(&g_procs, " "); emit_cell_elem_type(c, clv, &g_procs);
       buf_printf(&g_procs, " *%s;", caps.v[i]);
     }
-    if (cap_self) buf_puts(&g_procs, " void *__self;");
+    if (cap_self && self_is_value) buf_printf(&g_procs, " sp_%s __self_val;", self_cls);
+    else if (cap_self) buf_puts(&g_procs, " void *__self;");
     if (ret_proc) buf_puts(&g_procs, " mrb_int _home;");  /* home method's proc-return id (sp_proc_home.id) */
     buf_printf(&g_procs, " } _proc_cap_%d;\n", pid);
     buf_printf(&g_procs, "static void _proc_cap_scan_%d(void *p) {\n", pid);
     buf_printf(&g_procs, "  sp_gc_mark(p);\n");
     buf_printf(&g_procs, "  _proc_cap_%d *_c = (_proc_cap_%d *)p;\n", pid, pid);
     for (int i = 0; i < ncap; i++) buf_printf(&g_procs, "  if (_c->%s) sp_gc_mark((void *)_c->%s);\n", caps.v[i], caps.v[i]);
-    if (cap_self) buf_puts(&g_procs, "  if (_c->__self) sp_gc_mark(_c->__self);\n");
+    if (cap_self && self_is_value) {
+      if (class_needs_scan(&c->classes[bs->class_id]))
+        buf_printf(&g_procs, "  sp_%s_scan(&_c->__self_val);\n", self_cls);
+    }
+    else if (cap_self) buf_puts(&g_procs, "  if (_c->__self) sp_gc_mark(_c->__self);\n");
     buf_puts(&g_procs, "}\n");
   }
 
@@ -1925,6 +1937,13 @@ else if (orecv >= 0 && onm) {
   else g_proc_return_home = NULL;
   g_pre = NULL; g_indent = 0; g_nren = 0; g_block_id = -1; g_block_param_name = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ensure_depth = 0; g_result_poly = 0;
+  /* The proc body reads its captured self by value for a value-type class
+     (sp_X self) but by pointer otherwise (sp_X *self); ivar access inside the
+     body must match. g_self_deref is global, so override it for the body and
+     restore below -- before the capture code reads the enclosing method's
+     deref to decide whether to dereference self at the store site. */
+  const char *sv_deref = g_self_deref;
+  g_self_deref = (cap_self && self_is_value) ? "." : "->";
   /* the proc body is a fresh function: an enclosing break serial is out of
      scope inside it; a break here is a lambda-local return (kind 1) or a
      throw to the captured home serial (kind 2) */
@@ -1956,7 +1975,11 @@ else if (orecv >= 0 && onm) {
   buf_puts(pb, "    (void)argc;\n");
   /* Captured instance self, read back from _cap (#1436). (void) guards the
      over-approximating use-of-self detection. */
-  if (cap_self) {
+  if (cap_self && self_is_value) {
+    buf_printf(pb, "    sp_%s self = ((_proc_cap_%d *)_cap)->__self_val;\n", self_cls, pid);
+    buf_puts(pb, "    (void)self;\n");
+  }
+  else if (cap_self) {
     buf_printf(pb, "    sp_%s *self = (sp_%s *)((_proc_cap_%d *)_cap)->__self;\n", self_cls, self_cls, pid);
     buf_puts(pb, "    (void)self;\n");
   }
@@ -2151,6 +2174,7 @@ else if (orecv >= 0 && onm) {
 
   g_pre = sv_pre; g_indent = sv_indent; g_nren = sv_nren; g_block_id = sv_block;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt;
+  g_self_deref = sv_deref;
   g_cap_struct = sv_cap_struct; g_cap_names = sv_cap_names; g_ensure_depth = sv_ensure_depth;
   g_brk_ser_var = sv_bser; g_brk_skip_id = sv_bskip;
   g_proc_body_kind = sv_pbk; g_proc_brk_home = sv_pbh;
@@ -2176,8 +2200,15 @@ else if (orecv >= 0 && onm) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "SP_GC_ROOT(_capv_%d);\n", pid);
       for (int i = 0; i < ncap; i++) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->%s = _cell_%s;\n", pid, caps.v[i], caps.v[i]); }
-      /* Capture the enclosing instance self by pointer (#1436). */
-      if (cap_self) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->__self = (void *)%s;\n", pid, sv_self ? sv_self : "self"); }
+      /* Capture the enclosing instance self: by value for a value-type class
+         (deref if the enclosing method holds self as a pointer, e.g. an
+         initialize body), else by pointer (#1436). */
+      if (cap_self && self_is_value) {
+        int self_ptr = g_self_deref && sp_streq(g_self_deref, "->");
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "_capv_%d->__self_val = %s%s;\n", pid, self_ptr ? "*" : "", sv_self ? sv_self : "self");
+      }
+      else if (cap_self) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->__self = (void *)%s;\n", pid, sv_self ? sv_self : "self"); }
       /* Capture the home method's proc-return frame so the proc's `return`
          longjmps to it (the creating method declared `_pr`). */
       if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = _h.id;\n", pid); }
