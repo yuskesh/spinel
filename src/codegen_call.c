@@ -4526,19 +4526,47 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "print") || sp_streq(name, "puts")) {
       /* emit as a statement-like expression: print each arg, return nil.
          Non-string args are stringified via sp_poly_to_s (sp_File_write wants
-         a char *), matching Kernel#puts/#print coercion. */
-      int t = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_puts(g_pre, "({ ");
+         a char *), matching Kernel#puts/#print coercion.
+
+         Render each arg into a local buffer first: a compound arg
+         (format/sprintf/join, array/hash literal) pushes its temp decls to
+         g_pre, which must land as whole statements before this block, not
+         inside the half-built sp_File_write(...) call. Same class of bug as
+         the format/sprintf codegen below (#1498 / #1508). */
+      Buf *abs = (Buf *)calloc(argc > 0 ? (size_t)argc : 1, sizeof(Buf));
       for (int k = 0; k < argc; k++) {
-        buf_printf(g_pre, "sp_File_write(%s, ", r);
-        if (comp_ntype(c, argv[k]) == TY_STRING) emit_expr(c, argv[k], g_pre);
-        else { buf_puts(g_pre, "sp_poly_to_s("); emit_boxed(c, argv[k], g_pre); buf_puts(g_pre, ")"); }
-        buf_puts(g_pre, "); ");
+        if (comp_ntype(c, argv[k]) == TY_STRING) emit_expr(c, argv[k], &abs[k]);
+        else { buf_puts(&abs[k], "sp_poly_to_s("); emit_boxed(c, argv[k], &abs[k]); buf_puts(&abs[k], ")"); }
       }
-      if (sp_streq(name, "puts")) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
-      buf_puts(g_pre, "});\n");
-      (void)t;
+      /* puts uses sp_File_puts, which appends a newline per argument (and only
+         when the arg isn't already newline-terminated), matching CRuby's
+         `puts a, b` -> "a\nb\n" and `puts "x\n"` -> "x\n". A nullable string
+         arg can be NULL (nil); sp_File_puts is a no-op on NULL, so coalesce it
+         to "" first so `puts nil` still prints the blank line. print writes the
+         raw arg (a NULL write is correctly a no-op). Array flattening
+         (puts [1,2] -> one line each) is not yet modelled here -- a non-string
+         arg is stringified via sp_poly_to_s above. */
+      int is_puts = sp_streq(name, "puts");
+      /* An empty `print` (argc == 0, not puts) would emit an empty `({ })`,
+         which is not a valid statement-expression; skip the block entirely. */
+      if (argc > 0 || is_puts) {
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "({ ");
+        for (int k = 0; k < argc; k++) {
+          const char *at = abs[k].p ? abs[k].p : "\"\"";
+          if (is_puts) {
+            int ts = ++g_tmp;
+            buf_printf(g_pre, "sp_File_puts(%s, ({ const char *_t%d = %s; _t%d ? _t%d : \"\"; })); ",
+                       r, ts, at, ts, ts);
+          }
+          else buf_printf(g_pre, "sp_File_write(%s, %s); ", r, at);
+          free(abs[k].p);
+        }
+        if (is_puts && argc == 0) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
+        buf_puts(g_pre, "});\n");
+      }
+      else for (int k = 0; k < argc; k++) free(abs[k].p);
+      free(abs);
       buf_puts(b, "((mrb_int)0)");
       free(rb.p); return;
     }
