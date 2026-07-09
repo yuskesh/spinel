@@ -4502,6 +4502,46 @@ char *codegen_program(const NodeTable *nt) {
 
   /* method prototypes (scope 0 is top-level) */
   for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
+
+  /* User exception #message / #to_s overrides: a cls_name-keyed dispatcher so
+     the default message path yields the user-overridden text. Ruby's #message
+     calls #to_s, so #to_s uses a user #to_s if defined else the stored message,
+     and #message uses a user #message, else a user #to_s, else the stored
+     message. Emitted after the method prototypes it calls. Marked unused: a
+     program can define an override yet never query it, and the call sites only
+     reference these when a query is compiled. */
+  if (exc_has_user_msg_override(c)) {
+    for (int pass = 0; pass < 2; pass++) {
+      int want_message = pass;  /* 0 = to_s dispatcher, 1 = message dispatcher */
+      buf_printf(&b, "__attribute__((unused)) static const char *%s(sp_Exception *e){\n",
+                 want_message ? "sp_user_exc_message" : "sp_user_exc_to_s");
+      buf_puts(&b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_subclass(c, i)) continue;
+        int dmsg = -1, dtos = -1;
+        int mi_msg = comp_method_in_chain(c, i, "message", &dmsg);
+        int mi_tos = comp_method_in_chain(c, i, "to_s", &dtos);
+        int mi = -1, dcls = -1;
+        const char *fn = NULL;
+        if (want_message) {
+          if (mi_msg >= 0)      { mi = mi_msg; dcls = dmsg; fn = "message"; }
+          else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
+        } else if (mi_tos >= 0) { mi = mi_tos; dcls = dtos; fn = "to_s"; }
+        if (mi < 0) continue;
+        if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
+        const char *dcn = c->classes[dcls].c_name;
+        const char *cn0 = class_ruby_name(c, i);
+        if (!cn0) cn0 = c->classes[i].name;
+        if (!cn0) continue;
+        buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
+                   cn0, dcn, fn, dcn);
+        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
+          buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
+                     c->classes[i].name, dcn, fn, dcn);
+      }
+      buf_puts(&b, "  return sp_exc_message(e);\n}\n");
+    }
+  }
   /* constructor prototypes + definitions (after method protos: new calls initialize) */
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];

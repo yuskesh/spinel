@@ -5111,7 +5111,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && ty_is_object(comp_ntype(c, recv)) &&
       class_is_exc_subclass(c, ty_object_class(comp_ntype(c, recv)))) {
     if (sp_streq(name, "message") || sp_streq(name, "to_s") || sp_streq(name, "to_str")) {
-      buf_puts(b, "sp_exc_message((sp_Exception *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+      const char *fn = exc_has_user_msg_override(c)
+        ? (sp_streq(name, "message") ? "sp_user_exc_message" : "sp_user_exc_to_s")
+        : "sp_exc_message";
+      buf_printf(b, "%s((sp_Exception *)(", fn); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
   }
@@ -5144,7 +5147,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Exception *_t%d = ", t);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-      buf_printf(b, "(_t%d ? sp_exc_message(_t%d) : \"\")", t, t);
+      const char *fn = exc_has_user_msg_override(c)
+        ? (sp_streq(name, "message") ? "sp_user_exc_message" : "sp_user_exc_to_s")
+        : "sp_exc_message";
+      buf_printf(b, "(_t%d ? %s(_t%d) : \"\")", t, fn, t);
       return;
     }
     if (sp_streq(name, "cause")) {
