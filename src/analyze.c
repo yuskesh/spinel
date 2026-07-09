@@ -1551,9 +1551,19 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
       TyKind t = parse_seed_type(c, a2);
       if (t != TY_UNKNOWN) {
         ClassInfo *ci = &c->classes[cur_ci];
-        int idx = comp_ivar_intern(ci, a1);
+        /* The extractor emits the name WITHOUT the sigil (`ivar w1 obj_Mat`),
+           but ClassInfo interns parse-time ivars as `@w1`. Interning the bare
+           token created a PHANTOM parallel ivar: the seed typed and pinned
+           "w1" while every lookup asked about "@w1" -- so seeds never pinned
+           the real ivar, and the phantom's static emission strips the first
+           character (`ivars[j] + 1` assumes the sigil), colliding `w1`/`b1`
+           into two `civ_..._1` statics of conflicting C types (the toy FFN
+           double-emission). Normalize to the sigil form. */
+        char ivn[300];
+        snprintf(ivn, sizeof ivn, "%s%s", a1[0] == '@' ? "" : "@", a1);
+        int idx = comp_ivar_intern(ci, ivn);
         ci->ivar_types[idx] = t;
-        class_pin_ivar(ci, a1);
+        class_pin_ivar(ci, ivn);
       }
     }
     else if (sp_streq(kw, "meth") && a1 && a2) {
