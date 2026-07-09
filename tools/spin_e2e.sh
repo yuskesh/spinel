@@ -314,4 +314,31 @@ OUT=$("$SPIN" build 2>&1) && fail "unconsented dependent native build must be re
 OUT=$("$SPIN" run 2>&1)
 expect "native lib-dependency run (patched)" "201" "$(echo "$OUT" | tail -1)"
 
+# consumer-side features: `spin add --features` records the enablement in the
+# manifest (cargo-style; the lock stays resolution-only), the gated [[build]]
+# entry runs, and its artifact joins the link line.
+cd "$WORK"
+printf 'int mx_cuda(void) { return 999; }\n' > spinel-mathx/vendor/mx/cuda.c
+cat >> spinel-mathx/spin.toml <<'EOF'
+
+[[build]]
+features  = ["cuda"]
+workdir   = "vendor/mx"
+command   = "${CC:-cc} -O2 -c cuda.c -o cuda.o && ar rcs libmx-cu2.a cuda.o"
+artifacts = ["libmx-cu2.a"]
+
+[native]
+libs = ["${build.out}/libmx.a", "${build.out}/libmx-cuda.a", "${build.out}/libmx-cu2.a"]
+EOF
+printf 'module Mathx\n  ffi_func :mx_add, [:int, :int], :int\n  ffi_func :mx_cuda, [], :int\nend\n' > spinel-mathx/mathx.rb
+mkdir -p featconsumer/bin
+printf '[package]\nname = "featconsumer"\n' > featconsumer/spin.toml
+printf 'require "mathx"\nputs Mathx.mx_cuda\n' > featconsumer/bin/app.rb
+cd featconsumer
+"$SPIN" add mathx --path ../spinel-mathx --features cuda >/dev/null
+grep -q 'features = \["cuda"\]' spin.toml || fail "spin add --features didn't record the enablement"
+OUT=$("$SPIN" run 2>&1)
+expect "feature-enabled native run" "999" "$(echo "$OUT" | tail -1)"
+find "$XDG_CACHE_HOME/spin/native" -name 'libmx-cuda.a' | grep -q . || fail "enabled feature entry didn't build"
+
 echo "spin-e2e: ALL GREEN"

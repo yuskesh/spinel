@@ -313,11 +313,16 @@ libs = ["${build.out}/libggml.a"]   # artifacts reach the R6 --link surface
   flow into the compiler's repeatable `--link` (which accepts archives);
   R6 gains no third link shape. An entry whose artifact was
   feature-skipped drops out of the link line.
-- *Still open:* consumer-side feature enablement (`spin add <name>
-  --features cuda` recorded in the lock — today only the package's own
-  `[features] default` set gates entries). The recommended packaging
-  convention is cargo's `-sys` shape: a leaf package carrying the vendored
-  tree, the `[[build]]` entries, and the raw `ffi_*` declarations.
+- **Features**: a `[[build]]` entry gated with `features = ["cuda"]` runs
+  when the feature is in the package's own `[features] default` set or
+  enabled by the consuming application's manifest: `dep = { path = "..",
+  features = ["cuda"] }`, written by `spin add <name> --features cuda`.
+  Cargo-style, the manifest is the source of truth and the lock stays
+  resolution-only (Cargo.lock records no features either). Root-level
+  enablement only; transitive feature unification is out of scope. The
+  recommended packaging convention is cargo's `-sys` shape: a leaf package
+  carrying the vendored tree, the `[[build]]` entries, and the raw
+  `ffi_*` declarations.
 
 ## 5. Project model
 
@@ -411,6 +416,6 @@ string parameters downstream (tab/newline-packed record strings instead),
 6. `spin lock --update`, `--frozen`, `--dev`/`[dev-dependencies]`,
    index-install (a `spin get`-style verb), `-q`/`-v`/`-j`,
    `spin clean --cache`.
-7. Consumer-side feature enablement for R10 (`spin add <name> --features
-   cuda`, recorded in the lock); today `[[build]]` gates read only the
-   package's own `[features] default`.
+7. Transitive feature unification for R10 (a dependency's dependency
+   enabling a feature); consumer enablement is implemented for the root
+   application's direct dependencies.

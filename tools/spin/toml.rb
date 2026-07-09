@@ -57,17 +57,44 @@ class TomlDoc
     @keys[table] = have == "" ? key : (have + "\n" + key)
     if val.start_with?("{") && val.end_with?("}")
       inner = val[1..-2]
-      inner.split(",").each do |pair|
+      split_top(inner).split("\x02").each do |pair|
         peq = pair.index("=")
         next if peq.nil?
         ik = pair[0..(peq - 1)].strip
-        iv = unquote(pair[(peq + 1)..-1].strip)
+        iv = pair[(peq + 1)..-1].strip
+        # an array member keeps its bracket text (inline_array parses it);
+        # a plain member unquotes as before
+        iv = unquote(iv) unless iv.start_with?("[")
         @inline[table + "\x01" + key + "\x01" + ik] = iv
       end
       @vals[table + "\x01" + key] = ""
     else
       @vals[table + "\x01" + key] = unquote(val)
     end
+  end
+
+  # Split inline-table members on top-level commas only, so an array value
+  # (`features = ["a", "b"]`) survives as one member. Returns the pieces
+  # \x02-packed (a String[] would go poly downstream).
+  def split_top(inner)
+    out = ""
+    depth = 0
+    in_str = false
+    piece = ""
+    inner.each_char do |ch|
+      in_str = !in_str if ch == "\""
+      depth += 1 if ch == "[" && !in_str
+      depth -= 1 if ch == "]" && !in_str
+      if ch == "," && depth == 0 && !in_str
+        out += "\x02" unless out == "" && piece == ""
+        out += piece
+        piece = ""
+      else
+        piece += ch
+      end
+    end
+    out += "\x02" unless out == "" || piece == ""
+    out + piece
   end
 
   def unquote(s)
@@ -88,7 +115,16 @@ class TomlDoc
   # the bracket text is intact here. Newline packing over a String[] return
   # keeps the value monomorphic for spinel (house style, cf. dep_srcs).
   def get_array(table, key)
-    raw = get(table, key)
+    array_text(get(table, key))
+  end
+
+  # inline-table member holding an array (`dep = { features = ["a"] }`),
+  # newline-packed; "" when absent or not an array
+  def inline_array(table, key, ik)
+    array_text(get_inline(table, key, ik))
+  end
+
+  def array_text(raw)
     return "" unless raw.start_with?("[") && raw.end_with?("]")
     out = ""
     raw[1..-2].split(",").each do |part|

@@ -10,7 +10,8 @@ SPIN_USAGE = <<USAGE
 usage: spin <command> [args]
   new <name> [--lib]   scaffold an application (or a library with --lib)
   init                 write a spin.toml into the current directory
-  add <name> [--version C | --git URL [--ref R] | --path DIR]  add + lock
+  add <name> [--version C | --git URL [--ref R] | --path DIR]
+                       [--features A,B]  add + lock
   search [term]        find packages in the index (name, latest, repo)
   remove <name>        drop a dependency + relock
   lock | fetch | vendor  resolve deps / warm the cache / copy into vendor/
@@ -382,13 +383,21 @@ end
 # Entries gated on `features` run only when every named feature is in the
 # package's own `[features] default` set (consumer-side enablement is a
 # later slice); a lib entry whose artifact was feature-skipped is dropped.
-def native_build_libs_for(name, dir, version)
+def native_build_libs_for(name, dir, version, consumer_feats)
   mf = File.join(dir, "spin.toml")
   return "" unless File.exist?(mf)
   toml = TomlDoc.parse(File.read(mf))
   n = toml.array_len("build")
   return "" if n == 0
+  # enabled = the package's own defaults plus what the consuming application
+  # switched on for this dependency (cargo-style: features live in the
+  # manifest, the source of truth; the lock stays resolution-only)
   enabled = toml.get_array("features", "default")
+  consumer_feats.split("\n").each do |cf|
+    next if cf == "" || enabled.split("\n").include?(cf)
+    enabled += "\n" unless enabled == ""
+    enabled += cf
+  end
 
   # one artifact dir per package, keyed over every entry's inputs
   keysrc = "cc=" + File.basename(native_cc) + "\nfeatures=" + enabled
@@ -608,8 +617,10 @@ def resolve_deps(root, offline)
         out += dep + "\t" + parts[0] + "\t" + parts[1] + "\tgit\t" + url + "\x01" + sha + "\n"
         queue.push(parts[0])
       else
-        # a plain string value is an index constraint: foo = "~> 1.2" / "*"
+        # a plain string value is an index constraint: foo = "~> 1.2" / "*";
+        # with per-dep features it moves inline: foo = { version = "*", features = [..] }
         cons = toml.get("dependencies", dep)
+        cons = toml.get_inline("dependencies", dep, "version") if cons == ""
         sel = index_select(dep, cons, offline).split("\n")
         sel_v = sel[0]
         repo = sel[1]
@@ -665,6 +676,14 @@ class Project
       nm = base
     end
     @name = nm
+    # per-dependency feature enablement from THIS manifest's [dependencies]
+    # inline specs (dep = { ..., features = ["cuda"] }); root-level only --
+    # transitive feature unification is out of scope
+    @dep_features = { "" => "" }
+    toml.table_keys("dependencies").each do |dep|
+      f = toml.inline_array("dependencies", dep, "features")
+      @dep_features[dep] = f if f != ""
+    end
     @dep_paths = []
     @dep_records = resolve_deps(root, ENV["SPIN_OFFLINE"].to_s.length > 0)
     # tab-packed name\tdir\tversion records (an array of tuples would go
@@ -701,7 +720,8 @@ class Project
     libs = ""
     @dep_srcs.split("\n").each do |s|
       f = s.split("\t")
-      got = native_build_libs_for(f[0], f[1], f[2])
+      cf = @dep_features.key?(f[0]) ? @dep_features[f[0]] : ""
+      got = native_build_libs_for(f[0], f[1], f[2], cf)
       next if got == ""
       libs += "\n" unless libs == ""
       libs += got
@@ -997,20 +1017,30 @@ def cmd_tree(prj, json)
   puts r if json
 end
 
-def cmd_add(root, name, url, ref, pth, cons)
-  spin_die("usage: spin add <name> [--version C | --git URL [--ref R] | --path DIR]") if name == ""
+def cmd_add(root, name, url, ref, pth, cons, feats)
+  spin_die("usage: spin add <name> [--version C | --git URL [--ref R] | --path DIR] [--features A,B]") if name == ""
   mf = File.join(root, "spin.toml")
   text = File.read(mf)
+  flist = ""
+  feats.split(",").each do |ft|
+    next if ft.strip == ""
+    flist += ", " unless flist == ""
+    flist += "\"" + ft.strip + "\""
+  end
+  fmember = flist == "" ? "" : ", features = [" + flist + "]"
   spec = ""
   if pth != ""
-    spec = "{ path = \"" + pth + "\" }"
+    spec = "{ path = \"" + pth + "\"" + fmember + " }"
   elsif url != ""
-    spec = ref == "" ? "{ git = \"" + url + "\" }"
-                     : "{ git = \"" + url + "\", ref = \"" + ref + "\" }"
+    spec = ref == "" ? "{ git = \"" + url + "\"" + fmember + " }"
+                     : "{ git = \"" + url + "\", ref = \"" + ref + "\"" + fmember + " }"
   else
-    # index form: bare name takes any release, --version narrows it
+    # index form: bare name takes any release, --version narrows it; with
+    # features the constraint moves inline as `version`
     index_refresh(false)
-    spec = "\"" + (cons == "" ? "*" : cons) + "\""
+    c2 = cons == "" ? "*" : cons
+    spec = flist == "" ? "\"" + c2 + "\""
+                       : "{ version = \"" + c2 + "\"" + fmember + " }"
   end
   line = name + " = " + spec + "\n"
   if text.include?("\n[dependencies]\n")
@@ -1288,6 +1318,7 @@ when "add"
   ref = ""
   pth = ""
   cons = ""
+  feats = ""
   i2 = 0
   while i2 < rest.length
     a = rest[i2]
@@ -1303,12 +1334,15 @@ when "add"
     elsif a == "--version"
       i2 += 1
       cons = rest[i2].to_s
+    elsif a == "--features"
+      i2 += 1
+      feats = rest[i2].to_s
     elsif !a.start_with?("--") && nm == ""
       nm = a
     end
     i2 += 1
   end
-  cmd_add(root, nm, url, ref, pth, cons)
+  cmd_add(root, nm, url, ref, pth, cons, feats)
 when "remove"
   root = find_root(Dir.pwd)
   spin_die("no spin.toml found") if root == ""
