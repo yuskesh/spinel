@@ -1733,6 +1733,52 @@ int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* <array>.cycle.first(n) / .cycle.take(n) -> the first n elements of the infinite
+   cycle: arr[i % len] for i in [0, n). Only the bounded consumers are handled; an
+   unbounded cycle (bare, .to_a, .each, .map) is left to the loud reject so it can
+   never hang. Returns 1 if handled. */
+int emit_cycle_bounded_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || (!sp_streq(name, "first") && !sp_streq(name, "take"))) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (ac != 1) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
+  const char *rn = nt_str(nt, recv, "name");
+  if (!rn || !sp_streq(rn, "cycle") || nt_ref(nt, recv, "block") >= 0) return 0;
+  int cargs = nt_ref(nt, recv, "arguments");
+  int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
+  if (cac != 0) return 0;  /* only the argless (infinite) cycle */
+  int pr = nt_ref(nt, recv, "receiver");
+  TyKind rt = pr >= 0 ? comp_ntype(c, pr) : TY_UNKNOWN;
+  if (!ty_is_array(rt)) return 0;
+  const char *k = array_kind(rt);
+  int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, tlen = ++g_tmp, ti = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
+  Buf nb; memset(&nb, 0, sizeof nb);
+  Buf npre; memset(&npre, 0, sizeof npre);
+  Buf *sv = g_pre; g_pre = &npre; emit_expr(c, av[0], &nb); g_pre = sv;
+  if (npre.p) buf_puts(g_pre, npre.p); free(npre.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", k, ta, rb.p ? rb.p : "", ta); free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_int _t%d = %s;\n", tn, nb.p ? nb.p : "0"); free(nb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to take negative size\");\n", tn);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", k, tr, k, tr);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tlen, k, ta);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "if (_t%d > 0) for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) "
+             "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d %% _t%d));\n",
+             tlen, ti, ti, tn, ti, k, tr, k, ta, ti, tlen);
+  buf_printf(b, "_t%d", tr);
+  return 1;
+}
+
 /* int_array.chunk_while { |a, b| cond }.to_a -> array of runs. Adjacent elements
    stay in one run while the block is true; a boundary falls where it is false
    (the inverse of slice_when). Materialized as a poly array of boxed int arrays

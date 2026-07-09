@@ -1,0 +1,8 @@
+[1, 2, 3, 1, 2, 3, 1]
+[1, 2]
+["a", "b", "a", "b", "a"]
+[]
+[42, 42, 42, 42]
+"attempt to take negative size"
+"attempt to take negative size"
+[1, 2, 1, 2, 1, 2]
