@@ -1,0 +1,4 @@
+#<data Point x=500, y=3>
+#<data Point x=300, y=8>
+[8, 15]
+error: missing keyword: :n

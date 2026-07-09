@@ -2956,7 +2956,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
       int args_id = ty && sp_streq(ty, "SuperNode") ? nt_ref(c->nt, id, "arguments") : -1;
       int an = 0;
       const int *sargv = args_id >= 0 ? nt_arr(c->nt, args_id, "arguments", &an) : NULL;
-      int cnt = is_fwd ? s->nparams : an;
+      /* Data's `super(x: e, y: e2)` passes a single KeywordHashNode: map each
+         member to the like-named keyword's value. Assigning positionally would
+         drop the whole hash into the first (scalar) member slot. */
+      int kwh = (!is_fwd && an == 1 && sargv && nt_type(c->nt, sargv[0]) &&
+                 sp_streq(nt_type(c->nt, sargv[0]), "KeywordHashNode")) ? sargv[0] : -1;
+      int cnt = kwh >= 0 ? cls->nivars : (is_fwd ? s->nparams : an);
       buf_puts(b, "(");
       for (int a = 0; a < cls->nivars && a < cnt; a++) {
         TyKind ivt = cls->ivar_types[a];
@@ -2968,6 +2973,31 @@ void emit_super(Compiler *c, int id, Buf *b) {
           if (ivt == TY_POLY && at != TY_POLY) { Buf ex; memset(&ex, 0, sizeof ex); emit_boxed_text(c, at, src, &ex); buf_puts(b, ex.p ? ex.p : ""); free(ex.p); }
           else if (ivt != TY_POLY && at == TY_POLY) emit_unbox_text(c, ivt, src, b);
           else buf_puts(b, src);
+        }
+        else if (kwh >= 0) {
+          int vnode = struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
+          if (vnode < 0) {
+            /* CRuby raises ArgumentError when a keyword super omits a member.
+               The trailing zero-value is dead (sp_raise_cls is noreturn) but
+               still type-checks against the member slot -- a value-type-object
+               member is an inline struct, so `NULL` won't assign; give it the
+               compound-literal zero instead. */
+            buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), ",
+                       cls->ivars[a] + 1);
+            if (comp_ty_value_obj(c, ivt))
+              buf_printf(b, "(sp_%s){0})", c->classes[ty_object_class(ivt)].c_name);
+            else
+              buf_printf(b, "%s)", default_value(ivt));
+          }
+          else {
+            TyKind at = comp_ntype(c, vnode);
+            if (ivt == TY_POLY && at != TY_POLY) emit_boxed(c, vnode, b);
+            else if (ivt != TY_POLY && at == TY_POLY) {
+              Buf ex; memset(&ex, 0, sizeof ex); emit_expr(c, vnode, &ex);
+              emit_unbox_text(c, ivt, ex.p ? ex.p : "", b); free(ex.p);
+            }
+            else emit_expr(c, vnode, b);
+          }
         }
         else {
           TyKind at = comp_ntype(c, sargv[a]);
