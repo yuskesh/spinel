@@ -3716,52 +3716,6 @@ int desugar_block_destructure_params(Compiler *c) {
   return changed;
 }
 
-/* Desugar a blockless slicing enumerator materialized with `to_a` --
-   `recv.each_slice(n).to_a` / `recv.each_cons(n).to_a` -- into the equivalent
-   `recv.each_slice(n).map { |__s| __s }`, which the each_slice/each_cons map-fold
-   already lowers to a direct slice/window loop. Avoids a full Enumerator object
-   for the common materialize-the-slices idiom. */
-int desugar_enum_chain_to_a(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "to_a")) continue;
-    if (nt_ref(nt, id, "block") >= 0) continue;
-    int args = nt_ref(nt, id, "arguments");
-    int ac = 0; if (args >= 0) nt_arr(nt, args, "arguments", &ac);
-    if (ac != 0) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
-    const char *rn = nt_str(nt, recv, "name");
-    if (!rn || (!sp_streq(rn, "each_slice") && !sp_streq(rn, "each_cons"))) continue;
-    if (nt_ref(nt, recv, "block") >= 0) continue;  /* the blockless enumerator form */
-
-    int encl = c->nscope[id];
-    int base = nt->count;
-    char pn[32]; snprintf(pn, sizeof pn, "__es_%d", id);
-    int req = nt_new_node(nt, "RequiredParameterNode"); nt_node_set_str(nt, req, "name", pn);
-    int read = nt_new_node(nt, "LocalVariableReadNode"); nt_node_set_str(nt, read, "name", pn);
-    int params = nt_new_node(nt, "ParametersNode"); nt_node_set_arr(nt, params, "requireds", &req, 1);
-    int bparams = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, bparams, "parameters", params);
-    int bodyst = nt_new_node(nt, "StatementsNode"); nt_node_set_arr(nt, bodyst, "body", &read, 1);
-    int blocknode = nt_new_node(nt, "BlockNode");
-    nt_node_set_ref(nt, blocknode, "parameters", bparams);
-    nt_node_set_ref(nt, blocknode, "body", bodyst);
-
-    nt_node_set_str(nt, id, "name", "map");        /* to_a -> map { |__s| __s } */
-    nt_node_set_ref(nt, id, "block", blocknode);
-    comp_grow_node_arrays(c);
-    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
-    Scope *bs = comp_scope_of(c, blocknode);
-    LocalVar *lv = scope_local_intern(bs, pn); lv->is_block_param = 1;
-    changed = 1;
-  }
-  return changed;
-}
-
 /* Propagate `proc.call(args)` argument types onto the proc literal `create`'s
    required params: a concrete arg overrides a param still at its bare-int
    default (the fallback guess, no real evidence), otherwise unify. Returns 1 if
@@ -4503,7 +4457,7 @@ int infer_block_params(Compiler *c) {
        gets the element type of the original array (slice elements).
        array.each_cons(n).map { |pair| } chain: block param gets the array type.
        Also handles |(a, b)| destructuring as the first param. */
-    if ((ty_iter_shape(name) == TY_ITER_MAP) && rt == TY_UNKNOWN &&
+    if ((ty_iter_shape(name) == TY_ITER_MAP) && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) &&
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
         nt_str(nt, recv, "name") && (sp_streq(nt_str(nt, recv, "name"), "each_slice") ||
                                      sp_streq(nt_str(nt, recv, "name"), "each_cons")) &&
