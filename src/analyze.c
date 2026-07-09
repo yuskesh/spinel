@@ -1807,6 +1807,30 @@ int desugar_enum_method_recv(Compiler *c) {
       if (rn && sp_streq(rn, "__enum_to_a")) continue;
     }
     TyKind rt = infer_type(c, recv);
+    /* A materialized Enumerator delegates its block-driven Enumerable methods to
+       its element array: `enum.map { }` -> `enum.to_a.map { }`. Only block forms
+       need this; the blockless terminals (to_a, next, size, first) are emitted
+       against the enumerator directly. to_a/entries ARE the materializer, so
+       never wrap them (would recurse). An index-producing receiver
+       (each_with_index / each_index / with_index) has its own dedicated chain
+       codegen -- leave its shape intact rather than materializing early. */
+    int recv_is_index_enum = 0;
+    if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+      const char *rn = nt_str(nt, recv, "name");
+      recv_is_index_enum = rn && (sp_streq(rn, "each_with_index") ||
+                                  sp_streq(rn, "each_index") || sp_streq(rn, "with_index"));
+    }
+    if (rt == TY_ENUMERATOR && nt_ref(nt, id, "block") >= 0 && !recv_is_index_enum &&
+        !sp_streq(nm, "to_a") && !sp_streq(nm, "entries")) {
+      int wrap = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, wrap, "name", "to_a");
+      nt_node_set_ref(nt, wrap, "receiver", recv);
+      nt_node_set_ref(nt, id, "receiver", wrap);
+      comp_grow_node_arrays(c);
+      c->nscope[wrap] = c->nscope[id];
+      changed = 1;
+      continue;
+    }
     if (!ty_is_object(rt)) continue;
     int cid = ty_object_class(rt);
     if (comp_method_in_chain(c, cid, "__enum_to_a", NULL) < 0) continue;  /* not an #each class */
