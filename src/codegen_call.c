@@ -4296,6 +4296,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return;
   }
+  /* arr.each_with_index / arr.each_index with no block -> an external
+     Enumerator: each_with_index yields [element, index] pairs, each_index
+     yields the indices. A chained/terminal use (each_with_index.map/.to_a) is
+     matched earlier by emit_each_with_index_terminal and never reaches here. */
+  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_array(comp_ntype(c, recv)) &&
+      (sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) {
+    if (sp_streq(name, "each_with_index")) {
+      buf_puts(b, "sp_Enumerator_new_ewi(");
+      emit_boxed(c, recv, b); buf_puts(b, ", 0)");
+    }
+    else {
+      buf_puts(b, "sp_Enumerator_new_indices(");
+      emit_boxed(c, recv, b); buf_puts(b, ")");
+    }
+    return;
+  }
   /* str.each_char / each_line with no block -> an Enumerator over the string's
      characters / lines. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 0 &&

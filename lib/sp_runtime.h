@@ -5476,6 +5476,33 @@ static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
   return e;
 }
+/* A blockless Array#each_with_index enumerator: an [element, index] pair for
+   each element (index offset by `off`, as Enumerator#with_index(off) allows). */
+static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, mrb_int off) {
+  sp_PolyArray *items = sp_enum_items_from(arr);
+  SP_GC_ROOT(items);
+  sp_PolyArray *pairs = sp_PolyArray_new();
+  SP_GC_ROOT(pairs);
+  mrb_int n = items ? items->len : 0;
+  for (mrb_int i = 0; i < n; i++) {
+    sp_PolyArray *pair = sp_PolyArray_new();
+    SP_GC_ROOT(pair);
+    sp_PolyArray_push(pair, items->data[i]);
+    sp_PolyArray_push(pair, sp_box_int(i + off));
+    sp_PolyArray_push(pairs, sp_box_poly_array(pair));
+  }
+  return sp_Enumerator_new_from_items(pairs);
+}
+/* A blockless Array#each_index enumerator: the indices 0..len-1. */
+static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
+  sp_PolyArray *items = sp_enum_items_from(arr);
+  SP_GC_ROOT(items);
+  sp_PolyArray *idx = sp_PolyArray_new();
+  SP_GC_ROOT(idx);
+  mrb_int n = items ? items->len : 0;
+  for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(idx, sp_box_int(i));
+  return sp_Enumerator_new_from_items(idx);
+}
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
    intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
