@@ -2500,6 +2500,21 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     /* `x == nil` / `x != nil` for any receiver */
     int a_nil = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode");
     int r_nil = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "NilNode");
+    /* Both operands statically nil-TYPED: two calls the analyzer proved return
+       nil (`probe(1) == probe(2)`), or one such call against a literal nil
+       (`probe(5) == nil`). nil == nil is constant truth, but both expressions
+       must still evaluate for their effects. Checked before the literal-nil
+       paths below so a non-literal nil-typed operand is not constant-folded
+       away unevaluated. Receiver-then-arg order preserved by the C comma. */
+    if (rt == TY_NIL && a0 == TY_NIL) {
+      buf_puts(b, "((void)(");
+      emit_expr(c, recv, b);
+      buf_puts(b, "), (void)(");
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "), %d)", eq ? 1 : 0);
+      return 1;
+    }
+    /* `x == nil` / `x != nil` for any receiver */
     if (a_nil || r_nil) {
       int other = a_nil ? recv : argv[0];
       TyKind ot = comp_ntype(c, other);
