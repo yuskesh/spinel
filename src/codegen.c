@@ -4356,8 +4356,16 @@ char *codegen_program(const NodeTable *nt) {
     if (any) {
       for (int i = 0; i < c->nclasses; i++) {
         if (!class_is_exc_subclass(c, i)) continue;
-        const char *cn = class_ruby_name(c, i);
-        if (!cn) cn = c->classes[i].name;
+        /* snapshot: class_ruby_name returns a shared static buffer for nested
+           names, and the parent canonicalization below calls it again. Copy to
+           the heap, not a fixed buffer: the top-level path returns the class's
+           own arbitrary-length name, which a fixed size would truncate out of
+           agreement with the constructor emission. An unnamed entry has
+           nothing to match on. */
+        const char *cn0 = class_ruby_name(c, i);
+        if (!cn0) cn0 = c->classes[i].name;
+        if (!cn0) continue;
+        char *cn = strdup(cn0);
         /* find the direct parent name (builtin or user) */
         const char *par = NULL;
         int sc = nt_ref(c->nt, c->classes[i].def_node, "superclass");
@@ -4368,12 +4376,23 @@ char *codegen_program(const NodeTable *nt) {
         }
         if (!par && c->classes[i].parent >= 0)
           par = c->classes[c->classes[i].parent].name;
+        /* canonicalize a user parent to its qualified Ruby name so the
+           hierarchy walk meets the raised / rescue-arm names (both emitted
+           qualified); a builtin parent keeps its runtime name */
+        if (par && !is_exc_name(par)) {
+          int pci = comp_class_index(c, par);
+          if (pci >= 0) {
+            const char *pqn = class_ruby_name(c, pci);
+            if (pqn) par = pqn;
+          }
+        }
         if (par) {
           buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", cn, par);
           /* also register the leaf name if different from qualified name */
-          if (cn != c->classes[i].name && !sp_streq(cn, c->classes[i].name))
+          if (c->classes[i].name && !sp_streq(cn, c->classes[i].name))
             buf_printf(&b, "  if(!strcmp(cls,\"%s\"))return \"%s\";\n", c->classes[i].name, par);
         }
+        free(cn);
       }
     }
     buf_puts(&b, "  return 0;\n}\n");
