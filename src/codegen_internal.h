@@ -150,6 +150,8 @@ extern TyKind g_fn_ret_type;
 /* Set while emitting a self-recursive yield method (is_lowered_yield=1).
    Persists into inner proc literal bodies so { yield } forwards __yblk__. */
 extern int g_current_scope_is_lowered;
+extern const char *g_yield_proc_ref;
+extern TyKind g_yield_slot_ty;
 
 /* When set (SPINEL_LINE_MAP / SPINEL_DEBUG), emit `#line N "file"` directives
    at statement boundaries so a C compile error is reported against the
@@ -532,6 +534,7 @@ int emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 int is_block_call(Compiler *c, int id);
 int is_blockless_block_param_call(Compiler *c, int id);
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr);
+void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, int indent, int as_expr);
 int emit_inline_expr(Compiler *c, int id, Buf *b);
 void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig, const char *p0_ren, TyKind src_type, const char *src_expr, Buf *b, int indent);
 int subtree_has_own_redo(const NodeTable *nt, int id);

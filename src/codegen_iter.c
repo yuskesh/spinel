@@ -90,10 +90,27 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      emit_block_invoke, which restores the real function's funnel. */
   int m_has_ret = scope_has_return(c, mi);
   int block = nt_ref(nt, id, "block");   /* may be -1: no block passed */
+  char yprocbuf[128];  /* holds "lv_" + a rename_local result (g_ren_to width 112) */
+  const char *fwd_yield_proc = NULL;
   /* `inner(&)` / `inner(&block)`: a BlockArgumentNode forwards the block
      active at this (already-inlined) site, not a fresh literal. */
-  if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode"))
+  if (block >= 0 && nt_type(nt, block) && sp_streq(nt_type(nt, block), "BlockArgumentNode")) {
+    /* A forwarded `&blk` whose blk is a real (materialized) proc local -- e.g.
+       the enclosing method nil-checks its &block, so it can't be an inlined
+       literal block -- has no block body to splice; the inlined callee's
+       `yield` must call the proc instead. */
+    int fexpr = nt_ref(nt, block, "expression");
+    const char *pn = (fexpr >= 0 && nt_type(nt, fexpr) &&
+                      sp_streq(nt_type(nt, fexpr), "LocalVariableReadNode"))
+                     ? nt_str(nt, fexpr, "name") : NULL;
+    Scope *encl = pn ? comp_scope_of(c, id) : NULL;
+    LocalVar *plv = encl ? scope_local(encl, pn) : NULL;
+    if (g_block_id < 0 && plv && plv->type == TY_PROC) {
+      snprintf(yprocbuf, sizeof yprocbuf, "lv_%s", rename_local(pn));
+      fwd_yield_proc = yprocbuf;
+    }
     block = g_block_id;
+  }
   if (g_nren + m->nlocals >= MAX_RENAME) return 0;
   /* Pre-check: every body local must have an emittable type. Bail BEFORE
      writing anything (a mid-emit bail would leave an unbalanced `{`). */
@@ -133,6 +150,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_self_fallback = g_self;
   g_yield_self_deref_fallback = g_self_deref;
   g_block_id = block;
+  const char *saved_ypr = g_yield_proc_ref;
+  TyKind saved_yslot = g_yield_slot_ty;
+  g_yield_proc_ref = fwd_yield_proc;   /* NULL clears it for a normal inline */
+  g_yield_slot_ty = TY_UNKNOWN;        /* set to the inline's return type below */
   /* the literal block binds to THIS call site's break scope; a forwarded
      BlockArgumentNode block keeps its original definition-site scope */
   g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
@@ -229,6 +250,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     /* Use a result var so the tail uses assignment, not `return`, in the
        GCC statement-expression ({ ... result_var; }) context. */
     TyKind rt = comp_ntype(c, id);
+    if (fwd_yield_proc) g_yield_slot_ty = rt;  /* value-position yield unboxes to this */
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
     emit_indent(b, din); emit_ctype(c, rt, b);
@@ -274,6 +296,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   g_nren = saved_nren;
   g_block_id = saved_block;
+  g_yield_proc_ref = saved_ypr;
+  g_yield_slot_ty = saved_yslot;
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
   g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
@@ -321,6 +345,31 @@ int is_blockless_block_param_call(Compiler *c, int id) {
   if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
   const char *rn = nt_str(nt, recv, "name");
   return rn && sp_streq(rn, g_block_param_name);
+}
+
+/* Emit a call to the forwarded real-proc block (g_yield_proc_ref) with the
+   given args -- shared by `yield` and `<blk>.call` inside a method inlined with
+   a forwarded materialized proc. as_expr=0 emits a statement (value discarded);
+   as_expr=1 emits a value expression, unboxed to result_ty when concrete.
+   sp_proc_call returns a raw carrier; the poly result rides _sp_proc_poly_ret. */
+void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, int indent, int as_expr) {
+  const NodeTable *nt = c->nt;
+  int yargc = 0;
+  const int *yargv = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yargc) : NULL;
+  if (!as_expr) {
+    emit_indent(b, indent);
+    buf_printf(b, "sp_proc_call(%s, ", g_yield_proc_ref);
+    emit_proc_call_args(c, yargc, yargv, b, 1);
+    buf_puts(b, ";\n");
+    return;
+  }
+  Buf cb; memset(&cb, 0, sizeof cb);
+  buf_printf(&cb, "((void)sp_proc_call(%s, ", g_yield_proc_ref);
+  emit_proc_call_args(c, yargc, yargv, &cb, 1);
+  buf_puts(&cb, ", _sp_proc_poly_ret)");
+  if (result_ty == TY_POLY || result_ty == TY_UNKNOWN) buf_puts(b, cb.p ? cb.p : "");
+  else emit_unbox_text(c, result_ty, cb.p ? cb.p : "", b);
+  free(cb.p);
 }
 
 /* Expand the active block's body, binding its params to the given call

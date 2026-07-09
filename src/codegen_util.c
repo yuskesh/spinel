@@ -204,6 +204,15 @@ const char *g_fn_pr_label = NULL;
 const char *g_fn_pr_var = NULL;
 TyKind g_fn_ret_type = TY_UNKNOWN;
 int g_current_scope_is_lowered = 0;
+/* When a yielding method is inlined and its block is a forwarded REAL proc
+   (the caller nil-checks its &block, so the block can't be an inlined literal),
+   this holds the C expression for that proc; the inlined `yield` calls it via
+   sp_proc_call instead of splicing a block body. NULL otherwise. */
+const char *g_yield_proc_ref = NULL;
+/* The inlined call's return-slot type while g_yield_proc_ref is set: sp_proc_call
+   yields poly, but the slot may be concrete (the analyzer typed this forwarding
+   context), so a value-position yield unboxes its result to this. */
+TyKind g_yield_slot_ty = TY_UNKNOWN;
 EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
 int       g_ensure_depth = 0;
 RescueSave g_rescue_save_stack[MAX_ENSURE_DEPTH];

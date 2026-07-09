@@ -4020,6 +4020,12 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, ";\n");
       return;
     }
+    if (g_yield_proc_ref) {
+      /* The inlined callee's block is a forwarded real proc (the caller
+         nil-checks its &block); call the proc instead of splicing a body. */
+      emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
+      return;
+    }
     if (g_block_id < 0) {
       /* Reaching a yield emission with no block means the yield is unguarded --
          a `yield if block_given?` folds its guard to a compile-time false and
@@ -4063,7 +4069,11 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       return;
     }
     if (is_block_call(c, id)) { emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, indent, 0); return; }
-    if (is_blockless_block_param_call(c, id)) return;  /* dead path: no block supplied */
+    if (is_blockless_block_param_call(c, id)) {
+      /* forwarded real proc: <blk>.call(args) for effect; else a dead path. */
+      if (g_yield_proc_ref) emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), TY_VOID, b, indent, 0);
+      return;
+    }
     if (emit_output_call(c, id, b, indent)) return;
     /* Signal.trap / ::Signal.trap stmt: no-op */
     {
