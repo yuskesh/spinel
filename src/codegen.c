@@ -1667,22 +1667,17 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
      nested block in the proc is classified as body-local, not flagged as an
      uncaptured outer variable. */
   collect_locals_deep(c, body, &locals);
-  /* A float proc parameter still rides the truncating mrb_int arg slot, so a
-     proc that takes one can't safely also enable float captures: keep the clean
-     reject rather than emit a silently-wrong double. (Float args through the
-     proc slot are a separate, pre-existing gap.) */
-  int has_float_param = 0;
-  for (int k = 0; k < arity; k++) {
-    LocalVar *plv = scope_local(bs, proc_param_name(c, create, k));
-    if (plv && plv->type == TY_FLOAT) { has_float_param = 1; break; }
-  }
   for (int u = 0; u < used.n; u++) {
     const char *nm = used.v[u];
     if (nameset_has(&params, nm)) continue;
     LocalVar *lv = scope_local(bs, nm);
     if (lv && lv->is_cell) {
       int ptr_cell = proc_slot_is_ptr(lv->type) && !comp_ty_value_obj(c, lv->type);
-      int float_cell = lv->type == TY_FLOAT && !has_float_param;
+      /* Float captures ride the capture struct (a real mrb_float field), not the
+         proc's argument slot, so they are safe even alongside a float parameter
+         -- a first-class proc's `.call` passes float args through the boxed
+         side-channel (sp_box_float / sp_poly_to_f), not the truncating slot. */
+      int float_cell = lv->type == TY_FLOAT;
       int poly_cell = lv->type == TY_POLY;
       if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN &&
           lv->type != TY_PROC && !float_cell && !ptr_cell && !poly_cell) {
