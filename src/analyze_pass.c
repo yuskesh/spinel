@@ -4501,8 +4501,12 @@ int infer_block_params(Compiler *c) {
       }
     }
 
-    /* array.each_cons(n).with_index(off).map { |pair, i| } or { |(a,b), i| } chain */
-    if ((ty_iter_shape(name) == TY_ITER_MAP) && rt == TY_UNKNOWN &&
+    /* array.each_cons(n).with_index(off).map { |pair, i| } or { |(a,b), i| }
+       chain. A blockless enum.with_index now infers TY_ENUMERATOR (it used to
+       be TY_UNKNOWN), so accept both -- this arm must keep pinning the params'
+       concrete types ahead of the generic enumerator surface. */
+    if ((ty_iter_shape(name) == TY_ITER_MAP) &&
+        (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) &&
         nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "with_index") &&
         nt_ref(nt, recv, "block") < 0) {

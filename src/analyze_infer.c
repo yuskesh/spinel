@@ -1408,6 +1408,9 @@ else {
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
+    /* blockless enum.with_index(off) is another materialized Enumerator (over
+       [element, index] pairs); the block/terminal-chain forms are typed below */
+    if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "size")) return TY_INT;
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
@@ -2055,8 +2058,12 @@ else {
     }
   }
 
-  /* each_cons(n).with_index(off).map/collect { |...| } chain */
-  if (recv >= 0 && rt == TY_UNKNOWN && (ty_iter_shape(name) == TY_ITER_MAP) &&
+  /* each_cons(n).with_index(off).map/collect { |...| } chain. The receiver used
+     to infer TY_UNKNOWN; a blockless enum.with_index is now itself a
+     materialized Enumerator, so accept that type here too -- the chain arm must
+     keep winning over the generic enumerator surface. */
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) &&
+      (ty_iter_shape(name) == TY_ITER_MAP) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "with_index") &&
       nt_ref(nt, recv, "block") < 0) {

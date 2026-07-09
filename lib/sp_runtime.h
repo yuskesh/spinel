@@ -5565,6 +5565,22 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, mrb_int n) {
   }
   return sp_Enumerator_new_from_items(out);
 }
+/* Blockless <enum>.with_index(off): a materialized Enumerator whose items are
+   the [element, off + i] pairs of the source enumerator's items. The source is
+   always a materialized enumerator here (each / each_char / each_slice / ...);
+   a generator enumerator never reaches this path. */
+static sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off) {
+  sp_PolyArray *src = e ? e->items : NULL;
+  mrb_int n = src ? src->len : 0;
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  for (mrb_int i = 0; i < n; i++) {
+    sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
+    sp_PolyArray_push(pair, src->data[i]);
+    sp_PolyArray_push(pair, sp_box_int(off + i));
+    sp_PolyArray_push(out, sp_box_poly_array(pair));
+  }
+  return sp_Enumerator_new_from_items(out);
+}
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
    intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
