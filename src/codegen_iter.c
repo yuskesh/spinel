@@ -753,8 +753,8 @@ static void emit_block_param_nil(Compiler *c, TyKind pt, Buf *b) {
    unboxes down to its slot type. As in emit_block_param_nil, `pt` is TY_POLY
    or a scalar slot type only -- a value-type element is boxed to poly in its
    container, so emit_unbox_text is never asked for a struct-by-value slot. */
-static void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt,
-                                        const char *src, Buf *b) {
+void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt,
+                                 const char *src, Buf *b) {
   buf_printf(b, "lv_%s = ", pname);
   if (pt == TY_POLY) buf_puts(b, src);
   else emit_unbox_text(c, pt, src, b);

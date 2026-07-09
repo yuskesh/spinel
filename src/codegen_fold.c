@@ -3550,9 +3550,10 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   int range_recv = (rt == TY_RANGE);
-  if (!ty_is_array(rt) && !range_recv) return 0;
+  int poly_recv = (rt == TY_POLY);
+  if (!ty_is_array(rt) && !range_recv && !poly_recv) return 0;
   const char *k = range_recv ? "Int" : (rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt));
-  if (!k) return 0;
+  if (!k && !poly_recv) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -3562,8 +3563,53 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
      are truthy in Ruby but false in C), so leave those unsupported. */
   if (comp_ntype(c, bb[bn - 1]) != TY_BOOL) return 0;
 
-  const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+  const char *p0raw = block_param_name(c, block, 0);
+  const char *p0 = p0raw ? rename_local(p0raw) : NULL;
   int trecv = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
+
+  if (poly_recv) {
+    /* boxed receiver (a widened array): the same runtime-dispatch loop
+       poly `each` uses -- sp_poly_arr_len_ex + sp_poly_each_elem, the block
+       param unboxed to its analyzed type. */
+    int tlen = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", trecv, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", trecv);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tlen, trecv);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_int _t%d = 0;\n", tcnt);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tlen, ti);
+    int bodyIndentP = g_indent + 1;
+    if (p0) {
+      Scope *blkv = comp_scope_of(c, block);
+      LocalVar *plv = (blkv && p0raw) ? scope_local(blkv, p0raw) : NULL;
+      TyKind pt = plv ? plv->type : TY_POLY;
+      char src[64]; snprintf(src, sizeof src, "sp_poly_each_elem(_t%d, _t%d)", trecv, ti);
+      emit_indent(g_pre, bodyIndentP);
+      emit_block_param_from_boxed(c, p0, pt, src, g_pre);
+    }
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, bodyIndentP);
+    int saveIndentP = g_indent;
+    g_indent = bodyIndentP;
+    Buf vb; memset(&vb, 0, sizeof vb);
+    emit_expr(c, bb[bn - 1], &vb);
+    g_indent = saveIndentP;
+    emit_indent(g_pre, bodyIndentP);
+    buf_printf(g_pre, "if (%s) _t%d++;\n", vb.p ? vb.p : "0", tcnt);
+    free(vb.p);
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, "}\n");
+
+    if (is_all) buf_printf(b, "(_t%d == _t%d)", tcnt, tlen);
+    else if (is_any) buf_printf(b, "(_t%d > 0)", tcnt);
+    else if (is_none) buf_printf(b, "(_t%d == 0)", tcnt);
+    else buf_printf(b, "(_t%d == 1)", tcnt);
+    return 1;
+  }
 
   Buf rb; memset(&rb, 0, sizeof rb);
   if (range_recv) {
