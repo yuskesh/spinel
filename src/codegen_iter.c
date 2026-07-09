@@ -1223,7 +1223,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* array.each { |x| ... } */
-  if (sp_streq(name, "each") && rt == TY_POLY_ARRAY) {
+  /* Also drives a materialized or generator Enumerator: `enum.each { }` drains
+     it to a poly array once (a generator runs its fiber to completion -- an
+     infinite generator loops here, matching Ruby's eager Enumerator#each) and
+     reuses the poly-array param binding below. */
+  if (sp_streq(name, "each") && (rt == TY_POLY_ARRAY || rt == TY_ENUMERATOR)) {
     int t = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     int ta = ++g_tmp;
@@ -1236,7 +1240,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent); buf_printf(b, "%s _t%d = lv_%s;\n", ot_pa.p ? ot_pa.p : "sp_RbVal", ts_pa, p0); free(ot_pa.p);
     }
     emit_indent(b, indent);
-    buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+    if (rt == TY_ENUMERATOR)
+      buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s);\n", ta, rb.p ? rb.p : "");
+    else
+      buf_printf(b, "sp_PolyArray *_t%d = %s;\n", ta, rb.p ? rb.p : "");
+    free(rb.p);
     /* Root the receiver: a freshly-built array referenced only by this temp
        is otherwise freed if the loop body triggers GC mid-iteration, leaving
        the next element fetch dangling. */
