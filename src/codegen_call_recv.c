@@ -445,6 +445,20 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", tres);
       return 1;
     }
+    if (sp_streq(name, "insert") && argc == 2 && rt == TY_POLY_ARRAY) {
+      /* poly array (outside the typed-kind block -- array_kind(POLY_ARRAY) is
+         NULL): the inserted value boxes into the sp_RbVal slot */
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_PolyArray_insert(_t%d, ", t); emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_printf(b, "); _t%d; })", t);
+      return 1;
+    }
+    if (sp_streq(name, "delete_at") && argc == 1 && rt == TY_POLY_ARRAY) {
+      buf_puts(b, "sp_PolyArray_delete_at("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
     if (k) {
       if ((sp_streq(name, "to_a") || sp_streq(name, "to_ary") || sp_streq(name, "entries") ||
            sp_streq(name, "flatten") || sp_streq(name, "compact")) && argc == 0) {
