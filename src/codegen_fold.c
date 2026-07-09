@@ -4067,6 +4067,43 @@ static int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
   return 0;
 }
 
+/* True if the subtree at `id` reads a local variable named `name`. */
+static int subtree_reads_local(const NodeTable *nt, int id, const char *name) {
+  if (id < 0 || !name) return 0;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  if (sp_streq(ty, "LocalVariableReadNode")) {
+    const char *n = nt_str(nt, id, "name");
+    if (n && sp_streq(n, name)) return 1;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (subtree_reads_local(nt, nt_ref_at(nt, id, i), name)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (subtree_reads_local(nt, ids[j], name)) return 1;
+  }
+  return 0;
+}
+
+/* True if some parameter's default expression references an EARLIER parameter.
+   Ruby evaluates defaults left-to-right in the callee where earlier params are
+   already bound; spinel fills defaults at the call site, where those bindings
+   are absent, so such a default needs the sibling-binding path below. */
+static int default_refs_earlier_param(Compiler *c, Scope *m) {
+  const NodeTable *nt = c->nt;
+  if (!m->pnames) return 0;
+  for (int i = 1; i < m->nparams; i++) {
+    if (!m->pdefault || m->pdefault[i] < 0) continue;
+    for (int j = 0; j < i; j++)
+      if (m->pnames[j] && subtree_reads_local(nt, m->pdefault[i], m->pnames[j]))
+        return 1;
+  }
+  return 0;
+}
+
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
   Scope *m = &c->scopes[callee_idx];
   const NodeTable *nt = c->nt;
@@ -4201,6 +4238,60 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
      each allocating heap arg into a rooted temp, left to right; emit_expr
      substitutes the temp via g_argov. Plain positional calls only — the
      splat/kwarg machinery has its own evaluation order. */
+  /* A parameter default that references an earlier parameter (`def f(a, b=a*2)`
+     or `def f(a:, b: a*2)`) must be evaluated with that parameter bound. Ruby
+     evaluates defaults left-to-right in the callee; spinel fills them at the
+     call site, where the sibling's binding is absent, so a naive emit produces
+     an undeclared `lv_<sibling>`. Bind each param to a uniquely-named call-site
+     temp in order, registering a rename so a later default reads the earlier
+     temp, then pass the temps. Restricted to simple fixed-arity calls (no
+     splat / rest / kwrest / double-splat), which is where these defaults occur. */
+  if (splat_idx < 0 && ds_hash_tmp < 0 && m->rest_idx < 0 && m->kwrest_idx < 0 &&
+      m->nparams <= 64 && default_refs_earlier_param(c, m)) {
+    int uid = ++g_tmp;
+    int ren_base = g_nren;
+    char tmpnames[64][64];
+    for (int i = 0; i < m->nparams; i++) {
+      LocalVar *plv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+      TyKind pt = plv ? plv->type : TY_POLY;
+      int provided = -1;
+      if (i < pos_argc) provided = argv ? argv[i] : -1;
+      else if (kwh >= 0 && m->pnames[i]) provided = kwh_lookup(nt, kwh, m->pnames[i]);
+      Buf vb; memset(&vb, 0, sizeof vb);
+      /* A provided (caller) argument is emitted with the sibling-param renames
+         OFF -- only a callee default expression should resolve param references
+         to the hoisted temps. */
+      int active_nren = g_nren;
+      if (provided >= 0) g_nren = ren_base;
+      emit_arg_or_default(c, m, i, provided, &vb);
+      g_nren = active_nren;
+      char uniq[48];
+      snprintf(uniq, sizeof uniq, "_pd%d_%d", uid, i);
+      emit_indent(g_pre, g_indent);
+      emit_ctype(c, pt, g_pre);
+      buf_printf(g_pre, " lv_%s = %s;\n", uniq, vb.p ? vb.p : default_value(pt));
+      if (needs_root(pt)) {
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", uniq);
+      }
+      free(vb.p);
+      /* Register the rename AFTER emitting temp i so param i+1's default reads
+         it (rename_local rewrites the callee param name to the temp). */
+      if (m->pnames[i] && g_nren < MAX_RENAME) {
+        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[i]);
+        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "%s", uniq);
+        g_nren++;
+      }
+      snprintf(tmpnames[i], sizeof tmpnames[0], "lv_%s", uniq);
+    }
+    g_nren = ren_base;  /* pop the renames before emitting the call args */
+    for (int i = 0; i < m->nparams; i++) {
+      buf_puts(out, i == 0 ? lead : ", ");
+      buf_puts(out, tmpnames[i]);
+    }
+    return;
+  }
+
   int argov_saved = g_n_argov;
   if (splat_idx < 0 && kwh < 0 && argv) {
     for (int k = 0; k < pos_argc && k < m->nparams; k++) {
