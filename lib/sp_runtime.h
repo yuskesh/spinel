@@ -5648,6 +5648,11 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, mrb_int n) {
 static sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off) {
   sp_PolyArray *src = e ? e->items : NULL;
   mrb_int n = src ? src->len : 0;
+  /* Root the source enumerator (a temp `arr.each` is otherwise unreachable): the
+     sp_PolyArray_new below can collect it and free src mid-loop -> use-after-free
+     of src->data[i] under GC stress. Rooting `e` keeps src alive transitively --
+     sp_Enumerator_scan marks e->items and the GC is non-moving. */
+  SP_GC_ROOT(e);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
   for (mrb_int i = 0; i < n; i++) {
     sp_PolyArray *pair = sp_PolyArray_new(); SP_GC_ROOT(pair);
