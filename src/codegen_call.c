@@ -2145,9 +2145,10 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_CondVar_new()"); return 1;
       }
       if (cn && sp_streq(cn, "Enumerator") && nt_ref(nt, id, "block") >= 0) {
-        /* Enumerator.new { |y| ... }: a fiber-backed generator where `y << v`
-           lowers to a Fiber.yield. */
-        emit_fiber_new(c, id, b, 1);
+        /* Enumerator.new(size) { |y| ... }: a fiber-backed generator where
+           `y << v` lowers to a Fiber.yield. The optional leading arg is the
+           #size (a value or a callable), stored on the enumerator. */
+        emit_fiber_new(c, id, b, 1, argc >= 1 ? argv[0] : -1);
         return 1;
       }
       if (cn && sp_streq(cn, "Thread") && nt_ref(nt, id, "block") >= 0) {
@@ -2156,14 +2157,14 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
            read back by #value). Thread.new's first argument becomes the block's
            first param on entry; it is handed to the scheduler as the thread arg. */
         buf_puts(b, "sp_Thread_spawn_fiber(");
-        emit_fiber_new(c, id, b, 0);
+        emit_fiber_new(c, id, b, 0, -1);
         buf_puts(b, ", ");
         if (argc >= 1) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
         buf_puts(b, ")");
         return 1;
       }
       if (cn && sp_streq(cn, "Fiber") && nt_ref(nt, id, "block") >= 0) {
-        emit_fiber_new(c, id, b, 0);
+        emit_fiber_new(c, id, b, 0, -1);
         return 1;
       }
       if (cn && sp_streq(cn, "Queue")) { buf_puts(b, "sp_Queue_new()"); return 1; }

@@ -1411,7 +1411,9 @@ else {
     /* blockless enum.with_index(off) is another materialized Enumerator (over
        [element, index] pairs); the block/terminal-chain forms are typed below */
     if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
-    if (sp_streq(name, "size")) return TY_INT;
+    /* #size is nil for a generator with no size, an Integer for a materialized
+       snapshot, or whatever a stored size value/callable yields -- hence poly. */
+    if (sp_streq(name, "size")) return TY_POLY;
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
   }

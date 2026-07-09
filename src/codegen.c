@@ -1193,10 +1193,22 @@ int fiber_body_uses_self(Compiler *c, int id) {
   return 0;
 }
 
-void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
+/* The size argument for a generator Enumerator (Enumerator.new(size) { |y| },
+   or the threaded __size of a to_enum size-callable): a boxed value/proc, or nil
+   when none was given. #size returns it (calling it when it is a Proc). */
+static void emit_enum_size_arg(Compiler *c, int size_node, Buf *b) {
+  if (size_node >= 0) emit_boxed(c, size_node, b);
+  else buf_puts(b, "sp_box_nil()");
+}
+
+void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
-  if (blk < 0) { buf_puts(b, as_gen ? "sp_Enumerator_new_gen(NULL, NULL)" : "sp_Fiber_new(NULL)"); return; }
+  if (blk < 0) {
+    if (as_gen) { buf_puts(b, "sp_Enumerator_new_gen(NULL, NULL, "); emit_enum_size_arg(c, size_node, b); buf_puts(b, ")"); }
+    else buf_puts(b, "sp_Fiber_new(NULL)");
+    return;
+  }
 
   int fid = ++g_fiber_counter;
   char fname[48];
@@ -1500,7 +1512,9 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
         buf_printf(g_pre, "_t%d->%s = lv_%s;\n", tc, caps.v[i], rename_local(caps.v[i]));
     }
     if (as_gen) {
-      buf_printf(b, "sp_Enumerator_new_gen(%s, _t%d)", fname, tc);
+      buf_printf(b, "sp_Enumerator_new_gen(%s, _t%d, ", fname, tc);
+      emit_enum_size_arg(c, size_node, b);
+      buf_puts(b, ")");
     }
     else {
       emit_indent(g_pre, g_indent);
@@ -1508,8 +1522,13 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen) {
       buf_printf(b, "_t%d", tf);
     }
   }
+  else if (as_gen) {
+    buf_printf(b, "sp_Enumerator_new_gen(%s, NULL, ", fname);
+    emit_enum_size_arg(c, size_node, b);
+    buf_puts(b, ")");
+  }
   else {
-    buf_printf(b, as_gen ? "sp_Enumerator_new_gen(%s, NULL)" : "sp_Fiber_new(%s)", fname);
+    buf_printf(b, "sp_Fiber_new(%s)", fname);
   }
   free(caps.v);
 }
