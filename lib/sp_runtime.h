@@ -5440,6 +5440,21 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
       case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *a = (sp_PolyArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, a->data[i]); return r; }
       case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_float(a->data[i])); return r; }
       case SP_BUILTIN_SYM_ARRAY:  { sp_IntArray *a = (sp_IntArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_sym((sp_sym)a->data[a->start + i])); return r; }
+      /* A hash iterates as its [key, value] pairs, in insertion order --
+         sp_poly_each_elem builds the i-th pair for any of the variants. Each
+         freshly built pair is rooted across the push, whose array-grow may
+         trigger a collection. */
+      case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:
+      case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_STR_POLY_HASH:
+      case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH: {
+        mrb_int n = sp_poly_length(v);
+        sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+        for (mrb_int i = 0; i < n; i++) {
+          sp_RbVal pair = sp_poly_each_elem(v, i); SP_GC_ROOT_RBVAL(pair);
+          sp_PolyArray_push(r, pair);
+        }
+        return r;
+      }
     }
   }
   return sp_PolyArray_new();

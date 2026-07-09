@@ -4367,6 +4367,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_int_expr(c, argv[0], b); buf_puts(b, ")");
     return;
   }
+  /* hash.each / hash.each_pair with no block -> an external Enumerator over the
+     hash's [key, value] pairs (sp_enum_items_from builds them). The direct-block
+     form has block >= 0 and is excluded; a block-driving consumer of this
+     enumerator (e.g. `.map { }`) is a separate, later feature. */
+  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_hash(comp_ntype(c, recv)) &&
+      (sp_streq(name, "each") || sp_streq(name, "each_pair"))) {
+    buf_puts(b, "sp_Enumerator_new_from(");
+    emit_boxed(c, recv, b); buf_puts(b, ")");
+    return;
+  }
 
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */
