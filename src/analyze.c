@@ -1813,12 +1813,16 @@ int desugar_enum_method_recv(Compiler *c) {
        against the enumerator directly. to_a/entries ARE the materializer, so
        never wrap them (would recurse). An index-producing receiver
        (each_with_index / each_index / with_index) has its own dedicated chain
-       codegen -- leave its shape intact rather than materializing early. */
+       codegen -- leave its shape intact rather than materializing early. The
+       same holds for each_slice/each_cons: their .map/.collect chains are
+       fold-unrolled with the receiver's concrete element type (a float slice's
+       .sum came out 0 through the materialized poly detour). */
     int recv_is_index_enum = 0;
     if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
       const char *rn = nt_str(nt, recv, "name");
       recv_is_index_enum = rn && (sp_streq(rn, "each_with_index") ||
-                                  sp_streq(rn, "each_index") || sp_streq(rn, "with_index"));
+                                  sp_streq(rn, "each_index") || sp_streq(rn, "with_index") ||
+                                  sp_streq(rn, "each_slice") || sp_streq(rn, "each_cons"));
     }
     if (rt == TY_ENUMERATOR && nt_ref(nt, id, "block") >= 0 && !recv_is_index_enum &&
         !sp_streq(nm, "to_a") && !sp_streq(nm, "entries")) {
