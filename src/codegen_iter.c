@@ -326,6 +326,10 @@ int is_block_call(Compiler *c, int id) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) return 0;
   const char *rn = nt_str(nt, recv, "name");
+  /* Inside an Enumerator.new generator the block's first param is the YIELDER
+     (g_block_param_name == g_yielder_name); `y.yield(v)` lowers to Fiber.yield
+     via the g_yielder path, so it is not a block-param call to inline here. */
+  if (g_yielder_name && rn && sp_streq(rn, g_yielder_name)) return 0;
   return rn && sp_streq(rn, g_block_param_name);
 }
 

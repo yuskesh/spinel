@@ -4462,6 +4462,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "rewind") && argc == 0) {
       buf_puts(b, "sp_Enumerator_rewind("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
+    if (sp_streq(name, "feed") && argc == 1) {
+      buf_puts(b, "sp_Enumerator_feed("); emit_expr(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b); buf_puts(b, ")"); return;
+    }
     if (sp_streq(name, "size") && argc == 0) {
       buf_puts(b, "sp_Enumerator_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
@@ -5155,6 +5159,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (sp_streq(name, "cause")) {
       buf_puts(b, "sp_exc_cause("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
+    if (sp_streq(name, "result") && argc == 0) {
+      /* StopIteration#result: the finished iteration's return value. */
+      buf_puts(b, "sp_exc_result("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "full_message")) {

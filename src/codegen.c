@@ -1201,6 +1201,25 @@ static void emit_enum_size_arg(Compiler *c, int size_node, Buf *b) {
   else buf_puts(b, "sp_box_nil()");
 }
 
+
+/* Is `id` a yielder push -- `y << v` on the generator's yielder param `yname`?
+   Such a statement lowers to sp_Fiber_yield but its CRuby value is the yielder
+   itself (not modeled), so as a generator's terminal statement it must force a
+   nil StopIteration#result rather than be captured as yielded_value. `y.yield(v)`
+   is deliberately excluded: it returns the fed value, which IS the correct
+   result, so it compiles through the normal terminal path. */
+static int stmt_is_yielder_push(Compiler *c, int id, const char *yname) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || !yname || !nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !sp_streq(nm, "<<")) return 0;
+  int rcv = nt_ref(nt, id, "receiver");
+  if (rcv < 0 || !nt_type(nt, rcv) || !sp_streq(nt_type(nt, rcv), "LocalVariableReadNode")) return 0;
+  const char *rn = nt_str(nt, rcv, "name");
+  return rn && sp_streq(rn, yname);
+}
+
+
 void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
@@ -1410,22 +1429,24 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   free(fib_locals.v);
   free(fib_decls.v);
 
-  /* A generator yields imperatively via `y << v`; its body value is discarded
-     (running off the end terminates the fiber, which #next maps to
-     StopIteration). Emit every statement plainly and leave yielded_value nil. */
-  if (as_gen) {
-    if (body >= 0) { int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn); for (int k = 0; k < bn; k++) emit_stmt(c, bb[k], pb, 1); }
-    buf_puts(pb, "    _fb->yielded_value = sp_box_nil();\n");
-  }
   /* Emit body: all-but-last as side-effect statements, last sets yielded_value.
-     For void/nil last statements emit as stmt first then set yielded=nil. */
-  else if (body >= 0) {
+     For void/nil last statements emit as stmt first then set yielded=nil. A
+     generator (as_gen) yields imperatively via `y << v` mid-body, but its final
+     body value still lands in yielded_value: that is the value read on the
+     terminating resume, which sp_enum_gen_pull surfaces as StopIteration#result. */
+  if (body >= 0) {
     int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
     for (int k = 0; k < bn - 1; k++) emit_stmt(c, bb[k], pb, 1);
     if (bn > 0) {
       int last = bb[bn - 1];
       TyKind lty = comp_ntype(c, last);
-      if (lty == TY_VOID || lty == TY_UNKNOWN) {
+      if (as_gen && stmt_is_yielder_push(c, last, bp0)) {
+        /* A generator ending in a bare `y << v` yields v, then terminates with a
+           nil result (its value is the yielder in CRuby -- not modeled). */
+        emit_stmt(c, last, pb, 1);
+        buf_puts(pb, "    _fb->yielded_value = sp_box_nil();\n");
+      }
+      else if (lty == TY_VOID || lty == TY_UNKNOWN) {
         emit_stmt(c, last, pb, 1);
         buf_puts(pb, "    _fb->yielded_value = sp_box_nil();\n");
       }
@@ -2321,17 +2342,19 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
     /* An ivar-less exception subclass is forward-declared as
        `typedef sp_Exception` and needs no struct of its own. One with
        ivars gets a dedicated struct whose leading members mirror
-       sp_Exception (cls_name/parent_cls_name/msg/cause) -- a common initial
-       sequence -- so every `(sp_Exception *)` cast in the raise/rescue
+       sp_Exception (cls_name/parent_cls_name/msg/cause/result) -- a common
+       initial sequence -- so every `(sp_Exception *)` cast in the raise/rescue
        and message machinery stays valid, with the ivar fields after (#1415).
-       cause must be mirrored too: the rescue machinery writes it through the
-       base cast, so omitting it would alias the first ivar. */
+       cause and result must be mirrored too: the rescue machinery and the GC
+       scan / constructor write them through the base cast, so omitting one
+       would alias (and overrun into) the first ivar. */
     if (ci->nivars == 0) return;
     buf_printf(b, "struct sp_%s_s {\n", ci->c_name);
     buf_puts(b, "  const char *cls_name;\n");
     buf_puts(b, "  const char *parent_cls_name;\n");
     buf_puts(b, "  const char *msg;\n");
     buf_puts(b, "  struct sp_Exception_s *cause;\n");
+    buf_puts(b, "  sp_RbVal result;\n");
     for (int i = 0; i < ci->nivars; i++) {
       TyKind t = ci->ivar_types[i];
       /* belt and suspenders: analyze widens void/nil ivar slots to poly
@@ -2633,6 +2656,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_printf(b, "  self->cls_name = \"%s\";\n", cn2);
       buf_printf(b, "  self->parent_cls_name = \"%s\";\n", par);
       buf_puts(b, "  self->msg = (&(\"\\xff\")[1]);\n");
+      buf_puts(b, "  self->result = sp_box_nil();\n");  /* memset left tag 0 (int 0); #result wants nil */
       buf_printf(b, "  SP_GC_ROOT(self);\n");
       emit_ivar_nil_inits(b, ci, "self->", "  ", ";\n");
     }

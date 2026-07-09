@@ -1333,6 +1333,14 @@ else {
       /* IO.pipe -> [r, w] pair; each is TY_POLY; the pair is a str_array */
       if (sp_streq(name, "pipe")) return TY_STR_ARRAY;
     }
+    /* <local>.yield(v) or bare <local>.yield: a generator yielder / fiber yield
+       returns the value the next resume (or Enumerator#feed) supplies -- poly.
+       Gated on a local receiver so Fiber.yield (const receiver) and the yield
+       keyword are untouched; without this the return is typed nil and
+       `x = y.yield` drops the fed value. Zero-arg `y.yield` is valid too. */
+    if (recv >= 0 && sp_streq(name, "yield") &&
+        rty && sp_streq(rty, "LocalVariableReadNode"))
+      return TY_POLY;
     /* Fiber.new {} / Thread.new {} / Fiber.current etc.
        Handles both bare Const and ::Const path forms. */
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
@@ -1408,6 +1416,7 @@ else {
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
+    if (sp_streq(name, "feed") && argc == 1) return TY_NIL;   /* #feed returns nil */
     /* blockless enum.with_index(off) is another materialized Enumerator (over
        [element, index] pairs); the block/terminal-chain forms are typed below */
     if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
@@ -2508,6 +2517,7 @@ else {
     if (sp_streq(name, "class")) return TY_CLASS;  /* a Class object, carried by name */
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
     if (sp_streq(name, "cause")) return TY_EXCEPTION;      /* the threaded cause, nil if none */
+    if (sp_streq(name, "result")) return TY_POLY;          /* StopIteration#result, nil otherwise */
   }
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */

@@ -4501,6 +4501,7 @@ typedef struct sp_Exception_s {
   const char *parent_cls_name; /* builtin ancestor for user subclasses, or NULL */
   const char *msg;
   struct sp_Exception_s *cause; /* the exception being handled when this was raised, or NULL */
+  sp_RbVal result;             /* StopIteration#result (the iteration's return value); nil otherwise */
 } sp_Exception;
 /* Registered by the generated program to provide user exception hierarchy. */
 static const char *(*sp_user_exc_parent_fn)(const char *) = NULL;
@@ -4508,6 +4509,7 @@ static void sp_exc_gc_scan(void *p) {
   sp_Exception *e = (sp_Exception *)p;
   if (e->msg) sp_mark_string(e->msg);
   if (e->cause) sp_gc_mark(e->cause);
+  sp_mark_rbval(e->result);
   /* cls_name/parent_cls_name point into rodata -- not GC-managed strings */
 }
 static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
@@ -4516,6 +4518,7 @@ static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   e->parent_cls_name = NULL;
   e->msg = (msg && msg[0]) ? msg : (cls_name ? cls_name : "RuntimeError");
   e->cause = NULL;  /* set all fields explicitly; sp_exc_gc_scan reads cause */
+  e->result = sp_box_nil();
   return e;
 }
 static sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {
@@ -4534,6 +4537,7 @@ static void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *m
   memset(e, 0, sz);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->msg = (msg && msg[0]) ? msg : e->cls_name;
+  e->result = sp_box_nil();   /* memset left tag 0 (int 0); StopIteration#result wants nil */
   if (sp_user_exc_parent_fn) e->parent_cls_name = sp_user_exc_parent_fn(e->cls_name);
   return e;
 }
@@ -4558,6 +4562,18 @@ static void sp_raise_exc(volatile sp_Exception *ve) {
   sp_pending_exc_obj = (void *)e;
   sp_raise_cls(e->cls_name, e->msg);
 }
+/* Raise StopIteration carrying the iteration's return value as #result. Built as
+   a carried object so a `rescue StopIteration => e` binding reads e.result; a
+   generator supplies the value, a plain past-the-end #next raises with nil. */
+SP_NORETURN static void sp_raise_stop_iteration(sp_RbVal result) {
+  /* Marker-prefixed message: sp_mark_string reads msg[-1] as the GC marker, so a
+     bare rodata literal would be an out-of-bounds read at a section edge. */
+  const char *msg = (&("\xff" "iteration reached an end")[1]);
+  sp_Exception *e = sp_exc_new("StopIteration", msg);
+  e->result = result;
+  sp_pending_exc_obj = (void *)e;
+  sp_raise_cls("StopIteration", msg);
+}
 /* Create an exception for a `rescue => e` binding: like sp_exc_new but
    also looks up the parent class via the user hierarchy callback. */
 static sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
@@ -4572,6 +4588,12 @@ static sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
 static sp_Exception *sp_exc_cause(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   return e ? e->cause : NULL;
+}
+/* StopIteration#result: the value the finished iteration returned (nil for a
+   non-StopIteration exception or a past-the-end materialized enumerator). */
+static sp_RbVal sp_exc_result(volatile sp_Exception *ve) {
+  sp_Exception *e = (sp_Exception *)ve;
+  return e ? e->result : sp_box_nil();
 }
 /* Exception#is_a?(ClassName): checks class name and known hierarchy. */
 static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
@@ -5513,6 +5535,9 @@ typedef struct {
   sp_RbVal size;                          /* #size for a generator: a value, a
                                              callable (Proc), or nil. Unused by
                                              the materialized path (items->len). */
+  sp_RbVal feed; mrb_bool has_feed;       /* #feed: value returned by the next Fiber.yield */
+  sp_RbVal gen_result;                    /* generator body's return -> StopIteration#result */
+  sp_RbVal source;                        /* the iterated receiver -> materialized StopIteration#result */
 } sp_Enumerator;
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) {
@@ -5549,12 +5574,15 @@ static void sp_Enumerator_scan(void *p) {
   if (e->gen_cap) sp_gc_mark(e->gen_cap);
   if (e->peeked) sp_mark_rbval(e->peek_val);
   sp_mark_rbval(e->size);
+  if (e->has_feed) sp_mark_rbval(e->feed);
+  sp_mark_rbval(e->gen_result);
+  sp_mark_rbval(e->source);
 }
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil();
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr;
   return e;
 }
 /* Like sp_Enumerator_new_from but over a reversed snapshot, for a blockless
@@ -5571,7 +5599,7 @@ static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
     }
   }
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil();
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr;
   return e;
 }
 /* Wrap an already-built poly array as an Enumerator, taking ownership of it
@@ -5580,7 +5608,7 @@ static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
 static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil();
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil();
   return e;
 }
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for
@@ -5598,7 +5626,7 @@ static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, mrb_int off) {
     sp_PolyArray_push(pair, sp_box_int(i + off));
     sp_PolyArray_push(pairs, sp_box_poly_array(pair));
   }
-  return sp_Enumerator_new_from_items(pairs);
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(pairs); e->source = arr; return e; }
 }
 /* A blockless Array#each_index enumerator: the indices 0..len-1. */
 static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
@@ -5608,7 +5636,7 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
   SP_GC_ROOT(idx);
   mrb_int n = items ? items->len : 0;
   for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(idx, sp_box_int(i));
-  return sp_Enumerator_new_from_items(idx);
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(idx); e->source = arr; return e; }
 }
 /* Array#each_slice(n) with no block: a materialized Enumerator whose items are
    the consecutive non-overlapping slices of length n (the last may be short).
@@ -5629,7 +5657,7 @@ static sp_Enumerator *sp_Enumerator_new_slices(sp_RbVal arr, mrb_int n) {
     if (len - i <= n) break;
     i += n;
   }
-  return sp_Enumerator_new_from_items(out);
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
 }
 /* Array#each_cons(n) with no block: a materialized Enumerator whose items are
    the sliding windows of length n (none when len < n). */
@@ -5647,7 +5675,7 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, mrb_int n) {
       sp_PolyArray_push(out, sp_box_poly_array(win));
     }
   }
-  return sp_Enumerator_new_from_items(out);
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
 }
 /* Blockless <enum>.with_index(off): a materialized Enumerator whose items are
    the [element, off + i] pairs of the source enumerator's items. The source is
@@ -5668,7 +5696,8 @@ static sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, mrb_int off) {
     sp_PolyArray_push(pair, sp_box_int(off + i));
     sp_PolyArray_push(out, sp_box_poly_array(pair));
   }
-  return sp_Enumerator_new_from_items(out);
+  { sp_RbVal src_recv = e ? e->source : sp_box_nil();
+    sp_Enumerator *r = sp_Enumerator_new_from_items(out); r->source = src_recv; return r; }
 }
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
@@ -5699,7 +5728,7 @@ static sp_PolyArray *sp_str_lines_poly(const char *s) {
 }
 static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size) {
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size;
+  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil();
   return e;
 }
 /* Pull the next value from the generator fiber, or raise StopIteration when it
@@ -5710,9 +5739,11 @@ static sp_RbVal sp_enum_gen_pull(sp_Enumerator *e) {
     e->fib = sp_Fiber_new(e->gen);
     if (e->gen_cap) e->fib->user_data = e->gen_cap;
   }
-  if (!sp_Fiber_alive(e->fib)) sp_raise_cls("StopIteration", "iteration reached an end");
-  sp_RbVal v = sp_Fiber_resume(e->fib, sp_box_nil());
-  if (!sp_Fiber_alive(e->fib)) sp_raise_cls("StopIteration", "iteration reached an end");
+  if (!sp_Fiber_alive(e->fib)) sp_raise_stop_iteration(e->gen_result);
+  sp_RbVal feed = e->has_feed ? e->feed : sp_box_nil();
+  e->has_feed = FALSE; e->feed = sp_box_nil();   /* consumed by this resume */
+  sp_RbVal v = sp_Fiber_resume(e->fib, feed);
+  if (!sp_Fiber_alive(e->fib)) { e->gen_result = v; sp_raise_stop_iteration(v); }
   return v;
 }
 static sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {
@@ -5720,7 +5751,7 @@ static sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {
     if (e->peeked) { e->peeked = FALSE; return e->peek_val; }
     return sp_enum_gen_pull(e);
   }
-  if (!e->items || e->cursor >= e->items->len) sp_raise_cls("StopIteration", "iteration reached an end");
+  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
   return e->items->data[e->cursor++];
 }
 static sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {
@@ -5728,17 +5759,28 @@ static sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {
     if (!e->peeked) { e->peek_val = sp_enum_gen_pull(e); e->peeked = TRUE; }
     return e->peek_val;
   }
-  if (!e->items || e->cursor >= e->items->len) sp_raise_cls("StopIteration", "iteration reached an end");
+  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
   return e->items->data[e->cursor];
 }
 static sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) {
-  if (e->gen) { e->fib = NULL; e->peeked = FALSE; }
+  if (!e) return NULL;
+  if (e->gen) { e->fib = NULL; e->peeked = FALSE; e->gen_result = sp_box_nil(); }
   else e->cursor = 0;
+  e->feed = sp_box_nil(); e->has_feed = FALSE;
   return e;
 }
 /* Enumerator#size, defined after sp_proc_call so a callable size can be driven
    through the boxed-return channel. */
 static sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
+/* Enumerator#feed(v): sets the value the generator's next Fiber.yield returns
+   (inside `y.yield`). Raises TypeError if a feed value is already pending, per
+   CRuby; consumed by the next #next. Returns nil. */
+static sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v) {
+  if (!e) return sp_box_nil();
+  if (e->has_feed) sp_raise_cls("TypeError", (&("\xff" "feed value already set")[1]));
+  e->feed = v; e->has_feed = TRUE;
+  return sp_box_nil();
+}
 /* Enumerator#take(n) / #first(n): collect up to n values from a fresh run of the
    source (independent of the #next cursor), matching CRuby. */
 static sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n) {
