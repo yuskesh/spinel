@@ -4323,6 +4323,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b); buf_puts(b, "))");
     return;
   }
+  /* <enumerator>.with_index(off) with no block -> a materialized Enumerator over
+     the [element, off + i] pairs. The block and terminal chain forms
+     (each.with_index { }, each.with_index.map { }) are matched earlier. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR && argc <= 1 &&
+      nt_ref(nt, id, "block") < 0 && sp_streq(name, "with_index")) {
+    buf_puts(b, "sp_Enumerator_with_index(");
+    emit_expr(c, recv, b); buf_puts(b, ", ");
+    if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "0");
+    buf_puts(b, ")");
+    return;
+  }
 
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */

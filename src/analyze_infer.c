@@ -1408,6 +1408,9 @@ else {
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
+    /* blockless enum.with_index(off) is another materialized Enumerator (over
+       [element, index] pairs); the block/terminal-chain forms are typed below */
+    if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "size")) return TY_INT;
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
