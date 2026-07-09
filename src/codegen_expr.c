@@ -1018,6 +1018,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", _sp_proc_poly_ret.v.i)");
       return;
     }
+    if (g_yield_proc_ref) {
+      /* Forwarded real-proc block (caller nil-checks its &block): call the proc.
+         Unbox to the inline's return-slot type (g_yield_slot_ty), which the
+         analyzer may have typed concretely even though sp_proc_call is poly. */
+      emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), g_yield_slot_ty, b, 0, 1);
+      return;
+    }
     if (g_block_id < 0) {
       /* An unguarded yield with no block raises LocalJumpError. A guarded yield
          (`block_given? ? yield : x`) folds its guard to a compile-time false and
@@ -1034,8 +1041,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     emit_block_invoke(c, nt_ref(nt, id, "arguments"), b, 0, 1);
     return;
   }
-  if (is_blockless_block_param_call(c, id)) {  /* dead path: no block supplied */
-    buf_puts(b, default_value(comp_ntype(c, id)));
+  if (is_blockless_block_param_call(c, id)) {
+    /* A forwarded real proc (caller nil-checks its &block): <blk>.call(args)
+       invokes the proc. Otherwise it is a genuinely dead path (no block). */
+    if (g_yield_proc_ref)
+      emit_yield_proc_call(c, nt_ref(nt, id, "arguments"), g_yield_slot_ty, b, 0, 1);
+    else
+      buf_puts(b, default_value(comp_ntype(c, id)));
     return;
   }
   if (sp_streq(ty, "SelfNode")) { buf_puts(b, g_self); return; }  /* self is the object reference (pointer) */
