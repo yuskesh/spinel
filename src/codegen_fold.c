@@ -4059,12 +4059,206 @@ static int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
   if (!m || !name || m->def_node < 0) return 0;
   int pn = nt_ref(c->nt, m->def_node, "parameters");
   if (pn < 0) return 0;
+  /* A `def m(...)` forwarding method synthesizes a key-NAMED param for every
+     keyword its call sites pass (analyze_scope), so those params are
+     keyword-matchable even though the AST declares no keywords. Positional
+     synthesized params (__fwd_N) can never collide with a real key name. */
+  int kwr = nt_ref(c->nt, pn, "keyword_rest");
+  const char *kwr_type = kwr >= 0 ? nt_type(c->nt, kwr) : NULL;
+  if (kwr_type && sp_streq(kwr_type, "ForwardingParameterNode"))
+    return 1;
   int kn = 0; const int *kws = nt_arr(c->nt, pn, "keywords", &kn);
   for (int i = 0; i < kn; i++) {
     const char *kpn = nt_str(c->nt, kws[i], "name");
     if (kpn && sp_streq(kpn, name)) return 1;
   }
   return 0;
+}
+
+/* Materialize the first `**hash` source inside `kwh` (a KeywordHashNode) into
+   a typed temp so per-param extraction / kwrest collection can read it.
+   Returns the temp id, or -1 when kwh carries no double-splat (or its source
+   is not a known hash). Sets *out_type to the materialized hash's type.
+   Shared by emit_args_filled and emit_dispatch. */
+static int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
+  const NodeTable *nt = c->nt;
+  int ds_hash_tmp = -1;
+  *out_type = TY_UNKNOWN;
+  if (kwh < 0) return -1;
+  int en2 = 0; const int *elems2 = nt_arr(nt, kwh, "elements", &en2);
+  for (int e = 0; e < en2; e++) {
+    const char *ety2 = nt_type(nt, elems2[e]);
+    if (!ety2 || !sp_streq(ety2, "AssocSplatNode")) continue;
+    int inner2 = nt_ref(nt, elems2[e], "value");
+    if (inner2 >= 0) {
+      *out_type = comp_ntype(c, inner2);
+      if (ty_is_hash(*out_type)) {
+        ds_hash_tmp = ++g_tmp;
+        /* Render the source into a side buffer first: a hash LITERAL
+           (`**{ ... }`) drains its own construction into g_pre, which must
+           land before -- not inside -- this temp's declaration line. A bare
+           variable emits with no prelude, so this is a no-op there. */
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_expr(c, inner2, &hb);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, *out_type, g_pre);
+        buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
+        free(hb.p);
+      }
+    } else {
+      /* Anonymous `**`: materialize the enclosing __anon_kwrest (SymPolyHash)
+         so the per-param extraction and kwrest collection can read it. */
+      const char *akw = anon_kwrest_name(c, elems2[e]);
+      if (akw) {
+        *out_type = TY_SYM_POLY_HASH;
+        ds_hash_tmp = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, *out_type, g_pre);
+        buf_printf(g_pre, " _t%d = lv_%s;\n", ds_hash_tmp, akw);
+      }
+    }
+    break;
+  }
+  return ds_hash_tmp;
+}
+
+/* Emit the value for KEYWORD param `i` extracted by name from a materialized
+   `**hash` temp, falling back to the param's default when the key is absent.
+   Shared by emit_args_filled and emit_dispatch. */
+static void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
+                                  TyKind ds_hash_type, Buf *out) {
+  const char *hn = ty_hash_cname(ds_hash_type);
+  LocalVar *plv = scope_local(m, m->pnames[i]);
+  TyKind pt = plv ? plv->type : TY_INT;
+  if (hn) {
+    /* SymPoly: get returns sp_RbVal, unbox to param type.
+       Other sym/str keyed hashes: get returns the value type directly. */
+    TyKind hval = ty_hash_val(ds_hash_type);
+    Buf vb; memset(&vb, 0, sizeof vb);
+    char get_expr[256];
+    snprintf(get_expr, sizeof get_expr,
+             "sp_%sHash_get(_t%d, sp_sym_intern(\"%s\"))",
+             hn, ds_hash_tmp, m->pnames[i]);
+    if (hval == TY_POLY) emit_unbox_text(c, pt, get_expr, &vb);
+    else buf_puts(&vb, get_expr);
+    /* An optional keyword param (one with a default) whose key may be
+       absent from the forwarded hash falls back to its default: a bare
+       get returns nil and silently drops the callee's default value. */
+    if (m->pdefault && m->pdefault[i] >= 0) {
+      Buf db; memset(&db, 0, sizeof db);
+      emit_arg_or_default(c, m, i, -1, &db);
+      buf_printf(out, "(sp_%sHash_has_key(_t%d, sp_sym_intern(\"%s\")) ? (%s) : (%s))",
+                 hn, ds_hash_tmp, m->pnames[i],
+                 vb.p ? vb.p : "", db.p ? db.p : default_value(pt));
+      free(db.p);
+    }
+    else buf_puts(out, vb.p ? vb.p : "");
+    free(vb.p);
+  }
+  else {
+    buf_printf(out, "%s", default_value(pt));
+  }
+}
+
+/* Collect the call's unbound keyword args -- literal pairs not naming an
+   explicit keyword param, plus merged `**hash` sources -- into a fresh
+   SymPolyHash for the callee's `**kwrest` param. Returns the hash temp id.
+   Shared by emit_args_filled and emit_dispatch. */
+static int emit_kwrest_collect(Compiler *c, Scope *m, int kwh, int ds_hash_tmp,
+                               TyKind ds_hash_type, int argsNode) {
+  const NodeTable *nt = c->nt;
+  int krhash = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new();\n", krhash);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", krhash);
+  if (kwh >= 0) {
+    int en3 = 0; const int *elems3 = nt_arr(nt, kwh, "elements", &en3);
+    int splat_seen = 0;
+    for (int e3 = 0; e3 < en3; e3++) {
+      const char *ety3 = nt_type(nt, elems3[e3]);
+      if (ety3 && sp_streq(ety3, "AssocSplatNode")) {
+        /* Forwarded `**hash`: merge its entries into the keyword-rest
+           (later entries win, so order with literals is preserved). Only
+           a symbol-keyed hash can flow into a keyword-rest parameter. */
+        int inner3 = nt_ref(nt, elems3[e3], "value");
+        if (inner3 < 0) {
+          /* Anonymous `**`: merge the enclosing __anon_kwrest directly. */
+          const char *akw = anon_kwrest_name(c, elems3[e3]);
+          if (!akw) continue;
+          splat_seen = 1;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, akw);
+          continue;
+        }
+        const char *shn = ty_hash_cname(comp_ntype(c, inner3));
+        if (!shn || !sp_streq(shn, "SymPoly")) {
+          unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
+          continue;
+        }
+        int src;
+        if (!splat_seen && ds_hash_tmp >= 0) {
+          /* Reuse the first splat's materialized temp. It is declared with
+             ds_hash_type's C type, so it must be SymPoly to flow into
+             sp_SymPolyHash_update (the inner3 check above guarantees this
+             for the matching first splat; assert it explicitly so the
+             type-punned reuse can't silently emit a mismatched pointer). */
+          const char *dshn = ty_hash_cname(ds_hash_type);
+          if (!dshn || !sp_streq(dshn, "SymPoly")) {
+            unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
+            continue;
+          }
+          src = ds_hash_tmp;  /* first splat already materialized above */
+        } else {
+          src = ++g_tmp;
+          /* Render into a side buffer first: a hash LITERAL (`**{ ... }`) drains
+             its own construction into g_pre, which must land before -- not
+             inside -- this temp's declaration line (see emit_ds_hash_materialize). */
+          Buf hb; memset(&hb, 0, sizeof hb);
+          emit_expr(c, inner3, &hb);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_SymPolyHash *_t%d = %s;\n", src, hb.p ? hb.p : "");
+          free(hb.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", src);
+        }
+        splat_seen = 1;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, _t%d);\n", krhash, src);
+        continue;
+      }
+      int key3 = nt_ref(nt, elems3[e3], "key");
+      int val3 = nt_ref(nt, elems3[e3], "value");
+      if (key3 < 0 || val3 < 0) continue;
+      const char *kty3 = nt_type(nt, key3);
+      const char *kname3 = (kty3 && sp_streq(kty3, "SymbolNode")) ? nt_str(nt, key3, "value") : NULL;
+      if (!kname3) continue;
+      /* A literal `k: v` whose name is an explicit keyword param is bound
+         to that param, not the keyword-rest. A positional param of the
+         same name does not consume it. */
+      if (callee_has_kwarg(c, m, kname3)) continue;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", krhash, kname3);
+      emit_boxed(c, val3, g_pre);
+      buf_puts(g_pre, ");\n");
+    }
+    /* Keys merged from a `**hash` that name an explicit keyword param are
+       consumed by that param, so drop them from the keyword-rest. Only
+       keyword params consume keys -- a positional param of the same name
+       leaves its key in the rest. */
+    if (splat_seen && m->def_node >= 0) {
+      int dpn = nt_ref(nt, m->def_node, "parameters");
+      int kpn = 0; const int *kwps = dpn >= 0 ? nt_arr(nt, dpn, "keywords", &kpn) : NULL;
+      for (int kk = 0; kk < kpn; kk++) {
+        const char *kpname = nt_str(nt, kwps[kk], "name");
+        if (!kpname) continue;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_SymPolyHash_delete(_t%d, sp_sym_intern(\"%s\"));\n",
+                   krhash, kpname);
+      }
+    }
+  }
+  return krhash;
 }
 
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
@@ -4104,44 +4298,8 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   }
   /* Detect double-splat (**hash) inside kwh: AssocSplatNode wrapping a hash expr.
      Pre-evaluate the hash to a temp so we can do per-param lookups. */
-  int ds_hash_tmp = -1;  TyKind ds_hash_type = TY_UNKNOWN;
-  if (kwh >= 0) {
-    int en2 = 0; const int *elems2 = nt_arr(nt, kwh, "elements", &en2);
-    for (int e = 0; e < en2; e++) {
-      const char *ety2 = nt_type(nt, elems2[e]);
-      if (ety2 && sp_streq(ety2, "AssocSplatNode")) {
-        int inner2 = nt_ref(nt, elems2[e], "value");
-        if (inner2 >= 0) {
-          ds_hash_type = comp_ntype(c, inner2);
-          if (ty_is_hash(ds_hash_type)) {
-            ds_hash_tmp = ++g_tmp;
-            /* Render the source into a side buffer first: a hash LITERAL
-               (`**{ ... }`) drains its own construction into g_pre, which must
-               land before -- not inside -- this temp's declaration line. A bare
-               variable emits with no prelude, so this is a no-op there. */
-            Buf hb; memset(&hb, 0, sizeof hb);
-            emit_expr(c, inner2, &hb);
-            emit_indent(g_pre, g_indent);
-            emit_ctype(c, ds_hash_type, g_pre);
-            buf_printf(g_pre, " _t%d = %s;\n", ds_hash_tmp, hb.p ? hb.p : "");
-            free(hb.p);
-          }
-        } else {
-          /* Anonymous `**`: materialize the enclosing __anon_kwrest (SymPolyHash)
-             so the per-param extraction and kwrest collection below can read it. */
-          const char *akw = anon_kwrest_name(c, elems2[e]);
-          if (akw) {
-            ds_hash_type = TY_SYM_POLY_HASH;
-            ds_hash_tmp = ++g_tmp;
-            emit_indent(g_pre, g_indent);
-            emit_ctype(c, ds_hash_type, g_pre);
-            buf_printf(g_pre, " _t%d = lv_%s;\n", ds_hash_tmp, akw);
-          }
-        }
-        break;
-      }
-    }
-  }
+  TyKind ds_hash_type = TY_UNKNOWN;
+  int ds_hash_tmp = emit_ds_hash_materialize(c, kwh, &ds_hash_type);
 
   /* Find the first SplatNode in positional args. If it comes before rest_idx
      (or before nparams for rest-less methods), pre-evaluate it to a temp so
@@ -4289,134 +4447,24 @@ else if (splat_tmp >= 0 && i >= splat_idx) {
       free(eb.p);
     }
 else {
-      /* Check if this param has a keyword match (lookup by param name in kwh). */
-      int kv = kwh >= 0 ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
+      /* Check if this param has a keyword match (lookup by param name in kwh).
+         Only a true KEYWORD param consumes a key -- a positional param whose
+         name happens to match (e.g. `def target(a, **info)` called as
+         `target(a, **info)`, the forwarding idiom) must take the provided
+         positional below, not steal the key from the kwargs. Same rule the
+         keyword-rest collection applies via callee_has_kwarg. */
+      int is_kwparam = m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]);
+      int kv = (kwh >= 0 && is_kwparam) ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
       if (kv >= 0) {
         emit_arg_rooted(c, m, i, kv, out);
       }
-      else if (ds_hash_tmp >= 0 && m->pnames[i] && i != m->kwrest_idx) {
+      else if (ds_hash_tmp >= 0 && is_kwparam && i != m->kwrest_idx) {
         /* Double-splat: extract param by name from the pre-eval'd hash. */
-        const char *hn = ty_hash_cname(ds_hash_type);
-        LocalVar *plv = scope_local(m, m->pnames[i]);
-        TyKind pt = plv ? plv->type : TY_INT;
-        if (hn) {
-          /* SymPoly: get returns sp_RbVal, unbox to param type.
-             Other sym/str keyed hashes: get returns the value type directly. */
-          TyKind hval = ty_hash_val(ds_hash_type);
-          Buf vb; memset(&vb, 0, sizeof vb);
-          char get_expr[256];
-          snprintf(get_expr, sizeof get_expr,
-                   "sp_%sHash_get(_t%d, sp_sym_intern(\"%s\"))",
-                   hn, ds_hash_tmp, m->pnames[i]);
-          if (hval == TY_POLY) emit_unbox_text(c, pt, get_expr, &vb);
-          else buf_puts(&vb, get_expr);
-          /* An optional keyword param (one with a default) whose key may be
-             absent from the forwarded hash falls back to its default: a bare
-             get returns nil and silently drops the callee's default value. */
-          if (m->pdefault && m->pdefault[i] >= 0) {
-            Buf db; memset(&db, 0, sizeof db);
-            emit_arg_or_default(c, m, i, -1, &db);
-            buf_printf(out, "(sp_%sHash_has_key(_t%d, sp_sym_intern(\"%s\")) ? (%s) : (%s))",
-                       hn, ds_hash_tmp, m->pnames[i],
-                       vb.p ? vb.p : "", db.p ? db.p : default_value(pt));
-            free(db.p);
-          }
-          else buf_puts(out, vb.p ? vb.p : "");
-          free(vb.p);
-        }
-        else {
-          buf_printf(out, "%s", default_value(pt));
-        }
+        emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, out);
       }
       else if (m->kwrest_idx >= 0 && i == m->kwrest_idx) {
         /* Collect remaining (unbound) keyword args into a sp_SymPolyHash. */
-        int krhash = ++g_tmp;
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_SymPolyHash *_t%d = sp_SymPolyHash_new();\n", krhash);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", krhash);
-        if (kwh >= 0) {
-          int en3 = 0; const int *elems3 = nt_arr(nt, kwh, "elements", &en3);
-          int splat_seen = 0;
-          for (int e3 = 0; e3 < en3; e3++) {
-            const char *ety3 = nt_type(nt, elems3[e3]);
-            if (ety3 && sp_streq(ety3, "AssocSplatNode")) {
-              /* Forwarded `**hash`: merge its entries into the keyword-rest
-                 (later entries win, so order with literals is preserved). Only
-                 a symbol-keyed hash can flow into a keyword-rest parameter. */
-              int inner3 = nt_ref(nt, elems3[e3], "value");
-              if (inner3 < 0) {
-                /* Anonymous `**`: merge the enclosing __anon_kwrest directly. */
-                const char *akw = anon_kwrest_name(c, elems3[e3]);
-                if (!akw) continue;
-                splat_seen = 1;
-                emit_indent(g_pre, g_indent);
-                buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, lv_%s);\n", krhash, akw);
-                continue;
-              }
-              const char *shn = ty_hash_cname(comp_ntype(c, inner3));
-              if (!shn || !sp_streq(shn, "SymPoly")) {
-                unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
-                continue;
-              }
-              int src;
-              if (!splat_seen && ds_hash_tmp >= 0) {
-                /* Reuse the first splat's materialized temp. It is declared with
-                   ds_hash_type's C type, so it must be SymPoly to flow into
-                   sp_SymPolyHash_update (the inner3 check above guarantees this
-                   for the matching first splat; assert it explicitly so the
-                   type-punned reuse can't silently emit a mismatched pointer). */
-                const char *dshn = ty_hash_cname(ds_hash_type);
-                if (!dshn || !sp_streq(dshn, "SymPoly")) {
-                  unsupported(c, argsNode, "double-splat forward of a non-symbol-keyed hash into a keyword-rest parameter");
-                  continue;
-                }
-                src = ds_hash_tmp;  /* first splat already materialized above */
-              } else {
-                src = ++g_tmp;
-                emit_indent(g_pre, g_indent);
-                buf_printf(g_pre, "sp_SymPolyHash *_t%d = ", src);
-                emit_expr(c, inner3, g_pre);
-                buf_puts(g_pre, ";\n");
-                emit_indent(g_pre, g_indent);
-                buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", src);
-              }
-              splat_seen = 1;
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_SymPolyHash_update(_t%d, _t%d);\n", krhash, src);
-              continue;
-            }
-            int key3 = nt_ref(nt, elems3[e3], "key");
-            int val3 = nt_ref(nt, elems3[e3], "value");
-            if (key3 < 0 || val3 < 0) continue;
-            const char *kty3 = nt_type(nt, key3);
-            const char *kname3 = (kty3 && sp_streq(kty3, "SymbolNode")) ? nt_str(nt, key3, "value") : NULL;
-            if (!kname3) continue;
-            /* A literal `k: v` whose name is an explicit keyword param is bound
-               to that param, not the keyword-rest. A positional param of the
-               same name does not consume it. */
-            if (callee_has_kwarg(c, m, kname3)) continue;
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_sym_intern(\"%s\"), ", krhash, kname3);
-            emit_boxed(c, val3, g_pre);
-            buf_puts(g_pre, ");\n");
-          }
-          /* Keys merged from a `**hash` that name an explicit keyword param are
-             consumed by that param, so drop them from the keyword-rest. Only
-             keyword params consume keys -- a positional param of the same name
-             leaves its key in the rest. */
-          if (splat_seen && m->def_node >= 0) {
-            int dpn = nt_ref(nt, m->def_node, "parameters");
-            int kpn = 0; const int *kwps = dpn >= 0 ? nt_arr(nt, dpn, "keywords", &kpn) : NULL;
-            for (int kk = 0; kk < kpn; kk++) {
-              const char *kpname = nt_str(nt, kwps[kk], "name");
-              if (!kpname) continue;
-              emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_SymPolyHash_delete(_t%d, sp_sym_intern(\"%s\"));\n",
-                         krhash, kpname);
-            }
-          }
-        }
+        int krhash = emit_kwrest_collect(c, m, kwh, ds_hash_tmp, ds_hash_type, argsNode);
         buf_printf(out, "_t%d", krhash);
       }
       else if (i < pos_argc) {
@@ -4494,6 +4542,12 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
     kwh_d = argv[argc - 1]; pos_argc_d = argc - 1;
   }
+  /* Materialize a forwarded `**hash` inside kwh_d so keyword params extract
+     from it and a `**kwrest` callee param collects it -- the same handling
+     emit_args_filled applies (previously this path dropped every keyword
+     into a NULL kwrest and let positionals steal keys by name). */
+  TyKind ds_type_d = TY_UNKNOWN;
+  int ds_tmp_d = (m && kwh_d >= 0) ? emit_ds_hash_materialize(c, kwh_d, &ds_type_d) : -1;
   int np = m ? m->nparams : pos_argc_d;
   /* evaluate each param value (provided arg or default) into a temp so the
      virtual-dispatch cases reuse them without re-evaluating */
@@ -4566,9 +4620,22 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       continue;
     }
 else {
-      int kv = (m && kwh_d >= 0) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
+      /* Only a true KEYWORD param consumes a key -- a positional param whose
+         name happens to match must take the provided positional instead
+         (mirrors emit_args_filled). */
+      int is_kwp_d = m && m->pnames[k] && callee_has_kwarg(c, m, m->pnames[k]);
+      int kv = (m && kwh_d >= 0 && is_kwp_d) ? kwh_lookup(nt, kwh_d, m->pnames[k]) : -1;
       int provided = kv >= 0 ? kv : (k < pos_argc_d ? argv[k] : -1);
-      if (splat_tmp_d >= 0 && k >= splat_idx_d) {
+      if (m && m->kwrest_idx >= 0 && k == m->kwrest_idx) {
+        /* `**kwrest` callee param: collect the call's unbound keywords. */
+        int krhash = emit_kwrest_collect(c, m, kwh_d, ds_tmp_d, ds_type_d, argsNode);
+        buf_printf(&ab, "_t%d", krhash);
+      }
+      else if (kv < 0 && ds_tmp_d >= 0 && is_kwp_d) {
+        /* keyword param fed by a forwarded `**hash`: extract by name. */
+        emit_ds_param_extract(c, m, k, ds_tmp_d, ds_type_d, &ab);
+      }
+      else if (splat_tmp_d >= 0 && k >= splat_idx_d) {
         /* fill this fixed param from the splatted array at offset k-splat_idx */
         int off = k - splat_idx_d;
         TyKind set = ty_array_elem(splat_at_d);
