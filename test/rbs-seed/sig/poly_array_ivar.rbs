@@ -1,0 +1,4 @@
+class SeedBox
+  @kids: Array[untyped]
+  def kids: () -> Array[untyped]
+end

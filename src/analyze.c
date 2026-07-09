@@ -774,7 +774,7 @@ int register_ie_block_ivars(Compiler *c) {
        slot. An ivar written only inside iexec blocks has no competing writer, so
        widening it here from the value type is safe. */
     int v = nt_ref(nt, id, "value");
-    if (v >= 0) {
+    if (v >= 0 && !class_ivar_pinned(ci, nm)) {  /* --rbs seed pins are authoritative */
       TyKind vt = infer_type(c, v);
       if (vt != TY_UNKNOWN && vt != TY_NIL) {
         TyKind cur = ci->ivar_types[iv];
@@ -1402,6 +1402,10 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
   if (sp_streq(buf, "int_array"))    return TY_INT_ARRAY;
   if (sp_streq(buf, "float_array"))  return TY_FLOAT_ARRAY;
   if (sp_streq(buf, "str_array"))    return TY_STR_ARRAY;
+  /* the extractor emits poly_array for Array[T-outside-subset] (its header
+     documents it), but this parser never accepted it -- those seeds were
+     silently dropped */
+  if (sp_streq(buf, "poly_array"))   return TY_POLY_ARRAY;
   if (sp_streq(buf, "str_int_hash"))   return TY_STR_INT_HASH;
   if (sp_streq(buf, "str_str_hash"))   return TY_STR_STR_HASH;
   if (sp_streq(buf, "int_int_hash"))   return TY_INT_INT_HASH;
@@ -1562,6 +1566,7 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
         char ivn[300];
         snprintf(ivn, sizeof ivn, "%s%s", a1[0] == '@' ? "" : "@", a1);
         int idx = comp_ivar_intern(ci, ivn);
+        sp_ivwatch(a1, "rbs_seed_pin", ci->ivar_types[idx], t);
         ci->ivar_types[idx] = t;
         class_pin_ivar(ci, ivn);
       }
@@ -3272,7 +3277,9 @@ void analyze_program(Compiler *c) {
     int *recCi = (int *)malloc(sizeof(int) * rcap), *recIv = (int *)malloc(sizeof(int) * rcap);
     for (int ci = 0; ci < c->nclasses; ci++)
       for (int iv = 0; iv < c->classes[ci].nivars; iv++)
-        if (c->classes[ci].ivar_types[iv] == TY_POLY) {
+        if (c->classes[ci].ivar_types[iv] == TY_POLY &&
+            (!c->classes[ci].ivars[iv] ||
+             !class_ivar_pinned(&c->classes[ci], c->classes[ci].ivars[iv]))) {
           const char *_n = c->classes[ci].ivars[iv]; sp_ivwatch(_n && _n[0]=='@' ? _n+1 : _n, "renarrow_reset", TY_POLY, TY_UNKNOWN);
           c->classes[ci].ivar_types[iv] = TY_UNKNOWN; any = 1;
           if (nrec >= rcap) { rcap *= 2; recCi = realloc(recCi, sizeof(int) * rcap); recIv = realloc(recIv, sizeof(int) * rcap); }
@@ -3650,8 +3657,9 @@ void analyze_program(Compiler *c) {
           const char *ivn = nt_str(c->nt, nid, "name");
           if (ci2 >= 0 && ivn) {
             int ix = comp_ivar_index(&c->classes[ci2], ivn);
-            if (ix >= 0 && (c->classes[ci2].ivar_types[ix] == TY_STR_POLY_HASH ||
-                            c->classes[ci2].ivar_types[ix] == TY_SYM_POLY_HASH)) {
+            if (ix >= 0 && !class_ivar_pinned(&c->classes[ci2], ivn) &&
+                (c->classes[ci2].ivar_types[ix] == TY_STR_POLY_HASH ||
+                 c->classes[ci2].ivar_types[ix] == TY_SYM_POLY_HASH)) {
               c->classes[ci2].ivar_types[ix] = TY_POLY_POLY_HASH;
               hb_changed = 1;
               /* patch the node-type cache for every read/write of this ivar

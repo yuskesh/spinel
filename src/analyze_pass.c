@@ -1390,6 +1390,7 @@ int infer_write_types(Compiler *c) {
       ClassInfo *ci = &c->classes[ivar_cls_id];
       int iv = inm ? comp_ivar_index(ci, inm) : -1;
       if (iv < 0) continue;
+      if (class_ivar_pinned(ci, inm)) continue;  /* --rbs seed pins are authoritative */
       slot = &ci->ivar_types[iv];
       watch_nm = inm;
       /* If the slot is TY_UNKNOWN but has a direct InstanceVariableWriteNode
@@ -1450,6 +1451,7 @@ int infer_write_types(Compiler *c) {
       ClassInfo *ci2 = &c->classes[defcls2];
       int iv2 = comp_ivar_index(ci2, inm2);
       if (iv2 < 0) continue;
+      if (class_ivar_pinned(ci2, inm2)) continue;  /* --rbs seed pins are authoritative */
       slot = &ci2->ivar_types[iv2];
     }
     else continue;

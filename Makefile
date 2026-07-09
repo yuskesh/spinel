@@ -528,6 +528,20 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
 	  "$$tmp/cca" > "$$tmp/cca.out" 2>/dev/null; \
 	  cmp -s "$$tmp/cca.out" test/rbs-seed/capture_civ_array.expected || { echo "rbs-seed-test: FAIL (#1827 typed-array return pin output mismatch)"; diff -u test/rbs-seed/capture_civ_array.expected "$$tmp/cca.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#1827 Array[String] return pin: C did not compile)"; ok=0; fi; \
+	$(SPINEL) test/rbs-seed/poly_array_ivar.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/pa.c" 2>/dev/null; \
+	grep -Eq 'sp_PolyArray[[:space:]]*\*[[:space:]]*iv_kids' "$$tmp/pa.c" || { echo "rbs-seed-test: FAIL (poly_array ivar seed dropped)"; ok=0; }; \
+	if $(CC) -O0 -Ilib "$$tmp/pa.c" $(SP_RT_LIB) -lm -o "$$tmp/pa" 2>"$$tmp/pa.err"; then \
+	  "$$tmp/pa" > "$$tmp/pa.out" 2>/dev/null; \
+	  cmp -s "$$tmp/pa.out" test/rbs-seed/poly_array_ivar.expected || { echo "rbs-seed-test: FAIL (poly_array ivar output mismatch)"; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (poly_array ivar: C did not compile)"; ok=0; fi; \
+	$(SPINEL) test/rbs-seed/pinned_container.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/pc.c" 2>/dev/null; \
+	grep -Eq 'sp_PolyArray[[:space:]]*\*[[:space:]]*iv_kids' "$$tmp/pc.c" || { echo "rbs-seed-test: FAIL (ivar seed pin lost to fixpoint inference)"; ok=0; }; \
+	if $(CC) -O0 -Ilib "$$tmp/pc.c" $(SP_RT_LIB) -lm -o "$$tmp/pc" 2>"$$tmp/pc.err"; then \
+	  "$$tmp/pc" > "$$tmp/pc.out" 2>/dev/null; \
+	  cmp -s "$$tmp/pc.out" test/rbs-seed/pinned_container.expected || { echo "rbs-seed-test: FAIL (pinned container output mismatch)"; diff -u test/rbs-seed/pinned_container.expected "$$tmp/pc.out" || true; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (pinned container: C did not compile)"; ok=0; fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "rbs-seed-test: pass"; else exit 1; fi
 endif
