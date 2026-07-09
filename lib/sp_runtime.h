@@ -5506,6 +5506,9 @@ typedef struct {
   void *gen_cap;                          /* captures, passed via fiber user_data */
   sp_Fiber *fib;                          /* current generator fiber (lazy) */
   mrb_bool peeked; sp_RbVal peek_val;     /* #peek lookahead cache */
+  sp_RbVal size;                          /* #size for a generator: a value, a
+                                             callable (Proc), or nil. Unused by
+                                             the materialized path (items->len). */
 } sp_Enumerator;
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) {
@@ -5541,12 +5544,13 @@ static void sp_Enumerator_scan(void *p) {
   if (e->fib) sp_gc_mark(e->fib);
   if (e->gen_cap) sp_gc_mark(e->gen_cap);
   if (e->peeked) sp_mark_rbval(e->peek_val);
+  sp_mark_rbval(e->size);
 }
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil();
   return e;
 }
 /* Like sp_Enumerator_new_from but over a reversed snapshot, for a blockless
@@ -5563,7 +5567,7 @@ static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
     }
   }
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil();
   return e;
 }
 /* Wrap an already-built poly array as an Enumerator, taking ownership of it
@@ -5572,7 +5576,7 @@ static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
 static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE;
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil();
   return e;
 }
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for
@@ -5684,9 +5688,9 @@ static sp_PolyArray *sp_str_lines_poly(const char *s) {
   }
   return a;
 }
-static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap) {
+static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size) {
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE;
+  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size;
   return e;
 }
 /* Pull the next value from the generator fiber, or raise StopIteration when it
@@ -5723,7 +5727,9 @@ static sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) {
   else e->cursor = 0;
   return e;
 }
-static mrb_int sp_Enumerator_size(sp_Enumerator *e) { return e && e->items ? e->items->len : 0; }
+/* Enumerator#size, defined after sp_proc_call so a callable size can be driven
+   through the boxed-return channel. */
+static sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
 /* Enumerator#take(n) / #first(n): collect up to n values from a fresh run of the
    source (independent of the #next cursor), matching CRuby. */
 static sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, mrb_int n) {
@@ -5778,6 +5784,19 @@ static SP_TLS sp_RbVal _sp_proc_poly_ret;
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
+/* Enumerator#size (CRuby's ary2sv-independent size protocol): a materialized
+   enumerator reports its snapshot length; a generator reports its stored size --
+   calling it (no args) when it is a Proc and publishing through the boxed-return
+   channel, else returning the stored value (nil when none was supplied). */
+static sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {
+  if (!e) return sp_box_nil();
+  if (e->items) return sp_box_int(e->items->len);
+  if (e->size.tag == SP_TAG_OBJ && e->size.cls_id == SP_BUILTIN_PROC) {
+    (void)sp_proc_call((sp_Proc *)e->size.v.p, 0, NULL);
+    return _sp_proc_poly_ret;
+  }
+  return e->size;
+}
 /* Lambda strict-arity check: raise ArgumentError if argc is outside
    [req, req+opt] (no upper bound with a rest param). Procs are lenient. */
 static void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest) {
