@@ -317,12 +317,26 @@ def native_trust!(name)
 end
 
 # A package running an external build system is a trust decision the consumer
-# makes once, explicitly: the flag/env for this run, or a recorded `spin
-# trust <name>`. There is deliberately no silent default (cargo's build.rs
-# runs unprompted; we don't copy that).
+# makes: the flag/env for this run, a recorded `spin trust <name>`, or -- on
+# an interactive terminal -- a per-run prompt. There is deliberately no
+# silent default (cargo's build.rs runs unprompted; we don't copy that), and
+# a non-interactive build (CI, pipes) never waits on a prompt.
 def ensure_native_allowed(name, command)
   return if ENV["SPIN_ALLOW_NATIVE_BUILD"].to_s != ""
   return if native_trusted?(name)
+  if $stdin.tty?
+    $stderr.puts "spin: package '#{name}' declares a native build step:"
+    $stderr.puts "  #{command}"
+    $stderr.print "Allow? [y/N/always] "
+    ans = $stdin.gets
+    ans = ans.nil? ? "" : ans.strip.downcase
+    if ans == "always"
+      native_trust!(name)
+      return
+    end
+    return if ans == "y" || ans == "yes"
+    spin_die("native build not allowed (#{name})")
+  end
   $stderr.puts "spin: package '#{name}' declares a native build step:"
   $stderr.puts "  #{command}"
   $stderr.puts "Allow it with --allow-native-build (this run),"

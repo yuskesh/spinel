@@ -297,10 +297,12 @@ libs = ["${build.out}/libggml.a"]   # artifacts reach the R6 --link surface
   R2. The same package works as the build root (its own `bin/`) and as a
   library dependency.
 - **Consent, never silent** (deliberately unlike cargo's `build.rs`):
-  `--allow-native-build` (one run), `SPIN_ALLOW_NATIVE_BUILD=1` (CI), or
-  `spin trust <name>` (recorded in `$XDG_CONFIG_HOME/spin/trust`).
-  An unconsented build refuses with those three options. A cached artifact
-  skips consent — the consented command already ran on this machine.
+  `--allow-native-build` (one run), `SPIN_ALLOW_NATIVE_BUILD=1` (CI),
+  `spin trust <name>` (recorded in `$XDG_CONFIG_HOME/spin/trust`), or —
+  on an interactive terminal — an `Allow? [y/N/always]` prompt (`always`
+  records the trust entry). A non-interactive build never waits on a
+  prompt: it refuses with those options. A cached artifact skips consent —
+  the consented command already ran on this machine.
 - **Cache**: artifacts land in the shared native cache keyed by content
   (workdir tree hash + patch bytes + command + artifacts + toolchain +
   enabled features). A source or patch change moves the key and rebuilds;
@@ -313,11 +315,9 @@ libs = ["${build.out}/libggml.a"]   # artifacts reach the R6 --link surface
   feature-skipped drops out of the link line.
 - *Still open:* consumer-side feature enablement (`spin add <name>
   --features cuda` recorded in the lock — today only the package's own
-  `[features] default` set gates entries), and an interactive consent
-  prompt (spin has no stdin surface yet; explicit consent is also the
-  safer CI default). The recommended packaging convention is cargo's
-  `-sys` shape: a leaf package carrying the vendored tree, the `[[build]]`
-  entries, and the raw `ffi_*` declarations.
+  `[features] default` set gates entries). The recommended packaging
+  convention is cargo's `-sys` shape: a leaf package carrying the vendored
+  tree, the `[[build]]` entries, and the raw `ffi_*` declarations.
 
 ## 5. Project model
 
