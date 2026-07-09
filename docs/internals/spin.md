@@ -176,8 +176,42 @@ DSL in the Ruby source), and `[build] spinel-flags`.
 
 - **Name policy**: same name as a rubygems.org gem means "the same library,
   possibly a subset-compatible port"; divergent forks rename
-  (`foo-spinel`). The probe corpus is the intended seed for the index
-  (coordination still open).
+  (`foo-spinel`). Name reservation is the first accepted publish PR; the
+  gate is review and sign-off, with no popularity floor and no tier
+  requirement. Candidate/roadmap records (the probe corpus) stay OUTSIDE
+  the index -- compat.jsonl is the sidecar; the index carries only
+  fetchable packages (decided on #1753).
+
+  **Mirrors** — a package reimplementing a gem's consumer surface in the
+  subset rather than porting its source — may claim the gem's require
+  string under three normative conditions (the require string is the
+  consumer surface being honored):
+  1. *Ledgered divergences*: a documented exclusion ledger of what was
+     narrowed;
+  2. *The real gem as oracle*: the claimed surface is verified
+     differentially against CRuby plus the real gem;
+  3. *Loud failure outside the contract*: out-of-ledger surface fails
+     visibly (ideally at compile time), never silently diverging.
+  These mirror the compiler's own rule (unsupported constructs raise and
+  are documented): the name is honest exactly as long as everything behind
+  it either matches CRuby or refuses loudly. spinel-redis is the reference
+  shape (oracle/ harness + README ledger).
+
+  **Replacement**: names are held by evidence, not by arrival.
+  - *Holding*: a name stays claimed while the package keeps conditions
+    1-3 and its R8 probes pass at current engine revisions (a fail
+    re-published within a reasonable window is fine).
+  - *Staleness reclaim*: consecutive engine revisions with failing or
+    absent probes plus an unresponsive maintainer make the name
+    reclaimable via an index PR, with notice and a grace window (initial
+    numbers, tunable: 2-3 engine revisions, 30 days).
+  - *Superset challenge*: an actively-held name can be petitioned for
+    only by measurement -- the challenger passes the incumbent's entire
+    oracle suite plus more, with a strictly smaller exclusion ledger;
+    ties and partial overlaps keep the incumbent.
+  - All of this rides the ordinary PR flow and R8 records. `spin.lock`
+    pins full SHAs, so a reassignment only affects new resolutions;
+    locked builds never break.
 - `spin publish` (implemented): validates identity + a pushed,
   version-consistent release commit, runs `spin test` as a hard gate (R8's
   spirit ahead of its metadata), then writes `packages/<name>.toml` and submits
@@ -405,8 +439,10 @@ string parameters downstream (tab/newline-packed record strings instead),
    compiler tree into pre-installed packages first (`erb`/`optparse`/`set` are
    the easy three; `json`/`stringio` are C-backed and exercise R6), and the
    `packages/` directory itself.
-2. **Index seeding** from the probe corpus, and coordination with the
-   community spin packages compatibility catalog (who owns the name registry).
+2. ~~Index seeding / name-registry ownership~~ — decided on #1753:
+   publish-PR gate, compat.jsonl as the roadmap sidecar (never in the
+   index), mirror conditions + replacement rules under R5's name policy.
+   First three names accepted (redis, pg, spinel_kit).
 3. **Toolchain versioning**: the `spinel` manifest constraint, R8 probe
    warnings, and spin↔spinel skew handling all wait on the compiler
    carrying a version.
