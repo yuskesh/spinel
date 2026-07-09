@@ -2943,12 +2943,26 @@ void emit_super(Compiler *c, int id, Buf *b) {
       const int *argv2 = NULL;
       if (args_id >= 0) argv2 = nt_arr(c->nt, args_id, "arguments", &argc2);
       if (argc2 > 0) {
-        buf_printf(b, "(%s->msg = (", g_self);
-        emit_expr(c, argv2[0], b);
-        buf_puts(b, "))");
+        /* msg is a const char*; a poly message (e.g. an un-instantiated
+           subclass whose `message` param never got constrained to a String)
+           must be coerced, not assigned raw. emit_str_expr also coerces the
+           unresolved-call gate (TY_UNKNOWN sp_raise_nomethod) that comp_ntype
+           can't see. */
+        buf_printf(b, "(%s->msg = ", g_self);
+        emit_str_expr(c, argv2[0], b);
+        buf_puts(b, ")");
       }
-      else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0)
-        buf_printf(b, "(%s->msg = lv_%s)", g_self, rename_local(s->pnames[0]));
+      else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {
+        LocalVar *p0 = scope_local(s, s->pnames[0]);
+        const char *rn = rename_local(s->pnames[0]);
+        /* Effective type mirrors emit_method_signature: a NULL/TY_UNKNOWN
+           param is declared TY_POLY (sp_RbVal), so it too must be coerced. */
+        TyKind pt = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
+        if (pt == TY_POLY)
+          buf_printf(b, "(%s->msg = sp_poly_to_s(lv_%s))", g_self, rn);
+        else
+          buf_printf(b, "(%s->msg = lv_%s)", g_self, rn);
+      }
       else
         buf_puts(b, "((void)0)");
       return;
