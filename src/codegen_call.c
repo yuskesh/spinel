@@ -3597,6 +3597,43 @@ void emit_call(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   if (!name) unsupported(c, id, "call (no name)");
 
+  /* x.is_a?(NoSuchConst): the is_a?-family arms below match the target
+     ConstantReadNode textually and never emit the constant read, so an
+     UNDEFINED constant silently answered false where CRuby raises NameError
+     at the read. Catch it here, before any arm: a name that is no user
+     class/module, no builtin, and no defined value-constant cannot exist at
+     runtime (whole-program), so evaluate the receiver for effect and raise. */
+  if (recv >= 0 && argc == 1 &&
+      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+       sp_streq(name, "instance_of?")) &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")) {
+    const char *tcn = nt_str(nt, argv[0], "name");
+    /* Names CRuby defines that is_builtin_class_name doesn't list (the
+       is_a? arms below handle several of them by TY kind). The list errs
+       generous: a CRuby constant missing here just keeps the old false
+       answer; only a name in NO list may raise, so a wrong raise on real
+       code is impossible for listed names. */
+    static const char *const CRUBY_KNOWN[] = {
+      "Enumerator", "Struct", "Data", "Random", "Queue", "SizedQueue",
+      "ConditionVariable", "Dir", "Set", "Marshal", "Binding", "Warning",
+      "Errno", "EOFError", "SystemExit", "Interrupt", "SignalException",
+      "SyntaxError", "SystemStackError", "SecurityError", "EncodingError",
+      "RegexpError", "FiberError", "ThreadError", "UncaughtThrowError",
+      "ClosedQueueError", "NoMatchingPatternError",
+      "NoMatchingPatternKeyError", "SystemCallError", "Ractor", "ARGF",
+      NULL };
+    int cruby_known = 0;
+    for (int ki = 0; tcn && CRUBY_KNOWN[ki]; ki++)
+      if (sp_streq(tcn, CRUBY_KNOWN[ki])) { cruby_known = 1; break; }
+    if (tcn && !cruby_known && comp_class_index(c, tcn) < 0 &&
+        !is_builtin_class_name(tcn) && !comp_const(c, tcn)) {
+      buf_puts(b, "((void)(");
+      emit_expr(c, recv, b);
+      buf_printf(b, "), sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), 0)", tcn);
+      return;
+    }
+  }
+
   /* $~[N]: the Nth regexp group of the last match (0 = the whole match), read
      from the match registers. $~ is a special regexp accessor rather than
      stored MatchData, so index it directly instead of char-indexing a string. */
