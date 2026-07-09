@@ -178,6 +178,7 @@ extern void (*sp_json_hpair_fn)(sp_RbVal, mrb_int, sp_RbVal *, sp_RbVal *);
    -- CRuby's JSON.parse returns String keys. Arrays are built directly from the
    package ABI (sp_PolyArray). */
 extern sp_RbVal (*sp_json_mk_hash_fn)(void);
+extern sp_sym (*sp_json_sym_intern_fn)(const char *);  /* symbolize_names key interner (TU-installed) */
 extern void (*sp_json_hash_set_fn)(sp_RbVal, const char *, sp_RbVal);
 /* Recursive #inspect of a boxed value, for lib/sp_inspect.c's container walker
    (set to sp_poly_inspect; same idiom as the JSON hooks). */

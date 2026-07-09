@@ -3528,8 +3528,24 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
       /* use hierarchy-aware check for exception classes */
       int is_exc_cls = (ename && is_exc_name(ename)) ||
                        (uci >= 0 && class_is_exc_subclass(c, uci));
+      /* A namespaced rescue target with NO user class behind it (a package's
+         C-raised exception like JSON::ParserError) also matches the raised
+         name in its `Parent::Leaf` form: the raiser uses the qualified
+         string (so e.class displays like CRuby), while this arm's AST leaf
+         alone would only ever match the bare name. */
+      char qbuf[160]; qbuf[0] = 0;
+      if (sp_streq(en, "ConstantPathNode") && uci < 0 && ename && !is_exc_name(ename)) {
+        int qpar = nt_ref(nt, exc[i], "parent");
+        const char *qp = (qpar >= 0 && nt_type(nt, qpar) &&
+                          sp_streq(nt_type(nt, qpar), "ConstantReadNode"))
+                         ? nt_str(nt, qpar, "name") : NULL;
+        if (qp) snprintf(qbuf, sizeof qbuf, "%s::%s", qp, ename);
+      }
       if (is_exc_cls)
         buf_printf(b, "sp_exc_cls_matches(_rcls_%d, \"%s\")", rc, ename);
+      else if (qbuf[0])
+        buf_printf(b, "(sp_str_eq(_rcls_%d, \"%s\") || sp_str_eq(_rcls_%d, \"%s\"))",
+                   rc, ename, rc, qbuf);
       else
         buf_printf(b, "sp_str_eq(_rcls_%d, \"%s\")", rc, ename);
     }

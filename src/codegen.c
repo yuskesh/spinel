@@ -3339,6 +3339,7 @@ void emit_regex_section(Buf *b) {
     buf_puts(b, "  sp_gc_mark_globals_hook = sp_mark_user_globals;\n");
   /* Install the Marshal vtable: the construction wrappers (sp_runtime.h) plus
      the generated symbol interner and per-class object dump/load. */
+  buf_puts(b, "  sp_json_sym_intern_fn = sp_sym_intern;\n");
   if (g_uses_marshal) {
     buf_puts(b,
       "  sp_marshal_v.sym_intern = sp_sym_intern;\n"

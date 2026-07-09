@@ -4237,6 +4237,35 @@ static sp_RbVal sp_json_new_strhash(void) {
 static void sp_json_strhash_set(sp_RbVal h, const char *k, sp_RbVal v) {
   sp_StrPolyHash_set((sp_StrPolyHash *)h.v.p, k, v);
 }
+/* JSON.parse(symbolize_names: true): deep-convert every parsed object's
+   string keys to symbols. Objects become fresh SymPolyHashes (values
+   recursed); arrays recurse in place (the parse output is freshly owned);
+   scalars pass through. Interning goes through sp_json_sym_intern_fn (the
+   symbol table lives in the generated TU; sp_re_init installs the hook
+   before any user code runs). */
+static sp_RbVal sp_json_symbolize(sp_RbVal v) {
+  if (v.tag != SP_TAG_OBJ) return v;
+  if (v.cls_id == SP_BUILTIN_STR_POLY_HASH) {
+    sp_StrPolyHash *h = (sp_StrPolyHash *)v.v.p;
+    SP_GC_ROOT(h);
+    sp_SymPolyHash *r = sp_SymPolyHash_new();
+    SP_GC_ROOT(r);
+    if (h) for (mrb_int i = 0; i < h->len; i++) {
+      const char *k = h->order[i];
+      sp_RbVal sv = sp_json_symbolize(sp_StrPolyHash_get(h, k));
+      SP_GC_ROOT_RBVAL(sv);
+      sp_SymPolyHash_set(r, sp_json_sym_intern_fn(k), sv);
+    }
+    return sp_box_obj(r, SP_BUILTIN_SYM_POLY_HASH);
+  }
+  if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
+    sp_PolyArray *a = (sp_PolyArray *)v.v.p;
+    SP_GC_ROOT(a);
+    if (a) for (mrb_int i = 0; i < a->len; i++) a->data[i] = sp_json_symbolize(a->data[i]);
+    return v;
+  }
+  return v;
+}
 __attribute__((constructor)) static void sp_json_install_hooks(void) {
   sp_json_kind_fn = sp_json_kind;
   sp_json_len_fn = sp_poly_length;

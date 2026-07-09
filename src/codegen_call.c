@@ -6864,6 +6864,32 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            to the same symbol clobbers it, so dup onto the GC string heap
            before the value escapes into Ruby. */
         int nv_cstr_ret = sp_streq(nf->ret, "cstring");
+        /* JSON.parse's symbolize_names: the option rides a keyword hash the
+           1-arg native signature would silently drop. Route the parse
+           through the deep key-symbolizer: a literal true wraps directly, a
+           dynamic value decides at runtime over a single parse. Other
+           options keep the prior ignored-with-string-keys behavior. */
+        if (sp_streq(nvmod, "JSON") && sp_streq(name, "parse") && argc == 2 &&
+            nt_type(nt, argv[1]) &&
+            (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
+             sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
+          int symv = struct_kwarg_value(c, argv[1], "symbolize_names");
+          if (symv >= 0) {
+            const char *svty = nt_type(nt, symv);
+            int lit_true  = svty && sp_streq(svty, "TrueNode");
+            int lit_false = svty && (sp_streq(svty, "FalseNode") || sp_streq(svty, "NilNode"));
+            if (lit_true) { buf_printf(b, "sp_json_symbolize(%s(", nf->csym); emit_expr(c, argv[0], b); buf_puts(b, "))"); return; }
+            if (!lit_false) {
+              int tj = ++g_tmp;
+              buf_printf(b, "({ sp_RbVal _t%d = %s(", tj, nf->csym); emit_expr(c, argv[0], b);
+              buf_puts(b, "); (");
+              emit_cond(c, symv, b);
+              buf_printf(b, ") ? sp_json_symbolize(_t%d) : _t%d; })", tj, tj);
+              return;
+            }
+            /* literal false/nil: fall through to the plain 1-arg call */
+          }
+        }
         if (nv_cstr_ret) buf_puts(b, "sp_str_dup_external(");
         buf_puts(b, nf->csym); buf_puts(b, "(");
         for (int ai = 0; ai < nf->nargs && ai < argc; ai++) {

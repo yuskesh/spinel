@@ -1,0 +1,7 @@
+{a: 1}
+{a: {b: [{c: 2}]}}
+[{x: 1}, {y: 2}]
+{"a" => 1}
+{d: 4}
+caught JSON::ParserError
+control caught
