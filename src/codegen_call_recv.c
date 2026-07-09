@@ -182,6 +182,33 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* poly-array collection readers whose runtime backing already exists but
+       whose typed-array forms live in the array_kind()-gated `if (k)` block
+       below -- that gate is NULL for poly, so mirror them with explicit "Poly"
+       dispatch (as drop/take above do). All return a fresh poly array. */
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "reverse") && argc == 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_dup(", t); emit_expr(c, recv, b);
+      buf_printf(b, "); sp_PolyArray_reverse_bang(_t%d); _t%d; })", t, t);
+      return 1;
+    }
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "uniq") && argc == 0 &&
+        nt_ref(nt, id, "block") < 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_dup(", t); emit_expr(c, recv, b);
+      buf_printf(b, "); sp_PolyArray_uniq_bang(_t%d); _t%d; })", t, t);
+      return 1;
+    }
+    if (rt == TY_POLY_ARRAY && (sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) {
+      /* first(n)/last(n) -> subarray via slice; a negative n is an ArgumentError. */
+      int tn = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\"); sp_PolyArray_slice(", tn);
+      emit_expr(c, recv, b);
+      if (sp_streq(name, "first")) buf_printf(b, ", 0, _t%d); })", tn);
+      else                        buf_printf(b, ", -_t%d, _t%d); })", tn, tn);
+      return 1;
+    }
     /* poly-array max/min: boxed elements compared at runtime (numerics,
        strings, int-array tuples lexicographically). */
     if ((sp_streq(name, "max") || sp_streq(name, "min")) && argc == 0 &&
