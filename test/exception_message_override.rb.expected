@@ -1,0 +1,8 @@
+message=msg-only to_s=MsgOnly
+message=tos-only to_s=tos-only
+message=the-message to_s=the-to-s
+message=the-message to_s=the-to-s
+message=n=7 to_s=stored
+message=explicit to_s=explicit
+message=Plain to_s=Plain
+message=the-message to_s=the-to-s

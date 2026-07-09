@@ -926,6 +926,25 @@ const char *bigint_arith_fn(const char *op) {
   if (sp_streq(op, "%"))  return "sp_bigint_mod";
   return NULL;
 }
+/* True if any user exception subclass overrides #message or #to_s, so the
+   default exception message/to_s path must dispatch to the user method rather
+   than reporting the stored message (which defaults to the class name). */
+int exc_has_user_msg_override(Compiler *c) {
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!class_is_exc_subclass(c, i)) continue;
+    /* Only a string-returning override is dispatched (see codegen_program),
+       so gate on TY_STRING to match -- otherwise a non-string override would
+       route every exception query through an empty dispatcher for nothing. */
+    int mi_msg = comp_method_in_chain(c, i, "message", NULL);
+    if (mi_msg >= 0 && (TyKind)c->scopes[mi_msg].ret == TY_STRING)
+      return 1;
+    int mi_tos = comp_method_in_chain(c, i, "to_s", NULL);
+    if (mi_tos >= 0 && (TyKind)c->scopes[mi_tos].ret == TY_STRING)
+      return 1;
+  }
+  return 0;
+}
+
 const char *mc(const char *name) {
   static char buf[256];
   int j = 0;
