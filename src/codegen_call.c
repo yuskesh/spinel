@@ -4540,20 +4540,33 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
       /* puts uses sp_File_puts, which appends a newline per argument (and only
          when the arg isn't already newline-terminated), matching CRuby's
-         `puts a, b` -> "a\nb\n" and `puts "x\n"` -> "x\n". print writes the raw
-         arg. Array flattening (puts [1,2] -> one line each) is not yet modelled
-         here -- a non-string arg is stringified via sp_poly_to_s above. */
+         `puts a, b` -> "a\nb\n" and `puts "x\n"` -> "x\n". A nullable string
+         arg can be NULL (nil); sp_File_puts is a no-op on NULL, so coalesce it
+         to "" first so `puts nil` still prints the blank line. print writes the
+         raw arg (a NULL write is correctly a no-op). Array flattening
+         (puts [1,2] -> one line each) is not yet modelled here -- a non-string
+         arg is stringified via sp_poly_to_s above. */
       int is_puts = sp_streq(name, "puts");
-      emit_indent(g_pre, g_indent);
-      buf_puts(g_pre, "({ ");
-      for (int k = 0; k < argc; k++) {
-        buf_printf(g_pre, "sp_File_%s(%s, %s); ", is_puts ? "puts" : "write",
-                   r, abs[k].p ? abs[k].p : "\"\"");
-        free(abs[k].p);
+      /* An empty `print` (argc == 0, not puts) would emit an empty `({ })`,
+         which is not a valid statement-expression; skip the block entirely. */
+      if (argc > 0 || is_puts) {
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "({ ");
+        for (int k = 0; k < argc; k++) {
+          const char *at = abs[k].p ? abs[k].p : "\"\"";
+          if (is_puts) {
+            int ts = ++g_tmp;
+            buf_printf(g_pre, "sp_File_puts(%s, ({ const char *_t%d = %s; _t%d ? _t%d : \"\"; })); ",
+                       r, ts, at, ts, ts);
+          }
+          else buf_printf(g_pre, "sp_File_write(%s, %s); ", r, at);
+          free(abs[k].p);
+        }
+        if (is_puts && argc == 0) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
+        buf_puts(g_pre, "});\n");
       }
+      else for (int k = 0; k < argc; k++) free(abs[k].p);
       free(abs);
-      if (is_puts && argc == 0) buf_printf(g_pre, "sp_File_write(%s, \"\\n\"); ", r);
-      buf_puts(g_pre, "});\n");
       buf_puts(b, "((mrb_int)0)");
       free(rb.p); return;
     }

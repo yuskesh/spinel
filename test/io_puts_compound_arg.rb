@@ -26,6 +26,9 @@ STDOUT.puts("a", "b", "c")              # a\nb\nc\n
 STDOUT.puts("already\n")                # already\n (no extra blank line)
 STDOUT.puts(format("m=%d", 1), format("n=%d", 2))
 STDOUT.puts                             # a single blank line
+STDOUT.puts("abc"[10])                  # nil (out-of-range index) -> blank line
+STDOUT.print                            # print with no args -> nothing (no empty ({}) )
+STDOUT.puts("dprint-guard")
 
 # STDERR goes to stderr (asserted against the .err.expected sidecar).
 STDERR.puts(format("err=%d", 5))
