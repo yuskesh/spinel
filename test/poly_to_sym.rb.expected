@@ -1,0 +1,6 @@
+:hello
+:already
+:"with spaces"
+[:a, :b, :c, :d]
+ok
+NoMethodError: undefined method 'to_sym' for an instance of Integer

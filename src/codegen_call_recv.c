@@ -4260,6 +4260,25 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "to_i")) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
     if (sp_streq(name, "to_f")) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    /* String#to_sym interns; Symbol#to_sym is identity; every other tag raises
+       CRuby's NoMethodError. A user class defining to_sym wins via poly dispatch. */
+    if (sp_streq(name, "to_sym")) {
+      int has_user = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user; kk++)
+        if (comp_method_in_chain(c, kk, name, NULL) >= 0) has_user = 1;
+      if (!has_user) {
+        int t = ++g_tmp;
+        /* Root the boxed receiver: sp_sym_intern reads through the String's
+           data pointer and allocates, so a GC mid-intern could otherwise free
+           an unrooted temporary String out from under it. */
+        buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_STR ? sp_sym_intern(_t%d.v.s)"
+                      " : (_t%d.tag == SP_TAG_SYM ? (sp_sym)_t%d.v.i"
+                      " : (sp_raise_poly_nomethod(\"to_sym\", _t%d), (sp_sym)0)); })",
+                   t, t, t, t, t, t);
+        return 1;
+      }
+    }
     /* Numeric queries / rounding: dispatch on the runtime tag (a non-numeric
        tag raises CRuby's NoMethodError). A user method or attr reader with
        the same name wins -- the poly method dispatch handles it instead. */
