@@ -2595,13 +2595,20 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
             return 1;
           }
         }
-        /* different hash types can never be equal */
-        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), (");
-        emit_expr(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
+        /* Different hash VARIANTS compare by value, not by storage kind:
+           Ruby has one Hash, and a StrPolyHash built at runtime (JSON.parse)
+           equals the same pairs written as a StrIntHash literal. Box both
+           and let sp_poly_eq's cross-variant arm walk the pairs. */
+        buf_puts(b, eq ? "sp_poly_eq(" : "(!sp_poly_eq(");
+        emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+        buf_puts(b, eq ? ")" : "))");
         return 1;
       }
-      if (ty_is_hash(rt) || ty_is_hash(a0)) {
-        /* hash vs non-hash */
+      if ((ty_is_hash(rt) || ty_is_hash(a0)) && rt != TY_POLY && a0 != TY_POLY) {
+        /* hash vs a concrete non-hash: never equal. A poly operand instead
+           falls through to the dynamic sp_poly_eq arm below (it may hold a
+           hash at runtime -- the JSON.parse result compared against a hash
+           literal used to constant-fold here to false). */
         buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), (");
         emit_expr(c, argv[0], b); buf_printf(b, "), %d)", eq ? 0 : 1);
         return 1;

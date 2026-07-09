@@ -1924,6 +1924,10 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
         case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
         case SP_BUILTIN_PTR_ARRAY: case SP_BUILTIN_POLY_ARRAY: return SPL("Array");
+        case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:
+        case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_SYM_INT_HASH:
+        case SP_BUILTIN_SYM_STR_HASH: case SP_BUILTIN_STR_POLY_HASH:
+        case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH: return SPL("Hash");
         case SP_BUILTIN_RANGE: return SPL("Range");
         case SP_BUILTIN_TIME: return SPL("Time");
         case SP_BUILTIN_COMPLEX: return SPL("Complex");
@@ -2028,7 +2032,18 @@ static inline int sp_poly_is_array_kind(int cls_id) {
          cls_id == SP_BUILTIN_FLT_ARRAY || cls_id == SP_BUILTIN_SYM_ARRAY ||
          cls_id == SP_BUILTIN_POLY_ARRAY;
 }
-static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; { mrb_int __n = sp_poly_length(a); if (__n != sp_poly_length(b)) return FALSE; for (mrb_int __i = 0; __i < __n; __i++) if (!sp_poly_eq(sp_poly_arr_get(a, __i), sp_poly_arr_get(b, __i))) return FALSE; return TRUE; } } if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); /* boxed hashes of the same variant compare by value like every other
+static inline int sp_poly_is_hash_kind(int cls_id) {
+  return cls_id == SP_BUILTIN_STR_INT_HASH || cls_id == SP_BUILTIN_STR_STR_HASH ||
+         cls_id == SP_BUILTIN_INT_STR_HASH || cls_id == SP_BUILTIN_STR_POLY_HASH ||
+         cls_id == SP_BUILTIN_SYM_POLY_HASH || cls_id == SP_BUILTIN_POLY_POLY_HASH;
+}
+/* Cross-variant hash equality (defined after every hash type below): hashes
+   compare by VALUE across storage variants, like arrays -- Ruby has one Hash
+   and the variants are a storage optimization that must not leak into ==
+   (a JSON.parse StrPolyHash equals the same pairs written as a literal
+   StrIntHash). */
+static mrb_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b);
+static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; { mrb_int __n = sp_poly_length(a); if (__n != sp_poly_length(b)) return FALSE; for (mrb_int __i = 0; __i < __n; __i++) if (!sp_poly_eq(sp_poly_arr_get(a, __i), sp_poly_arr_get(b, __i))) return FALSE; return TRUE; } } if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id) && a.cls_id != b.cls_id) return sp_poly_hash_eq_cross(a, b); if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); /* boxed hashes of the same variant compare by value like every other
      container -- the arm was simply missing, so [h] == [h-literal] was
      pointer identity and always false. */ case SP_BUILTIN_STR_INT_HASH: return sp_StrIntHash_eq((sp_StrIntHash*)a.v.p,(sp_StrIntHash*)b.v.p); case SP_BUILTIN_STR_STR_HASH: return sp_StrStrHash_eq((sp_StrStrHash*)a.v.p,(sp_StrStrHash*)b.v.p); case SP_BUILTIN_INT_STR_HASH: return sp_IntStrHash_eq((sp_IntStrHash*)a.v.p,(sp_IntStrHash*)b.v.p); case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_eq((sp_StrPolyHash*)a.v.p,(sp_StrPolyHash*)b.v.p); case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_eq((sp_SymPolyHash*)a.v.p,(sp_SymPolyHash*)b.v.p); case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_eq((sp_PolyPolyHash*)a.v.p,(sp_PolyPolyHash*)b.v.p); default: return FALSE; } case SP_TAG_CLASS: { const char *an = sp_class_val_name(a), *bn = sp_class_val_name(b); return (an && bn) ? strcmp(an, bn) == 0 : an == bn; } default: return FALSE; } }
 /* sp_sym_name_fn is now an extern hook (sp_gc.h / sp_gc.c) so cold lib readers
@@ -4111,6 +4126,49 @@ static const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h){return h?sp_inspect
 static sp_PolyPolyHash*sp_StrIntHash_invert_poly(sp_StrIntHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_int(sp_StrIntHash_get(h,h->order[i])),sp_box_str(h->order[i]));return r;}
 static sp_PolyPolyHash*sp_IntStrHash_invert(sp_IntStrHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(!h)return r;for(mrb_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,sp_box_str(sp_IntStrHash_get(h,h->order[i])),sp_box_int(h->order[i]));return r;}
 static mrb_bool sp_PolyPolyHash_eq(sp_PolyPolyHash*a,sp_PolyPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(mrb_int i=0;i<a->len;i++){sp_RbVal k=a->keys[a->order[i]];if(!sp_PolyPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_PolyPolyHash_get(a,k),sp_PolyPolyHash_get(b,k)))return FALSE;}return TRUE;}
+/* --- cross-variant hash equality ------------------------------------------
+   Boxed key/value of the i-th insertion-ordered pair, per variant. */
+static void sp_poly_hash_pair_i(sp_RbVal h, mrb_int i, sp_RbVal *k, sp_RbVal *v) {
+  switch (h.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH: { sp_StrIntHash *x=(sp_StrIntHash*)h.v.p; *k=sp_box_str(x->order[i]); *v=sp_box_int(sp_StrIntHash_get(x,x->order[i])); return; }
+    case SP_BUILTIN_STR_STR_HASH: { sp_StrStrHash *x=(sp_StrStrHash*)h.v.p; *k=sp_box_str(x->order[i]); *v=sp_box_str(sp_StrStrHash_get(x,x->order[i])); return; }
+    case SP_BUILTIN_INT_STR_HASH: { sp_IntStrHash *x=(sp_IntStrHash*)h.v.p; *k=sp_box_int(x->order[i]); *v=sp_box_str(sp_IntStrHash_get(x,x->order[i])); return; }
+    case SP_BUILTIN_STR_POLY_HASH: { sp_StrPolyHash *x=(sp_StrPolyHash*)h.v.p; *k=sp_box_str(x->order[i]); *v=sp_StrPolyHash_get(x,x->order[i]); return; }
+    case SP_BUILTIN_SYM_POLY_HASH: { sp_SymPolyHash *x=(sp_SymPolyHash*)h.v.p; *k=sp_box_sym(x->order[i]); *v=sp_SymPolyHash_get(x,x->order[i]); return; }
+    case SP_BUILTIN_POLY_POLY_HASH: { sp_PolyPolyHash *x=(sp_PolyPolyHash*)h.v.p; *k=x->keys[x->order[i]]; *v=sp_PolyPolyHash_get(x,*k); return; }
+    default: *k = sp_box_nil(); *v = sp_box_nil(); return;
+  }
+}
+/* Probe a boxed key in a hash of any variant; *found distinguishes a missing
+   key from a nil value (Hash#== requires presence). A key whose boxed kind
+   cannot exist in the variant (an int key in a string-keyed hash) is absent. */
+static sp_RbVal sp_poly_hash_probe(sp_RbVal h, sp_RbVal k, mrb_bool *found) {
+  *found = FALSE;
+  switch (h.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH: { sp_StrIntHash *x=(sp_StrIntHash*)h.v.p; if (k.tag!=SP_TAG_STR||!k.v.s) return sp_box_nil(); if (!sp_StrIntHash_has_key(x,k.v.s)) return sp_box_nil(); *found=TRUE; return sp_box_int(sp_StrIntHash_get(x,k.v.s)); }
+    case SP_BUILTIN_STR_STR_HASH: { sp_StrStrHash *x=(sp_StrStrHash*)h.v.p; if (k.tag!=SP_TAG_STR||!k.v.s) return sp_box_nil(); if (!sp_StrStrHash_has_key(x,k.v.s)) return sp_box_nil(); *found=TRUE; return sp_box_str(sp_StrStrHash_get(x,k.v.s)); }
+    case SP_BUILTIN_INT_STR_HASH: { sp_IntStrHash *x=(sp_IntStrHash*)h.v.p; if (k.tag!=SP_TAG_INT) return sp_box_nil(); if (!sp_IntStrHash_has_key(x,k.v.i)) return sp_box_nil(); *found=TRUE; return sp_box_str(sp_IntStrHash_get(x,k.v.i)); }
+    case SP_BUILTIN_STR_POLY_HASH: { sp_StrPolyHash *x=(sp_StrPolyHash*)h.v.p; if (k.tag!=SP_TAG_STR||!k.v.s) return sp_box_nil(); if (!sp_StrPolyHash_has_key(x,k.v.s)) return sp_box_nil(); *found=TRUE; return sp_StrPolyHash_get(x,k.v.s); }
+    case SP_BUILTIN_SYM_POLY_HASH: { sp_SymPolyHash *x=(sp_SymPolyHash*)h.v.p; if (k.tag!=SP_TAG_SYM) return sp_box_nil(); if (!sp_SymPolyHash_has_key(x,(sp_sym)k.v.i)) return sp_box_nil(); *found=TRUE; return sp_SymPolyHash_get(x,(sp_sym)k.v.i); }
+    case SP_BUILTIN_POLY_POLY_HASH: { sp_PolyPolyHash *x=(sp_PolyPolyHash*)h.v.p; if (!sp_PolyPolyHash_has_key(x,k)) return sp_box_nil(); *found=TRUE; return sp_PolyPolyHash_get(x,k); }
+    default: return sp_box_nil();
+  }
+}
+static mrb_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b) {
+  if (!a.v.p || !b.v.p) return a.v.p == b.v.p;
+  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);
+  if (sp_poly_length(a) != sp_poly_length(b)) return FALSE;
+  mrb_int n = sp_poly_length(a);
+  for (mrb_int i = 0; i < n; i++) {
+    sp_RbVal k, va;
+    sp_poly_hash_pair_i(a, i, &k, &va);
+    mrb_bool found = FALSE;
+    sp_RbVal vb = sp_poly_hash_probe(b, k, &found);
+    if (!found) return FALSE;
+    if (!sp_poly_eq(va, vb)) return FALSE;
+  }
+  return TRUE;
+}
 
 /* JSON serialization now lives in lib/sp_json.c. It owns no container types and
    reaches them only through these generic readers, registered into the sp_json_*
