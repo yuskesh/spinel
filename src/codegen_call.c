@@ -5435,8 +5435,34 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          class is that subclass, so `new` resolves to the subclass constructor. */
       int new_cls = (g_emitting_class_id >= 0) ? g_emitting_class_id : encl->class_id;
       if (sp_streq(name, "new")) {
-        buf_printf(b, "sp_%s_new(", c->classes[new_cls].c_name);
+        ClassInfo *ncls = &c->classes[new_cls];
         int initm = comp_method_in_chain(c, new_cls, "initialize", NULL);
+        /* A Data/Struct class has no user `initialize`; its generated constructor
+           takes one arg per member. Fill member-wise -- positionally, or by
+           keyword when a trailing kwarg hash names each member -- exactly as the
+           receiver `Klass.new(...)` path does. Without this, a bare `new(...)`
+           inside a `def self.default`/`self.initial` factory emitted an empty
+           `sp_Klass_new()`, dropping every argument. */
+        if (ncls->is_struct && initm < 0) {
+          int sargc; const int *sargv = call_args(nt, id, &sargc);
+          int kwh = (sargc == 1 && nt_type(nt, sargv[0]) &&
+                     sp_streq(nt_type(nt, sargv[0]), "KeywordHashNode")) ? sargv[0] : -1;
+          buf_printf(b, "sp_%s_new(", ncls->c_name);
+          for (int a = 0; a < ncls->nivars; a++) {
+            if (a) buf_puts(b, ", ");
+            int vnode = -1;
+            if (kwh >= 0) vnode = struct_kwarg_value(c, kwh, ncls->ivars[a] + 1);
+            else if (a < sargc) vnode = sargv[a];
+            if (vnode >= 0) {
+              if (ncls->ivar_types[a] == TY_POLY && comp_ntype(c, vnode) != TY_POLY) emit_boxed(c, vnode, b);
+              else emit_expr(c, vnode, b);
+            }
+            else buf_puts(b, default_value(ncls->ivar_types[a]));
+          }
+          buf_puts(b, ")");
+          return;
+        }
+        buf_printf(b, "sp_%s_new(", ncls->c_name);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");
         return;
