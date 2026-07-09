@@ -1004,15 +1004,18 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (g_current_scope_is_lowered) {
       int yargs = nt_ref(nt, id, "arguments");
       int yargc = 0; const int *yargv = yargs >= 0 ? nt_arr(nt, yargs, "arguments", &yargc) : NULL;
-      /* Lowered yield method returns mrb_int (raw carrier for any type).
-         sp_proc_call already returns mrb_int; emit it directly with no cast. */
-      buf_puts(b, "sp_proc_call(");
+      /* The __yblk__ proc publishes its result through the universal boxed
+         return channel (_sp_proc_poly_ret); call it for effect, then take the
+         raw carrier bits from the slot (v.i aliases the pointer/int value),
+         matching this lowered method's mrb_int raw-carrier ABI -- the call site
+         casts back to the yield's inferred type, exactly as before. */
+      buf_puts(b, "((void)sp_proc_call(");
       emit_yblk_ref(b);
       buf_puts(b, ", ");
       /* force_poly=1: a rest/post-taking block recovers arguments from the boxed
-         side-channel, and this callee's signature is unknown here. The lean
-         unboxed ABI only ever served this self-recursive-yield path. */
+         side-channel, and this callee's signature is unknown here. */
       emit_proc_call_args(c, yargc, yargv, b, 1);
+      buf_puts(b, ", _sp_proc_poly_ret.v.i)");
       return;
     }
     if (g_block_id < 0) {

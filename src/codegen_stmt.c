@@ -3306,6 +3306,30 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
 
+  /* Inside a first-class proc body whose return rides the boxed slot (the
+     universal proc return ABI): an explicit `return <v>` writes the boxed value
+     to _sp_proc_poly_ret and returns 0 (the raw mrb_int carrier is unused),
+     mirroring the implicit tail. Compute the value while any live begin/rescue
+     frames are still open (a raising value must unwind into them), then pop the
+     frames and return 0. Non-local proc `return` (g_proc_return_home) and the
+     in-ensure deferral are handled above and return early before here. */
+  if (g_in_proc_body && g_result_var && g_result_poly) {
+    emit_indent(b, indent);
+    buf_printf(b, "{ %s = ", g_result_var);
+    if (n == 0) buf_puts(b, "sp_box_nil()");
+    else if (n == 1) emit_boxed(c, a[0], b);
+    else {
+      int ta = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+      for (int k = 0; k < n; k++) { buf_printf(b, " sp_PolyArray_push(_t%d, ", ta); emit_boxed(c, a[k], b); buf_puts(b, ");"); }
+      buf_printf(b, " sp_box_poly_array(_t%d); })", ta);
+    }
+    buf_puts(b, "; ");
+    emit_frame_unwind(b, 0, NULL);
+    buf_puts(b, "return 0; }\n");
+    return;
+  }
+
   emit_indent(b, indent);
   /* leaving through live begin/rescue frames: pop them, or their jmp_bufs
      dangle into this soon-dead C frame and the next raise longjmps into
@@ -3699,13 +3723,13 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
         char g[24]; snprintf(g, sizeof g, "_retf%d", eid);
         if (emit_frame_unwind(b, 0, g)) { buf_puts(b, "\n"); emit_indent(b, indent); }
       }
-      /* inside a poly-slot proc body (g_result_var, e.g. a break-capable
-         lambda) the deferred value returns through the slot ABI, not a raw
-         C return of an sp_RbVal from an mrb_int function */
-      if (has_retval && g_proc_body_kind != 0 && g_result_var && g_ret_type == TY_POLY)
+      /* inside a first-class proc body routing returns through the boxed slot
+         (the universal proc return ABI) the deferred value returns through the
+         slot, not a raw C return of an sp_RbVal from an mrb_int function */
+      if (has_retval && g_in_proc_body && g_result_var && g_result_poly)
         buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, g_result_var, eid);
       else if (has_retval) buf_printf(b, "if (_retf%d) return _retv%d;\n", eid, eid);
-      else if (g_proc_body_kind != 0 && g_result_var && g_ret_type == TY_POLY)
+      else if (g_in_proc_body && g_result_var && g_result_poly)
         buf_printf(b, "if (_retf%d) { %s = sp_box_nil(); return 0; }\n", eid, g_result_var);
       else if (g_ret_type == TY_POLY) buf_printf(b, "if (_retf%d) return sp_box_nil();\n", eid);
       else if (g_ret_type == TY_UNKNOWN) buf_printf(b, "if (_retf%d) return 0;\n", eid); /* main() */

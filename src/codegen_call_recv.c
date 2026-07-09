@@ -1943,19 +1943,13 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         buf_printf(&g_procs, "static mrb_int _hashproc_%d(void *cap, mrb_int argc, mrb_int *args) {\n", pn);
         buf_printf(&g_procs, "  if (argc < 1) return 0;\n");
         buf_printf(&g_procs, "  sp_%sHash *_h = (sp_%sHash *)cap;\n", hn, hn);
-        if (vt == TY_POLY) {
-          if (!g_needs_proc_poly_retslot) {
-            g_needs_proc_poly_retslot = 1;
-            buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_ret;\n");
-          }
-          buf_printf(&g_procs, "  _sp_proc_poly_ret = sp_%sHash_get(_h, %s);\n  return 0;\n}\n", hn, keyexpr);
-        }
-        else if (vt == TY_STRING) {
-          buf_printf(&g_procs, "  return (mrb_int)(uintptr_t)sp_%sHash_get(_h, %s);\n}\n", hn, keyexpr);
-        }
-        else {
-          buf_printf(&g_procs, "  return (mrb_int)sp_%sHash_get(_h, %s);\n}\n", hn, keyexpr);
-        }
+        /* Universal return ABI: publish the boxed value into _sp_proc_poly_ret
+           for every value type; the .call site reads the slot back. */
+        buf_puts(&g_procs, "  _sp_proc_poly_ret = ");
+        emit_box_open(c, vt, &g_procs);
+        buf_printf(&g_procs, "sp_%sHash_get(_h, %s)", hn, keyexpr);
+        emit_box_close(c, vt, &g_procs);
+        buf_puts(&g_procs, ";\n  return 0;\n}\n");
         buf_printf(b, "sp_proc_new_meta((void *)_hashproc_%d, (void *)(", pn);
         emit_expr(c, recv, b);
         buf_puts(b, "), sp_hashproc_cap_scan, 1, FALSE, 1, NULL, NULL)");

@@ -196,6 +196,24 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     }
   }
   TyKind t = comp_ntype(c, node);
+  /* Lowered self-recursive yield in a boxed value position (a `{ yield }` block
+     whose value rides the universal proc slot): the enclosing method's block is
+     the runtime __yblk__ proc, which publishes its boxed result into
+     _sp_proc_poly_ret. Call it for effect and take the boxed slot -- do NOT
+     fall through to the no-block raise below (a lowered scope has g_block_id
+     == -1 but is not a missing-block case). Checked before the raise because
+     emit_boxed, unlike the expr-position YieldNode emitter, is now reached for
+     a lowered yield tail once every proc returns through the boxed channel. */
+  if (nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "YieldNode") && g_current_scope_is_lowered) {
+    int yargs = nt_ref(c->nt, node, "arguments");
+    int yargc = 0; const int *yargv = yargs >= 0 ? nt_arr(c->nt, yargs, "arguments", &yargc) : NULL;
+    buf_puts(b, "((void)sp_proc_call(");
+    emit_yblk_ref(b);
+    buf_puts(b, ", ");
+    emit_proc_call_args(c, yargc, yargv, b, 1);
+    buf_puts(b, ", _sp_proc_poly_ret)");
+    return;
+  }
   /* An inlined yield's value type is per-CALL-SITE: the method AST has ONE
      YieldNode but each call site supplies its own block, so the node's cached
      type is whichever site inference visited (a string-block site poisoned an
@@ -1765,6 +1783,19 @@ else if (orecv >= 0 && onm) {
       if (mi >= 0 && ((TyKind)c->scopes[mi].blk_ret == TY_POLY || escapes)) ret = TY_POLY;
     }
   }
+  /* Universal boxed return (CRuby's uniform proc VALUE ABI): every
+     value-carrying proc publishes its result through the _sp_proc_poly_ret
+     slot, boxed, regardless of the value's static type. Compiling the body as
+     a poly return routes every exit -- implicit tail, explicit return, break,
+     next, and ensure-deferred return -- through the one slot-writing path, so
+     the call site can read the slot for ANY proc. A polymorphic call site (a
+     stored &blk, a forwarded proc) can no longer read an unwritten slot behind
+     a raw-only body. The call site re-derives the proc's true return type and
+     unboxes, so no caller observes a poly value; the raw mrb_int carrier is
+     unused (`return 0`). optcarrot emits no first-class proc calls, so this is
+     perf-neutral there; a hot .call boxes/unboxes a tagged scalar (no alloc),
+     exactly as CRuby does. */
+  if (ret != TY_VOID && ret != TY_NIL) ret = TY_POLY;
   /* The proc fn returns mrb_int (the ABI); heap-pointer values (strings,
      arrays, hashes, objects) are laundered through (mrb_int)(uintptr_t).
      TY_POLY and float values are stored in _sp_proc_poly_ret (file-static
@@ -2043,10 +2074,6 @@ else if (orecv >= 0 && onm) {
        on a shared slot and corrupt each other's return values. The slot is
        safe per-worker because no safepoint poll (the only migration /
        preemption point) lies between the store and the call-site read. */
-    if (!g_needs_proc_poly_retslot) {
-      g_needs_proc_poly_retslot = 1;
-      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_ret;\n");
-    }
     g_result_var = "_sp_proc_poly_ret"; g_result_poly = 1;
     if (tail_ret_arg >= 0) {
       /* explicit `return <expr>` tail: emit the leading statements, then box the
@@ -2071,9 +2098,10 @@ else if (orecv >= 0 && onm) {
   }
   else if (ret_no_value) {
     /* no usable value (TY_VOID or TY_NIL): run the body as plain statements,
-       return nil (0) */
+       publish nil to the return slot (so a .call reading the slot sees nil,
+       not a stale value), return nil (0) */
     emit_stmts(c, body, pb, 1);
-    buf_puts(pb, "  return 0;\n");
+    buf_puts(pb, "  _sp_proc_poly_ret = sp_box_nil();\n  return 0;\n");
   }
   else {
     /* Direct-slot return (mrb_int carrier). A TY_UNKNOWN tail can still emit
@@ -4629,7 +4657,6 @@ char *codegen_program(const NodeTable *nt) {
   free(g_procs.p); free(g_proc_protos.p);
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
-  g_needs_proc_poly_retslot = 0;
   g_needs_proc_poly_argslot = 0;
 
   comp_free(c);

@@ -429,6 +429,23 @@ int diagnose_eval_call(Compiler *c, int id) {
   return 1;
 }
 
+/* Unbox the boxed proc result (_sp_proc_poly_ret, an sp_RbVal) to the call's
+   statically-inferred return type. Inverse of emit_box_open: every first-class
+   proc now publishes its result boxed in the slot (the universal return ABI),
+   so a `.call` reads it back through here. sp_poly_to_i/f coerce defensively
+   (matching the historical float arm); pointer kinds read the union member the
+   matching sp_box_* wrote (strings live in v.s, other heap values in v.p). */
+void emit_proc_ret_unbox(Compiler *c, TyKind rty, Buf *b) {
+  if (rty == TY_POLY || rty == TY_UNKNOWN) { buf_puts(b, "_sp_proc_poly_ret"); return; }
+  if (rty == TY_FLOAT)  { buf_puts(b, "sp_poly_to_f(_sp_proc_poly_ret)"); return; }
+  if (rty == TY_SYMBOL) { buf_puts(b, "(sp_sym)sp_poly_to_i(_sp_proc_poly_ret)"); return; }
+  if (proc_slot_is_direct(rty)) { buf_puts(b, "sp_poly_to_i(_sp_proc_poly_ret)"); return; }  /* int/bool/nil */
+  if (rty == TY_STRING) { buf_puts(b, "_sp_proc_poly_ret.v.s"); return; }
+  if (rty == TY_RANGE)  { buf_puts(b, "(*(sp_Range *)_sp_proc_poly_ret.v.p)"); return; }
+  if (rty == TY_TIME)   { buf_puts(b, "(*(sp_Time *)_sp_proc_poly_ret.v.p)"); return; }
+  buf_puts(b, "("); emit_ctype(c, rty, b); buf_puts(b, ")_sp_proc_poly_ret.v.p");  /* array/hash/object */
+}
+
 /* Emit the `<argc>, (mrb_int[16]){...}` argument tail of an sp_proc_call.
    A TY_POLY argument does not fit the mrb_int slot, so it is published to the
    _sp_proc_poly_args side-channel and a heap-pointer argument is laundered
@@ -2020,8 +2037,29 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
             !c->scopes[initm].yields) {
           if (c->scopes[initm].nparams > 0) buf_puts(b, ", ");
           int blk = nt_ref(nt, id, "block");
-          if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockNode"))
+          const char *bty = blk >= 0 ? nt_type(nt, blk) : NULL;
+          int bexpr = (bty && sp_streq(bty, "BlockArgumentNode")) ? nt_ref(nt, blk, "expression") : -1;
+          if (bty && sp_streq(bty, "BlockNode"))
             emit_proc_literal(c, blk, b);
+          /* A forwarded `&proc` (BlockArgumentNode) threads the proc value
+             itself into the stored `&blk`. This is faithful now that every proc
+             publishes its result on the boxed return channel, so a later
+             `@blk.call` reads it back correctly regardless of the proc's body
+             type (the reason this once had to be a loud reject). */
+          else if (bexpr >= 0 && comp_ntype(c, bexpr) == TY_PROC)
+            emit_expr(c, bexpr, b);
+          /* A poly-carried proc (a proc pulled from a poly slot -- a container
+             element, an untyped ivar/return) arrives boxed; unbox it to the
+             sp_Proc*, mirroring the poly `.call` site's `(sp_Proc *)v.v.p`. */
+          else if (bexpr >= 0 && comp_ntype(c, bexpr) == TY_POLY) {
+            buf_puts(b, "(sp_Proc *)("); emit_expr(c, bexpr, b); buf_puts(b, ").v.p");
+          }
+          /* A forwarded block of an unmodeled static type: refuse loudly rather
+             than silently thread a NULL block (a later @blk.call would misfire
+             -- the silent-wrong outcome). block omitted (bexpr < 0) is the real
+             NULL case below. */
+          else if (bexpr >= 0)
+            unsupported(c, id, "forwarding a block of this type into a stored-block initialize");
           else buf_puts(b, "NULL");
         }
         buf_puts(b, ")");
@@ -3962,14 +4000,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
         else if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[k], b);
       }
-      buf_printf(b, ")%s : sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", mabi_poly ? ")" : "", t, argc);
+      /* the Proc publishes its result in _sp_proc_poly_ret (universal return
+         ABI); evaluate for effect and unbox to the mrb_int the Method branch
+         yields, keeping the ternary's two arms a single type. */
+      buf_printf(b, ")%s : ((void)sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", mabi_poly ? ")" : "", t, argc);
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
         if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[k], b);
       }
       if (argc == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
-      buf_puts(b, "}))");
+      buf_puts(b, "}), sp_poly_to_i(_sp_proc_poly_ret)))");
       return;
     }
   }
@@ -4179,30 +4220,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
       (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
-    int unbox_ptr = proc_slot_is_ptr(rty);
-    int unbox_poly = (rty == TY_POLY);
-    int unbox_float = (rty == TY_FLOAT);     /* boxed in the poly slot, read back as float */
-    int unbox_range = (rty == TY_RANGE);     /* boxed heap copy, dereferenced back */
-    int unbox_time  = (rty == TY_TIME);
-    /* Ensure _sp_proc_poly_ret is declared even when triggered from a call site
-       (e.g. ivar-stored proc whose proc_ret is TY_UNKNOWN → TY_POLY at analysis). */
-    if ((unbox_poly || unbox_float || unbox_range || unbox_time) && !g_needs_proc_poly_retslot) {
-      g_needs_proc_poly_retslot = 1;
-      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_ret;\n");
-    }
-    if (unbox_ptr) { buf_puts(b, "("); emit_ctype(c, rty, b); buf_puts(b, ")(uintptr_t)("); }
-    /* poly/float return: proc stores the boxed result in _sp_proc_poly_ret;
-       read it back after the call (float unboxes via sp_poly_to_f). */
-    if (unbox_poly || unbox_float || unbox_range || unbox_time) buf_puts(b, "((void)");
-    buf_puts(b, "sp_proc_call(");
+    /* Universal boxed return: the proc publishes its result in _sp_proc_poly_ret
+       (see emit_proc_literal); evaluate the call for effect, then unbox the slot
+       to the call's inferred type. */
+    buf_puts(b, "((void)sp_proc_call(");
     emit_expr(c, recv, b);
     buf_puts(b, ", ");
-    emit_proc_call_args(c, argc, argv, b, 1);
-    if (unbox_ptr) buf_puts(b, ")");
-    if (unbox_poly) buf_puts(b, ", _sp_proc_poly_ret)");
-    if (unbox_float) buf_puts(b, ", sp_poly_to_f(_sp_proc_poly_ret))");
-    if (unbox_range) buf_puts(b, ", (*(sp_Range *)_sp_proc_poly_ret.v.p))");
-    if (unbox_time)  buf_puts(b, ", (*(sp_Time *)_sp_proc_poly_ret.v.p))");
+    emit_proc_call_args(c, argc, argv, b, 1);  /* emits args + the closing `)` */
+    buf_puts(b, ", ");
+    emit_proc_ret_unbox(c, rty, b);
+    buf_puts(b, ")");
     return;
   }
 

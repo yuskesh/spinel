@@ -198,7 +198,6 @@ void emit_cur_exc_restore(Buf *b, int pop_base);
 extern Buf g_procs;
 extern Buf g_proc_protos;
 extern int g_proc_counter;
-extern int g_needs_proc_poly_retslot; /* any proc returns TY_POLY via _sp_proc_poly_ret */
 extern int g_needs_proc_poly_argslot; /* any proc takes a TY_POLY arg via _sp_proc_poly_args */
 /* Fiber body functions accumulate here (similar to g_procs but void(*)(sp_Fiber*)). */
 extern int g_fiber_counter;
@@ -365,6 +364,8 @@ int proc_slot_is_ptr(TyKind t);
 int cell_is_typed_ptr(Compiler *c, LocalVar *lv);
 void emit_cell_elem_type(Compiler *c, LocalVar *lv, Buf *b);
 void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int force_poly);
+/* Unbox the boxed proc result (_sp_proc_poly_ret) to a call's inferred type. */
+void emit_proc_ret_unbox(Compiler *c, TyKind rty, Buf *b);
 void emit_case_expr(Compiler *c, int id, Buf *b);
 
 /* Strip ParenthesesNode wrappers to reach the inner expression. */

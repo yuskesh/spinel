@@ -5575,6 +5575,14 @@ static sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
   if (e->items) for (mrb_int i = 0; i < e->items->len; i++) sp_PolyArray_push(r, e->items->data[i]);
   return r;
 }
+/* Universal proc return channel: every first-class proc publishes its result
+   here, boxed, and the .call site unboxes it back to the call's inferred type
+   (CRuby's uniform boxed-VALUE proc ABI). A file-static per TU, like the
+   sp_exc_stack machinery -- the compose/curry trampolines below and every
+   generated proc body live in the same TU and share this slot. Per-worker
+   (SP_TLS): a concurrent Proc#call would otherwise race, and no safepoint poll
+   lies between a body's store and the call site's read. */
+static SP_TLS sp_RbVal _sp_proc_poly_ret;
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
@@ -5595,9 +5603,14 @@ static mrb_int sp_proc_compose_fn(void *cap, mrb_int argc, mrb_int *args) {
   sp_ProcCompose *c = (sp_ProcCompose *)cap;
   mrb_int inner_args[16] = {0};
   if (args && argc > 0) inner_args[0] = args[0];
-  mrb_int mid = sp_proc_call(c->inner, 1, inner_args);
+  /* the inner proc publishes its (boxed) result through the return slot; read
+     it back to thread through the outer proc's mrb_int arg channel. */
+  sp_proc_call(c->inner, 1, inner_args);
+  mrb_int mid = sp_poly_to_i(_sp_proc_poly_ret);
   mrb_int outer_args[16] = {0};
   outer_args[0] = mid;
+  /* the outer proc publishes the composed result into the slot; our own raw
+     return is unread (the call site reads the slot). */
   return sp_proc_call(c->outer, 1, outer_args);
 }
 static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
@@ -5627,7 +5640,9 @@ static sp_Curry *sp_curry_apply(sp_Curry *c, mrb_int arg) {
 }
 static mrb_int sp_curry_to_int(sp_Curry *c) {
   if (!c || !c->target) return 0;
-  return sp_proc_call(c->target, c->nargs, c->args);
+  /* the target publishes its (boxed) result through the return slot */
+  sp_proc_call(c->target, c->nargs, c->args);
+  return sp_poly_to_i(_sp_proc_poly_ret);
 }
 
 /* Hash#to_proc cap-scan: the proc's `cap` field IS the source hash
