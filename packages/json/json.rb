@@ -16,4 +16,5 @@ module JSON
   native_func :generate, [:any], :string, "sp_json_val"
   native_func :dump,     [:any], :string, "sp_json_val"
   native_func :parse,    [:string], :any,  "sp_json_parse"
+  native_func :pretty_generate, [:any], :string, "sp_json_pretty"
 end

@@ -112,6 +112,67 @@ const char *sp_json_val(sp_RbVal v) {
   }
 }
 
+/* ---------- JSON.pretty_generate ----------
+   CRuby's pretty format: two-space indent per level, ": " key separator,
+   containers multiline with the closer at the parent's indent; empty
+   containers stay "{}" / "[]". Scalars delegate to the flat serializer. */
+
+static void sp_json_indent(jbuf *b, int depth) {
+  for (int i = 0; i < depth; i++) jb_add(b, "  ", 2);
+}
+
+static void sp_json_pretty_val(jbuf *b, sp_RbVal v, int depth) {
+  if (v.tag == SP_TAG_OBJ) {
+    int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
+    if (kind == 1) {  /* array */
+      mrb_int n = sp_json_len_fn(v);
+      if (n == 0) { jb_add(b, "[]", 2); return; }
+      jb_c(b, '[');
+      for (mrb_int i = 0; i < n; i++) {
+        if (i) jb_c(b, ',');
+        jb_c(b, '\n');
+        sp_json_indent(b, depth + 1);
+        sp_json_pretty_val(b, sp_json_aref_fn(v, i), depth + 1);
+      }
+      jb_c(b, '\n');
+      sp_json_indent(b, depth);
+      jb_c(b, ']');
+      return;
+    }
+    if (kind == 2) {  /* hash */
+      mrb_int n = sp_json_len_fn(v);
+      if (n == 0) { jb_add(b, "{}", 2); return; }
+      jb_c(b, '{');
+      for (mrb_int i = 0; i < n; i++) {
+        if (i) jb_c(b, ',');
+        jb_c(b, '\n');
+        sp_json_indent(b, depth + 1);
+        sp_RbVal k, val;
+        sp_json_hpair_fn(v, i, &k, &val);
+        const char *ks = sp_json_key(k);
+        jb_add(b, ks, strlen(ks));
+        jb_add(b, ": ", 2);
+        sp_json_pretty_val(b, val, depth + 1);
+      }
+      jb_c(b, '\n');
+      sp_json_indent(b, depth);
+      jb_c(b, '}');
+      return;
+    }
+    if (sp_obj_to_hash_fn) { sp_json_pretty_val(b, sp_obj_to_hash_fn(v), depth); return; }
+    jb_add(b, "null", 4);
+    return;
+  }
+  const char *s = sp_json_val(v);
+  jb_add(b, s, strlen(s));
+}
+
+const char *sp_json_pretty(sp_RbVal v) {
+  jbuf b; memset(&b, 0, sizeof b);
+  sp_json_pretty_val(&b, v, 0);
+  return jb_finish(&b);
+}
+
 /* ---------- JSON.parse ----------
    A recursive-descent parser producing boxed poly values: scalars and arrays
    are built directly from the package ABI (sp_box_*, sp_PolyArray); objects use
