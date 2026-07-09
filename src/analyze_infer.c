@@ -2024,8 +2024,11 @@ else {
     }
   }
 
-  /* each_slice(n).map/collect { |...| } chain: return array of block result type */
-  if (recv >= 0 && rt == TY_UNKNOWN && (ty_iter_shape(name) == TY_ITER_MAP) &&
+  /* each_slice(n).map/collect { |...| } chain: return array of block result type.
+     The blockless each_slice receiver types as TY_ENUMERATOR (a first-class
+     enumerator value); the codegen fold still unrolls this chain syntactically,
+     so accept that receiver type here too and keep the array result. */
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) && (ty_iter_shape(name) == TY_ITER_MAP) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "each_slice") &&
       nt_ref(nt, recv, "block") < 0) {
@@ -2037,8 +2040,10 @@ else {
     }
   }
 
-  /* each_cons(n).map/collect { |...| } chain: return array of block result type */
-  if (recv >= 0 && rt == TY_UNKNOWN && (ty_iter_shape(name) == TY_ITER_MAP) &&
+  /* each_cons(n).map/collect { |...| } chain: return array of block result type.
+     Same as each_slice above -- the blockless each_cons receiver is now
+     TY_ENUMERATOR, but the codegen fold unrolls this chain syntactically. */
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_ENUMERATOR) && (ty_iter_shape(name) == TY_ITER_MAP) &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "each_cons") &&
       nt_ref(nt, recv, "block") < 0) {
@@ -2185,6 +2190,12 @@ else {
     if (block < 0 && argc == 0 &&
         (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
          sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) return TY_ENUMERATOR;
+    /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
+       Enumerator of slices / windows. The direct-block form has block >= 0 and
+       is excluded; a .map/.collect chain consumer is typed by its own arm above
+       (which accepts this TY_ENUMERATOR receiver and keeps the array result). */
+    if (block < 0 && argc == 1 &&
+        (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) return TY_ENUMERATOR;
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP) {
         int body = nt_ref(nt, block, "body");

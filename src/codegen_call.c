@@ -4323,6 +4323,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b); buf_puts(b, "))");
     return;
   }
+  /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
+     Enumerator over the slices (non-overlapping, last may be short) or the
+     sliding windows of length n. */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      (ty_is_array(comp_ntype(c, recv)) ||
+       (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
+      (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) {
+    buf_printf(b, "sp_Enumerator_new_%s(", sp_streq(name, "each_slice") ? "slices" : "cons");
+    emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+    return;
+  }
 
   /* Enumerator instance methods: #next / #peek (raise StopIteration past the
      end), #rewind (reset, returns self), #size. */

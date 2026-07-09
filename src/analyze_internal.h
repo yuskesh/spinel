@@ -202,7 +202,6 @@ int infer_block_params(Compiler *c);
 int desugar_to_proc_block_arg(Compiler *c);
 int desugar_to_hash_splat(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
-int desugar_enum_chain_to_a(Compiler *c);
 int desugar_block_destructure_params(Compiler *c);
 int desugar_implicit_send(Compiler *c);
 int desugar_dynamic_send(Compiler *c);

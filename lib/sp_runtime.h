@@ -5503,6 +5503,45 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
   for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(idx, sp_box_int(i));
   return sp_Enumerator_new_from_items(idx);
 }
+/* Array#each_slice(n) with no block: a materialized Enumerator whose items are
+   the consecutive non-overlapping slices of length n (the last may be short).
+   `slice` is block-scoped, so its GC root pops each iteration; `out` keeps the
+   pushed slices alive. */
+static sp_Enumerator *sp_Enumerator_new_slices(sp_RbVal arr, mrb_int n) {
+  if (n < 1) sp_raise_cls("ArgumentError", "invalid slice size");
+  sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  mrb_int len = items ? items->len : 0;
+  /* `len - i` and the `i + n <= len` guard keep every sum in range, so a large
+     n can't overflow mrb_int (undefined behavior). */
+  for (mrb_int i = 0; i < len; ) {
+    sp_PolyArray *slice = sp_PolyArray_new(); SP_GC_ROOT(slice);
+    mrb_int limit = len - i < n ? len : i + n;
+    for (mrb_int j = i; j < limit; j++) sp_PolyArray_push(slice, items->data[j]);
+    sp_PolyArray_push(out, sp_box_poly_array(slice));
+    if (len - i <= n) break;
+    i += n;
+  }
+  return sp_Enumerator_new_from_items(out);
+}
+/* Array#each_cons(n) with no block: a materialized Enumerator whose items are
+   the sliding windows of length n (none when len < n). */
+static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, mrb_int n) {
+  if (n < 1) sp_raise_cls("ArgumentError", "invalid size");
+  sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  mrb_int len = items ? items->len : 0;
+  /* Guarding on len >= n and iterating to len - n keeps i + n <= len, so a
+     large n can't overflow mrb_int (undefined behavior). */
+  if (len >= n) {
+    for (mrb_int i = 0; i <= len - n; i++) {
+      sp_PolyArray *win = sp_PolyArray_new(); SP_GC_ROOT(win);
+      for (mrb_int j = i; j < i + n; j++) sp_PolyArray_push(win, items->data[j]);
+      sp_PolyArray_push(out, sp_box_poly_array(win));
+    }
+  }
+  return sp_Enumerator_new_from_items(out);
+}
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
    intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
