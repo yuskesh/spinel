@@ -530,24 +530,10 @@ const char *sp_crypto_random_b64url(int nbytes) {
     arc4random_buf(r, nbytes);
 #else
     FILE *f = fopen("/dev/urandom", "rb");
-    if (f) {
-        size_t got = fread(r, 1, nbytes, f);
-        (void)got;  /* short read is rare for urandom; fall through */
-        fclose(f);
-    }
-else {
-        /* Last-ditch: counter-mixed time -- NOT cryptographically
-         * secure. Modern systems never reach this path. The
-         * counter guarantees distinct outputs across calls within
-         * the same second. */
-        static uint64_t sp_crypto_fallback_ctr = 0;
-        sp_crypto_fallback_ctr++;
-        uint64_t mix = (uint64_t)time(NULL) ^ (sp_crypto_fallback_ctr * 0x9e3779b97f4a7c15ULL);
-        for (int k = 0; k < nbytes; k++) {
-            mix ^= mix << 13; mix ^= mix >> 7; mix ^= mix << 17;
-            r[k] = (uint8_t)mix;
-        }
-    }
+    if (!f) return NULL;
+    size_t got = fread(r, 1, nbytes, f);
+    fclose(f);
+    if (got != nbytes) return NULL;
 #endif
     int i, j = 0;
     for (i = 0; i + 3 <= nbytes; i += 3) {
