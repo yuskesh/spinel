@@ -543,6 +543,8 @@ experr=$$tmpdir/experr; \
 acterr=$$tmpdir/acterr; \
 args=""; \
 if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
+stdinf=/dev/null; \
+if [ -f "$<.stdin" ]; then stdinf="$<.stdin"; fi; \
 rm -f "$@.diff"; \
 $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
 $(CC) $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) -Ilib "$$cfile" $(BUNDLED_NATIVE_OBJS) $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o "$$bin" 2>/dev/null; \
@@ -550,14 +552,14 @@ if [ $$? -eq 0 ]; then \
   if [ -f "$<.expected" ]; then \
     LC_ALL=C sed 's/\r$$//' "$<.expected" >"$$exp.n"; \
   else \
-    $(TIMEOUT10) $(REF_RUBY) "$<" $$args >"$$exp" 2>/dev/null; \
+    $(TIMEOUT10) $(REF_RUBY) "$<" $$args <"$$stdinf" >"$$exp" 2>/dev/null; \
     ruby_rc=$$?; \
     if [ $$ruby_rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
-      $(TIMEOUT10) ruby "$<" $$args >"$$exp" 2>/dev/null; \
+      $(TIMEOUT10) ruby "$<" $$args <"$$stdinf" >"$$exp" 2>/dev/null; \
     fi; \
     LC_ALL=C sed 's/\r$$//' "$$exp" >"$$exp.n"; \
   fi; \
-  $(TIMEOUT10) "$$bin" $$args >"$$act" 2>"$$acterr"; \
+  $(TIMEOUT10) "$$bin" $$args <"$$stdinf" >"$$act" 2>"$$acterr"; \
   LC_ALL=C sed 's/\r$$//' "$$act" >"$$act.n"; \
   LC_ALL=C sed 's/\r$$//' "$$acterr" >"$$acterr.n"; \
   if [ -f "$<.err.expected" ]; then \
@@ -633,9 +635,11 @@ benchmark/%.rb.expected: benchmark/%.rb
 define regen-snapshot
 @args=""; \
 if [ -f "$<.args" ]; then args=$$(cat "$<.args"); fi; \
-rc=0; $(TIMEOUT10) $(REF_RUBY) $< $$args $1 || rc=$$?; \
+stdinf=/dev/null; \
+if [ -f "$<.stdin" ]; then stdinf="$<.stdin"; fi; \
+rc=0; $(TIMEOUT10) $(REF_RUBY) $< $$args <"$$stdinf" $1 || rc=$$?; \
 if [ $$rc -ne 0 ] && [ "$(REF_RUBY)" != "ruby" ]; then \
-  rc=0; $(TIMEOUT10) ruby $< $$args $1 || rc=$$?; \
+  rc=0; $(TIMEOUT10) ruby $< $$args <"$$stdinf" $1 || rc=$$?; \
 fi; \
 if [ $$rc -ne 0 ]; then \
   echo "regen-expected: $< failed (rc=$$rc); skipping $@" >&2; rm -f $@.tmp; \

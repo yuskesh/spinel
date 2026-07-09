@@ -3507,6 +3507,10 @@ TyKind infer_uncached(Compiler *c, int id) {
   }
   if (nk == NK_GlobalVariableReadNode) {
     const char *nm = nt_str(nt, id, "name");
+    /* $stdin is the IO handle over the C stdin stream (gets/read/tty?/... via
+       the TY_IO dispatch). $stdout/$stderr keep their dedicated AST-shape
+       emission arm and stay untyped here. */
+    if (nm && sp_streq(nm, "$stdin")) return TY_IO;
     /* predefined punctuation globals: $/ defaults to "\n"; $! / $; / $, read nil */
     if (nm && sp_streq(nm, "$/")) return TY_STRING;
     if (nm && sp_streq(nm, "$?")) return TY_INT;  /* last child exit status */
@@ -3530,9 +3534,11 @@ TyKind infer_uncached(Compiler *c, int id) {
                sp_streq(nm, "RUBY_REVISION") || sp_streq(nm, "RUBY_COPYRIGHT"))) return TY_STRING;
     if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
     if (nm && sp_streq(nm, "ARGF")) return TY_ARGF;
-    /* STDOUT/STDERR are IO handles wrapping the C stdout/stderr streams, so
-       puts/print/write/flush route through the existing TY_IO dispatch. */
-    if (nm && (sp_streq(nm, "STDOUT") || sp_streq(nm, "STDERR"))) return TY_IO;
+    /* STDOUT/STDERR/STDIN are IO handles wrapping the C standard streams, so
+       puts/print/write/flush -- and gets/read/tty? for STDIN -- route through
+       the existing TY_IO dispatch. */
+    if (nm && (sp_streq(nm, "STDOUT") || sp_streq(nm, "STDERR") ||
+               sp_streq(nm, "STDIN"))) return TY_IO;
     if (nm && comp_class_index(c, nm) >= 0) return TY_CLASS;
     if (nm && is_builtin_class_name(nm)) return TY_CLASS;
     return TY_UNKNOWN;

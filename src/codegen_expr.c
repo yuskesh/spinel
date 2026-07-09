@@ -1149,6 +1149,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     const char *nm = nt_str(nt, id, "name");
     /* predefined punctuation globals: $/ is the record separator "\n"; $! / $; /
        $, read nil (spinel doesn't honor the split/print-sep defaults) */
+    if (nm && sp_streq(nm, "$stdin")) { buf_puts(b, "sp_io_stdin()"); return; }
     if (nm && sp_streq(nm, "$/")) { emit_str_literal(b, "\n"); return; }
     if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_status"); return; }
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) { buf_puts(b, "sp_program_name"); return; }
@@ -1212,6 +1213,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return; }
     if (nm && sp_streq(nm, "STDOUT")) { buf_puts(b, "sp_io_stdout()"); return; }
     if (nm && sp_streq(nm, "STDERR")) { buf_puts(b, "sp_io_stderr()"); return; }
+    if (nm && sp_streq(nm, "STDIN"))  { buf_puts(b, "sp_io_stdin()"); return; }
     if (nm) {
       int _cidx = comp_class_index(c, nm);
       if (_cidx >= 0) {

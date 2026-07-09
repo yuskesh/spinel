@@ -40,6 +40,7 @@ sp_IntArray *sp_File_winsize(sp_File *f); /* #winsize -> [rows, cols] (ioctl, or
    initializers) and is never closed. */
 sp_File *sp_io_stdout(void);
 sp_File *sp_io_stderr(void);
+sp_File *sp_io_stdin(void);
 
 /* File metadata predicates (libc/WinAPI only; defined in sp_io.c). */
 mrb_bool sp_file_directory(const char *path);

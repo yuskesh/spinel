@@ -87,11 +87,17 @@ sp_File *sp_io_stderr(void) {
   return &f;
 }
 
+sp_File *sp_io_stdin(void) {
+  static sp_File f = { NULL, "<STDIN>", "r" };
+  if (!f.fp) f.fp = stdin;
+  return &f;
+}
+
 mrb_int sp_File_close(sp_File *f) {
   /* never fclose the shared stdout/stderr handles (sp_io_stdout/sp_io_stderr):
      closing the process's standard streams would corrupt the singleton and any
      later write through it. Closing them is a no-op. */
-  if (f && f->fp && f->fp != stdout && f->fp != stderr) { fclose(f->fp); f->fp = NULL; }
+  if (f && f->fp && f->fp != stdout && f->fp != stderr && f->fp != stdin) { fclose(f->fp); f->fp = NULL; }
   return 0;
 }
 
