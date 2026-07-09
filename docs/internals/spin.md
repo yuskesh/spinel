@@ -3,7 +3,7 @@
 The design record for Spinel's package system (**spin packages**) and its
 project tool (**`spin`**). The user-facing guide is [../spin.md](../spin.md);
 this document is the *why* and the *contract*: the constraints, the
-requirements (R1–R9), the resolution semantics, and what remains open.
+requirements (R1–R10), the resolution semantics, and what remains open.
 
 Naming note: the tool is **`spin`**, the manifest **`spin.toml`**, the
 lockfile **`spin.lock`**, the unit a **package**, and the registry
@@ -16,8 +16,8 @@ scoped to the language, like `mruby-*`.
 
 Status: implemented through M3 — scaffold, path/git/index dependencies with
 MVS selection, `spin.lock`, vendor + offline, snapshot tests, carried native
-C, `list`/`tree`/`search`. The hermetic end-to-end check
-(`tools/spin_e2e.sh`) runs inside `make check`. Sections below note the
+C, declared native build steps (R10), `list`/`tree`/`search`. The hermetic
+end-to-end check (`tools/spin_e2e.sh`) runs inside `make check`. Sections below note the
 pieces that are still specification.
 
 ## 1. Problem
@@ -117,12 +117,13 @@ same file runs under `ruby` and diffs directly — the subset-parity check.
 **Manifest** (`spin.toml`) is TOML and never executable: fetching or
 vendoring a package runs no package code, and compilation of package C happens only
 while building a dependent application. Implemented fields: `[package]
-name`/`version`, `[dependencies]`. *Still specification:*
-`[dev-dependencies]`, `provides` (feature names beyond the package's own),
-`spinel` (compiler version constraint — reserved until the toolchain is
-versioned), `[native]` cflags/libs (carried C currently needs no manifest
-entry; external libraries use the `ffi_lib` DSL in the Ruby source), and
-`[build] spinel-flags`.
+name`/`version`, `[dependencies]`, `[[build]]` + `[native] libs` +
+`[features] default` (declared native build steps, R10). *Still
+specification:* `[dev-dependencies]`, `provides` (feature names beyond the
+package's own), `spinel` (compiler version constraint — reserved until the
+toolchain is versioned), `[native]` cflags and bare `-lLIB` entries (carried
+C needs no manifest entry; external installed libraries use the `ffi_lib`
+DSL in the Ruby source), and `[build] spinel-flags`.
 
 ### R3 — consumer surface (implemented)
 
@@ -272,6 +273,52 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spin/`.
   checker also install `spin`; distro packages may need a `spinel-spin`
   package name even though the binary stays `spin`.
 
+### R10 — declared native build steps (implemented; #1820)
+
+A package vendoring an external project with its own build system (cmake,
+make) — ggml is the driving case — cannot be expressed as carried C (R6's
+per-file `CC` has no configure step, per-arch flags, or nvcc). `[[build]]`
+declares the step instead of running arbitrary tasks:
+
+```toml
+[[build]]                        # repeatable (ggml + a shim archive = two)
+workdir   = "vendor/ggml"        # read-only input; the build runs in a scratch copy
+patches   = ["patches/*.patch"]  # applied to the scratch copy (patch -p1)
+command   = "cmake -B . ... && cmake --build ."
+artifacts = ["libggml.a"]        # verified after the run; missing = failure
+features  = ["cuda"]             # optional gate; off unless in [features] default
+
+[native]
+libs = ["${build.out}/libggml.a"]   # artifacts reach the R6 --link surface
+```
+
+- **When**: only while building a dependent application (`spin
+  build`/`run`/`test`); `spin fetch`/`vendor` execute nothing, preserving
+  R2. The same package works as the build root (its own `bin/`) and as a
+  library dependency.
+- **Consent, never silent** (deliberately unlike cargo's `build.rs`):
+  `--allow-native-build` (one run), `SPIN_ALLOW_NATIVE_BUILD=1` (CI), or
+  `spin trust <name>` (recorded in `$XDG_CONFIG_HOME/spin/trust`).
+  An unconsented build refuses with those three options. A cached artifact
+  skips consent — the consented command already ran on this machine.
+- **Cache**: artifacts land in the shared native cache keyed by content
+  (workdir tree hash + patch bytes + command + artifacts + toolchain +
+  enabled features). A source or patch change moves the key and rebuilds;
+  unchanged steps are reused across consumer projects with no
+  build-system run.
+- **Link**: `[[build]]` only *produces* artifacts. Linking stays on the
+  existing surface — `[native] libs` entries, `${build.out}` expanded,
+  flow into the compiler's repeatable `--link` (which accepts archives);
+  R6 gains no third link shape. An entry whose artifact was
+  feature-skipped drops out of the link line.
+- *Still open:* consumer-side feature enablement (`spin add <name>
+  --features cuda` recorded in the lock — today only the package's own
+  `[features] default` set gates entries), and an interactive consent
+  prompt (spin has no stdin surface yet; explicit consent is also the
+  safer CI default). The recommended packaging convention is cargo's
+  `-sys` shape: a leaf package carrying the vendored tree, the `[[build]]`
+  entries, and the raw `ffi_*` declarations.
+
 ## 5. Project model
 
 - **Project root** = the nearest ancestor directory containing `spin.toml`
@@ -286,8 +333,9 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spin/`.
   per-file dependency graph, because type specialization spans every
   source. *Aspiration:* content-hash stamps (the compiler-repo scheme)
   instead of mtimes. Package C is cached across projects (R6); `spin` runs no
-  arbitrary build tasks (no rake surface) — projects with bespoke steps
-  call `spin` from their own build system.
+  *arbitrary* build tasks (no rake surface) — a package's *declared,
+  consented* native build steps are the one exception (R10), and projects
+  with bespoke steps beyond that call `spin` from their own build system.
 - Output: one line per phase; `spin list --json` / `spin tree --json` are
   the machine surface. *Still specification:* `-q`/`-v`, distinct exit
   codes (currently 0/1), test parallelism (`-j`),
@@ -363,3 +411,6 @@ string parameters downstream (tab/newline-packed record strings instead),
 6. `spin lock --update`, `--frozen`, `--dev`/`[dev-dependencies]`,
    index-install (a `spin get`-style verb), `-q`/`-v`/`-j`,
    `spin clean --cache`.
+7. Consumer-side feature enablement for R10 (`spin add <name> --features
+   cuda`, recorded in the lock); today `[[build]]` gates read only the
+   package's own `[features] default`.
