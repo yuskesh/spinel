@@ -1451,7 +1451,7 @@ static mrb_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, m
   size_t boff = sp_utf8_byte_offset(str, cpos);
   int64_t slen = (int64_t)strlen(str);
   int caps[2];
-  return re_exec(pat, str, slen, (mrb_int)boff, caps, 2) > 0;
+  return re_exec(pat, str, slen, (mrb_int)boff, caps, 2, 0) > 0;
 }
 
 /* Issue #855: expand `\1`..`\9` / `\&` / `\0` backreferences in
@@ -1471,7 +1471,7 @@ static const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *
   size_t cap = (slen * 2) + 64; char *out = (char *)malloc(cap); size_t olen = 0;
   int64_t pos = 0; int caps[64];
   while (pos <= slen) {
-    int n = re_exec(pat, str, slen, pos, caps, 64);
+    int n = re_exec(pat, str, slen, pos, caps, 64, 0);
     if (n <= 0 || caps[0] < 0) break;
     size_t before = caps[0] - pos;
     int mlen = caps[1] - caps[0];
@@ -1519,7 +1519,7 @@ else {
 static const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {
   int64_t slen = (int64_t)strlen(str);
   int caps[64];
-  int n = re_exec(pat, str, slen, 0, caps, 64);
+  int n = re_exec(pat, str, slen, 0, caps, 64, 0);
   if (n <= 0 || caps[0] < 0) return str;
   int mlen = caps[1] - caps[0];
   /* 0xff marker before the transient key: keeps sp_str_hash's s[-1] read

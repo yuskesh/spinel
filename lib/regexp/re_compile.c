@@ -186,9 +186,23 @@ class_set_bit(re_charclass *cc, uint8_t ch)
 static void
 class_add_range(re_charclass *cc, uint32_t lo, uint32_t hi)
 {
+  /* Merge with the previous range when the new one is contiguous with or
+     overlaps it. Codepoints are appended in scan order, so an ascending run
+     (the common case, e.g. a long [...] enumeration) collapses to a single
+     range instead of one entry per codepoint. */
+  if (cc->num_ranges > 0) {
+    uint32_t *last = &cc->ranges[2 * (cc->num_ranges - 1)];
+    if (lo >= last[0] && lo <= last[1] + 1) {
+      if (hi > last[1]) last[1] = hi;
+      return;
+    }
+  }
   if (cc->num_ranges >= cc->range_capa) {
-    cc->range_capa = cc->range_capa ? cc->range_capa * 2 : 4;
-    cc->ranges = (uint32_t*)realloc(cc->ranges, sizeof(uint32_t) * 2 * cc->range_capa);
+    /* range_capa/num_ranges are uint32_t: doubling from 32768 no longer
+       wraps to 0 (which fed a size-0 realloc and a write through NULL). */
+    uint32_t new_capa = cc->range_capa ? cc->range_capa * 2 : 4;
+    cc->ranges = (uint32_t*)realloc(cc->ranges, sizeof(uint32_t) * 2 * new_capa);
+    cc->range_capa = new_capa;
   }
   cc->ranges[2 * cc->num_ranges] = lo;
   cc->ranges[2 * cc->num_ranges + 1] = hi;
@@ -442,10 +456,10 @@ read_class_atom(re_compiler *c)
     /* ASCII or stray continuation byte. */
     return (uint32_t)next_char(c);
   }
-  /* Multi-byte UTF-8 leader: decode the full codepoint. */
+  /* Multi-byte UTF-8 leader: decode the full codepoint. The decoder is
+     end-aware (truncated sequences consume a single byte), so no clamp. */
   int len = 0;
-  uint32_t cp = re_utf8_decode(c->p, &len);
-  if (c->p + len > c->src_end) len = (int)(c->src_end - c->p);
+  uint32_t cp = re_utf8_decode(c->p, c->src_end, &len);
   c->p += len;
   return cp;
 }
@@ -645,6 +659,74 @@ compute_fixed_len(re_compiler *c, uint32_t start, uint32_t end)
   return len;
 }
 
+/* Parse the option letters of an inline (?...) group. The parser is
+   positioned just past the '?'; it reads a run of i/m/x, an optional '-',
+   and a further run of i/m/x to switch off, then stops at the terminator
+   (':' or ')'). `base` is the option set in effect on entry; the resulting
+   set is returned. Ruby's inline letters are i (IGNORECASE), m (DOTALL),
+   x (EXTENDED). Extended mode is applied by a whole-pattern preprocessing
+   pass and cannot be scoped inline; `*want_x` reports that an x (not
+   switched back off) was requested, and the caller accepts it only when
+   it is provably a no-op (no significant whitespace in its scope). */
+static uint32_t
+parse_inline_flags(re_compiler *c, uint32_t base, mrb_bool *want_x)
+{
+  uint32_t on = 0, off = 0;
+  mrb_bool negate = FALSE, seen = FALSE, x_on = FALSE, x_off = FALSE;
+  *want_x = FALSE;
+  for (;;) {
+    int oc = peek(c);
+    uint32_t bit;
+    if (oc == 'i') bit = RE_FLAG_IGNORECASE;
+    else if (oc == 'm') bit = RE_FLAG_DOTALL;
+    else if (oc == 'x') {
+      if (negate) x_off = TRUE;
+      else x_on = TRUE;
+      seen = TRUE;
+      next_char(c);
+      continue;
+    }
+    else if (oc == '-' && !negate) { negate = TRUE; next_char(c); continue; }
+    else break;
+    if (negate) off |= bit;
+    else on |= bit;
+    seen = TRUE;
+    next_char(c);
+  }
+  if (!seen) compile_error(c, "undefined (?...) sequence");
+  *want_x = (x_on && !x_off);
+  return (base | on) & ~off;
+}
+
+/* Whether the range [p, group end) contains whitespace or `#` that inline
+   extended mode would treat specially: whitespace/comments OUTSIDE character
+   classes (inside [...] they are literal even under /x, and an escaped
+   space means a literal space with or without /x). The scope ends at the
+   enclosing group's ')' (depth-aware) or the pattern end. Used to accept a
+   decorative (?x...) -- one whose x changes nothing -- while raising on one
+   whose stripping semantics spinel does not implement. */
+static mrb_bool
+inline_x_scope_has_significant_ws(const char *p, const char *end)
+{
+  int depth = 0;
+  mrb_bool in_class = FALSE;
+  for (; p < end; p++) {
+    char ch = *p;
+    if (ch == '\\') { p++; continue; }   /* escaped char: literal either way */
+    if (in_class) {
+      if (ch == ']') in_class = FALSE;
+      continue;
+    }
+    if (ch == '[') { in_class = TRUE; continue; }
+    if (ch == '(') { depth++; continue; }
+    if (ch == ')') { if (depth == 0) return FALSE; depth--; continue; }
+    if (ch == '#' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
+        ch == '\f' || ch == '\v')
+      return TRUE;
+  }
+  return FALSE;
+}
+
 /* Compile a single atom (character, class, group, etc.) */
 static void
 compile_atom(re_compiler *c)
@@ -656,6 +738,11 @@ compile_atom(re_compiler *c)
     {
       next_char(c);
       mrb_bool capturing = TRUE;
+
+      /* Options in effect on entry. A group restores them on exit so an
+         inline toggle like (?i) inside it (which sets c->flags for the rest
+         of the group) does not leak past the closing ')'. */
+      uint32_t saved_flags = c->flags;
 
       const char *cap_name = NULL;
       uint16_t cap_name_len = 0;
@@ -686,6 +773,7 @@ compile_atom(re_compiler *c)
           if (peek(c) != ')') compile_error(c, "unmatched '('");
           next_char(c);
           c->needs_backtrack = TRUE;  /* needs backtracking engine */
+          c->flags = saved_flags;
           break;  /* done with this atom */
         }
         else if (c->p[1] == '<' && c->p + 2 < c->src_end && (c->p[2] == '=' || c->p[2] == '!')) {
@@ -711,6 +799,7 @@ compile_atom(re_compiler *c)
           if (peek(c) != ')') compile_error(c, "unmatched '('");
           next_char(c);
           c->needs_backtrack = TRUE;  /* needs backtracking engine */
+          c->flags = saved_flags;
           break;
         }
         else if (c->p[1] == '<' && c->p + 2 < c->src_end && c->p[2] != '=' && c->p[2] != '!') {
@@ -721,41 +810,48 @@ compile_atom(re_compiler *c)
           cap_name_len = (uint16_t)(c->p - cap_name);
           next_char(c);  /* skip > */
         }
-        else {
-          /* Inline-flag group `(?xim-xim:...)` or whole-group flag
-             `(?xim)`. Skip the flag chars (and optional `-flags`),
-             then either `:` (non-capturing body) or `)` (apply to
-             outer group). Spinel's compiler doesn't honour the
-             flag SEMANTICS yet -- /x in particular would need to
-             strip whitespace inside this sub-pattern only -- but
-             the parse now consumes the directive so compile_seq
-             advances. Without this, `(?x:foo)` left c->p stuck on
-             `?` and compile_seq's outer loop spun forever. */
-          int c1 = c->p[1];
-          int recognized_flag = (c1 == 'x' || c1 == 'i' || c1 == 'm' || c1 == 's' || c1 == 'u' || c1 == 'a');
-          if (recognized_flag) {
-            next_char(c);  /* skip ? */
-            while (peek(c) != ':' && peek(c) != ')' && peek(c) >= 0) next_char(c);
-            if (peek(c) == ':') {
-              next_char(c);  /* skip : */
-              capturing = FALSE;
-            }
-            else if (peek(c) == ')') {
-              /* `(?xim)` with no body — apply to the enclosing
-                 group; spinel doesn't track per-scope flags, so
-                 just consume the close paren and emit nothing.
-                 The atom loop will see the next token. */
-              next_char(c);
-              break;
-            }
+        else if (c->p[1] == 'i' || c->p[1] == 'm' || c->p[1] == 'x' || c->p[1] == '-') {
+          /* Inline options (imported from mruby): the toggle form
+             (?imx) / (?-imx) changes the options for the rest of the
+             enclosing group, and the scoped form (?imx:...) is a
+             non-capturing group whose options apply only to its body.
+             The emit path already consults c->flags for IGNORECASE and
+             DOTALL, so tracking the flags is all i/m need. Inline x is
+             accepted only when it is a no-op (its scope has no
+             significant whitespace or `#`); a scope the strip would
+             actually change raises rather than silently diverging. */
+          next_char(c);  /* skip '?' */
+          mrb_bool want_x = FALSE;
+          uint32_t new_flags = parse_inline_flags(c, c->flags, &want_x);
+          if (peek(c) == ')') {
+            next_char(c);
+            if (want_x && inline_x_scope_has_significant_ws(c->p, c->src_end))
+              compile_error(c, "inline extended mode (?x) with significant whitespace is not supported");
+            c->flags = new_flags;  /* rest of the group; restored at its ')' */
+            return;                /* consumed the token; no atom emitted */
+          }
+          else if (peek(c) == ':') {
+            next_char(c);
+            if (want_x && inline_x_scope_has_significant_ws(c->p, c->src_end))
+              compile_error(c, "inline extended mode (?x) with significant whitespace is not supported");
+            c->flags = new_flags;
+            compile_alt(c);
+            c->flags = saved_flags;
+            if (peek(c) != ')') compile_error(c, "unmatched '('");
+            next_char(c);
+            return;
           }
           else {
-            /* Unrecognized `(?<X>...` directive. Compile-error
-               instead of looping: better surface than the prior
-               infinite-loop wedge. */
-            compile_error(c, "unrecognized (? construct");
-            break;
+            compile_error(c, "undefined (?...) sequence");
           }
+        }
+        else {
+          /* (?X) with an unsupported X: not one of the recognized (?: (?= (?!
+             (?<= (?<! (?<name> (?imx forms. The absent operator (?~...) and
+             conditionals (?(...)) are not implemented. Raise here rather than
+             falling through to the capturing-group path, which would leave
+             the stray `?` for compile_seq to spin on forever. */
+          compile_error(c, "undefined (?...) sequence");
         }
       }
 
@@ -794,6 +890,7 @@ compile_atom(re_compiler *c)
       if (capturing) {
         emit(c, RE_SAVE, 0, group * 2 + 1);
       }
+      c->flags = saved_flags;  /* inline toggles inside the group end here */
     }
     break;
 
@@ -1099,7 +1196,17 @@ static void
 compile_seq(re_compiler *c)
 {
   while (peek(c) >= 0 && peek(c) != ')' && peek(c) != '|') {
+    uint32_t code_before = c->code_len;
+    const char *p_before = c->p;
     compile_quantified(c);
+    if (c->code_len == code_before && c->p == p_before) {
+      /* compile_quantified neither consumed input nor emitted code: the
+         current character is a quantifier metacharacter with no atom to
+         repeat (a leading `*`, `+`, `?`, or the trailing `*`s in `a***`).
+         CRuby raises RegexpError here; without this guard peek() never
+         advances and the loop spins forever. */
+      compile_error(c, "target of repeat operator is not specified");
+    }
   }
 }
 

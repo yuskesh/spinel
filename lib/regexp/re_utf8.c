@@ -27,12 +27,16 @@ re_utf8_charlen(const char *s, const char *end)
 
 /* Decode a UTF-8 character and return its codepoint.
    *len is set to the byte length consumed.
+   The buffer end is checked before any continuation byte is read
+   (imported from mruby): a truncated multi-byte leader at the end of
+   a pattern or subject consumes a single byte instead of reading past
+   the buffer, mirroring re_utf8_charlen.
    Issue #780: reject overlong sequences (where a multi-byte form
    encodes a codepoint that fits in fewer bytes). RFC 3629 + Ruby
    both treat these as invalid. Returns U+FFFD (replacement) and
    consumes just the lead byte so the caller can resync. */
 uint32_t
-re_utf8_decode(const char *s, int *len)
+re_utf8_decode(const char *s, const char *end, int *len)
 {
   uint8_t c = (uint8_t)s[0];
   uint32_t cp;
@@ -47,10 +51,8 @@ re_utf8_decode(const char *s, int *len)
   }
   else if (c < 0xe0) {
     /* Issue #754: validate continuation byte before reading further.
-       NUL (0x00) is the C string terminator -- a 2-byte lead at
-       end-of-string would otherwise pull garbage. Also rejects any
-       byte without the 10xxxxxx continuation pattern. */
-    if (((uint8_t)s[1] & 0xc0) != 0x80) { *len = 1; return 0xFFFD; }
+       Rejects any byte without the 10xxxxxx continuation pattern. */
+    if (s + 2 > end || ((uint8_t)s[1] & 0xc0) != 0x80) { *len = 1; return 0xFFFD; }
     *len = 2;
     cp = (c & 0x1f) << 6;
     cp |= ((uint8_t)s[1] & 0x3f);
@@ -58,7 +60,8 @@ re_utf8_decode(const char *s, int *len)
     return cp;
   }
   else if (c < 0xf0) {
-    if (((uint8_t)s[1] & 0xc0) != 0x80 || ((uint8_t)s[2] & 0xc0) != 0x80) {
+    if (s + 3 > end ||
+        ((uint8_t)s[1] & 0xc0) != 0x80 || ((uint8_t)s[2] & 0xc0) != 0x80) {
       *len = 1; return 0xFFFD;
     }
     *len = 3;
@@ -69,7 +72,8 @@ re_utf8_decode(const char *s, int *len)
     return cp;
   }
   else {
-    if (((uint8_t)s[1] & 0xc0) != 0x80 || ((uint8_t)s[2] & 0xc0) != 0x80 ||
+    if (s + 4 > end ||
+        ((uint8_t)s[1] & 0xc0) != 0x80 || ((uint8_t)s[2] & 0xc0) != 0x80 ||
         ((uint8_t)s[3] & 0xc0) != 0x80) {
       *len = 1; return 0xFFFD;
     }

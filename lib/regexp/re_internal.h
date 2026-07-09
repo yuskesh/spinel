@@ -61,8 +61,10 @@ typedef struct {
      ranges[2k] = lo, ranges[2k+1] = hi (inclusive). NULL when the
      class has no non-ASCII members (the common case). */
   uint32_t *ranges;
-  uint16_t num_ranges;
-  uint16_t range_capa;
+  uint32_t num_ranges;   /* uint32_t: doubling a uint16_t capa from 32768
+                            wrapped to 0 and fed a size-0 realloc (mruby
+                            #6937), so a huge class wrote through NULL */
+  uint32_t range_capa;
   mrb_bool negated;
   mrb_bool utf8_any;  /* match any non-ASCII byte if true */
 } re_charclass;
@@ -151,16 +153,39 @@ void re_free(mrb_regexp_pattern *pat);
    default; the library falls back to fprintf + exit. */
 void sp_re_set_error_handler(void (*fn)(const char *msg));
 
-/* Execute a match.
-   Returns number of captures filled (0 = no match).
-   captures[2*n] = start, captures[2*n+1] = end for group n. */
-int re_exec(const mrb_regexp_pattern *pat,
-            const char *str, mrb_int len, mrb_int start,
-            int *captures, int captures_size);
-
 /* UTF-8 helpers */
 int re_utf8_charlen(const char *s, const char *end);
-uint32_t re_utf8_decode(const char *s, int *len);
+uint32_t re_utf8_decode(const char *s, const char *end, int *len);
 mrb_bool re_is_word_char(uint32_t c);
+
+static inline int
+re_charlen(const char *s, const char *end, mrb_bool binary)
+{
+  return binary ? 1 : re_utf8_charlen(s, end);
+}
+
+static inline uint32_t
+re_decode_char(const char *s, const char *end, int *len, mrb_bool binary)
+{
+  if (binary) {
+    if (len) *len = 1;
+    return (uint8_t)*s;
+  }
+  return re_utf8_decode(s, end, len);
+}
+
+static inline mrb_bool
+re_utf8_continuation_p(const char *s)
+{
+  return (((uint8_t)*s & 0xC0) == 0x80);
+}
+
+/* Execute a match.
+   Returns number of captures filled (0 = no match).
+   captures[2*n] = start, captures[2*n+1] = end for group n.
+   `binary` selects a byte-indexed (ASCII-8BIT) subject; 0 = UTF-8. */
+int re_exec(const mrb_regexp_pattern *pat,
+            const char *str, mrb_int len, mrb_int start,
+            int *captures, int captures_size, mrb_bool binary);
 
 #endif /* SP_RE_INTERNAL_H */

@@ -21,7 +21,7 @@
 typedef struct mrb_regexp_pattern mrb_regexp_pattern;
 mrb_regexp_pattern* re_compile(const char *pattern, int64_t len, uint32_t flags);
 void re_free(mrb_regexp_pattern *pat);
-int re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size);
+int re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary);
 /* named-capture introspection (lib/regexp/re_compile.c) */
 int re_num_named(const mrb_regexp_pattern *pat);
 const char *re_named_name(const mrb_regexp_pattern *pat, int i, int *group_out);
