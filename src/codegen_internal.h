@@ -459,6 +459,7 @@ int emit_hash_collect_expr(Compiler *c, int id, Buf *b);
 int patch_lv_reads(Compiler *c, int id, const char *nm, TyKind ty, int *ids_out, TyKind *ty_out, int cap);
 int patch_lv_read_ntype(Compiler *c, int scope_idx, const char *name, TyKind new_ty, int min_id, int **saved_ids, TyKind **saved_tys);
 void restore_lv_read_ntype(Compiler *c, int *saved_ids, TyKind *saved_tys, int n);
+int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent);
 int emit_transform_hash_expr(Compiler *c, int id, Buf *b);
 int emit_bsearch_expr(Compiler *c, int id, Buf *b);
 int emit_minmax_by_expr(Compiler *c, int id, Buf *b);

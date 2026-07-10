@@ -891,6 +891,22 @@ static void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp,
   }
 }
 
+/* Shared entry for element-loop emitters: when a flat multi-param block runs
+   over a poly array, its element (itself an array) auto-splats across the
+   params; bind them from `elem_src` and return the param count. Returns 0 when
+   the ordinary single-param bind applies (any other receiver/param shape). */
+int emit_iter_autosplat(Compiler *c, int block, TyKind rt, const char *elem_src, int indent) {
+  if (rt != TY_POLY_ARRAY) return 0;
+  if (block_param_is_multi(c, block, 0)) return 0;
+  int np = 0; while (block_param_name(c, block, np)) np++;
+  if (np < 2) return 0;
+  int te = ++g_tmp;
+  emit_indent(g_pre, indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", te, elem_src, te);
+  emit_autosplat_params(c, block, np, te, indent);
+  return np;
+}
+
 /* `array.flat_map { |params| block-returning-array }` as an expression: map each
    element through the block and concatenate the returned arrays (flatten one
    level). Handles a single block param (bound to the element) and a flat
@@ -1039,15 +1055,17 @@ int emit_filter_map_expr(Compiler *c, int id, Buf *b) {
   Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-  int use_shadow = clv0 && clv0->type != et && et != TY_UNKNOWN;
   int din = g_indent + 1;
+  char es_fm[64]; snprintf(es_fm, sizeof es_fm, "sp_%sArray_get(_t%d, _t%d)", k, ta, ti);
+  int splat = emit_iter_autosplat(c, block, rt, es_fm, din);
+  int use_shadow = !splat && clv0 && clv0->type != et && et != TY_UNKNOWN;
   if (use_shadow) {
     clv0->type = et;
     for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
     emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
     emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti);
   }
-  else if (p0) { emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti); }
+  else if (!splat && p0) { emit_indent(g_pre, din); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti); }
 
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, din);
   int save = g_indent; g_indent = din;
@@ -2757,7 +2775,9 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
   Scope *psc = p0 ? comp_scope_of(c, block) : NULL;
   LocalVar *plv0 = (psc && p0) ? scope_local(psc, p0) : NULL;
   TyKind psaved0 = plv0 ? plv0->type : TY_UNKNOWN;
-  int use_shadow = plv0 && plv0->type != et && et != TY_UNKNOWN;
+  int np_pt = 0; while (block_param_name(c, block, np_pt)) np_pt++;
+  int splat_pt = (np_pt >= 2 && rt == TY_POLY_ARRAY && !block_param_is_multi(c, block, 0));
+  int use_shadow = !splat_pt && plv0 && plv0->type != et && et != TY_UNKNOWN;
   if (use_shadow) {
     plv0->type = et;
     for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
@@ -2781,7 +2801,11 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
 
   int bodyIndent = g_indent + 1;
   int innerIndent = use_shadow ? bodyIndent + 1 : bodyIndent;
-  if (use_shadow) {
+  if (splat_pt) {
+    char es_pt[64]; snprintf(es_pt, sizeof es_pt, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+    emit_iter_autosplat(c, block, rt, es_pt, bodyIndent);
+  }
+  else if (use_shadow) {
     emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "{\n");
     emit_indent(g_pre, innerIndent); emit_ctype(c, et, g_pre);
     buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
@@ -3630,7 +3654,8 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
   int bodyIndent = g_indent + 1;
-  if (p0) {
+  char es_pr[64]; snprintf(es_pr, sizeof es_pr, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+  if (!emit_iter_autosplat(c, block, rt, es_pr, bodyIndent) && p0) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }

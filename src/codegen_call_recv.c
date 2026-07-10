@@ -341,7 +341,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                      ti, ti, ek, trecv, ti);
-          if (tw_bp) {
+          char es_tw[64]; snprintf(es_tw, sizeof es_tw, "sp_%sArray_get(_t%d, _t%d)", ek, trecv, ti);
+          if (emit_iter_autosplat(c, tw_blk, rt, es_tw, g_indent + 1)) { }
+          else if (tw_bp) {
             emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre);
             buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", tw_bp, ek, trecv, ti);
           }
@@ -405,12 +407,14 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           /* Declare the block param in the loop body so the form is self-contained
              when this find is a parameter default hoisted to the call site (whose
              function has no top-level declaration for the block local). */
-          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
+          char es_fd[64]; snprintf(es_fd, sizeof es_fd, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+          int splat_fd = emit_iter_autosplat(c, fblock, rt, es_fd, g_indent + 1);
+          if (!splat_fd && bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_RbVal lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
           Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
           emit_indent(g_pre, g_indent + 1);
-          if (bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
+          if (!splat_fd && bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
           else buf_printf(g_pre, "if (%s) { _t%d = sp_PolyArray_get(_t%d, _t%d); break; }\n", cb.p ? cb.p : "0", tres, trecv, ti);
           free(cb.p);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
@@ -1517,7 +1521,10 @@ else {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n",
                      ti, ti, trecv, ti);
-          if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
+          char es_ct[64]; snprintf(es_ct, sizeof es_ct, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+          if (!emit_iter_autosplat(c, blk, rt, es_ct, g_indent + 1) && bp) {
+            emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti);
+          }
           for (int j = 0; j < bn2 - 1; j++) emit_stmt(c, bb2[j], g_pre, g_indent + 1);
           int saveI = g_indent; g_indent = g_indent + 1;
           /* The block value is a condition: route through emit_cond so a poly /
