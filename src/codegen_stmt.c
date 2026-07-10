@@ -607,6 +607,17 @@ else {
    the value expression and a closing `)`. Returns 1 if it handled the lvalue
    (proc cell), 0 if the local is not a laundered proc cell and the caller
    should fall back to `emit_local_ref = value`. */
+/* The C expression for a slot of type `t` holding Ruby nil: the type's own nil
+   sentinel, or its default value otherwise. */
+static const char *nil_sentinel(TyKind t) {
+  switch (t) {
+    case TY_INT:    return "SP_INT_NIL";
+    case TY_FLOAT:  return "sp_float_nil()";
+    case TY_POLY:   return "sp_box_nil()";
+    case TY_STRING: return "NULL";
+    default:        return default_value(t);
+  }
+}
 static int emit_proc_cell_lvalue(Compiler *c, int scope_node, const char *nm, Buf *b) {
   LocalVar *lv = nm ? scope_local(comp_scope_of(c, scope_node), nm) : NULL;
   if (!lv || lv->type != TY_PROC) return 0;
@@ -5568,15 +5579,16 @@ else {
           int lpoly = llv && llv->type == TY_POLY;
           if (i == 0) { if (lpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
           else if (lpoly) {
-            /* rest target's typed-zero default, boxed into the widened slot.
-               comp_ntype on the target node still reports its pre-widen scalar
-               type, so default_value lands the same 0 default mode emits. */
-            TyKind tt = comp_ntype(c, lefts[i]);
-            Buf bx; memset(&bx, 0, sizeof bx);
-            emit_boxed_text(c, tt, default_value(tt), &bx);
-            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+            /* under-filled target under a scalar RHS is Ruby nil, not the
+               typed zero (`a, b, c = 1` -> [1, nil, nil]). */
+            buf_puts(b, "sp_box_nil()");
           }
-          else buf_puts(b, default_value(comp_ntype(c, lefts[i])));
+          else {
+            /* the target NODE's type can read TY_UNKNOWN here; use the local's
+               DECLARED type so the nil sentinel matches its C slot. */
+            TyKind tt = llv ? llv->type : comp_ntype(c, lefts[i]);
+            buf_puts(b, nil_sentinel(tt));
+          }
           buf_puts(b, ";\n");
         }
         return;
@@ -5920,13 +5932,17 @@ else {
              to poly and needs a boxed-nil default rather than a scalar zero. */
           LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
           TyKind ltt = llv ? llv->type : comp_ntype(c, lefts[i]);
+          /* An under-filled massign target is Ruby `nil`, not the type's zero
+             value; emit the slot's nil sentinel (mirroring the typed-array
+             under-fill arm above) so `a, b, c = 1` yields [1, nil, nil]. */
+          const char *nilv = nil_sentinel(ltt);
           /* a captured TY_PROC cell needs the raw int-laundered lvalue rather
              than emit_local_ref's non-assignable cast form (see emit_assign). */
           if (emit_proc_cell_lvalue(c, id, lvn, b)) {
-            buf_printf(b, "%s);\n", default_value(ltt));
+            buf_printf(b, "%s);\n", nilv);
           } else {
             emit_local_ref(c, id, lvn, b);
-            buf_printf(b, " = %s;\n", default_value(ltt));
+            buf_printf(b, " = %s;\n", nilv);
           }
         }
         continue;
