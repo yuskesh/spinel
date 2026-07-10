@@ -6970,6 +6970,39 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
         emit_expr(c, argv[0], b); buf_puts(b, ", (&(\"\\xff\")[1]));\n");
         return 1;
       }
+      if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
+        /* slice!(i): one char at i; slice!(range): the range's span. Same
+           clamped splice as the (start, len) arm below (OOB is a no-op). */
+        int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
+        emit_indent(b, indent);
+        if (comp_ntype(c, argv[0]) == TY_RANGE) {
+          int tr2 = ++g_tmp;
+          buf_printf(b, "{ sp_Range _t%d = ", tr2); emit_expr(c, argv[0], b);
+          buf_printf(b, "; mrb_int _t%d = (mrb_int)strlen(", tn2); emit_expr(c, recv, b);
+          buf_printf(b, "); mrb_int _t%d = _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
+                     ti2, tr2, tr2, tn2, tr2);
+          buf_printf(b, " mrb_int _t%d = (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
+                     tl2, tr2, tr2, tn2, tr2, ti2, tr2);
+          buf_printf(b, " if (_t%d < 0) _t%d = 0;", tl2, tl2);
+        }
+        else {
+          buf_printf(b, "{ mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+          buf_printf(b, "; mrb_int _t%d = 1; mrb_int _t%d = (mrb_int)strlen(", tl2, tn2);
+          emit_expr(c, recv, b);
+          buf_printf(b, "); if (_t%d < 0) _t%d += _t%d;", ti2, ti2, tn2);
+        }
+        buf_printf(b, " if (_t%d >= 0 && _t%d < _t%d && _t%d > 0) {"
+                      " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d; ",
+                   ti2, ti2, tn2, tl2,
+                   tl2, tn2, ti2, tl2, tn2, ti2);
+        emit_expr(c, recv, b);
+        buf_puts(b, " = sp_str_concat(sp_str_substr(");
+        emit_expr(c, recv, b);
+        buf_printf(b, ", 0, _t%d), sp_str_substr(", ti2);
+        emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d + _t%d, _t%d - _t%d - _t%d)); } }\n", ti2, tl2, tn2, ti2, tl2);
+        return 1;
+      }
       if (argc == 2) {
         /* splice out [i, i+len): head + tail, bounds clamped to the string
            (a negative i counts from the end; an out-of-range i is a no-op) */

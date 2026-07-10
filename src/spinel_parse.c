@@ -2622,6 +2622,13 @@ static char *rewrite_syntax_sugar(char *source) {
         OUT_STR("&:");
         continue;
       }
+      if (i < len && source[i] == '.') {
+        /* `&:sym.to_proc` (a call ON the symbol): not the shorthand. Leave
+           it for Prism -- the explicit to_proc desugars to a lambda later. */
+        OUT_STR("&:");
+        i = ns;   /* re-emit the symbol name through the normal path */
+        continue;
+      }
       if (prev == '(') {
         /* Sole parenthesized arg: drop the `(` (and any trailing ws)
            and the matching `)` so the block binds paren-less. #792:

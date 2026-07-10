@@ -560,6 +560,9 @@ int hash_enum_redispatch(Compiler *c, int id) {
                     sp_streq(name, "minmax")))
     return 1;
   if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  /* comparator-block min/max/minmax compare the [k, v] pairs like the
+     blockless forms (min_by/max_by keep their dedicated hash emitters) */
+  if (sp_streq(name, "min") || sp_streq(name, "max") || sp_streq(name, "minmax")) return 1;
   if (sp_streq(name, "each_with_index")) return 1;
   if (sp_streq(name, "reduce") || sp_streq(name, "inject")) return 1;
   /* each_with_object / flat_map keep their dedicated hash emitters */
@@ -3164,7 +3167,7 @@ else {
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
     if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
     if ((sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
-         sp_streq(name, "each_byte")) && argc == 0 &&
+         sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");

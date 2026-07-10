@@ -83,7 +83,10 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
 
   Scope *pscope = comp_scope_of(c, block);
-  TyKind p0_actual = p1_orig ? kt : vt;   /* p0 is key if 2 params, else value */
+  /* p0 is the key if 2 params; solo it binds by mode: 0 = key (Hash-specific
+     methods yield k, v), 1 = value, 2 = the boxed [k, v] pair (Enumerable
+     methods yield the pair as ONE argument). */
+  TyKind p0_actual = p1_orig ? kt : (p0_solo_is_value == 2 ? TY_POLY : vt);
   TyKind p1_actual = vt;
   LocalVar *p0_lv = p0_orig ? scope_local(pscope, p0_orig) : NULL;
   LocalVar *p1_lv = p1_orig ? scope_local(pscope, p1_orig) : NULL;
@@ -100,7 +103,26 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
     emit_indent(g_pre, g_indent + 1);
     if (ns0) {
       st0 = ++g_tmp; emit_ctype(c, p0_actual, g_pre);
-      if (p0_is_key) {
+      if (!p1_orig && p0_solo_is_value == 2) {
+        int tpp = ++g_tmp;
+        buf_printf(g_pre, " lv__bp%d = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", st0, tpp, tpp);
+        if (rt == TY_POLY_POLY_HASH) {
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]); ", tpp, trecv, trecv, ti);
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]); ", tpp, trecv, trecv, ti);
+        }
+        else {
+          char kx[96], vx[128];
+          snprintf(kx, sizeof kx, "_t%d->order[_t%d]", trecv, ti);
+          snprintf(vx, sizeof vx, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, trecv, trecv, ti);
+          Buf bk; memset(&bk, 0, sizeof bk); emit_boxed_text(c, kt, kx, &bk);
+          Buf bv; memset(&bv, 0, sizeof bv); emit_boxed_text(c, vt, vx, &bv);
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s); sp_PolyArray_push(_t%d, %s); ",
+                     tpp, bk.p ? bk.p : "sp_box_nil()", tpp, bv.p ? bv.p : "sp_box_nil()");
+          free(bk.p); free(bv.p);
+        }
+        buf_printf(g_pre, "sp_box_poly_array(_t%d); });\n", tpp);
+      }
+      else if (p0_is_key) {
         if (rt == TY_POLY_POLY_HASH)
           buf_printf(g_pre, " lv__bp%d = _t%d->keys[_t%d->order[_t%d]];\n", st0, trecv, trecv, ti);
         else
@@ -124,7 +146,26 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
       }
     }
     else {
-      if (p0_is_key) {
+      if (!p1_orig && p0_solo_is_value == 2) {
+        int tpp = ++g_tmp;
+        buf_printf(g_pre, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpp, tpp);
+        if (rt == TY_POLY_POLY_HASH) {
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d->keys[_t%d->order[_t%d]]); ", tpp, trecv, trecv, ti);
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d->vals[_t%d->order[_t%d]]); ", tpp, trecv, trecv, ti);
+        }
+        else {
+          char kx[96], vx[128];
+          snprintf(kx, sizeof kx, "_t%d->order[_t%d]", trecv, ti);
+          snprintf(vx, sizeof vx, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, trecv, trecv, ti);
+          Buf bk; memset(&bk, 0, sizeof bk); emit_boxed_text(c, kt, kx, &bk);
+          Buf bv; memset(&bv, 0, sizeof bv); emit_boxed_text(c, vt, vx, &bv);
+          buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s); sp_PolyArray_push(_t%d, %s); ",
+                     tpp, bk.p ? bk.p : "sp_box_nil()", tpp, bv.p ? bv.p : "sp_box_nil()");
+          free(bk.p); free(bv.p);
+        }
+        buf_printf(g_pre, "sp_box_poly_array(_t%d); });\n", tpp);
+      }
+      else if (p0_is_key) {
         if (rt == TY_POLY_POLY_HASH)
           buf_printf(g_pre, "lv_%s = _t%d->keys[_t%d->order[_t%d]];\n", p0, trecv, trecv, ti);
         else
@@ -537,7 +578,7 @@ int emit_hash_transform_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
   TyKind bret;
-  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   if (is_part) {
     char cond[256];
     if (bret == TY_BOOL) snprintf(cond, sizeof cond, "(%s)", vb ? vb : "0");
@@ -2780,7 +2821,26 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   if (mm_args >= 0) { int mm_argc = 0; nt_arr(nt, mm_args, "arguments", &mm_argc); if (mm_argc > 0) return 0; }
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
-  TyKind rt = infer_type(c, recv);
+  TyKind rt = comp_ntype(c, recv);   /* cache read: the mirror override below must stick */
+  /* a hash receiver rides the pair-array redispatch: materialize the [k, v]
+     pairs and re-enter with the receiver overridden (same mirror pattern as
+     the emit_range_call tail) */
+  if (ty_is_hash(rt) && hash_enum_redispatch(c, id) && g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_boxed(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);\n",
+               ta, rb.p ? rb.p : "sp_box_nil()", ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    int handled = emit_minmax_cmp_expr(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return handled;
+  }
   if (!ty_is_array(rt)) return 0;
   const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;

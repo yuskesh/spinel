@@ -4674,9 +4674,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 0 &&
       nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
-       sp_streq(name, "each_byte"))) {
-    if (sp_streq(name, "each_byte")) {
-      buf_puts(b, "sp_Enumerator_new_from(sp_box_int_array(sp_str_bytes(");
+       sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint"))) {
+    if (sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) {
+      const char *fn = sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";
+      buf_printf(b, "sp_Enumerator_new_from(sp_box_int_array(%s(", fn);
       emit_expr(c, recv, b); buf_puts(b, ")))");
       return;
     }

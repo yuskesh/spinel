@@ -1954,7 +1954,7 @@ static int is_array_enum_method(const char *nm) {
     "any?", "all?", "none?", "one?", "take", "drop", "take_while", "drop_while",
     "filter_map", "partition", "group_by", "each_with_object", "tally",
     "find_all", "zip", "grep", "grep_v", "to_h", "uniq", "reverse",
-    "member?", "minmax", "join", "index", NULL };
+    "member?", "minmax", "join", "index", "each", NULL };
   for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
   return 0;
 }
@@ -2043,6 +2043,24 @@ static void desugar_enum_chain_shapes(Compiler *c) {
             comp_grow_node_arrays(c);
             continue;
           }
+        }
+      }
+    }
+    /* `m(&lambda_literal)`: attach the lambda's block directly as m's block
+       (the :sym.to_proc desugar below produces exactly this shape when the
+       proc is passed inline as a block argument). */
+    {
+      int blkref = nt_ref(nt, id, "block");
+      if (blkref >= 0 && nt_type(nt, blkref) &&
+          sp_streq(nt_type(nt, blkref), "BlockArgumentNode")) {
+        int bex = nt_ref(nt, blkref, "expression");
+        if (bex >= 0 && nt_type(nt, bex) && sp_streq(nt_type(nt, bex), "CallNode")) {
+          const char *lname = nt_str(nt, bex, "name");
+          int lblk = nt_ref(nt, bex, "block");
+          if (lname && (sp_streq(lname, "lambda") || sp_streq(lname, "proc")) &&
+              nt_ref(nt, bex, "receiver") < 0 && lblk >= 0 &&
+              nt_type(nt, lblk) && sp_streq(nt_type(nt, lblk), "BlockNode"))
+            nt_node_set_ref(nt, id, "block", lblk);
         }
       }
     }
@@ -2215,7 +2233,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_ref(nt, id, "receiver", eachn);
       comp_grow_node_arrays(c);
     }
-    else if (sp_streq(nm, "to_a") && sp_streq(rn, "take") &&
+    else if ((sp_streq(nm, "to_a") || sp_streq(nm, "force")) && sp_streq(rn, "take") &&
              nt_ref(nt, id, "block") < 0) {
       /* X.take(n).to_a == X.first(n) -- and first(n) is what the lazy
          pipeline terminates on, so a lazy .take(n).to_a materializes. */
@@ -2360,6 +2378,60 @@ static int pad_unsupplied_params(Compiler *c) {
    counting idiom each_with_object(Hash.new(0)). Rename the call to the
    internal `__hash_new_default`, which infers (stably) as the
    universally-boxed PolyPoly variant. */
+/* `m(*[a, b])`: a splat of an ARRAY LITERAL expands to its elements at
+   compile time so builtin methods and proc calls (which have no runtime
+   splat path) take plain positionals -- min(*[2]), add.(*[3, 4]). USER
+   methods keep the runtime splat shape: emit_args_filled handles it and
+   carries the correct ArgumentError timing for arity mismatches. Type-aware
+   (user-object receivers excluded), hence in the fixpoint. */
+static int expand_literal_splat_args(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) {
+      if (comp_method_index(c, nm) >= 0 || comp_included_method_index(c, nm) >= 0)
+        continue;   /* a user method: native splat path */
+    }
+    else {
+      TyKind rt = infer_type(c, recv);
+      if (rt == TY_UNKNOWN || ty_is_object(rt) || rt == TY_CLASS) continue;
+    }
+    int argsn = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+    int sp_at = -1;
+    for (int j = 0; j < an; j++) {
+      const char *aty = av[j] >= 0 ? nt_type(nt, av[j]) : NULL;
+      if (aty && sp_streq(aty, "SplatNode")) { sp_at = j; break; }
+    }
+    if (sp_at < 0 || an > 32) continue;
+    int inner = nt_ref(nt, av[sp_at], "expression");
+    const char *ity = inner >= 0 ? nt_type(nt, inner) : NULL;
+    if (!ity || !sp_streq(ity, "ArrayNode")) continue;
+    int en = 0;
+    const int *ev = nt_arr(nt, inner, "elements", &en);
+    int nested = 0;
+    for (int j = 0; j < en; j++) {
+      const char *ety = ev[j] >= 0 ? nt_type(nt, ev[j]) : NULL;
+      if (ety && sp_streq(ety, "SplatNode")) nested = 1;
+    }
+    if (nested || en > 32 || an - 1 + en > 64) continue;
+    int na[96];
+    int m0 = 0;
+    for (int j = 0; j < sp_at; j++) na[m0++] = av[j];
+    for (int j = 0; j < en; j++) na[m0++] = ev[j];
+    for (int j = sp_at + 1; j < an; j++) na[m0++] = av[j];
+    nt_node_set_arr(nt, (int)argsn, "arguments", na, m0);
+    changed = 1;
+  }
+  return changed;
+}
+
 static int pin_arg_position_hash_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2466,6 +2538,30 @@ int desugar_enum_method_recv(Compiler *c) {
     /* A blockless TERMINAL on an index/slice enumerator delegates through
        to_a too (each_slice(2).count / .to_h): only the block-driving chains
        need the raw shape for their fold unrolls. */
+    /* A BLOCK-form Enumerable on a SLICE/CONS enumerator delegates through
+       to_a -- except map/collect, whose dedicated fold arms need the raw
+       shape. The index enums (each_with_index / with_index) keep ALL their
+       block chains on the dedicated two-param codegen. */
+    int recv_is_slice_enum = 0;
+    if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
+      const char *rn2 = nt_str(nt, recv, "name");
+      recv_is_slice_enum = rn2 && (sp_streq(rn2, "each_slice") || sp_streq(rn2, "each_cons"));
+    }
+    if (rt == TY_ENUMERATOR && recv_is_slice_enum && nt_ref(nt, id, "block") >= 0 &&
+        !sp_streq(nm, "map") && !sp_streq(nm, "collect") &&
+        !sp_streq(nm, "with_index") && !sp_streq(nm, "each_with_index") &&
+        !sp_streq(nm, "to_a") && !sp_streq(nm, "entries")) {
+      int wrap3 = nt_new_node(nt, "CallNode");
+      if (wrap3 >= 0) {
+        nt_node_set_str(nt, wrap3, "name", "to_a");
+        nt_node_set_ref(nt, wrap3, "receiver", recv);
+        nt_node_set_ref(nt, id, "receiver", wrap3);
+        comp_grow_node_arrays(c);
+        c->nscope[wrap3] = c->nscope[id];
+        changed = 1;
+        continue;
+      }
+    }
     if (rt == TY_ENUMERATOR && recv_is_index_enum && enum_terminal &&
         !sp_streq(nm, "first") && !sp_streq(nm, "size")) {
       int wrap2 = nt_new_node(nt, "CallNode");
@@ -3686,6 +3782,9 @@ void analyze_program(Compiler *c) {
 
   rename_shadowing_block_params(c);
   desugar_enum_chain_shapes(c);          /* each_char.with_index / each.with_object */
+  desugar_enum_chain_shapes(c);          /* 2nd pass: shapes the 1st created (e.g.
+                                            map(&:sym.to_proc): to_proc->lambda first,
+                                            then the lambda block attaches) */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
@@ -3947,6 +4046,7 @@ void analyze_program(Compiler *c) {
     ch |= propagate_prep_params(c);
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
+    ch |= expand_literal_splat_args(c);        /* builtin/proc m(*[a,b]) -> m(a, b) */
     ch |= pin_arg_position_hash_new(c);        /* f(Hash.new(d)) -> PolyPoly variant */
     ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
     ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
