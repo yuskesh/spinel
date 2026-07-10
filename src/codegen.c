@@ -66,7 +66,10 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
     case TY_FLOAT_ARRAY: fn = "sp_box_float_array"; break;
     case TY_STR_ARRAY: fn = "sp_box_str_array"; break;
     case TY_POLY_ARRAY: fn = "sp_box_poly_array"; break;
-    case TY_NIL: buf_puts(b, "sp_box_nil()"); return;
+    case TY_NIL:
+      /* a nil-typed expression can still have side effects (puts/print as a
+         block tail): evaluate it for effect, then yield nil */
+      buf_printf(b, "(%s, sp_box_nil())", expr && *expr ? expr : "(void)0"); return;
     default: break;
   }
   if (fn) buf_printf(b, "%s(%s)", fn, expr);

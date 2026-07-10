@@ -131,6 +131,54 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     return 0;  /* unsupported obj-array op: pass should have prevented this. */
   }
+  /* String#slice! in VALUE position: returns the removed part (or nil) and
+     reassigns the receiver; statement position has its own arm. The
+     receiver must be an lvalue (re-read and re-assigned). */
+  if (rt == TY_STRING && sp_streq(name, "slice!") && (argc == 1 || argc == 2)) {
+    const char *rvt2 = nt_type(nt, recv);
+    int sb_asgn = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
+                           sp_streq(rvt2, "InstanceVariableReadNode"));
+    if (sb_asgn && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+      int tp2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", tp2); emit_expr(c, argv[0], b);
+      buf_printf(b, "; const char *_hit%d = (_t%d && ", tp2, tp2);
+      emit_expr(c, recv, b);
+      buf_printf(b, ") ? strstr(", tp2); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d) : NULL; if (_hit%d) ", tp2, tp2);
+      emit_expr(c, recv, b);
+      buf_printf(b, " = sp_str_sub("); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, (&(\"\\xff\")[1])); _hit%d ? _t%d : (const char *)0; })", tp2, tp2, tp2);
+      return 1;
+    }
+    if (sb_asgn && argc == 2) {
+      int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
+      buf_printf(b, "; mrb_int _t%d = (mrb_int)strlen(", tn2);
+      emit_expr(c, recv, b);
+      buf_printf(b, "); const char *_t%d = NULL;"
+                    " if (_t%d < 0) _t%d += _t%d;"
+                    " if (_t%d >= 0 && _t%d <= _t%d && _t%d > 0) {"
+                    " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d;"
+                    " _t%d = sp_str_substr(",
+                 tr2,
+                 ti2, ti2, tn2,
+                 ti2, ti2, tn2, tl2,
+                 tl2, tn2, ti2, tl2, tn2, ti2,
+                 tr2);
+      emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d); ", ti2, tl2);
+      emit_expr(c, recv, b);
+      buf_puts(b, " = sp_str_concat(sp_str_substr(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", 0, _t%d), sp_str_substr(", ti2);
+      emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d + _t%d, _t%d - _t%d - _t%d)); } _t%d; })",
+                 ti2, tl2, tn2, ti2, tl2, tr2);
+      return 1;
+    }
+  }
+
   if (recv >= 0 && ty_is_array(rt)) {
     if (sp_streq(name, "pack") && argc == 1 &&
         (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_STR_ARRAY)) {
@@ -391,6 +439,21 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        there. Needed for the array-backed Set package's #delete, whose
        @data widens to poly for mixed-element sets. */
     if (rt == TY_POLY_ARRAY && sp_streq(name, "delete") && argc == 1) {
+      int dblk = nt_ref(nt, id, "block");
+      if (dblk >= 0 && nt_type(nt, dblk) && sp_streq(nt_type(nt, dblk), "BlockNode")) {
+        /* delete(v) { not-found value }: yield the block's value on a miss */
+        int dbody = nt_ref(nt, dblk, "body");
+        int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
+        if (dbn >= 1) {
+          int tdr = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = sp_PolyArray_delete(", tdr);
+          emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+          buf_printf(b, "); _t%d.tag != SP_TAG_NIL ? _t%d : ", tdr, tdr);
+          emit_boxed(c, dbb[dbn - 1], b);
+          buf_puts(b, "; })");
+          return 1;
+        }
+      }
       buf_puts(b, "sp_PolyArray_delete("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
@@ -817,6 +880,27 @@ else {
         return 1;
       }
       if (sp_streq(name, "delete") && argc == 1 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+        int dblk = nt_ref(nt, id, "block");
+        if (dblk >= 0 && nt_type(nt, dblk) && sp_streq(nt_type(nt, dblk), "BlockNode")) {
+          int dbody = nt_ref(nt, dblk, "body");
+          int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
+          if (dbn >= 1) {
+            int tdr = ++g_tmp;
+            if (rt == TY_INT_ARRAY) {
+              buf_printf(b, "({ mrb_int _t%d = sp_IntArray_delete(", tdr);
+              emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
+              buf_printf(b, "); _t%d != SP_INT_NIL ? sp_box_int(_t%d) : ", tdr, tdr);
+            }
+            else {
+              buf_printf(b, "({ const char *_t%d = sp_StrArray_delete(", tdr);
+              emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b);
+              buf_printf(b, "); _t%d ? sp_box_str(_t%d) : ", tdr, tdr);
+            }
+            emit_boxed(c, dbb[dbn - 1], b);
+            buf_puts(b, "; })");
+            return 1;
+          }
+        }
         buf_printf(b, "sp_%sArray_delete(", k); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
@@ -934,9 +1018,10 @@ else {
           buf_printf(b, "_t%d", tres); return 1;
         }
       }
-      /* find_index { |x| cond } / index { |x| cond } on typed arrays - returns
-         the index or nil (`index` is an alias for `find_index` in this form). */
-      if ((sp_streq(name, "find_index") || sp_streq(name, "index")) && block >= 0) {
+      /* find_index { |x| cond } / index { |x| cond } / rindex { |x| cond } on
+         typed arrays - returns the index or nil (rindex scans from the end). */
+      if ((sp_streq(name, "find_index") || sp_streq(name, "index") ||
+           sp_streq(name, "rindex")) && block >= 0) {
         const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -947,8 +1032,12 @@ else {
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rfi.p ? rfi.p : "NULL"); free(rfi.p);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = SP_INT_NIL;\n", tres);
           emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
-                     ti, ti, k, trecv, ti);
+          if (sp_streq(name, "rindex"))
+            buf_printf(g_pre, "for (mrb_int _t%d = sp_%sArray_length(_t%d) - 1; _t%d >= 0; _t%d--) {\n",
+                       ti, k, trecv, ti, ti);
+          else
+            buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
+                       ti, ti, k, trecv, ti);
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
           for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
           int sv = g_indent; g_indent++;
@@ -1665,6 +1754,10 @@ else {
       if (sp_streq(name, "flatten") && argc <= 1) {
         if (argc == 1) { buf_puts(b, "sp_PolyArray_flatten_n("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_PolyArray_flatten("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+        return 1;
+      }
+      if (sp_streq(name, "flatten!") && argc == 0) {
+        buf_puts(b, "sp_PolyArray_flatten_bang("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "transpose") && argc == 0) {

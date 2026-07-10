@@ -5035,6 +5035,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "sp_kernel_array("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }
       return;
     }
+    if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && ac == 1 &&
+        nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "SplatNode")) {
+      /* format(*args): the array's head is the format string */
+      int sfx = nt_ref(nt, av[0], "expression");
+      if (sfx >= 0) {
+        buf_puts(b, "sp_str_format_splat(");
+        emit_boxed(c, sfx, b);
+        buf_puts(b, ")");
+        return;
+      }
+    }
     if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && ac >= 1) {
       /* format(fmt, *args) -> sp_str_format_polyarr(fmt, poly_arr) */
       int tf = ++g_tmp, ta = ++g_tmp;

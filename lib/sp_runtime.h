@@ -1919,10 +1919,11 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
         default:
-          if (v.cls_id >= 0 && v.v.p) {
+          if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p) {
             /* a class with a user #to_s renders through the generated
-               dispatcher; the rest get CRuby's default #<Name:0xADDR> */
-            if (sp_obj_to_s_fn) {
+               dispatcher; the rest (bare Object.new included) get CRuby's
+               default #<Name:0xADDR> */
+            if (v.cls_id >= 0 && sp_obj_to_s_fn) {
               const char *us = sp_obj_to_s_fn(v.cls_id, v.v.p);
               if (us) return us;
             }
@@ -2741,7 +2742,19 @@ static void sp_PolyArray_flatten_into(sp_PolyArray *dst, sp_RbVal v) {
      deep-flatten use cases. */
   sp_PolyArray_push(dst, v);
 }
+static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a);  /* below */
 static sp_PolyArray *sp_PolyArray_flatten(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (!a) return b; for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into(b, a->data[i]); return b; }
+/* Array#flatten!: replace the receiver's contents with the flattened run
+   (aliases observe the mutation). */
+static sp_PolyArray *sp_PolyArray_flatten_bang(sp_PolyArray *a) {
+  if (!a) return NULL;
+  if (a->frozen) sp_raise_frozen_array();
+  SP_GC_ROOT(a);
+  sp_PolyArray *f = sp_PolyArray_flatten(a); SP_GC_ROOT(f);
+  a->len = 0;
+  for (mrb_int i = 0; i < f->len; i++) sp_PolyArray_push(a, f->data[i]);
+  return a;
+}
 
 /* Box-into-poly converters used by the printf-with-array codegen
    (`"%fmt" % typed_array`). The format helper expects sp_RbVal
@@ -2841,6 +2854,43 @@ static int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
 }
 
 static sp_RbVal sp_fmt_named_ref(sp_PolyArray *a, const char *nm);  /* defined after the hash structs */
+/* Splat arguments into the print builtins: puts(*a) / print(*a) / p(*a)
+   expand each element of the (any-kind) array as its own argument. puts
+   recurses into array elements, as CRuby does. */
+static void sp_splat_puts(sp_RbVal a) {
+  mrb_int n = sp_poly_arr_len(a);
+  if (n == 0) { putchar(10); return; }
+  for (mrb_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(a, i);
+    if (e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)) { sp_splat_puts(e); continue; }
+    const char *s = sp_poly_to_s(e);
+    if (s) fputs(s, stdout);
+    if (!s || !*s || s[strlen(s) - 1] != 10) putchar(10);
+  }
+}
+static void sp_splat_print(sp_RbVal a) {
+  mrb_int n = sp_poly_arr_len(a);
+  for (mrb_int i = 0; i < n; i++) {
+    const char *s = sp_poly_to_s(sp_poly_arr_get(a, i));
+    if (s) fputs(s, stdout);
+  }
+}
+static void sp_splat_p(sp_RbVal a) {
+  mrb_int n = sp_poly_arr_len(a);
+  for (mrb_int i = 0; i < n; i++) {
+    const char *s = sp_poly_inspect(sp_poly_arr_get(a, i));
+    fputs(s ? s : "nil", stdout); putchar(10);
+  }
+}
+/* format(*args): the first element is the format string, the rest its args */
+static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a);
+static const char *sp_str_format_splat(sp_RbVal a) {
+  mrb_int n = sp_poly_arr_len(a);
+  const char *fmt = n > 0 ? sp_poly_to_s(sp_poly_arr_get(a, 0)) : "";
+  sp_PolyArray *rest = sp_PolyArray_new(); SP_GC_ROOT(rest);
+  for (mrb_int i = 1; i < n; i++) sp_PolyArray_push(rest, sp_poly_arr_get(a, i));
+  return sp_str_format_polyarr(fmt ? fmt : "", rest);
+}
 static inline const char *sp_poly_inspect(sp_RbVal v);            /* %p; defined after the container types */
 static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
   size_t cap = strlen(fmt) + 64;
@@ -3427,6 +3477,9 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
              #<Name:0x... @a=..., ...> like CRuby's default inspect */
           if (v.cls_id >= 0 && sp_obj_inspect_fn && v.v.p)
             return sp_obj_inspect_fn(v.cls_id, v.v.p);
+          if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p)
+            return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
+                              (unsigned long long)(uintptr_t)v.v.p);
           return SPL("#<Object>");
       }
     default:          return sp_str_empty;

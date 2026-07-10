@@ -95,7 +95,7 @@ def t_reduce_sym_op
   p [5, 3].inject(:|)          # 7
   p [5, 3].inject(:^)          # 6
   p [42].reduce(:+)            # 42 (single-element)
-  p [].reduce(:+)              # 0 (empty array; CRuby returns nil -- int_array can't)
+  p [].reduce(:+)              # nil (empty seedless fold, matching CRuby)
 end
 t_reduce_sym_op
 

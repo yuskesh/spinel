@@ -2006,6 +2006,34 @@ int desugar_enum_method_recv(Compiler *c) {
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
+    /* hash.map.with_index { } / hash.each.with_index { }: interpose to_a so
+       the pair-array enumerator chain (which the array machinery serves)
+       carries it -- h.to_a.map.with_index. Type-aware, hence here and not in
+       the one-shot pre-pass. */
+    if (nm && (sp_streq(nm, "with_index") || sp_streq(nm, "with_object"))) {
+      int wrecv = nt_ref(nt, id, "receiver");
+      if (wrecv >= 0 && nt_type(nt, wrecv) && sp_streq(nt_type(nt, wrecv), "CallNode") &&
+          nt_ref(nt, wrecv, "block") < 0) {
+        const char *wrn = nt_str(nt, wrecv, "name");
+        if (wrn && (sp_streq(wrn, "map") || sp_streq(wrn, "each") ||
+                    sp_streq(wrn, "collect"))) {
+          int hrecv = nt_ref(nt, wrecv, "receiver");
+          if (hrecv >= 0 && ty_is_hash(infer_type(c, hrecv)) &&
+              !(nt_type(nt, hrecv) && sp_streq(nt_type(nt, hrecv), "CallNode") &&
+                nt_str(nt, hrecv, "name") && sp_streq(nt_str(nt, hrecv, "name"), "to_a"))) {
+            int toa = nt_new_node(nt, "CallNode");
+            if (toa >= 0) {
+              nt_node_set_str(nt, toa, "name", "to_a");
+              nt_node_set_ref(nt, toa, "receiver", hrecv);
+              nt_node_set_ref(nt, wrecv, "receiver", toa);
+              comp_grow_node_arrays(c);
+              c->nscope[toa] = c->nscope[wrecv];
+              changed = 1;
+            }
+          }
+        }
+      }
+    }
     if (!nm || !is_array_enum_method(nm)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;

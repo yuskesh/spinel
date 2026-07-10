@@ -1895,7 +1895,7 @@ else {
               return TY_STRING;
             if ((sp_streq(name, "+") || sp_streq(name, "*")) && argc >= 1) return TY_STRING;
             if (sp_streq(name, "gsub") || sp_streq(name, "sub")) return TY_STRING;
-            if (sp_streq(name, "[]") || sp_streq(name, "slice")) return TY_STRING;
+            if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "slice!")) return TY_STRING;
             if (sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "bytesize") ||
                 sp_streq(name, "to_i") || sp_streq(name, "count") || sp_streq(name, "ord") ||
                 sp_streq(name, "hex") || sp_streq(name, "oct") || sp_streq(name, "rindex") ||
@@ -2522,7 +2522,7 @@ else {
         block >= 0) return TY_POLY;  /* self, or nil when nothing was removed */
     if ((sp_streq(name, "keep_if") || sp_streq(name, "delete_if")) && block >= 0)
       return rt;  /* always self */
-    if (sp_streq(name, "find_index") || sp_streq(name, "index")) return TY_INT;  /* int or nil */
+    if (sp_streq(name, "find_index") || sp_streq(name, "index") || sp_streq(name, "rindex")) return TY_INT;  /* int or nil */
     if (sp_streq(name, "each_index")) return rt;
     if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) &&
         argc >= 1 && argv && rt != TY_POLY_ARRAY && ty_array_elem(rt) != TY_UNKNOWN) {
@@ -2556,6 +2556,9 @@ else {
     if (sp_streq(name, "combination") && argc == 1 && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "permutation") && (argc == 1 || argc == 0) && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
+    /* delete(v) { fallback }: the not-found block's value mixes in -> poly */
+    if (sp_streq(name, "delete") && argc == 1 && nt_ref(nt, id, "block") >= 0)
+      return TY_POLY;
     if ((sp_streq(name, "delete_at") || sp_streq(name, "delete")) && argc == 1)
       return ty_array_elem(rt);
     if (sp_streq(name, "shift") && argc == 0) return ty_array_elem(rt);
@@ -3094,6 +3097,7 @@ else {
         sp_streq(name, "squeeze") || sp_streq(name, "tr") || sp_streq(name, "tr_s") ||
         sp_streq(name, "succ") || sp_streq(name, "next") ||
         sp_streq(name, "delete")) return TY_STRING;
+    if (sp_streq(name, "slice!")) return TY_STRING;  /* removed part, or nil */
     if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "byteslice") ||
         sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) return TY_STRING;
     if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;

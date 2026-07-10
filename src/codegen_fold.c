@@ -2008,6 +2008,44 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
+  /* generic poly array with a :sym operator (or an initial value + :sym):
+     fold via the tag-dispatching sp_poly_<op> over boxed elements. Covers
+     Hash#values / #map results, whose elements are boxed. */
+  if (rt == TY_POLY_ARRAY) {
+    int pblk = nt_ref(nt, id, "block");
+    const char *pop = NULL;
+    if (pblk >= 0 && nt_type(nt, pblk) && sp_streq(nt_type(nt, pblk), "BlockArgumentNode")) {
+      int ex = nt_ref(nt, pblk, "expression");
+      if (ex >= 0 && nt_type(nt, ex) && sp_streq(nt_type(nt, ex), "SymbolNode")) pop = nt_str(nt, ex, "value");
+    }
+    int pargs = nt_ref(nt, id, "arguments");
+    int pac = 0; const int *pav = pargs >= 0 ? nt_arr(nt, pargs, "arguments", &pac) : NULL;
+    int init_node = -1;
+    if (!pop && pac >= 1 && pav && nt_type(nt, pav[pac - 1]) &&
+        sp_streq(nt_type(nt, pav[pac - 1]), "SymbolNode")) {
+      pop = nt_str(nt, pav[pac - 1], "value");
+      if (pac == 2) init_node = pav[0];
+    }
+    else if (pop && pac == 1 && pav) init_node = pav[0];
+    const char *pfn = pop ? (sp_streq(pop, "+") ? "sp_poly_add"
+                           : sp_streq(pop, "-") ? "sp_poly_sub"
+                           : sp_streq(pop, "*") ? "sp_poly_mul"
+                           : sp_streq(pop, "/") ? "sp_poly_div" : NULL) : NULL;
+    if (pfn) {
+      int ta = ++g_tmp, tn = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); mrb_int _t%d = sp_PolyArray_length(_t%d);"
+                    " sp_RbVal _t%d = ", ta, tn, ta, tacc);
+      int start;
+      if (init_node >= 0) { emit_boxed(c, init_node, b); start = 0; }
+      else { buf_printf(b, "_t%d > 0 ? sp_PolyArray_get(_t%d, 0) : sp_box_nil()", tn, ta); start = 1; }
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);"
+                    " for (mrb_int _t%d = %d; _t%d < _t%d; _t%d++)"
+                    " _t%d = %s(_t%d, sp_PolyArray_get(_t%d, _t%d)); _t%d; })",
+                 tacc, ti, start, ti, tn, ti, tacc, pfn, tacc, ta, ti, tacc);
+      return 1;
+    }
+  }
   if (!ty_is_array(rt)) return 0;
   const char *k = array_kind(rt);
   if (!k) return 0;
@@ -2048,7 +2086,13 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   emit_ctype(c, et, b); buf_printf(b, " _t%d = ", tacc);
   int start;
   if (init >= 0) { emit_expr(c, init, b); start = 0; }
-  else { buf_printf(b, "_t%d > 0 ? sp_%sArray_get(_t%d, 0) : %s", tn, k, ta, default_value(et)); start = 1; }
+  else {
+    /* CRuby: a seedless fold over an empty collection is nil */
+    const char *mt = (et == TY_INT) ? "SP_INT_NIL"
+                   : (et == TY_FLOAT) ? "sp_float_nil()"
+                   : (et == TY_STRING) ? "NULL" : default_value(et);
+    buf_printf(b, "_t%d > 0 ? sp_%sArray_get(_t%d, 0) : %s", tn, k, ta, mt); start = 1;
+  }
   buf_printf(b, "; for (mrb_int _t%d = %d; _t%d < _t%d; _t%d++) _t%d = ", ti, start, ti, tn, ti, tacc);
   if (ifn)
     buf_printf(b, "%s(_t%d, sp_%sArray_get(_t%d, _t%d))", ifn, tacc, k, ta, ti);
@@ -2115,7 +2159,10 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   int start;
   if (init >= 0) { emit_expr(c, init, b); buf_puts(b, "; "); start = 0; }
   else if (nested) { buf_printf(b, "sp_PolyArray_length(_t%d) > 0 ? (sp_IntArray *)sp_PolyArray_get(_t%d, 0).v.p : sp_IntArray_new(); ", ta, ta); start = 1; }
-  else { buf_printf(b, "sp_%sArray_length(_t%d) > 0 ? sp_%sArray_get(_t%d, 0) : 0; ", k, ta, k, ta); start = 1; }
+  else { buf_printf(b, "sp_%sArray_length(_t%d) > 0 ? sp_%sArray_get(_t%d, 0) : %s; ", k, ta, k, ta,
+                    acc_ty == TY_INT ? "SP_INT_NIL" : acc_ty == TY_FLOAT ? "sp_float_nil()"
+                    : acc_ty == TY_STRING ? "NULL"
+                    : acc_ty == TY_POLY ? "sp_box_nil()" : "0"); start = 1; }
   /* Temporarily override block param types to match acc_ty/et so the body
      expression uses the correct C types (same pattern as emit_sort_cmp_expr). */
   Scope *rsc = comp_scope_of(c, block);
