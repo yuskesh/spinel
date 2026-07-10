@@ -3921,6 +3921,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
       }
     }
   }
+  /* ENV.key?/has_key?/include?/member?(key) -> getenv presence test */
+  if (recv >= 0 && argc == 1 &&
+      (sp_streq(name, "key?") || sp_streq(name, "has_key?") ||
+       sp_streq(name, "include?") || sp_streq(name, "member?"))) {
+    const char *rty2 = nt_type(nt, recv);
+    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+      const char *rn = nt_str(nt, recv, "name");
+      if (rn && sp_streq(rn, "ENV")) {
+        buf_puts(b, "(getenv("); emit_expr(c, argv[0], b); buf_puts(b, ") != NULL)");
+        return;
+      }
+    }
+  }
   /* ENV.fetch(key, default) -> getenv with fallback */
   if (recv >= 0 && sp_streq(name, "fetch") && argc >= 1) {
     const char *rty2 = nt_type(nt, recv);

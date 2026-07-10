@@ -2045,6 +2045,16 @@ else {
       if (rn && sp_streq(rn, "ENV")) return TY_STRING;
     }
   }
+  /* ENV.key?/has_key?/include?/member?(key) -> bool */
+  if (recv >= 0 && argc == 1 &&
+      (sp_streq(name, "key?") || sp_streq(name, "has_key?") ||
+       sp_streq(name, "include?") || sp_streq(name, "member?"))) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && sp_streq(rty, "ConstantReadNode")) {
+      const char *rn = nt_str(nt, recv, "name");
+      if (rn && sp_streq(rn, "ENV")) return TY_BOOL;
+    }
+  }
 
   /* each_slice(n).map/collect { |...| } chain: return array of block result type.
      The blockless each_slice receiver types as TY_ENUMERATOR (a first-class
