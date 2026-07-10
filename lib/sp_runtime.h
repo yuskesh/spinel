@@ -2063,6 +2063,20 @@ static mrb_float sp_poly_Float(sp_RbVal v) {
   sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Float", sp_convert_src_name(v)));
   return 0.0;
 }
+/* Coerce a value to a C double for a Math.<fn> argument. Math accepts only a
+   real Numeric (no String parsing, unlike Kernel#Float), so nil / String /
+   any non-numeric raises TypeError -- where the lenient sp_poly_to_f coerced
+   nil to 0.0 and a String cast was a C compile error. */
+static mrb_float sp_num_to_f(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return v.v.f;
+  if (v.tag == SP_TAG_INT) return (mrb_float)v.v.i;
+  if (v.tag == SP_TAG_BIGINT) return (mrb_float)sp_bigint_to_int((sp_Bigint *)v.v.p);
+  const char *w = v.tag == SP_TAG_NIL ? "nil"
+                : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false")
+                : sp_poly_class_name(v);
+  sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Float", w));
+  return 0.0;
+}
 /* Numeric queries / rounding on a poly value: dispatch on the runtime tag the
    way CRuby dispatches on the class. A tag whose class does not define the
    method raises CRuby's NoMethodError (e.g. `1.nan?`, `"x".abs`). */
