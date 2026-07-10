@@ -2353,6 +2353,14 @@ else {
       /* a float initial value promotes the whole sum to Float (e.g.
          ints.sum(0.0) or ints.sum(0.0) { |x| x }), regardless of the block. */
       if (argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+      /* a String / Array initial value folds by concatenation */
+      if (argc == 1 && blk < 0) {
+        TyKind sit = infer_type(c, argv[0]);
+        if (sit == TY_STRING) return TY_STRING;
+        if (ty_is_array(sit) ||
+            (sit == TY_UNKNOWN && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode")))
+          return TY_POLY_ARRAY;
+      }
       if (blk >= 0) {
         int body = nt_ref(nt, blk, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;

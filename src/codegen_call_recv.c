@@ -264,6 +264,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     if (rt == TY_POLY_ARRAY && sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
       TyKind init_t = comp_ntype(c, argv[0]);
+      /* an Array initial value concatenates one level ([[1],[2]].sum([])) */
+      if (ty_is_array(init_t) ||
+          (init_t == TY_UNKNOWN && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode"))) {
+        buf_puts(b, "sp_PolyArray_sum_concat("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       buf_puts(b, "sp_box_int(");
       if (init_t == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { emit_expr(c, argv[0], b); }
@@ -1156,6 +1163,12 @@ else {
       }
       if (sp_streq(name, "sum") && argc == 1 && nt_ref(nt, id, "block") < 0) {
         TyKind init_t = comp_ntype(c, argv[0]);
+        /* a String initial value concatenates (["a","b"].sum("") == "ab") */
+        if (rt == TY_STR_ARRAY && init_t == TY_STRING) {
+          buf_puts(b, "sp_StrArray_sum_str("); emit_expr(c, recv, b); buf_puts(b, ", ");
+          emit_expr(c, argv[0], b); buf_puts(b, ")");
+          return 1;
+        }
         /* a float initial value promotes an integer-array sum to Float: add the
            float init to the integer total in floating point (sp_IntArray_sum
            returns mrb_int, so accumulating the init through it would truncate). */

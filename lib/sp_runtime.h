@@ -3116,6 +3116,25 @@ else if (kind == SP_BUILTIN_STR_ARRAY) {
    (e.g. the result of `arr.map { _1[:int_key] }`). Non-int tags
    contribute zero. */
 static mrb_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; mrb_int s = 0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += a->data[i].v.i; } return s; }
+/* Array#sum with a String initial value: concatenation fold ("abc" from
+   ["a","b","c"].sum("")), CRuby's + on each element. */
+static const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {
+  size_t n = init ? strlen(init) : 0;
+  if (a) for (mrb_int i = 0; i < a->len; i++) if (a->data[i]) n += strlen(a->data[i]);
+  char *r = sp_str_alloc(n); size_t o = 0;
+  if (init) { memcpy(r, init, strlen(init)); o = strlen(init); }
+  if (a) for (mrb_int i = 0; i < a->len; i++) if (a->data[i]) { size_t l = strlen(a->data[i]); memcpy(r + o, a->data[i], l); o += l; }
+  r[o] = 0; sp_str_set_len(r, o); return r;
+}
+/* Array#sum with an Array initial value over an array of arrays: one-level
+   concatenation into a fresh poly array ([[1],[2]].sum([]) == [1, 2]). */
+static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  sp_PolyArray_flatten_into_n(r, init, 1);
+  if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_n(r, a->data[i], 1);
+  return r;
+}
 static sp_PolyArray *sp_PolyArray_from_int_array(sp_IntArray *a) { sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (mrb_int i = 0; i < a->len; i++) { mrb_int v = a->data[a->start+i]; sp_PolyArray_push(p, v == SP_INT_NIL ? sp_box_nil() : sp_box_int(v)); } return p; }
 static sp_PolyArray *sp_PolyArray_from_str_array(sp_StrArray *a) { sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(p, sp_box_str(a->data[i])); return p; }
 static sp_PolyArray *sp_PolyArray_from_float_array(sp_FloatArray *a) { sp_PolyArray *p = sp_PolyArray_new(); if (!a) return p; for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(p, sp_box_float(a->data[i])); return p; }
