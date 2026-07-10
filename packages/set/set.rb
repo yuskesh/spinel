@@ -54,4 +54,48 @@ class Set
   def empty?
     @data.empty?
   end
+
+  def to_a
+    @data.dup
+  end
+
+  def map
+    r = []
+    @data.each { |x| r.push(yield(x)) }
+    r
+  end
+  alias collect map
+
+  # Set operators build fresh sets; the operand only needs #include? /#each.
+  def &(other)
+    r = Set.new
+    @data.each { |x| r.add(x) if other.include?(x) }
+    r
+  end
+  alias intersection &
+
+  def |(other)
+    r = Set.new(@data)
+    other.each { |x| r.add(x) }
+    r
+  end
+  alias union |
+  alias + |
+
+  def -(other)
+    r = Set.new
+    @data.each { |x| r.add(x) unless other.include?(x) }
+    r
+  end
+  alias difference -
+
+  def subset?(other)
+    @data.all? { |x| other.include?(x) }
+  end
+  alias <= subset?
+
+  def superset?(other)
+    other.subset?(self)
+  end
+  alias >= superset?
 end
