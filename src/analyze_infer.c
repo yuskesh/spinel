@@ -2390,9 +2390,12 @@ else {
         nt_ref(nt, id, "block") < 0 && argc == 1)
       return rt;
     if (sp_streq(name, "[]")) {
-      /* arr[range] / arr[start, len] -> a subarray; arr[i] -> an element */
+      /* arr[range] / arr[start, len] -> a subarray; arr[i] -> an element. The
+         range index may be a literal RangeNode or a variable/param typed
+         TY_RANGE. */
       if (argc == 2) return rt;
-      if (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) return rt;
+      if (argc == 1 && ((nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) ||
+                        a0 == TY_RANGE)) return rt;
       return ty_array_elem(rt);
     }
     if (sp_streq(name, "at") && argc == 1) return ty_array_elem(rt);  /* like [i] */

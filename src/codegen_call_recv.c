@@ -584,6 +584,28 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
         return 1;
       }
+      if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        /* arr[range] where the range is a variable/param (a literal RangeNode is
+           folded above). Resolve beginless (INTPTR_MIN), endless (INTPTR_MAX),
+           and negative endpoints against the length, then slice -- a start
+           outside [-len, len] is nil, matching Array#[]. */
+        int ta = ++g_tmp, tr = ++g_tmp, tf = ++g_tmp, tl = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d);", tn, k, ta);
+        buf_printf(b, " mrb_int _t%d = _t%d.first == INTPTR_MIN ? 0 :"
+                      " (_t%d.first < 0 ? _t%d.first + _t%d : _t%d.first);",
+                   tf, tr, tr, tr, tn, tr);
+        buf_printf(b, " mrb_int _t%d = _t%d.last == INTPTR_MAX ? _t%d - _t%d :"
+                      " ((_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1));",
+                   tl, tr, tn, tf, tr, tr, tn, tr, tf, tr);
+        /* a start before the array (`first < -len`, so the resolved `_tf` is
+           still negative) or past its end (`_tf > len`) is nil in Ruby, not a
+           clamped slice; `_tf == len` is the empty slice, which slice() yields. */
+        buf_printf(b, " (_t%d < 0 || _t%d > _t%d) ? (sp_%sArray *)0 : sp_%sArray_slice(_t%d, _t%d, _t%d); })",
+                   tf, tf, tn, k, k, ta, tf, tl);
+        return 1;
+      }
       if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) {
         buf_printf(b, "sp_%sArray_get(", k);
         emit_expr(c, recv, b); buf_puts(b, ", ");
