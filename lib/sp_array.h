@@ -40,7 +40,7 @@ static inline mrb_int sp_IntArray_get(sp_IntArray*a,mrb_int i){if(!a)return SP_I
    adjustment. CRuby raises IndexError; spinel no-ops as the safest
    fallback (raising from a typed-array set would need setjmp plumbing
    throughout the call chain). */
-static void sp_IntArray_set_slow(sp_IntArray*a,mrb_int i,mrb_int v){if(i<0)return;while(a->start+i>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));SP_GC_CTR_SUB(sp_gc_bytes,sizeof(mrb_int)*a->cap);h->size-=sizeof(mrb_int)*a->cap;a->cap=((((((a->cap*2))))))+1;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);h->size+=sizeof(mrb_int)*a->cap;SP_GC_CTR_ADD(sp_gc_bytes,sizeof(mrb_int)*a->cap);}while(i>=a->len){a->data[a->start+a->len]=0;a->len++;}a->data[a->start+i]=v;}
+static void sp_IntArray_set_slow(sp_IntArray*a,mrb_int i,mrb_int v){if(i<0)return;while(a->start+i>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));SP_GC_CTR_SUB(sp_gc_bytes,sizeof(mrb_int)*a->cap);h->size-=sizeof(mrb_int)*a->cap;a->cap=((((((a->cap*2))))))+1;a->data=(mrb_int*)realloc(a->data,sizeof(mrb_int)*a->cap);h->size+=sizeof(mrb_int)*a->cap;SP_GC_CTR_ADD(sp_gc_bytes,sizeof(mrb_int)*a->cap);}while(i>=a->len){a->data[a->start+a->len]=SP_INT_NIL;a->len++;}  /* gap slots read as nil */a->data[a->start+i]=v;}
 /* Issue #839: an extreme negative index (still negative after `i += len`)
    raises IndexError per MRI. */
 static inline void sp_IntArray_set(sp_IntArray*a,mrb_int i,mrb_int v){if(!a)return;if(a->frozen){sp_raise_frozen_array();return;}mrb_int orig=i;if(i<0)i+=a->len;if(i<0)sp_raise_cls("IndexError",sp_sprintf("index %lld too small for array; minimum: %lld",(long long)orig,(long long)-a->len));if(i<a->len){a->data[a->start+i]=v;return;}sp_IntArray_set_slow(a,i,v);}

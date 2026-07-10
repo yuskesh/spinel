@@ -1561,6 +1561,33 @@ else {
         buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
+      if (sp_streq(name, "unshift") && argc >= 1) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
+        for (int a2 = argc - 1; a2 >= 0; a2--) {
+          buf_printf(b, " sp_PolyArray_insert(_t%d, 0, ", t); emit_boxed(c, argv[a2], b); buf_puts(b, ");");
+        }
+        buf_printf(b, " _t%d; })", t);
+        return 1;
+      }
+      if (sp_streq(name, "insert") && argc >= 2) {
+        int t = ++g_tmp, ti2 = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); mrb_int _t%d = ", t, ti2); emit_int_expr(c, argv[0], b);
+        buf_puts(b, ";");
+        for (int a2 = 1; a2 < argc; a2++) {
+          buf_printf(b, " sp_PolyArray_insert(_t%d, _t%d + %d, ", t, ti2, a2 - 1);
+          emit_boxed(c, argv[a2], b); buf_puts(b, ");");
+        }
+        buf_printf(b, " _t%d; })", t);
+        return 1;
+      }
+      if (sp_streq(name, "concat") && argc == 1) {
+        buf_puts(b, "sp_PolyArray_concat_into("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       if (sp_streq(name, "first") && argc == 0) {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", 0)");
         return 1;

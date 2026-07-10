@@ -1246,6 +1246,21 @@ int infer_write_types(Compiler *c) {
         if (sp_streq(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;
         is_push = 1; vt = infer_type(c, argv[0]);
       }
+      else if (name && sp_streq(name, "unshift") && an >= 1) {
+        /* unshift(v, ...): every argument is element evidence, like push
+           (a foreign value used to store its raw bits into the typed slots) */
+        is_push = 1; vt = infer_type(c, argv[0]);
+        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, infer_type(c, argv[ai]));
+      }
+      else if (name && sp_streq(name, "insert") && an >= 2) {
+        /* insert(i, v, ...): the values from position 1 on are evidence */
+        is_push = 1; vt = infer_type(c, argv[1]);
+        for (int ai = 2; ai < an; ai++) vt = ty_unify(vt, infer_type(c, argv[ai]));
+      }
+      else if (name && sp_streq(name, "concat") && an == 1) {
+        /* concat(other): the other array's elements splice in */
+        is_push = 1; vt = splice_incoming_elem(c, argv[0]);
+      }
       else if (name && sp_streq(name, "[]=") && an == 2) {
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
         /* a range key is a splice: the RHS contributes element evidence */
