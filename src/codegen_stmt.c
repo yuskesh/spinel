@@ -4549,12 +4549,24 @@ else {
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     Scope *cws2 = comp_scope_of(c, id);
+    /* Resolve the slot's storage location + type. A top-level method's ivar
+       lives in the Toplevel pseudo-class global (`civ_Toplevel_x`) and a
+       class/module body's in `civ_<Class>_x` -- mirror the plain-write handler,
+       else a top-level `@x ||= v` renders no store and the assignment is lost. */
     int sc2 = cws2 ? cws2->class_id : -1;
+    if (sc2 < 0 && g_class_body_id >= 0) sc2 = g_class_body_id;
+    if (sc2 < 0) sc2 = comp_class_index(c, "Toplevel");
     TyKind ivt2 = TY_UNKNOWN;
     if (sc2 >= 0) { int iv2 = comp_ivar_index(&c->classes[sc2], nm); if (iv2 >= 0) ivt2 = c->classes[sc2].ivar_types[iv2]; }
     char ref2[300];
-    if (cws2 && cws2->is_cmethod && sc2 >= 0)
-      snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[sc2].name, nm + 1);
+    if (cws2 && cws2->is_cmethod && cws2->class_id >= 0)
+      snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[cws2->class_id].name, nm + 1);
+    else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && g_ie_class_id >= 0)
+      snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, nm + 1);
+    else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && g_class_body_id >= 0)
+      snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[g_class_body_id].name, nm + 1);
+    else if (cws2 && cws2->class_id < 0 && !cws2->is_cmethod && sc2 >= 0)
+      snprintf(ref2, sizeof ref2, "civ_Toplevel_%s", nm + 1);
     else
       snprintf(ref2, sizeof ref2, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     if (ivt2 == TY_POLY) {
