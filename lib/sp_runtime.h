@@ -2499,6 +2499,16 @@ static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v) {
   for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(v, i));
   return r;
 }
+/* The argument vector for `format`/`String#%` from a single poly right-hand
+   side: an Array value is spread across the directives, any other value formats
+   as a one-element list. Used when the `%` RHS is statically poly so the array
+   vs scalar distinction is only known at runtime. */
+static sp_PolyArray *sp_format_args(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return sp_poly_to_poly_array(v);
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_PolyArray_push(a, v);
+  return a;
+}
 /* Array#<=> across any pair of builtin array kinds: lexicographic element-wise
    compare via sp_poly_cmp, breaking ties on length. `*comparable` is cleared
    when an element pair is not mutually comparable (CRuby yields nil there). */
