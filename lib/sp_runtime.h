@@ -2815,6 +2815,7 @@ static int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
   return o;
 }
 
+static sp_RbVal sp_fmt_named_ref(sp_PolyArray *a, const char *nm);  /* defined after the hash structs */
 static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
   size_t cap = strlen(fmt) + 64;
   char *buf = (char *)malloc(cap);
@@ -2840,9 +2841,42 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
       }
       if (!overflow && argnum > 0 && *q == '$') { idx = argnum - 1; p = q + 1; }
     }
-    while (*p && sl < sizeof(spec) - 4) {
+    /* %<name>conv / %{name}: named reference into the format's hash argument.
+       %{name} interpolates the value's to_s directly (no conversion spec);
+       %<name> substitutes the value for the following conversion. */
+    sp_RbVal named_v = sp_box_nil(); mrb_bool have_named = FALSE;
+    if (*p == '<' || *p == '{') {
+      char nclose = (*p == '<') ? '>' : '}';
+      char nm[64]; size_t nl = 0; const char *q = p + 1;
+      while (*q && *q != nclose && nl < sizeof nm - 1) nm[nl++] = *q++;
+      nm[nl] = 0;
+      if (*q == nclose) {
+        p = q + 1;
+        named_v = sp_fmt_named_ref(a, nm);
+        have_named = TRUE;
+        if (nclose == '}') {
+          const char *sv2 = sp_poly_to_s(named_v);
+          size_t svl = sv2 ? strlen(sv2) : 0;
+          if (out + svl + 1 >= cap) { cap = (out + svl) * 2 + 64; buf = (char *)realloc(buf, cap); }
+          if (svl) memcpy(buf + out, sv2, svl);
+          out += svl;
+          continue;
+        }
+      }
+    }
+    while (*p && sl < sizeof(spec) - 8) {
       char c = *p;
-      if (c == '-' || c == '+' || c == ' ' || c == '#' || c == '0' || c == '.' || (c >= '0' && c <= '9')) { spec[sl++] = c; p++; }
+      if (c == '*') {
+        /* dynamic width / precision: the next positional argument supplies the
+           number (a negative width left-justifies, like printf) */
+        sp_RbVal wv = (idx < a->len) ? a->data[idx] : sp_box_nil(); idx++;
+        long long wnum = (wv.tag == SP_TAG_INT) ? (long long)wv.v.i
+                       : (wv.tag == SP_TAG_FLT) ? (long long)wv.v.f : 0;
+        char wbuf[24]; int wl = snprintf(wbuf, sizeof wbuf, "%lld", wnum);
+        if (sl + (size_t)wl < sizeof(spec) - 8) { memcpy(spec + sl, wbuf, (size_t)wl); sl += (size_t)wl; }
+        p++;
+      }
+      else if (c == '-' || c == '+' || c == ' ' || c == '#' || c == '0' || c == '.' || (c >= '0' && c <= '9')) { spec[sl++] = c; p++; }
       else break;
     }
     if (!*p) break;
@@ -2856,8 +2890,9 @@ else {
       memcpy(fmt_use, spec, sl); fmt_use[sl] = 0;
     }
     char tmp[256]; int wn = 0;
-    sp_RbVal v = (idx < a->len) ? a->data[idx] : sp_box_nil();
-    idx++;
+    sp_RbVal v;
+    if (have_named) v = named_v;
+    else { v = (idx < a->len) ? a->data[idx] : sp_box_nil(); idx++; }
     if (conv == 'd' || conv == 'i' || conv == 'x' || conv == 'X' || conv == 'o') {
       long long lv = 0;
       if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
@@ -2893,7 +2928,8 @@ else if (conv == 'c') {
       wn = snprintf(tmp, sizeof(tmp), fmt_use, cv);
     }
 else {
-      memcpy(tmp, spec, sl); tmp[sl] = 0; wn = (int)sl; idx--;
+      memcpy(tmp, spec, sl); tmp[sl] = 0; wn = (int)sl;
+      if (!have_named) idx--;
     }
     if (wn < 0) continue;
     if (out + (size_t)wn + 1 >= cap) { cap = ((out + wn) * 2) + 64; buf = (char *)realloc(buf, cap); }
@@ -3644,6 +3680,35 @@ static sp_PolyPolyHash *sp_PolyArray_tally(sp_PolyArray *a) { if (!a) return sp_
    index; merge inherits the LEFT receiver's default per CRuby. */
 static sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b){sp_PolyPolyHash*r=sp_PolyPolyHash_new();if(a){r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++){mrb_int idx=a->order[i];sp_PolyPolyHash_set(r,a->keys[idx],a->vals[idx]);}}if(b){for(mrb_int i=0;i<b->len;i++){mrb_int idx=b->order[i];sp_PolyPolyHash_set(r,b->keys[idx],b->vals[idx]);}}return r;}
 static mrb_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){mrb_int idx=(mrb_int)(sp_rbval_hash_key(k)&h->mask);while(h->occ[idx]){if(sp_rbval_eql_key(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
+/* format's %<name> / %{name}: find the key in the trailing hash argument by
+   its name (a keyword hash boxes as SymPolyHash; string-keyed and fully-poly
+   hashes are accepted too). A missing name is CRuby's KeyError. */
+static sp_RbVal sp_fmt_named_ref(sp_PolyArray *a, const char *nm) {
+  sp_RbVal h = (a && a->len > 0) ? a->data[a->len - 1] : sp_box_nil();
+  if (h.tag == SP_TAG_OBJ && h.v.p) {
+    if (h.cls_id == SP_BUILTIN_SYM_POLY_HASH) {
+      sp_SymPolyHash *sh = (sp_SymPolyHash *)h.v.p;
+      for (mrb_int i = 0; i < sh->len; i++)
+        if (sp_str_eq(sp_sym_to_s(sh->order[i]), nm))
+          return sp_SymPolyHash_get(sh, sh->order[i]);
+    }
+    else if (h.cls_id == SP_BUILTIN_STR_POLY_HASH) {
+      sp_StrPolyHash *th = (sp_StrPolyHash *)h.v.p;
+      for (mrb_int i = 0; i < th->len; i++)
+        if (sp_str_eq(th->order[i], nm)) return sp_StrPolyHash_get(th, th->order[i]);
+    }
+    else if (h.cls_id == SP_BUILTIN_POLY_POLY_HASH) {
+      sp_PolyPolyHash *ph = (sp_PolyPolyHash *)h.v.p;
+      for (mrb_int i = 0; i < ph->len; i++) {
+        sp_RbVal k = ph->keys[ph->order[i]];
+        if ((k.tag == SP_TAG_SYM && sp_str_eq(sp_sym_to_s((sp_sym)k.v.i), nm)) ||
+            (k.tag == SP_TAG_STR && k.v.s && sp_str_eq(k.v.s, nm)))
+          return ph->vals[ph->order[i]];
+      }
+    }
+  }
+  sp_raise_cls("KeyError", sp_sprintf("key<%s> not found", nm));
+}
 static mrb_int sp_PolyPolyHash_length(sp_PolyPolyHash*h){return h->len;}
 static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->occ[i]=0;h->len=0;}
 /* Hash#delete for a poly-keyed hash: was entirely missing (only the
