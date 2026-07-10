@@ -36,6 +36,7 @@ TyKind ie_block_break_next_ty(Compiler *c, int node);
    to an int array (both inference and codegen then treat the receiver as an int
    array). Excludes range-native methods (each/map/select/sum/min/count-no-arg). */
 int range_enum_redispatch(Compiler *c, int id);
+int hash_enum_redispatch(Compiler *c, int id);
 
 /* True if `node` (a block body / statements subtree) contains a top-level
    `break` that binds to the enclosing block -- i.e. not captured by a nested

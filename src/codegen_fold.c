@@ -2063,7 +2063,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      poly array; fold them as int arrays (unboxing each element). The poly array
      itself has no array_kind, so detect this before the typed-array bail. */
   int nested = (rt == TY_POLY_ARRAY && comp_is_nested_int_array_literal(c, recv));
-  const char *k = array_kind(rt);
+  const char *k = (rt == TY_POLY_ARRAY && !nested) ? "Poly" : array_kind(rt);
   if (!k && !nested) return 0;
   if (nested) k = "Poly";  /* length via sp_PolyArray_length; elements unboxed below */
   TyKind et = nested ? TY_INT_ARRAY : ty_array_elem(rt);
@@ -2073,9 +2073,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   if (!bty || !sp_streq(bty, "BlockNode")) return 0;
   const char *p0_orig = block_param_name(c, block, 0);
   const char *p1_orig = block_param_name(c, block, 1);
-  if (!p0_orig || !p1_orig) return 0;
+  /* |acc, (a, b)|: the element (an array, e.g. a hash's [k, v] pair)
+     destructures across the second param's leaves */
+  int p1_multi = !p1_orig && rt == TY_POLY_ARRAY && block_param_is_multi(c, block, 1);
+  if (!p0_orig || (!p1_orig && !p1_multi)) return 0;
   const char *p0 = rename_local(p0_orig);
-  const char *p1 = rename_local(p1_orig);
+  const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
   int bbody = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
   if (bn == 0) return 0;
@@ -2106,7 +2109,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      expression uses the correct C types (same pattern as emit_sort_cmp_expr). */
   Scope *rsc = comp_scope_of(c, block);
   LocalVar *rlv0 = rsc ? scope_local(rsc, p0_orig) : NULL;
-  LocalVar *rlv1 = rsc ? scope_local(rsc, p1_orig) : NULL;
+  LocalVar *rlv1 = (rsc && p1_orig) ? scope_local(rsc, p1_orig) : NULL;
   TyKind rpt0 = rlv0 ? rlv0->type : TY_UNKNOWN;
   TyKind rpt1 = rlv1 ? rlv1->type : TY_UNKNOWN;
   if (rlv0) rlv0->type = acc_ty;
@@ -2116,13 +2119,31 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
              ti, start, ti, k, ta, ti);
   buf_puts(b, "{ ");
   emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc);
-  if (nested) { emit_ctype(c, et, b); buf_printf(b, " lv_%s = (sp_IntArray *)sp_PolyArray_get(_t%d, _t%d).v.p; ", p1, ta, ti); }
+  if (p1_multi) {
+    int te2 = ++g_tmp;
+    buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d); ", te2, ta, ti);
+    int lc2 = block_param_multi_count(c, block, 1);
+    for (int li = 0; li < lc2; li++) {
+      const char *ln = block_param_multi_leaf(c, block, 1, li);
+      if (!ln) continue;
+      buf_printf(b, "sp_RbVal lv_%s = sp_poly_index_poly(_t%d, sp_box_int(%d)); (void)lv_%s; ",
+                 rename_local(ln), te2, li, rename_local(ln));
+    }
+  }
+  else if (nested) { emit_ctype(c, et, b); buf_printf(b, " lv_%s = (sp_IntArray *)sp_PolyArray_get(_t%d, _t%d).v.p; ", p1, ta, ti); }
   else { emit_ctype(c, et, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", p1, k, ta, ti); }
   for (int j = 0; j < bn - 1; j++) {
     emit_stmt(c, bb[j], b, 0);
     buf_puts(b, " ");
   }
-  buf_printf(b, "_t%d = ", tacc); emit_expr(c, bb[bn - 1], b); buf_puts(b, "; } } ");
+  buf_printf(b, "_t%d = ", tacc);
+  /* a poly-typed body value coerces back to a scalar accumulator */
+  TyKind rbt = comp_ntype(c, bb[bn - 1]);
+  if (rbt == TY_POLY && acc_ty == TY_INT) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, bb[bn - 1], b); buf_puts(b, ")"); }
+  else if (rbt == TY_POLY && acc_ty == TY_FLOAT) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, bb[bn - 1], b); buf_puts(b, ")"); }
+  else if (rbt == TY_POLY && acc_ty == TY_STRING) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, bb[bn - 1], b); buf_puts(b, ")"); }
+  else emit_expr(c, bb[bn - 1], b);
+  buf_puts(b, "; } } ");
   buf_printf(b, "_t%d; })", tacc);
   if (rlv0) rlv0->type = rpt0;
   if (rlv1) rlv1->type = rpt1;
@@ -2522,7 +2543,10 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
   TyKind kt = comp_ntype(c, bb[bn - 1]);
-  if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING && kt != TY_POLY) return 0;  /* scalar or poly key */
+  /* scalar, poly, symbol, or ARRAY key (the multi-key sort idiom
+     `sort_by { [a, b] }` -- sp_poly_cmp orders boxed arrays element-wise) */
+  if (kt != TY_INT && kt != TY_FLOAT && kt != TY_STRING && kt != TY_POLY &&
+      kt != TY_SYMBOL && !ty_is_array(kt)) return 0;
 
   /* Schwartzian transform: compute each element's sort key exactly once (CRuby
      semantics -- the old bubble sort re-ran the block per comparison), stable-sort

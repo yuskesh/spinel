@@ -536,6 +536,21 @@ int range_enum_redispatch(Compiler *c, int id) {
   return 0;
 }
 
+/* A Hash Enumerable method served by materializing the hash into its
+   [key, value] pair array (sp_enum_items_from) and re-dispatching as a poly
+   array: reduce/inject and each_with_index block forms. The hash-native
+   folds (sum/count/find/map/...) keep their own emitters. */
+int hash_enum_redispatch(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return 0;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (sp_streq(name, "each_with_index")) return 1;
+  if (sp_streq(name, "reduce") || sp_streq(name, "inject")) return 1;
+  return 0;
+}
+
 TyKind infer_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   /* a dynamic send lowered to a name-dispatch (desugar_dynamic_send) yields one
@@ -568,6 +583,7 @@ TyKind infer_call(Compiler *c, int id) {
   /* A Range Enumerable method spinel serves by materializing to an int array:
      infer it as the array version (the array arms below key on `rt`). */
   if (rt == TY_RANGE && range_enum_redispatch(c, id)) rt = TY_INT_ARRAY;
+  if (ty_is_hash(rt) && hash_enum_redispatch(c, id)) rt = TY_POLY_ARRAY;
   /* A block each-family call returns its receiver (each, each_value/each_key/
      each_pair, each_with_index, reverse_each), so the value form composes:
      r = arr.each { }; arr.each { }.map { }. Gated to receivers that define

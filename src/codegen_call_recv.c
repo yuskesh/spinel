@@ -4151,6 +4151,26 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
      materialize the range into an int array once, then re-dispatch the call as
      an array by overriding the receiver's emission and type. Inference already
      typed the call as the array version (range_enum_redispatch). */
+  /* A Hash Enumerable served by the pair-array redispatch (reduce/inject/
+     each_with_index block forms): materialize the [k, v] pairs once and
+     re-dispatch as a poly array, mirroring the range redispatch below. */
+  if (recv >= 0 && ty_is_hash(rt) && hash_enum_redispatch(c, id) &&
+      g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_boxed(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);\n",
+               ta, rb.p ? rb.p : "sp_box_nil()", ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    emit_call(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return 1;
+  }
   if (recv >= 0 && rt == TY_RANGE && range_enum_redispatch(c, id) &&
       g_n_argov < MAX_ARG_OVERRIDE) {
     int ta = ++g_tmp, tr = ++g_tmp;
