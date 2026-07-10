@@ -3743,6 +3743,19 @@ int emit_grep_pred(Compiler *c, int pat, const char *ev, TyKind et, Buf *b) {
   if (pty && sp_streq(pty, "ConstantReadNode")) {
     const char *cn = nt_str(nt, pat, "name");
     if (!cn) return 0;
+    /* typed elements answer the class test statically (the tag tests below
+       expect a boxed sp_RbVal; applying them to a raw scalar fails in C) */
+    if (et != TY_POLY) {
+      int yes = -1;
+      if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) yes = (et == TY_INT);
+      else if (sp_streq(cn, "String"))  yes = (et == TY_STRING);
+      else if (sp_streq(cn, "Float"))   yes = (et == TY_FLOAT);
+      else if (sp_streq(cn, "Symbol"))  yes = (et == TY_SYMBOL);
+      else if (sp_streq(cn, "Numeric")) yes = (et == TY_INT || et == TY_FLOAT);
+      if (yes < 0) return 0;
+      buf_printf(b, "((void)(%s), %d)", ev, yes);
+      return 1;
+    }
     if (sp_streq(cn, "Integer") || sp_streq(cn, "Fixnum")) buf_printf(b, "(%s).tag == SP_TAG_INT", ev);
     else if (sp_streq(cn, "String"))   buf_printf(b, "(%s).tag == SP_TAG_STR", ev);
     else if (sp_streq(cn, "Float"))    buf_printf(b, "(%s).tag == SP_TAG_FLT", ev);

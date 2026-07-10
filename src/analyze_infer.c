@@ -2467,7 +2467,7 @@ else {
     if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "empty?") || sp_streq(name, "include?")) return TY_BOOL;
     if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
-         sp_streq(name, "none?") || sp_streq(name, "one?")) && argc == 0) return TY_BOOL;
+         sp_streq(name, "none?") || sp_streq(name, "one?")) && argc <= 1) return TY_BOOL;
     if ((sp_streq(name, "bsearch") || sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0)
       return ty_array_elem(rt);  /* element or nil */
     if (sp_streq(name, "bsearch_index") && block >= 0) return TY_INT;  /* index, or nil */

@@ -1,0 +1,12 @@
+# any?/all?/none?/one? with a Class pattern match by ===; grep(Class)
+# filters, including over typed arrays where the answer is static.
+p [1, 2, 3].all?(Integer)
+p [1, 2, 3].any?(String)
+p [1, "a"].all?(Integer)
+p [1, "a"].any?(String)
+p [1, 2].none?(String)
+p [1, "a", 2].one?(String)
+p [1, 2, 3].grep(Integer)
+p ["a", 1, "b"].grep(String)
+p [1, 2.5, "x"].grep(Numeric)
+p [1, 2, 3].any?(2)

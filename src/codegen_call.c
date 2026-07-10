@@ -8350,6 +8350,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* any?/all?/none?/one?(Class) over an array: Class === element membership
+     (the value-argument arms compare ==). Walks the boxed elements so every
+     array kind is covered. */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_array(rt) && comp_ntype(c, argv[0]) == TY_CLASS &&
+      (sp_streq(name, "any?") || sp_streq(name, "all?") ||
+       sp_streq(name, "none?") || sp_streq(name, "one?"))) {
+    int ta = ++g_tmp, tc2 = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
+    buf_printf(b, "; sp_Class _t%d = ", tc2); emit_expr(c, argv[0], b);
+    buf_printf(b, "; mrb_int _t%d = sp_poly_arr_len_ex(_t%d); mrb_int _t%d = 0;"
+                  " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                  " if (sp_poly_is_a(sp_poly_each_elem(_t%d, _t%d), _t%d)) _t%d++; ",
+               tn, ta, tcnt, ti, ti, tn, ti, ta, ti, tc2, tcnt);
+    if (sp_streq(name, "any?"))       buf_printf(b, "_t%d > 0; })", tcnt);
+    else if (sp_streq(name, "all?"))  buf_printf(b, "_t%d == _t%d; })", tcnt, tn);
+    else if (sp_streq(name, "none?")) buf_printf(b, "_t%d == 0; })", tcnt);
+    else                              buf_printf(b, "_t%d == 1; })", tcnt);
+    return;
+  }
+
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) {
     /* Re-infer when stale cache has TY_POLY (e.g. block params temporarily pinned to element type). */
     TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? infer_type(c, recv) : rt;
