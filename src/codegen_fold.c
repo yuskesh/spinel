@@ -566,9 +566,10 @@ int emit_hash_transform_expr(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_poly_arr_len(_t%d); _t%d++) sp_PolyArray_push(_t%d, sp_poly_arr_get(_t%d, _t%d));\n",
                  tj, tj, tbv, tj, tres, tbv, tj);
     }
-    else {  /* flat_map, scalar value */
+    else {  /* flat_map, runtime-typed value: an array splices one level,
+               a scalar appends as-is (CRuby flat_map) */
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tbv);
+      buf_printf(g_pre, "sp_PolyArray_flatten_into_n(_t%d, _t%d, 1);\n", tres, tbv);
     }
   }
   free(vb);
@@ -1744,7 +1745,9 @@ int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 2);
   buf_printf(g_pre, "_tpair_%d = sp_PolyArray_new();\n", ta);
   emit_indent(g_pre, g_indent + 2);
-  buf_printf(g_pre, "sp_PolyArray_push(_tpair_%d, sp_box_int(_tkey_%d));\n", ta, ta);
+  /* a boolean group key boxes as true/false, not its 0/1 bits */
+  buf_printf(g_pre, "sp_PolyArray_push(_tpair_%d, %s(_tkey_%d));\n", ta,
+             comp_ntype(c, bb[bn - 1]) == TY_BOOL ? "sp_box_bool" : "sp_box_int", ta);
   emit_indent(g_pre, g_indent + 2);
   buf_printf(g_pre, "sp_PolyArray_push(_tpair_%d, sp_box_int_array(_t%d));\n", ta, tcur);
   emit_indent(g_pre, g_indent + 2);
@@ -5441,9 +5444,12 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     int tacc = ++g_tmp;
     { Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, argv[0], &ab);
       emit_indent(g_pre, g_indent); emit_ctype(c, memo_decl, g_pre);
-      if (memo_decl != accT)
-        buf_printf(g_pre, " _t%d = %s_new();\n", tacc,
-                   memo_decl == TY_POLY_ARRAY ? "sp_PolyArray" : "sp_IntArray");
+      if (memo_decl != accT) {
+        const char *nk2 = (memo_decl == TY_POLY_ARRAY) ? "Poly"
+                        : (memo_decl == TY_STR_ARRAY) ? "Str"
+                        : (memo_decl == TY_FLOAT_ARRAY) ? "Float" : "Int";
+        buf_printf(g_pre, " _t%d = sp_%sArray_new();\n", tacc, nk2);
+      }
       else
         buf_printf(g_pre, " _t%d = %s;\n", tacc, ab.p ? ab.p : default_value(memo_decl));
       free(ab.p); }
@@ -5484,7 +5490,13 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
              buf_puts(g_pre, vb.p ? vb.p : vexpr); free(vb.p); }
       buf_puts(g_pre, ");\n");
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "lv_%s = _t%d;\n", pairname, tpair);
+      {
+        LocalVar *plv2 = pairname_orig && cs ? scope_local(comp_scope_of(c, block), pairname_orig) : NULL;
+        if (plv2 && plv2->type == TY_POLY)
+          buf_printf(g_pre, "lv_%s = sp_box_poly_array(_t%d);\n", pairname, tpair);
+        else
+          buf_printf(g_pre, "lv_%s = _t%d;\n", pairname, tpair);
+      }
     }
     /* Assign key */
     if (kname) {

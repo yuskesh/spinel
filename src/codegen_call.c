@@ -4494,7 +4494,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
      characters / lines. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 0 &&
       nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "each_char") || sp_streq(name, "each_line"))) {
+      (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
+       sp_streq(name, "each_byte"))) {
+    if (sp_streq(name, "each_byte")) {
+      buf_puts(b, "sp_Enumerator_new_from(sp_box_int_array(sp_str_bytes(");
+      emit_expr(c, recv, b); buf_puts(b, ")))");
+      return;
+    }
     const char *itemfn = sp_streq(name, "each_char") ? "sp_str_chars_poly" : "sp_str_lines_poly";
     buf_printf(b, "sp_Enumerator_new_from_items(%s(", itemfn);
     emit_expr(c, recv, b); buf_puts(b, "))");

@@ -771,6 +771,15 @@ else {
         const char *ka = (rt == TY_POLY_ARRAY) ? "Poly" : k;
         buf_printf(b, "({ sp_%sArray *_t%d = ", ka, ta); emit_expr(c, recv, b); buf_puts(b, ";");
         for (int j = 0; j < nargs; j++) {
+          /* a Range argument materializes to its int array */
+          if (at[j] == TY_RANGE) {
+            int trj = ++g_tmp;
+            buf_printf(b, " sp_IntArray *_t%d = ({ sp_Range _t%d = ", tb[j], trj);
+            emit_expr(c, argv[j], b);
+            buf_printf(b, "; sp_range_to_ia(_t%d); });", trj);
+            at[j] = TY_INT_ARRAY;
+            continue;
+          }
           const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");
           buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b); buf_puts(b, ";");
         }
@@ -1705,6 +1714,15 @@ else {
         Buf ra = expr_buf(c, recv);
         buf_printf(b, "({ sp_PolyArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
         for (int j = 0; j < nargs; j++) {
+          /* a Range argument materializes to its int array */
+          if (at[j] == TY_RANGE) {
+            int trj = ++g_tmp;
+            buf_printf(b, " sp_IntArray *_t%d = ({ sp_Range _t%d = ", tb[j], trj);
+            emit_expr(c, argv[j], b);
+            buf_printf(b, "; sp_range_to_ia(_t%d); });", trj);
+            at[j] = TY_INT_ARRAY;
+            continue;
+          }
           const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");
           buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b); buf_puts(b, ";");
         }

@@ -1953,7 +1953,8 @@ static int is_array_enum_method(const char *nm) {
     "reduce", "inject", "each_with_index", "flat_map", "collect_concat",
     "any?", "all?", "none?", "one?", "take", "drop", "take_while", "drop_while",
     "filter_map", "partition", "group_by", "each_with_object", "tally",
-    "find_all", "zip", "grep", "grep_v", NULL };
+    "find_all", "zip", "grep", "grep_v", "to_h", "uniq", "reverse",
+    "member?", "minmax", "join", "index", NULL };
   for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
   return 0;
 }
@@ -1988,6 +1989,22 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_ref(nt, eachn, "receiver", recv);
       nt_node_set_ref(nt, id, "receiver", eachn);
       comp_grow_node_arrays(c);
+    }
+    else if (sp_streq(nm, "to_a") && sp_streq(rn, "take") &&
+             nt_ref(nt, id, "block") < 0) {
+      /* X.take(n).to_a == X.first(n) -- and first(n) is what the lazy
+         pipeline terminates on, so a lazy .take(n).to_a materializes. */
+      int inner = nt_ref(nt, recv, "receiver");
+      int targs = nt_ref(nt, recv, "arguments");
+      int tan = 0; if (targs >= 0) nt_arr(nt, targs, "arguments", &tan);
+      if (inner >= 0 && tan == 1) {
+        nt_node_set_str(nt, recv, "name", "first");
+        nt_node_set_ref(nt, id, "receiver", inner);
+        nt_node_set_str(nt, id, "name", "first");
+        nt_node_set_ref(nt, id, "arguments", targs);
+        /* the outer node IS now the first(n) call; drop the duplicated inner */
+        nt_node_set_ref(nt, id, "receiver", inner);
+      }
     }
     else if ((sp_streq(nm, "with_object") || sp_streq(nm, "each_with_object")) &&
              sp_streq(rn, "each")) {
@@ -2070,6 +2087,22 @@ int desugar_enum_method_recv(Compiler *c) {
         "sort", "reduce", "inject", "tally", "to_h", "uniq", "reverse",
         "find_index", "index", "join", NULL };
       for (int t = 0; term[t]; t++) if (sp_streq(nm, term[t])) { enum_terminal = 1; break; }
+    }
+    /* A blockless TERMINAL on an index/slice enumerator delegates through
+       to_a too (each_slice(2).count / .to_h): only the block-driving chains
+       need the raw shape for their fold unrolls. */
+    if (rt == TY_ENUMERATOR && recv_is_index_enum && enum_terminal &&
+        !sp_streq(nm, "first") && !sp_streq(nm, "size")) {
+      int wrap2 = nt_new_node(nt, "CallNode");
+      if (wrap2 >= 0) {
+        nt_node_set_str(nt, wrap2, "name", "to_a");
+        nt_node_set_ref(nt, wrap2, "receiver", recv);
+        nt_node_set_ref(nt, id, "receiver", wrap2);
+        comp_grow_node_arrays(c);
+        c->nscope[wrap2] = c->nscope[id];
+        changed = 1;
+        continue;
+      }
     }
     if (rt == TY_ENUMERATOR && !recv_is_index_enum &&
         !sp_streq(nm, "to_a") && !sp_streq(nm, "entries") &&

@@ -534,7 +534,7 @@ int range_enum_redispatch(Compiler *c, int id) {
   if (block >= 0 &&
       (sp_streq(name, "partition") || sp_streq(name, "each_with_index") ||
        sp_streq(name, "sort_by") || sp_streq(name, "chunk_while") ||
-       sp_streq(name, "sum")))
+       sp_streq(name, "sum") || sp_streq(name, "each_with_object")))
     return 1;
   if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) && block >= 0)
     return 1;
@@ -555,9 +555,17 @@ int hash_enum_redispatch(Compiler *c, int id) {
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int block = nt_ref(nt, id, "block");
+  /* blockless pair-order Enumerables: min/max compare the [k, v] pairs */
+  if (block < 0 && (sp_streq(name, "min") || sp_streq(name, "max") ||
+                    sp_streq(name, "minmax")))
+    return 1;
   if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   if (sp_streq(name, "each_with_index")) return 1;
   if (sp_streq(name, "reduce") || sp_streq(name, "inject")) return 1;
+  /* each_with_object / flat_map keep their dedicated hash emitters */
+  /* min_by/max_by keep their dedicated hash emitters; only minmax_by rides
+     the pair redispatch */
+  if (sp_streq(name, "minmax_by")) return 1;
   return 0;
 }
 
@@ -2311,6 +2319,9 @@ else {
        (which accepts this TY_ENUMERATOR receiver and keeps the array result). */
     if (block < 0 && argc == 1 &&
         (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) return TY_ENUMERATOR;
+    /* chunk { } with no chained consumer is an enumerator of [key, run]
+       pairs; the desugar interposes to_a so .map/.count chains compose. */
+    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) return TY_ENUMERATOR;
     if (block >= 0) {
       if (ty_iter_shape(name) == TY_ITER_MAP) {
         int body = nt_ref(nt, block, "body");
@@ -3054,6 +3065,19 @@ else {
         sp_streq(name, "has_value?") || sp_streq(name, "value?") ||
         sp_streq(name, "empty?")) return TY_BOOL;
     if (sp_streq(name, "each_with_object") && argc > 0 && argv) {
+      /* the memo block-param's settled type IS the result: the widening pass
+         narrows it from what the block pushes (a string push into an []
+         seed makes it a StrArray -- the seed-based guess mistyped it) */
+      int ewo_blk = nt_ref(nt, id, "block");
+      if (ewo_blk >= 0 && nt_type(nt, ewo_blk) && sp_streq(nt_type(nt, ewo_blk), "BlockNode")) {
+        const char *mn = block_param_name(c, ewo_blk, 1);
+        if (!mn) mn = block_param_name(c, ewo_blk, 2);   /* |k, v, memo| */
+        if (mn) {
+          LocalVar *ml = scope_local(comp_scope_of(c, ewo_blk), mn);
+          if (ml && ml->type != TY_UNKNOWN && (ty_is_array(ml->type) || ty_is_hash(ml->type)))
+            return ml->type;
+        }
+      }
       TyKind at = infer_type(c, argv[0]);
       if (at == TY_UNKNOWN) {
         const char *a0ty = nt_type(nt, argv[0]);
@@ -3123,7 +3147,8 @@ else {
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
     if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
-    if ((sp_streq(name, "each_char") || sp_streq(name, "each_line")) && argc == 0 &&
+    if ((sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
+         sp_streq(name, "each_byte")) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
