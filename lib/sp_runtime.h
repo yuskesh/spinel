@@ -1892,6 +1892,8 @@ static mrb_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.
    trips on "used but never defined" otherwise. */
 static const char *sp_class_to_s(sp_Class c);
 static const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
+static inline int sp_poly_is_hash_kind(int cls_id);
+static inline const char *sp_poly_inspect(sp_RbVal v);
 static inline const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
     /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
@@ -1927,6 +1929,9 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
             return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
                               (unsigned long long)(uintptr_t)v.v.p);
           }
+          /* a builtin container kind with no explicit arm above (the hash
+             variants): to_s is its inspect */
+          if (sp_poly_is_hash_kind(v.cls_id)) return sp_poly_inspect(v);
           return sp_str_empty;
       }
     default: return sp_str_empty;
@@ -5779,6 +5784,10 @@ static void sp_Enumerator_scan(void *p) {
   sp_mark_rbval(e->gen_result);
   sp_mark_rbval(e->source);
 }
+/* Blockless Hash#each_value / #each_key: an external Enumerator over the
+   hash's values / keys (each pair from the generic walker, second/first
+   element taken). */
+static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside);
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
@@ -5786,6 +5795,16 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr;
   return e;
 }
+static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
+  mrb_int n = sp_poly_length(h);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  for (mrb_int i = 0; i < n; i++) {
+    sp_RbVal pair = sp_poly_each_elem(h, i); SP_GC_ROOT_RBVAL(pair);
+    sp_PolyArray_push(r, sp_poly_arr_get(pair, keyside ? 0 : 1));
+  }
+  return r;
+}
+
 /* Like sp_Enumerator_new_from but over a reversed snapshot, for a blockless
    Array#reverse_each. sp_enum_items_from always returns a fresh, owned poly
    array (every arm allocates a new one), so reversing it in place does not

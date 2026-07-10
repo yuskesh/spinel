@@ -4479,6 +4479,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return;
   }
+  /* hash.each_value / hash.each_key with no block -> an external Enumerator
+     over the values / keys (so .to_a/.map chains compose). */
+  if (recv >= 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_hash(comp_ntype(c, recv)) &&
+      (sp_streq(name, "each_value") || sp_streq(name, "each_key"))) {
+    buf_printf(b, "sp_Enumerator_new_from_items(sp_enum_hash_side(");
+    emit_boxed(c, recv, b);
+    buf_printf(b, ", %d))", sp_streq(name, "each_key") ? 1 : 0);
+    return;
+  }
   /* <enumerator>.with_index(off) with no block -> a materialized Enumerator over
      the [element, off + i] pairs. The block and terminal chain forms
      (each.with_index { }, each.with_index.map { }) are matched earlier. */
