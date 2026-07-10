@@ -269,6 +269,82 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     /* fill(val[, start[, len]]): fill a range with val, evaluate to self. */
+    /* fill([start[, length]]) { |i| ... } / fill(range) { |i| ... }: the block
+       form takes NO value argument -- the positional args are the index span and
+       the value at each index comes from the block. (The no-block forms, where
+       the first argument IS the value, are handled below.) */
+    if (sp_streq(name, "fill") && argc <= 2 && nt_ref(nt, id, "block") >= 0) {
+      const char *fk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
+      int fblk = nt_ref(nt, id, "block");
+      int fbody = nt_ref(nt, fblk, "body");
+      int fbn = 0; const int *fbb = fbody >= 0 ? nt_arr(nt, fbody, "body", &fbn) : NULL;
+      if (fk && fbn > 0) {
+        TyKind et = ty_array_elem(rt);
+        int trecv = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp, ti = ++g_tmp;
+        const char *ip = block_param_name(c, fblk, 0); if (ip) ip = rename_local(ip);
+        Buf rb = expr_buf(c, recv);
+        emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+        buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, fk, trecv);
+        /* resolve the [start, end) span from the arguments */
+        int is_range = (argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE);
+        if (is_range) {
+          int tr = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_Range _t%d = ", tr); emit_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "mrb_int _t%d = _t%d.first; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;\n",
+                     ts, tr, ts, ts, tn, ts, ts);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "mrb_int _t%d = (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) + (_t%d.excl ? 0 : 1);\n",
+                     te, tr, tr, tn, tr, tr);
+        }
+        else {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "mrb_int _t%d = 0;", ts);
+          if (argc >= 1) { buf_printf(g_pre, " _t%d = ", ts); emit_int_expr(c, argv[0], g_pre);
+                           buf_printf(g_pre, "; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, tn, ts, ts); }
+          buf_puts(g_pre, "\n");
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "mrb_int _t%d = _t%d;", te, tn);
+          if (argc == 2) { buf_printf(g_pre, " { mrb_int _tl = "); emit_int_expr(c, argv[1], g_pre);
+                           buf_printf(g_pre, "; if (_tl < 0) _tl = 0; _t%d = _t%d + _tl; }", te, ts); }
+          buf_puts(g_pre, "\n");
+        }
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "for (mrb_int _t%d = _t%d; _t%d < _t%d; _t%d++) {\n", ti, ts, ti, te, ti);
+        if (ip) {
+          Scope *fic = comp_scope_of(c, fblk);
+          LocalVar *filv = fic ? scope_local(fic, ip) : NULL;
+          TyKind fit = filv ? filv->type : TY_INT;
+          emit_indent(g_pre, g_indent + 1);
+          if (fit == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
+          else buf_printf(g_pre, "lv_%s = _t%d;\n", ip, ti);
+        }
+        for (int bi = 0; bi < fbn - 1; bi++) {
+          Buf sb; memset(&sb, 0, sizeof sb);
+          emit_expr(c, fbb[bi], &sb);
+          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, sb.p ? sb.p : ""); buf_puts(g_pre, ";\n"); free(sb.p);
+        }
+        Buf vb; memset(&vb, 0, sizeof vb);
+        emit_expr(c, fbb[fbn - 1], &vb);
+        emit_indent(g_pre, g_indent + 1);
+        if (sp_streq(fk, "Poly")) {
+          TyKind vt = comp_ntype(c, fbb[fbn - 1]);
+          buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, ", trecv, ti);
+          if (vt != TY_POLY && vt != TY_UNKNOWN) emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", g_pre);
+          else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, fbb[fbn - 1], &bx);
+                 buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+          buf_puts(g_pre, ");\n");
+        }
+        else buf_printf(g_pre, "sp_%sArray_set(_t%d, _t%d, %s);\n", fk, trecv, ti, vb.p ? vb.p : "");
+        free(vb.p);
+        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+        buf_printf(b, "_t%d", trecv);
+        return 1;
+      }
+    }
     if (sp_streq(name, "fill") && argc >= 1 && argc <= 3) {
       const char *fk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
       if (fk) {

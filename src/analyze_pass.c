@@ -4487,8 +4487,9 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "to_h")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);
-    /* each_index { |i| } binds the index, not the element: always int. */
-    else if (sp_streq(name, "each_index") && ty_is_array(rt))
+    /* each_index { |i| } / fill { |i| } bind the index, not the element: always
+       int (fill's block form takes the index and returns the value to store). */
+    else if ((sp_streq(name, "each_index") || sp_streq(name, "fill")) && ty_is_array(rt))
       pt = TY_INT;
     /* TY_POLY receiver with iteration methods: element type is TY_POLY */
     else if (rt == TY_POLY &&
