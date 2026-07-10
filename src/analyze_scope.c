@@ -2144,6 +2144,50 @@ static int scope_body_has_super(Compiler *c, int scope_idx) {
   return 0;
 }
 
+/* True when the scope body contains a receiverless instance_exec/instance_eval.
+   Such a method rebinds self to the receiver, so when mixed in via `include` its
+   body must be re-attributed to the includer scope (cloned + walk_scope'd) rather
+   than shared with the module: with a shared body, comp_scope_of resolves the
+   block's self to the module, the escape loop cannot mark the includer copy
+   inlinable, and the instance_exec splice binds the wrong (module) class. Cloning
+   per includer mirrors CRuby, where `include` inserts a per-includer iclass and
+   the instance_exec block runs with self = the receiver (the includer). */
+static int scope_body_has_receiverless_ie(Compiler *c, int scope_idx) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (c->nscope[id] != scope_idx) continue;
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && (sp_streq(nm, "instance_exec") || sp_streq(nm, "instance_eval"))) return 1;
+  }
+  return 0;
+}
+
+/* True when the scope body reads or writes an instance variable. A module
+   instance method that touches an ivar must be re-attributed (cloned) to the
+   includer so the ivar types against the includer's slot, not a separate
+   module-owned slot: a module cannot be instantiated, so in CRuby its methods
+   always run on the includer's instance and there is a single ivar. With a
+   shared body the module slot (typed only from module-side usage) and the
+   includer slot diverge, and the transplanted method -- emitted taking the
+   includer as self -- reads self's includer-typed ivar through the module type. */
+static int scope_body_uses_ivar(Compiler *c, int scope_idx) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (c->nscope[id] != scope_idx) continue;
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_InstanceVariableReadNode ||
+        k == NK_InstanceVariableWriteNode ||
+        k == NK_InstanceVariableOperatorWriteNode ||
+        k == NK_InstanceVariableOrWriteNode ||
+        k == NK_InstanceVariableAndWriteNode ||
+        k == NK_InstanceVariableTargetNode)
+      return 1;
+  }
+  return 0;
+}
+
 /* Process include calls in a single class body, creating scope copies for each
    included module method. We copy (not mutate) so multiple classes can include
    the same module independently. */
@@ -2219,8 +2263,21 @@ void process_include_body(Compiler *c, int ci, int body_node) {
            SelfNode resolves to the module and e.g. `self.to_s` mis-dispatches; or
            (b) the copied method itself calls `super` (a multi-module chain), so
            its super node resolves to this shadow scope (and thus the class's prep
-           chain) rather than to the source module, where the chain isn't set. */
-        if ((is_builtin_class_name(c->classes[ci].name) || scope_body_has_super(c, ms)) && src->body >= 0) {
+           chain) rather than to the source module, where the chain isn't set; or
+           (c) the body has a receiverless instance_exec/eval, whose block rebinds
+           self to the includer -- a shared body would resolve that self to the
+           module and mis-splice (see scope_body_has_receiverless_ie); or
+           (d) the body touches an ivar, which must type against the includer's
+           slot rather than a divergent module-owned slot (scope_body_uses_ivar); or
+           (e) the method takes a &block param. A block-taking module method must be
+           inlinable per includer so a forwarded block literal threads through the
+           call chain and can be spliced (a collector builder `col(&b) = build(tag,
+           &b)` forwarding into a self-rebinding instance_exec); shared, it emits as
+           a real function that lifts the block to a proc and breaks the chain. */
+        if ((is_builtin_class_name(c->classes[ci].name) || scope_body_has_super(c, ms) ||
+             scope_body_has_receiverless_ie(c, ms) || scope_body_uses_ivar(c, ms) ||
+             (src->blk_param && src->blk_param[0])) &&
+            src->body >= 0) {
           int nb = nt_clone_subtree((NodeTable *)nt, src->body);
           if (nb >= 0) {
             comp_grow_node_arrays(c);
