@@ -160,7 +160,7 @@ static int ivar_array_elems_int_returning_impl(Compiler *c, int cid, const char 
     /* element write `@ivar[i] = v` */
     if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || !sp_streq(nm, "[]=")) continue;
+      if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0) continue;
       const char *rty = nt_type(nt, recv);
@@ -266,7 +266,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
     if (!ty) continue;
     if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || !sp_streq(nm, "[]=")) continue;
+      if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) continue;
       const char *rn = nt_str(nt, recv, "name");
@@ -348,7 +348,7 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
     if (!ty) continue;
     if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || !sp_streq(nm, "[]=")) continue;
+      if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "ConstantReadNode")) continue;
       const char *rn = nt_str(nt, recv, "name");
@@ -1479,7 +1479,7 @@ else {
   /* Kernel#p returns its argument (one arg; several return the array), so it
      composes as an expression: x = p(y), f(p(y)). Statement-position p keeps
      its own emitter; this types the value form. */
-  if (recv < 0 && sp_streq(name, "p") && nt_ref(nt, id, "block") < 0 && argc == 1)
+  if (recv < 0 && (sp_streq(name, "p") || sp_streq(name, "pp")) && nt_ref(nt, id, "block") < 0 && argc == 1)
     return infer_type(c, argv[0]);
   /* Object#instance_variables: a static symbol list for a typed object */
   if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
@@ -2926,7 +2926,8 @@ else {
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
     if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */
     if (sp_streq(name, "[]"))     return ty_hash_val(rt);
-    if (sp_streq(name, "[]="))    return argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt);
+    if (sp_streq(name, "[]=") || sp_streq(name, "store"))
+      return argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt);
     if (sp_streq(name, "fetch")) {
       TyKind vt = ty_hash_val(rt);
       if (argc == 2) {

@@ -399,7 +399,7 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
   if (sp_streq(name, "print")) { for (int k = 0; k < argc; k++) emit_print_one(c, argv[k], b, indent); return 1; }
-  if (sp_streq(name, "p"))     { for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent); return 1; }
+  if (sp_streq(name, "p") || sp_streq(name, "pp")) { for (int k = 0; k < argc; k++) emit_p_one(c, argv[k], b, indent); return 1; }
   if (sp_streq(name, "putc") && argc == 1) {
     /* Kernel#putc: an int writes (byte & 0xff); a string writes its first char. */
     TyKind at = comp_ntype(c, argv[0]);
@@ -6851,7 +6851,8 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   if (ty_is_hash(rt)) {
     const char *hn = ty_hash_cname(rt);
-    if (hn && sp_streq(name, "[]=") && argc == 2) {
+    /* Hash#store is the method form of []= */
+    if (hn && (sp_streq(name, "[]=") || sp_streq(name, "store")) && argc == 2) {
       emit_indent(b, indent);
       buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash();\n");
       emit_indent(b, indent);

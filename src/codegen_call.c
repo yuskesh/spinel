@@ -5144,7 +5144,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      argument as the value (statement position has its own emitter). The
      value is boxed once, printed through the poly inspect (which consults
      the user-object hook), and unboxed back to the static type. */
-  if (recv < 0 && sp_streq(name, "p") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+  if (recv < 0 && (sp_streq(name, "p") || sp_streq(name, "pp")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
     TyKind at = comp_ntype(c, argv[0]);
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);

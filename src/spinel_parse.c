@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <stdarg.h>
 #include <limits.h>
@@ -282,6 +283,10 @@ static void emit_float(int id, const char *field, double val) {
      The lib-side replacement is safe because Ruby float literals never
      contain a comma. */
   char buf[64];
+  /* an out-of-range literal (1e400) parses to +/-inf, which "%.17g" prints
+     as "inf" -- not a C token. Emit the C99 macros instead. */
+  if (isinf(val)) { out_add("F %d %s %s", id, field, val > 0 ? "INFINITY" : "-INFINITY"); return; }
+  if (isnan(val)) { out_add("F %d %s %s", id, field, "NAN"); return; }
   snprintf(buf, sizeof(buf), "%.17g", val);
   for (char *p = buf; *p; p++) if (*p == ',') *p = '.';
   if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E')) {
