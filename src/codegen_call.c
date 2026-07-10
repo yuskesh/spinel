@@ -2494,7 +2494,11 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   }
 
   if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!=") ||
-                    (sp_streq(name, "eql?") && ty_is_array(rt)))) {
+                    (sp_streq(name, "eql?") &&
+                     (ty_is_array(rt) ||
+                      (ty_is_object(rt) && ty_object_class(rt) >= 0 &&
+                       ty_object_class(rt) < c->nclasses &&
+                       c->classes[ty_object_class(rt)].is_struct))))) {
     /* Array#eql? is structural, the same element-wise comparison as ==;
        only != negates. Scalar eql? is handled by the per-type emitters. */
     int eq = !sp_streq(name, "!=");
@@ -2549,6 +2553,47 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     equality_skip_nil:;
+    /* Struct instances compare by member value (CRuby Struct#==); a user
+       override on the struct class still wins via the dispatch below. eql?
+       shares the arm. */
+    if (ty_is_object(rt) && rt == a0) {
+      int scid = ty_object_class(rt);
+      if (scid >= 0 && scid < c->nclasses && c->classes[scid].is_struct &&
+          comp_method_in_chain(c, scid, "==", NULL) < 0) {
+        ClassInfo *sci = &c->classes[scid];
+        int ta = ++g_tmp, tb2 = ++g_tmp;
+        buf_puts(b, eq ? "(" : "(!(");
+        buf_printf(b, "({ sp_%s *_t%d = ", sci->c_name, ta); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_%s *_t%d = ", sci->c_name, tb2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; _t%d == _t%d || (_t%d && _t%d", ta, tb2, ta, tb2);
+        for (int j = 0; j < sci->nivars; j++) {
+          const char *ivn = sci->ivars[j] + 1;   /* skip @ */
+          TyKind ivt = sci->ivar_types[j];
+          if (ivt == TY_INT || ivt == TY_BOOL || ivt == TY_SYMBOL || ivt == TY_FLOAT)
+            buf_printf(b, " && _t%d->iv_%s == _t%d->iv_%s", ta, ivn, tb2, ivn);
+          else if (ivt == TY_STRING)
+            buf_printf(b, " && sp_str_eq(_t%d->iv_%s, _t%d->iv_%s)", ta, ivn, tb2, ivn);
+          else if (ivt == TY_POLY)
+            buf_printf(b, " && sp_poly_eq(_t%d->iv_%s, _t%d->iv_%s)", ta, ivn, tb2, ivn);
+          else {
+            /* boxed comparison covers arrays/hashes/objects uniformly */
+            Buf ba; memset(&ba, 0, sizeof ba);
+            char lx[128], rx[128];
+            snprintf(lx, sizeof lx, "_t%d->iv_%s", ta, ivn);
+            snprintf(rx, sizeof rx, "_t%d->iv_%s", tb2, ivn);
+            buf_puts(b, " && sp_poly_eq(");
+            emit_boxed_text(c, ivt, lx, b);
+            buf_puts(b, ", ");
+            emit_boxed_text(c, ivt, rx, b);
+            buf_puts(b, ")");
+            free(ba.p);
+          }
+        }
+        buf_puts(b, "); })");
+        buf_puts(b, eq ? ")" : "))");
+        return 1;
+      }
+    }
     /* arr == [] : an array equals the empty literal iff it has no elements */
     {
       int er = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
