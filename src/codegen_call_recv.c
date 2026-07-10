@@ -4282,6 +4282,18 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       TyKind kt = comp_ntype(c, argv[0]);
       if (kt == TY_SYMBOL) { buf_printf(b, "sp_MatchData_aref_name(%s, sp_sym_to_s(", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
       else if (kt == TY_STRING) { buf_printf(b, "sp_MatchData_aref_name(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (kt == TY_POLY) {
+        /* a poly key dispatches at runtime: a Symbol/String resolves by name,
+           anything else is an index -- passing the raw sp_RbVal to
+           sp_MatchData_aref (mrb_int) would be a C type error. */
+        int mtmp = ++g_tmp, ktmp = ++g_tmp;
+        buf_printf(b, "({ sp_MatchData *_t%d = %s; sp_RbVal _t%d = ", mtmp, r, ktmp);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? sp_MatchData_aref_name(_t%d, sp_sym_to_s((sp_sym)_t%d.v.i)) :"
+                      " _t%d.tag == SP_TAG_STR ? sp_MatchData_aref_name(_t%d, _t%d.v.s) :"
+                      " sp_MatchData_aref(_t%d, sp_poly_to_i(_t%d)); })",
+                   ktmp, mtmp, ktmp, ktmp, mtmp, ktmp, mtmp, ktmp);
+      }
       else { buf_printf(b, "sp_MatchData_aref(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     }
     else if (sp_streq(name, "named_captures") && argc == 0) buf_printf(b, "sp_md_named_captures(%s)", r);
@@ -4305,15 +4317,40 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
     }
     else if (sp_streq(name, "values_at") && argc >= 1) {
-      /* values_at(i, ...) -> a poly array of the selected groups (nil when a
-         group did not participate), mirroring MatchData#[] per index. */
+      /* values_at(i, ...) / values_at(:name, ...) -> a poly array of the
+         selected groups (nil when a group did not participate). A Symbol/String
+         argument resolves by name against this MatchData's own group table (like
+         #[]); an integer argument is a group index. Routing a name through the
+         index accessor would consult a wrong (first-seen) global name table. */
       int mt = ++g_tmp, at = ++g_tmp;
       buf_printf(b, "({ sp_MatchData *_t%d = %s; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);",
                  mt, r, mt, at, at);
       for (int i = 0; i < argc; i++) {
-        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref(_t%d, ", at, mt);
-        emit_expr(c, argv[i], b);
-        buf_puts(b, ")));");
+        TyKind kt3 = comp_ntype(c, argv[i]);
+        if (kt3 == TY_SYMBOL) {
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref_name(_t%d, sp_sym_to_s(", at, mt);
+          emit_expr(c, argv[i], b); buf_puts(b, "))));");
+        }
+        else if (kt3 == TY_STRING) {
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref_name(_t%d, ", at, mt);
+          emit_expr(c, argv[i], b); buf_puts(b, ")));");
+        }
+        else if (kt3 == TY_POLY) {
+          /* a poly key dispatches at runtime like #[]: a Symbol/String resolves
+             by name, anything else is an index. Passing the raw sp_RbVal to
+             sp_MatchData_aref (mrb_int) would be a C type error. */
+          int kt = ++g_tmp;
+          buf_printf(b, " sp_RbVal _t%d = ", kt); emit_expr(c, argv[i], b);
+          buf_printf(b, "; sp_PolyArray_push(_t%d, sp_box_nullable_str("
+                        "_t%d.tag == SP_TAG_SYM ? sp_MatchData_aref_name(_t%d, sp_sym_to_s((sp_sym)_t%d.v.i)) :"
+                        " _t%d.tag == SP_TAG_STR ? sp_MatchData_aref_name(_t%d, _t%d.v.s) :"
+                        " sp_MatchData_aref(_t%d, sp_poly_to_i(_t%d))));",
+                     at, kt, mt, kt, kt, mt, kt, mt, kt);
+        }
+        else {
+          buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nullable_str(sp_MatchData_aref(_t%d, ", at, mt);
+          emit_expr(c, argv[i], b); buf_puts(b, ")));");
+        }
       }
       buf_printf(b, " _t%d; })", at);
     }
