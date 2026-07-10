@@ -69,6 +69,14 @@ bang(w)
 f.call
 puts w
 
+# element assignment is an in-place mutator too
+def fix(s)
+  s[0] = "X"
+end
+e = "abc".dup
+fix(e)
+puts e
+
 # a frozen argument raises FrozenError from inside the callee, like CRuby
 frozen = "locked".freeze
 begin
