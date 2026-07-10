@@ -6880,6 +6880,58 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, ", _a%d + 1 < _len%d ? _a%d + 1 : _len%d, _len%d)); }\n", ti, ti, ti, ti, ti);
       return 1;
     }
+    /* s[range] = v: splice over the range's char span (negative n inserts) */
+    if (assignable && sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) {
+      int ti = ++g_tmp;
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent);
+      buf_printf(b, "{ sp_Range _t%d = ", ti); emit_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _len%d = (mrb_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_puts(b, ");");
+      buf_printf(b, " mrb_int _a%d = _t%d.first < 0 ? _t%d.first + _len%d : _t%d.first;", ti, ti, ti, ti, ti);
+      buf_printf(b, " mrb_int _e%d = _t%d.last < 0 ? _t%d.last + _len%d : _t%d.last;", ti, ti, ti, ti, ti);
+      buf_printf(b, " mrb_int _n%d = _e%d - _a%d + (_t%d.excl ? 0 : 1);", ti, ti, ti, ti);
+      buf_puts(b, " "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_splice_at(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", _a%d, _n%d < 0 ? 0 : _n%d, ", ti, ti, ti); emit_str_expr(c, argv[1], b);
+      buf_puts(b, ", 1); }\n");
+      return 1;
+    }
+    /* s[start, len] = v */
+    if (assignable && sp_streq(name, "[]=") && argc == 3 && comp_ntype(c, argv[0]) == TY_INT) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent);
+      emit_expr(c, recv, b); buf_puts(b, " = sp_str_splice_at("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+      buf_puts(b, ", "); emit_str_expr(c, argv[2], b);
+      buf_puts(b, ", 0);\n");
+      return 1;
+    }
+    /* s["sub"] = v: replace the first occurrence; missing raises IndexError */
+    if (assignable && sp_streq(name, "[]=") && argc == 2 && comp_ntype(c, argv[0]) == TY_STRING &&
+        re_lit_index(c, argv[0]) < 0) {
+      int ti = ++g_tmp;
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent);
+      buf_printf(b, "{ const char *_t%d = ", ti); emit_str_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_int _a%d = sp_str_index_opt(", ti); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d); if (_a%d == SP_INT_NIL) sp_raise_cls(\"IndexError\", \"string not matched\");", ti, ti);
+      buf_puts(b, " "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_splice_at(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", _a%d, (mrb_int)sp_str_length(_t%d), ", ti, ti); emit_str_expr(c, argv[1], b);
+      buf_puts(b, ", 0); }\n");
+      return 1;
+    }
+    /* s[/re/] = v: replace the first match's span; no match raises IndexError */
+    if (assignable && sp_streq(name, "[]=") && argc == 2 && re_lit_index(c, argv[0]) >= 0) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
+      emit_indent(b, indent);
+      emit_expr(c, recv, b);
+      buf_printf(b, " = sp_str_splice_re(sp_re_pat_%d, ", re_lit_index(c, argv[0]));
+      emit_expr(c, recv, b); buf_puts(b, ", "); emit_str_expr(c, argv[1], b);
+      buf_puts(b, ");\n");
+      return 1;
+    }
   }
 
   if (ty_is_hash(rt)) {

@@ -2002,7 +2002,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   /* Class.new(args) -> sp_<Class>_new(args) */
-  if (recv >= 0 && sp_streq(name, "new")) {
+  if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
     const char *rty = nt_type(nt, recv);
     if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
       int ci = comp_class_index(c, nt_str(nt, recv, "name"));
@@ -2176,6 +2176,22 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         if (argc >= 1) emit_expr(c, argv[0], b);
         else buf_puts(b, "(mrb_int)time(NULL)");
         buf_puts(b, ")");
+        return 1;
+      }
+      /* Hash.new / Hash.new(default) whose variant was pinned on the node
+         (argument position pins PolyPoly): construct that variant directly. */
+      if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") < 0 &&
+          ty_is_hash(comp_ntype(c, id))) {
+        TyKind ht = comp_ntype(c, id);
+        const char *hcn = ty_hash_cname(ht);
+        if (argc == 0) buf_printf(b, "sp_%sHash_new()", hcn);
+        else {
+          buf_printf(b, "sp_%sHash_new_with_default(", hcn);
+          if (ht == TY_SYM_POLY_HASH || ht == TY_STR_POLY_HASH || ht == TY_POLY_POLY_HASH)
+            emit_boxed(c, argv[0], b);
+          else emit_expr(c, argv[0], b);
+          buf_puts(b, ")");
+        }
         return 1;
       }
       /* Hash.new { |hash, key| default } -> a PolyPolyHash with a default-proc

@@ -796,7 +796,12 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   if (keys) {
     /* new key = block result; unbox if block returned poly but key type is typed */
     const char *vbp = vb.p ? vb.p : "0";
-    if (dkt == TY_STRING && (bret == TY_POLY || bret == TY_UNKNOWN))
+    if (dkt == TY_POLY && bret != TY_POLY && bret != TY_UNKNOWN) {
+      /* PolyPoly destination: box the typed new key */
+      Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, bret, vbp, &bx);
+      buf_puts(g_pre, bx.p ? bx.p : ""); free(bx.p);
+    }
+    else if (dkt == TY_STRING && (bret == TY_POLY || bret == TY_UNKNOWN))
       buf_printf(g_pre, "sp_poly_to_s(%s)", vbp);
     else if (dkt == TY_INT && (bret == TY_POLY || bret == TY_UNKNOWN))
       buf_printf(g_pre, "sp_poly_to_i(%s)", vbp);

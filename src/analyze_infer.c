@@ -1177,7 +1177,7 @@ else {
   }
 
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
-  if (recv >= 0 && sp_streq(name, "new")) {
+  if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
     const char *rty = nt_type(nt, recv);
     /* a namespaced class (M::Sub) or root-qualified builtin (::Array etc) */
     if (rty && sp_streq(rty, "ConstantPathNode")) {
@@ -1199,7 +1199,8 @@ else {
       if (cn && sp_streq(cn, "Array")) return TY_POLY_ARRAY;
       if (cn && sp_streq(cn, "Object")) return TY_POLY;
       if (cn && sp_streq(cn, "String")) return TY_STRING;
-      if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN;
+      if (cn && sp_streq(cn, "Hash"))
+        return sp_streq(name, "__hash_new_default") ? TY_POLY_POLY_HASH : TY_UNKNOWN;
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
       if (cn && (sp_streq(cn, "Thread") || sp_streq(cn, "Mutex") || (sp_streq(cn, "Monitor") && sp_feature_enabled("monitor")) ||
@@ -1243,7 +1244,9 @@ else {
          faithful PolyPoly variant boxes each key by value -- inspect then renders
          symbol keys as `a:`, string keys as `"a"=>`, etc., all correctly. */
       if (cn && sp_streq(cn, "Hash") && nt_ref(nt, id, "block") >= 0) return TY_POLY_POLY_HASH;
-      if (cn && sp_streq(cn, "Hash")) return TY_UNKNOWN; /* hash type determined by key usage */
+      if (cn && sp_streq(cn, "Hash"))
+        /* argument-position Hash.new was renamed: PolyPoly; else key usage decides */
+        return sp_streq(name, "__hash_new_default") ? TY_POLY_POLY_HASH : TY_UNKNOWN;
       if (cn && sp_streq(cn, "Regexp")) return TY_REGEX;
       /* Builtin object types */
       if (cn && sp_streq(cn, "Fiber")) return TY_FIBER;
@@ -2574,6 +2577,9 @@ else {
       return ty_array_elem(rt);
     if (sp_streq(name, "shift") && argc == 0) return ty_array_elem(rt);
     if (sp_streq(name, "slice!") && argc == 2) return rt;  /* removed subarray */
+    if (sp_streq(name, "slice!") && argc == 1)
+      /* slice!(range) removes a subarray; slice!(i) removes one element */
+      return infer_type(c, argv[0]) == TY_RANGE ? rt : ty_array_elem(rt);
     /* a[i] = v -> v's type (== element type); a[range] = v / a[s,l] = v is a
        splice and returns the RHS as written. The poly-array splice emitter
        yields the RHS BOXED (its `_t` temp is an sp_RbVal), so a poly receiver
@@ -3027,6 +3033,8 @@ else {
         return rt;  /* always self */
       if (block >= 0 && (ty_iter_shape(name) == TY_ITER_SELECT || sp_streq(name, "reject"))) return rt;
       if (block >= 0 && sp_streq(name, "transform_keys")) {
+        /* a PolyPoly receiver boxes any key: the variant is stable */
+        if (rt == TY_POLY_POLY_HASH) return rt;
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         TyKind nkt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
@@ -3038,6 +3046,7 @@ else {
         return r != TY_UNKNOWN ? r : rt;
       }
       if (block >= 0 && sp_streq(name, "transform_values")) {
+        if (rt == TY_POLY_POLY_HASH) return rt;
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         TyKind nvt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;

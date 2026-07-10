@@ -1261,6 +1261,26 @@ int infer_write_types(Compiler *c) {
         /* concat(other): the other array's elements splice in */
         is_push = 1; vt = splice_incoming_elem(c, argv[0]);
       }
+      else if (name && sp_streq(name, "replace") && an == 1) {
+        /* replace(other) splices the WHOLE other container in: a hash local
+           must be able to hold other's variant (transform_keys! desugars to
+           replace and may change the key type). Differing variants widen the
+           local to the universally-boxed PolyPoly hash. */
+        TyKind ot = infer_type(c, argv[0]);
+        if (recv < 0 || !ty_is_hash(ot)) continue;
+        const char *rpty = nt_type(nt, recv);
+        if (!rpty || !sp_streq(rpty, "LocalVariableReadNode")) continue;
+        const char *rpnm = nt_str(nt, recv, "name");
+        Scope *rpsc = rpnm ? comp_scope_of(c, recv) : NULL;
+        LocalVar *rplv = rpsc ? scope_local(rpsc, rpnm) : NULL;
+        if (rplv && !rplv->is_param && !rplv->is_block_param &&
+            ty_is_hash(rplv->type) && rplv->type != ot &&
+            rplv->type != TY_POLY_POLY_HASH) {
+          rplv->type = TY_POLY_POLY_HASH;
+          changed = 1;
+        }
+        continue;
+      }
       else if (name && sp_streq(name, "[]=") && an == 2) {
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
         /* a range key is a splice: the RHS contributes element evidence */

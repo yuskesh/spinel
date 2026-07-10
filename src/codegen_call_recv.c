@@ -751,10 +751,34 @@ else {
           return 1;
         }
       }
-      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
-        /* a real copy: arrays are mutable, so dup/clone must not alias. */
-        buf_printf(b, "sp_%sArray_dup(", k); emit_expr(c, recv, b); buf_puts(b, ")");
-        return 1;
+      if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && (argc == 0 || argc == 1)) {
+        /* a real copy: arrays are mutable, so dup/clone must not alias.
+           clone (unlike dup) carries the frozen flag over; the freeze:
+           keyword forces it. */
+        int fz = -1;  /* -1: dup semantics; -2: copy receiver's flag; 0/1: forced */
+        if (argc == 0) fz = sp_streq(name, "clone") ? -2 : -1;
+        else if (sp_streq(name, "clone") && nt_type(nt, argv[0]) &&
+                 sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+          int fv = kwh_lookup(nt, argv[0], "freeze");
+          const char *fvt = fv >= 0 ? nt_type(nt, fv) : NULL;
+          if (fvt && sp_streq(fvt, "FalseNode")) fz = 0;
+          else if (fvt && sp_streq(fvt, "TrueNode")) fz = 1;
+          else if (fvt && sp_streq(fvt, "NilNode")) fz = -2;
+        }
+        if (argc == 1 && fz == -1) { /* not a recognized keyword: fall through */ }
+        else if (fz == -1) {
+          buf_printf(b, "sp_%sArray_dup(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+          return 1;
+        }
+        else {
+          int ts = ++g_tmp, td = ++g_tmp;
+          buf_printf(b, "({ sp_%sArray *_t%d = ", k, ts); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_dup(_t%d); ", k, td, k, ts);
+          if (fz == -2) buf_printf(b, "_t%d->frozen = _t%d ? _t%d->frozen : 0; ", td, ts, ts);
+          else buf_printf(b, "_t%d->frozen = %d; ", td, fz);
+          buf_printf(b, "_t%d; })", td);
+          return 1;
+        }
       }
       if (sp_streq(name, "reverse") && argc == 0) {
         /* copy + reverse in place; sp_*Array_dup exists for Int/Str/Float/Poly */
@@ -923,6 +947,24 @@ else {
            FrozenError inside the runtime helper when the array is frozen) */
         buf_printf(b, "sp_%sArray_slice_bang(", k); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "slice!") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        /* slice!(range): normalize begin/length against the live length */
+        int ta = ++g_tmp, tr = ++g_tmp, tf = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = _t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first;",
+                   tf, tr, tr, ta, ta, tr);
+        buf_printf(b, " mrb_int _t%d = (_t%d.last < 0 ? _t%d.last + (_t%d ? _t%d->len : 0) : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
+                   tn, tr, tr, ta, ta, tr, tf, tr);
+        buf_printf(b, " sp_%sArray_slice_bang(_t%d, _t%d, _t%d < 0 ? 0 : _t%d); })", k, ta, tf, tn, tn);
+        return 1;
+      }
+      if (sp_streq(name, "slice!") && argc == 1) {
+        /* slice!(i): remove and return the element (nil sentinel on miss) */
+        buf_printf(b, "sp_%sArray_delete_at(", k); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       int block = nt_ref(nt, id, "block");
@@ -1757,6 +1799,15 @@ else {
         buf_puts(b, "sp_PolyArray_include("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
+      if (sp_streq(name, "clone") && argc == 0) {
+        /* clone carries the frozen flag over (dup does not) */
+        int ts = ++g_tmp, td = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", ts); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_dup(_t%d); "
+                      "_t%d->frozen = _t%d ? _t%d->frozen : 0; _t%d; })",
+                   td, ts, td, ts, ts, td);
+        return 1;
+      }
       if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0) {
         buf_puts(b, "sp_PolyArray_dup("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
@@ -1806,6 +1857,22 @@ else {
       if (sp_streq(name, "slice!") && argc == 2) {
         buf_puts(b, "sp_PolyArray_slice_bang("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "slice!") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        int ta = ++g_tmp, tr = ++g_tmp, tf = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Range _t%d = ", tr); emit_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = _t%d.first < 0 ? _t%d.first + (_t%d ? _t%d->len : 0) : _t%d.first;",
+                   tf, tr, tr, ta, ta, tr);
+        buf_printf(b, " mrb_int _t%d = (_t%d.last < 0 ? _t%d.last + (_t%d ? _t%d->len : 0) : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
+                   tn, tr, tr, ta, ta, tr, tf, tr);
+        buf_printf(b, " sp_PolyArray_slice_bang(_t%d, _t%d, _t%d < 0 ? 0 : _t%d); })", ta, tf, tn, tn);
+        return 1;
+      }
+      if (sp_streq(name, "slice!") && argc == 1) {
+        buf_puts(b, "sp_PolyArray_delete_at("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "replace") && argc == 1 && a0 == TY_POLY_ARRAY) {
@@ -2956,6 +3023,19 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "empty?"))     buf_printf(b, "sp_str_empty_p(%s)", r);
       else if (sp_streq(name, "include?") && argc == 1) {
         buf_printf(b, "sp_str_include(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?")) && argc >= 2) {
+        /* several candidates: true when any matches (receiver bound once) */
+        int tv = ++g_tmp;
+        const char *fn = sp_streq(name, "start_with?") ? "sp_str_start_with" : "sp_str_end_with";
+        buf_printf(b, "({ const char *_t%d = %s; (", tv, r);
+        for (int j = 0; j < argc; j++) {
+          if (j) buf_puts(b, " || ");
+          buf_printf(b, "%s(_t%d, ", fn, tv);
+          emit_str_expr(c, argv[j], b);
+          buf_puts(b, ")");
+        }
+        buf_puts(b, "); })");
       }
       else if (sp_streq(name, "start_with?") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
         /* s.start_with?(/re/): true when the pattern matches at index 0 */

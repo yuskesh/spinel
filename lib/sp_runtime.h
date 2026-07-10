@@ -1069,6 +1069,26 @@ static inline const char *sp_str_clone_val(const char *s) {
   if (r && sp_str_is_frozen_val(s)) ((unsigned char *)r)[-1] = 0xf1;
   return r;
 }
+/* s[from, n] = val (char-based splice): prefix + val + suffix. A negative
+   `from` counts from the end; out-of-range raises (RangeError for the range
+   form, IndexError for the (start, len) form); an explicit negative length
+   raises IndexError. Over-long spans clamp to the tail. */
+static const char *sp_str_splice_at(const char *s, mrb_int from, mrb_int n, const char *val, int range_form) {
+  if (!s) s = "";
+  if (!val) val = "";
+  mrb_int len = (mrb_int)sp_str_length(s);
+  if (n < 0) { sp_raise_cls("IndexError", sp_sprintf("negative length %lld", (long long)n)); return s; }
+  mrb_int from0 = from;
+  if (from < 0) from += len;
+  if (from < 0 || from > len) {
+    if (range_form) sp_raise_cls("RangeError", sp_sprintf("%lld out of range", (long long)from0));
+    else sp_raise_cls("IndexError", sp_sprintf("index %lld out of string", (long long)from0));
+    return s;
+  }
+  if (from + n > len) n = len - from;
+  return sp_str_concat(sp_str_concat(sp_str_sub_range(s, 0, from), val),
+                       sp_str_sub_range(s, from + n, len - from - n));
+}
 static inline void sp_str_check_mutable(const char *s) {
   if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
 }
@@ -4373,6 +4393,7 @@ static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   sp_raise_cls("NoMethodError", "undefined method 'values'");
   return NULL;  /* unreachable: sp_raise_cls is noreturn */
 }
+static sp_PolyPolyHash*sp_PolyPolyHash_replace(sp_PolyPolyHash*h,sp_PolyPolyHash*o){if(!h)return h;for(mrb_int i=0;i<h->cap;i++)h->occ[i]=FALSE;h->len=0;if(o)for(mrb_int i=0;i<o->len;i++)sp_PolyPolyHash_set(h,o->keys[o->order[i]],o->vals[o->order[i]]);return h;}
 static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h){sp_PolyPolyHash*r=sp_PolyPolyHash_new();r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
 /* Issue #738: poly_poly_hash inspect using sp_poly_inspect on each
    k,v. Output mirrors Ruby's `{k => v, ...}` for non-symbol keys and

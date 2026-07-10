@@ -95,6 +95,17 @@ mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {
   sp_re_match_post = NULL;
   return -1;
 }
+/* s[/re/] = val: replace the first match's byte span with val (taken
+   literally, no template expansion); no match raises IndexError. */
+const char *sp_str_splice_re(mrb_regexp_pattern *pat, const char *s, const char *val) {
+  if (!s) s = "";
+  if (!val) val = "";
+  int64_t slen = (int64_t)strlen(s);
+  int caps[2];
+  int n = re_exec(pat, s, slen, 0, caps, 2, 0);
+  if (n <= 0) { sp_raise_cls("IndexError", "regexp not matched"); return s; }
+  return sp_sprintf("%.*s%s%s", (int)caps[0], s, val, s + caps[1]);
+}
 mrb_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {
   int64_t slen = (int64_t)strlen(str);
   int caps[2];

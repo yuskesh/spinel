@@ -1978,6 +1978,143 @@ static void desugar_enum_chain_shapes(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int recv = nt_ref(nt, id, "receiver");
+    if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0 &&
+        nt_ref(nt, id, "block") < 0) {
+      /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!
+         chains the same way because it returns self. */
+      int argsn = nt_ref(nt, id, "arguments");
+      int an = 0;
+      const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+      if (an >= 2 && an <= 64) {
+        const char *mname = sp_streq(nm, "merge!") ? "merge!" : "merge";
+        int av[64];
+        memcpy(av, av0, (size_t)an * sizeof(int));
+        int cur = recv;
+        for (int j = 0; j < an - 1; j++) {
+          int call = nt_new_node(nt, "CallNode");
+          int one = nt_new_node(nt, "ArgumentsNode");
+          if (call < 0 || one < 0) { cur = -1; break; }
+          nt_node_set_arr(nt, one, "arguments", &av[j], 1);
+          nt_node_set_str(nt, call, "name", mname);
+          nt_node_set_ref(nt, call, "receiver", cur);
+          nt_node_set_ref(nt, call, "arguments", one);
+          cur = call;
+        }
+        if (cur >= 0) {
+          int last = nt_new_node(nt, "ArgumentsNode");
+          if (last >= 0) {
+            nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
+            nt_node_set_ref(nt, id, "receiver", cur);
+            nt_node_set_ref(nt, id, "arguments", last);
+            comp_grow_node_arrays(c);
+          }
+        }
+      }
+      continue;
+    }
+    /* transform_keys(mapping) [no block]: key k maps to mapping[k] when
+       present, else stays -- exactly `{ |k| mapping.fetch(k, k) }`. The
+       mapping expression is re-evaluated per key, which is correct (and only
+       wasteful) for the literal-hash common case. */
+    if ((sp_streq(nm, "transform_keys") || sp_streq(nm, "transform_keys!")) &&
+        recv >= 0 && nt_ref(nt, id, "block") < 0) {
+      int argsn = nt_ref(nt, id, "arguments");
+      int an = 0;
+      const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+      if (an == 1) {
+        int mnode = av0[0];
+        char pname[32];
+        snprintf(pname, sizeof pname, "__tk_k_%d", id);
+        int kp = nt_new_node(nt, "RequiredParameterNode");
+        nt_node_set_str(nt, kp, "name", pname);
+        int params = nt_new_node(nt, "ParametersNode");
+        nt_node_set_arr(nt, params, "requireds", &kp, 1);
+        int bparams = nt_new_node(nt, "BlockParametersNode");
+        nt_node_set_ref(nt, bparams, "parameters", params);
+        int kr1 = nt_new_node(nt, "LocalVariableReadNode");
+        nt_node_set_str(nt, kr1, "name", pname);
+        int kr2 = nt_new_node(nt, "LocalVariableReadNode");
+        nt_node_set_str(nt, kr2, "name", pname);
+        int fargs = nt_new_node(nt, "ArgumentsNode");
+        int fa[2] = { kr1, kr2 };
+        nt_node_set_arr(nt, fargs, "arguments", fa, 2);
+        int fetch = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, fetch, "name", "fetch");
+        nt_node_set_ref(nt, fetch, "receiver", mnode);
+        nt_node_set_ref(nt, fetch, "arguments", fargs);
+        int blkbody = nt_new_node(nt, "StatementsNode");
+        nt_node_set_arr(nt, blkbody, "body", &fetch, 1);
+        int blk = nt_new_node(nt, "BlockNode");
+        nt_node_set_ref(nt, blk, "parameters", bparams);
+        nt_node_set_ref(nt, blk, "body", blkbody);
+        nt_node_set_ref(nt, id, "block", blk);
+        nt_node_set_ref(nt, id, "arguments", -1);
+        comp_grow_node_arrays(c);
+      }
+      /* fall through: the bang form wraps in replace below */
+    }
+    /* transform_values! / transform_keys! { }: build the transformed hash,
+       then splice it back into the receiver (aliases observe the mutation). */
+    if ((sp_streq(nm, "transform_values!") || sp_streq(nm, "transform_keys!")) &&
+        recv >= 0 && nt_ref(nt, id, "block") >= 0) {
+      int blk = nt_ref(nt, id, "block");
+      int inner = nt_new_node(nt, "CallNode");
+      int rargs = nt_new_node(nt, "ArgumentsNode");
+      if (inner >= 0 && rargs >= 0) {
+        nt_node_set_str(nt, inner, "name",
+                        sp_streq(nm, "transform_keys!") ? "transform_keys" : "transform_values");
+        nt_node_set_ref(nt, inner, "receiver", recv);
+        nt_node_set_ref(nt, inner, "block", blk);
+        nt_node_set_arr(nt, rargs, "arguments", &inner, 1);
+        nt_node_set_str(nt, id, "name", "replace");
+        nt_node_set_ref(nt, id, "block", -1);
+        nt_node_set_ref(nt, id, "arguments", rargs);
+        comp_grow_node_arrays(c);
+      }
+      continue;
+    }
+    if (sp_streq(nm, "[]") && recv >= 0 && nt_type(nt, recv) &&
+        sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+        nt_ref(nt, id, "block") < 0) {
+      const char *cn = nt_str(nt, recv, "name");
+      int argsn = nt_ref(nt, id, "arguments");
+      int an = 0;
+      const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+      if (cn && sp_streq(cn, "Hash") && an >= 1) {
+        if (an == 1 && nt_type(nt, av0[0]) &&
+            sp_streq(nt_type(nt, av0[0]), "ArrayNode")) {
+          /* Hash[[[k, v], ...]] == pairs.to_h */
+          nt_node_set_str(nt, id, "name", "to_h");
+          nt_node_set_ref(nt, id, "receiver", av0[0]);
+          nt_node_set_ref(nt, id, "arguments", -1);
+          continue;
+        }
+        if (an >= 2 && an % 2 == 0 && an <= 64) {
+          /* Hash[k1, v1, k2, v2, ...] == [[k1, v1], [k2, v2], ...].to_h */
+          int av[64];
+          memcpy(av, av0, (size_t)an * sizeof(int));
+          int pairs[32];
+          int ok = 1;
+          for (int j = 0; j < an / 2; j++) {
+            int pair = nt_new_node(nt, "ArrayNode");
+            if (pair < 0) { ok = 0; break; }
+            nt_node_set_arr(nt, pair, "elements", &av[j * 2], 2);
+            pairs[j] = pair;
+          }
+          if (ok) {
+            int outer = nt_new_node(nt, "ArrayNode");
+            if (outer >= 0) {
+              nt_node_set_arr(nt, outer, "elements", pairs, an / 2);
+              nt_node_set_str(nt, id, "name", "to_h");
+              nt_node_set_ref(nt, id, "receiver", outer);
+              nt_node_set_ref(nt, id, "arguments", -1);
+              comp_grow_node_arrays(c);
+            }
+          }
+          continue;
+        }
+      }
+    }
     if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) continue;
     const char *rn = nt_str(nt, recv, "name");
     if (!rn || nt_ref(nt, recv, "block") >= 0) continue;
@@ -2014,6 +2151,43 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_ref(nt, id, "receiver", inner);
     }
   }
+}
+
+/* An inline `Hash.new` / `Hash.new(default)` in ARGUMENT position has no
+   variable whose key/value usage could pick its hash variant, so it infers
+   TY_UNKNOWN forever and codegen rejects the call -- which breaks the common
+   counting idiom each_with_object(Hash.new(0)). Rename the call to the
+   internal `__hash_new_default`, which infers (stably) as the
+   universally-boxed PolyPoly variant. */
+static int pin_arg_position_hash_new(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    int argsn = nt_ref(nt, id, "arguments");
+    if (argsn < 0) continue;
+    int an = 0;
+    const int *av = nt_arr(nt, argsn, "arguments", &an);
+    for (int j = 0; j < an; j++) {
+      int a = av[j];
+      if (a < 0) continue;
+      const char *aty = nt_type(nt, a);
+      if (!aty || !sp_streq(aty, "CallNode")) continue;
+      const char *anm = nt_str(nt, a, "name");
+      if (!anm || !sp_streq(anm, "new") || nt_ref(nt, a, "block") >= 0) continue;
+      int arecv = nt_ref(nt, a, "receiver");
+      if (arecv < 0) continue;
+      const char *rty = nt_type(nt, arecv);
+      if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
+      const char *cn = nt_str(nt, arecv, "name");
+      if (cn && sp_streq(cn, "Hash")) {
+        nt_node_set_str(nt, a, "name", "__hash_new_default");
+        changed = 1;
+      }
+    }
+  }
+  return changed;
 }
 
 int desugar_enum_method_recv(Compiler *c) {
@@ -3572,6 +3746,7 @@ void analyze_program(Compiler *c) {
     ch |= propagate_prep_params(c);
     ch |= infer_string_params(c);
     ch |= infer_default_param_types(c);
+    ch |= pin_arg_position_hash_new(c);        /* f(Hash.new(d)) -> PolyPoly variant */
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
@@ -5015,6 +5190,7 @@ void analyze_program(Compiler *c) {
     else if (lit_n == 0 && ty_is_hash(dstt) && litt != dstt)
       c->ntype[v] = dstt;
   }
+
 
   /* Final safety pass: a hash-typed LOCAL assigned from a plain TY_POLY
      value, or from a reader whose backing ivar finished on a different
