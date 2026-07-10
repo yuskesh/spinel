@@ -3650,7 +3650,11 @@ int desugar_block_destructure_params(Compiler *c) {
   int n0 = nt->count;
   for (int L = 0; L < n0; L++) {
     const char *ty = nt_type(nt, L);
-    if (!ty || (!sp_streq(ty, "BlockNode") && !sp_streq(ty, "LambdaNode"))) continue;
+    /* DefNode too: `def m((a, b))` destructures an array parameter with the
+       same MultiTargetNode shape blocks use (its "parameters" is the bare
+       ParametersNode; the conditional unwrap below handles both). */
+    if (!ty || (!sp_streq(ty, "BlockNode") && !sp_streq(ty, "LambdaNode") &&
+                !sp_streq(ty, "DefNode"))) continue;
     int bp = nt_ref(nt, L, "parameters");
     if (bp < 0) continue;
     const char *bpty = nt_type(nt, bp);
