@@ -1995,6 +1995,57 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
   return 1;
 }
 
+/* Positional-arity bounds a class's `initialize` accepts, for the `.new` arity
+   check. Returns 1 and fills [*pmin,*pmax] only when the arity is a fixed
+   positional window we can enforce: no `initialize` (Object#initialize, arity
+   0), or an `initialize` with only required/optional positionals. Returns 0 --
+   don't enforce -- when `initialize` has a rest (`*a`), any keyword params, a
+   `**kwrest`, or `...` forwarding, since those accept variable/keyword arg
+   counts that argc alone can't validate. */
+static int class_new_pos_arity(Compiler *c, int ci, int *pmin, int *pmax) {
+  int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+  if (initm < 0) { *pmin = 0; *pmax = 0; return 1; }
+  int def = c->scopes[initm].def_node;
+  if (def < 0) return 0;
+  int pn = nt_ref(c->nt, def, "parameters");
+  if (pn < 0) { *pmin = 0; *pmax = 0; return 1; }
+  /* Any rest / keyword / kwrest / forwarding param makes the count variable. */
+  if (nt_ref(c->nt, pn, "rest") >= 0 || nt_ref(c->nt, pn, "keyword_rest") >= 0)
+    return 0;
+  int kn = 0; nt_arr(c->nt, pn, "keywords", &kn);
+  if (kn > 0) return 0;
+  int rn = 0; nt_arr(c->nt, pn, "requireds", &rn);
+  int on = 0; nt_arr(c->nt, pn, "optionals", &on);
+  int postn = 0; nt_arr(c->nt, pn, "posts", &postn);
+  *pmin = rn + postn;
+  *pmax = rn + postn + on;
+  return 1;
+}
+
+/* Emit an unconditional ArgumentError raise into the prelude when `argc`
+   positional args cannot satisfy class `ci`'s `initialize` -- MRI raises at the
+   `.new` site. Skips the check when the call carries a splat or a keyword hash
+   (argc is not the true positional count), or when the arity is variable.
+   Returns 1 if a raise was emitted (caller still emits the -- now dead --
+   construction so the expression stays well-typed). */
+static int emit_new_arity_check(Compiler *c, int ci, int argc,
+                                const int *argv, Buf *pre) {
+  const NodeTable *nt = c->nt;
+  for (int a = 0; a < argc; a++) {
+    const char *at = nt_type(nt, argv[a]);
+    if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode"))) return 0;
+  }
+  int lo, hi;
+  if (!class_new_pos_arity(c, ci, &lo, &hi)) return 0;
+  if (argc >= lo && argc <= hi) return 0;
+  char exp[48];
+  if (lo == hi) snprintf(exp, sizeof exp, "%d", lo);
+  else snprintf(exp, sizeof exp, "%d..%d", lo, hi);
+  buf_printf(pre, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given %d, expected %s)\");\n",
+             argc, exp);
+  return 1;
+}
+
 static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -2081,6 +2132,10 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           buf_puts(b, ")");
           return 1;
         }
+        /* Extra/missing positional args to a fixed-arity initialize raise
+           ArgumentError at the .new site, as in MRI; the check emits the raise
+           into the prelude and the (dead) construction below keeps the type. */
+        emit_new_arity_check(c, ci, argc, argv, g_pre);
         buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
         int initm = comp_method_in_chain(c, ci, "initialize", NULL);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
