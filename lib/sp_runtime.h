@@ -3431,6 +3431,7 @@ static const char *sp_PolyArray_inspect(sp_PolyArray *a) {
 /* Array#join for a mixed-element (poly) array: to_s each element via
    sp_poly_to_s and concatenate with sep. Mirrors sp_StrArray_join for
    the boxed-element case. */
+static const char *sp_poly_join(sp_RbVal a, const char *sep);  /* mutual recursion below */
 static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
   if (!a) return sp_str_empty;
   SP_GC_ROOT(a); SP_GC_ROOT(sep);
@@ -3438,7 +3439,12 @@ static const char *sp_PolyArray_join(sp_PolyArray *a, const char *sep) {
   SP_GC_ROOT(s);
   for (mrb_int i = 0; i < a->len; i++) {
     if (i > 0 && sep) sp_String_append(s, sep);
-    sp_String_append(s, sp_poly_to_s(a->data[i]));
+    sp_RbVal e = a->data[i];
+    /* a nested array joins recursively with the same separator (CRuby) */
+    if (e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id))
+      sp_String_append(s, sp_poly_join(e, sep));
+    else
+      sp_String_append(s, sp_poly_to_s(e));
   }
   return s->data;
 }
