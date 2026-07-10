@@ -901,6 +901,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->is_block_param = 0;
   lv->proc_ret = TY_UNKNOWN;
   lv->is_cell = 0;
+  lv->byref_out = 0;
   lv->init_guarded = 0;
   lv->rbs_seeded = 0;
   return lv;

@@ -3749,6 +3749,47 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_INT;
+  /* Byref string out-param: pass the caller's slot (const char**) so the
+     callee's mutation lands in the caller's variable. A plain string local
+     passes its address; an already-celled local (captured, or itself a byref
+     param) passes its cell. Anything else -- literal, expression, ivar,
+     filled default -- materializes a rooted temp and passes that: for a
+     non-lvalue argument CRuby's mutation is equally invisible to the caller,
+     for the rest this keeps the pre-byref behavior. */
+  if (p && p->byref_out) {
+    if (provided >= 0) {
+      const char *aty = nt_type(c->nt, provided);
+      if (aty && sp_streq(aty, "LocalVariableReadNode")) {
+        const char *vn = nt_str(c->nt, provided, "name");
+        if (g_cap_struct && g_cap_names && vn && nameset_has(g_cap_names, vn)) {
+          /* inside a proc body: the capture struct holds the cell pointer */
+          buf_printf(out, "((%s *)_cap)->%s", g_cap_struct, vn);
+          return;
+        }
+        LocalVar *clv = vn ? scope_local(comp_scope_of(c, provided), vn) : NULL;
+        if (clv && clv->type == TY_STRING && clv->is_cell) {
+          buf_printf(out, "_cell_%s", vn);
+          return;
+        }
+        if (clv && clv->type == TY_STRING) {
+          buf_printf(out, "&lv_%s", rename_local(vn));
+          return;
+        }
+      }
+    }
+    Buf ab; memset(&ab, 0, sizeof ab);
+    p->byref_out = 0;   /* reenter for the plain coerced value */
+    emit_arg_or_default(c, m, idx, provided, &ab);
+    p->byref_out = 1;
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = %s;\n", t, ab.p ? ab.p : "NULL");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+    buf_printf(out, "&_t%d", t);
+    free(ab.p);
+    return;
+  }
   /* An unused/unresolved param is declared poly (sp_RbVal) in the method
      signature (codegen.c maps TY_UNKNOWN params to TY_POLY); box the argument
      to match, so a virtually-dispatched call into such a slot passes a valid
@@ -4063,6 +4104,9 @@ else {
 static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_UNKNOWN;
+  /* a byref out-param arg is a slot address, not a heap value: it hoists its
+     own rooted temp when one is needed (see emit_arg_or_default) */
+  if (p && p->byref_out) { emit_arg_or_default(c, m, idx, provided, out); return; }
   int poly = (pt == TY_POLY);
   if (!poly && !needs_root(pt)) { emit_arg_or_default(c, m, idx, provided, out); return; }
   /* A bare read (local/ivar/const/self/nil/string literal) is already reachable
@@ -4364,6 +4408,13 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
         LocalVar *mp = scope_local(m, m->pnames[i]);
         TyKind et = ep ? ep->type : TY_POLY;
         TyKind mt = mp ? mp->type : TY_POLY;
+        /* forwarding into a byref out-param slot: pass the enclosing param's
+           slot (its cell when it is itself byref/celled, else its address) */
+        if (mp && mp->byref_out && ep && et == TY_STRING) {
+          if (ep->is_cell) buf_printf(out, "_cell_%s", encl->pnames[i]);
+          else buf_printf(out, "&lv_%s", encl->pnames[i]);
+          continue;
+        }
         char txt[80]; snprintf(txt, sizeof txt, "lv_%s", encl->pnames[i]);
         if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, out);
         else buf_puts(out, txt);
@@ -4580,6 +4631,17 @@ else if (splat_tmp >= 0 && i >= splat_idx) {
         buf_printf(out, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, splat_tmp, splat_tmp,
                    eb.p ? eb.p : "", db.p ? db.p : default_value(pt));
         free(db.p);
+      }
+      else if (sp && sp->byref_out) {
+        /* a splat element filling a byref out-param slot has no caller
+           variable to write back to: pass a rooted temp's address (the
+           mutation stays local, like the pre-byref behavior). */
+        int bt = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "const char *_t%d = %s;\n", bt, eb.p ? eb.p : "NULL");
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", bt);
+        buf_printf(out, "&_t%d", bt);
       }
       else buf_puts(out, eb.p ? eb.p : "");
       free(eb.p);

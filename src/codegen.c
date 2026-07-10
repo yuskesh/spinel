@@ -500,6 +500,10 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
     /* Virtual &block slot: skip declaration UNLESS it's a lowered __yblk__ that
        needs a cell (so forwarding procs can capture it). */
     if (s->blk_param && lv->name && sp_streq(lv->name, s->blk_param) && !lv->is_cell) continue;
+    /* Byref string out-param: the C parameter already IS the cell (the
+       caller's rooted slot), so no heap cell, no copy-in, and no root --
+       the pointee lives in the caller's frame, not on the GC heap. */
+    if (lv->byref_out) continue;
     /* Captured-by-closure local: lives in a heap cell so the proc and this
        scope share storage. A param's incoming value is copied into the cell;
        a body local starts at 0. Int and proc cells supported. */
@@ -630,6 +634,12 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   for (int i = 0; i < s->nparams; i++) {
     if (wrote++) buf_puts(b, ", ");
     LocalVar *p = scope_local(s, s->pnames[i]);
+    /* byref string out-param: the caller's slot, so body mutation propagates.
+       Named _cell_<name> so the ordinary is_cell deref forms read/write it. */
+    if (p && p->byref_out) {
+      buf_printf(b, "const char * *_cell_%s", s->pnames[i]);
+      continue;
+    }
     TyKind pt = (p && p->type != TY_UNKNOWN) ? p->type : TY_POLY;
     if (!is_scalar_ret(pt)) {
       fprintf(stderr, "spinel: method '%s' param '%s' has unsupported type %s\n",
@@ -726,6 +736,7 @@ static void inherit_transplant_locals(Compiler *c, Scope *s) {
       dl->is_block_param = sl.is_block_param;
       dl->proc_ret = sl.proc_ret;
       dl->is_cell = sl.is_cell;
+      dl->byref_out = sl.byref_out;
     }
     break;
   }

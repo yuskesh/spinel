@@ -2955,6 +2955,189 @@ static void mark_empty_array_receivers(Compiler *c) {
   }
 }
 
+/* --- byref string out-params (see LocalVar.byref_out) ---------------------
+   CRuby strings are shared heap objects: a callee's `s << "x"` mutates the
+   very object the caller passed. Spinel strings are immutable const char*
+   values and `<<` is a local reassignment, so the mutation silently stops at
+   the callee -- the classic pass-an-output-buffer pattern loses every append.
+   Mark the mutated string params of statically-bound methods byref: codegen
+   passes the caller's slot (const char **), the callee reads and reassigns
+   through it (the existing is_cell deref forms), and the mutation lands in
+   the caller's variable like CRuby.
+
+   Eligibility is deliberately narrow -- byref changes the C ABI, so every
+   call site must know the callee statically and no plain rebind may leak:
+   - toplevel / class (singleton) methods only: an instance method can be
+     reached through poly dispatch stubs and same-name subtree dispatch,
+     which keep the plain ABI;
+   - the name is unique program-wide, never aliased, and never appears as a
+     symbol/string literal (send/method(:x)/define_method material);
+   - all params required positional (no rest/kw/defaults: those fill slots
+     through temps and per-name extraction, where an address is meaningless);
+   - the param is mutated via a receiver-reassigning string mutator (`<<`,
+     replace, prepend, insert, clear, concat, bang forms) or passed on into
+     another method's byref slot (fixpoint), and is never PLAIN-reassigned:
+     CRuby `s = ...` rebinds the local invisibly to the caller, which a
+     write-through cell would wrongly propagate. */
+static int an_str_mutator_name(const char *nm) {
+  size_t l = nm ? strlen(nm) : 0;
+  if (!l) return 0;
+  return sp_streq(nm, "<<") || sp_streq(nm, "concat") || sp_streq(nm, "replace") ||
+         sp_streq(nm, "prepend") || sp_streq(nm, "insert") || sp_streq(nm, "clear") ||
+         (l > 1 && nm[l - 1] == '!');
+}
+
+/* Unique method scope index by name across the program, or -1 (absent or
+   defined more than once). Scope 0 is the top level (name NULL). */
+static int an_unique_scope_by_name(Compiler *c, const char *nm) {
+  int found = -1;
+  if (!nm) return -1;
+  for (int i = 1; i < c->nscopes; i++) {
+    Scope *s = &c->scopes[i];
+    if (!s->name || !sp_streq(s->name, nm)) continue;
+    if (found >= 0) return -1;
+    found = i;
+  }
+  return found;
+}
+
+/* Param index of `vn` in s->pnames, or -1. */
+static int an_param_idx(Scope *s, const char *vn) {
+  if (!vn) return -1;
+  for (int i = 0; i < s->nparams; i++)
+    if (s->pnames[i] && sp_streq(s->pnames[i], vn)) return i;
+  return -1;
+}
+
+int comp_byref_param(Compiler *c, Scope *m, int idx) {
+  if (!m || idx < 0 || idx >= m->nparams || !m->pnames[idx]) return 0;
+  LocalVar *p = scope_local(m, m->pnames[idx]);
+  return p && p->byref_out;
+}
+
+static void compute_byref_out_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int n = c->nscopes;
+  char *elig = calloc((size_t)n, 1);
+  unsigned *blocked = calloc((size_t)n, sizeof(unsigned));  /* per-scope param bitmask */
+  if (!elig || !blocked) { free(elig); free(blocked); return; }
+
+  for (int si = 1; si < n; si++) {
+    Scope *s = &c->scopes[si];
+    if (!s->name || s->def_node < 0 || s->body < 0) continue;
+    if (s->yields || s->is_lowered_yield || s->dm_subst_name || s->cs_synth) continue;
+    if (s->is_transplanted_source) continue;
+    if (s->class_id >= 0 && !s->is_cmethod) continue;
+    if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->npost_rest > 0) continue;
+    if (s->nparams <= 0 || s->nparams > 32 || s->nrequired != s->nparams) continue;
+    int pn = nt_ref(nt, s->def_node, "parameters");
+    if (pn >= 0) {
+      int kn = 0; nt_arr(nt, pn, "keywords", &kn);
+      if (kn > 0) continue;
+    }
+    if (an_unique_scope_by_name(c, s->name) != si) continue;
+    elig[si] = 1;
+  }
+  /* an aliased name reaches the method under another spelling; the alias call
+     sites keep the plain ABI, so the method must too */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *cls = &c->classes[ci];
+    for (int a = 0; a < cls->naliases; a++)
+      for (int si = 1; si < n; si++)
+        if (elig[si] && ((cls->alias_old[a] && sp_streq(cls->alias_old[a], c->scopes[si].name)) ||
+                         (cls->alias_new[a] && sp_streq(cls->alias_new[a], c->scopes[si].name))))
+          elig[si] = 0;
+  }
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty) continue;
+    /* a symbol/string literal spelling the name: send / method(:x) /
+       define_method / respond_to? -- all reach the plain ABI */
+    const char *v = NULL;
+    if (sp_streq(ty, "SymbolNode")) {
+      v = nt_str(nt, id, "value");
+      if (!v) v = nt_str(nt, id, "unescaped");
+    }
+    else if (sp_streq(ty, "StringNode")) {
+      v = nt_str(nt, id, "content");
+      if (!v) v = nt_str(nt, id, "unescaped");
+    }
+    if (v)
+      for (int si = 1; si < n; si++)
+        if (elig[si] && sp_streq(c->scopes[si].name, v)) elig[si] = 0;
+    /* a plain rebind of a param blocks it (see the header comment) */
+    if (sp_streq(ty, "LocalVariableWriteNode") ||
+        sp_streq(ty, "LocalVariableOperatorWriteNode") ||
+        sp_streq(ty, "LocalVariableOrWriteNode") ||
+        sp_streq(ty, "LocalVariableAndWriteNode") ||
+        sp_streq(ty, "LocalVariableTargetNode")) {
+      Scope *s = comp_scope_of(c, id);
+      int si = s ? (int)(s - c->scopes) : -1;
+      if (si > 0 && si < n && elig[si]) {
+        int pi = an_param_idx(s, nt_str(nt, id, "name"));
+        if (pi >= 0 && pi < 32) blocked[si] |= 1u << pi;
+      }
+    }
+  }
+
+  int changed = 1;
+  while (changed) {
+    changed = 0;
+    for (int id = 0; id < nt->count; id++) {
+      const char *ty = nt_type(nt, id);
+      if (!ty || !sp_streq(ty, "CallNode")) continue;
+      Scope *s = comp_scope_of(c, id);
+      int si = s ? (int)(s - c->scopes) : -1;
+      if (si <= 0 || si >= n || !elig[si]) continue;
+      const char *nm = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+      /* direct mutator: param << ... / param.gsub!(...) */
+      if (rty && sp_streq(rty, "LocalVariableReadNode") && an_str_mutator_name(nm)) {
+        const char *vn = nt_str(nt, recv, "name");
+        int pi = an_param_idx(s, vn);
+        if (pi >= 0 && pi < 32 && !(blocked[si] & (1u << pi))) {
+          LocalVar *p = scope_local(s, vn);
+          if (p && p->is_param && p->type == TY_STRING && !p->is_cell &&
+              !p->rbs_seeded && !p->is_block_param && !p->byref_out) {
+            p->byref_out = 1;
+            p->is_cell = 1;   /* body reads/writes ride the cell deref forms */
+            changed = 1;
+          }
+        }
+      }
+      /* transitive: the param passed on into another method's byref slot */
+      if (recv < 0 || (rty && (sp_streq(rty, "ConstantReadNode") ||
+                               sp_streq(rty, "ConstantPathNode") ||
+                               sp_streq(rty, "SelfNode")))) {
+        int mi = an_unique_scope_by_name(c, nm);
+        if (mi < 0) continue;
+        Scope *m = &c->scopes[mi];
+        int argsN = nt_ref(nt, id, "arguments");
+        int argc2 = 0;
+        const int *argv2 = argsN >= 0 ? nt_arr(nt, argsN, "arguments", &argc2) : NULL;
+        for (int j = 0; j < argc2 && j < m->nparams; j++) {
+          if (!comp_byref_param(c, m, j)) continue;
+          const char *aty = nt_type(nt, argv2[j]);
+          if (!aty || !sp_streq(aty, "LocalVariableReadNode")) continue;
+          const char *vn = nt_str(nt, argv2[j], "name");
+          int pi = an_param_idx(s, vn);
+          if (pi < 0 || pi >= 32 || (blocked[si] & (1u << pi))) continue;
+          LocalVar *p = scope_local(s, vn);
+          if (p && p->is_param && p->type == TY_STRING && !p->is_cell &&
+              !p->rbs_seeded && !p->is_block_param && !p->byref_out) {
+            p->byref_out = 1;
+            p->is_cell = 1;
+            changed = 1;
+          }
+        }
+      }
+    }
+  }
+  free(elig);
+  free(blocked);
+}
+
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
@@ -4262,6 +4445,11 @@ void analyze_program(Compiler *c) {
     an_ie_class_id = saved2;
   }
 
+  /* Byref string out-params: must run before the STRBUF promotion below so
+     the promotion can exclude locals whose address is passed to a byref slot
+     (a STRBUF local is an sp_String*, not the const char* slot byref needs). */
+  compute_byref_out_params(c);
+
   /* Promote `<<`-appended string locals to mutable strings (TY_STRBUF) so the
      append is amortized O(1) instead of an O(n) copy-concat (which makes a
      build-in-a-loop O(n^2)). This is a storage-only refinement: comp_ntype
@@ -4330,6 +4518,27 @@ void analyze_program(Compiler *c) {
     }
     if (has_reassign_mutate) continue;
     if (lv->rbs_seeded) continue;
+    /* Exclude vars passed into a byref out-param slot: the call site takes
+       the local's address as const char**, which a promoted sp_String* slot
+       cannot provide. */
+    int passed_byref = 0;
+    for (int u = 0; u < c->nt->count && !passed_byref; u++) {
+      const char *uty = nt_type(c->nt, u);
+      if (!uty || !sp_streq(uty, "CallNode")) continue;
+      if (comp_scope_of(c, u) != s) continue;
+      int mi = an_unique_scope_by_name(c, nt_str(c->nt, u, "name"));
+      if (mi < 0) continue;
+      int argsN = nt_ref(c->nt, u, "arguments");
+      int uargc = 0;
+      const int *uargv = argsN >= 0 ? nt_arr(c->nt, argsN, "arguments", &uargc) : NULL;
+      for (int j = 0; j < uargc && j < c->scopes[mi].nparams; j++) {
+        if (!comp_byref_param(c, &c->scopes[mi], j)) continue;
+        const char *aty = nt_type(c->nt, uargv[j]);
+        const char *an2 = aty && sp_streq(aty, "LocalVariableReadNode") ? nt_str(c->nt, uargv[j], "name") : NULL;
+        if (an2 && sp_streq(an2, vn)) { passed_byref = 1; break; }
+      }
+    }
+    if (passed_byref) continue;
     lv->type = TY_STRBUF;
   }
 

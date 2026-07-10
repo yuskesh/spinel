@@ -37,6 +37,12 @@ typedef struct {
   int is_cell;      /* captured by an escaping proc: lives in a heap cell
                        (mrb_int *_cell_<name>) so the closure and the enclosing
                        scope share mutable storage */
+  int byref_out;    /* (params) a string param the method body mutates in place
+                       (`<<`/bang mutators): passed as const char** so the
+                       mutation lands in the caller's variable, like CRuby's
+                       shared-object semantics. Implies is_cell (body reads and
+                       writes go through *_cell_<name>), but the cell is the
+                       caller's slot -- no heap cell is allocated on entry. */
   int init_guarded; /* (consts) initialized via `CONST = Class.new(...)`: reads
                        during the init raise NameError (uninitialized constant) */
   int rbs_seeded;   /* param type pinned from an --rbs advisory seed: the
@@ -396,6 +402,9 @@ int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 int        comp_cvar_index(ClassInfo *ci, const char *name);  /* class var; -1 if none */
 int        comp_cvar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
+/* 1 iff method m's param idx is a byref string out-param (LocalVar.byref_out):
+   passed as const char** so callee mutation lands in the caller's variable. */
+int        comp_byref_param(Compiler *c, Scope *m, int idx);
 /* Find the instance-method scope index for class_id + method name, or -1. */
 int        comp_method_in_class(Compiler *c, int class_id, const char *name);
 /* Freeze/unfreeze the (class_id,name,is_cmethod)->scope lookup index. Frozen
