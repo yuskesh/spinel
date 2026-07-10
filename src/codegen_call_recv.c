@@ -2469,6 +2469,37 @@ else {
       }
       /* except(*keys): a copy of the hash without the given keys (the variants
          that have a runtime delete: str/sym/poly-keyed). */
+      /* Hash#slice(k, ...): a fresh hash of the present keys, in argument
+         order (CRuby keeps hash order; argument order matches for the common
+         literal-key use). Same variants as #except below. */
+      if (sp_streq(name, "slice") && hn && argc >= 1 &&
+          (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_STR_STR_HASH ||
+           rt == TY_STR_INT_HASH || rt == TY_POLY_POLY_HASH)) {
+        int th = ++g_tmp, tr = ++g_tmp;
+        buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th);
+        emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);", th, hn, tr, hn, tr);
+        TyKind skt = ty_hash_key(rt);
+        for (int i = 0; i < argc; i++) {
+          int tk = ++g_tmp;
+          if (rt == TY_POLY_POLY_HASH) {
+            buf_printf(b, " { sp_RbVal _t%d = ", tk); emit_boxed(c, argv[i], b);
+          }
+          else if (skt == TY_SYMBOL) {
+            buf_printf(b, " { sp_sym _t%d = ", tk); emit_hash_key(c, argv[i], skt, b);
+          }
+          else if (skt == TY_INT) {
+            buf_printf(b, " { mrb_int _t%d = ", tk); emit_hash_key(c, argv[i], skt, b);
+          }
+          else {
+            buf_printf(b, " { const char *_t%d = ", tk); emit_hash_key(c, argv[i], skt, b);
+          }
+          buf_printf(b, "; if (sp_%sHash_has_key(_t%d, _t%d)) sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }",
+                     hn, th, tk, hn, tr, tk, hn, th, tk);
+        }
+        buf_printf(b, " _t%d; })", tr);
+        return 1;
+      }
       if (sp_streq(name, "except") && hn &&
           (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_STR_STR_HASH ||
            rt == TY_STR_INT_HASH || rt == TY_POLY_POLY_HASH)) {

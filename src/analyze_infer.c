@@ -2925,6 +2925,7 @@ else {
     if (sp_streq(name, "to_proc")) return TY_PROC;
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
     if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */
+    if (sp_streq(name, "slice") && argc >= 1) return rt;  /* key-subset hash */
     if (sp_streq(name, "[]"))     return ty_hash_val(rt);
     if (sp_streq(name, "[]=") || sp_streq(name, "store"))
       return argc >= 2 ? ty_unify(infer_type(c, argv[1]), ty_hash_val(rt)) : ty_hash_val(rt);
