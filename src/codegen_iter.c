@@ -857,6 +857,27 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
   TyKind rt = comp_ntype(c, recv);
 
+  /* A Range Enumerable the array emitters below serve (each_slice/each_cons
+     block forms, ...): materialize once into an int array and re-enter with
+     the receiver's emission and type overridden -- the block-form mirror of
+     the call_recv redispatch, keyed on the same predicate. */
+  if (rt == TY_RANGE && range_enum_redispatch(c, id) && g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp, tr = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
+               ta, tr, rb.p ? rb.p : "", tr, ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_INT_ARRAY;
+    int done = emit_iteration_stmt(c, id, b, indent);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return done;
+  }
+
   /* (range).step(k) { |x| ... } -- materialise the stepped values (shared with
      the no-block path so they match exactly) and walk them; the element type
      follows the array, int or float. */

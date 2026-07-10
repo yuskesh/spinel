@@ -4312,6 +4312,10 @@ int infer_block_params(Compiler *c) {
 
     if (recv < 0) continue;
     TyKind rt = infer_type(c, recv);
+    /* A Range Enumerable served by materializing to an int array (each_slice/
+       each_cons block forms, ...): type the block params as the array version,
+       matching infer_call's redispatch and the codegen mirrors. */
+    if (rt == TY_RANGE && range_enum_redispatch(c, id)) rt = TY_INT_ARRAY;
     const char *p0 = block_param_name(c, block, 0);
     if (!p0 && !block_param_is_multi(c, block, 0)) continue;
 
@@ -4476,6 +4480,8 @@ int infer_block_params(Compiler *c) {
         nt_ref(nt, recv, "block") < 0) {
       int es_recv2 = nt_ref(nt, recv, "receiver");
       TyKind arr_t2 = es_recv2 >= 0 ? infer_type(c, es_recv2) : TY_UNKNOWN;
+      /* a Range under the chain types its params as the materialized int array */
+      if (arr_t2 == TY_RANGE && range_enum_redispatch(c, recv)) arr_t2 = TY_INT_ARRAY;
       if (ty_is_array(arr_t2)) {
         Scope *es2 = comp_scope_of(c, block);
         int np2 = 0; while (block_param_name(c, block, np2)) np2++;

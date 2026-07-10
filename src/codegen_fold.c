@@ -2940,6 +2940,35 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
+  /* (range).each_slice/each_cons(n).map chain: materialize the range once
+     into an int array and re-enter with the range node's emission and type
+     overridden, so the array chain unrolls below serve it (the expression
+     mirror of the block-form redispatch in emit_iteration_stmt). */
+  if (ty_iter_shape(name) == TY_ITER_MAP &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+      nt_str(nt, recv, "name") &&
+      (sp_streq(nt_str(nt, recv, "name"), "each_slice") ||
+       sp_streq(nt_str(nt, recv, "name"), "each_cons")) &&
+      nt_ref(nt, recv, "block") < 0) {
+    int es_recv = nt_ref(nt, recv, "receiver");
+    if (es_recv >= 0 && comp_ntype(c, es_recv) == TY_RANGE &&
+        range_enum_redispatch(c, recv) && g_n_argov < MAX_ARG_OVERRIDE) {
+      int ta = ++g_tmp, tr = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, es_recv, &rb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
+                 ta, tr, rb.p ? rb.p : "", tr, ta);
+      free(rb.p);
+      g_argov_node[g_n_argov] = es_recv;
+      snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+      g_n_argov++;
+      TyKind sv = c->ntype[es_recv]; c->ntype[es_recv] = TY_INT_ARRAY;
+      int done = emit_collect_expr(c, id, b);
+      c->ntype[es_recv] = sv;
+      g_n_argov--;
+      return done;
+    }
+  }
   /* array.each_slice(n).map { |x, y, ...| } chain: unroll into a direct slice loop */
   if (ty_iter_shape(name) == TY_ITER_MAP &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
