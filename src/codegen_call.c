@@ -3620,6 +3620,26 @@ static void emit_ffi_callback_arg(Compiler *c, int cbidx, int argnode, Buf *out)
   buf_puts(out, "NULL");
 }
 
+/* A single-segment constant name is well-formed iff it begins with an uppercase
+   ASCII letter (or any non-ASCII byte, conservatively treated as a valid Unicode
+   start) and every remaining ASCII byte is a constant-identifier char. A scoped
+   name (containing "::") is left to the flat lookup rather than diagnosed here.
+   Returns 1 when the name is malformed -- CRuby raises NameError "wrong constant
+   name" for these instead of answering false. */
+static int const_name_is_wrong(const char *s) {
+  if (strstr(s, "::")) return 0;
+  if (!s[0]) return 1;
+  unsigned char c0 = (unsigned char)s[0];
+  if (c0 < 0x80 && !(c0 >= 'A' && c0 <= 'Z')) return 1;
+  for (const char *p = s + 1; *p; p++) {
+    unsigned char ch = (unsigned char)*p;
+    if (ch < 0x80 && !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                       (ch >= '0' && ch <= '9') || ch == '_'))
+      return 1;
+  }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -5879,6 +5899,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (a0ty && sp_streq(a0ty, "SymbolNode")) cn0 = nt_str(nt, argv[0], "value");
       else if (a0ty && sp_streq(a0ty, "StringNode")) cn0 = nt_str(nt, argv[0], "unescaped");
       if (cn0) {
+        if (const_name_is_wrong(cn0)) {
+          buf_printf(b, "((void)("); emit_expr(c, recv, b);
+          buf_printf(b, "), sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", ");
+          emit_str_literal(b, cn0);
+          buf_printf(b, ")), 0)");
+          return;
+        }
         int yes = (comp_const(c, cn0) != NULL) || comp_class_index(c, cn0) >= 0;
         buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
         return;
@@ -8234,6 +8261,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (aty && sp_streq(aty, "SymbolNode")) qm = nt_str(nt, argv[0], "value");
     else if (aty && sp_streq(aty, "StringNode")) qm = nt_str(nt, argv[0], "content");
     if (qm) {
+      if (const_name_is_wrong(qm)) {
+        buf_printf(b, "((void)("); emit_expr(c, recv, b);
+        buf_printf(b, "), sp_raise_cls(\"NameError\", sp_sprintf(\"wrong constant name %%s\", ");
+        emit_str_literal(b, qm);
+        buf_printf(b, ")), 0)");
+        return;
+      }
       int yes = comp_const(c, qm) != NULL || comp_class_index(c, qm) >= 0;
       buf_printf(b, "%d", yes);
       return;

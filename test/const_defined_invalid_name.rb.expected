@@ -1,0 +1,12 @@
+true
+true
+false
+false
+false
+wrong constant name name
+wrong constant name _Foo
+wrong constant name @x
+wrong constant name 1A
+wrong constant name A B
+wrong constant name 
+wrong constant name lower
