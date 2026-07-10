@@ -1,0 +1,8 @@
+class Base
+  def assign: (Hash[String, untyped] row) -> nil
+end
+
+class Thing < Base
+  attr_reader id: Integer
+  attr_reader body: String
+end

@@ -2655,9 +2655,27 @@ void inherit_members(Compiler *c) {
       int idx = comp_ivar_intern(ci, old[k]);
       /* an --rbs-pinned slot keeps its pinned type verbatim through the
          layout rebuild (this runs again AFTER seeds apply; unifying with the
-         parent's inferred type here would overwrite the pin) */
-      if (class_ivar_pinned(ci, old[k]))
-        ci->ivar_types[idx] = oldt[k];
+         parent's inferred type here would overwrite the pin) -- UNLESS an
+         ancestor carries the same ivar with a conflicting type. The struct
+         layouts must stay cast-compatible (a parent method writes the slot
+         through a (Parent*) cast of the child), so a pin that would split
+         the layouts yields with a warning instead of corrupting every
+         inherited read (#1871: a child's `attr_reader id: Integer` under a
+         parent assign writing Hash[String, untyped] values). */
+      if (class_ivar_pinned(ci, old[k])) {
+        int pidx = comp_ivar_index(pc, old[k]);
+        TyKind pt = pidx >= 0 ? pc->ivar_types[pidx] : TY_UNKNOWN;
+        if (pidx >= 0 && pt != TY_UNKNOWN && pt != TY_NIL && pt != oldt[k]) {
+          fprintf(stderr,
+                  "spinel: warning: --rbs ivar pin %s dropped on %s: ancestor %s holds it as %s (layouts must stay cast-compatible)\n",
+                  old[k], ci->name, pc->name, ty_name(pt));
+          class_unpin_ivar(ci, old[k]);
+          ci->ivar_types[idx] = ty_unify(ci->ivar_types[idx], oldt[k]);
+        }
+        else {
+          ci->ivar_types[idx] = oldt[k];
+        }
+      }
       else
         ci->ivar_types[idx] = ty_unify(ci->ivar_types[idx], oldt[k]);
       free(old[k]);
@@ -2679,7 +2697,17 @@ int infer_inherited_ivars(Compiler *c) {
     for (int k = 0; k < pc->nivars; k++) {
       int idx = comp_ivar_index(ci, pc->ivars[k]);
       if (idx < 0) continue;
-      if (class_ivar_pinned(ci, pc->ivars[k])) continue;  /* --rbs seed pins are authoritative */
+      if (class_ivar_pinned(ci, pc->ivars[k])) {
+        /* authoritative -- unless the parent's slot settled to a conflicting
+           type after the layout rebuild (same cast-compatibility rule as
+           inherit_members; the write reaches this slot through a Parent*). */
+        TyKind pt2 = pc->ivar_types[k];
+        if (pt2 == TY_UNKNOWN || pt2 == TY_NIL || pt2 == ci->ivar_types[idx]) continue;
+        fprintf(stderr,
+                "spinel: warning: --rbs ivar pin %s dropped on %s: ancestor %s holds it as %s (layouts must stay cast-compatible)\n",
+                pc->ivars[k], ci->name, pc->name, ty_name(pt2));
+        class_unpin_ivar(ci, pc->ivars[k]);
+      }
       TyKind merged = ty_unify(ci->ivar_types[idx], pc->ivar_types[k]);
       if (merged != ci->ivar_types[idx]) { ci->ivar_types[idx] = merged; changed = 1; }
     }

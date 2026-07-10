@@ -1492,6 +1492,18 @@ int class_ivar_pinned(ClassInfo *ci, const char *name) {
   return 0;
 }
 
+/* Drop an --rbs ivar pin (a layout conflict with an ancestor demoted it;
+   see the cast-compatibility note in inherit_members). */
+void class_unpin_ivar(ClassInfo *ci, const char *name) {
+  for (int i = 0; i < ci->n_rbs_pin_ivars; i++) {
+    if (sp_streq(ci->rbs_pin_ivars[i], name)) {
+      free(ci->rbs_pin_ivars[i]);
+      ci->rbs_pin_ivars[i] = ci->rbs_pin_ivars[--ci->n_rbs_pin_ivars];
+      return;
+    }
+  }
+}
+
 static void class_pin_ivar(ClassInfo *ci, const char *name) {
   if (class_ivar_pinned(ci, name)) return;
   if (ci->n_rbs_pin_ivars >= ci->c_rbs_pin_ivars) {
