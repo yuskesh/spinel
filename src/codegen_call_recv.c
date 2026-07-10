@@ -3363,6 +3363,22 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     if (cn) {
       int cid = ty_object_class(rt);
       int target = comp_class_index(c, cn);
+      /* an exception-subclass instance walks its carried cls_name chain --
+         the class-index fold below answers 0 for builtin targets like
+         StandardError, which have no user class index */
+      if (class_is_exc_subclass(c, cid)) {
+        if (sp_streq(name, "instance_of?")) {
+          buf_puts(b, "(strcmp(((sp_Exception *)(");
+          emit_expr(c, recv, b);
+          buf_printf(b, "))->cls_name, \"%s\") == 0)", cn);
+        }
+        else {
+          buf_puts(b, "sp_exc_is_a((volatile sp_Exception *)(");
+          emit_expr(c, recv, b);
+          buf_printf(b, "), \"%s\")", cn);
+        }
+        return 1;
+      }
       if (target >= 0) {
         if (sp_streq(name, "instance_of?")) {
           buf_puts(b, "((void)("); emit_expr(c, recv, b);

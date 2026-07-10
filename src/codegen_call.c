@@ -5747,6 +5747,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, "), ((sp_Class){(mrb_int)-1, \"%s\"}))", _ocn);
         return;
       }
+      /* an exception subclass shares sp_Exception's layout (no cls_id
+         member); its runtime class is the carried cls_name */
+      if (_cidx >= 0 && class_is_exc_subclass(c, _cidx)) {
+        int _texc = ++g_tmp;
+        emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _texc);
+        Buf _eb = expr_buf(c, recv);
+        buf_puts(g_pre, _eb.p ? _eb.p : ""); buf_puts(g_pre, ";\n"); free(_eb.p);
+        buf_printf(b, "((sp_Class){(mrb_int)-1, _t%d ? ((sp_Exception *)_t%d)->cls_name : \"NilClass\"})", _texc, _texc);
+        return;
+      }
       int _tobj = ++g_tmp;
       emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _tobj);
       Buf _rb = expr_buf(c, recv);

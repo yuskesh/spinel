@@ -1145,7 +1145,11 @@ else {
       const char *cn = nt_str(nt, recv, "name");
       int ci = cn ? comp_class_index(c, cn) : -1;
       if (ci >= 0) {
-        if (class_inherits_builtin_exception(c, ci)) return TY_EXCEPTION;
+        /* an exception-subclass instance keeps its concrete class (its custom
+           methods must dispatch); the exception-shaped queries route through
+           the base helpers like a specialized rescue var does */
+        if (class_inherits_builtin_exception(c, ci))
+          return (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci));
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) return (TyKind)c->scopes[ucnew].ret;
         return ty_object(ci);
@@ -1167,7 +1171,11 @@ else {
       const char *cn = nt_str(nt, recv, "name");
       int ci = comp_class_index(c, cn);
       if (ci >= 0) {
-        if (class_inherits_builtin_exception(c, ci)) return TY_EXCEPTION;
+        /* an exception-subclass instance keeps its concrete class (its custom
+           methods must dispatch); the exception-shaped queries route through
+           the base helpers like a specialized rescue var does */
+        if (class_inherits_builtin_exception(c, ci))
+          return (comp_method_in_chain(c, ci, "initialize", NULL), ty_object(ci));
         int ucnew = comp_cmethod_in_chain(c, ci, "new", NULL);
         if (ucnew >= 0) return (TyKind)c->scopes[ucnew].ret;
         return ty_object(ci);
