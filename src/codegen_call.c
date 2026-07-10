@@ -8229,7 +8229,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     const char *aty0 = nt_type(nt, argv[0]);
     int lit_shift = aty0 && sp_streq(aty0, "IntegerNode");
     long long litc = lit_shift ? nt_int(nt, argv[0], "value", 0) : 0;
-    if (is_shift && lit_shift && (litc < 0 || litc >= 64)) {
+    /* `<< 63` joins the helper path: it overflows (or lands on the nil
+       sentinel INTPTR_MIN) for every nonzero receiver, so the overflow check
+       in sp_int_shl must see it. */
+    if (is_shift && lit_shift &&
+        (litc < 0 || litc >= 64 || (sp_streq(name, "<<") && litc >= 63))) {
       buf_printf(b, "sp_int_%s(", sp_streq(name, "<<") ? "shl" : "shr");
       if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);

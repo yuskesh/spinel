@@ -750,14 +750,14 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     if (t == TY_INT && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*"))) {
-      /* Coerce a poly RHS through sp_poly_to_i, exactly as the non-celled int
-         op-write below does -- an uncoerced `mrb_int <op> sp_RbVal` (e.g. a poly
-         array element folded into a captured int accumulator) fails to compile. */
+      /* Same overflow-checked helpers as the binary form (raw `x *= y` wrapped
+         where `x * y` raised); a poly RHS coerces through sp_poly_to_i as
+         before -- an uncoerced `mrb_int <op> sp_RbVal` fails to compile. */
       TyKind vt = comp_ntype(c, v);
-      emit_local_ref(c, id, nm, b); buf_printf(b, " %s ", op);
+      buf_printf(b, "%s(", int_arith_fn(op)); emit_local_ref(c, id, nm, b); buf_puts(b, ", ");
       if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, v, b); buf_puts(b, ")"); }
       else emit_expr(c, v, b);
-      buf_puts(b, ";\n");
+      buf_puts(b, ");\n");
       return;
     }
     if (t == TY_FLOAT && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*") || sp_streq(op, "/"))) {
@@ -811,31 +811,33 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
     emit_expr(c, v, b); buf_puts(b, ");\n");
     return;
   }
-  if (t == TY_INT && (sp_streq(op, "+") || sp_streq(op, "-") || sp_streq(op, "*"))) {
-    TyKind vt = comp_ntype(c, v);
-    if (vt == TY_POLY) {
-      buf_printf(b, "lv_%s %s= sp_poly_to_i(", en, op); emit_expr(c, v, b); buf_puts(b, ");\n");
-    }
-else {
-      buf_printf(b, "lv_%s %s= ", en, op); emit_expr(c, v, b); buf_puts(b, ";\n");
-    }
-    return;
-  }
+  /* Int op-assign routes through the same overflow-checked helpers as the
+     binary form: a raw C `lv_x *= y` silently wrapped where `x * y` raised. */
   if (t == TY_INT) {
     const char *fn = int_arith_fn(op);
     if (fn) {
+      TyKind vt = comp_ntype(c, v);
       int isdivmod = sp_streq(op, "/") || sp_streq(op, "%");
       buf_printf(b, "lv_%s = %s(lv_%s, ", en, fn, en);
       if (isdivmod) emit_int_divisor(c, v, b);
+      else if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, v, b); buf_puts(b, ")"); }
       else emit_expr(c, v, b);
       buf_puts(b, ");\n"); return;
     }
   }
   /* Bitwise op-assign on an int: shift/and/or/xor map straight to the C
-     operator (fixed-width wrap, same as the binary `x << y` path). */
+     operator (fixed-width wrap, same as the binary `x << y` path). A `<<=`
+     by a literal count that overflows every nonzero receiver (>= 63) or a
+     negative count routes through sp_int_shl, mirroring the binary gate. */
   if (t == TY_INT && (sp_streq(op, "<<") || sp_streq(op, ">>") ||
                       sp_streq(op, "|") || sp_streq(op, "&") || sp_streq(op, "^"))) {
     TyKind vt = comp_ntype(c, v);
+    const char *vty = nt_type(nt, v);
+    long long vlit = (vty && sp_streq(vty, "IntegerNode")) ? nt_int(nt, v, "value", 0) : 0;
+    if (sp_streq(op, "<<") && vty && sp_streq(vty, "IntegerNode") && (vlit < 0 || vlit >= 63)) {
+      buf_printf(b, "lv_%s = sp_int_shl(lv_%s, %lldLL);\n", en, en, vlit);
+      return;
+    }
     buf_printf(b, "lv_%s = (lv_%s %s (", en, en, op);
     if (vt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, v, b); buf_puts(b, ")"); }
     else emit_expr(c, v, b);
@@ -4724,6 +4726,18 @@ else {
     else {
       int ival = nt_ref(nt, id, "value");
       TyKind rhst = comp_ntype(c, ival);
+      /* An int ivar op-assign takes the overflow-checked helpers like the
+         binary form (raw `@x *= y` wrapped where `@x * y` raised). Bitwise
+         ops keep the raw C operator below. */
+      if (vt == TY_INT && op && int_arith_fn(op)) {
+        int ivdm = sp_streq(op, "/") || sp_streq(op, "%");
+        buf_printf(b, "%s = %s(%s, ", ref, int_arith_fn(op), ref);
+        if (ivdm) emit_int_divisor(c, ival, b);
+        else if (rhst == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, ival, b); buf_puts(b, ")"); }
+        else emit_expr(c, ival, b);
+        buf_puts(b, ");\n");
+        return;
+      }
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
          scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */

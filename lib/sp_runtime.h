@@ -1646,7 +1646,21 @@ static sp_RbVal sp_box_int_or_nil(mrb_int v) { return v == SP_INT_NIL ? sp_box_n
    it, so it saturates to 0 -- the Bignum-promotion path handles the real case.) */
 static inline mrb_int sp_int_shl(mrb_int a, mrb_int n) {
   if (n < 0) { mrb_int s = -n; return s >= 64 ? (a < 0 ? -1 : 0) : (a >> s); }
-  return n >= 64 ? 0 : (a << n);
+#ifdef SP_INT_OVERFLOW_MODE_WRAP
+  return n >= 64 ? 0 : (mrb_int)((uintptr_t)a << n);
+#else
+  /* Ruby promotes to Bignum here; under raise mode that is an overflow, and a
+     result of SP_INT_NIL (INTPTR_MIN) is unrepresentable even when the shift
+     itself fits (it aliases the tagged nil sentinel). Shift in unsigned space:
+     a signed shift into the sign bit is C UB. */
+  if (n >= 64) {
+    if (a != 0) sp_raise_cls("RangeError", "integer overflow in <<");
+    return 0;
+  }
+  mrb_int r = (mrb_int)((uintptr_t)a << n);
+  if ((r >> n) != a || r == SP_INT_NIL) sp_raise_cls("RangeError", "integer overflow in <<");
+  return r;
+#endif
 }
 static inline mrb_int sp_int_shr(mrb_int a, mrb_int n) {
   if (n < 0) { mrb_int s = -n; return s >= 64 ? 0 : (a << s); }
@@ -2219,7 +2233,25 @@ static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
    than silently truncating toward 0. Float ** negative stays a float
    (CRuby-compatible: 2.0 ** -1 == 0.5). See docs/limitations.md. */
 static mrb_int sp_int_pow(mrb_int base, mrb_int exp) __attribute__((unused));
-static mrb_int sp_int_pow(mrb_int base, mrb_int exp) { if (exp < 0) sp_raise_cls("RangeError", "negative exponent"); return (mrb_int)pow((double)base, (double)exp); }
+static mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
+  if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
+  /* Exact square-and-multiply (the old pow(double) round-trip lost precision
+     above 2^53 and saturated on overflow). Overflow follows the +/-/* mode:
+     raise by default, wrap under SP_INT_OVERFLOW_MODE_WRAP. */
+  mrb_int r = 1, b = base;
+  while (exp > 0) {
+#ifdef SP_INT_OVERFLOW_MODE_WRAP
+    if (exp & 1) r = (mrb_int)((uintptr_t)r * (uintptr_t)b);
+    exp >>= 1;
+    if (exp) b = (mrb_int)((uintptr_t)b * (uintptr_t)b);
+#else
+    if (exp & 1) { if (sp_int_mul_overflow_p(r, b, &r)) sp_raise_cls("RangeError", "integer overflow in **"); }
+    exp >>= 1;
+    if (exp) { if (sp_int_mul_overflow_p(b, b, &b)) sp_raise_cls("RangeError", "integer overflow in **"); }
+#endif
+  }
+  return r;
+}
 static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i < 0) sp_raise_cls("RangeError", "negative exponent"); double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b)); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i >= 0) return sp_box_int((mrb_int)r); return sp_box_float((mrb_float)r); }
 /* sp_poly_shl is defined after sp_PolyArray_push (below) so the
    push-dispatch path can call it directly. The Integer-bit-shift

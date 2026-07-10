@@ -1,0 +1,13 @@
+RangeError: integer overflow in *
+RangeError: integer overflow in +
+RangeError: integer overflow in <<
+RangeError: integer overflow in <<
+4611686018427387904
+RangeError: integer overflow in <<
+1
+RangeError: integer overflow in **
+4611686018427387904
+125
+-4
+2
+ivar RangeError: integer overflow in *
