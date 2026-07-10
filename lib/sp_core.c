@@ -307,4 +307,42 @@ mrb_int sp_int_floor(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>
 mrb_int sp_int_truncate(mrb_int v,mrb_int nd){if(nd>=0)return v;mrb_int p=-nd;if(p>=SP_INT_POW10_LIMIT)return 0;mrb_int f=sp_ipow10(p);return(v/f)*f;}
 /* String#oct: prefix auto-detection (0x=hex, 0b=bin, 0o/0=oct, else
    base-8). Matches CRuby. */
-mrb_int sp_str_oct(const char*s){if(!s)return 0;const char*p=s;while(*p==' '||*p=='\t')p++;if(p[0]=='0'){if(p[1]=='x'||p[1]=='X')return(mrb_int)strtoll(p,NULL,16);if(p[1]=='b'||p[1]=='B')return(mrb_int)strtoll(p+2,NULL,2);if(p[1]=='o'||p[1]=='O')return(mrb_int)strtoll(p+2,NULL,8);return(mrb_int)strtoll(p,NULL,8);}return(mrb_int)strtoll(p,NULL,8);}
+/* String#oct: lenient Integer(str, 8)-style parse. Skips leading whitespace,
+   accepts an optional sign, an optional base prefix (0x/0b/0o/0d, or a leading
+   0 = octal), and single `_` separators between digits. Stops at the first
+   character not valid in the selected base (a leading/doubled underscore ends
+   parsing too); an unparseable string is 0. A value past mrb_int raises
+   RangeError, like the sibling Integer() parsers. */
+mrb_int sp_str_oct(const char*s){
+  if(!s)return 0;
+  const char*p=s;
+  while(isspace((unsigned char)*p))p++;
+  int sign=1;
+  if(*p=='+')p++;
+  else if(*p=='-'){sign=-1;p++;}
+  int base=8;
+  if(p[0]=='0'){
+    char c=p[1];
+    if(c=='x'||c=='X'){base=16;p+=2;}
+    else if(c=='b'||c=='B'){base=2;p+=2;}
+    else if(c=='o'||c=='O'){base=8;p+=2;}
+    else if(c=='d'||c=='D'){base=10;p+=2;}
+    /* a bare leading 0 is octal; keep p on the 0 (a valid octal digit) */
+  }
+  mrb_int val=0; int any=0, prev_us=0;
+  for(;;){
+    char c=*p; int d;
+    if(c>='0'&&c<='9')d=c-'0';
+    else if(c>='a'&&c<='z')d=c-'a'+10;
+    else if(c>='A'&&c<='Z')d=c-'A'+10;
+    else if(c=='_'){ if(!any||prev_us)break; prev_us=1; p++; continue; }
+    else break;
+    if(d>=base)break;
+    mrb_int t;
+    if(__builtin_mul_overflow(val,(mrb_int)base,&t)||
+       __builtin_add_overflow(t,(mrb_int)d,&val))
+      sp_raise_cls("RangeError",sp_sprintf("integer overflow parsing \"%s\"",s));
+    any=1; prev_us=0; p++;
+  }
+  return sign*val;
+}
