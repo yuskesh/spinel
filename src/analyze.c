@@ -1964,6 +1964,41 @@ static int is_array_enum_method(const char *nm) {
    the array path handles it without an explicit `enum_for(:each)`. Runs in the
    inference fixpoint (needs the receiver's type, and the inserted node is typed
    on a later iteration). Returns 1 if anything changed. */
+/* One-shot chain normalizations before scope registration:
+   - str.each_char.with_index { }  ->  str.chars.each.with_index { }
+     (the each.with_index chain machinery keys on the `each` shape)
+   - enum_recv.each.with_object(x) { }  ->  enum_recv.each_with_object(x) { }
+   Both rewrites produce constructs the existing emitters already serve. */
+static void desugar_enum_chain_shapes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) continue;
+    const char *rn = nt_str(nt, recv, "name");
+    if (!rn || nt_ref(nt, recv, "block") >= 0) continue;
+    if (sp_streq(nm, "with_index") && sp_streq(rn, "each_char")) {
+      nt_node_set_str(nt, recv, "name", "chars");
+      int eachn = nt_new_node(nt, "CallNode");
+      if (eachn < 0) continue;
+      nt_node_set_str(nt, eachn, "name", "each");
+      nt_node_set_ref(nt, eachn, "receiver", recv);
+      nt_node_set_ref(nt, id, "receiver", eachn);
+      comp_grow_node_arrays(c);
+    }
+    else if ((sp_streq(nm, "with_object") || sp_streq(nm, "each_with_object")) &&
+             sp_streq(rn, "each")) {
+      int inner = nt_ref(nt, recv, "receiver");
+      if (inner < 0) continue;
+      nt_node_set_str(nt, id, "name", "each_with_object");
+      nt_node_set_ref(nt, id, "receiver", inner);
+    }
+  }
+}
+
 int desugar_enum_method_recv(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -3214,6 +3249,7 @@ void analyze_program(Compiler *c) {
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
 
   rename_shadowing_block_params(c);
+  desugar_enum_chain_shapes(c);          /* each_char.with_index / each.with_object */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
