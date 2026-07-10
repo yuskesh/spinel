@@ -192,6 +192,9 @@ extern sp_RbVal (*sp_obj_to_hash_fn)(sp_RbVal);
    per-class ivar walk (sp_obj_inspect_sw); sp_poly_inspect's OBJ default
    consults it so nested/boxed objects render like CRuby */
 extern const char *(*sp_obj_inspect_fn)(int cls_id, void *p);
+/* Same shape for user #to_s: sp_poly_to_s's OBJ default consults it so a
+   boxed user object with a custom to_s renders through it. */
+extern const char *(*sp_obj_to_s_fn)(int cls_id, void *p);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */

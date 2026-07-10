@@ -1917,9 +1917,16 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
         default:
-          if (v.cls_id >= 0 && v.v.p)
+          if (v.cls_id >= 0 && v.v.p) {
+            /* a class with a user #to_s renders through the generated
+               dispatcher; the rest get CRuby's default #<Name:0xADDR> */
+            if (sp_obj_to_s_fn) {
+              const char *us = sp_obj_to_s_fn(v.cls_id, v.v.p);
+              if (us) return us;
+            }
             return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
                               (unsigned long long)(uintptr_t)v.v.p);
+          }
           return sp_str_empty;
       }
     default: return sp_str_empty;
@@ -2816,6 +2823,7 @@ static int sp_fmt_binary(const char *spec, size_t sl, char conv, long long val,
 }
 
 static sp_RbVal sp_fmt_named_ref(sp_PolyArray *a, const char *nm);  /* defined after the hash structs */
+static inline const char *sp_poly_inspect(sp_RbVal v);            /* %p; defined after the container types */
 static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
   size_t cap = strlen(fmt) + 64;
   char *buf = (char *)malloc(cap);
@@ -2911,14 +2919,25 @@ else if (conv == 'f' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G'
       double dv = 0;
       if (v.tag == SP_TAG_FLT) dv = v.v.f;
       else if (v.tag == SP_TAG_INT) dv = (double)v.v.i;
-      wn = snprintf(tmp, sizeof(tmp), fmt_use, dv);
+      /* Ruby prints non-finite floats as Inf/-Inf/NaN (C printf lowercases) */
+      if (!isfinite(dv)) wn = snprintf(tmp, sizeof(tmp), "%s", isnan(dv) ? "NaN" : dv > 0 ? "Inf" : "-Inf");
+      else wn = snprintf(tmp, sizeof(tmp), fmt_use, dv);
     }
-else if (conv == 's') {
-      const char *sv = "";
-      char num_buf[32];
-      if (v.tag == SP_TAG_STR) sv = v.v.s ? v.v.s : "";
-      else if (v.tag == SP_TAG_INT) { snprintf(num_buf, sizeof(num_buf), "%lld", (long long)v.v.i); sv = num_buf; }
-      else if (v.tag == SP_TAG_FLT) { snprintf(num_buf, sizeof(num_buf), "%g", v.v.f); sv = num_buf; }
+else if (conv == 's' || conv == 'p') {
+      /* %s is to_s, %p is inspect -- for every tag (symbols, arrays, hashes,
+         booleans, user objects), not just the scalar three. Hash/Array to_s
+         is its inspect, which sp_poly_to_s already returns. %p formats through
+         a 's' conversion (C's %p is a pointer). A value longer than the spec
+         buffer is appended raw (width padding on it is a non-case). */
+      const char *sv = (conv == 's') ? sp_poly_to_s(v) : sp_poly_inspect(v);
+      if (!sv) sv = "";
+      fmt_use[sl - 1] = 's';
+      if (strlen(sv) + 8 >= sizeof(tmp)) {
+        size_t svl = strlen(sv);
+        if (out + svl + 1 >= cap) { cap = (out + svl) * 2 + 64; buf = (char *)realloc(buf, cap); }
+        memcpy(buf + out, sv, svl); out += svl;
+        continue;
+      }
       wn = snprintf(tmp, sizeof(tmp), fmt_use, sv);
     }
 else if (conv == 'c') {

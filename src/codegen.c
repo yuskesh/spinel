@@ -2863,6 +2863,21 @@ static int class_inspectable(Compiler *c, int i) {
   return 1;
 }
 static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
+  /* user #to_s dispatcher: only classes defining one get an arm; NULL means
+     "no user to_s" and the caller renders the #<Name:0xADDR> default. */
+  buf_puts(b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) {\n  switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *tci = &c->classes[i];
+    if (is_builtin_reopen(tci->name) || tci->is_native_class) continue;
+    if (comp_ty_value_obj(c, ty_object(i))) continue;
+    int tdef = -1;
+    int tmi = comp_method_in_chain(c, i, "to_s", &tdef);
+    if (tmi < 0 || !c->scopes[tmi].reachable || c->scopes[tmi].ret != TY_STRING ||
+        c->scopes[tmi].nparams != 0) continue;
+    buf_printf(b, "    case %d: return sp_%s_%s((sp_%s *)p);\n",
+               i, c->classes[tdef].c_name, mc(c->scopes[tmi].name), c->classes[tdef].c_name);
+  }
+  buf_puts(b, "    default: return NULL;\n  }\n}\n");
   buf_puts(b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) {\n");
   buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
@@ -3434,6 +3449,7 @@ void emit_regex_section(Buf *b) {
      the generated symbol interner and per-class object dump/load. */
   buf_puts(b, "  sp_json_sym_intern_fn = sp_sym_intern;\n");
   buf_puts(b, "  sp_obj_inspect_fn = sp_obj_inspect_sw;\n");
+  buf_puts(b, "  sp_obj_to_s_fn = sp_obj_to_s_sw;\n");
   if (g_uses_marshal) {
     buf_puts(b,
       "  sp_marshal_v.sym_intern = sp_sym_intern;\n"
@@ -4662,6 +4678,7 @@ char *codegen_program(const NodeTable *nt) {
   /* default-inspect dispatch prototype: bodies call it, the switch itself is
      emitted with the marshal dispatch near the end of the TU */
   buf_puts(&b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) __attribute__((cold, noinline));\n");
+  buf_puts(&b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) __attribute__((cold, noinline));\n");
   /* method prototypes (scope 0 is top-level) */
   for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
 
