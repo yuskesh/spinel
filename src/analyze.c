@@ -3041,7 +3041,7 @@ static int an_str_mutator_name(const char *nm) {
   if (!l) return 0;
   return sp_streq(nm, "<<") || sp_streq(nm, "concat") || sp_streq(nm, "replace") ||
          sp_streq(nm, "prepend") || sp_streq(nm, "insert") || sp_streq(nm, "clear") ||
-         (l > 1 && nm[l - 1] == '!');
+         sp_streq(nm, "[]=") || (l > 1 && nm[l - 1] == '!');
 }
 
 /* Unique method scope index by name across the program, or -1 (absent or
