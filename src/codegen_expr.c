@@ -1427,7 +1427,6 @@ void emit_expr(Compiler *c, int id, Buf *b) {
                sp_streq(vt, "SourceEncodingNode") || sp_streq(vt, "ForNode") ||
                sp_streq(vt, "WhileNode") || sp_streq(vt, "UntilNode"))
         res = "expression";
-      else if (sp_streq(vt, "YieldNode")) res = "yield";
     }
     /* a CONTAINER literal builds its elements, so an unresolvable constant
        anywhere inside nils the answer; short-circuiting forms (&&/||) do
@@ -1451,6 +1450,21 @@ void emit_expr(Compiler *c, int id, Buf *b) {
         buf_printf(b, "(sp_re_captures[%d] ? SPL(\"global-variable\") : NULL)", refn);
         return;
       }
+    }
+    /* defined?(yield) answers "yield" only when the current method actually
+       received a block, else nil — the same runtime question as block_given?.
+       An inlined yielding scope statically has a block; a lowered scope tests
+       its runtime __yblk__ parameter; any other scope has no block. */
+    if (!res && vt && sp_streq(vt, "YieldNode")) {
+      if (g_block_id >= 0) { buf_puts(b, "SPL(\"yield\")"); return; }
+      if (g_current_scope_is_lowered) {
+        buf_puts(b, "(");
+        emit_yblk_ref(b);
+        buf_puts(b, " != NULL ? SPL(\"yield\") : NULL)");
+        return;
+      }
+      buf_puts(b, "NULL");
+      return;
     }
     if (res) buf_printf(b, "SPL(\"%s\")", res);
     else buf_puts(b, "NULL");
