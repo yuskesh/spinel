@@ -5008,7 +5008,7 @@ static mrb_int sp_exc_is_a(volatile sp_Exception *ve, const char *cn) {
     {"IOError",               "StandardError"},
     {"EOFError",              "IOError"},
     {"ZeroDivisionError",     "StandardError"},
-    {"NotImplementedError",   "StandardError"},
+    {"NotImplementedError",   "ScriptError"},
     {"StopIteration",         "IndexError"},
     {"FloatDomainError",      "RangeError"},
     {"Math_DomainError",      "StandardError"},
@@ -5068,7 +5068,7 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
     {"IOError",              "StandardError"},
     {"EOFError",             "IOError"},
     {"ZeroDivisionError",    "StandardError"},
-    {"NotImplementedError",  "StandardError"},
+    {"NotImplementedError",  "ScriptError"},
     {"StopIteration",        "IndexError"},
     {"FloatDomainError",     "RangeError"},
     {"Math_DomainError",     "StandardError"},
@@ -5102,6 +5102,34 @@ static int sp_exc_cls_matches(const char *raised, const char *target) {
   }
   if (!strcmp(target, "Object") || !strcmp(target, "BasicObject") || !strcmp(target, "Kernel")) return 1;
   return 0;
+}
+
+/* Does `raised` descend from StandardError? Used by a bare `rescue` (no class),
+   which catches StandardError and its subclasses only. CRuby's non-StandardError
+   branch is a small fixed set of system exceptions; EVERY other exception -- all
+   library and user classes -- descends from StandardError. So an unknown class
+   (a C-raised package error like JSON::ParserError, or a user class with no
+   registered parent) defaults to StandardError; only the listed roots and their
+   subclasses answer false. */
+static int sp_exc_is_standard_error(const char *raised) {
+  if (!raised) return 0;
+  static const char *const NONSTD[] = {
+    "Exception", "NoMemoryError", "ScriptError", "LoadError",
+    "NotImplementedError", "SyntaxError", "SecurityError", "SignalException",
+    "Interrupt", "SystemExit", "SystemStackError", "fatal", NULL
+  };
+  const char *cls = raised;
+  for (int depth = 0; depth < 30 && cls; depth++) {
+    if (!strcmp(cls, "StandardError")) return 1;
+    for (int i = 0; NONSTD[i]; i++)
+      if (!strcmp(cls, NONSTD[i])) return 0;
+    /* walk user subclasses toward their declared parent; a builtin StandardError
+       subclass has no user parent and terminates here, defaulting to true. */
+    const char *parent = sp_user_exc_parent_fn ? sp_user_exc_parent_fn(cls) : NULL;
+    if (!parent) return 1;
+    cls = parent;
+  }
+  return 1;
 }
 
 /* Cross-TU bridge for sp_bigint.c (compiled as a separate translation

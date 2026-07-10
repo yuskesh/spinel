@@ -3703,9 +3703,13 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   emit_indent(b, indent);
   buf_printf(b, "const char *_rmsg_%d = sp_exc_msg[sp_exc_top]; (void)_rmsg_%d;\n", rc, rc);
 
-  /* type-match condition: catch-all when no types or a StandardError-ish
-     type; otherwise exact class-name match */
-  int catchall = (nexc == 0);
+  /* type-match condition: an explicit StandardError-ish type is treated as a
+     catch-all; otherwise exact class-name (hierarchy-aware) match. A BARE
+     rescue (no types) is NOT unconditional: CRuby matches only StandardError
+     and its subclasses, so a raised Exception/ScriptError/NotImplementedError
+     falls through to a later `rescue Exception`. */
+  int bare = (nexc == 0);
+  int catchall = 0;
   for (int i = 0; i < nexc; i++) {
     const char *en = nt_type(nt, exc[i]);
     if (en && sp_streq(en, "ConstantReadNode") && rescue_is_catchall_name(nt_str(nt, exc[i], "name")))
@@ -3720,6 +3724,10 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   if (!catchall) {
     emit_indent(b, indent);
     buf_puts(b, "if (");
+    if (bare) {
+    /* bare rescue: match StandardError and its subclasses only */
+    buf_printf(b, "sp_exc_is_standard_error(_rcls_%d)", rc);
+    } else {
     int first = 1;
     for (int i = 0; i < nexc; i++) {
       const char *en = nt_type(nt, exc[i]);
@@ -3779,6 +3787,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
         buf_printf(b, "sp_str_eq(_rcls_%d, \"%s\")", rc, ename);
     }
     if (first) buf_puts(b, "1");  /* no usable type -> always */
+    }
     buf_puts(b, ") {\n");
     indent++;
   }
