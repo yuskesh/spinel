@@ -562,6 +562,17 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
     int recv = nt_ref(c->nt, id, "receiver");
     int args = nt_ref(c->nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
+    /* A bare unresolved identifier (Prism variable-call: no receiver, no
+       parens, no args) is CRuby's NameError -- an undefined local that fell
+       through to method lookup. Name the enclosing class the way CRuby does. */
+    if (recv < 0 && ac == 0 && nt_ref(c->nt, id, "block") < 0 &&
+        nt_int(c->nt, id, "vcall", 0)) {
+      const char *cn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
+      fprintf(stderr, "spinel: %sundefined local variable or method '%s' for %s%s (NameError)\n",
+              pos, mname, cn ? "an instance of " : "main", cn ? cn : "");
+      if (collect_mode() && g_unsup_armed) longjmp(g_unsup_recover, 1);
+      exit(1);
+    }
     /* A call on a typed user object whose class chain has no such method is
        not a compiler gap: it is the program's NoMethodError, caught ahead of
        time. Report it in CRuby's words instead of the internal node dump. */

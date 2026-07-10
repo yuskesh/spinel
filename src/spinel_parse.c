@@ -495,9 +495,12 @@ static int flatten(pm_node_t *node) {
     if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_SAFE_NAVIGATION)) {
       S("call_operator", escape_str((const uint8_t *)"&.", 2));
     }
-else {
+    else {
       S("call_operator", escape_str((const uint8_t *)".", 1));
     }
+    /* A bare identifier (no receiver/parens/args) is a variable-or-method
+       read: an unresolved one is CRuby's NameError, not NoMethodError. */
+    if (PM_NODE_FLAG_P(node, PM_CALL_NODE_FLAGS_VARIABLE_CALL)) I("vcall", 1);
     break;
   }
   case PM_CONSTANT_WRITE_NODE: {
