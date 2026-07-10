@@ -3770,6 +3770,19 @@ static int const_name_is_wrong(const char *s) {
   return 0;
 }
 
+/* Emit a Math.<fn> argument as a C double. A statically numeric operand casts
+   directly (hot path for trig-heavy code); anything else is boxed and coerced
+   through sp_num_to_f, which raises TypeError for nil / String / non-numeric
+   rather than the lenient sp_poly_to_f's 0.0 (or a String->double CC error). */
+static void emit_math_arg(Compiler *c, int node, Buf *out) {
+  TyKind t = comp_ntype(c, node);
+  if (t == TY_INT || t == TY_FLOAT) {
+    buf_puts(out, "(mrb_float)("); emit_expr(c, node, out); buf_puts(out, ")");
+    return;
+  }
+  buf_puts(out, "sp_num_to_f("); emit_boxed(c, node, out); buf_puts(out, ")");
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -6987,36 +7000,36 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (sp_streq(name, "erfc"))  cfn = "erfc";
     else if (sp_streq(name, "gamma")) cfn = "sp_math_gamma";
     if (cfn && argc == 1) {
-      /* emit_float_expr casts a plain int and unboxes a poly value alike
-         (sp_poly_to_f) -- a bare `if (a0t==TY_INT) "(double)"` cast, as this
-         used to do, left a poly-typed arg (e.g. `Math.sqrt(dx*dx + dy*dy)`
-         over locals that unify to Integer|Float) passed straight through as
-         an unconvertible sp_RbVal. */
+      /* emit_math_arg casts a plain int and coerces a poly value alike -- a
+         bare `if (a0t==TY_INT) "(double)"` cast left a poly-typed arg (e.g.
+         `Math.sqrt(dx*dx + dy*dy)` over locals that unify to Integer|Float)
+         passed straight through as an unconvertible sp_RbVal -- and raises
+         TypeError on a nil / String / non-numeric operand. */
       buf_printf(b, "%s(", cfn);
-      emit_float_expr(c, argv[0], b);
+      emit_math_arg(c, argv[0], b);
       buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "lgamma") && argc == 1) {
       /* Math.lgamma(x) -> [log(|gamma(x)|), sign] as a poly array */
-      buf_puts(b, "sp_math_lgamma("); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_math_lgamma("); emit_math_arg(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     /* Math.log(x) or Math.log(x, base) */
     if (sp_streq(name, "log") && (argc == 1 || argc == 2)) {
       if (argc == 1) {
         buf_puts(b, "sp_math_log(");
-        emit_float_expr(c, argv[0], b);
+        emit_math_arg(c, argv[0], b);
         buf_puts(b, ")");
       }
       else {
         int t0 = ++g_tmp, t1 = ++g_tmp;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "double _t%d = ", t0);
-        emit_float_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
+        emit_math_arg(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "double _t%d = ", t1);
-        emit_float_expr(c, argv[1], g_pre); buf_puts(g_pre, ";\n");
+        emit_math_arg(c, argv[1], g_pre); buf_puts(g_pre, ";\n");
         buf_printf(b, "(sp_math_log(_t%d) / sp_math_log(_t%d))", t0, t1);
       }
       return;
@@ -7024,24 +7037,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     /* Math.log2(x), Math.log10(x) */
     if (sp_streq(name, "log2") && argc == 1) {
       buf_puts(b, "sp_math_log2(");
-      emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+      emit_math_arg(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "log10") && argc == 1) {
       buf_puts(b, "sp_math_log10(");
-      emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+      emit_math_arg(c, argv[0], b); buf_puts(b, ")");
       return;
     }
     /* Math.atan2(y, x), Math.hypot(x, y), Math.ldexp(x, e) */
     if ((sp_streq(name, "atan2") || sp_streq(name, "hypot")) && argc == 2) {
       buf_printf(b, "%s(", name);
-      emit_float_expr(c, argv[0], b); buf_puts(b, ", ");
-      emit_float_expr(c, argv[1], b); buf_puts(b, ")");
+      emit_math_arg(c, argv[0], b); buf_puts(b, ", ");
+      emit_math_arg(c, argv[1], b); buf_puts(b, ")");
       return;
     }
     if (sp_streq(name, "ldexp") && argc == 2) {
       buf_puts(b, "ldexp(");
-      emit_float_expr(c, argv[0], b); buf_puts(b, ", (int)");
+      emit_math_arg(c, argv[0], b); buf_puts(b, ", (int)");
       emit_expr(c, argv[1], b); buf_puts(b, ")");
       return;
     }

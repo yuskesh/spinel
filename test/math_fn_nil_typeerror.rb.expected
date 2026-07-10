@@ -1,0 +1,10 @@
+TypeError: can't convert nil into Float
+TypeError: can't convert Symbol into Float
+TypeError: can't convert String into Float
+TypeError: can't convert Array into Float
+3.0
+1.4142135623730951
+0.0
+5.0
+3.0
+TypeError: can't convert nil into Float
