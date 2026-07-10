@@ -2836,6 +2836,30 @@ int infer_ivar_types(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
+    /* A top-level method that only READS an ivar (never assigned anywhere)
+       gets no slot from the write pass and none from register_locals (which
+       interns reads only for a real class scope), so the read can't be
+       lowered. An unassigned ivar is always nil in Ruby: register a slot for
+       it in the Toplevel pseudo-class (or the enclosing class body), leaving
+       its type unpinned so it stays a nil-valued poly. */
+    if (sp_streq(ty, "InstanceVariableReadNode")) {
+      Scope *s = comp_scope_of(c, id);
+      if (s->class_id >= 0) continue;  /* class/instance reads: register_locals */
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm) continue;
+      int cid = c->node_cbody[id];
+      if (cid < 0) {
+        int old_nc = c->nclasses;
+        cid = comp_class_index(c, "Toplevel");
+        if (cid < 0) { comp_class_new(c, "Toplevel", -1); cid = c->nclasses - 1; }
+        if (c->nclasses != old_nc) changed = 1;
+      }
+      ClassInfo *ci = &c->classes[cid];
+      int old_ni = ci->nivars;
+      comp_ivar_intern(ci, nm);
+      if (ci->nivars != old_ni) changed = 1;
+      continue;
+    }
     if (sp_streq(ty, "InstanceVariableWriteNode") ||
         sp_streq(ty, "InstanceVariableOrWriteNode") ||
         sp_streq(ty, "InstanceVariableAndWriteNode") ||
