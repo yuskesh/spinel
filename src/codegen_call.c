@@ -8083,8 +8083,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       free(rew.p);
     }
-    /* a single non-array argument formats as a one-element array */
-    if (at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL || at == TY_POLY) {
+    /* a poly RHS may hold an Array (spread across the directives) or a scalar
+       (a one-element list) -- the distinction is only known at runtime. */
+    if (at == TY_POLY) {
+      buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b);
+      buf_puts(b, ", sp_format_args("); emit_boxed(c, argv[0], b); buf_puts(b, "))");
+      return;
+    }
+    /* a single non-array scalar argument formats as a one-element array */
+    if (at == TY_INT || at == TY_FLOAT || at == TY_STRING || at == TY_SYMBOL) {
       buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b);
       buf_puts(b, ", ({ sp_PolyArray *_fa = sp_PolyArray_new(); sp_PolyArray_push(_fa, ");
       emit_boxed(c, argv[0], b); buf_puts(b, "); _fa; }))");
