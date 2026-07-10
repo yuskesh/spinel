@@ -223,10 +223,14 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         int t = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", dk, t); emit_expr(c, recv, b);
         buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+        /* a negative count raises ArgumentError; the no-block take/drop otherwise
+           silently returns a slice (a tail slice for drop). */
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to %s negative size\");",
+                   tn, name);
         if (sp_streq(name, "take"))
-          buf_printf(b, "; sp_%sArray_slice(_t%d, 0, _t%d); })", dk, t, tn);
+          buf_printf(b, " sp_%sArray_slice(_t%d, 0, _t%d); })", dk, t, tn);
         else
-          buf_printf(b, "; sp_%sArray_slice(_t%d, _t%d, _t%d->len - _t%d); })", dk, t, tn, t, tn);
+          buf_printf(b, " sp_%sArray_slice(_t%d, _t%d, _t%d->len - _t%d); })", dk, t, tn, t, tn);
         return 1;
       }
     }
