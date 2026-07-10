@@ -1,0 +1,8 @@
+(Infinity+Infinity*i)
+(10.5+20.5i)
+(-Infinity+Infinity*i)
+(NaN+NaN*i)
+(5+10i)
+divided by 0
+(10+20i)
+"Infinity+NaN*i"
