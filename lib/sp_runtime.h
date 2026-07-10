@@ -4667,6 +4667,15 @@ static void sp_raise_exc(volatile sp_Exception *ve) {
   sp_pending_exc_obj = (void *)e;
   sp_raise_cls(e->cls_name, e->msg);
 }
+/* Kernel#raise with a runtime-typed (poly) operand: a String raises
+   RuntimeError with it, a carried exception object re-raises as itself,
+   anything else is CRuby's TypeError. */
+SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) sp_raise(v.v.s);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p)
+    sp_raise_exc((volatile sp_Exception *)v.v.p);
+  sp_raise_cls("TypeError", "exception class/object expected");
+}
 /* Raise StopIteration carrying the iteration's return value as #result. Built as
    a carried object so a `rescue StopIteration => e` binding reads e.result; a
    generator supplies the value, a plain past-the-end #next raises with nil. */

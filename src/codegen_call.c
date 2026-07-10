@@ -5124,8 +5124,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
         buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
       }
-      else
-        { buf_puts(b, "sp_raise("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      else if (at == TY_STRING) {
+        /* `raise "msg"` raises RuntimeError with the message */
+        buf_puts(b, "sp_raise("); emit_expr(c, av[0], b); buf_puts(b, ")");
+      }
+      else if (at == TY_POLY) {
+        /* the runtime value may be a string, an exception object, or a
+           non-exception (TypeError) -- dispatch on the tag */
+        buf_puts(b, "sp_raise_poly("); emit_boxed(c, av[0], b); buf_puts(b, ")");
+      }
+      else {
+        /* Integer/nil/Array/Symbol/Float/...: valid Ruby, TypeError at
+           runtime. The old path smuggled the value into the const char*
+           message slot -- a C type error for scalars, garbage for the rest. */
+        buf_puts(b, "((void)("); emit_expr(c, av[0], b);
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
+      }
     }
     return;
   }
