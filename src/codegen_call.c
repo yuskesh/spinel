@@ -1080,13 +1080,35 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) {
-    buf_puts(b, "sp_rational_new((mrb_int)(");
-    emit_expr(c, argv[0], b);
-    buf_puts(b, "), (mrb_int)(");
-    if (argc == 2) emit_expr(c, argv[1], b);
-    else buf_puts(b, "1");
-    buf_puts(b, "))");
-    return 1;
+    /* Rational(String): parse "n", "n/d", or "n.d" like String#to_r rather than
+       reading the string pointer as an integer. */
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+      Buf sb = expr_buf(c, argv[0]);
+      buf_printf(b, "sp_str_to_r(%s)", sb.p ? sb.p : "\"\"");
+      free(sb.p);
+      return 1;
+    }
+    if (argc == 2) {
+      /* a zero denominator raises ZeroDivisionError (CRuby), not (n/0). Both
+         arguments are evaluated first, in order. Render each into a local Buf so
+         a complex argument's prelude is hoisted whole to g_pre, not spliced into
+         this line when b is g_pre. */
+      int tn = ++g_tmp, td = ++g_tmp;
+      Buf nb = expr_buf(c, argv[0]);
+      Buf db = expr_buf(c, argv[1]);
+      buf_printf(b, "({ mrb_int _t%d = (mrb_int)(%s); mrb_int _t%d = (mrb_int)(%s);"
+                    " if (_t%d == 0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                    " sp_rational_new(_t%d, _t%d); })",
+                 tn, nb.p ? nb.p : "0", td, db.p ? db.p : "0", td, tn, td);
+      free(nb.p); free(db.p);
+      return 1;
+    }
+    {
+      Buf sb = expr_buf(c, argv[0]);
+      buf_printf(b, "sp_rational_new((mrb_int)(%s), (mrb_int)(1))", sb.p ? sb.p : "0");
+      free(sb.p);
+      return 1;
+    }
   }
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
