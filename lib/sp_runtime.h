@@ -4621,7 +4621,10 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      inside an `ensure` running during a proc-return / throw): clear the unwind so
      an outer handler treats this as an exception, not a continued unwind. */
   sp_unwind_kind = SP_UNWIND_NONE;
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_cur_handled(); sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); } fprintf(stderr, "unhandled exception: %s\n", msg); exit(1); }
+  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_cur_handled(); sp_last_exc_cls = cls; longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  /* Uncaught: CRuby's tail format "<message> (<ClassName>)". The source
+     location CRuby prefixes is not carried through the raise machinery. */
+  fprintf(stderr, "%s (%s)\n", (msg && *msg) ? msg : cls, cls); exit(1); }
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
 /* Issue #781: bridge between the regex compile-error path (which lives
@@ -4961,7 +4964,7 @@ static mrb_int sp_brk_push(void) {
      nesting (e.g. deep recursion through .each/.map) fails loudly instead of
      writing past the array. CRuby's SystemStackError message. */
   if (sp_brk_top >= SP_BRK_STACK_MAX) {
-    fputs("unhandled exception: stack level too deep\n", stderr);
+    fputs("stack level too deep (SystemStackError)\n", stderr);
     exit(1);
   }
   if (!sp_brk_stack) {
