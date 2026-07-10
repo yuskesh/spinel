@@ -1439,9 +1439,10 @@ else {
           (sp_streq(name, "report_on_exception") || sp_streq(name, "report_on_exception="))) return TY_BOOL;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "current")) return TY_FIBER;
       if (cn2 && sp_streq(cn2, "Fiber") && sp_streq(name, "yield")) return TY_POLY;
-      /* Random class methods: Random.rand(n)->int / Random.rand->float */
+      /* Random class methods: Random.rand(float)->float / Random.rand(int)->int
+         / Random.rand->float */
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "rand"))
-        return argc >= 1 ? TY_INT : TY_FLOAT;
+        return argc >= 1 ? (infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT) : TY_FLOAT;
       if (cn2 && sp_streq(cn2, "Random") && sp_streq(name, "bytes")) return TY_STRING;
     }
   }
@@ -1519,7 +1520,8 @@ else {
 
   /* TY_RANDOM instance methods */
   if (recv >= 0 && rt == TY_RANDOM) {
-    if (sp_streq(name, "rand")) return argc >= 1 ? TY_INT : TY_FLOAT;
+    if (sp_streq(name, "rand"))
+      return argc >= 1 ? (infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT) : TY_FLOAT;
     if (sp_streq(name, "bytes")) return TY_STRING;
     if (sp_streq(name, "seed")) return TY_INT;
   }

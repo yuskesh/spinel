@@ -6339,12 +6339,19 @@ static sp_Random *sp_Random_new(mrb_int seed) {
   return r;
 }
 static mrb_int sp_Random_rand_int(sp_Random *r, mrb_int n) {
-  if (!r || n <= 0) return 0;
+  if (n <= 0) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %lld", (long long)n));
+  if (!r) return 0;
   return (mrb_int)(sp_random_next(r) % (uint64_t)n);
 }
 static mrb_float sp_Random_rand_float(sp_Random *r) {
   if (!r) return 0.0;
   return (mrb_float)(sp_random_next(r) >> 11) / (mrb_float)(1ULL << 53);
+}
+/* Random#rand(Float bound): a random Float in [0, bound). A non-positive bound
+   raises ArgumentError like the Integer form (MRI validates both). */
+static mrb_float sp_Random_rand_float_bound(sp_Random *r, mrb_float bound) {
+  if (bound <= 0) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", sp_float_to_s(bound)));
+  return sp_Random_rand_float(r) * bound;
 }
 /* Class-method forms (`Random.rand` / `Random.bytes`) share one
    lazily-seeded default instance, mirroring CRuby's Random::DEFAULT. */
