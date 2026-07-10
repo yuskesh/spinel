@@ -1822,7 +1822,11 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   int block = nt_ref(nt, recv, "block");
   if (block < 0) return 0;
   int pr = nt_ref(nt, recv, "receiver");
-  if (pr < 0 || comp_ntype(c, pr) != TY_INT_ARRAY) return 0;
+  if (pr < 0) return 0;
+  TyKind prt = comp_ntype(c, pr);
+  /* an int Range materializes to the int array the walk below expects */
+  int pr_range = (prt == TY_RANGE && range_enum_redispatch(c, recv));
+  if (prt != TY_INT_ARRAY && !pr_range) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
@@ -1832,7 +1836,14 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   const char *p0 = rename_local(p0n), *p1 = rename_local(p1n);
 
   int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, ti = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (pr_range) {
+    int trg = ++g_tmp;
+    buf_printf(&rb, "({ sp_Range _t%d = ", trg);
+    emit_expr(c, pr, &rb);
+    buf_printf(&rb, "; sp_range_to_ia(_t%d); })", trg);
+  }
+  else emit_expr(c, pr, &rb);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_IntArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent);
@@ -2792,7 +2803,7 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
   if (block < 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
-  TyKind rt = infer_type(c, recv);
+  TyKind rt = comp_ntype(c, recv);  /* cache read: the range redispatch overrides it */
   if (!ty_is_array(rt)) return 0;
   const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;

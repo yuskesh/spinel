@@ -4095,6 +4095,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     /* `count` with a block or argument is Enumerable#count, not Range#size:
        let it fall through to the int-array redispatch below. */
     if (sp_streq(name, "count") && (block >= 0 || argc >= 1)) known = 0;
+    /* `sum` with a block is Enumerable#sum { }: the native Range sum ignored
+       the block; let it fall through to the int-array redispatch below. */
+    if (sp_streq(name, "sum") && block >= 0) known = 0;
     if (known) {
       /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
       if ((sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) {

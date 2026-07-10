@@ -528,6 +528,16 @@ int range_enum_redispatch(Compiler *c, int id) {
      the range's own ints. */
   if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) && argc >= 1)
     return 1;
+  /* block-taking Enumerable forms the array emitters serve: partition,
+     each_with_index, sort_by, chunk_while, sum { }, and the block forms of
+     inject/reduce with an initial value. */
+  if (block >= 0 &&
+      (sp_streq(name, "partition") || sp_streq(name, "each_with_index") ||
+       sp_streq(name, "sort_by") || sp_streq(name, "chunk_while") ||
+       sp_streq(name, "sum")))
+    return 1;
+  if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) && block >= 0)
+    return 1;
   if ((sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) && block >= 0) return 1;
   /* reduce/inject: the explicit symbol / initial-value forms (no block). */
   if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && argc >= 1 && block < 0) return 1;
@@ -743,7 +753,12 @@ TyKind infer_call(Compiler *c, int id) {
        sp_streq(nt_str(nt, recv, "name"), "chunk")) &&
       nt_ref(nt, recv, "block") >= 0) {
     int pr = nt_ref(nt, recv, "receiver");
-    if (pr >= 0 && infer_type(c, pr) == TY_INT_ARRAY) return TY_POLY_ARRAY;
+    if (pr >= 0) {
+      TyKind prt = infer_type(c, pr);
+      if (prt == TY_INT_ARRAY ||
+          (prt == TY_RANGE && range_enum_redispatch(c, recv)))
+        return TY_POLY_ARRAY;
+    }
   }
 
   /* an empty array literal used directly as a receiver (`[].flatten`) has no
