@@ -1851,6 +1851,61 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  /* str.split(sep) { |piece| body } -- iterate over the substrings; the call
+     yields each piece and evaluates to the receiver (handled in statement
+     position, where the value is discarded). */
+  if (sp_streq(name, "split") && rt == TY_STRING) {
+    int args = nt_ref(nt, id, "arguments");
+    int sp_argc = 0; const int *sp_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sp_argc) : NULL;
+    if (sp_argc > 2) return 0;
+    TyKind et = TY_STRING;
+    Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
+    LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
+    TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
+    int use_shadow_sp = clv0 && clv0->type != et && et != TY_UNKNOWN;
+    int tm = ++g_tmp, ti = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_StrArray *_t%d = ", tm);
+    if (sp_argc == 0) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
+    else if (sp_argc == 1) {
+      const char *aty = nt_type(nt, sp_argv[0]);
+      int ws = (aty && sp_streq(aty, "NilNode")) ||
+               (aty && sp_streq(aty, "StringNode") && nt_str(nt, sp_argv[0], "content") &&
+                sp_streq(nt_str(nt, sp_argv[0], "content"), " "));
+      if (ws) buf_printf(b, "sp_str_split_ws(%s);\n", rb.p ? rb.p : "");
+      else {
+        buf_printf(b, "sp_str_split_drop_trailing(%s, ", rb.p ? rb.p : ""); emit_expr(c, sp_argv[0], b); buf_puts(b, ");\n");
+      }
+    }
+    else {
+      buf_printf(b, "sp_str_split_limit(%s, ", rb.p ? rb.p : ""); emit_expr(c, sp_argv[0], b);
+      buf_puts(b, ", "); emit_expr(c, sp_argv[1], b); buf_puts(b, ");\n");
+    }
+    free(rb.p);
+    emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT(_t%d);\n", tm);
+    emit_indent(b, indent);
+    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n", ti, ti, tm, ti);
+    int spIndent = indent + 1;
+    if (use_shadow_sp) {
+      int sb_bn = 0; const int *sb_bb = body >= 0 ? nt_arr(nt, body, "body", &sb_bn) : NULL;
+      clv0->type = et;
+      for (int j = 0; j < sb_bn; j++) infer_type(c, sb_bb[j]);
+      emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
+      emit_indent(b, spIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
+      emit_loop_body(c, body, b, spIndent);
+      spIndent--;
+      emit_indent(b, spIndent); buf_puts(b, "}\n");
+      clv0->type = csaved0;
+    }
+    else {
+      if (p0) { emit_indent(b, spIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
+      emit_loop_body(c, body, b, spIndent);
+    }
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
   /* str.scan(/re/) { |m| body } -- iterate over regex matches */
   if (sp_streq(name, "scan") && rt == TY_STRING) {
     int args = nt_ref(nt, id, "arguments");

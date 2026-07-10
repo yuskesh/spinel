@@ -4423,8 +4423,8 @@ int infer_block_params(Compiler *c) {
     else if (rt == TY_POLY && sp_streq(name, "each_byte"))
       pt = TY_INT;
     else if (rt == TY_STRING && (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "upto") ||
-                                 sp_streq(name, "chars") || sp_streq(name, "lines")))
-      pt = TY_STRING;
+                                 sp_streq(name, "chars") || sp_streq(name, "lines") || sp_streq(name, "split")))
+      pt = TY_STRING;  /* split { |piece| } yields each substring */
     else if (rt == TY_STRING && (sp_streq(name, "gsub") || sp_streq(name, "sub")))
       pt = TY_STRING;  /* block receives the matched substring */
     else if (rt == TY_STRING && (sp_streq(name, "each_byte") || sp_streq(name, "bytes") || sp_streq(name, "codepoints")))
