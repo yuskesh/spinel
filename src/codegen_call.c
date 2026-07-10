@@ -4621,7 +4621,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Random")) {
     if (sp_streq(name, "rand")) {
-      if (argc >= 1) {
+      if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_puts(b, "sp_Random_rand_float_bound(sp_random_default_get(), ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int(sp_random_default_get(), ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -4638,7 +4642,11 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* Random instance methods */
   if (recv >= 0 && comp_ntype(c, recv) == TY_RANDOM) {
     if (sp_streq(name, "rand")) {
-      if (argc >= 1) {
+      if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_puts(b, "sp_Random_rand_float_bound("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (argc >= 1) {
         buf_puts(b, "sp_Random_rand_int("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
