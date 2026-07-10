@@ -9387,7 +9387,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_bigint_bit_length(%s)", r); free(rs.p); return;
     }
     if (sp_streq(name, "to_f") && argc == 0) {
-      buf_printf(b, "((mrb_float)sp_bigint_to_int(%s))", r); free(rs.p); return;
+      buf_printf(b, "sp_bigint_to_double(%s)", r); free(rs.p); return;
     }
     free(rs.p);
   }
