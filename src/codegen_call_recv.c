@@ -444,6 +444,57 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
       return 1;
     }
+    /* concat(*arrays): append each argument array's elements onto the receiver
+       in place, return the receiver. Coerce a typed-array argument to poly. */
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "concat")) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
+      /* evaluate (and root) every argument left-to-right BEFORE any append, so a
+         side-effecting argument or one that reads the receiver sees pre-mutation
+         state, per Ruby's arg-before-call evaluation order. */
+      int base = g_tmp + 1; g_tmp += argc;
+      for (int ai = 0; ai < argc; ai++) {
+        TyKind at = comp_ntype(c, argv[ai]);
+        const char *from = at == TY_INT_ARRAY   ? "sp_PolyArray_from_int_array"
+                         : at == TY_STR_ARRAY   ? "sp_PolyArray_from_str_array"
+                         : at == TY_FLOAT_ARRAY ? "sp_PolyArray_from_float_array" : NULL;
+        buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
+        if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[ai], b);   /* already a poly array */
+        buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
+      }
+      for (int ai = 0; ai < argc; ai++)
+        buf_printf(b, " sp_PolyArray_append_all(_t%d, _t%d);", t, base + ai);
+      buf_printf(b, " _t%d; })", t);
+      return 1;
+    }
+    /* unshift/prepend(*elems): insert each element at the front (reverse order
+       so the arg order is preserved), return the receiver. */
+    if (rt == TY_POLY_ARRAY && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && argc >= 1) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b); buf_puts(b, ";");
+      /* evaluate (and root) every element left-to-right first, THEN insert them
+         at the front in reverse so the arg order is preserved -- keeps Ruby's
+         left-to-right evaluation independent of the receiver mutations. */
+      int base = g_tmp + 1; g_tmp += argc;
+      for (int ai = 0; ai < argc; ai++) {
+        buf_printf(b, " sp_RbVal _t%d = ", base + ai); emit_boxed(c, argv[ai], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", base + ai);
+      }
+      for (int ai = argc - 1; ai >= 0; ai--)
+        buf_printf(b, " sp_PolyArray_insert(_t%d, 0, _t%d);", t, base + ai);
+      buf_printf(b, " _t%d; })", t);
+      return 1;
+    }
+    /* rindex(obj): last matching index, or nil (SP_INT_NIL sentinel, matching
+       the index/find_index int-or-nil convention). */
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "rindex") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = sp_PolyArray_rindex(", t); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+      buf_printf(b, "); _t%d < 0 ? SP_INT_NIL : _t%d; })", t, t);
+      return 1;
+    }
     /* each_index { |i| ... } - iterate with index (works for all array kinds) */
     {
       int ei_blk = nt_ref(nt, id, "block");

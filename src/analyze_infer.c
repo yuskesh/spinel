@@ -2565,7 +2565,7 @@ else {
         (sp_streq(name, "union") && argc == 0) ||
         sp_streq(name, "reverse!") || sp_streq(name, "sort!") || sp_streq(name, "shuffle!") ||
         sp_streq(name, "uniq!") ||
-        sp_streq(name, "rotate!") || sp_streq(name, "rotate") || sp_streq(name, "insert") || sp_streq(name, "unshift") || sp_streq(name, "freeze") ||
+        sp_streq(name, "rotate!") || sp_streq(name, "rotate") || sp_streq(name, "insert") || sp_streq(name, "unshift") || sp_streq(name, "prepend") || sp_streq(name, "concat") || sp_streq(name, "freeze") ||
         (sp_streq(name, "fill") && ((block < 0 && argc >= 1 && argc <= 3) ||
                                     (block >= 0 && argc <= 2))) ||
         sp_streq(name, "replace") ||
