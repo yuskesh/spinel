@@ -1259,19 +1259,31 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Emit a `fetch`-miss KeyError raise carrying MRI's "key not found: <key>"
+   text. The key node is boxed so sp_raise_key_not_found can inspect any key
+   type; re-evaluating it on the (aborting) miss path is harmless. */
+static void emit_key_not_found(Compiler *c, int key_node, Buf *b) {
+  buf_puts(b, "sp_raise_key_not_found(");
+  emit_boxed(c, key_node, b);
+  buf_puts(b, ")");
+}
+
 /* Emit the else-branch of a poly-Hash `fetch` dispatched through the poly value
    switch: the caller's default (fetch(k, dflt)) or a KeyError raise (fetch(k)),
    coerced to the dispatch's result-temp representation (poly, or the scalar
-   `trt`). `argv1` is the default-argument node (only read when argc == 2). */
+   `trt`). `argv1` is the default-argument node (only read when argc == 2);
+   `key_node` is the fetched key (argv[0]) for the KeyError message. */
 static void emit_poly_fetch_absent(Compiler *c, int argc, const int *atmp, int argv1,
-                                   TyKind ret, TyKind trt, Buf *b) {
+                                   int key_node, TyKind ret, TyKind trt, Buf *b) {
   if (argc == 2) {
     char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
     if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv1), dn, b);
     else buf_puts(b, dn);
   }
   else {
-    buf_puts(b, "(sp_raise_cls(\"KeyError\", \"key not found\"), ");
+    buf_puts(b, "(");
+    emit_key_not_found(c, key_node, b);
+    buf_puts(b, ", ");
     buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
     buf_puts(b, ")");
   }
@@ -1867,7 +1879,7 @@ else {
             char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
             if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b); else buf_puts(b, dn);
           }
-          else if (is_fetch) { buf_puts(b, "(sp_raise_cls(\"KeyError\", \"key not found\"), "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
+          else if (is_fetch) { buf_puts(b, "("); emit_key_not_found(c, argv[0], b); buf_puts(b, ", "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
           else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
           buf_puts(b, "; break;");
         }
@@ -1890,7 +1902,7 @@ else {
           if (is_fetch) buf_printf(b, "%s ? ", hx);
           if (ret == TY_POLY) buf_puts(b, getx);
           else emit_unbox_text(c, trt, getx, b);
-          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, ret, trt, b); }
+          if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, trt, b); }
           buf_puts(b, "; break;");
         }
       }
@@ -1911,7 +1923,7 @@ else {
           char dn[32]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
           if (ret == TY_POLY) emit_boxed_text(c, infer_type(c, argv[1]), dn, b); else buf_puts(b, dn);
         }
-        else if (is_fetch) { buf_puts(b, "(sp_raise_cls(\"KeyError\", \"key not found\"), "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
+        else if (is_fetch) { buf_puts(b, "("); emit_key_not_found(c, argv[0], b); buf_puts(b, ", "); buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt)); buf_puts(b, ")"); }
         else buf_puts(b, ret == TY_POLY ? "sp_box_nil()" : default_value(trt));
         buf_puts(b, "; break;");
       }
@@ -1942,7 +1954,7 @@ else {
         if (is_fetch) buf_printf(b, "%s ? ", hx);
         if (ret == TY_POLY) buf_puts(b, gx);
         else emit_unbox_text(c, ptrt, gx, b);
-        if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, ret, ptrt, b); }
+        if (is_fetch) { buf_puts(b, " : "); emit_poly_fetch_absent(c, argc, atmp, argc == 2 ? argv[1] : -1, argv[0], ret, ptrt, b); }
         buf_puts(b, "; break;");
       }
       /* eql?/equal?/is_a?/kind_of?/instance_of? on a builtin-scalar (or
