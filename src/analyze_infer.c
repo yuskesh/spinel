@@ -734,7 +734,8 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
         sp_streq(name, "instance_of?")) return TY_BOOL;
     if (sp_streq(name, "to_i") || sp_streq(name, "to_int")) return TY_INT;
-    if (sp_streq(name, "to_f") || sp_streq(name, "to_r")) return TY_FLOAT;
+    if (sp_streq(name, "to_f")) return TY_FLOAT;
+    if (sp_streq(name, "to_r")) return TY_RATIONAL;
     if (sp_streq(name, "to_a")) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_h")) return TY_SYM_POLY_HASH;
     if (sp_streq(name, "respond_to?")) return TY_BOOL;
