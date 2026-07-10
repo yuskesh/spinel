@@ -368,16 +368,19 @@ artifacts = ["libcx2.a"]
 [native]
 libs = ["${build.out}/libcx.a", "${build.out}/libcx2.a"]
 EOF
-printf '#ifndef CXBUILD\n#error carried-C swept a [[build]] workdir\n#endif\nint cx_val(void) { return 7; }\n' > spinel-crossx/csrc/cx.c
+printf '#ifndef CXBUILD\n#error carried-C swept a [[build]] workdir\n#endif\nint cx_val(void) { return 7; }\nlong cx_fsum(const double *d, long n) { return d && n >= 2 ? (long)(d[0] + d[1]) : -1; }\n' > spinel-crossx/csrc/cx.c
 printf '#define CX_BONUS 30\n' > spinel-crossx/csrc/cx.h
 printf '#ifndef CXBUILD\n#error carried-C swept a [[build]] workdir\n#endif\n#include "cx.h"\nint cx2_val(void) { return CX_BONUS + 5; }\n' > spinel-crossx/csrc2/cx2.c
-printf 'module Crossx\n  ffi_lib "cx"\n  ffi_func :cx_val, [], :int\n  ffi_func :cx2_val, [], :int\nend\n' > spinel-crossx/crossx.rb
+printf 'module Crossx\n  ffi_lib "cx"\n  ffi_func :cx_val, [], :int\n  ffi_func :cx2_val, [], :int\n  ffi_func :cx_fsum, [:float_array, :int], :int\nend\n' > spinel-crossx/crossx.rb
 mkdir -p crossapp/bin
 printf '[package]\nname = "crossapp"\n\n[dependencies]\ncrossx = { path = "../spinel-crossx" }\n' > crossapp/spin.toml
-printf 'require "crossx"\nputs Crossx.cx_val + Crossx.cx2_val\n' > crossapp/bin/app.rb
+printf 'require "crossx"\ndef widen(a)\n  a\nend\nwiden(["x"])\nputs Crossx.cx_fsum(widen([60.5, 4.5]), 2)\nputs Crossx.cx_val + Crossx.cx2_val\n' > crossapp/bin/app.rb
 cd crossapp
 OUT=$(SPIN_ALLOW_NATIVE_BUILD=1 "$SPIN" run 2>&1)
 expect "cross-entry native run" "42" "$(echo "$OUT" | tail -1)"
+# a poly-collapsed float array marshals its element data (the :float_array
+# twin of the #1855/#1867 int fix; 60.5+4.5=65, NULL would print -1)
+echo "$OUT" | grep -q '^65$' || fail "poly-collapsed :float_array marshalled wrong data"
 # a .git dropped into the workdir must not move the content key
 mkdir -p ../spinel-crossx/csrc/.git
 echo junk > ../spinel-crossx/csrc/.git/HEAD

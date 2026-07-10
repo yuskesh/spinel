@@ -3,14 +3,18 @@
 # poly arm used to reinterpret the boxed value's .v.p as sp_PolyArray*
 # regardless of the runtime kind, reading a garbage length out of the boxed
 # sp_IntArray and handing the callee NULL (toy's silent LoRA flatline).
-# wcslen observes the data (wchar_t is 4 bytes here): int64 65 is
-# {65, 0, ...} as wchar_t -> 1; double 65.0 starts with a 0 word -> 0.
-# A NULL marshal would segfault wcslen (loud test failure).
+#
+# The observer is sp_json_str from the bundled json package object (linked
+# into every test): plain NUL-terminated C-string semantics over the
+# marshalled bytes, no libc builtin for clang to fight (wcslen's extern
+# redeclaration was a clang hard error). int64 65 is "A\0..." little-endian
+# -> "\"A\""; a NULL marshal distinguishes as "\"\"".
+# The :float_array twin of the same fix is exercised end-to-end in
+# tools/spin_e2e.sh (crossx), where a test-owned C archive is available.
+require "json"   # links the bundled sp_json.o outside the test harness too
+
 module L
-  ffi_func :wcslen, [:int_array], :size_t
-end
-module LF
-  ffi_func :wcsnlen, [:float_array, :size_t], :size_t
+  ffi_func :sp_json_str, [:int_array], :str
 end
 
 def widen(a)
@@ -18,12 +22,11 @@ def widen(a)
 end
 
 widen(["x", "y"])              # the trigger: widen's param/return go poly
-p L.wcslen(widen([65, 66]))
-p LF.wcsnlen(widen([65.0]), 2)
+puts L.sp_json_str(widen([65, 66]))
 
 # a poly value holding a non-array raises loudly instead of marshalling NULL
 begin
-  L.wcslen(widen("not an array"))
+  L.sp_json_str(widen("not an array"))
   puts "no raise"
 rescue TypeError => e
   puts "TypeError: #{e.message}"
