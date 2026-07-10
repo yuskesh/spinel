@@ -5090,7 +5090,14 @@ TyKind return_node_type(Compiler *c, int id) {
   int n = 0;
   const int *a = nt_arr(c->nt, args, "arguments", &n);
   if (n > 1) return TY_POLY_ARRAY;
-  return n > 0 ? infer_type(c, a[0]) : TY_NIL;
+  if (n == 0) return TY_NIL;
+  /* `return *x` builds an array (`[*x]`): a scalar wraps in a one-element
+     array, an array stays itself. Codegen emits sp_splat_to_array, so the
+     method's return type is a poly array -- not the splat's element type that
+     infer_type would report for a bare SplatNode in array-literal context. */
+  const char *aty = nt_type(c->nt, a[0]);
+  if (aty && sp_streq(aty, "SplatNode")) return TY_POLY_ARRAY;
+  return infer_type(c, a[0]);
 }
 
 /* Defined in codegen_fold.c (linked in). */

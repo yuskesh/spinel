@@ -3467,6 +3467,17 @@ static int node_is_pure_literal(const NodeTable *nt, int node) {
                 sp_streq(ty, "ImaginaryNode"));
 }
 
+/* The static type of a single return argument for coercion purposes. A bare
+   `*x` return argument (`return *x`) emits an sp_PolyArray* via emit_expr, so it
+   is TY_POLY_ARRAY here -- comp_ntype reports a SplatNode as its element type
+   (the array-literal element-unification convention), which would drive a
+   spurious unbox against a TY_POLY_ARRAY return slot. */
+static TyKind ret_arg_ntype(Compiler *c, int node) {
+  const char *ty = nt_type(c->nt, node);
+  if (ty && sp_streq(ty, "SplatNode")) return TY_POLY_ARRAY;
+  return comp_ntype(c, node);
+}
+
 void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int args = nt_ref(c->nt, id, "arguments");
   int n = 0;
@@ -3505,7 +3516,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
       }
       else if (n == 1) {
         buf_printf(b, "%s = ", g_method_pr_var);
-        TyKind r0 = comp_ntype(c, a[0]);
+        TyKind r0 = ret_arg_ntype(c, a[0]);
         if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
         else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
         else emit_tail_value(c, a[0], b);
@@ -3616,7 +3627,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
       return;
     }
     int tr = ++g_tmp;
-    TyKind r0 = comp_ntype(c, a[0]);
+    TyKind r0 = ret_arg_ntype(c, a[0]);
     buf_puts(b, "{ "); emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
     buf_printf(b, " _t%d = ", tr);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
@@ -3648,7 +3659,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   }
   else if (n > 0) {
     buf_puts(b, "return ");
-    TyKind r0 = comp_ntype(c, a[0]);
+    TyKind r0 = ret_arg_ntype(c, a[0]);
     if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
     /* a poly return value feeding a narrower (non-poly) return slot -- e.g. a
        method(:sym) target pinned to mrb_int that returns a poly @ivar, or an
