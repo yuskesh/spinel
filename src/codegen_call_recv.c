@@ -189,6 +189,30 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
+    /* product(b, c, ...) with two or more array arguments: the n-way Cartesian
+       product. The single-argument form is specialized below (per element-type
+       boxing); for 2+ arguments box the receiver and every argument into rooted
+       locals -- the GC is precise, so they must stay reachable across the
+       helper's allocations -- and hand them to sp_poly_product as one vector. */
+    if (sp_streq(name, "product") && argc >= 2) {
+      int nn = argc + 1;
+      int *ids = (int *)malloc(sizeof(int) * nn);
+      if (!ids) { perror("malloc"); exit(1); }
+      buf_puts(b, "({ ");
+      ids[0] = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = ", ids[0]); emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ids[0]);
+      for (int i = 0; i < argc; i++) {
+        ids[i + 1] = ++g_tmp;
+        buf_printf(b, "sp_RbVal _t%d = ", ids[i + 1]); emit_boxed(c, argv[i], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ids[i + 1]);
+      }
+      buf_printf(b, "sp_RbVal _tp[%d] = { _t%d", nn, ids[0]);
+      for (int i = 1; i < nn; i++) buf_printf(b, ", _t%d", ids[i]);
+      buf_printf(b, " }; sp_poly_product(_tp, %d); })", nn);
+      free(ids);
+      return 1;
+    }
     /* values_at(i, j, ...) -> fresh same-kind array of the picked elements
        (works for typed and poly arrays alike, and range args) */
     if (sp_streq(name, "values_at") && argc >= 1) {

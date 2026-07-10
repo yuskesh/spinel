@@ -2492,6 +2492,48 @@ static mrb_int sp_poly_arr_len(sp_RbVal a) {
     default: return 0;
   }
 }
+/* n-way Cartesian product: given `n` array values, return a poly array of the
+   `len(arrs[0]) * len(arrs[1]) * ...` tuples, each a poly array with one element
+   drawn from each input in order (an odometer over the index vector). The caller
+   keeps `arrs[i]` rooted across this call; `res` and the current `tuple` are
+   rooted here so a push-triggered collection cannot reclaim a partial tuple.
+   Any empty input yields an empty product. */
+static sp_PolyArray *sp_poly_product(sp_RbVal *arrs, mrb_int n) {
+  sp_PolyArray *res = sp_PolyArray_new(); SP_GC_ROOT(res);
+  mrb_int total = 1;
+  for (mrb_int i = 0; i < n; i++) {
+    mrb_int len = sp_poly_arr_len(arrs[i]);
+    if (len == 0) { total = 0; break; }
+    /* guard the running product against mrb_int overflow, which would wrap to a
+       bogus (small/negative) total and silently truncate the result. */
+    if (total > INTPTR_MAX / len) sp_raise_cls("RangeError", "too big to product");
+    total *= len;
+  }
+  if (total <= 0) return res;
+  /* small stack buffer for the odometer, heap only for an implausibly large
+     arity -- avoids a calloc that a raise/longjmp from the loop would leak. */
+  mrb_int idx_stack[16];
+  mrb_int *idx = idx_stack;
+  if (n > (mrb_int)(sizeof idx_stack / sizeof idx_stack[0])) {
+    idx = (mrb_int *)calloc((size_t)n, sizeof(mrb_int));
+    if (!idx) { fprintf(stderr, "out of memory\n"); exit(1); }
+  } else {
+    memset(idx, 0, (size_t)n * sizeof(mrb_int));
+  }
+  sp_PolyArray *tuple = NULL; SP_GC_ROOT(tuple);
+  for (mrb_int t = 0; t < total; t++) {
+    tuple = sp_PolyArray_new();
+    for (mrb_int i = 0; i < n; i++)
+      sp_PolyArray_push(tuple, sp_poly_arr_get(arrs[i], idx[i]));
+    sp_PolyArray_push(res, sp_box_poly_array(tuple));
+    for (mrb_int i = n - 1; i >= 0; i--) {
+      if (++idx[i] < sp_poly_arr_len(arrs[i])) break;
+      idx[i] = 0;
+    }
+  }
+  if (idx != idx_stack) free(idx);
+  return res;
+}
 /* `when *arr`: does any element of arr match the scrutinee? Value equality
    via sp_poly_eq (the splat form is used with value lists; Class/Regexp
    elements inside a splat are not dispatched through #=== here). */

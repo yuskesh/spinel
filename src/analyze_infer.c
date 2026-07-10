@@ -2571,7 +2571,7 @@ else {
         sp_streq(name, "replace") ||
         sp_streq(name, "values_at")) return rt;
     if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;
-    if (sp_streq(name, "product") && argc == 1) return TY_POLY_ARRAY;
+    if (sp_streq(name, "product") && argc >= 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "repeated_combination") && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "combination") && argc == 1 && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "permutation") && (argc == 1 || argc == 0) && block < 0) return TY_POLY_ARRAY;
