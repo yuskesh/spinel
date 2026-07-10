@@ -26,6 +26,8 @@ sp_Complex sp_complex_add(sp_Complex a, sp_Complex b);
 sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b);
 sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b);
 sp_Complex sp_complex_div(sp_Complex a, sp_Complex b);
+sp_Complex sp_complex_div_real(sp_Complex a, mrb_float b);
+sp_Complex sp_complex_div_int(sp_Complex a, mrb_int b);
 sp_Complex sp_complex_neg(sp_Complex a);
 sp_Complex sp_complex_conjugate(sp_Complex a);
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e);

@@ -1115,6 +1115,18 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       TyKind cxa = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
       int cx_ok = cxa == TY_COMPLEX || cxa == TY_INT || cxa == TY_FLOAT;
+      /* Dividing a Complex by a real scalar divides each component: a Float
+         divisor yields Infinity at 0 (IEEE), an Integer divisor raises
+         ZeroDivisionError at 0 (integer rules). The conjugate-formula
+         sp_complex_div boxes the real to c+0i and produces NaN at c==0. */
+      if (argc == 1 && sp_streq(name, "/") && cxa == TY_FLOAT) {
+        buf_puts(b, "sp_complex_div_real("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_float)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        return 1;
+      }
+      if (argc == 1 && sp_streq(name, "/") && cxa == TY_INT) {
+        buf_puts(b, "sp_complex_div_int("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        return 1;
+      }
       if (cx_ok && argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") ||
                                  sp_streq(name, "*") || sp_streq(name, "/"))) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";

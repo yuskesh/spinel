@@ -7,22 +7,36 @@
 #include <string.h>
 #include <time.h>       /* gmtime / strftime for sp_Time_inspect */
 
+/* Format a non-negative Complex-component magnitude the way MRI does: infinite
+   and NaN values become the Ruby names Infinity/NaN (not C's inf/nan), a whole
+   value stays integer-looking, else %g. Returns the written length. */
+static int sp_complex_mag(char *out, size_t sz, mrb_float v) {
+  if (isinf(v)) return snprintf(out, sz, "Infinity");
+  if (isnan(v)) return snprintf(out, sz, "NaN");
+  /* a float outside mrb_int's range makes (mrb_int)v undefined behavior; only
+     integer-print a whole value that fits, else fall through to %g. */
+  if (v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_int)v)
+    return snprintf(out, sz, "%lld", (long long)v);
+  return snprintf(out, sz, "%g", v);
+}
+/* Append the imaginary part ("+<mag>i" / "-<mag>i") to buf. MRI inserts a `*`
+   before a non-numeric magnitude (Infinity/NaN) so `Infinity*i` stays readable,
+   while a plain number is written as `10i`. */
+static int sp_complex_imag(char *buf, int n, size_t sz, mrb_float im) {
+  if (n < 0 || (size_t)n >= sz) return 0;
+  char mag[64];
+  sp_complex_mag(mag, sizeof mag, im < 0 ? -im : im);
+  const char *sep = (mag[0] >= '0' && mag[0] <= '9') ? "" : "*";
+  return snprintf(buf + n, sz - (size_t)n, "%c%s%si", im < 0 ? '-' : '+', mag, sep);
+}
 const char *sp_complex_inspect(sp_Complex c) {
-  char buf[128];
-  int n = 0;
-  /* Real part: keep integer-looking values short. */
-  if (c.re == (mrb_int)c.re) n += snprintf(buf + n, sizeof(buf) - n, "(%lld", (long long)c.re);
-  else n += snprintf(buf + n, sizeof(buf) - n, "(%g", c.re);
-  /* Imaginary sign + value. */
-  if (c.im < 0) {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "-%lldi)", -(long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "%gi)", c.im);
-  }
-  else {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "+%lldi)", (long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "+%gi)", c.im);
-  }
-  if (n < 0) n = 0;
+  char buf[128], re[64];
+  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re);
+  int n = snprintf(buf, sizeof buf, "(%s%s", c.re < 0 ? "-" : "", re);
+  if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
+  n += sp_complex_imag(buf, n, sizeof buf, c.im);
+  if (n < (int)sizeof buf) n += snprintf(buf + n, sizeof(buf) - (size_t)n, ")");
+  if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
   char *r = sp_str_alloc_raw(n + 1);
   memcpy(r, buf, n);
   r[n] = 0;
@@ -30,19 +44,12 @@ const char *sp_complex_inspect(sp_Complex c) {
 }
 /* Complex#to_s: bare `re+imi` (no surrounding parens, unlike #inspect). */
 const char *sp_complex_to_s(sp_Complex c) {
-  char buf[128];
-  int n = 0;
-  if (c.re == (mrb_int)c.re) n += snprintf(buf + n, sizeof(buf) - n, "%lld", (long long)c.re);
-  else n += snprintf(buf + n, sizeof(buf) - n, "%g", c.re);
-  if (c.im < 0) {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "-%lldi", -(long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "%gi", c.im);
-  }
-  else {
-    if (c.im == (mrb_int)c.im) n += snprintf(buf + n, sizeof(buf) - n, "+%lldi", (long long)c.im);
-    else n += snprintf(buf + n, sizeof(buf) - n, "+%gi", c.im);
-  }
-  if (n < 0) n = 0;
+  char buf[128], re[64];
+  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re);
+  int n = snprintf(buf, sizeof buf, "%s%s", c.re < 0 ? "-" : "", re);
+  if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
+  n += sp_complex_imag(buf, n, sizeof buf, c.im);
+  if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
   char *r = sp_str_alloc_raw(n + 1);
   memcpy(r, buf, n);
   r[n] = 0;
@@ -100,6 +107,18 @@ sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.r
 sp_Complex sp_complex_div(sp_Complex a, sp_Complex b) {
   mrb_float d = (b.re * b.re) + (b.im * b.im); sp_Complex c;
   c.re = ((a.re * b.re) + (a.im * b.im)) / d; c.im = ((a.im * b.re) - (a.re * b.im)) / d; return c;
+}
+/* Complex divided by a real scalar divides each component -- unlike the
+   conjugate formula, this yields Infinity (not NaN) when the divisor is 0.0,
+   matching MRI's Complex#/ against a Float. */
+sp_Complex sp_complex_div_real(sp_Complex a, mrb_float b) {
+  sp_Complex c; c.re = a.re / b; c.im = a.im / b; return c;
+}
+/* Complex divided by an Integer follows integer zero-division rules: dividing
+   by 0 raises ZeroDivisionError, as in MRI (a Float divisor gives Infinity). */
+sp_Complex sp_complex_div_int(sp_Complex a, mrb_int b) {
+  if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  sp_Complex c; c.re = a.re / (mrb_float)b; c.im = a.im / (mrb_float)b; return c;
 }
 sp_Complex sp_complex_neg(sp_Complex a) { sp_Complex c; c.re = -a.re; c.im = -a.im; return c; }
 mrb_float sp_complex_abs2(sp_Complex a) { return (a.re * a.re) + (a.im * a.im); }
