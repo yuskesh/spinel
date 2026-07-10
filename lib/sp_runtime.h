@@ -1991,6 +1991,16 @@ SP_NORETURN SP_COLD static void sp_raise_poly_nomethod(const char *m, sp_RbVal v
   sp_raise_cls("NoMethodError",
                sp_sprintf("undefined method '%s' for an instance of %s", m, sp_poly_class_name(v)));
 }
+/* CRuby-shaped NoMethodError text for an unresolved call on a runtime value:
+   nil/true/false read as themselves, anything else as "an instance of
+   <Class>". Only builds the message -- the caller keeps the recognizable
+   sp_raise_nomethod(...) form the coercion paths key on. */
+SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
+  const char *d = (v.tag == SP_TAG_NIL) ? "nil"
+                : (v.tag == SP_TAG_BOOL) ? (v.v.i ? "true" : "false")
+                : sp_sprintf("an instance of %s", sp_poly_class_name(v));
+  return sp_sprintf("undefined method '%s' for %s", m, d);
+}
 /* floor/ceil/round/truncate on a non-finite Float: casting NaN/Inf to an
    integer is C UB; CRuby raises FloatDomainError naming the value. */
 static inline void sp_poly_flo_domain_ck(mrb_float f) {

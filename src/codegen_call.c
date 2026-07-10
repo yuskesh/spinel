@@ -9201,11 +9201,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     emit_expr(c, recv, b); buf_puts(b, "))");
     return;
   }
+  /* The nil-degrade placeholders must still emit the receiver: a chain like
+     `cell.id.inspect` whose receiver is itself an unresolved call then reaches
+     that call's own diagnostic (a compile-time NoMethodError) instead of
+     silently printing "[]" with the whole receiver dropped. */
   if (recv >= 0 && argc == 0 && sp_streq(name, "inspect")) {
-    buf_puts(b, "\"[]\""); return;
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), \"[]\")"); return;
   }
   if (recv >= 0 && argc == 0 && sp_streq(name, "to_s")) {
-    buf_puts(b, "\"\""); return;
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), \"\")"); return;
   }
   /* nil? on an object type: a value-type object is never nil; a heap object
      reference is nil exactly when its pointer is NULL. */
@@ -9587,7 +9591,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (grt == TY_POLY || grt == TY_NIL || grt == TY_INT || grt == TY_UNKNOWN ||
-        grt == TY_STRING) {
+        grt == TY_STRING || grt == TY_FLOAT || grt == TY_BOOL) {
       TyKind ret = comp_ntype(c, id);
       /* An unresolved call raises NoMethodError by default, matching CRuby
          (a dead poly-dispatch arm still emits nothing; a live one raising here
@@ -9610,11 +9614,34 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
            token (returns sp_RbVal) so coercion sites keep the raise side-effect
            rather than text-discarding a bare sp_box_nil(). Both diverge before
            the value is used. */
+        /* CRuby-shaped receiver text: a poly receiver names its runtime class
+           through sp_nomethod_msg (evaluating the receiver once, as CRuby
+           does before raising); statically-typed receivers get the static
+           equivalent. TY_UNKNOWN keeps the old lattice name -- its receiver
+           expression may not be independently emittable. */
+        char rdesc[128];
+        if (grt == TY_NIL) snprintf(rdesc, sizeof rdesc, "nil");
+        else if (grt == TY_INT) snprintf(rdesc, sizeof rdesc, "an instance of Integer");
+        else if (grt == TY_STRING) snprintf(rdesc, sizeof rdesc, "an instance of String");
+        else if (grt == TY_FLOAT) snprintf(rdesc, sizeof rdesc, "an instance of Float");
+        else snprintf(rdesc, sizeof rdesc, "%s", ty_name(grt));
+        if (grt == TY_POLY || grt == TY_BOOL) {
+          if (sp_streq(dflt, "sp_box_nil()")) {
+            buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", ", nm ? nm : "?");
+            emit_boxed(c, recv, b); buf_puts(b, "))");
+          }
+          else {
+            buf_printf(b, "(sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"%s\", ", nm ? nm : "?");
+            emit_boxed(c, recv, b);
+            buf_printf(b, ")), %s)", dflt);
+          }
+          return;
+        }
         if (sp_streq(dflt, "sp_box_nil()"))
-          buf_printf(b, "sp_raise_nomethod(\"undefined method '%s' for %s\")", nm ? nm : "?", ty_name(grt));
+          buf_printf(b, "sp_raise_nomethod(\"undefined method '%s' for %s\")", nm ? nm : "?", rdesc);
         else
           buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"undefined method '%s' for %s\"), %s)",
-                     nm ? nm : "?", ty_name(grt), dflt);
+                     nm ? nm : "?", rdesc, dflt);
         return;
       }
       buf_puts(b, dflt);

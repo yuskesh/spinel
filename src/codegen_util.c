@@ -562,6 +562,23 @@ __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what
     int recv = nt_ref(c->nt, id, "receiver");
     int args = nt_ref(c->nt, id, "arguments");
     int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
+    /* A call on a typed user object whose class chain has no such method is
+       not a compiler gap: it is the program's NoMethodError, caught ahead of
+       time. Report it in CRuby's words instead of the internal node dump. */
+    if (recv >= 0) {
+      TyKind rvt = comp_ntype(c, recv);
+      if (ty_is_object(rvt)) {
+        int cid = ty_object_class(rvt);
+        if (cid >= 0 && cid < c->nclasses && !c->classes[cid].is_native_class &&
+            comp_method_in_chain(c, cid, mname, NULL) < 0) {
+          const char *cn = class_ruby_name(c, cid);
+          fprintf(stderr, "spinel: %sundefined method '%s' for an instance of %s (NoMethodError)\n",
+                  pos, mname, cn ? cn : "Object");
+          if (collect_mode() && g_unsup_armed) longjmp(g_unsup_recover, 1);
+          exit(1);
+        }
+      }
+    }
     fprintf(stderr, "spinel: %sunsupported %s: node %d (%s `%s`) recv=%s/ty%d argc=%d",
             pos, what, id, ty, mname,
             recv >= 0 ? nt_type(c->nt, recv) : "-",

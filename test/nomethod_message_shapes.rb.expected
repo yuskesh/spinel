@@ -1,0 +1,4 @@
+undefined method 'id' for an instance of Cell
+undefined method 'bogus' for nil
+undefined method 'bogus' for true
+undefined method 'bogus' for an instance of Float

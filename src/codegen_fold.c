@@ -1552,7 +1552,15 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
   int block = nt_ref(nt, recv, "block");
   if (block < 0) return 0;
   int pr = nt_ref(nt, recv, "receiver");
-  if (pr < 0 || comp_ntype(c, pr) != TY_INT_ARRAY) return 0;
+  if (pr < 0) return 0;
+  /* an empty array literal has nothing to slice/chunk: the whole chain is
+     statically "[]" (the literal has no side effects to preserve) */
+  if (comp_ntype(c, pr) == TY_UNKNOWN && nt_type(nt, pr) &&
+      sp_streq(nt_type(nt, pr), "ArrayNode")) {
+    int en = 0; nt_arr(nt, pr, "elements", &en);
+    if (en == 0) { buf_puts(b, "\"[]\""); return 1; }
+  }
+  if (comp_ntype(c, pr) != TY_INT_ARRAY) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
