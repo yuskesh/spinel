@@ -2513,7 +2513,12 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           if (vt == TY_POLY) buf_puts(b, getexpr);
           else emit_boxed_text(c, vt, getexpr, b);
           buf_puts(b, ");");
-          if (is_fetch) buf_puts(b, " else sp_raise_cls(\"KeyError\", \"key not found\");");
+          if (is_fetch) {
+            char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
+            buf_puts(b, " else sp_raise_key_not_found(");
+            emit_boxed_text(c, kt, keytmp, b);
+            buf_puts(b, ");");
+          }
           else buf_printf(b, " else sp_PolyArray_push(_t%d, sp_box_nil());", tr);
         }
         buf_printf(b, " _t%d; })", tr);
@@ -2560,9 +2565,12 @@ else {
         int th = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
         buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
-        buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d)"
-                      " : (sp_raise_cls(\"KeyError\", \"key not found\"), %s); })",
-                   hn, th, tk, hn, th, tk, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
+        buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : (",
+                   hn, th, tk, hn, th, tk);
+        char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
+        buf_puts(b, "sp_raise_key_not_found(");
+        emit_boxed_text(c, ty_hash_key(rt), keytmp, b);
+        buf_printf(b, "), %s); })", vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
         return 1;
       }
       if (sp_streq(name, "fetch") && argc == 2) {

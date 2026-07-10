@@ -3659,6 +3659,12 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     default:          return sp_str_empty;
   }
 }
+/* Raise Hash#fetch's KeyError with MRI's "key not found: <key.inspect>" text.
+   Boxing the key lets one helper serve every key type (symbol, string, int,
+   ...) via sp_poly_inspect. */
+SP_NORETURN static void sp_raise_key_not_found(sp_RbVal key) {
+  sp_raise_cls("KeyError", sp_sprintf("key not found: %s", sp_poly_inspect(key)));
+}
 /* Array#inspect for heterogeneous poly arrays. Each element dispatches
    through sp_poly_inspect, so a mixed `[1, "x", :y]` renders
    `[1, "x", :y]` byte-for-byte identical to CRuby. NULL renders
