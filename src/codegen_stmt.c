@@ -6588,7 +6588,29 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
     int celled = (lv && lv->is_cell) || (g_cap_struct && g_cap_names && nm && nameset_has(g_cap_names, nm));
-    if (celled) { emit_stmt(c, id, b, indent); return; }
+    if (celled) {
+      /* Inside a proc/lambda body the cell op-write must still return the
+         POST-assignment value (`->{ n += 1 }.call` is `n+1`, not the stale
+         slot). Emit the mutation as a statement, then read the cell back and
+         publish it into the proc's result slot. Outside a proc body keep the
+         plain-statement form (the method's default return covers the value). */
+      if (g_in_proc_body && g_result_var) {
+        emit_stmt(c, id, b, indent);
+        TyKind ct = lv ? lv->type : TY_INT;
+        Buf rb; memset(&rb, 0, sizeof rb); emit_local_ref(c, id, nm, &rb);
+        emit_indent(b, indent); buf_printf(b, "%s = ", g_result_var);
+        if (g_result_poly && ct != TY_POLY) {
+          Buf bx; memset(&bx, 0, sizeof bx);
+          emit_boxed_text(c, ct, rb.p ? rb.p : "0", &bx);
+          buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+        } else {
+          buf_printf(b, "%s;\n", rb.p ? rb.p : "0");
+        }
+        free(rb.p);
+        return;
+      }
+      emit_stmt(c, id, b, indent); return;
+    }
   }
   /* iteration calls with a block are side-effect statements at tail position;
      emit them without wrapping in a return (the method returns nil implicitly).
