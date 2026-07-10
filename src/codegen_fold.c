@@ -4697,6 +4697,29 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   TyKind ds_hash_type = TY_UNKNOWN;
   int ds_hash_tmp = emit_ds_hash_materialize(c, kwh, &ds_hash_type);
 
+  /* A `**hash` forwarded into a method with fixed keyword params and no
+     keyword-rest must carry only declared keys, else CRuby raises
+     ArgumentError. Emit a runtime check over the materialized (symbol-keyed)
+     hash against the callee's declared keyword names. (A kwrest absorbs the
+     extras, so only guard when there is none.) */
+  if (ds_hash_tmp >= 0 && m && m->kwrest_idx < 0 && m->def_node >= 0) {
+    const char *dshn = ty_hash_cname(ds_hash_type);
+    int pn = nt_ref(nt, m->def_node, "parameters");
+    int kn = 0; const int *kws = pn >= 0 ? nt_arr(nt, pn, "keywords", &kn) : NULL;
+    if (kn > 0 && dshn && sp_streq(dshn, "SymPoly")) {
+      int chk = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "static const char *const _kw%d[] = {", chk);
+      for (int ki = 0; ki < kn; ki++) {
+        const char *kpn = nt_str(nt, kws[ki], "name");
+        if (kpn) buf_printf(g_pre, "\"%s\", ", kpn);
+      }
+      buf_puts(g_pre, "0};\n");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_kwargs_check(_t%d, _kw%d);\n", ds_hash_tmp, chk);
+    }
+  }
+
   /* Find the first SplatNode in positional args. If it comes before rest_idx
      (or before nparams for rest-less methods), pre-evaluate it to a temp so
      we can index into it per fixed param. */

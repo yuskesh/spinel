@@ -3786,6 +3786,30 @@ static mrb_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)retu
 static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(mrb_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
 static sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b){sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_SymPolyHash_get(b,b->order[i]));return r;}
 static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
+/* A `**hash` forwarded into a method with fixed keyword params (and no
+   keyword-rest to absorb extras) must carry only declared keys; CRuby raises
+   ArgumentError otherwise. `allowed` is a NULL-terminated array of the callee's
+   keyword names, in declaration order. The message matches CRuby:
+   `unknown keyword: :x` for one, `unknown keywords: :x, :y` for several. */
+static void sp_kwargs_check(sp_SymPolyHash *h, const char *const *allowed) {
+  if (!h) return;
+  char list[256]; int n = 0, cnt = 0;
+  for (mrb_int i = 0; i < h->len; i++) {
+    const char *nm = sp_sym_to_s(h->order[i]);
+    int ok = 0;
+    for (const char *const *a = allowed; *a; a++) if (!strcmp(nm, *a)) { ok = 1; break; }
+    if (ok) continue;
+    if (n < (int)sizeof(list) - 1) {
+      int w = snprintf(list + n, sizeof(list) - n, "%s:%s", cnt ? ", " : "", nm);
+      /* snprintf returns the untruncated length; clamp so n never runs past the
+         buffer and sizeof(list)-n stays a valid size on the next iteration. */
+      n = (w > 0 && n + w < (int)sizeof(list)) ? n + w : (int)sizeof(list) - 1;
+    }
+    cnt++;
+  }
+  if (cnt == 0) return;
+  sp_raise_cls("ArgumentError", sp_sprintf("unknown keyword%s: %s", cnt > 1 ? "s" : "", list));
+}
 /* Hash#delete for sym_poly_hash. Removes key and re-tombstones the
    slot, shifting probe-chain successors backward and dropping the
    key from the insertion-order list. Issue #510. */
