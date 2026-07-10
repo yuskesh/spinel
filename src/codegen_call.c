@@ -5070,6 +5070,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
+  /* Kernel#puts / #print as an expression: run the statement emitters inside
+     a statement-expression and yield nil (their Ruby value). */
+  if (recv < 0 && (sp_streq(name, "puts") || sp_streq(name, "print")) &&
+      nt_ref(nt, id, "block") < 0) {
+    buf_puts(b, "({ ");
+    if (argc == 0 && sp_streq(name, "puts")) buf_puts(b, "putchar('\n');\n");
+    for (int k = 0; k < argc; k++) {
+      if (sp_streq(name, "puts")) emit_puts_one(c, argv[k], b, 0);
+      else emit_print_one(c, argv[k], b, 0);
+    }
+    buf_puts(b, " sp_box_nil(); })");
+    return;
+  }
+
   /* Kernel#p as an expression: print the argument's inspect, yield the
      argument as the value (statement position has its own emitter). The
      value is boxed once, printed through the poly inspect (which consults

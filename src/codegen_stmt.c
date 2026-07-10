@@ -210,6 +210,13 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_Range _t%d = ", tv); emit_expr(c, arg, b);
     buf_printf(b, "; fputs(sp_Range_inspect(&_t%d), stdout); }\n", tv);
   }
+  else if (ty_is_array(t) || ty_is_hash(t) || t == TY_EXCEPTION || t == TY_TIME) {
+    /* print of a collection renders its to_s (== inspect for Array/Hash);
+       box once and go through the poly renderer. */
+    int tv = ++g_tmp;
+    buf_printf(b, "{ sp_RbVal _t%d = ", tv); emit_boxed(c, arg, b);
+    buf_printf(b, "; const char *_ps%d = sp_poly_to_s(_t%d); if (_ps%d) fputs(_ps%d, stdout); }\n", tv, tv, tv, tv);
+  }
   else {
     if (!diagnose_eval_call(c, arg))
       unsupported(c, arg, "print argument");
