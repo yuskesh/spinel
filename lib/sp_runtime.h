@@ -2031,6 +2031,37 @@ static mrb_float sp_poly_to_f(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return v.v.
    returns nil there) instead of coercing to 0.0 like sp_poly_to_f. */
 static mrb_float sp_poly_to_f_opt(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_float_nil() : sp_poly_to_f(v); }
 static mrb_bool sp_poly_numeric_p(sp_RbVal v) { return v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT || v.tag == SP_TAG_BIGINT; }
+/* Display form of a value in a `can't convert %s into ...` TypeError:
+   nil/true/false render lowercase, everything else by class name (CRuby). */
+static const char *sp_convert_src_name(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return "nil";
+  if (v.tag == SP_TAG_BOOL) return v.v.b ? "true" : "false";
+  return sp_poly_class_name(v);
+}
+/* Kernel#Integer / Kernel#Float: STRICT coercion. Unlike the lenient
+   sp_poly_to_i / sp_poly_to_f (which treat nil as 0 for `nil.to_i`), these
+   raise TypeError on nil / a non-numeric object and ArgumentError on an
+   unparseable String, matching CRuby's conversion methods. */
+static mrb_int sp_poly_Integer(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_BIGINT) return (mrb_int)sp_bigint_to_int((sp_Bigint *)v.v.p);
+  if (v.tag == SP_TAG_FLT) {
+    if (isnan(v.v.f) || isinf(v.v.f))
+      sp_raise_cls("FloatDomainError", sp_sprintf("%g", v.v.f));
+    return (mrb_int)v.v.f;
+  }
+  if (v.tag == SP_TAG_STR) return (mrb_int)sp_str_to_i_strict(v.v.s ? v.v.s : sp_str_empty);
+  sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Integer", sp_convert_src_name(v)));
+  return 0;
+}
+static mrb_float sp_poly_Float(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return v.v.f;
+  if (v.tag == SP_TAG_INT) return (mrb_float)v.v.i;
+  if (v.tag == SP_TAG_BIGINT) return sp_poly_to_f(v);
+  if (v.tag == SP_TAG_STR) return sp_str_to_f_strict(v.v.s ? v.v.s : sp_str_empty);
+  sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Float", sp_convert_src_name(v)));
+  return 0.0;
+}
 /* Numeric queries / rounding on a poly value: dispatch on the runtime tag the
    way CRuby dispatches on the class. A tag whose class does not define the
    method raises CRuby's NoMethodError (e.g. `1.nan?`, `"x".abs`). */

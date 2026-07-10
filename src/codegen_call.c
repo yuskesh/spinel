@@ -5006,7 +5006,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { buf_puts(b, "sp_str_to_i_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_FLOAT) { buf_puts(b, "((mrb_int)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
-      else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      else if (at == TY_POLY) { buf_puts(b, "sp_poly_Integer("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       return;
     }
@@ -5023,7 +5023,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) { buf_puts(b, "sp_str_to_f_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_INT) { buf_puts(b, "((mrb_float)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
-      else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_f("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      else if (at == TY_POLY) { buf_puts(b, "sp_poly_Float("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       return;
     }
