@@ -3341,6 +3341,8 @@ static int class_is_hashkey(Compiler *c, int k) {
    Object#hash / equal? default). The eql hook is only reached for two keys of
    the same cls_id (the runtime pre-filters), so both pointers are that class. */
 static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
+  /* Emission uses mc(m->name) throughout: `alias eql? ==` resolves to the
+     target method's scope, whose C symbol carries the target's name. */
   buf_puts(b, "static mrb_int sp_gen_obj_hash(int cls_id, void *p) {\n  switch (cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     if (!class_is_hashkey(c, k)) continue;
@@ -3351,9 +3353,9 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
     if (m->ret == TY_INT)
-      buf_printf(b, "return (mrb_int)sp_%s_%s(%s(sp_%s *)p);\n", dcn, mc("hash"), slf, dcn);
+      buf_printf(b, "return (mrb_int)sp_%s_%s(%s(sp_%s *)p);\n", dcn, mc(m->name), slf, dcn);
     else
-      buf_printf(b, "return sp_rbval_hash_key(sp_%s_%s(%s(sp_%s *)p));\n", dcn, mc("hash"), slf, dcn);
+      buf_printf(b, "return sp_rbval_hash_key(sp_%s_%s(%s(sp_%s *)p));\n", dcn, mc(m->name), slf, dcn);
   }
   buf_puts(b, "    default: break;\n  }\n  return (mrb_int)(uintptr_t)p;\n}\n");
 
@@ -3378,9 +3380,9 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
     if (m->ret == TY_BOOL)
-      buf_printf(b, "return sp_%s_%s(%s(sp_%s *)a, %s);\n", dcn, mc("eql?"), slf, dcn, argbuf);
+      buf_printf(b, "return sp_%s_%s(%s(sp_%s *)a, %s);\n", dcn, mc(m->name), slf, dcn, argbuf);
     else
-      buf_printf(b, "return sp_poly_truthy(sp_%s_%s(%s(sp_%s *)a, %s));\n", dcn, mc("eql?"), slf, dcn, argbuf);
+      buf_printf(b, "return sp_poly_truthy(sp_%s_%s(%s(sp_%s *)a, %s));\n", dcn, mc(m->name), slf, dcn, argbuf);
   }
   buf_puts(b, "    default: break;\n  }\n  return a == b_;\n}\n");
 }

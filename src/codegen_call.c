@@ -2639,8 +2639,35 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ") %s 0)", eq ? "==" : "!=");
       return 1;
     }
-    /* a poly operand compares dynamically (covers string-vs-poly etc.) */
+    /* a poly operand compares dynamically (covers string-vs-poly etc.) --
+       EXCEPT when the typed object receiver's class defines #==: that method
+       must dispatch (sp_poly_eq would compare object identity), e.g. the
+       `self == o` body of a hash key's #eql?. == falls through to the generic
+       user-method call; != (derived from == in Ruby) negates it here. */
     if (rt == TY_POLY || a0 == TY_POLY) {
+      if (ty_is_object(rt) && !comp_ty_value_obj(c, rt)) {
+        int ueq_def = -1;
+        int ueq_mi = comp_method_in_chain(c, ty_object_class(rt), "==", &ueq_def);
+        if (ueq_mi >= 0) {
+          if (eq) return 0;
+          Scope *um = &c->scopes[ueq_mi];
+          LocalVar *up = um->nparams >= 1 ? scope_local(um, um->pnames[0]) : NULL;
+          TyKind upt = (up && up->type != TY_UNKNOWN) ? up->type : TY_POLY;
+          int uretb = (um->ret == TY_BOOL);
+          buf_puts(b, "(!");
+          if (!uretb) buf_puts(b, "sp_poly_truthy(");
+          buf_printf(b, "sp_%s_%s((sp_%s *)(", c->classes[ueq_def].c_name,
+                     mc(um->name), c->classes[ueq_def].c_name);
+          emit_expr(c, recv, b);
+          buf_puts(b, "), ");
+          if (upt == TY_POLY) emit_boxed(c, argv[0], b);
+          else emit_expr(c, argv[0], b);
+          buf_puts(b, ")");
+          if (!uretb) buf_puts(b, ")");
+          buf_puts(b, ")");
+          return 1;
+        }
+      }
       buf_puts(b, eq ? "sp_poly_eq(" : "(!sp_poly_eq(");
       emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
       buf_puts(b, eq ? ")" : "))");
