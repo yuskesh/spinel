@@ -3641,6 +3641,11 @@ TyKind infer_uncached(Compiler *c, int id) {
       if (nm && (sp_streq(nm, "SEEK_SET") || sp_streq(nm, "SEEK_CUR") ||
                  sp_streq(nm, "SEEK_END"))) return TY_INT;
     }
+    if (par_nm && sp_streq(par_nm, "Process")) {
+      /* clock ids (codegen emits their integer values) */
+      if (nm && (sp_streq(nm, "CLOCK_MONOTONIC") || sp_streq(nm, "CLOCK_REALTIME")))
+        return TY_INT;
+    }
     if (par_nm && sp_streq(par_nm, "Integer")) {
       if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN"))) return TY_UNKNOWN; /* raises NameError */
     }
