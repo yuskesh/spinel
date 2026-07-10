@@ -712,7 +712,7 @@ static sp_Object *sp_Object_new(void){return(sp_Object*)sp_gc_alloc(sizeof(sp_Ob
 /* sp_IntArray lives in sp_array.h (hot core inline) + lib/sp_array.c
    (cold ops). The Integer methods that happen to build an IntArray stay
    here; they call the inline sp_IntArray_new / _push from sp_array.h. */
-static sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){sp_IntArray*a=sp_IntArray_new();if(base<2)base=10;if(n==0){sp_IntArray_push(a,0);return a;}if(n<0)n=-n;while(n>0){sp_IntArray_push(a,n%base);n/=base;}return a;}
+static sp_IntArray*sp_int_digits(mrb_int n,mrb_int base){if(base<0)sp_raise_cls("ArgumentError","negative radix");if(base<2)sp_raise_cls("ArgumentError",sp_sprintf("invalid radix %lld",(long long)base));if(n<0)sp_raise_cls("Math_DomainError","out of domain");sp_IntArray*a=sp_IntArray_new();if(n==0){sp_IntArray_push(a,0);return a;}while(n>0){sp_IntArray_push(a,n%base);n/=base;}return a;}
 /* Integer#bit_length: bits in the two's-complement representation excluding
    the sign bit (a negative n counts the bits of ~n). */
 static mrb_int sp_int_bit_length(mrb_int n){unsigned long long x=(n<0)?(unsigned long long)(~n):(unsigned long long)n;mrb_int b=0;if(x>=1ULL<<32){b+=32;x>>=32;}if(x>=1ULL<<16){b+=16;x>>=16;}if(x>=1ULL<<8){b+=8;x>>=8;}if(x>=1ULL<<4){b+=4;x>>=4;}if(x>=1ULL<<2){b+=2;x>>=2;}if(x>=1ULL<<1){b+=1;x>>=1;}return b+(mrb_int)x;}
