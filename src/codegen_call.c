@@ -8399,10 +8399,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        to the object-receiver path, which would misread a boxed int's payload
        as a user-class pointer and recurse into this same `<=>`. */
     if (lrt == TY_POLY || lat == TY_POLY) {
-      int ta = ++g_tmp, tb = ++g_tmp, tk = ++g_tmp;
+      int ta = ++g_tmp, tb = ++g_tmp, tk = ++g_tmp, tr2 = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
       buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; mrb_bool _t%d; sp_poly_cmp(_t%d, _t%d, &_t%d); })", tk, ta, tb, tk);
+      /* incomparable runtime operands answer nil (the int-nil sentinel),
+         matching CRuby -- discarding the flag returned a bogus 0 */
+      buf_printf(b, "; mrb_bool _t%d; mrb_int _t%d = sp_poly_cmp(_t%d, _t%d, &_t%d);"
+                    " _t%d ? _t%d : SP_INT_NIL; })", tk, tr2, ta, tb, tk, tk, tr2);
+      return;
+    }
+    /* Statically incomparable concrete operands (1 <=> "a"): Ruby answers
+       nil. User objects fall through to their own #<=> dispatch. */
+    if (lrt != TY_UNKNOWN && lat != TY_UNKNOWN &&
+        !ty_is_object(lrt) && !ty_is_object(lat)) {
+      buf_puts(b, "((void)(");
+      emit_expr(c, recv, b);
+      buf_puts(b, "), (void)(");
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "), SP_INT_NIL)");
       return;
     }
   }
