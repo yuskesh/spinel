@@ -1217,18 +1217,33 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       }
       if (rat_ok && argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") ||
                         sp_streq(name, "<=") || sp_streq(name, ">="))) {
+        /* against a Float, compare by float value: coercing the Float to a
+           Rational truncates it (1.5 -> 1/1) and compares wrong. */
+        if (rat == TY_FLOAT) {
+          buf_puts(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_printf(b, ") %s ", name); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+          return 1;
+        }
         buf_puts(b, "(sp_rational_cmp("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_printf(b, ") %s 0)", name);
         return 1;
       }
       if (rat_ok && argc == 1 && sp_streq(name, "<=>")) {
+        if (rat == TY_FLOAT) {
+          int tl = ++g_tmp, tr = ++g_tmp;
+          buf_printf(b, "({ mrb_float _t%d = sp_rational_to_f(", tl); emit_expr(c, recv, b);
+          buf_printf(b, "); mrb_float _t%d = ", tr); emit_float_expr(c, argv[0], b);
+          buf_printf(b, "; _t%d < _t%d ? -1 : (_t%d > _t%d ? 1 : 0); })", tl, tr, tl, tr);
+          return 1;
+        }
         buf_puts(b, "sp_rational_cmp("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
-      if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
-        if (rat == TY_RATIONAL || rat == TY_INT) {
-          buf_printf(b, "(%ssp_rational_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, "))");
+      if (rat_ok && argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
+        if (rat == TY_FLOAT) {
+          buf_printf(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_printf(b, ") %s ", name); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
           return 1;
         }
+        buf_printf(b, "(%ssp_rational_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, "))");
+        return 1;
       }
     }
     /* Integer <op> Rational: lift the Integer to n/1 (covers `2/3r`, `1 + r`). */

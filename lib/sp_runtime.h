@@ -2111,7 +2111,7 @@ static inline int sp_poly_is_hash_kind(int cls_id) {
    (a JSON.parse StrPolyHash equals the same pairs written as a literal
    StrIntHash). */
 static mrb_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b);
-static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; { mrb_int __n = sp_poly_length(a); if (__n != sp_poly_length(b)) return FALSE; for (mrb_int __i = 0; __i < __n; __i++) if (!sp_poly_eq(sp_poly_arr_get(a, __i), sp_poly_arr_get(b, __i))) return FALSE; return TRUE; } } if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id) && a.cls_id != b.cls_id) return sp_poly_hash_eq_cross(a, b); if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); /* boxed hashes of the same variant compare by value like every other
+static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT) { sp_Bigint *ba = sp_poly_as_bigint(a), *bb = sp_poly_as_bigint(b); if (ba && bb) return sp_bigint_cmp(ba, bb) == 0; if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); return FALSE; } if (sp_poly_numeric_p(a) && sp_poly_numeric_p(b)) return sp_poly_to_f(a) == sp_poly_to_f(b); if (a.tag != b.tag) return FALSE; switch (a.tag) { case SP_TAG_INT: return a.v.i == b.v.i; case SP_TAG_STR: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_FLT: return a.v.f == b.v.f; case SP_TAG_BOOL: return a.v.b == b.v.b; case SP_TAG_NIL: return TRUE; case SP_TAG_SYM: return a.v.i == b.v.i; case SP_TAG_ENCODING: return (a.v.s == NULL || b.v.s == NULL) ? (a.v.s == b.v.s) : (strcmp(a.v.s, b.v.s) == 0); case SP_TAG_OBJ: /* Arrays compare by VALUE across storage kinds: [1,2] boxed as an IntArray equals the same numbers rebuilt as a PolyArray (a splat-rest, a mapped run). Ruby has one Array; the kinds are a storage optimization and must not leak into ==. */ if (sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) { if (a.cls_id == b.cls_id && a.v.p == b.v.p) return TRUE; { mrb_int __n = sp_poly_length(a); if (__n != sp_poly_length(b)) return FALSE; for (mrb_int __i = 0; __i < __n; __i++) if (!sp_poly_eq(sp_poly_arr_get(a, __i), sp_poly_arr_get(b, __i))) return FALSE; return TRUE; } } if (sp_poly_is_hash_kind(a.cls_id) && sp_poly_is_hash_kind(b.cls_id) && a.cls_id != b.cls_id) return sp_poly_hash_eq_cross(a, b); if (a.cls_id != b.cls_id) return FALSE; if (a.v.p == b.v.p) return TRUE; switch (a.cls_id) { case SP_BUILTIN_INT_ARRAY: return sp_IntArray_eq((sp_IntArray*)a.v.p,(sp_IntArray*)b.v.p); case SP_BUILTIN_STR_ARRAY: return sp_StrArray_eq((sp_StrArray*)a.v.p,(sp_StrArray*)b.v.p); case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_eq((sp_FloatArray*)a.v.p,(sp_FloatArray*)b.v.p); case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_eq((sp_PolyArray*)a.v.p,(sp_PolyArray*)b.v.p); case SP_BUILTIN_RATIONAL: { sp_Rational *ra = (sp_Rational*)a.v.p, *rb = (sp_Rational*)b.v.p; return (ra && rb) ? sp_rational_eq(*ra, *rb) : (ra == rb); } /* boxed hashes of the same variant compare by value like every other
      container -- the arm was simply missing, so [h] == [h-literal] was
      pointer identity and always false. */ case SP_BUILTIN_STR_INT_HASH: return sp_StrIntHash_eq((sp_StrIntHash*)a.v.p,(sp_StrIntHash*)b.v.p); case SP_BUILTIN_STR_STR_HASH: return sp_StrStrHash_eq((sp_StrStrHash*)a.v.p,(sp_StrStrHash*)b.v.p); case SP_BUILTIN_INT_STR_HASH: return sp_IntStrHash_eq((sp_IntStrHash*)a.v.p,(sp_IntStrHash*)b.v.p); case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_eq((sp_StrPolyHash*)a.v.p,(sp_StrPolyHash*)b.v.p); case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_eq((sp_SymPolyHash*)a.v.p,(sp_SymPolyHash*)b.v.p); case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_eq((sp_PolyPolyHash*)a.v.p,(sp_PolyPolyHash*)b.v.p); default: return FALSE; } case SP_TAG_CLASS: { const char *an = sp_class_val_name(a), *bn = sp_class_val_name(b); return (an && bn) ? strcmp(an, bn) == 0 : an == bn; } default: return FALSE; } }
 /* sp_sym_name_fn is now an extern hook (sp_gc.h / sp_gc.c) so cold lib readers
@@ -3809,6 +3809,13 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
         return (mrb_int)(((uintptr_t)m->self * 31) + m->fn) +
                (m->name ? (mrb_int)sp_str_hash(m->name) : 0);
       }
+      if (v.cls_id == SP_BUILTIN_RATIONAL) {
+        /* value-based so equal Rationals (reduced to lowest terms) hash alike
+           and can serve as Hash keys; a fresh box otherwise hashes by pointer. */
+        sp_Rational *r = (sp_Rational *)v.v.p;
+        /* unsigned arithmetic: signed mrb_int multiply/add could overflow (UB) */
+        return r ? (mrb_int)(((uintptr_t)r->num * 31) + (uintptr_t)r->den) : 0;
+      }
       if (sp_obj_hash_hook) return sp_obj_hash_hook(v.cls_id, v.v.p);
       return (mrb_int)((uintptr_t)v.v.p);
   }
@@ -3847,6 +3854,12 @@ static mrb_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
         if (ma->self != mb->self || ma->fn != mb->fn) return FALSE;
         if (ma->name == mb->name) return TRUE;
         return ma->name && mb->name && strcmp(ma->name, mb->name) == 0;
+      }
+      if (a.cls_id == SP_BUILTIN_RATIONAL) {
+        /* value-based so equal Rationals serve as one Hash key (paired with the
+           value-based hash above). */
+        sp_Rational *ra = (sp_Rational *)a.v.p, *rb = (sp_Rational *)b.v.p;
+        return (ra && rb) ? (ra->num == rb->num && ra->den == rb->den) : (ra == rb);
       }
       if (sp_obj_eql_hook) return sp_obj_eql_hook(a.cls_id, a.v.p, b.v.p);
       return FALSE;
