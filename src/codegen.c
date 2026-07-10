@@ -2827,6 +2827,64 @@ static void emit_obj_to_hash_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: return sp_box_nil();\n  }\n}\n");
 }
 
+/* Default Object#inspect: one switch over every user class, walking its
+   typed ivars boxed through the marshal box helper into sp_poly_inspect --
+   so nested containers, strings (quoted), nil and nested objects (via the
+   sp_obj_inspect_fn hook recursion) all render like CRuby's
+   #<Name:0xADDR @a=1, @b="x">. Mirrors sp_marshal_obj_dump's shape. */
+static int class_inspectable(Compiler *c, int i) {
+  ClassInfo *ci = &c->classes[i];
+  if (is_builtin_reopen(ci->name)) return 0;
+  if (ci->is_native_class) return 0;   /* the package owns the struct */
+  if (class_is_exc_subclass(c, i)) return 0;  /* #<Cls: msg> path exists */
+  if (comp_ty_value_obj(c, ty_object(i))) return 0;  /* no stable address */
+  return 1;
+}
+static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) {\n");
+  buf_puts(b, "  switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (!class_inspectable(c, i)) continue;
+    ClassInfo *ci = &c->classes[i];
+    buf_printf(b, "    case %d: {\n", i);
+    buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
+    buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", (unsigned long long)(uintptr_t)p));\n",
+               class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
+    for (int j = 0; j < ci->nivars; j++) {
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", ci->ivars[j] + 1);
+      buf_printf(b, "      sp_String_append(_s, \"%s%s=\"); sp_String_append(_s, ",
+                 j ? ", " : " ", ci->ivars[j]);
+      TyKind ivt = ci->ivar_types[j];
+      /* containers have their own typed inspect; scalars box through the
+         marshal helper into sp_poly_inspect; an UNKNOWN (never usefully
+         typed) ivar occupies an int slot in the layout and renders as its
+         nil default. */
+      if (ty_is_array(ivt) && ivt != TY_POLY_ARRAY && array_kind(ivt))
+        buf_printf(b, "(%s ? sp_%sArray_inspect(%s) : \"nil\")", expr, array_kind(ivt), expr);
+      else if (ivt == TY_POLY_ARRAY)
+        buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
+      else if (ty_is_hash(ivt) && ty_hash_cname(ivt))
+        buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(ivt), expr);
+      else if (marshal_ivar_type_ok(ivt) && ivt != TY_UNKNOWN) {
+        buf_puts(b, "sp_poly_inspect(");
+        emit_marshal_box_ivar(ivt, expr, b);
+        buf_puts(b, ")");
+      }
+      else if (ivt == TY_UNKNOWN) {
+        buf_puts(b, "sp_poly_inspect(");
+        emit_marshal_box_ivar(TY_INT, expr, b);
+        buf_puts(b, ")");
+      }
+      else
+        buf_puts(b, "\"#<?>\"");
+      buf_puts(b, ");\n");
+    }
+    buf_puts(b, "      sp_String_append(_s, \">\");\n");
+    buf_puts(b, "      return _s->data;\n    }\n");
+  }
+  buf_puts(b, "    default: return \"#<Object>\";\n  }\n}\n");
+}
+
 static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
   buf_puts(b, "  switch (cls_id) {\n");
@@ -3351,6 +3409,7 @@ void emit_regex_section(Buf *b) {
   /* Install the Marshal vtable: the construction wrappers (sp_runtime.h) plus
      the generated symbol interner and per-class object dump/load. */
   buf_puts(b, "  sp_json_sym_intern_fn = sp_sym_intern;\n");
+  buf_puts(b, "  sp_obj_inspect_fn = sp_obj_inspect_sw;\n");
   if (g_uses_marshal) {
     buf_puts(b,
       "  sp_marshal_v.sym_intern = sp_sym_intern;\n"
@@ -4576,6 +4635,9 @@ char *codegen_program(const NodeTable *nt) {
     }
   }
 
+  /* default-inspect dispatch prototype: bodies call it, the switch itself is
+     emitted with the marshal dispatch near the end of the TU */
+  buf_puts(&b, "static const char *sp_obj_inspect_sw(int cls_id, void *p) __attribute__((cold, noinline));\n");
   /* method prototypes (scope 0 is top-level) */
   for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
 
@@ -4774,6 +4836,7 @@ char *codegen_program(const NodeTable *nt) {
       EMIT_COLLECT_UNIT(emit_class_new(c, &c->classes[i], body));
   /* user-object Marshal dispatchers (after every class struct + pool define) */
   emit_marshal_dispatch(c, body);
+  emit_obj_inspect_dispatch(c, body);
   emit_obj_to_hash_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || !c->scopes[s].reachable || scope_is_shadowed(c, s) || c->scopes[s].is_transplanted_source) continue; EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));

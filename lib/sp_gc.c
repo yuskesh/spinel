@@ -36,6 +36,7 @@ sp_sym (*sp_json_sym_intern_fn)(const char *) = NULL;
 void (*sp_json_hash_set_fn)(sp_RbVal, const char *, sp_RbVal) = NULL;
 const char *(*sp_poly_inspect_fn)(sp_RbVal) = NULL;
 sp_RbVal (*sp_obj_to_hash_fn)(sp_RbVal) = NULL;
+const char *(*sp_obj_inspect_fn)(int cls_id, void *p) = NULL;
 sp_marshal_vt sp_marshal_v = {0};   /* filled by the generated TU (sp_re_init) */
 
 /* ---- Collector-private globals ---- */

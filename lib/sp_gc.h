@@ -188,6 +188,10 @@ extern const char *(*sp_poly_inspect_fn)(sp_RbVal);
    cls_id) when it has Structs and a package consumes it; a consumer such as
    the json package reads it to serialize an object as a hash. NULL otherwise. */
 extern sp_RbVal (*sp_obj_to_hash_fn)(sp_RbVal);
+/* default Object#inspect for user objects: the generated TU installs a
+   per-class ivar walk (sp_obj_inspect_sw); sp_poly_inspect's OBJ default
+   consults it so nested/boxed objects render like CRuby */
+extern const char *(*sp_obj_inspect_fn)(int cls_id, void *p);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */

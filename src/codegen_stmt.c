@@ -119,6 +119,13 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     }
     buf_puts(b, ")); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
   }
+  else if (ty_is_object(t)) {
+    /* default Object#to_s: #<Name:0xADDR>, like CRuby (no ivars) */
+    int cid = ty_object_class(t);
+    const char *rn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
+    buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);
+    buf_printf(b, "); fputs(_po ? sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)_po) : \"\", stdout); putchar('\\n'); }\n", rn);
+  }
   else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ArrayNode") &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
     buf_puts(b, "(void)0;  /* puts [] prints nothing */\n");
@@ -329,6 +336,21 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     int ev = ++g_tmp;
     buf_printf(b, "{ sp_Exception *_t%d = (sp_Exception *)(", ev); emit_expr(c, arg, b);
     buf_printf(b, "); fputs(_t%d ? sp_sprintf(\"#<%%s: %%s>\", sp_exc_class_name(_t%d), sp_exc_message(_t%d)) : \"nil\", stdout); putchar('\\n'); }\n", ev, ev, ev);
+  }
+  else if (ty_is_object(t)) {
+    /* p obj: a user #inspect wins; otherwise the generated per-class ivar
+       walk renders CRuby's default #<Name:0xADDR @a=..., ...> */
+    int cid = ty_object_class(t);
+    const char *icn = obj_str_cname(c, cid, 1);
+    if (icn) {
+      buf_printf(b, "{ const char *_pi = sp_%s_inspect((sp_%s *)(", icn, icn);
+      emit_expr(c, arg, b);
+      buf_puts(b, ")); fputs(_pi ? _pi : \"nil\", stdout); putchar('\\n'); }\n");
+    }
+    else {
+      buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);
+      buf_printf(b, "); fputs(_po ? sp_obj_inspect_sw(%d, _po) : \"nil\", stdout); putchar('\\n'); }\n", cid);
+    }
   }
   else {
     if (!diagnose_eval_call(c, arg))

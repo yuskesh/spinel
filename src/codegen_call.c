@@ -5114,6 +5114,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       TyKind at = ac > 0 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
       if (at == TY_EXCEPTION)
         { buf_puts(b, "sp_raise_exc((sp_Exception *)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
+      else if (ty_is_object(at) && class_is_exc_subclass(c, ty_object_class(at)))
+        /* an exception-subclass INSTANCE in a variable raises as itself */
+        { buf_puts(b, "sp_raise_exc((sp_Exception *)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
+      else if (ty_is_object(at)) {
+        /* CRuby: raising a non-exception object is TypeError, not a
+           pointer smuggled into the message slot (which emitted a C
+           warning and raised garbage). Evaluate the operand for effect. */
+        buf_puts(b, "((void)("); emit_expr(c, av[0], b);
+        buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
+      }
       else
         { buf_puts(b, "sp_raise("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
     }
@@ -9175,6 +9185,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      The test array_unresolved_inspect_no_segv expects "[]" when an
      unsupported method chains into inspect. Emit a safe nil-degrade
      rather than aborting the compiler. */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "inspect") && ty_is_object(rt) &&
+      !comp_ty_value_obj(c, rt)) {
+    /* default Object#inspect: the generated per-class ivar walk */
+    buf_printf(b, "sp_obj_inspect_sw(%d, (void *)(", ty_object_class(rt));
+    emit_expr(c, recv, b); buf_puts(b, "))");
+    return;
+  }
+  if (recv >= 0 && argc == 0 && sp_streq(name, "to_s") && ty_is_object(rt) &&
+      !comp_ty_value_obj(c, rt)) {
+    /* default Object#to_s: #<Name:0xADDR> */
+    int dcid = ty_object_class(rt);
+    const char *drn = class_ruby_name(c, dcid) ? class_ruby_name(c, dcid) : c->classes[dcid].name;
+    buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", drn);
+    emit_expr(c, recv, b); buf_puts(b, "))");
+    return;
+  }
   if (recv >= 0 && argc == 0 && sp_streq(name, "inspect")) {
     buf_puts(b, "\"[]\""); return;
   }

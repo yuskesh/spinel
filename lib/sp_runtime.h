@@ -1877,6 +1877,7 @@ static mrb_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.
    decl always needs a definition somewhere because -Werror
    trips on "used but never defined" otherwise. */
 static const char *sp_class_to_s(sp_Class c);
+static const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
 static inline const char *sp_poly_to_s(sp_RbVal v) {
   switch (v.tag) {
     /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
@@ -1901,7 +1902,11 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
-        default: return sp_str_empty;
+        default:
+          if (v.cls_id >= 0 && v.v.p)
+            return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
+                              (unsigned long long)(uintptr_t)v.v.p);
+          return sp_str_empty;
       }
     default: return sp_str_empty;
   }
@@ -3283,7 +3288,12 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_inspect((sp_StrPolyHash *)v.v.p);
         case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_inspect((sp_SymPolyHash *)v.v.p);
         case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_inspect((sp_PolyPolyHash *)v.v.p);
-        default:                   return SPL("#<Object>");
+        default:
+          /* a user object: the generated per-class ivar walk renders
+             #<Name:0x... @a=..., ...> like CRuby's default inspect */
+          if (v.cls_id >= 0 && sp_obj_inspect_fn && v.v.p)
+            return sp_obj_inspect_fn(v.cls_id, v.v.p);
+          return SPL("#<Object>");
       }
     default:          return sp_str_empty;
   }
