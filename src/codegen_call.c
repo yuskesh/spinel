@@ -2184,8 +2184,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       if (cn && sp_streq(cn, "String")) {
-        /* String.new / String.new(s): always create a mutable heap copy */
-        if (argc == 1) { buf_puts(b, "sp_str_dup_external("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        /* String.new(str = "", capacity:, encoding:): always a mutable heap copy.
+           The capacity/encoding keyword arguments are hints that do not change
+           the value, so the content is the leading positional argument (when it
+           is not itself the keyword hash). */
+        const char *a0ty = argc >= 1 ? nt_type(nt, argv[0]) : NULL;
+        int has_content = argc >= 1 && !(a0ty && sp_streq(a0ty, "KeywordHashNode"));
+        if (has_content) { buf_puts(b, "sp_str_dup_external("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         else buf_puts(b, "sp_str_dup_external((&(\"\\xff\")[1]))");
         return 1;
       }
