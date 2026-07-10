@@ -12,6 +12,7 @@
 
 
 #include <string.h>
+#include <math.h>      /* isinf: early-exit once a limb fold overflows to Infinity */
 #include "sp_bigint.h"
 
 /* Defined in sp_runtime.h (linked into the final program); forward-declared
@@ -5428,6 +5429,22 @@ int64_t sp_bigint_to_int(sp_Bigint *b) {
     v |= ((int64_t)z->p[i]) << (i * DIG_SIZE);
   }
   return z->sn < 0 ? -v : v;
+}
+
+/* Convert a bigint to the nearest double. Unlike sp_bigint_to_int, which keeps
+   only the low limbs and so truncates any value beyond int64, this folds every
+   limb in (most-significant first, Horner-style) so the full magnitude reaches
+   the double -- matching MRI's Integer#to_f / Rational#to_f. Values too large
+   for a double round to HUGE_VAL (Infinity), as in MRI. */
+double sp_bigint_to_double(sp_Bigint *b) {
+  if (b == NULL) return 0.0;
+  mpz_t *z = &b->mpz;
+  double d = 0.0;
+  for (size_t i = z->sz; i > 0; i--) {
+    d = d * (double)DIG_BASE + (double)z->p[i - 1];
+    if (isinf(d)) break;  /* Infinity is absorbing; the remaining limbs can't change it */
+  }
+  return z->sn < 0 ? -d : d;
 }
 
 /* Bitwise AND/OR/XOR on bigints. For two non-negative operands -- the
