@@ -217,6 +217,23 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
 }
 void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   TyKind t = comp_ntype(c, arg);
+  /* an element-less hash construct ({} / Hash.new / Hash.new(default)) that no
+     key usage narrowed stays TY_UNKNOWN; box it (emit_boxed carries the
+     default) and inspect through the poly path. */
+  if (t == TY_UNKNOWN && nt_type(c->nt, arg) &&
+      (sp_streq(nt_type(c->nt, arg), "HashNode") ||
+       (sp_streq(nt_type(c->nt, arg), "CallNode") &&
+        nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "new")))) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    emit_boxed(c, arg, &hb);
+    if (hb.p && strstr(hb.p, "sp_PolyPolyHash_new")) {
+      emit_indent(b, indent);
+      buf_printf(b, "fputs(sp_poly_inspect(%s), stdout); putchar('\\n');\n", hb.p);
+      free(hb.p);
+      return;
+    }
+    free(hb.p);
+  }
   /* `p x.class` prints the class name bare (it is a Class, not a String). */
   if (t == TY_STRING && nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "CallNode") &&
       nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "class") &&

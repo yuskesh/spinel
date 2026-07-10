@@ -304,6 +304,28 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); return; }
   }
+  /* Hash.new / Hash.new(default) whose variant no key usage ever narrowed:
+     box an empty PolyPolyHash carrying the default (it used to fall to the
+     constant path and raise "uninitialized constant Hash"). */
+  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode") &&
+      nt_str(c->nt, node, "name") && sp_streq(nt_str(c->nt, node, "name"), "new") &&
+      nt_ref(c->nt, node, "block") < 0) {
+    int hrecv = nt_ref(c->nt, node, "receiver");
+    const char *hty = hrecv >= 0 ? nt_type(c->nt, hrecv) : NULL;
+    const char *hcn = hrecv >= 0 ? nt_str(c->nt, hrecv, "name") : NULL;
+    int han = 0; int haN = nt_ref(c->nt, node, "arguments");
+    const int *hav = haN >= 0 ? nt_arr(c->nt, haN, "arguments", &han) : NULL;
+    if (hty && (sp_streq(hty, "ConstantReadNode") || sp_streq(hty, "ConstantPathNode")) &&
+        hcn && sp_streq(hcn, "Hash") && han <= 1) {
+      if (han == 1 && hav) {
+        buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new_with_default(");
+        emit_boxed(c, hav[0], b);
+        buf_puts(b, "), SP_BUILTIN_POLY_POLY_HASH)");
+      }
+      else buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
+      return;
+    }
+  }
   const char *fn = NULL;
   switch (t) {
     /* A nullable-int sentinel (SP_INT_NIL) only flows into a poly box under
