@@ -3127,6 +3127,27 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
   if (g_ret_type == TY_POLY || (g_result_var && g_result_poly)) { emit_expr(c, node, b); return; }
+  /* An int value returned through a TY_BIGINT slot must be wrapped: the raw
+     integer is otherwise reinterpreted as an sp_Bigint* -- a literal `return 0`
+     became a NULL pointer that segfaulted the caller's first sp_bigint_cmp
+     (tep's proxy retry loop, whose backoff accumulator promoted the method's
+     return to bigint while an early guard returned plain 0). Mirrors the
+     assignment-side int->bigint coercion. */
+  if (g_ret_type == TY_BIGINT) {
+    TyKind bvt = comp_ntype(c, node);
+    if (bvt == TY_INT || bvt == TY_BOOL) {
+      buf_puts(b, "sp_bigint_new_int(");
+      emit_expr(c, node, b);
+      buf_puts(b, ")");
+      return;
+    }
+    if (bvt == TY_POLY) {
+      buf_puts(b, "sp_poly_as_bigint(");
+      emit_expr(c, node, b);
+      buf_puts(b, ")");
+      return;
+    }
+  }
   /* A poly-array value returned through a slot pinned (e.g. by RBS) to a concrete
      typed array cannot flow through as-is: sp_PolyArray holds boxed elements while
      sp_StrArray/sp_IntArray/... hold raw unboxed storage, so passing the pointer
