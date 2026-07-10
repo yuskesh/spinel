@@ -1,0 +1,10 @@
+ArgumentError: attempt to drop negative size
+ArgumentError: attempt to take negative size
+IndexError: index -5 too small for array; minimum: -3
+IndexError: index -4 too small for array; minimum: -3
+[2, 3]
+[1, 2]
+[1, 2]
+[9, 1, 2]
+[1, 9, 2]
+["a", "b", "z"]

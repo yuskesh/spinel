@@ -2373,7 +2373,7 @@ static sp_PolyArray *sp_math_lgamma(double x) {
 }
 static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (!a || a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array(); return sp_box_nil(); } sp_RbVal v = a->data[0]; memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
 static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, mrb_int i) { if (!a) return sp_box_nil(); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (mrb_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
-static void sp_PolyArray_insert(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } if (i < 0) i += a->len + 1; if (i < 0) i = 0; if (i > a->len) i = a->len; sp_PolyArray_push(a, sp_box_nil()); for (mrb_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
+static void sp_PolyArray_insert(sp_PolyArray *a, mrb_int i, sp_RbVal v) { if (!a) return; if (a->frozen) { sp_raise_frozen_array(); return; } mrb_int orig = i; if (i < 0) i += a->len + 1; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld", (long long)orig, (long long)(-(a->len + 1)))); if (i > a->len) i = a->len; sp_PolyArray_push(a, sp_box_nil()); for (mrb_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
 /* Array#delete(v): removes every element sp_poly_eq to v, returns v (or
    nil if not found). Was missing for TY_POLY_ARRAY -- only TY_INT_ARRAY/
    TY_STR_ARRAY had it -- which blocked the array-backed Set package's
