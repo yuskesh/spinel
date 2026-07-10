@@ -1481,6 +1481,11 @@ else {
      its own emitter; this types the value form. */
   if (recv < 0 && sp_streq(name, "p") && nt_ref(nt, id, "block") < 0 && argc == 1)
     return infer_type(c, argv[0]);
+  /* Object#instance_variables: a static symbol list for a typed object */
+  if (recv >= 0 && ty_is_object(rt) && argc == 0 &&
+      sp_streq(name, "instance_variables"))
+    return TY_POLY_ARRAY;
+
   /* Kernel#puts / #print return nil; typed so the value form composes. */
   if (recv < 0 && (sp_streq(name, "puts") || sp_streq(name, "print")) &&
       nt_ref(nt, id, "block") < 0)

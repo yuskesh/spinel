@@ -3714,6 +3714,21 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
        runtime, also matching CRuby. A dynamic name -- or instance_variable_set
        to a valid name absent from the fixed object layout (no field to write) --
        cannot be represented and is diagnosed. */
+    /* instance_variables: the class's ivar layout is static, so the list is
+       a compile-time symbol array (the receiver evaluates for effect). */
+    if (sp_streq(name, "instance_variables") && argc == 0 && ty_is_object(rt)) {
+      int ivcid = ty_object_class(rt);
+      if (ivcid >= 0 && ivcid < c->nclasses) {
+        ClassInfo *ivc = &c->classes[ivcid];
+        int tia = ++g_tmp;
+        buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+        buf_printf(b, "); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
+        for (int ji = 0; ji < ivc->nivars; ji++)
+          buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", tia, ivc->ivars[ji]);
+        buf_printf(b, "_t%d; })", tia);
+        return 1;
+      }
+    }
     if ((sp_streq(name, "instance_variable_get") || sp_streq(name, "instance_variable_set")) &&
         argc >= 1 && nt_type(nt, argv[0]) &&
         (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
