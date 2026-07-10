@@ -2507,6 +2507,15 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       else { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), ("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
       return 1;
     }
+    /* A scalar-comparable receiver against a poly argument (e.g. a boolean or
+       integer param `=== y` where y unified to poly across call sites): case
+       equality is value equality, so box the receiver and compare by the poly
+       runtime rule (int/float cross-compare numerically, other tags by tag). */
+    if (fr && fr != 5 && a0 == TY_POLY) {
+      buf_puts(b, "sp_poly_eq("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+      emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
   }
 
   if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!=") ||
