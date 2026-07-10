@@ -6707,6 +6707,64 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       }
     }
   }
+  /* arg-taking in-place bangs (gsub!/sub!/tr!/delete!/slice!): transform and
+     reassign, reusing the non-bang expression emitters by temporarily
+     renaming the node. Statement position only, like the other bangs (the
+     nil-when-unchanged return is not modeled). slice! removes the matched
+     span: the string form deletes the first occurrence, the (i, len) form
+     splices the span out. */
+  if (rt == TY_STRING && argc >= 1) {
+    const char *rty2 = nt_type(nt, recv);
+    int assignable2 = rty2 && (sp_streq(rty2, "LocalVariableReadNode") ||
+                               sp_streq(rty2, "InstanceVariableReadNode") || sp_streq(rty2, "SelfNode"));
+    const char *abase = NULL, *abang = NULL;
+    if      (sp_streq(name, "gsub!"))   { abase = "gsub";   abang = "gsub!"; }
+    else if (sp_streq(name, "sub!"))    { abase = "sub";    abang = "sub!"; }
+    else if (sp_streq(name, "tr!"))     { abase = "tr";     abang = "tr!"; }
+    else if (sp_streq(name, "delete!")) { abase = "delete"; abang = "delete!"; }
+    if (abase && assignable2) {
+      nt_node_set_str((NodeTable *)nt, id, "name", abase);
+      emit_indent(b, indent);
+      emit_expr(c, recv, b); buf_puts(b, " = ");
+      emit_expr(c, id, b);
+      buf_puts(b, ";\n");
+      nt_node_set_str((NodeTable *)nt, id, "name", abang);
+      return 1;
+    }
+    if (sp_streq(name, "slice!") && assignable2) {
+      if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+        /* remove the first occurrence */
+        emit_indent(b, indent);
+        emit_expr(c, recv, b); buf_puts(b, " = sp_str_sub(");
+        emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ", (&(\"\\xff\")[1]));\n");
+        return 1;
+      }
+      if (argc == 2) {
+        /* splice out [i, i+len): head + tail, bounds clamped to the string
+           (a negative i counts from the end; an out-of-range i is a no-op) */
+        int ti2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
+        emit_indent(b, indent);
+        buf_printf(b, "{ mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
+        buf_printf(b, "; mrb_int _t%d = (mrb_int)strlen(", tn2);
+        emit_expr(c, recv, b);
+        buf_printf(b, "); if (_t%d < 0) _t%d += _t%d;"
+                      " if (_t%d >= 0 && _t%d <= _t%d && _t%d > 0) {"
+                      " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d; ",
+                   ti2, ti2, tn2,
+                   ti2, ti2, tn2, tl2,
+                   tl2, tn2, ti2, tl2, tn2, ti2);
+        emit_expr(c, recv, b);
+        buf_puts(b, " = sp_str_concat(sp_str_substr(");
+        emit_expr(c, recv, b);
+        buf_printf(b, ", 0, _t%d), sp_str_substr(", ti2);
+        emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d + _t%d, _t%d - _t%d - _t%d)); } }\n", ti2, tl2, tn2, ti2, tl2);
+        return 1;
+      }
+    }
+  }
   /* replace / prepend / clear / delete_prefix!/suffix! via reassignment */
   if (rt == TY_STRING) {
     const char *rty = nt_type(nt, recv);
