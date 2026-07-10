@@ -273,12 +273,43 @@ sp_Rational sp_float_rationalize(mrb_float f, mrb_float eps) {
 }
 /* No-arg rationalize: simplest rational that round-trips to this exact double,
    i.e. lying in the half-ulp interval around f. */
+/* No-arg rationalize: the simplest rational whose nearest double is exactly f.
+   The continued-fraction convergents of f are, by construction, the simplest
+   rationals approximating it in increasing complexity, so the FIRST convergent
+   that round-trips to f is the answer. This is robust where a double-precision
+   half-ulp interval search is not: computing the interval bounds in `double`
+   rounds them back to f for an exactly-representable value (collapsing the
+   interval) and amplifies rounding at the ulp scale for others. */
 sp_Rational sp_float_rationalize0(mrb_float f) {
   if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", isnan(f) ? "NaN" : "Infinity");
   if (f == 0.0) { sp_Rational z; z.num = 0; z.den = 1; return z; }
-  double lo = ((double)f + nextafter((double)f, -INFINITY)) / 2.0;
-  double hi = ((double)f + nextafter((double)f,  INFINITY)) / 2.0;
-  return sp_rationalize_interval(lo, hi);
+  int neg = f < 0.0;
+  double x = neg ? -(double)f : (double)f;
+  double v = x;
+  sp_rat_wide h0 = 1, h1 = 0, k0 = 0, k1 = 1;  /* convergent num/den recurrences */
+  sp_rat_wide num = 0, den = 1;
+  int found = 0;
+  for (int i = 0; i < 64 && !found; i++) {
+    /* floor(v) out of sp_rat_wide range would make the cast below UB; any such
+       convergent exceeds INTPTR_MAX anyway, so bail to the exact-ratio fallback. */
+    if (v > (double)INTPTR_MAX) break;
+    sp_rat_wide a = (sp_rat_wide)floor(v);
+    /* guard the convergent against mrb_int overflow before forming it (all in
+       integer arithmetic: a*h0 + h1 <= INTPTR_MAX). */
+    if (a > 0 && (h0 > ((sp_rat_wide)INTPTR_MAX - h1) / a ||
+                  k0 > ((sp_rat_wide)INTPTR_MAX - k1) / a))
+      break;
+    sp_rat_wide h = a * h0 + h1;
+    sp_rat_wide k = a * k0 + k1;
+    num = h; den = k;
+    if (k != 0 && (double)h / (double)k == x) { found = 1; break; }
+    h1 = h0; h0 = h; k1 = k0; k0 = k;
+    double frac = v - a;
+    if (frac == 0.0) break;
+    v = 1.0 / frac;
+  }
+  if (!found) return sp_float_to_rational(f);  /* fallback: exact bit ratio */
+  return sp_rational_new_wide(neg ? -num : num, den);
 }
 static sp_rat_wide sp_rat_ipow(sp_rat_wide base, mrb_int e) {
   sp_rat_wide r = 1;
