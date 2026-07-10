@@ -3245,7 +3245,13 @@ else {
          so the result stays Float and the value is still computed exactly (x
          rounded to n places); only #class differs from CRuby when n turns out
          <= 0 -- the documented residual divergence (docs/float-rounding.md). */
-      if (argc == 1) {
+      /* a trailing `half:` keyword only picks the tie-break mode; peel it
+         off the positional count for the class choice */
+      int fr_argc = argc;
+      if (fr_argc >= 1 && nt_type(nt, argv[fr_argc - 1]) &&
+          sp_streq(nt_type(nt, argv[fr_argc - 1]), "KeywordHashNode"))
+        fr_argc--;
+      if (fr_argc == 1) {
         const char *aty = nt_type(nt, argv[0]);
         if (!aty || !sp_streq(aty, "IntegerNode")) return TY_FLOAT;  /* non-literal */
         return nt_int(nt, argv[0], "value", 0) > 0 ? TY_FLOAT : TY_INT;

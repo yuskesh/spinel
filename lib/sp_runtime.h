@@ -2027,6 +2027,12 @@ SP_COLD static const char *sp_nomethod_msg(const char *m, sp_RbVal v) {
                 : sp_sprintf("an instance of %s", sp_poly_class_name(v));
   return sp_sprintf("undefined method '%s' for %s", m, d);
 }
+/* Float#round(half:) tie-breaking: :even is banker's rounding (rint under
+   the default FE_TONEAREST), :down rounds ties toward zero. (:up is the
+   plain round().) */
+static double sp_round_half_even(double x) { return rint(x); }
+static double sp_round_half_down(double x) { return x >= 0 ? ceil(x - 0.5) : floor(x + 0.5); }
+
 /* floor/ceil/round/truncate on a non-finite Float: casting NaN/Inf to an
    integer is C UB; CRuby raises FloatDomainError naming the value. */
 static inline void sp_poly_flo_domain_ck(mrb_float f) {

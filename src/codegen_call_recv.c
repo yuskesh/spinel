@@ -3237,14 +3237,31 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          value at runtime, typed Float (see infer_method_name_type / FLOAT-ROUNDING). */
       int ndig = 0;
       int nonlit = 0;
+      /* round(half: :even/:down/:up): tie-break mode as a trailing keyword,
+         with or without a digits argument. The keyword hash is peeled off
+         the positional view. */
+      const char *half_fn = NULL;
+      int eff_argc = argc;
+      if (sp_streq(name, "round") && argc >= 1 && nt_type(c->nt, argv[argc - 1]) &&
+          sp_streq(nt_type(c->nt, argv[argc - 1]), "KeywordHashNode")) {
+        int hv = kwh_lookup(nt, argv[argc - 1], "half");
+        if (hv >= 0 && nt_type(c->nt, hv) && sp_streq(nt_type(c->nt, hv), "SymbolNode")) {
+          const char *hm = nt_str(c->nt, hv, "value");
+          if (hm && sp_streq(hm, "even")) half_fn = "sp_round_half_even";
+          else if (hm && sp_streq(hm, "down")) half_fn = "sp_round_half_down";
+          else half_fn = "round";  /* :up is the default rounding */
+          eff_argc = argc - 1;
+        }
+      }
       if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
-           sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
+           sp_streq(name, "round") || sp_streq(name, "truncate")) && eff_argc == 1) {
         const char *aty = nt_type(c->nt, argv[0]);
         if (aty && sp_streq(aty, "IntegerNode")) ndig = (int)nt_int(c->nt, argv[0], "value", 0);
         else nonlit = 1;
       }
       const char *cfn = sp_streq(name, "floor") ? "floor" : sp_streq(name, "ceil") ? "ceil"
                       : sp_streq(name, "truncate") ? "trunc" : "round";
+      if (half_fn) cfn = half_fn;
       if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
            sp_streq(name, "round") || sp_streq(name, "truncate"))) {
         if (nonlit) {
