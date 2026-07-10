@@ -4,4 +4,6 @@ interp: #<Cell:0xADDR>
 #<Outer:0xADDR @inner=#<Inner:0xADDR @k=7>>
 custom
 <custom>
+#<Cell:0xADDR @x=2, @y=3, @alive=false, @tag=nil, @list=[], @name="c1">
+#<Cell:0xADDR @x=4, @y=5, @alive=false, @tag=nil, @list=[], @name="c1">
 TypeError: exception class/object expected

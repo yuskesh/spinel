@@ -33,6 +33,13 @@ puts norm.call("interp: #{c}")
 puts norm.call(Outer.new.inspect)   # nested object recurses
 puts Named.new
 p Named.new
+# an object read back out of a container is poly-boxed: its .inspect goes
+# through sp_poly_inspect's user-object hook, not the typed path (#1875)
+cells = {}
+cells["0-0"] = Cell.new(2, 3)
+puts norm.call(cells["0-0"].inspect)
+mixed = [Cell.new(4, 5), "s"]
+puts norm.call(mixed[0].inspect)
 begin
   raise c
 rescue TypeError => e
