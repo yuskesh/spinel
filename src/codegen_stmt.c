@@ -83,6 +83,10 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ const char *_ps = sp_exc_message("); emit_expr(c, arg, b);
     buf_puts(b, "); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
   }
+  else if (t == TY_REGEX) {
+    buf_puts(b, "puts(sp_re_to_s_str((void *)("); emit_expr(c, arg, b); buf_puts(b, ")));\n");
+    return;
+  }
   else if (t == TY_TIME) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
@@ -339,6 +343,10 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_RATIONAL) {
     buf_puts(b, "fputs(sp_rational_inspect("); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
+  }
+  else if (t == TY_REGEX) {
+    buf_puts(b, "puts(sp_re_inspect_str((void *)("); emit_expr(c, arg, b); buf_puts(b, ")));\n");
+    return;
   }
   else if (t == TY_TIME) {
     int tv = ++g_tmp;

@@ -276,7 +276,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   }
   /* regex values can appear in poly context (multi-typed local); evaluate for
      side effects (e.g. Regexp.new(str)) and yield nil */
-  if (t == TY_REGEX) { buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, ", sp_box_nil())"); return; }
+  if (t == TY_REGEX) { buf_puts(b, "sp_box_regexp("); emit_expr(c, node, b); buf_puts(b, ")"); return; }
   /* class/module value: box into poly */
   if (t == TY_CLASS) {
     buf_puts(b, "sp_box_class("); emit_expr(c, node, b); buf_puts(b, ")"); return;

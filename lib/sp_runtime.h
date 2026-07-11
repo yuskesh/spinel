@@ -1762,6 +1762,12 @@ static sp_RbVal sp_box_nullable_obj(void *p, int cls_id) { return p ? sp_box_obj
 /* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the
    collector skips it (it is not a sp_gc_alloc allocation). NULL -> nil. */
 static sp_RbVal sp_box_foreign_ptr(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_FOREIGN_PTR) : sp_box_nil(); }
+/* a compiled Regexp value (mrb_regexp_pattern *): untraced, program-lifetime */
+static sp_RbVal sp_box_regexp(void *p) { return p ? sp_box_obj(p, SP_BUILTIN_REGEX) : sp_box_nil(); }
+/* renderers live in sp_re.c; declared through void* to avoid the engine header */
+const char *sp_re_inspect_str(void *pat);
+const char *sp_re_to_s_str(void *pat);
+const char *sp_re_source(void *pat);
 /* Built-in pointer boxes — share SP_TAG_OBJ with a reserved negative
    cls_id so the dispatch path is uniform. */
 static sp_RbVal sp_box_int_array(void *p)   { return sp_box_obj(p, SP_BUILTIN_INT_ARRAY); }
@@ -1896,6 +1902,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
         case SP_BUILTIN_TIME: puts(sp_Time_inspect((sp_Time *)v.v.p)); break;
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
         case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
+        case SP_BUILTIN_REGEX: puts(sp_re_to_s_str(v.v.p)); break;
         default: printf("#<Object:0x%p>\n", v.v.p); break;
       }
       break;
@@ -1938,6 +1945,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_TIME: return sp_Time_inspect((sp_Time *)v.v.p);
         case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
+        case SP_BUILTIN_REGEX: return sp_re_to_s_str(v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
         default:
           if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p) {
@@ -1985,6 +1993,7 @@ static const char *sp_poly_class_name(sp_RbVal v) {
         case SP_BUILTIN_TIME: return SPL("Time");
         case SP_BUILTIN_COMPLEX: return SPL("Complex");
         case SP_BUILTIN_RATIONAL: return SPL("Rational");
+        case SP_BUILTIN_REGEX: return SPL("Regexp");
         case SP_BUILTIN_OBJECT: return SPL("Object");   /* a bare Object.new instance */
         case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
         default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
@@ -3705,6 +3714,7 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
         case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
         case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
+        case SP_BUILTIN_REGEX:     return sp_re_inspect_str(v.v.p);
         case SP_BUILTIN_EXCEPTION: return sp_sprintf("#<%s: %s>", sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p), sp_exc_message((volatile struct sp_Exception_s *)v.v.p));
         case SP_BUILTIN_STR_INT_HASH:  return sp_StrIntHash_inspect((sp_StrIntHash *)v.v.p);
         case SP_BUILTIN_STR_STR_HASH:  return sp_StrStrHash_inspect((sp_StrStrHash *)v.v.p);

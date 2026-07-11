@@ -98,6 +98,7 @@ typedef struct mrb_regexp_pattern {
   void *cached_threads[2];      /* curr/next thread lists */
   int cached_list_capa;         /* capacity of cached thread lists */
   mrb_bool cache_in_use;        /* re-entrancy guard */
+  char *source;                 /* the pattern text, for #source/#inspect/#to_s */
 } mrb_regexp_pattern;
 
 /* Regexp flags */

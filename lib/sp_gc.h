@@ -32,6 +32,9 @@
    the other SP_BUILTIN_* in sp_runtime.h) so the inline mark helper can see it.
    Value is the next free slot below SP_BUILTIN_METHOD (-24). */
 #define SP_BUILTIN_FOREIGN_PTR (-25)
+/* a compiled Regexp: malloc-owned (never GC heap), so like FOREIGN_PTR the
+   collector must not trace it */
+#define SP_BUILTIN_REGEX       (-33)
 /* Wide value types (heap-copied crossing into a poly slot). Shared here so
    lib/sp_marshal.c can recognize them by cls_id. */
 #define SP_BUILTIN_COMPLEX  (-26)
@@ -209,7 +212,8 @@ static inline void sp_mark_string(const char *s) {
 }
 static inline void sp_mark_rbval(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) sp_mark_string(v.v.s);
-  else if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR) sp_gc_mark(v.v.p);
+  else if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR &&
+           v.cls_id != SP_BUILTIN_REGEX) sp_gc_mark(v.v.p);
   else if (v.tag == SP_TAG_BIGINT) sp_gc_mark(v.v.p);
 }
 /* Closure-cell content markers. A captured non-int local is laundered into the

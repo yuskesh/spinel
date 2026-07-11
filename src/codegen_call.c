@@ -7861,22 +7861,42 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "sp_re_match_poly(sp_re_pat_%d, ", rre); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
     }
-    /* /re/.source and /re/.options are compile-time constants of the literal */
+    /* /re/.source and /re/.options are compile-time constants of the literal.
+       The source/flags come from the RESOLVED literal's registration slot
+       (g_re_src) -- re_lit_index also resolves variables and constants, whose
+       own nodes carry no "unescaped" (a variable read fell to an empty
+       string, #2018). */
     if (rre >= 0 && sp_streq(name, "source") && argc == 0) {
-      emit_str_literal(b, nt_str(nt, recv, "unescaped")); return;
+      emit_str_literal(b, g_re_src[rre]); return;
     }
     if (rre >= 0 && sp_streq(name, "options") && argc == 0) {
-      int pf = (int)nt_int(nt, recv, "flags", 0);
-      int opt = ((pf & 4) ? 1 : 0) | ((pf & 8) ? 2 : 0) | ((pf & 16) ? 4 : 0);
+      int pf = g_re_flg[rre];
+      int opt = ((pf & 1) ? 1 : 0) | ((pf & 8) ? 2 : 0) | ((pf & 4) ? 4 : 0);
       buf_printf(b, "%d", opt); return;
     }
     if (rre >= 0 && sp_streq(name, "encoding") && argc == 0) {
-      int ascii = re_src_all_ascii(nt_str(nt, recv, "unescaped"));
+      int ascii = re_src_all_ascii(g_re_src[rre]);
       buf_printf(b, "sp_box_encoding(%s)", ascii ? "sp_encoding_us_ascii()" : "sp_encoding_utf8()");
       return;
     }
     if (rre >= 0 && sp_streq(name, "fixed_encoding?") && argc == 0) {
-      buf_puts(b, re_src_all_ascii(nt_str(nt, recv, "unescaped")) ? "FALSE" : "TRUE");
+      buf_puts(b, re_src_all_ascii(g_re_src[rre]) ? "FALSE" : "TRUE");
+      return;
+    }
+  }
+  /* Regexp VALUE receiver (a variable, or a literal in value position):
+     rendering reads the pattern's retained source text at runtime. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 0) {
+    if (sp_streq(name, "source")) {
+      buf_puts(b, "sp_re_source((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return;
+    }
+    if (sp_streq(name, "inspect")) {
+      buf_puts(b, "sp_re_inspect_str((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return;
+    }
+    if (sp_streq(name, "to_s")) {
+      buf_puts(b, "sp_re_to_s_str((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
   }

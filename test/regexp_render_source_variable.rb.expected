@@ -1,0 +1,14 @@
+"hello\\d+"
+/hello\d+/
+"/hello\\d+/"
+"(?-mix:hello\\d+)"
+"x"
+[/a/, /b/]
+"/abc/"
+"(?-mix:abc)"
+/abc/
+(?-mix:abc)
+/ca.e/mi
+"(?mi-x:ca.e)"
+3
+"pat"

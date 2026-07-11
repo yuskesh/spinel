@@ -1438,6 +1438,8 @@ compute_first_set(const re_inst *code, uint32_t code_len,
 mrb_regexp_pattern*
 re_compile(const char *pattern, mrb_int len, uint32_t flags)
 {
+  const char *orig_pattern = pattern;
+  mrb_int orig_len = len;
   re_compiler c;
   memset(&c, 0, sizeof(c));
 
@@ -1539,12 +1541,15 @@ re_compile(const char *pattern, mrb_int len, uint32_t flags)
   }
 
   if (c.stripped) free(c.stripped);
+  pat->source = (char *)malloc((size_t)orig_len + 1);
+  if (pat->source) { memcpy(pat->source, orig_pattern, (size_t)orig_len); pat->source[orig_len] = 0; }
   return pat;
 }
 
 void
 re_free(mrb_regexp_pattern *pat)
 {
+  if (pat && pat->source) { free(pat->source); pat->source = NULL; }
   if (pat) {
     free(pat->code);
     if (pat->classes) {
@@ -1598,4 +1603,35 @@ int re_named_group(const mrb_regexp_pattern *pat, const char *name) {
       group = (int)nc->group;
   }
   return group;
+}
+
+/* sp_sprintf lives in the generated TU (same late-bind as sp_re.c uses) */
+extern const char *sp_sprintf(const char *fmt, ...);
+
+/* Regexp rendering from the retained pattern text: #source is the raw text,
+   #inspect is /src/flags, #to_s is CRuby's (?on-off:src) with the m/i/x set. */
+const char *sp_re_source(void *vpat) {
+  mrb_regexp_pattern *pat = (mrb_regexp_pattern *)vpat;
+  return (pat && pat->source) ? pat->source : "";
+}
+const char *sp_re_inspect_str(void *vpat) {
+  mrb_regexp_pattern *pat = (mrb_regexp_pattern *)vpat;
+  char fl[4]; int n = 0;
+  uint32_t f = pat ? pat->flags : 0;
+  if (f & RE_FLAG_DOTALL) fl[n++] = 'm';
+  if (f & RE_FLAG_IGNORECASE) fl[n++] = 'i';
+  if (f & RE_FLAG_EXTENDED) fl[n++] = 'x';
+  fl[n] = 0;
+  return sp_sprintf("/%s/%s", sp_re_source(pat), fl);
+}
+const char *sp_re_to_s_str(void *vpat) {
+  mrb_regexp_pattern *pat = (mrb_regexp_pattern *)vpat;
+  char on[4], off[4]; int no = 0, nf = 0;
+  uint32_t f = pat ? pat->flags : 0;
+  if (f & RE_FLAG_DOTALL) on[no++] = 'm'; else off[nf++] = 'm';
+  if (f & RE_FLAG_IGNORECASE) on[no++] = 'i'; else off[nf++] = 'i';
+  if (f & RE_FLAG_EXTENDED) on[no++] = 'x'; else off[nf++] = 'x';
+  on[no] = 0; off[nf] = 0;
+  if (nf) return sp_sprintf("(?%s-%s:%s)", on, off, sp_re_source(pat));
+  return sp_sprintf("(?%s:%s)", on, sp_re_source(pat));
 }

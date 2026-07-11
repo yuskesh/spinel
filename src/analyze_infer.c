@@ -1297,6 +1297,7 @@ else {
     if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone")) return TY_REGEX;
     if (sp_streq(name, "encoding")) return TY_POLY;  /* a boxed Encoding value */
     if (sp_streq(name, "fixed_encoding?")) return TY_BOOL;
+    if (sp_streq(name, "options")) return TY_INT;
   }
 
   /* MatchData instance methods */
