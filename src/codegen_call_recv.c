@@ -4152,6 +4152,10 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
       else if (sp_streq(name, "next_float")) buf_printf(b, "nextafter(%s, INFINITY)", r);
       else if (sp_streq(name, "prev_float")) buf_printf(b, "nextafter(%s, -INFINITY)", r);
+      /* numerator/denominator of the exact rational value of the double
+         (0.5.numerator == 1), via the frexp conversion behind Float#to_r. */
+      else if (sp_streq(name, "numerator") && argc == 0) buf_printf(b, "sp_float_to_rational(%s).num", r);
+      else if (sp_streq(name, "denominator") && argc == 0) buf_printf(b, "sp_float_to_rational(%s).den", r);
       else if (sp_streq(name, "magnitude")) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
       else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       /* Float#clamp with float bounds always yields a float (the returned bound

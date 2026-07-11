@@ -1405,14 +1405,14 @@ else {
          sp_streq(name, "tanh") || sp_streq(name, "asinh") || sp_streq(name, "acosh") ||
          sp_streq(name, "atanh") || sp_streq(name, "exp") || sp_streq(name, "log") ||
          sp_streq(name, "log2") || sp_streq(name, "log10") || sp_streq(name, "sqrt") ||
-         sp_streq(name, "cbrt") || sp_streq(name, "hypot") || sp_streq(name, "frexp") ||
+         sp_streq(name, "cbrt") || sp_streq(name, "hypot") ||
          sp_streq(name, "ldexp") || sp_streq(name, "erf") || sp_streq(name, "erfc") ||
          sp_streq(name, "gamma")))
       return TY_FLOAT;
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
-        sp_streq(name, "lgamma") && argc == 1)
-      return TY_POLY_ARRAY;  /* [log(|gamma|), sign] */
+        (sp_streq(name, "lgamma") || sp_streq(name, "frexp")) && argc == 1)
+      return TY_POLY_ARRAY;  /* [log(|gamma|), sign] / [fraction, exponent] */
     /* JSON.generate/dump return type comes from the native binding
        (packages/json, inferred in the FFI/native block above), not a hardcoded
        arm. */
@@ -3400,6 +3400,7 @@ else {
         sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
         sp_streq(name, "modulo") || sp_streq(name, "to_f") ||
         (sp_streq(name, "fdiv") && argc == 1)) return TY_FLOAT;
+    if ((sp_streq(name, "numerator") || sp_streq(name, "denominator")) && argc == 0) return TY_INT;
     if ((sp_streq(name, "to_r") && argc == 0) ||
         (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
     if (sp_streq(name, "eql?") && argc == 1) return TY_BOOL;

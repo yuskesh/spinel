@@ -2218,6 +2218,8 @@ static mrb_float sp_num_to_f(sp_RbVal v) {
   if (v.tag == SP_TAG_FLT) return v.v.f;
   if (v.tag == SP_TAG_INT) return (mrb_float)v.v.i;
   if (v.tag == SP_TAG_BIGINT) return (mrb_float)sp_bigint_to_int((sp_Bigint *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL && v.v.p)
+    return sp_rational_to_f(*(sp_Rational *)v.v.p);
   const char *w = v.tag == SP_TAG_NIL ? "nil"
                 : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false")
                 : sp_poly_class_name(v);

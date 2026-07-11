@@ -4000,6 +4000,10 @@ static void emit_math_arg(Compiler *c, int node, Buf *out) {
     buf_puts(out, "(mrb_float)("); emit_expr(c, node, out); buf_puts(out, ")");
     return;
   }
+  if (t == TY_RATIONAL) {
+    buf_puts(out, "sp_rational_to_f("); emit_expr(c, node, out); buf_puts(out, ")");
+    return;
+  }
   buf_puts(out, "sp_num_to_f("); emit_boxed(c, node, out); buf_puts(out, ")");
 }
 
@@ -7282,6 +7286,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "lgamma") && argc == 1) {
       /* Math.lgamma(x) -> [log(|gamma(x)|), sign] as a poly array */
       buf_puts(b, "sp_math_lgamma("); emit_math_arg(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    /* Math.frexp(x) -> [fraction, exponent] as a poly array */
+    if (sp_streq(name, "frexp") && argc == 1) {
+      int te = ++g_tmp, tf = ++g_tmp, o = ++g_tmp;
+      buf_printf(b, "({ int _t%d; mrb_float _t%d = frexp(", te, tf);
+      emit_math_arg(c, argv[0], b);
+      buf_printf(b, ", &_t%d); sp_PolyArray *_t%d = sp_PolyArray_new();"
+                    " sp_PolyArray_push(_t%d, sp_box_float(_t%d));"
+                    " sp_PolyArray_push(_t%d, sp_box_int(_t%d)); _t%d; })",
+                 te, o, o, tf, o, te, o);
       return;
     }
     /* Math.log(x) or Math.log(x, base) */
