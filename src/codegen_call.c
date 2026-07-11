@@ -5226,7 +5226,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else if (at == TY_POLY) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_BOOL) { buf_puts(b, "("); emit_expr(c, av[0], b); buf_puts(b, " ? \"true\" : \"false\")"); }
       else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
-      else { buf_puts(b, "sp_poly_to_s(sp_box_nil())"); }  /* nil or unknown */
+      else if (at == TY_NIL || at == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_s(sp_box_nil())"); }
+      else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, av[0], b); buf_puts(b, ")"); }  /* container/range/object: #to_s */
       return;
     }
     if (sp_streq(name, "Array") && ac == 1) {

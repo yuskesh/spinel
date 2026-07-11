@@ -4296,11 +4296,23 @@ int infer_block_params(Compiler *c) {
         int yc = 0;
         const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
         Scope *bs = comp_scope_of(c, block);
+        /* CRuby auto-splat: one (non-splat) Array yielded to a 2+-param (or
+           required+rest) block binds elements, so type params from the
+           element type (mirrors emit_block_invoke). */
+        TyKind as_elem = TY_UNKNOWN;
+        if (yc == 1 &&
+            (block_param_name(c, block, 1) ||
+             (block_param_name(c, block, 0) && block_rest_name(c, block))) &&
+            !(nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))) {
+          TyKind yat = infer_type(c, yargs[0]);
+          if (ty_is_array(yat)) as_elem = ty_array_elem(yat);
+        }
         for (int k = 0; k < yc; k++) {
           const char *bp = block_param_name(c, block, k);
           if (!bp) continue;
           LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-          TyKind m = ty_unify(lv->type, infer_type(c, yargs[k]));
+          TyKind m = ty_unify(lv->type, as_elem != TY_UNKNOWN ? as_elem
+                                                              : infer_type(c, yargs[k]));
           if (m != lv->type) { lv->type = m; changed = 1; }
         }
         /* Params beyond the first yield's arity might still be nil if there

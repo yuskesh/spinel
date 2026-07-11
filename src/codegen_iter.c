@@ -389,9 +389,16 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      (auto-splat). Evaluate it once into a rooted temp and bind each param (and
      any rest param) from its elements rather than from the splat AST node. */
   int splat_tmp = -1; TyKind splat_at = TY_UNKNOWN;
-  if (yc == 1 && yargs && nt_type(nt, yargs[0]) &&
-      sp_streq(nt_type(nt, yargs[0]), "SplatNode")) {
-    int inner = nt_ref(nt, yargs[0], "expression");
+  if (yc == 1 && yargs) {
+    int inner = -1;
+    if (nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))
+      inner = nt_ref(nt, yargs[0], "expression");
+    /* CRuby auto-splat: a single (non-splat) Array yielded to a block taking
+       more than one parameter destructures across the params. Only-rest
+       blocks (`|*a|`) keep the array whole. */
+    else if (block_param_name(c, blk, 1) ||
+             (block_param_name(c, blk, 0) && block_rest_name(c, blk)))
+      inner = yargs[0];
     TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
     if (ty_is_array(at) || at == TY_POLY_ARRAY) {
       splat_at = at;
