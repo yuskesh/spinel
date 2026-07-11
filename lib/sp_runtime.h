@@ -2873,6 +2873,8 @@ typedef struct sp_BoundMethod { void *self; mrb_int fn; const char *name; } sp_B
 static sp_RbVal sp_poly_slice(sp_RbVal a, mrb_int start, mrb_int len) {
   if (a.tag == SP_TAG_STR) return sp_box_nullable_str(sp_str_sub_range(a.v.s ? a.v.s : "", start, len));
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
+  /* arr[start, negative] is nil in CRuby (the slice helpers would return []) */
+  if (len < 0 && sp_poly_is_array_kind(a.cls_id)) return sp_box_nil();
   /* bm[a, b]: a boxed bound Method called with two int arguments (optcarrot's
      store dispatch table: `@store[addr][addr, value]`). */
   if (a.cls_id == SP_BUILTIN_METHOD) {

@@ -1865,6 +1865,15 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
     TyKind at = infer_type(c, argv[k]);
     LocalVar *p = scope_local(m, m->pnames[k]);
     if (!p || p->rbs_seeded) continue;
+    /* Post-convergence backstop only: an empty array-literal arg fills a
+       parameter that no other call site typed, as an (empty) poly array so
+       the callee's array methods dispatch. Never during the fixpoint -- a
+       concrete kind from another call site must win the unification. */
+    if (g_final_bind_pass && p->type == TY_UNKNOWN && at == TY_UNKNOWN &&
+        apty && sp_streq(apty, "ArrayNode")) {
+      int en0 = 0; nt_arr(nt, argv[k], "elements", &en0);
+      if (en0 == 0) { p->type = TY_POLY_ARRAY; changed = 1; continue; }
+    }
     /* A void arg (`sink(always_raising_method)`) is nil-ish in value position:
        bind the param poly so it is declarable; the arg is emitted via
        emit_boxed (it diverges and yields nil). */

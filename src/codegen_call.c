@@ -2992,6 +2992,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "mrb_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : "0"); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
+        emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", tr);
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
         emit_indent(g_pre, g_indent);
@@ -3016,6 +3018,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent);
         if (argc >= 1) { buf_printf(g_pre, "mrb_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : "0"); buf_puts(g_pre, ";\n"); }
         else { buf_printf(g_pre, "mrb_int _t%d = 0;\n", tn); }
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
         free(nb.p);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tr, k);
@@ -3071,6 +3075,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           Buf vb = expr_buf(c, argv[1]);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
           emit_indent(g_pre, g_indent);
           if (at == TY_POLY_ARRAY) {
             buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
@@ -8961,8 +8967,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (en == 0) {
         if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) { buf_puts(b, "0"); return; }
         if (sp_streq(name, "empty?") && argc == 0) { buf_puts(b, "1"); return; }
-        if ((sp_streq(name, "first") || sp_streq(name, "last") ||
-             sp_streq(name, "min") || sp_streq(name, "max") ||
+        /* first/last type poly (boxed nil, printable as nil); the rest keep
+           the historical int-nil sentinel pending their own nil arms */
+        if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) { buf_puts(b, "sp_box_nil()"); return; }
+        if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return; }
         if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "0"); return; }
         if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return; }

@@ -928,10 +928,11 @@ TyKind infer_call(Compiler *c, int id) {
     if (rty && sp_streq(rty, "ArrayNode")) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en == 0) {
-        /* first/last/min/max/pop/shift/sample of an empty array returns 0
-           (the typed slot's zero value); carry it as an int */
-        if ((sp_streq(name, "first") || sp_streq(name, "last") ||
-             sp_streq(name, "min") || sp_streq(name, "max") ||
+        /* first/last of an empty array is nil, boxed to poly (codegen emits
+           sp_box_nil). min/max/pop/shift/sample keep the historical int-0
+           shortcut pending their own nil arms. */
+        if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) return TY_POLY;
+        if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "sample") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) return TY_INT;
         rt = TY_POLY_ARRAY;
