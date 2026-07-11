@@ -68,6 +68,8 @@ const char *sp_str_splice_re(mrb_regexp_pattern *pat, const char *s, const char 
 const char *sp_re_source(void *pat);
 const char *sp_re_inspect_str(void *pat);
 const char *sp_re_to_s_str(void *pat);
+const char *sp_MatchData_inspect(sp_MatchData *m);
+const char *re_group_name(const mrb_regexp_pattern *pat, int group);
 mrb_int sp_re_index_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start);
 mrb_int sp_re_rindex_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start);
 sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str);

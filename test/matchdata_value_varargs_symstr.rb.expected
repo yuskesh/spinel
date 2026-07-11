@@ -1,0 +1,15 @@
+nil
+MatchData
+"llo"
+"l"
+#<MatchData "llo" 1:"l">
+#<MatchData "2024-01" y:"2024" m:"01">
+1
+"ell"
+"l"
+2
+true
+"ll"
+true
+-1
+true

@@ -3546,7 +3546,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "ascii_only?") && argc == 0) buf_printf(b, "sp_str_ascii_only(%s)", r);
       else if (sp_streq(name, "valid_encoding?") && argc == 0) buf_printf(b, "sp_str_valid_encoding(%s)", r);
       else if (sp_streq(name, "index") && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
-        buf_printf(b, "sp_re_index_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
+        /* nullable-int carrier (SP_INT_NIL on miss), matching the inferred
+           type -- the poly-boxed form broke a variable-regexp argument */
+        int tmi = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = sp_re_match(sp_re_pat_%d, %s); _t%d < 0 ? SP_INT_NIL : _t%d; })",
+                   tmi, re_lit_index(c, argv[0]), r, tmi, tmi);
       }
       else if (sp_streq(name, "index") && argc == 1) {
         /* nil-on-miss carried as the SP_INT_NIL sentinel (a nullable int) */
@@ -3629,6 +3633,16 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_re_match(sp_re_pat_%d, %s) >= 0 ? "
                       "(_t%d == 0 ? sp_re_match_str : (_t%d >= 1 && _t%d <= 9 ? sp_re_captures[_t%d] : NULL)) : NULL; })",
                    pi, r, tn, tn, tn, tn);
+      }
+      else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 &&
+               comp_ntype(c, argv[0]) == TY_RANGE &&
+               !(nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode"))) {
+        /* a Range VALUE (variable / expression): slice through the runtime
+           bounds (the literal form keeps its specialized arm below) */
+        int trg2 = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", trg2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_str_sub_range_r(%s, _t%d.first, _t%d.last, (int)_t%d.excl); })",
+                   r, trg2, trg2, trg2);
       }
       else if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && argc == 1 && nt_type(c->nt, argv[0]) &&
                sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {

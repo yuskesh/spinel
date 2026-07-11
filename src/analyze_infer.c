@@ -1028,6 +1028,7 @@ TyKind infer_call(Compiler *c, int id) {
     if (ty_is_numeric(rt) || rt == TY_STRING || rt == TY_SYMBOL || rt == TY_BOOL ||
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
         rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
+        rt == TY_MATCHDATA || rt == TY_REGEX ||
         rt == TY_FIBER || rt == TY_ENUMERATOR || ty_is_array(rt) || ty_is_hash(rt))
       return TY_CLASS;
   }
@@ -3159,7 +3160,10 @@ else {
     if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;
     if (sp_streq(name, "index") && argc == 1) {
       const char *aty = nt_type(nt, argv[0]);
-      if (aty && sp_streq(aty, "RegularExpressionNode")) return TY_POLY;  /* nil on no match */
+      /* nullable int (SP_INT_NIL on no match), matching the string-needle
+         form -- the emitter carries the same sentinel for a regexp needle */
+      if (aty && sp_streq(aty, "RegularExpressionNode")) return TY_INT;
+      if (infer_type(c, argv[0]) == TY_REGEX) return TY_INT;
     }
     if (sp_streq(name, "index") || sp_streq(name, "to_i") || sp_streq(name, "count") ||
         sp_streq(name, "oct") || sp_streq(name, "hex") || sp_streq(name, "ord") ||

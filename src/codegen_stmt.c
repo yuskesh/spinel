@@ -348,6 +348,13 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "puts(sp_re_inspect_str((void *)("); emit_expr(c, arg, b); buf_puts(b, ")));\n");
     return;
   }
+  else if (t == TY_MATCHDATA) {
+    /* p and inspect coincide for MatchData; nil (NULL) prints nil */
+    int tm2 = ++g_tmp;
+    buf_printf(b, "{ sp_MatchData *_t%d = ", tm2); emit_expr(c, arg, b);
+    buf_printf(b, "; puts(_t%d ? sp_MatchData_inspect(_t%d) : \"nil\"); }\n", tm2, tm2);
+    return;
+  }
   else if (t == TY_TIME) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);

@@ -4998,12 +4998,17 @@ int infer_block_params(Compiler *c) {
         }
       }
       else {
+        /* an Enumerable-flavored method's SOLO param receives the boxed
+           [k, v] pair (the emitter's pair mode), not the key */
+        const char *p1 = block_param_name(c, block, 1);
+        int pair_solo = !p1 &&
+                        (sp_streq(name, "flat_map") || sp_streq(name, "collect_concat") ||
+                         sp_streq(name, "filter_map") || sp_streq(name, "partition"));
         if (p0) {
           LocalVar *kp = scope_local_intern(hs, p0); kp->is_block_param = 1;
-          TyKind km = ty_unify(kp->type, ty_hash_key(rt));
+          TyKind km = ty_unify(kp->type, pair_solo ? TY_POLY : ty_hash_key(rt));
           if (km != kp->type) { kp->type = km; changed = 1; }
         }
-        const char *p1 = block_param_name(c, block, 1);
         if (p1) {
           LocalVar *vp = scope_local_intern(hs, p1); vp->is_block_param = 1;
           TyKind vm = ty_unify(vp->type, ty_hash_val(rt));

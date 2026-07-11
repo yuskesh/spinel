@@ -6023,6 +6023,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_ARGF) cn = "ARGF.class";  /* ARGF's singleton class name (CRuby) */
     else if (rt == TY_NIL) cn = "NilClass";
     else if (rt == TY_METHOD) cn = "Method";
+    else if (rt == TY_MATCHDATA) cn = "MatchData";
+    else if (rt == TY_REGEX) cn = "Regexp";
     else if (rt == TY_PROC) cn = "Proc";
     else if (ty_is_array(rt)) cn = "Array";
     else if (ty_is_hash(rt)) cn = "Hash";

@@ -1588,6 +1588,25 @@ const char *re_named_name(const mrb_regexp_pattern *pat, int i, int *group_out) 
   if (group_out) *group_out = (int)pat->named_captures[i].group;
   return pat->named_captures[i].name;
 }
+/* group index -> its name (NUL-terminated copy in a static rotating buffer),
+   or NULL when the group is positional. For MatchData#inspect. */
+const char *re_group_name(const mrb_regexp_pattern *pat, int group) {
+  static char buf[4][64];
+  static int rot = 0;
+  if (!pat) return NULL;
+  for (int k = 0; k < pat->num_named; k++) {
+    if (pat->named_captures[k].group == group) {
+      int n = pat->named_captures[k].name_len;
+      if (n > 63) n = 63;
+      char *o = buf[rot = (rot + 1) & 3];
+      memcpy(o, pat->named_captures[k].name, (size_t)n);
+      o[n] = 0;
+      return o;
+    }
+  }
+  return NULL;
+}
+
 int re_named_group(const mrb_regexp_pattern *pat, const char *name) {
   if (!pat || !name) return -1;
   size_t nlen = strlen(name);

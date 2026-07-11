@@ -95,6 +95,27 @@ mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {
   sp_re_match_post = NULL;
   return -1;
 }
+/* MatchData#inspect: CRuby's #<MatchData "full" 1:"g1" ...> (named groups
+   render by name; unmatched groups render nil). */
+const char *sp_MatchData_inspect(sp_MatchData *m) {
+  if (!m) return "nil";
+  sp_String *b = sp_String_new("#<MatchData ");
+  sp_String_append(b, sp_str_inspect(sp_str_substr(m->source + m->caps[0], 0, m->caps[1] - m->caps[0])));
+  for (int g = 1; g < m->ncap; g++) {
+    const char *gname = re_group_name(m->pat, g);
+    sp_String_append(b, " ");
+    if (gname) { sp_String_append(b, gname); }
+    else {
+      char num[16]; snprintf(num, sizeof num, "%d", g);
+      sp_String_append(b, num);
+    }
+    sp_String_append(b, ":");
+    if (m->caps[g * 2] < 0) sp_String_append(b, "nil");
+    else sp_String_append(b, sp_str_inspect(sp_str_substr(m->source + m->caps[g * 2], 0, m->caps[g * 2 + 1] - m->caps[g * 2])));
+  }
+  sp_String_append(b, ">");
+  return sp_String_cstr(b);
+}
 /* s[/re/] = val: replace the first match's byte span with val (taken
    literally, no template expansion); no match raises IndexError. */
 const char *sp_str_splice_re(mrb_regexp_pattern *pat, const char *s, const char *val) {

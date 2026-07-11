@@ -2470,6 +2470,60 @@ static int expand_literal_splat_args(Compiler *c) {
   return changed;
 }
 
+/* A Symbol receiver delegates its STRING-flavored methods (regex match,
+   pattern slice, comparisons) through the name text: interpose .to_s so the
+   string machinery serves them. Symbol-native fast paths (==, to_s, case
+   conversions, succ) keep their own arms. */
+static int desugar_symbol_string_methods(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  static const char *const SYMSTR[] = {
+    "match", "match?", "=~", "[]", "slice", "start_with?", "end_with?",
+    "between?", "<", "<=", ">", ">=", "<=>", "count", "index", "tr",
+    "sub", "gsub", NULL };
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int hit = 0;
+    for (int j = 0; SYMSTR[j]; j++) if (sp_streq(nm, SYMSTR[j])) { hit = 1; break; }
+    if (!hit) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || infer_type(c, recv) != TY_SYMBOL) continue;
+    /* symbol-to-symbol comparisons need BOTH sides as text */
+    int toa = nt_new_node(nt, "CallNode");
+    if (toa < 0) continue;
+    nt_node_set_str(nt, toa, "name", "to_s");
+    nt_node_set_ref(nt, toa, "receiver", recv);
+    nt_node_set_ref(nt, id, "receiver", toa);
+    comp_grow_node_arrays(c);
+    c->nscope[toa] = c->nscope[id];
+    /* symbol ARGUMENTS to the comparisons also read as their names */
+    int argsn = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+    for (int j = 0; j < an && j < 8; j++) {
+      if (av[j] >= 0 && infer_type(c, av[j]) == TY_SYMBOL) {
+        int t2 = nt_new_node(nt, "CallNode");
+        if (t2 < 0) continue;
+        nt_node_set_str(nt, t2, "name", "to_s");
+        nt_node_set_ref(nt, t2, "receiver", av[j]);
+        comp_grow_node_arrays(c);
+        c->nscope[t2] = c->nscope[id];
+        int na2[8];
+        const int *av2 = nt_arr(nt, argsn, "arguments", &an);
+        for (int k2 = 0; k2 < an && k2 < 8; k2++) na2[k2] = (k2 == j) ? t2 : av2[k2];
+        nt_node_set_arr(nt, argsn, "arguments", na2, an);
+        av = nt_arr(nt, argsn, "arguments", &an);
+      }
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `m(&op)` where op is a SYMBOL variable: rewrite the block argument into a
    real block calling `send(op)` -- the dynamic-send desugar then expands the
    send over op's statically-known candidate set. Comparator consumers
@@ -4188,6 +4242,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
+    ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
     ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
