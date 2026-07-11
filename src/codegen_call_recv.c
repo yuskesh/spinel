@@ -3680,6 +3680,18 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
            the byte_len-aware copy carries embedded NULs (dup_external is for
            unmarked C pointers and must stay strlen-based). */
         buf_printf(b, "sp_str_dup(%s)", r);
+      else if (sp_streq(name, "clone") && argc == 1 && nt_type(nt, argv[0]) &&
+               sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
+               kwh_lookup(nt, argv[0], "freeze") >= 0) {
+        /* clone(freeze: false) is an unfrozen copy (sp_str_dup yields a heap
+           mutable string); freeze: true freezes the copy */
+        int fv2 = kwh_lookup(nt, argv[0], "freeze");
+        const char *fvt2 = nt_type(nt, fv2);
+        if (fvt2 && sp_streq(fvt2, "TrueNode"))
+          buf_printf(b, "sp_str_freeze_val(sp_str_dup(%s))", r);
+        else
+          buf_printf(b, "sp_str_dup(%s)", r);
+      }
       else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
       else if (sp_streq(name, "empty?"))     buf_printf(b, "sp_str_empty_p(%s)", r);
       else if (sp_streq(name, "include?") && argc == 1) {

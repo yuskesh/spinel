@@ -9349,12 +9349,47 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       else { buf_puts(b, "sp_poly_truthy("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
       return;
     }
-    if (argc == 1 && sp_streq(name, "===")) {
+    if (argc == 1 && (sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?"))) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (");
       emit_boxed(c, argv[0], b);
       buf_puts(b, ").tag == SP_TAG_NIL)");
       return;
     }
+  }
+  /* true/false receiver: equal?/eql?/=== are value identity */
+  if (recv >= 0 && rt == TY_BOOL && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==="))) {
+    int tb2 = ++g_tmp;
+    buf_printf(b, "({ mrb_bool _t%d = ", tb2); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_RbVal _tb%d = ", tb2); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; (_tb%d.tag == SP_TAG_BOOL && _tb%d.v.b == (_t%d != 0)); })", tb2, tb2, tb2);
+    return;
+  }
+  /* Symbol receiver: equal?/eql? compare the interned id */
+  if (recv >= 0 && rt == TY_SYMBOL && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
+      comp_ntype(c, argv[0]) == TY_SYMBOL) {
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+    emit_expr(c, argv[0], b); buf_puts(b, "))");
+    return;
+  }
+  /* Kernel#display prints to_s with no newline, returns nil */
+  if (recv >= 0 && sp_streq(name, "display") && argc == 0) {
+    buf_puts(b, "((void)fputs(sp_poly_to_s(");
+    emit_boxed(c, recv, b);
+    buf_puts(b, "), stdout))");
+    return;
+  }
+  /* instance_variable_defined?(:@x / '@x') on a statically-typed object:
+     the layout answers at compile time */
+  if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+      ty_is_object(rt) && nt_type(nt, argv[0]) &&
+      (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
+    const char *ivn = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
+                        ? nt_str(nt, argv[0], "value") : nt_str(nt, argv[0], "content");
+    int have = ivn && ivn[0] == '@' && comp_ivar_index(&c->classes[ty_object_class(rt)], ivn) >= 0;
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
+    return;
   }
 
   if (emit_poly_call(c, id, b)) return;

@@ -779,9 +779,14 @@ TyKind infer_call(Compiler *c, int id) {
   }
 
   /* nil receiver: type inference for NilClass methods */
+  if (recv >= 0 && sp_streq(name, "display") && argc == 0) return TY_NIL;
+  if (recv >= 0 && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+      ty_is_object(rt)) return TY_BOOL;
+  if (recv >= 0 && (rt == TY_BOOL || rt == TY_SYMBOL) && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?"))) return TY_BOOL;
   if (recv >= 0 && rt == TY_NIL) {
     if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-        sp_streq(name, "===")) return TY_BOOL;
+        sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?")) return TY_BOOL;
     if (sp_streq(name, "to_c")) return TY_COMPLEX;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
@@ -3297,6 +3302,7 @@ else {
 
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
+    if (sp_streq(name, "clone") && argc == 1) return TY_STRING;  /* clone(freeze: ...) */
     if (sp_streq(name, "encoding") && argc == 0) return TY_POLY;  /* an Encoding value */
     if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
         sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
