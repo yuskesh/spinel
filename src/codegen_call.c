@@ -8813,6 +8813,33 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "; sp_time_cmp(_t%d, _t%d) %s 0; })", tt, tu, name);
       return;
     }
+    /* An object whose class defines the comparison operator itself (e.g.
+       Set#< aliased to proper_subset?): dispatch to the user method. */
+    if (ty_is_object(rt)) {
+      int cid5 = ty_object_class(rt);
+      if (comp_method_in_chain(c, cid5, name, NULL) >= 0) {
+        char selfp5[64];
+        const char *rty5 = nt_type(nt, recv);
+        if (rty5 && (sp_streq(rty5, "LocalVariableReadNode") ||
+                     sp_streq(rty5, "InstanceVariableReadNode") ||
+                     sp_streq(rty5, "SelfNode"))) {
+          Buf rb = expr_buf(c, recv);
+          snprintf(selfp5, sizeof selfp5, "%s", rb.p ? rb.p : "");
+          free(rb.p);
+        }
+        else {
+          int t5 = ++g_tmp;
+          Buf rb = expr_buf(c, recv);
+          emit_indent(g_pre, g_indent);
+          emit_ctype(c, rt, g_pre);
+          buf_printf(g_pre, " _t%d = %s;\n", t5, rb.p ? rb.p : "");
+          free(rb.p);
+          snprintf(selfp5, sizeof selfp5, "_t%d", t5);
+        }
+        emit_dispatch(c, cid5, name, selfp5, nt_ref(nt, id, "arguments"), -1, b);
+        return;
+      }
+    }
     /* Comparable: object with a user `<=>` method but no direct `<` etc. */
     if (ty_is_object(rt)) {
       int cid4 = ty_object_class(rt);

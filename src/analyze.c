@@ -4791,7 +4791,11 @@ void analyze_program(Compiler *c) {
     if (m->blk_param || !m->yields) continue;   /* already lowered, or no yielding each */
     m->is_lowered_yield = 1;
     m->yields = 0;
-    m->ret = TY_INT;
+    /* An Enumerable-style each ends in `self`; unlike the self-recursive
+       lowering below its value is the receiver, not the block's -- pin the
+       return to the defining class so `return self` type-checks (the
+       __enum_to_a driver discards it either way). */
+    m->ret = m->class_id >= 0 ? ty_object(m->class_id) : TY_INT;
     m->blk_param = strdup("__yblk__");
     LocalVar *yblk = scope_local_intern(m, "__yblk__");
     if (yblk) { yblk->type = TY_PROC; yblk->is_param = 1; yblk->is_cell = 1; }

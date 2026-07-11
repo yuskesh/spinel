@@ -398,10 +398,12 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "fputs(\"[]\\n\", stdout);\n");  /* p [] */
   }
   else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 1)) {
-    /* an object with #inspect (user-defined or a generated struct/data one) */
+    /* an object with #inspect (user-defined or a generated struct/data one);
+       a NULL pointer is nil (nullable-object convention, e.g. Set#add?) */
     const char *cn = obj_str_cname(c, ty_object_class(t), 1);
-    buf_printf(b, "fputs(sp_%s_inspect((sp_%s *)", cn, cn); emit_expr(c, arg, b);
-    buf_puts(b, "), stdout); putchar('\\n');\n");
+    int pv = ++g_tmp;
+    buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", cn, pv, cn); emit_expr(c, arg, b);
+    buf_printf(b, "); fputs(_t%d ? sp_%s_inspect(_t%d) : \"nil\", stdout); putchar('\\n'); }\n", pv, cn, pv);
   }
   else if (t == TY_EXCEPTION) {
     /* boxed-path inspect: NULL prints nil, else #<Class: message> */
