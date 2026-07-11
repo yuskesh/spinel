@@ -1293,6 +1293,16 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
+    /* Integer ** <negative literal>: a Rational in CRuby (2 ** -2 == (1/4)).
+       The non-literal-exponent form types poly and resolves in sp_poly_pow. */
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "**") &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
+        !nt_str(nt, argv[0], "bigval") && nt_int(nt, argv[0], "value", 0) < 0) {
+      buf_puts(b, "sp_rational_pow(sp_rational_new((mrb_int)(");
+      emit_expr(c, recv, b);
+      buf_printf(b, "), 1), %lldLL)", (long long)nt_int(nt, argv[0], "value", 0));
+      return 1;
+    }
     /* An Integer viewed as a Rational: numerator is self, denominator is 1. */
     if (crt == TY_INT && sp_streq(name, "numerator") && argc == 0) {
       buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;

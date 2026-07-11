@@ -644,6 +644,16 @@ TyKind infer_call(Compiler *c, int id) {
         infer_int_pow_overflows(base, exp))
       return TY_BIGINT;
   }
+  /* Integer ** <negative literal>: a Rational in CRuby, typed statically. A
+     runtime exponent keeps the static Integer result (typing it poly would
+     cascade through every int-arithmetic consumer -- see limitations.md); the
+     negative case raises loudly, and the poly-dispatched path (promote-mode
+     params) resolves the class at runtime in sp_poly_pow. */
+  if (sp_streq(name, "**") && recv >= 0 && argc == 1 &&
+      infer_type(c, recv) == TY_INT && a0 == TY_INT) {
+    long long exp;
+    if (infer_const_int_node(nt, argv[0], &exp) && exp < 0) return TY_RATIONAL;
+  }
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
      is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
      `1LL << 64LL`. */

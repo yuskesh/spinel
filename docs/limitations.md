@@ -118,22 +118,17 @@ visible error. Those deliberate divergences are listed here.
 
 #### `Integer#**` with a negative exponent
 
-CRuby evaluates a negative integer exponent to a `Rational` (`2 ** -1 # => (1/2)`).
-Spinel now has a `Rational` type, but `Integer#**` keeps a static `Integer`
-result type: the exponent's sign is generally not known at compile time, so
-typing `x ** y` as a sometimes-`Rational` would force the result poly and
-cascade through inference. A negative integer exponent therefore raises rather
-than silently truncating to `0`:
-
-```ruby
-2 ** -1   # RangeError: negative exponent
-```
-
-This applies to `Integer#**` / `Integer#pow` across the int, bigint, and
-poly-dispatched paths, and is catchable as usual (`rescue RangeError`).
-`Float#**` is unaffected and stays CRuby-compatible, because a float result is
-representable (`2.0 ** -1 # => 0.5`). A `Rational` base is also fine
-(`Rational(1,2) ** -1 # => (2/1)`).
+CRuby evaluates a negative integer exponent to a `Rational`. Spinel matches
+it whenever the sign is knowable: a literal negative exponent types the
+result `Rational` statically (`2 ** -1 # => (1/2)`, `0 ** -1` raises
+`ZeroDivisionError` as in CRuby), and the poly-dispatched path (a
+poly-typed base or exponent, e.g. promote-mode parameters) picks `Integer`
+or `Rational` from the sign at run time. The residual divergence is a
+statically int-typed runtime exponent (`x ** y` with plain int locals):
+typing it a sometimes-`Rational` would force the result poly and cascade
+through every int-arithmetic consumer, so a negative value there still
+raises `RangeError` rather than silently truncating. `Integer#pow(negative,
+mod)` raises `RangeError` with CRuby's message.
 
 #### Embedded NUL bytes: byte-exact core, C-string transforms
 

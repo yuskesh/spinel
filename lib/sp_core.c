@@ -286,7 +286,7 @@ bad0:
  * libc + sp_raise_cls only. */
 mrb_int sp_gcd(mrb_int a,mrb_int b){if(a<0)a=-a;if(b<0)b=-b;while(b){mrb_int t=b;b=a%b;a=t;}return a;}
 mrb_int sp_lcm(mrb_int a,mrb_int b){if(a==0||b==0)return 0;mrb_int g=sp_gcd(a,b);if(a<0)a=-a;if(b<0)b=-b;return (a/g)*b;}
-mrb_int sp_powmod(mrb_int base,mrb_int exp,mrb_int mod){if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");mrb_int r=1;mrb_int m=mod<0?-mod:mod;if(m==1){r=0;}else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=r*base%m;exp=exp/2;base=base*base%m;}}if(mod<0&&r>0)r-=m;return r;}
+mrb_int sp_powmod(mrb_int base,mrb_int exp,mrb_int mod){if(exp<0)sp_raise_cls("RangeError","Integer#pow() 1st argument cannot be negative when 2nd argument specified");if(mod==0)sp_raise_cls("ZeroDivisionError","divided by 0");mrb_int r=1;mrb_int m=mod<0?-mod:mod;if(m==1){r=0;}else{base=base%m;if(base<0)base+=m;while(exp>0){if(exp%2==1)r=r*base%m;exp=exp/2;base=base*base%m;}}if(mod<0&&r>0)r-=m;return r;}
 mrb_int sp_ceildiv(mrb_int a,mrb_int b){if(b==0)sp_raise_cls("ZeroDivisionError","divided by 0");if(b==-1)return -a;mrb_int q=a/b;if(a%b!=0&&((a^b)>=0))q++;return q;}
 mrb_int sp_int_clamp(mrb_int v,mrb_int lo,mrb_int hi){return v<lo?lo:v>hi?hi:v;}
 mrb_float sp_float_clamp(mrb_float v,mrb_float lo,mrb_float hi){return v<lo?lo:v>hi?hi:v;}
