@@ -5428,6 +5428,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       ty_is_array(comp_ntype(c, recv)) &&
       (sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) {
+    /* CRuby's pattern form matches with `pattern === element`. Spinel has no
+       runtime type-dispatched #=== (like `when *arr`, a poly `===` lowers to
+       `==`), so a Range/Class/Regexp/Proc pattern would silently use `==` and
+       group wrongly. Reject those loudly; a plain value pattern (where
+       `===` is `==`) and the block form are unaffected. */
+    TyKind spat = comp_ntype(c, argv[0]);
+    if (spat == TY_RANGE || spat == TY_CLASS || spat == TY_REGEX || spat == TY_PROC)
+      unsupported(c, id, "slice_before/slice_after with a Range, Class, or Regexp pattern (needs #=== dispatch); use a block or a value pattern");
     buf_printf(b, "sp_Enumerator_new_from_items(sp_poly_slice_groups(");
     emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b);

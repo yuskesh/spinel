@@ -5916,6 +5916,11 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     /* min(n)/max(n) return arrays of the smallest/largest n: Enumerable forms,
        served by the int-array redispatch below (the native arm is argless). */
     if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc >= 1) known = 0;
+    /* min/max/minmax with a comparator block: the comparator emitter serves
+       the lowerable shapes; anything else must reject rather than silently
+       ignore the block. */
+    if ((sp_streq(name, "min") || sp_streq(name, "max") ||
+         sp_streq(name, "minmax")) && block >= 0) known = 0;
     if (known) {
       /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
       if ((sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) {
@@ -6113,18 +6118,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      unbox the helper's boxed result to match it -- the receiver provably held
      nil there, so the payload really is the concrete kind. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
+      (sp_streq(name, "to_h") ||
        sp_streq(name, "to_r") || sp_streq(name, "to_c"))) {
     int has_user = 0;
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
     if (!has_user) {
-      if (sp_streq(name, "to_a")) {
-        buf_puts(b, "((sp_PolyArray *)sp_poly_to_a_m(");
-        emit_expr(c, recv, b);
-        buf_puts(b, ").v.p)");
-      }
-      else if (sp_streq(name, "to_r")) {
+      if (sp_streq(name, "to_r")) {
         buf_puts(b, "(*(sp_Rational *)sp_poly_to_r_m(");
         emit_expr(c, recv, b);
         buf_puts(b, ").v.p)");
@@ -6247,6 +6247,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    /* to_a on a runtime-tagged value: nil -> [], array -> itself, hash -> its
+       pairs, anything else CRuby's NoMethodError. Skip when a user class
+       defines to_a so its method wins the dispatch. */
+    if (sp_streq(name, "to_a") && nt_ref(nt, id, "block") < 0) {
+      int has_user_ta = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user_ta; kk++)
+        if (comp_method_in_chain(c, kk, "to_a", NULL) >= 0) has_user_ta = 1;
+      if (!has_user_ta) {
+        buf_puts(b, "sp_poly_to_a_arr("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+    }
     /* Hash#keys / #values on a poly value (e.g. an evidence-free empty `{}` that
        stayed poly). Skip when a user class defines keys/values so its method wins. */
     if (sp_streq(name, "keys") || sp_streq(name, "values")) {

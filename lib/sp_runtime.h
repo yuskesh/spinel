@@ -4644,6 +4644,7 @@ static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
      eql? to [1, 2.0] even though they are ==. */
   if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ &&
       sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) {
+    if (a.v.p == b.v.p) return TRUE;  /* same object: eql? to itself (O(1)) */
     mrb_int n = sp_poly_length(a);
     if (n != sp_poly_length(b)) return FALSE;
     for (mrb_int i = 0; i < n; i++)
@@ -6583,6 +6584,22 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
     }
   }
   return sp_PolyArray_new();
+}
+/* Poly-receiver #to_a: nil is the empty array, arrays and hashes materialize
+   through sp_enum_items_from (a hash yields its [key, value] pairs), and any
+   other value raises CRuby's NoMethodError. */
+static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return sp_PolyArray_new();
+  /* Array#to_a returns self (identity), so a poly array is returned as-is
+     rather than copied; typed arrays and hashes must materialize a new
+     PolyArray to reach the poly representation. */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
+    return (sp_PolyArray *)v.v.p;
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id)))
+    return sp_enum_items_from(v);
+  sp_raise_nomethod(sp_nomethod_msg("to_a", v));
+  return NULL;
 }
 static void sp_Enumerator_scan(void *p) {
   sp_Enumerator *e = (sp_Enumerator *)p;

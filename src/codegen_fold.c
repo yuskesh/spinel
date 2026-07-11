@@ -892,6 +892,10 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
   int tr = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, tres = ++g_tmp, tmid = ++g_tmp;
+  /* an Integer-typed block is CRuby's find-any mode (0 found, positive means
+     the target sorts after the probe, negative before); a truthy block is
+     find-minimum mode */
+  int find_any = infer_type(c, bb[bn - 1]) == TY_INT;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_Range _t%d = ", tr); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = _t%d.first;\n", tlo, tr);
@@ -903,9 +907,23 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
   int save = g_indent; g_indent++;
   Buf cb; memset(&cb, 0, sizeof cb); emit_expr(c, bb[bn - 1], &cb); g_indent = save;
-  emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid); free(cb.p);
-  emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+  if (find_any) {
+    int tcmp = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "mrb_int _t%d = %s;\n", tcmp, cb.p ? cb.p : "0");
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d == 0) { _t%d = _t%d; break; }\n", tcmp, tres, tmid);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "else if (_t%d > 0) { _t%d = _t%d + 1; }\n", tcmp, tlo, tmid);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
+  }
+  else {
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+  }
+  free(cb.p);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   buf_printf(b, "_t%d", tres);
   return 1;
@@ -3135,6 +3153,24 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
     TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    int handled = emit_minmax_cmp_expr(c, id, b);
+    c->ntype[recv] = sv;
+    g_n_argov--;
+    return handled;
+  }
+  /* a range receiver materializes to its int array once and re-enters with
+     the receiver overridden, so the comparator loop below serves it */
+  if (rt == TY_RANGE && g_n_argov < MAX_ARG_OVERRIDE) {
+    int ta = ++g_tmp, tr = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_IntArray *_t%d = ({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);\n",
+               ta, tr, rb.p ? rb.p : "", tr, ta);
+    free(rb.p);
+    g_argov_node[g_n_argov] = recv;
+    snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
+    g_n_argov++;
+    TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_INT_ARRAY;
     int handled = emit_minmax_cmp_expr(c, id, b);
     c->ntype[recv] = sv;
     g_n_argov--;

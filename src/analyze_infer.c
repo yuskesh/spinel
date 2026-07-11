@@ -564,7 +564,8 @@ int range_enum_redispatch(Compiler *c, int id) {
   if (block >= 0 &&
       (sp_streq(name, "partition") || sp_streq(name, "each_with_index") ||
        sp_streq(name, "sort_by") || sp_streq(name, "chunk_while") ||
-       sp_streq(name, "sum") || sp_streq(name, "each_with_object")))
+       sp_streq(name, "sum") || sp_streq(name, "each_with_object") ||
+       sp_streq(name, "take_while") || sp_streq(name, "drop_while")))
     return 1;
   if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) && block >= 0)
     return 1;
@@ -2959,8 +2960,11 @@ else {
       if (sp_streq(name, "to_i") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
       if (sp_streq(name, "to_f")) return TY_FLOAT;
       /* Hash#keys / #values on a poly hash -> a poly array (boxed elements),
-         unless a user class defines that method (then its return type wins). */
-      if ((sp_streq(name, "keys") || sp_streq(name, "values")) && argc == 0) {
+         unless a user class defines that method (then its return type wins).
+         to_a on a poly value follows the same rule: nil -> [], arrays and
+         hashes materialize, anything else raises (sp_poly_to_a_arr). */
+      if ((sp_streq(name, "keys") || sp_streq(name, "values") ||
+           sp_streq(name, "to_a")) && argc == 0) {
         int has_user = 0;
         for (int k = 0; k < c->nclasses && !has_user; k++)
           if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
