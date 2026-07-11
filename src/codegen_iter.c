@@ -131,6 +131,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   int tag = ++g_tmp;
   int saved_nren = g_nren, saved_block = g_block_id;
+  int saved_emcls = g_emitting_class_id;
   const char *saved_self = g_self;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
@@ -188,6 +189,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
     g_self = selfbuf;
     g_self_deref = self_is_val ? "." : "->";
+    /* The inlined body runs in the RECEIVER's class context, not the
+       caller's. An implicit-self call inside the body (e.g. `to_a` in
+       `def map; to_a.map { |x| yield x }; end`) resolves against
+       g_emitting_class_id; without this it would be looked up on the
+       caller's class and reported as an undefined method. Mirrors how a
+       normal method-body emission sets g_emitting_class_id to its own
+       class (codegen.c). */
+    g_emitting_class_id = recv_class;
   }
   int din = indent + 1;
 
@@ -313,6 +322,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_self = saved_self;
   g_self_deref = saved_deref;
+  g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
   g_yield_self_fallback = saved_self_fb;
