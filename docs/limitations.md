@@ -173,12 +173,19 @@ Rational(10**18, 1) * Rational(10**18, 1)   # RangeError (CRuby: a Bigint Ration
 `Complex` stores its components as `mrb_float` plus a per-component class tag,
 so `#real` / `#imaginary` / `#abs2` and display report `Integer` components like
 CRuby for integer-valued inputs. What the representation cannot express is a
-`Rational` component: exact division yields `Float` components instead of
-`Rational`:
+`Rational` component: operations that would produce one compute in floats
+instead. This applies to exact division and to mixed `Complex`/`Rational`
+arithmetic and construction, which coerce the `Rational` via `#to_f` (the
+operations work; only the component class -- and therefore the printed form --
+differs from CRuby):
 
 ```ruby
-Complex(1, 2).real               # => 1     (matches CRuby)
-Complex(1, 2) / Complex(3, -1)   # => (0.1+0.7i)   (CRuby: ((1/10)+(7/10)*i))
+Complex(1, 2).real                      # => 1     (matches CRuby)
+Complex(1, 2) / Complex(3, -1)          # => (0.1+0.7i)       (CRuby: ((1/10)+(7/10)*i))
+Complex(1, 2) + Rational(1, 2)          # => (1.5+2i)         (CRuby: ((3/2)+2i))
+Rational(1, 2) + Complex(1, 2)          # => (1.5+2i)         (CRuby: ((3/2)+2i))
+Complex(Rational(1, 2), Rational(1, 3)) # => (0.5+0.3333333333333333i)
+                                        #                     (CRuby: ((1/2)+(1/3)*i))
 ```
 
 `Rational` and `Complex` values box into heterogeneous (poly) arrays and hashes

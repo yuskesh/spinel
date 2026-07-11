@@ -558,6 +558,14 @@ static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
    becomes re+0i (a Float operand marks the real component Float-classed). */
 static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
+  /* a Rational operand computes in floats (owner-approved divergence: CRuby
+     keeps rational components, spinel's Complex stores machine floats --
+     documented in docs/limitations.md) */
+  if (comp_ntype(c, node) == TY_RATIONAL) {
+    buf_puts(b, "((sp_Complex){sp_rational_to_f("); emit_expr(c, node, b);
+    buf_puts(b, "), 0, 1})");
+    return;
+  }
   buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b);
   buf_printf(b, "), 0, %d})", comp_ntype(c, node) == TY_FLOAT ? 1 : 0);
 }
@@ -1140,11 +1148,15 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       free(sb.p);
       return 1;
     }
-    int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
-             (argc >= 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
-    buf_puts(b, "((sp_Complex){(mrb_float)(");
+    int re_rat = comp_ntype(c, argv[0]) == TY_RATIONAL;
+    int im_rat = argc >= 2 && comp_ntype(c, argv[1]) == TY_RATIONAL;
+    int fl = (comp_ntype(c, argv[0]) == TY_FLOAT || re_rat ? 1 : 0) |
+             (argc >= 2 && (comp_ntype(c, argv[1]) == TY_FLOAT || im_rat) ? 2 : 0);
+    buf_puts(b, "((sp_Complex){");
+    buf_puts(b, re_rat ? "sp_rational_to_f(" : "(mrb_float)(");
     emit_expr(c, argv[0], b);
-    buf_puts(b, "), (mrb_float)(");
+    buf_puts(b, "), ");
+    buf_puts(b, im_rat ? "sp_rational_to_f(" : "(mrb_float)(");
     if (argc >= 2) emit_expr(c, argv[1], b);
     else buf_puts(b, "0");
     buf_printf(b, "), %d})", fl);
@@ -1284,7 +1296,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "to_s")) { buf_puts(b, "sp_complex_to_s("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "inspect")) { buf_puts(b, "sp_complex_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       TyKind cxa = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-      int cx_ok = cxa == TY_COMPLEX || cxa == TY_INT || cxa == TY_FLOAT;
+      int cx_ok = cxa == TY_COMPLEX || cxa == TY_INT || cxa == TY_FLOAT ||
+                  cxa == TY_RATIONAL;
       /* Dividing a Complex by a real scalar divides each component: a Float
          divisor yields Infinity at 0 (IEEE), an Integer divisor raises
          ZeroDivisionError at 0 (integer rules). The conjugate-formula
@@ -1298,7 +1311,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       if (cx_ok && argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") ||
-                                 sp_streq(name, "*") || sp_streq(name, "/"))) {
+                                 sp_streq(name, "*") || sp_streq(name, "/") ||
+                                 sp_streq(name, "quo"))) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_complex_%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, ")");
         return 1;
@@ -1573,6 +1587,19 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return 1; }
       if (sp_streq(name, "abs") && argc == 0) { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       TyKind rat = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      /* Rational <op> Complex computes in floats (same divergence note as
+         emit_complex_coerce) */
+      if (rat == TY_COMPLEX && argc == 1 &&
+          (sp_streq(name, "+") || sp_streq(name, "-") ||
+           sp_streq(name, "*") || sp_streq(name, "/"))) {
+        const char *cfn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
+        buf_printf(b, "sp_complex_%s(((sp_Complex){sp_rational_to_f(", cfn);
+        emit_expr(c, recv, b);
+        buf_puts(b, "), 0, 1}), ");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
       /* Only Integer/Rational/Float operands are modeled (a poly operand --
          e.g. a Rational read out of a poly array, which has no box form yet --
          falls through to the generic path rather than miscompiling). */

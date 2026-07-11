@@ -748,6 +748,9 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;
     if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
   }
+  if (rt == TY_RATIONAL && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX &&
+      (sp_streq(name, "+") || sp_streq(name, "-") ||
+       sp_streq(name, "*") || sp_streq(name, "/"))) return TY_COMPLEX;
   if (rt == TY_COMPLEX) {
     if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) return TY_FLOAT;
     /* real/imaginary/abs/abs2 box to poly: each component keeps its CRuby
@@ -758,7 +761,8 @@ TyKind infer_call(Compiler *c, int id) {
       return TY_POLY_ARRAY;
     if (sp_streq(name, "conjugate") || sp_streq(name, "conj") || sp_streq(name, "to_c") ||
         sp_streq(name, "-@") || sp_streq(name, "+@") ||
-        sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;
+        sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
+        sp_streq(name, "/") || sp_streq(name, "quo")) return TY_COMPLEX;
     if (sp_streq(name, "**")) return TY_COMPLEX;
     if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
