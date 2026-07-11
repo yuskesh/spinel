@@ -79,6 +79,7 @@ sp_PolyArray *sp_re_scan_poly(mrb_regexp_pattern *pat, const char *str);
 sp_PolyArray *sp_re_match_data(mrb_regexp_pattern *pat, const char *str);
 void sp_MatchData_scan(void *p);
 sp_MatchData *sp_re_matchdata(mrb_regexp_pattern *pat, const char *str);
+sp_MatchData *sp_re_last_matchdata(void);   /* $~ from the TLS match registers */
 sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, mrb_int cpos);
 const char *sp_MatchData_aref(sp_MatchData *m, mrb_int i);
 const char *sp_MatchData_aref_name(sp_MatchData *m, const char *name);

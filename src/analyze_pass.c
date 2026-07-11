@@ -4472,7 +4472,20 @@ int infer_block_params(Compiler *c) {
           if (src && an_re_has_captures(src)) has_cap = 1;
         }
       }
-      pt = has_cap ? TY_STR_ARRAY : TY_STRING;
+      /* a capturing scan yields each captures ROW (a boxed-element array);
+         multiple params destructure it into strings */
+      if (has_cap && block_param_name(c, block, 1)) {
+        Scope *scs = comp_scope_of(c, block);
+        for (int pk = 0; ; pk++) {
+          const char *pn2 = block_param_name(c, block, pk);
+          if (!pn2) break;
+          LocalVar *plv2 = scope_local_intern(scs, pn2); plv2->is_block_param = 1;
+          TyKind pm2 = ty_unify(plv2->type, TY_STRING);
+          if (pm2 != plv2->type) { plv2->type = pm2; changed = 1; }
+        }
+        continue;
+      }
+      pt = has_cap ? TY_POLY_ARRAY : TY_STRING;
     }
     else if ((sp_streq(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
               sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter") ||

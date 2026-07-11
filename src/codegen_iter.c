@@ -1933,6 +1933,44 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     int args = nt_ref(nt, id, "arguments");
     int sc_argc = 0; const int *sc_argv = args >= 0 ? nt_arr(nt, args, "arguments", &sc_argc) : NULL;
     if (sc_argc != 1 || re_lit_index(c, sc_argv[0]) < 0) return 0;
+    /* a capturing pattern yields each captures array (a StrArray) */
+    if (re_has_captures(re_lit_src(c, sc_argv[0]))) {
+      int tm2 = ++g_tmp, ti2 = ++g_tmp;
+      Buf rb2; memset(&rb2, 0, sizeof rb2); emit_expr(c, recv, &rb2);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, %s); SP_GC_ROOT(_t%d);\n",
+                 tm2, re_lit_index(c, sc_argv[0]), rb2.p ? rb2.p : "", tm2);
+      free(rb2.p);
+      emit_indent(b, indent);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n",
+                 ti2, ti2, tm2, ti2);
+      if (p0 && block_param_name(c, block, 1)) {
+        /* |a, b, ...| destructures the captures row into strings */
+        int trow = ++g_tmp;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "sp_PolyArray *_t%d = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n",
+                   trow, tm2, ti2);
+        for (int pk = 0; ; pk++) {
+          const char *pn2 = block_param_name(c, block, pk);
+          if (!pn2) break;
+          emit_indent(b, indent + 1);
+          buf_printf(b, "lv_%s = (_t%d && %d < _t%d->len) ? sp_poly_to_s(sp_PolyArray_get(_t%d, %d)) : NULL;\n",
+                     rename_local(pn2), trow, pk, trow, trow, pk);
+        }
+      }
+      else if (p0) {
+        Scope *csc2 = comp_scope_of(c, block);
+        LocalVar *clv2 = csc2 ? scope_local(csc2, p0) : NULL;
+        emit_indent(b, indent + 1);
+        if (clv2 && clv2->type == TY_POLY_ARRAY)
+          buf_printf(b, "lv_%s = (sp_PolyArray *)sp_PolyArray_get(_t%d, _t%d).v.p;\n", p0, tm2, ti2);
+        else
+          buf_printf(b, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, tm2, ti2);
+      }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
     TyKind et = TY_STRING;
     Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;

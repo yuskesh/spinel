@@ -3918,8 +3918,10 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (nm && (sp_streq(nm, "$PROGRAM_NAME") || sp_streq(nm, "$0"))) return TY_STRING;
     if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;  /* the exception being handled, or nil (NULL) outside a rescue */
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
-    /* regex match globals: nullable strings ($~ == $&, $`, $', $+) */
-    if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&") || sp_streq(nm, "$`") ||
+    /* regex match globals: $~ is the last MatchData (NULL = nil); the
+       text back-references are nullable strings */
+    if (nm && sp_streq(nm, "$~")) return TY_MATCHDATA;
+    if (nm && (sp_streq(nm, "$&") || sp_streq(nm, "$`") ||
                sp_streq(nm, "$'") || sp_streq(nm, "$+"))) return TY_STRING;
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;

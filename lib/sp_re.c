@@ -49,8 +49,25 @@ const char *sp_re_last_paren_match(void) {
   }
   return NULL;
 }
+void sp_MatchData_scan(void *p);   /* defined below */
+SP_TLS int sp_re_last_ncap = 0;
+SP_TLS const mrb_regexp_pattern *sp_re_last_pat = NULL;
+/* $~ as a first-class MatchData: build it lazily from the TLS match
+   registers (NULL when the last match failed / none ran). */
+sp_MatchData *sp_re_last_matchdata(void) {
+  if (!sp_re_last_str || sp_re_last_ncap <= 0 || sp_re_caps[0] < 0) return NULL;
+  sp_MatchData *md = (sp_MatchData *)sp_gc_alloc(sizeof(sp_MatchData), NULL, sp_MatchData_scan);
+  md->source = sp_re_last_str;
+  int n = sp_re_last_ncap * 2;
+  if (n > 64) n = 64;
+  for (int i = 0; i < n; i++) md->caps[i] = sp_re_caps[i];
+  md->ncap = sp_re_last_ncap;
+  md->pat = sp_re_last_pat;
+  return md;
+}
 void sp_re_set_captures(const char *str, int *caps, int ncaps) {
   sp_re_last_str = str;
+  sp_re_last_ncap = ncaps;
   for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
   for (int i = 1; i < ncaps && i < 10; i++) {
     if (caps[i*2] >= 0 && caps[(i*2)+1] >= 0) {
@@ -85,7 +102,7 @@ mrb_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {
   int64_t slen = (int64_t)strlen(str);
   int ncaps = 32;
   int n = re_exec(pat, str, slen, 0, sp_re_caps, ncaps, 0);
-  if (n > 0) { sp_re_set_captures(str, sp_re_caps, n/2); return sp_re_caps[0]; }
+  if (n > 0) { sp_re_last_pat = pat; sp_re_set_captures(str, sp_re_caps, n/2); return sp_re_caps[0]; }
   /* Issue #848: clear backrefs on no-match so a subsequent `$1`
      reads as nil rather than the previous match's group. */
   for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;

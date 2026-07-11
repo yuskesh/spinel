@@ -323,6 +323,22 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ", _t%d, (&(\"\\xff\")[1])); _hit%d ? _t%d : (const char *)0; })", tp2, tp2, tp2);
       return 1;
     }
+    if (sb_asgn && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      /* slice!(/re/): remove the first match, evaluate to it (or nil).
+         sp_re_match fills sp_re_match_str with the matched run; the splice
+         helper replaces it with the empty string. */
+      int tm3 = ++g_tmp, ts3 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", ts3); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
+                    " const char *_hit%d = _t%d >= 0 ? sp_re_match_str : NULL;"
+                    " if (_hit%d) ",
+                 tm3, re_lit_index(c, argv[0]), ts3, tm3, tm3, tm3);
+      emit_expr(c, recv, b);
+      buf_printf(b, " = sp_str_splice_re(sp_re_pat_%d, _t%d, (&(\"\\xff\")[1]));"
+                    " _hit%d; })",
+                 re_lit_index(c, argv[0]), ts3, tm3);
+      return 1;
+    }
     if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
       /* slice!(i) / slice!(range): the removed part (or nil), reassigning an
          lvalue receiver; a literal receiver just yields the removed part. */
@@ -3711,21 +3727,48 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                nt_ref(nt, id, "block") >= 0) {
         /* value-form scan { }: iterate in the prelude; the value is the
-           receiver string (CRuby returns self from the block form). */
+           receiver string (CRuby returns self from the block form). A
+           capturing pattern yields each captures array, a plain one each
+           whole match. */
         int blk = nt_ref(nt, id, "block");
         const char *p0o = block_param_name(c, blk, 0);
         const char *p0r = p0o ? rename_local(p0o) : NULL;
         int body = nt_ref(nt, blk, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        int caps = re_has_captures(re_lit_src(c, argv[0]));
         int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
-                   tm, re_lit_index(c, argv[0]), tr, tm);
+        if (caps)
+          buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                     tm, re_lit_index(c, argv[0]), tr, tm);
+        else
+          buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
+                     tm, re_lit_index(c, argv[0]), tr, tm);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
-        if (p0r) {
+        if (p0r && caps) {
+          int blk2 = nt_ref(nt, id, "block");
+          if (block_param_name(c, blk2, 1)) {
+            int trow = ++g_tmp;
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n",
+                       trow, tm, ti);
+            for (int pk = 0; ; pk++) {
+              const char *pn2 = block_param_name(c, blk2, pk);
+              if (!pn2) break;
+              emit_indent(g_pre, g_indent + 1);
+              buf_printf(g_pre, "lv_%s = (_t%d && %d < _t%d->len) ? sp_poly_to_s(sp_PolyArray_get(_t%d, %d)) : NULL;\n",
+                         rename_local(pn2), trow, pk, trow, trow, pk);
+            }
+          }
+          else {
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "lv_%s = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", p0r, tm, ti);
+          }
+        }
+        else if (p0r) {
           emit_indent(g_pre, g_indent + 1);
           buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
         }

@@ -1193,7 +1193,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return; }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
-    if (nm && (sp_streq(nm, "$~") || sp_streq(nm, "$&")))  { buf_puts(b, "sp_re_match_str");  return; }
+    if (nm && sp_streq(nm, "$~")) { buf_puts(b, "sp_re_last_matchdata()"); return; }
+    if (nm && sp_streq(nm, "$&"))  { buf_puts(b, "sp_re_match_str");  return; }
     if (nm && sp_streq(nm, "$`"))                          { buf_puts(b, "sp_re_match_pre");  return; }
     if (nm && sp_streq(nm, "$'"))                          { buf_puts(b, "sp_re_match_post"); return; }
     if (nm && sp_streq(nm, "$+")) {
@@ -1216,7 +1217,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "BackReferenceReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) { buf_puts(b, "NULL"); return; }
-    if (sp_streq(nm, "$&") || sp_streq(nm, "$~")) buf_puts(b, "sp_re_match_str");
+    if (sp_streq(nm, "$~")) buf_puts(b, "sp_re_last_matchdata()");
+    else if (sp_streq(nm, "$&")) buf_puts(b, "sp_re_match_str");
     else if (sp_streq(nm, "$`"))                 buf_puts(b, "sp_re_match_pre");
     else if (sp_streq(nm, "$'"))                 buf_puts(b, "sp_re_match_post");
     else if (sp_streq(nm, "$+")) {

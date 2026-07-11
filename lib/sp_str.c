@@ -494,7 +494,29 @@ const char*sp_str_undump(const char*s){SP_GC_ROOT_STR(s);
   }
   out[oi]=0;return out;
 }
-const char*sp_str_succ_impl(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("succ");size_t l=strlen(s);if(l==0){char*r=sp_str_alloc_raw(1);r[0]=0;return r;}/* Find start of last codepoint */size_t lc=l-1;while(lc>0&&((unsigned char)s[lc]&0xC0)==0x80)lc--;if((unsigned char)s[lc]>=0x80){/* Multibyte tail: increment its codepoint */uint32_t cp;sp_utf8_decode(s+lc,&cp);cp++;char enc[4];int el=sp_utf8_encode(cp,enc);char*r=sp_str_alloc_raw(lc+el+1);memcpy(r,s,lc);memcpy(r+lc,enc,el);r[lc+el]=0;return r;}/* ASCII tail: existing carry logic */char*r=sp_str_alloc_raw(l+2);memcpy(r,s,l+1);mrb_int i=(mrb_int)l-1;while(i>=0){unsigned char c=(unsigned char)r[i];if(c>='0'&&c<'9'){r[i]=c+1;return r;}if(c=='9'){r[i]='0';i--;continue;}if(c>='a'&&c<'z'){r[i]=c+1;return r;}if(c=='z'){r[i]='a';i--;continue;}if(c>='A'&&c<'Z'){r[i]=c+1;return r;}if(c=='Z'){r[i]='A';i--;continue;}r[i]=c+1;return r;}memmove(r+1,r,l+1);if(r[1]=='0')r[0]='1';else if(r[1]=='a')r[0]='a';else if(r[1]=='A')r[0]='A';else r[0]=r[1];return r;}
+const char*sp_str_succ_impl(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("succ");size_t l=strlen(s);if(l==0){char*r=sp_str_alloc_raw(1);r[0]=0;return r;}/* Find start of last codepoint */size_t lc=l-1;while(lc>0&&((unsigned char)s[lc]&0xC0)==0x80)lc--;if((unsigned char)s[lc]>=0x80){/* Multibyte tail: increment its codepoint */uint32_t cp;sp_utf8_decode(s+lc,&cp);cp++;char enc[4];int el=sp_utf8_encode(cp,enc);char*r=sp_str_alloc_raw(lc+el+1);memcpy(r,s,lc);memcpy(r+lc,enc,el);r[lc+el]=0;return r;}
+  /* ASCII: CRuby carries over the ALPHANUMERIC characters only, skipping
+     everything else ("<<koala>>".succ == "<<koalb>>"); when no alnum exists
+     the rightmost byte increments. A carry past the leftmost alnum inserts
+     the carry character ('1' for a digit run, 'a'/'A' for a letter run)
+     just before it ("zz" -> "aaa", "a9" -> "b0", "Zz" -> "AAa"). */
+  char*r=sp_str_alloc_raw(l+2);memcpy(r,s,l+1);
+  int has_alnum=0;for(size_t k=0;k<l;k++){unsigned char c=(unsigned char)r[k];if((c>='0'&&c<='9')||(c>='a'&&c<='z')||(c>='A'&&c<='Z')){has_alnum=1;break;}}
+  if(!has_alnum){r[l-1]=(char)((unsigned char)r[l-1]+1);return r;}
+  mrb_int i=(mrb_int)l-1;mrb_int last_alnum=-1;char carry_ch='1';
+  while(i>=0){
+    unsigned char c=(unsigned char)r[i];
+    int is_d=(c>='0'&&c<='9'),is_lo=(c>='a'&&c<='z'),is_up=(c>='A'&&c<='Z');
+    if(!is_d&&!is_lo&&!is_up){i--;continue;}
+    last_alnum=i;
+    if(is_d){if(c<'9'){r[i]=c+1;return r;}r[i]='0';carry_ch='1';i--;continue;}
+    if(is_lo){if(c<'z'){r[i]=c+1;return r;}r[i]='a';carry_ch='a';i--;continue;}
+    if(c<'Z'){r[i]=c+1;return r;}r[i]='A';carry_ch='A';i--;continue;
+  }
+  /* full carry: insert the carry character before the leftmost alnum */
+  memmove(r+last_alnum+1,r+last_alnum,l+1-(size_t)last_alnum);
+  r[last_alnum]=carry_ch;
+  return r;}
 /* The ASCII same-length carry paths in succ_impl allocate l+2 bytes (room for
    a prepend) but return a string of length l, leaving the heap header's len
    field one too large. Callers that read sp_str_byte_len (e.g. concat) then

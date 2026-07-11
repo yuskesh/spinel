@@ -63,8 +63,8 @@ puts ("abc" =~ /xyz/).inspect              # nil
 puts ("abc" =~ /xyz/).nil?                 # true
 puts ("abc" =~ /b/).nil?                   # false
 
-# $~ / $& / $` / $' -- regex match globals exposed as strings
-# (spinel has no MatchData wrapper, so $~ === $&).
+# $~ / $& / $` / $' -- regex match globals. $~ is a real MatchData
+# (its to_s is the whole match, so `puts $~` prints like $&).
 "hello world" =~ /(o w)/
 puts $~                                    # o w
 puts $&                                    # o w

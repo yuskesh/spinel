@@ -63,7 +63,13 @@ int an_re_has_captures(const char *src) {
   if (!src) return 0;
   for (const char *p = src; *p; p++) {
     if (*p == '\\') { if (p[1]) p++; continue; }
-    if (*p == '(' && p[1] != '?') return 1;
+    if (*p == '(') {
+      if (p[1] != '?') return 1;
+      /* (?<name>...) and (?'name'...) are named CAPTURE groups
+         ((?<=..)/(?<!..) lookbehinds are not) */
+      if (p[1] == '?' && p[2] == '<' && p[3] != '=' && p[3] != '!') return 1;
+      if (p[1] == '?' && p[2] == 0x27) return 1;
+    }
   }
   return 0;
 }

@@ -35,6 +35,12 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ const char *_bs = sp_bigint_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "); if (_bs) { fputs(_bs, stdout); free((void *)_bs); } putchar('\\n'); }\n");
   }
+  else if (t == TY_MATCHDATA) {
+    /* puts uses to_s: the full matched substring; nil (NULL) prints blank */
+    int tmd = ++g_tmp;
+    buf_printf(b, "{ sp_MatchData *_t%d = ", tmd); emit_expr(c, arg, b);
+    buf_printf(b, "; puts(_t%d ? sp_MatchData_to_s(_t%d) : \"\"); }\n", tmd, tmd);
+  }
   else if (t == TY_RATIONAL) {
     buf_puts(b, "fputs(sp_rational_to_s("); emit_expr(c, arg, b);
     buf_puts(b, "), stdout); putchar('\\n');\n");
