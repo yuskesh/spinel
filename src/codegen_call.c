@@ -100,6 +100,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int saved_nren = g_nren, saved_block = g_block_id;
   const char *saved_self = g_self;
   const char *saved_self_deref = g_self_deref;
+  int saved_emcls = g_emitting_class_id;
   const char *saved_bpn = g_block_param_name;
   int saved_yfb = g_yield_block_fallback;
   int is_val = c->classes[ci].is_value_type;
@@ -188,6 +189,13 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     buf_puts(b, ";\n");
   }
 
+  /* The inlined `initialize` body runs in the CONSTRUCTED class's context:
+     an implicit-self call inside it (`setup` in `def initialize; setup;
+     yield self; end`) must resolve against `ci`, not the caller's class.
+     Args above were bound in the caller's context (g_self temporarily
+     restored per arg; g_emitting_class_id untouched until here), and the
+     spliced block body restores the caller's class via the fallback. */
+  g_emitting_class_id = ci;
   int save_ind = g_indent; g_indent = din;
   emit_stmts(c, m->body, b, din);
   g_indent = save_ind;
@@ -199,6 +207,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_block_id = saved_block;
   g_self = saved_self;
   g_self_deref = saved_self_deref;
+  g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
   g_yield_self_fallback = saved_self_fb;
