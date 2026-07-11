@@ -1173,8 +1173,12 @@ TyKind infer_call(Compiler *c, int id) {
     return (s && s->name && s->name[0]) ? TY_SYMBOL : TY_NIL;
   }
 
-  /* identity methods: return the receiver unchanged */
-  if (recv >= 0 && argc == 0 &&
+  /* identity methods: return the receiver unchanged (clone also with its
+     freeze: keyword argument) */
+  if (recv >= 0 &&
+      (argc == 0 ||
+       (argc == 1 && sp_streq(name, "clone") && argv && nt_type(nt, argv[0]) &&
+        sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))) &&
       (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
        sp_streq(name, "dup") || sp_streq(name, "clone")))
     return rt;

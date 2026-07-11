@@ -4021,22 +4021,27 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         int tv = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = %s; if (!_t%d) sp_nil_recv(\"to_str\"); _t%d; })", tv, r, tv, tv);
       }
-      else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && argc == 0)
+      else if ((sp_streq(name, "dup") || sp_streq(name, "clone")) &&
+               (argc == 0 ||
+                (argc == 1 && sp_streq(name, "clone") && nt_type(nt, argv[0]) &&
+                 sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
+                 ({ int _fv = kwh_lookup(nt, argv[0], "freeze");
+                    const char *_ft = _fv >= 0 ? nt_type(nt, _fv) : NULL;
+                    _ft && (sp_streq(_ft, "FalseNode") || sp_streq(_ft, "TrueNode") ||
+                            sp_streq(_ft, "NilNode")); })))) {
         /* sp_str_dup, not dup_external: the receiver is a spinel string, and
            the byte_len-aware copy carries embedded NULs (dup_external is for
-           unmarked C pointers and must stay strlen-based). */
-        buf_printf(b, "sp_str_dup(%s)", r);
-      else if (sp_streq(name, "clone") && argc == 1 && nt_type(nt, argv[0]) &&
-               sp_streq(nt_type(nt, argv[0]), "KeywordHashNode") &&
-               kwh_lookup(nt, argv[0], "freeze") >= 0) {
-        /* clone(freeze: false) is an unfrozen copy (sp_str_dup yields a heap
-           mutable string); freeze: true freezes the copy */
-        int fv2 = kwh_lookup(nt, argv[0], "freeze");
-        const char *fvt2 = nt_type(nt, fv2);
-        if (fvt2 && sp_streq(fvt2, "TrueNode"))
-          buf_printf(b, "sp_str_freeze_val(sp_str_dup(%s))", r);
-        else
-          buf_printf(b, "sp_str_dup(%s)", r);
+           unmarked C pointers and must stay strlen-based). clone's literal
+           freeze: keyword forces the copy's frozen state (nil/absent keeps
+           clone's default); a non-literal value stays a loud reject. */
+        int fz1 = 0;
+        if (argc == 1) {
+          int fv = kwh_lookup(nt, argv[0], "freeze");
+          const char *ft = fv >= 0 ? nt_type(nt, fv) : NULL;
+          fz1 = ft && sp_streq(ft, "TrueNode");
+        }
+        if (fz1) buf_printf(b, "sp_str_freeze_val(sp_str_dup(%s))", r);
+        else buf_printf(b, "sp_str_dup(%s)", r);
       }
       else if (sp_streq(name, "inspect"))    { int tv = ++g_tmp; buf_printf(b, "({ const char *_t%d = %s; _t%d ? sp_str_inspect(_t%d) : SPL(\"nil\"); })", tv, r, tv, tv); }
       else if (sp_streq(name, "empty?"))     buf_printf(b, "sp_str_empty_p(%s)", r);
@@ -4946,7 +4951,13 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       else {
-        buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+        /* no user class index: universal ancestors still answer true for the
+           hierarchy predicates (every object is_a? Object/BasicObject/Kernel);
+           instance_of? stays exact and answers false */
+        int uni = !sp_streq(name, "instance_of?") &&
+                  (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject") ||
+                   sp_streq(cn, "Kernel"));
+        buf_puts(b, "(("); emit_expr(c, recv, b); buf_printf(b, "), %d)", uni);
         return 1;
       }
     }
@@ -5017,6 +5028,42 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_obj_clamp_range(");
     emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    return 1;
+  }
+
+  /* Default Object#to_s / #inspect on a plain user object with no override:
+     box and route through the poly renderers, which produce CRuby's
+     "#<Name:0x...>" (inspect appends the ivar list via the registered
+     per-class walker). A by-value class has no boxable pointer, so its
+     renderer is emitted inline over a stack temp. */
+  if (recv >= 0 && ty_is_object(rt) && !c->classes[ty_object_class(rt)].is_struct &&
+      (sp_streq(name, "to_s") || sp_streq(name, "inspect")) && argc == 0 &&
+      !obj_str_cname(c, ty_object_class(rt), sp_streq(name, "inspect"))) {
+    int cid2 = ty_object_class(rt);
+    ClassInfo *ci2 = &c->classes[cid2];
+    int want_ins = sp_streq(name, "inspect");
+    if (ci2->is_value_type) {
+      const char *rn2 = class_ruby_name(c, cid2);
+      int tv2 = ++g_tmp;
+      buf_printf(b, "({ sp_%s _t%d = ", ci2->c_name, tv2); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_sprintf(\"#<%s:0x%%016llx", rn2 ? rn2 : ci2->name);
+      if (want_ins)
+        for (int vi = 0; vi < ci2->nivars; vi++)
+          buf_printf(b, "%s %s=%%s", vi ? "," : "", ci2->ivars[vi]);
+      buf_printf(b, ">\", (unsigned long long)(uintptr_t)&_t%d", tv2);
+      if (want_ins)
+        for (int vi = 0; vi < ci2->nivars; vi++) {
+          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d.iv_%s", tv2, ci2->ivars[vi] + 1);
+          buf_puts(b, ", sp_poly_inspect(");
+          emit_boxed_text(c, ci2->ivar_types[vi], fb2, b);
+          buf_puts(b, ")");
+        }
+      buf_puts(b, "); })");
+      return 1;
+    }
+    buf_printf(b, "sp_poly_%s(", want_ins ? "inspect" : "to_s");
+    emit_boxed(c, recv, b);
     buf_puts(b, ")");
     return 1;
   }
