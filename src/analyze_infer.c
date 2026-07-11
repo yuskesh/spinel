@@ -367,6 +367,11 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
     if (!nm || !sp_streq(nm, cname)) continue;
     int v = nt_ref(nt, id, "value");
     if (v < 0) return 0;
+    /* `CNAME = [...].freeze` binds the same literal */
+    if (nt_type(nt, v) && sp_streq(nt_type(nt, v), "CallNode") &&
+        nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "freeze") &&
+        nt_ref(nt, v, "receiver") >= 0)
+      v = nt_ref(nt, v, "receiver");
     const char *vty = nt_type(nt, v);
     int arr = -1;
     if (vty && sp_streq(vty, "ArrayNode")) arr = v;
@@ -394,7 +399,7 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
   return saw;
 }
 
-static int const_array_elems_all_int_array(Compiler *c, const char *cname) {
+int const_array_elems_all_int_array(Compiler *c, const char *cname) {
   long k = narrow_key(2, 0, cname);
   int hit; int v = narrow_memo_get(k, &hit);
   if (hit) return v;

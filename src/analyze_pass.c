@@ -5291,6 +5291,14 @@ int infer_block_params(Compiler *c) {
             if (ty_is_array(common_at)) inner_elem = ty_array_elem(common_at);
             else inner_elem = TY_POLY;
           }
+          else if (rty2 && sp_streq(rty2, "ConstantReadNode") &&
+                   nt_str(nt, recv, "name") &&
+                   const_array_elems_all_int_array(c, nt_str(nt, recv, "name"))) {
+            /* a poly-array CONSTANT of int-array rows (DIRECTIONS = [[dx,dy],
+               ...].freeze) destructures to int params -- otherwise one such
+               call site poisons every downstream method's params to poly */
+            inner_elem = TY_INT;
+          }
           else { inner_elem = TY_POLY; }
         }
         if (inner_elem != TY_UNKNOWN) {
