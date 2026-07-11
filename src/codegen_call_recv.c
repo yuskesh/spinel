@@ -5589,8 +5589,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       int t = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       if (comp_ntype(c, id) == TY_ENUMERATOR) {
-        buf_printf(b, "sp_Enumerator_new_from(sp_box_int_array(({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); })))",
-                   t, rb.p ? rb.p : "", t);
+        /* pass the boxed range itself: sp_enum_items_from expands the members
+           and #inspect keeps the range printable as the source */
+        buf_printf(b, "sp_Enumerator_new_from(sp_box_range(%s))", rb.p ? rb.p : "");
       }
       else {
         buf_printf(b, "({ sp_Range _t%d = %s; sp_range_to_ia(_t%d); })",

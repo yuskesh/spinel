@@ -3010,6 +3010,27 @@ int desugar_enum_method_recv(Compiler *c) {
         }
       }
     }
+    /* <stored enumerator>.with_object(memo) { }: drain to an array and ride
+       the array each_with_object machinery (covers both statement and value
+       forms, with the memo's own typing). Type-aware, hence fixpoint. */
+    if (nm && sp_streq(nm, "with_object")) {
+      int erecv = nt_ref(nt, id, "receiver");
+      int eblk = nt_ref(nt, id, "block");
+      int ea = nt_ref(nt, id, "arguments");
+      int eac = 0;
+      if (ea >= 0) nt_arr(nt, ea, "arguments", &eac);
+      if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR) {
+        int toa = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, toa, "name", "to_a");
+        nt_node_set_ref(nt, toa, "receiver", erecv);
+        nt_node_set_str(nt, id, "name", "each_with_object");
+        nt_node_set_ref(nt, id, "receiver", toa);
+        comp_grow_node_arrays(c);
+        c->nscope[toa] = c->nscope[id];
+        changed = 1;
+        continue;
+      }
+    }
     /* min_by(n)/max_by(n) { b }: sort_by { b } then take the n smallest /
        largest (largest reversed, matching CRuby's descending max_by order) */
     if (nm && (sp_streq(nm, "min_by") || sp_streq(nm, "max_by"))) {

@@ -482,7 +482,8 @@ static int range_each_is_external(Compiler *c, int id) {
     if (nt_ref(nt, n, "receiver") != id) continue;
     const char *m = nt_str(nt, n, "name");
     if (m && (sp_streq(m, "next") || sp_streq(m, "peek") ||
-              sp_streq(m, "rewind") || sp_streq(m, "size"))) return 1;
+              sp_streq(m, "rewind") || sp_streq(m, "size") ||
+              sp_streq(m, "class") || sp_streq(m, "inspect"))) return 1;
     return 0;   /* receiver of a collection method -> materialize to an array */
   }
   return 1;     /* standalone -> enumerator */
@@ -1620,6 +1621,7 @@ else {
     if (sp_streq(name, "size")) return TY_POLY;
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) return TY_POLY_ARRAY;
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) return TY_POLY_ARRAY;
+    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) return TY_STRING;
   }
 
   /* Kernel#p returns its argument (one arg; several return the array), so it
@@ -3161,13 +3163,16 @@ else {
       if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
       if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
       if (!sp_streq(nm, "map") && !sp_streq(nm, "collect") && !sp_streq(nm, "select") &&
-          !sp_streq(nm, "filter") && !sp_streq(nm, "reject") && !sp_streq(nm, "take_while")) { ok = 0; break; }
+          !sp_streq(nm, "filter") && !sp_streq(nm, "reject") && !sp_streq(nm, "take_while") &&
+          !sp_streq(nm, "filter_map") && !sp_streq(nm, "flat_map") &&
+          !sp_streq(nm, "collect_concat")) { ok = 0; break; }
       saw_op = 1;
       cur = nt_ref(nt, cur, "receiver");
     }
     if (ok && saw_op && lazy_src >= 0) {
       TyKind st = infer_type(c, lazy_src);
-      if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR) return TY_POLY_ARRAY;
+      if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
+          st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) return TY_POLY_ARRAY;
     }
   }
 

@@ -411,6 +411,10 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", cn, pv, cn); emit_expr(c, arg, b);
     buf_printf(b, "); fputs(_t%d ? sp_%s_inspect(_t%d) : \"nil\", stdout); putchar('\\n'); }\n", pv, cn, pv);
   }
+  else if (t == TY_ENUMERATOR) {
+    buf_puts(b, "{ sp_Enumerator *_pe = ("); emit_expr(c, arg, b);
+    buf_puts(b, "); fputs(sp_enum_inspect(_pe), stdout); putchar('\\n'); }\n");
+  }
   else if (t == TY_EXCEPTION) {
     /* boxed-path inspect: NULL prints nil, else #<Class: message> */
     int ev = ++g_tmp;

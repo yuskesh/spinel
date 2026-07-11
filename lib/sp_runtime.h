@@ -6526,6 +6526,7 @@ typedef struct {
   sp_RbVal feed; mrb_bool has_feed;       /* #feed: value returned by the next Fiber.yield */
   sp_RbVal gen_result;                    /* generator body's return -> StopIteration#result */
   sp_RbVal source;                        /* the iterated receiver -> materialized StopIteration#result */
+  const char *meth;                       /* creating method name, for #inspect ("each", ...) */
 } sp_Enumerator;
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) {
@@ -6536,6 +6537,9 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
       case SP_BUILTIN_POLY_ARRAY: { sp_PolyArray *a = (sp_PolyArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, a->data[i]); return r; }
       case SP_BUILTIN_FLT_ARRAY:  { sp_FloatArray *a = (sp_FloatArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_float(a->data[i])); return r; }
       case SP_BUILTIN_SYM_ARRAY:  { sp_IntArray *a = (sp_IntArray *)p; sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_sym((sp_sym)a->data[a->start + i])); return r; }
+      /* an int range iterates its members; keeps the range itself printable
+         as the enumerator's #inspect source */
+      case SP_BUILTIN_RANGE: { sp_Range *rg = (sp_Range *)p; sp_IntArray *ia = sp_range_to_ia(*rg); SP_GC_ROOT(ia); return sp_IntArray_to_poly(ia); }
       /* A hash iterates as its [key, value] pairs, in insertion order --
          sp_poly_each_elem builds the i-th pair for any of the variants. Each
          freshly built pair is rooted across the push, whose array-grow may
@@ -6574,7 +6578,7 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr;
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr; e->meth = "each";
   return e;
 }
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
@@ -6601,7 +6605,7 @@ static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
     }
   }
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr;
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr; e->meth = "reverse_each";
   return e;
 }
 /* Wrap an already-built poly array as an Enumerator, taking ownership of it
@@ -6610,7 +6614,7 @@ static sp_Enumerator *sp_Enumerator_new_from_rev(sp_RbVal arr) {
 static sp_Enumerator *sp_Enumerator_new_from_items(sp_PolyArray *items) {
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil();
+  e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
   return e;
 }
 /* A blockless Array#each_with_index enumerator: an [element, index] pair for
@@ -6628,7 +6632,7 @@ static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, mrb_int off) {
     sp_PolyArray_push(pair, sp_box_int(i + off));
     sp_PolyArray_push(pairs, sp_box_poly_array(pair));
   }
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(pairs); e->source = arr; return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(pairs); e->source = arr; e->meth = "each_with_index"; return e; }
 }
 /* A blockless Array#each_index enumerator: the indices 0..len-1. */
 static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
@@ -6638,7 +6642,7 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
   SP_GC_ROOT(idx);
   mrb_int n = items ? items->len : 0;
   for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(idx, sp_box_int(i));
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(idx); e->source = arr; return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(idx); e->source = arr; e->meth = "each_index"; return e; }
 }
 /* Array#each_slice(n) with no block: a materialized Enumerator whose items are
    the consecutive non-overlapping slices of length n (the last may be short).
@@ -6659,7 +6663,7 @@ static sp_Enumerator *sp_Enumerator_new_slices(sp_RbVal arr, mrb_int n) {
     if (len - i <= n) break;
     i += n;
   }
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; e->meth = sp_sprintf("each_slice(%lld)", (long long)n); return e; }
 }
 /* Array#each_cons(n) with no block: a materialized Enumerator whose items are
    the sliding windows of length n (none when len < n). */
@@ -6677,7 +6681,7 @@ static sp_Enumerator *sp_Enumerator_new_cons(sp_RbVal arr, mrb_int n) {
       sp_PolyArray_push(out, sp_box_poly_array(win));
     }
   }
-  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; e->meth = sp_sprintf("each_cons(%lld)", (long long)n); return e; }
 }
 /* Blockless <enum>.with_index(off): a materialized Enumerator whose items are
    the [element, off + i] pairs of the source enumerator's items. The source is
@@ -6730,8 +6734,19 @@ static sp_PolyArray *sp_str_lines_poly(const char *s) {
 }
 static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size) {
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
-  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil();
+  e->items = NULL; e->cursor = 0; e->gen = gen; e->gen_cap = cap; e->fib = NULL; e->peeked = FALSE; e->size = size; e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = sp_box_nil(); e->meth = "each";
   return e;
+}
+
+/* Enumerator#inspect: the CRuby "#<Enumerator: <source>:<method>>" for a
+   materialized enumerator with a known source; a generator has no printable
+   receiver and renders a Generator placeholder (CRuby shows its address). */
+static const char *sp_enum_inspect(sp_Enumerator *e) {
+  if (!e) return "nil";
+  if (e->gen) return "#<Enumerator: #<Enumerator::Generator>:each>";
+  sp_RbVal src = (e->source.tag != SP_TAG_NIL) ? e->source
+               : sp_box_poly_array(e->items ? e->items : sp_PolyArray_new());
+  return sp_sprintf("#<Enumerator: %s:%s>", sp_poly_inspect(src), e->meth ? e->meth : "each");
 }
 /* Pull the next value from the generator fiber, or raise StopIteration when it
    has run to completion. A resume that ends the body terminates the fiber and

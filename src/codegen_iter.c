@@ -1356,6 +1356,59 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
+  /* <stored enumerator>.with_index(off) { |x, i| }: drain the enumerator once
+     and drive the block with the offset index alongside each element. (The
+     immediate chain forms -- arr.each.with_index { } -- are matched earlier by
+     the chain emitters; this is the stored-value case. with_object desugars to
+     to_a.each_with_object in analyze.) */
+  if (rt == TY_ENUMERATOR && sp_streq(name, "with_index")) {
+    int wargs = nt_ref(nt, id, "arguments");
+    int wargc = 0;
+    const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
+    if (wargc <= 1) {
+      const char *p1_orig = block_param_name(c, block, 1);
+      const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
+      int ta = ++g_tmp, ti = ++g_tmp, toff = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_PolyArray *_t%d = sp_Enumerator_to_a(%s); SP_GC_ROOT(_t%d);\n",
+                 ta, rb.p ? rb.p : "", ta);
+      free(rb.p);
+      emit_indent(b, indent);
+      buf_printf(b, "mrb_int _t%d = ", toff);
+      if (wargc == 1 && wargv) emit_int_expr(c, wargv[0], b);
+      else buf_puts(b, "0");
+      buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
+      if (p0) {
+        Scope *bs0 = comp_scope_of(c, block);
+        LocalVar *b0 = p0_orig ? scope_local(bs0, p0_orig) : NULL;
+        TyKind p0t = (b0 && b0->type != TY_UNKNOWN) ? b0->type : TY_POLY;
+        char vb0[48];
+        snprintf(vb0, sizeof vb0, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = ", p0);
+        if (p0t == TY_POLY) buf_puts(b, vb0);
+        else emit_unbox_text(c, p0t, vb0, b);
+        buf_puts(b, ";\n");
+      }
+      if (p1) {
+        Scope *bs1 = comp_scope_of(c, block);
+        LocalVar *b1 = p1_orig ? scope_local(bs1, p1_orig) : NULL;
+        TyKind p1t = (b1 && b1->type != TY_UNKNOWN) ? b1->type : TY_POLY;
+        emit_indent(b, indent + 1);
+        if (p1t == TY_POLY)
+          buf_printf(b, "lv_%s = sp_box_int(_t%d + _t%d);\n", p1, ti, toff);
+        else
+          buf_printf(b, "lv_%s = _t%d + _t%d;\n", p1, ti, toff);
+      }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
+  }
+
   /* array.each { |x| ... } */
   /* Also drives a materialized or generator Enumerator: `enum.each { }` drains
      it to a poly array once (a generator runs its fiber to completion -- an

@@ -610,7 +610,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     else if (ac != 0) return 0;
   }
 
-  enum { OP_MAP, OP_FILTER, OP_TAKEWHILE };
+  enum { OP_MAP, OP_FILTER, OP_TAKEWHILE, OP_FILTERMAP, OP_FLATMAP };
   struct { int kind; int block; int negate; } ops[16];
   int nops = 0, cur = recv, lazy_src = -1;
   while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
@@ -627,6 +627,12 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
              sp_streq(nm, "find_all")) ops[nops].kind = OP_FILTER, ops[nops].negate = 0;
     else if (sp_streq(nm, "reject")) ops[nops].kind = OP_FILTER, ops[nops].negate = 1;
     else if (sp_streq(nm, "take_while")) ops[nops].kind = OP_TAKEWHILE, ops[nops].negate = 0;
+    else if (sp_streq(nm, "filter_map")) ops[nops].kind = OP_FILTERMAP, ops[nops].negate = 0;
+    /* flat_map splices its block result into the stream; supported as the
+       stage adjacent to the terminal (nops == 0 here: ops collect
+       terminal-first), where the splice happens straight into the result. */
+    else if ((sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) && nops == 0)
+      ops[nops].kind = OP_FLATMAP, ops[nops].negate = 0;
     else return 0;
     ops[nops].block = blk;
     nops++;
@@ -637,7 +643,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   TyKind st = infer_type(c, lazy_src);
   int src_is_range = (st == TY_RANGE), src_is_intarr = (st == TY_INT_ARRAY);
   int src_is_enum = (st == TY_ENUMERATOR);
-  if (!src_is_range && !src_is_intarr && !src_is_enum) return 0;
+  /* other array kinds iterate a boxed-element snapshot */
+  int src_is_arr = (st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY);
+  if (!src_is_range && !src_is_intarr && !src_is_enum && !src_is_arr) return 0;
 
   int excl = 0, endless = 0, right = -1, left_n = -1;
   int src_range_literal = 0, trange = -1;
@@ -680,6 +688,13 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     tsrc = ++g_tmp; emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_IntArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", tsrc, sb.p ? sb.p : "0", tsrc); free(sb.p);
   }
+  if (src_is_arr) {
+    /* snapshot the source's elements boxed (shared element walker) */
+    Buf sb = {0};
+    emit_boxed(c, lazy_src, &sb);
+    tsrc = ++g_tmp; emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_enum_items_from(%s); SP_GC_ROOT(_t%d);\n", tsrc, sb.p ? sb.p : "0", tsrc); free(sb.p);
+  }
 
   int tloop = ++g_tmp, tv = ++g_tmp;
   Buf lo_b; memset(&lo_b, 0, sizeof lo_b);
@@ -705,6 +720,13 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
                tloop, tloop, tsrc, cbuf, tloop);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_RbVal _t%d = sp_box_int(sp_IntArray_get(_t%d, _t%d)); SP_GC_ROOT_RBVAL(_t%d);\n", tv, tsrc, tloop, tv);
+  }
+  else if (src_is_arr) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len%s; _t%d++) {\n",
+               tloop, tloop, tsrc, cbuf, tloop);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = _t%d->data[_t%d]; SP_GC_ROOT_RBVAL(_t%d);\n", tv, tsrc, tloop, tv);
   }
   else {
     /* Enumerator source: drive a fresh run one value at a time -- a generator
@@ -764,6 +786,38 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       int svind = g_indent; g_indent += 1; emit_boxed(c, bb[bn - 1], &eb); g_indent = svind;
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "%s = %s;\n", vbuf, eb.p ? eb.p : "sp_box_nil()"); free(eb.p);
+    }
+    else if (ops[oi].kind == OP_FILTERMAP) {
+      /* map, then drop a falsy result */
+      Buf eb; memset(&eb, 0, sizeof eb);
+      int svind = g_indent; g_indent += 1; emit_boxed(c, bb[bn - 1], &eb); g_indent = svind;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "%s = %s;\n", vbuf, eb.p ? eb.p : "sp_box_nil()"); free(eb.p);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (!sp_poly_truthy(%s)) continue;\n", vbuf);
+    }
+    else if (ops[oi].kind == OP_FLATMAP) {
+      /* splice an array result element-wise into the result (a non-array
+         result pushes as itself), honoring the terminal count, then skip the
+         shared tail push. Only ever the last-applied stage (oi == 0). */
+      Buf eb; memset(&eb, 0, sizeof eb);
+      int svind = g_indent; g_indent += 1; emit_boxed(c, bb[bn - 1], &eb); g_indent = svind;
+      int tfm = ++g_tmp, tfj = ++g_tmp;
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tfm, eb.p ? eb.p : "sp_box_nil()", tfm); free(eb.p);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) {\n", tfm, tfm);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_poly_length(_t%d)%s; _t%d++)\n", tfj, tfj, tfm, cbuf, tfj);
+      emit_indent(g_pre, g_indent + 3);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_poly_arr_get(_t%d, _t%d));\n", tres, tfm, tfj);
+      emit_indent(g_pre, g_indent + 1);
+      buf_puts(g_pre, "}\n");
+      emit_indent(g_pre, g_indent + 1);
+      buf_puts(g_pre, "else ");
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tfm);
+      emit_indent(g_pre, g_indent + 1);
+      buf_puts(g_pre, "continue;\n");
     }
     else {
       Buf cb; memset(&cb, 0, sizeof cb);
@@ -5256,6 +5310,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
     }
     if (sp_streq(name, "size") && argc == 0) {
       buf_puts(b, "sp_Enumerator_size("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+    }
+    if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
+      buf_puts(b, "sp_enum_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
     if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) {
       buf_puts(b, "sp_Enumerator_take("); emit_expr(c, recv, b); buf_puts(b, ", ");
