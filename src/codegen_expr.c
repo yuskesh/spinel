@@ -1995,13 +1995,30 @@ else {
     buf_puts(b, " sp_exc_top--;\n}\nelse {\n  sp_exc_top--;\n  sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n  "
                 "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n  "
                 "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n  ");
-    /* rescue arm */
+    /* materialize the handled exception and push it so `$!` (and #cause
+       threading for a nested raise) see it inside the fallback, exactly like
+       a full rescue arm; popped when the arm value settles. */
+    int tce = ++g_tmp;
+    buf_printf(b, "sp_Exception *_t%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                  " : sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n  ", tce);
+    buf_printf(b, "_t%d->cause = (sp_Exception *)sp_pending_cause; sp_pending_cause = NULL;\n  ", tce);
+    buf_printf(b, "sp_rescue_push((void *)_t%d);\n  ", tce);
+    /* rescue arm: its preludes (e.g. a hoisted `$!` read) must land INSIDE
+       this else block, after the push -- swap g_pre to a local buffer. */
     if (r >= 0) {
-      buf_printf(b, "_t%d = ", t);
-      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed(c, r, b);
-      else emit_expr(c, r, b);
-      buf_puts(b, ";");
+      Buf rpre; memset(&rpre, 0, sizeof rpre);
+      Buf *sv_pre = g_pre; int sv_ind = g_indent;
+      g_pre = &rpre; g_indent = 1;
+      Buf rv; memset(&rv, 0, sizeof rv);
+      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed(c, r, &rv);
+      else emit_expr(c, r, &rv);
+      g_pre = sv_pre; g_indent = sv_ind;
+      if (rpre.p) buf_puts(b, rpre.p);
+      free(rpre.p);
+      buf_printf(b, "_t%d = %s;", t, rv.p ? rv.p : "");
+      free(rv.p);
     }
+    buf_puts(b, "\n  sp_rescue_sp--;");
     buf_printf(b, "\n}\n_t%d; })", t);
     return;
   }

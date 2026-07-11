@@ -3139,7 +3139,8 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
       if (c == '*') {
         /* dynamic width / precision: the next positional argument supplies the
            number (a negative width left-justifies, like printf) */
-        sp_RbVal wv = (idx < a->len) ? a->data[idx] : sp_box_nil(); idx++;
+        if (idx >= a->len) { free(buf); sp_raise_cls("ArgumentError", "too few arguments"); }
+        sp_RbVal wv = a->data[idx]; idx++;
         long long wnum = (wv.tag == SP_TAG_INT) ? (long long)wv.v.i
                        : (wv.tag == SP_TAG_FLT) ? (long long)wv.v.f : 0;
         char wbuf[24]; int wl = snprintf(wbuf, sizeof wbuf, "%lld", wnum);
@@ -3162,7 +3163,11 @@ else {
     char tmp[256]; int wn = 0;
     sp_RbVal v;
     if (have_named) v = named_v;
-    else { v = (idx < a->len) ? a->data[idx] : sp_box_nil(); idx++; }
+    else {
+      /* CRuby raises rather than padding a missing argument with nil/0 */
+      if (idx >= a->len) { free(buf); sp_raise_cls("ArgumentError", "too few arguments"); }
+      v = a->data[idx]; idx++;
+    }
     if (conv == 'd' || conv == 'i' || conv == 'x' || conv == 'X' || conv == 'o') {
       long long lv = 0;
       if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
@@ -3209,8 +3214,13 @@ else if (conv == 'c') {
       wn = snprintf(tmp, sizeof(tmp), fmt_use, cv);
     }
 else {
-      memcpy(tmp, spec, sl); tmp[sl] = 0; wn = (int)sl;
-      if (!have_named) idx--;
+      /* CRuby: an unknown / truncated conversion is a hard error */
+      free(buf);
+      if (conv)
+        sp_raise_cls("ArgumentError", sp_sprintf("malformed format string - %%%c", conv));
+      else
+        sp_raise_cls("ArgumentError", "incomplete format specifier; use %% (double %) instead");
+      return "";
     }
     if (wn < 0) continue;
     if (out + (size_t)wn + 1 >= cap) { cap = ((out + wn) * 2) + 64; buf = (char *)realloc(buf, cap); }

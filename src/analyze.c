@@ -2432,6 +2432,103 @@ static int expand_literal_splat_args(Compiler *c) {
   return changed;
 }
 
+/* `m(&op)` where op is a SYMBOL variable: rewrite the block argument into a
+   real block calling `send(op)` -- the dynamic-send desugar then expands the
+   send over op's statically-known candidate set. Comparator consumers
+   (reduce/inject/sort/min/max/minmax) get the two-parameter form so operator
+   symbols (`op = :+`) apply both arguments. A `sym_var.to_proc` call gets the
+   same treatment as an explicit lambda. */
+static int desugar_symbol_var_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int is_toproc = nm && sp_streq(nm, "to_proc");
+    int ex = -1;
+    if (is_toproc) {
+      ex = nt_ref(nt, id, "receiver");
+      if (nt_ref(nt, id, "block") >= 0 || nt_ref(nt, id, "arguments") >= 0) continue;
+    }
+    else {
+      int blk = nt_ref(nt, id, "block");
+      if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+      ex = nt_ref(nt, blk, "expression");
+    }
+    if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "LocalVariableReadNode")) continue;
+    if (infer_type(c, ex) != TY_SYMBOL) continue;
+    int two = 0;
+    if (!is_toproc && nm)
+      two = sp_streq(nm, "reduce") || sp_streq(nm, "inject") || sp_streq(nm, "sort") ||
+            sp_streq(nm, "min") || sp_streq(nm, "max") || sp_streq(nm, "minmax");
+    char pa[32], pb[32];
+    snprintf(pa, sizeof pa, "__svp_a_%d", id);
+    snprintf(pb, sizeof pb, "__svp_b_%d", id);
+    int kpa = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, kpa, "name", pa);
+    int preq[2] = { kpa, -1 };
+    int npar = 1;
+    if (two) {
+      int kpb = nt_new_node(nt, "RequiredParameterNode");
+      nt_node_set_str(nt, kpb, "name", pb);
+      preq[1] = kpb; npar = 2;
+    }
+    int params = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, params, "requireds", preq, npar);
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, bparams, "parameters", params);
+    int ra = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, ra, "name", pa);
+    int sargs = nt_new_node(nt, "ArgumentsNode");
+    int sa[2] = { ex, -1 };
+    int nsa = 1;
+    if (two) {
+      int rb2 = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, rb2, "name", pb);
+      sa[1] = rb2; nsa = 2;
+    }
+    nt_node_set_arr(nt, sargs, "arguments", sa, nsa);
+    int call = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, call, "name", "send");
+    nt_node_set_ref(nt, call, "receiver", ra);
+    nt_node_set_ref(nt, call, "arguments", sargs);
+    int blkbody = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, blkbody, "body", &call, 1);
+    int blk2 = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, blk2, "parameters", bparams);
+    nt_node_set_ref(nt, blk2, "body", blkbody);
+    comp_grow_node_arrays(c);
+    /* new nodes belong to the call's scope */
+    int ns2[16]; int nn2 = 0;
+    ns2[nn2++] = kpa; if (two) ns2[nn2++] = preq[1];
+    ns2[nn2++] = params; ns2[nn2++] = bparams; ns2[nn2++] = ra;
+    if (two) ns2[nn2++] = sa[1];
+    ns2[nn2++] = sargs; ns2[nn2++] = call; ns2[nn2++] = blkbody; ns2[nn2++] = blk2;
+    for (int j = 0; j < nn2; j++) c->nscope[ns2[j]] = c->nscope[id];
+    Scope *sc2 = comp_scope_of(c, id);
+    if (sc2) {
+      LocalVar *lva = scope_local_intern(sc2, pa);
+      if (lva) lva->is_block_param = 1;
+      if (two) {
+        LocalVar *lvb = scope_local_intern(sc2, pb);
+        if (lvb) lvb->is_block_param = 1;
+      }
+    }
+    if (is_toproc) {
+      /* sym_var.to_proc -> lambda { |x| x.send(sym_var) } */
+      nt_node_set_str(nt, id, "name", "lambda");
+      nt_node_set_ref(nt, id, "receiver", -1);
+      nt_node_set_ref(nt, id, "block", blk2);
+    }
+    else
+      nt_node_set_ref(nt, id, "block", blk2);
+    changed = 1;
+  }
+  return changed;
+}
+
 static int pin_arg_position_hash_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -4053,6 +4150,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
+    ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
     ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
     ch |= desugar_binding_lvget(c);            /* binding.local_variable_get(:x) -> x.itself */

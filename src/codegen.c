@@ -564,7 +564,9 @@ void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
          existing cell scan marks the referent. Int / bool stay direct in an
          mrb_int cell; float / poly have native cells above. */
       int ptr_cell = cell_is_typed_ptr(c, lv);
-      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN && !ptr_cell)
+      /* a Symbol is int-represented (sp_sym), so it rides the mrb_int cell */
+      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_SYMBOL &&
+          lv->type != TY_UNKNOWN && !ptr_cell)
         unsupported(c, s->def_node, "closure capturing a non-integer variable (later slice)");
       if (ptr_cell) {
         const char *cell_scan = (lv->type == TY_STRING) ? "sp_cell_scan_str" : "sp_cell_scan_ptr";
@@ -1742,7 +1744,8 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
          side-channel (sp_box_float / sp_poly_to_f), not the truncating slot. */
       int float_cell = lv->type == TY_FLOAT;
       int poly_cell = lv->type == TY_POLY;
-      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_UNKNOWN &&
+      if (lv->type != TY_INT && lv->type != TY_BOOL && lv->type != TY_SYMBOL &&
+          lv->type != TY_UNKNOWN &&
           lv->type != TY_PROC && !float_cell && !ptr_cell && !poly_cell) {
         free(params.v); free(used.v); free(locals.v); free(caps.v);
         unsupported(c, create, "proc capturing a non-integer variable (later slice)");

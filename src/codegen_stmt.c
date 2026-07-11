@@ -6566,7 +6566,19 @@ else {
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) sp_proc_homes_unwind();\n");
     /* A non-local unwind only passes through (no ensure here): continue it. */
     emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
+    /* $! and #cause threading inside the fallback, like a full rescue arm */
+    {
+      int tce = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_Exception *_t%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n", tce);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "_t%d->cause = (sp_Exception *)sp_pending_cause; sp_pending_cause = NULL;\n", tce);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_rescue_push((void *)_t%d);\n", tce);
+    }
     if (r >= 0) emit_stmt(c, r, b, indent + 1);
+    emit_indent(b, indent + 1); buf_puts(b, "sp_rescue_sp--;\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
   }
