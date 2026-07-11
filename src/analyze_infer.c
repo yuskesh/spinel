@@ -769,6 +769,9 @@ TyKind infer_call(Compiler *c, int id) {
 
   /* nil receiver: type inference for NilClass methods */
   if (recv >= 0 && rt == TY_NIL) {
+    if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
+        sp_streq(name, "===")) return TY_BOOL;
+    if (sp_streq(name, "to_c")) return TY_COMPLEX;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
         sp_streq(name, "instance_of?")) return TY_BOOL;
@@ -2804,6 +2807,28 @@ else {
         if (!has_user) return TY_POLY_ARRAY;
       }
       if (sp_streq(name, "clamp")) return TY_POLY;  /* boxed numeric clamp -> poly */
+      /* nil-aware conversions (a nil local widens to poly): boxed results */
+      if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
+          (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
+           sp_streq(name, "to_r") || sp_streq(name, "to_c"))) {
+        int has_user = 0;
+        for (int k = 0; k < c->nclasses && !has_user; k++)
+          if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
+        if (!has_user) return TY_POLY;  /* boxed result (array/hash/rational/complex) */
+      }
+      if (argc == 1 && sp_streq(name, "===")) {
+        int has_user = 0;
+        for (int k = 0; k < c->nclasses && !has_user; k++)
+          if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
+        if (!has_user) return TY_BOOL;
+      }
+      /* & | ^ against a boolean operand is the NilClass/Boolean logical
+         operator (an int receiver with a bool operand would be a TypeError),
+         so the result is a boolean; int operands keep the bitwise int type. */
+      if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+        TyKind bat = infer_type(c, argv[0]);
+        if (bat == TY_BOOL || bat == TY_NIL) return TY_BOOL;
+      }
       /* String transforms on a boxed value: emit_poly_call routes these
          through sp_poly_to_s and re-boxes the result, so the value stays
          poly (mirrors the codegen list in codegen_call_recv.c). */

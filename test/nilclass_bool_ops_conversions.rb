@@ -1,0 +1,20 @@
+# NilClass: boolean & | ^ (variable and literal receivers), ===, and the
+# conversions to_a/to_h/to_r/to_c on a nil-holding (poly-widened) variable.
+x = nil
+p(x.to_a)
+p(x.to_h)
+p(x.to_r)
+p(x.to_c)
+p(x === nil)
+p(x === 1)
+p(x & true)
+p(x | true)
+p(x ^ true)
+p(x | false)
+p(x ^ false)
+p(nil & true)
+p(nil | 5)
+p(nil ^ nil)
+p(nil === nil)
+p(nil === 0)
+p(nil.to_c)

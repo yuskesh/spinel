@@ -9240,6 +9240,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (argc == 0 && sp_streq(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)0)"); return; }
     if (argc == 0 && sp_streq(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return; }
     if (argc == 0 && sp_streq(name, "to_r"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_rational_new(0, 1))"); return; }
+    if (argc == 0 && sp_streq(name, "to_c"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_Complex){0, 0})"); return; }
     if (argc == 0 && sp_streq(name, "to_a"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())"); return; }
     if (argc == 0 && sp_streq(name, "to_h"))    {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
@@ -9250,6 +9251,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode") ? nt_str(nt, argv[0], "name") : NULL;
       int yes = cn ? (sp_streq(cn, "NilClass") || sp_streq(name, "instance_of?") ? sp_streq(cn, "NilClass") : (sp_streq(cn, "Object") || sp_streq(cn, "BasicObject"))) : 0;
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
+      return;
+    }
+    /* NilClass boolean operators: & is always false, | and ^ test the
+       operand's truthiness */
+    if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), ");
+      if (sp_streq(name, "&")) { buf_puts(b, "(void)("); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)"); }
+      else { buf_puts(b, "sp_poly_truthy("); emit_boxed(c, argv[0], b); buf_puts(b, "))"); }
+      return;
+    }
+    if (argc == 1 && sp_streq(name, "===")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (");
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, ").tag == SP_TAG_NIL)");
       return;
     }
   }

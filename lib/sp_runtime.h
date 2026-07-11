@@ -2523,9 +2523,24 @@ static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
    semantics fall through when the recv isn't an array. */
 static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b);
 static sp_RbVal sp_poly_shr(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) >> sp_poly_to_i(b)); }
-static sp_RbVal sp_poly_band(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) & sp_poly_to_i(b)); }
-static sp_RbVal sp_poly_bor(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) | sp_poly_to_i(b)); }
-static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) { return sp_box_int(sp_poly_to_i(a) ^ sp_poly_to_i(b)); }
+/* & | ^ are boolean operators on a nil/boolean receiver (NilClass#& is
+   always false, | and ^ test the operand's truthiness) and bitwise on an
+   integer receiver. */
+static sp_RbVal sp_poly_band(sp_RbVal a, sp_RbVal b) {
+  if (a.tag == SP_TAG_NIL) return sp_box_bool(0);
+  if (a.tag == SP_TAG_BOOL) return sp_box_bool(a.v.b && sp_poly_truthy(b));
+  return sp_box_int(sp_poly_to_i(a) & sp_poly_to_i(b));
+}
+static sp_RbVal sp_poly_bor(sp_RbVal a, sp_RbVal b) {
+  if (a.tag == SP_TAG_NIL) return sp_box_bool(sp_poly_truthy(b));
+  if (a.tag == SP_TAG_BOOL) return sp_box_bool(a.v.b || sp_poly_truthy(b));
+  return sp_box_int(sp_poly_to_i(a) | sp_poly_to_i(b));
+}
+static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
+  if (a.tag == SP_TAG_NIL) return sp_box_bool(sp_poly_truthy(b));
+  if (a.tag == SP_TAG_BOOL) return sp_box_bool(a.v.b != sp_poly_truthy(b));
+  return sp_box_int(sp_poly_to_i(a) ^ sp_poly_to_i(b));
+}
 static sp_RbVal sp_poly_neg(sp_RbVal a) { if (a.tag == SP_TAG_FLT) return sp_box_float(-a.v.f); return sp_box_int(-sp_poly_to_i(a)); }
 
 /* sp_mark_rbval: inline helper in sp_gc.h. */
@@ -4776,6 +4791,34 @@ static sp_RbVal sp_marv_hash_new(void) { return sp_box_obj(sp_PolyPolyHash_new()
 static void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v) { sp_PolyPolyHash_set((sp_PolyPolyHash *)h.v.p, k, v); }
 static sp_RbVal sp_marv_box_complex(mrb_float re, mrb_float im) { sp_Complex c; c.re = re; c.im = im; return sp_box_complex(c); }
 static sp_RbVal sp_marv_box_rational(mrb_int n, mrb_int d) { return sp_box_rational(sp_rational_new(n, d)); }
+/* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
+   to poly): nil converts per NilClass, a value already of the target kind is
+   itself, anything else raises NoMethodError like CRuby. */
+static sp_RbVal sp_poly_to_a_m(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return sp_box_poly_array(sp_PolyArray_new());
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return v;
+  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_a' for %s", sp_poly_class_name(v)));
+}
+static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH);
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return v;
+  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_h' for %s", sp_poly_class_name(v)));
+}
+static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return sp_box_rational(sp_rational_new(0, 1));
+  if (v.tag == SP_TAG_INT) return sp_box_rational(sp_rational_new(v.v.i, 1));
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL) return v;
+  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_r' for %s", sp_poly_class_name(v)));
+}
+static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) { sp_Complex z; z.re = 0; z.im = 0; return sp_box_complex(z); }
+  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT) {
+    sp_Complex z; z.re = sp_poly_to_f(v); z.im = 0; return sp_box_complex(z);
+  }
+  if (v.tag == SP_TAG_STR) return sp_box_complex(sp_str_to_c(v.v.s ? v.v.s : sp_str_empty));
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) return v;
+  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_c' for %s", sp_poly_class_name(v)));
+}
 static void sp_marv_raise(const char *cls, const char *msg) { sp_raise_cls(cls, msg); }
 /* Array-reduction methods on a boxed array value -- an element of a poly array,
    e.g. a run produced by chunk_while / slice_when. Each switches on the boxed
