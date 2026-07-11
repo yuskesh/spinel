@@ -115,8 +115,10 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      nested emission (a frame only ever writes its own selfbuf). */
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
+  int saved_emcls_fb = g_yield_emitting_class_fallback;
   g_yield_self_fallback = g_self;
   g_yield_self_deref_fallback = g_self_deref;
+  g_yield_emitting_class_fallback = g_emitting_class_id;
   g_block_id = block;
   g_block_param_name = m->blk_param;
 
@@ -201,6 +203,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_yield_block_fallback = saved_yfb;
   g_yield_self_fallback = saved_self_fb;
   g_yield_self_deref_fallback = saved_deref_fb;
+  g_yield_emitting_class_fallback = saved_emcls_fb;
   return 1;
 }
 

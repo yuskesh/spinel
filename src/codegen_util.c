@@ -102,6 +102,10 @@ int  g_yield_block_fallback = -1;
    g_yield_block_fallback. */
 const char *g_yield_self_fallback = NULL;
 const char *g_yield_self_deref_fallback = NULL;
+/* Companion to g_yield_self_fallback: the CALLER's emitting-class, so a
+   block body spliced into an inlined callee resolves its implicit-self
+   calls against the caller's class (the block is caller code). */
+int g_yield_emitting_class_fallback = -1;
 const char *g_block_param_name = NULL;
 /* Inside an Enumerator.new { |y| ... } generator body, the name of the yielder
    block param. A `y << v` / `y.yield(v)` on it lowers to a Fiber.yield. */
