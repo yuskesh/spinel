@@ -547,6 +547,11 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
    comparison op. */
 static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_RATIONAL) { emit_expr(c, node, b); return; }
+  if (comp_ntype(c, node) == TY_FLOAT) {
+    /* the exact rational value of the double, not a truncating int cast */
+    buf_puts(b, "sp_float_to_rational("); emit_expr(c, node, b); buf_puts(b, ")");
+    return;
+  }
   buf_puts(b, "sp_rational_new((mrb_int)("); emit_expr(c, node, b); buf_puts(b, "), 1)");
 }
 /* Emit a node as an sp_Complex: a Complex stays as-is, an Integer/Float
@@ -1087,6 +1092,29 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       Buf sb = expr_buf(c, argv[0]);
       buf_printf(b, "sp_str_to_r(%s)", sb.p ? sb.p : "\"\"");
       free(sb.p);
+      return 1;
+    }
+    /* Rational(Float) is the exact value of the double (5/2 for 2.5), not the
+       truncating int cast; a Rational passes through unchanged. */
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+      Buf sb = expr_buf(c, argv[0]);
+      buf_printf(b, "sp_float_to_rational(%s)", sb.p ? sb.p : "0");
+      free(sb.p);
+      return 1;
+    }
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      emit_expr(c, argv[0], b);
+      return 1;
+    }
+    /* Rational(a, b) with a Float or Rational operand: the exact quotient of
+       the two values (sp_rational_div raises ZeroDivisionError at b == 0). */
+    if (argc == 2 && (comp_ntype(c, argv[0]) == TY_FLOAT || comp_ntype(c, argv[1]) == TY_FLOAT ||
+                      comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+      buf_puts(b, "sp_rational_div(");
+      emit_rat_coerce(c, argv[0], b);
+      buf_puts(b, ", ");
+      emit_rat_coerce(c, argv[1], b);
+      buf_puts(b, ")");
       return 1;
     }
     if (argc == 2) {
