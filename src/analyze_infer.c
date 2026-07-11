@@ -737,6 +737,20 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_CURRY;
   }
 
+  if (rt == TY_INT && sp_streq(name, "clamp") && argc == 1 &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
+      ((nt_ref(nt, argv[0], "left") >= 0 && infer_type(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
+       (nt_ref(nt, argv[0], "right") >= 0 && infer_type(c, nt_ref(nt, argv[0], "right")) == TY_FLOAT)))
+    return TY_POLY;
+  if (rt == TY_INT && sp_streq(name, "divmod") && argc == 1 &&
+      comp_ntype(c, argv[0]) == TY_FLOAT) return TY_POLY_ARRAY;
+  if (rt == TY_INT && sp_streq(name, "modulo") && argc == 1 &&
+      comp_ntype(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+  if (rt == TY_FLOAT && sp_streq(name, "clamp") && argc == 1 &&
+      comp_ntype(c, argv[0]) == TY_RANGE) return TY_POLY;
+  if (rt == TY_INT && sp_streq(name, "round") && argc >= 1 &&
+      nt_type(nt, argv[argc - 1]) &&
+      sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) return TY_INT;
   if (rt == TY_INT && sp_streq(name, "quo")) return TY_RATIONAL;
   /* Integer <op> Rational coerces the Integer to Rational (result Rational for
      arithmetic, Bool/Int for comparisons). */

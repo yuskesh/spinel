@@ -4253,6 +4253,19 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "floor") ||
                 sp_streq(name, "ceil") || sp_streq(name, "round") || sp_streq(name, "truncate")) &&
                argc == 0) buf_printf(b, "(%s)", r);
+      else if (sp_streq(name, "round") && argc >= 1 && nt_type(nt, argv[argc - 1]) &&
+               sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
+        int hv2 = kwh_lookup(nt, argv[argc - 1], "half");
+        const char *hm = (hv2 >= 0 && nt_type(nt, hv2) && sp_streq(nt_type(nt, hv2), "SymbolNode"))
+                           ? nt_str(nt, hv2, "value") : NULL;
+        if (argc == 1) buf_printf(b, "(%s)", r);   /* no digits: self */
+        else {
+          int md = hm && sp_streq(hm, "even") ? 0 : hm && sp_streq(hm, "down") ? 2 : 1;
+          buf_printf(b, "sp_int_round_half(%s, ", r);
+          emit_int_expr(c, argv[0], b);
+          buf_printf(b, ", %d)", md);
+        }
+      }
       else if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
                 sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
         buf_printf(b, "sp_int_%s(%s, ", name, r); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -4283,6 +4296,20 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         else
           unsupported(c, id, "Integer#chr with a non-constant or unsupported encoding");
       }
+      else if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        /* bit-slice: n[lo..hi] extracts hi-lo+1 bits starting at lo; an
+           endless range keeps everything above lo */
+        int trb = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", trb); emit_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _lo%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first;"
+                      " mrb_int _sh%d = ((%s) >> _lo%d);"
+                      " _t%d.last == INTPTR_MAX ? _sh%d"
+                      " : (_sh%d & ((((mrb_int)1) << (_t%d.last - _lo%d + (_t%d.excl ? 0 : 1))) - 1)); })",
+                   trb, trb, trb,
+                   trb, r, trb,
+                   trb, trb,
+                   trb, trb, trb, trb);
+      }
       else if (sp_streq(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
       else if (sp_streq(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
       else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((mrb_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
@@ -4301,6 +4328,17 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "nonzero?")) buf_printf(b, "((%s) == 0 ? SP_INT_NIL : (%s))", r, r);
       else if (sp_streq(name, "positive?")) buf_printf(b, "((%s) > 0)", r);
       else if (sp_streq(name, "negative?")) buf_printf(b, "((%s) < 0)", r);
+      else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        /* a Float divisor divides as floats: [floor-quotient Integer, Float mod] */
+        int tb = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                      " mrb_int _t%d = (mrb_int)floor((double)(%s) / _t%d);"
+                      " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_float((double)(%s) - (double)_t%d * _t%d)); _t%d; })",
+                   tb, tq, r, tb, o, o, o, tq, o, r, tq, tb, o);
+      }
       else if (sp_streq(name, "divmod") && argc == 1) {
         int tb = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
@@ -4308,9 +4346,22 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
       }
       else if (sp_streq(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+      else if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1 &&
+               comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_puts(b, "({ (void)(");
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "); sp_raise_cls(\"TypeError\", \"not an integer\"); (mrb_int)(%s); })", r);
+      }
       else if (sp_streq(name, "gcd") && argc == 1) { buf_printf(b, "sp_gcd(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "modulo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        int tb = ++g_tmp, tq = ++g_tmp;
+        buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = (mrb_int)floor((double)(%s) / _t%d);"
+                      " (double)(%s) - (double)_t%d * _t%d; })",
+                   tb, tq, r, tb, r, tq, tb);
+      }
       else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "remainder") && argc == 1) { buf_printf(b, "sp_iremainder(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "size") && argc == 0) buf_puts(b, "((mrb_int)sizeof(mrb_int))");
@@ -4329,6 +4380,24 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE &&
+               nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
+               ((nt_ref(nt, argv[0], "left") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
+                (nt_ref(nt, argv[0], "right") >= 0 && comp_ntype(c, nt_ref(nt, argv[0], "right")) == TY_FLOAT))) {
+        /* float bounds cannot ride sp_Range's int fields: compare as doubles,
+           the clamped-to bound is the Float endpoint itself */
+        int lo3 = nt_ref(nt, argv[0], "left"), hi3 = nt_ref(nt, argv[0], "right");
+        int tv3 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = (%s);", tv3, r);
+        buf_printf(b, " double _lo%d = ", tv3);
+        if (lo3 >= 0) emit_float_expr(c, lo3, b); else buf_puts(b, "-HUGE_VAL");
+        buf_printf(b, "; double _hi%d = ", tv3);
+        if (hi3 >= 0) emit_float_expr(c, hi3, b); else buf_puts(b, "HUGE_VAL");
+        buf_printf(b, "; ((double)_t%d < _lo%d) ? sp_box_float(_lo%d)"
+                      " : ((double)_t%d > _hi%d) ? sp_box_float(_hi%d)"
+                      " : sp_box_int(_t%d); })",
+                   tv3, tv3, tv3, tv3, tv3, tv3, tv3);
+      }
       else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
         /* the helper raises on an exclusive range with a real end (CRuby) */
         buf_printf(b, "sp_int_clamp_range_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -4419,10 +4488,38 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         }
         else if (ndig > 0)
           buf_printf(b, "({ double _f = pow(10, %d); %s((%s) * _f) / _f; })", ndig, cfn, r);
-        else if (ndig < 0)  /* round to a power of ten left of the decimal -> Integer */
-          buf_printf(b, "({ double _f = pow(10, %d); (mrb_int)(%s((%s) / _f) * _f); })", -ndig, cfn, r);
-        else
-          buf_printf(b, "((mrb_int)%s(%s))", cfn, r);
+        else if (ndig < 0) {  /* round to a power of ten left of the decimal -> Integer */
+          int tg = ++g_tmp;
+          buf_printf(b, "({ double _t%d = (%s);"
+                        " if (isinf(_t%d)) sp_raise_cls(\"FloatDomainError\", _t%d > 0 ? \"Infinity\" : \"-Infinity\");"
+                        " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                        " double _f = pow(10, %d); (mrb_int)(%s(_t%d / _f) * _f); })",
+                     tg, r, tg, tg, tg, -ndig, cfn, tg);
+        }
+        else {
+          int tg = ++g_tmp;
+          buf_printf(b, "({ double _t%d = (%s);"
+                        " if (isinf(_t%d)) sp_raise_cls(\"FloatDomainError\", _t%d > 0 ? \"Infinity\" : \"-Infinity\");"
+                        " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                        " (mrb_int)%s(_t%d); })",
+                     tg, r, tg, tg, tg, cfn, tg);
+        }
+      }
+      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        /* the clamped-to bound is the range's Integer endpoint itself; an
+           in-range receiver stays the Float */
+        int tf2 = ++g_tmp, trg2 = ++g_tmp;
+        buf_printf(b, "({ double _t%d = (%s); sp_Range _t%d = ", tf2, r, trg2);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d.excl && _t%d.last != INTPTR_MAX)"
+                      " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");"
+                      " (_t%d.first != INTPTR_MIN && _t%d < (double)_t%d.first) ? sp_box_int(_t%d.first)"
+                      " : (_t%d.last != INTPTR_MAX && _t%d > (double)_t%d.last) ? sp_box_int(_t%d.last)"
+                      " : sp_box_float(_t%d); })",
+                   trg2, trg2,
+                   trg2, tf2, trg2, trg2,
+                   trg2, tf2, trg2, trg2,
+                   tf2);
       }
       else if (sp_streq(name, "to_i"))  buf_printf(b, "sp_float_to_i_checked(%s)", r);
       else if (sp_streq(name, "to_f"))  buf_printf(b, "(%s)", r);
@@ -4432,10 +4529,25 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ mrb_float _t%d = (%s); mrb_float _t%d = ", tx, r, tn); emit_expr(c, argv[0], b);
         buf_printf(b, "; if (isnan(_t%d) || isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
                       " if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                      " mrb_int _t%d = (mrb_int)floor(_t%d / _t%d); sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " if (isinf(_t%d)) {"
+                      /* an infinite divisor: same sign -> [0, x], opposite -> [-1, divisor] */
+                      " if (_t%d == 0.0 || (_t%d > 0) == (_t%d > 0)) {"
+                      " sp_PolyArray_push(_t%d, sp_box_int(0)); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); }"
+                      " else { sp_PolyArray_push(_t%d, sp_box_int(-1)); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); } }"
+                      " else {"
+                      " mrb_int _t%d = (mrb_int)floor(_t%d / _t%d);"
                       " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                      " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); _t%d; })",
-                   tx, tn, tn, tq, tx, tn, o, o, tq, o, tx, tq, tn, o);
+                      " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (mrb_float)_t%d * _t%d)); } _t%d; })",
+                   tx, tn, tn,
+                   o, o,
+                   tn,
+                   tx, tx, tn,
+                   o, o, tx,
+                   o, o, tn,
+                   tq, tx, tn,
+                   o, tq,
+                   o, tx, tq, tn, o);
       }
       else if (sp_streq(name, "to_s"))    buf_printf(b, "sp_float_opt_to_s(%s)", r);
       else if (sp_streq(name, "inspect")) buf_printf(b, "sp_float_opt_inspect(%s)", r);

@@ -2468,6 +2468,23 @@ static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
    which CRuby evaluates to a Rational like (1/2) -- raises RangeError rather
    than silently truncating toward 0. Float ** negative stays a float
    (CRuby-compatible: 2.0 ** -1 == 0.5). See docs/limitations.md. */
+/* Integer#round(ndigits, half: mode): mode 0 = :even (banker's),
+   1 = :up (default), 2 = :down. Positive ndigits are a no-op for ints. */
+static mrb_int sp_int_round_half(mrb_int v, mrb_int nd, int mode) __attribute__((unused));
+static mrb_int sp_int_round_half(mrb_int v, mrb_int nd, int mode) {
+  if (nd >= 0) return v;
+  mrb_int f = 1;
+  for (mrb_int i = 0; i < -nd; i++) f *= 10;
+  mrb_int q = v / f, rem = v % f;
+  mrb_int arem = rem < 0 ? -rem : rem;
+  mrb_int half = f / 2;
+  int up;
+  if (arem > half) up = 1;
+  else if (arem < half) up = 0;
+  else up = mode == 1 ? 1 : mode == 2 ? 0 : (q % 2 != 0);  /* :even ties to even */
+  if (up) q += (v < 0 ? -1 : 1);
+  return q * f;
+}
 static mrb_int sp_int_pow(mrb_int base, mrb_int exp) __attribute__((unused));
 static mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
   if (exp < 0) sp_raise_cls("RangeError", "negative exponent");
