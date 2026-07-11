@@ -2889,6 +2889,16 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_inspectable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
+    /* a user #inspect wins over the default ivar walk, so a contained
+       element renders the same as a directly-inspected one */
+    int uidef = -1;
+    int uimi = comp_method_in_chain(c, i, "inspect", &uidef);
+    if (uimi >= 0 && c->scopes[uimi].reachable && c->scopes[uimi].ret == TY_STRING &&
+        c->scopes[uimi].nparams == 0) {
+      buf_printf(b, "    case %d: return sp_%s_%s((sp_%s *)p);\n",
+                 i, c->classes[uidef].c_name, mc(c->scopes[uimi].name), c->classes[uidef].c_name);
+      continue;
+    }
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", (unsigned long long)(uintptr_t)p));\n",

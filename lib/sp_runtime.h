@@ -1906,6 +1906,12 @@ static inline void sp_poly_puts(sp_RbVal v) {
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
         case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
         case SP_BUILTIN_REGEX: puts(sp_re_to_s_str(v.v.p)); break;
+        case SP_BUILTIN_POLY_ARRAY: {
+          /* puts flattens arrays recursively, one element per line */
+          sp_PolyArray *_a = (sp_PolyArray *)v.v.p;
+          for (mrb_int _i = 0; _i < _a->len; _i++) sp_poly_puts(_a->data[_i]);
+          break;
+        }
         default: printf("#<Object:0x%p>\n", v.v.p); break;
       }
       break;
