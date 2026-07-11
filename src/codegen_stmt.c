@@ -2715,7 +2715,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         emit_indent(b, body_indent);
         buf_printf(b, "lv_%s = ", lnm);
         LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
-        char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d->len - %dLL)", k, arm_t, arm_t, (long long)(npost - j));
+        char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d->len - %lldLL)", k, arm_t, arm_t, (long long)(npost - j));
         if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) {
           Buf bx; memset(&bx, 0, sizeof bx);
           emit_boxed_text(c, ty_array_elem(arr_t), gx, &bx);

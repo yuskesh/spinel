@@ -496,6 +496,10 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 int emit_grep_expr(Compiler *c, int id, Buf *b);
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out);
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
+/* analyze-side helpers also called from codegen (defined in analyze_util.c /
+   analyze_scope.c; canonical declarations live in analyze_internal.h) */
+int is_arith_op(const char *op);
+TyKind ffi_spec_to_ty(const char *spec);
 void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt, const char *src, Buf *b);
 void emit_rest_pack(Compiler *c, int from, int pos_argc, const int *argv, Buf *b);
 void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
