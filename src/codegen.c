@@ -2869,6 +2869,22 @@ static int class_inspectable(Compiler *c, int i) {
   return 1;
 }
 static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
+  /* Forward-declare the user to_s/inspect methods the switches dispatch to --
+     the switch bodies are emitted ahead of the method definitions. */
+  for (int i = 0; i < c->nclasses; i++) {
+    ClassInfo *fci = &c->classes[i];
+    if (is_builtin_reopen(fci->name) || fci->is_native_class) continue;
+    if (comp_ty_value_obj(c, ty_object(i))) continue;
+    const char *mnames[2] = { "to_s", "inspect" };
+    for (int m = 0; m < 2; m++) {
+      int fdef = -1;
+      int fmi = comp_method_in_chain(c, i, mnames[m], &fdef);
+      if (fmi < 0 || !c->scopes[fmi].reachable || c->scopes[fmi].ret != TY_STRING ||
+          c->scopes[fmi].nparams != 0 || fdef != i) continue;
+      buf_printf(b, "static const char *sp_%s_%s(sp_%s *self);\n",
+                 c->classes[fdef].c_name, mc(c->scopes[fmi].name), c->classes[fdef].c_name);
+    }
+  }
   /* user #to_s dispatcher: only classes defining one get an arm; NULL means
      "no user to_s" and the caller renders the #<Name:0xADDR> default. */
   buf_puts(b, "static const char *sp_obj_to_s_sw(int cls_id, void *p) {\n  switch (cls_id) {\n");
