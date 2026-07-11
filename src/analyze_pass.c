@@ -462,6 +462,59 @@ static TyKind pm_deconstruct_arr_ty(Compiler *c, TyKind scrutinee_t) {
   return scrutinee_t;
 }
 
+/* Recursively type every local bound anywhere inside a nested container
+   pattern to boxed poly: values reached through a poly-valued container
+   (a hash value, a find window, a capture under either) are sp_RbVal at
+   the binding site. Monotonic unify, like the flat arms. */
+static int pm_seed_locals_poly(Compiler *c, Scope *ms, int pat) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  if (pat < 0) return 0;
+  const char *pty = nt_type(nt, pat);
+  if (!pty) return 0;
+  if (sp_streq(pty, "LocalVariableTargetNode")) {
+    const char *lnm = nt_str(nt, pat, "name");
+    LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+    if (lv && !lv->is_param && !lv->is_block_param) {
+      TyKind mg = ty_unify(lv->type, TY_POLY);
+      if (mg != lv->type) { lv->type = mg; changed = 1; }
+    }
+    return changed;
+  }
+  if (sp_streq(pty, "CapturePatternNode")) {
+    changed |= pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "target"));
+    changed |= pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "value"));
+    return changed;
+  }
+  if (sp_streq(pty, "SplatNode"))
+    return pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "expression"));
+  if (sp_streq(pty, "AssocNode"))
+    return pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "value"));
+  if (sp_streq(pty, "AssocSplatNode"))
+    return pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "value"));
+  if (sp_streq(pty, "ArrayPatternNode") || sp_streq(pty, "FindPatternNode") ||
+      sp_streq(pty, "HashPatternNode")) {
+    int n = 0;
+    const int *kids = nt_arr(nt, pat, sp_streq(pty, "HashPatternNode") ? "elements" : "requireds", &n);
+    for (int i = 0; i < n; i++) changed |= pm_seed_locals_poly(c, ms, kids[i]);
+    int np = 0;
+    const int *posts = nt_arr(nt, pat, "posts", &np);
+    for (int i = 0; i < np; i++) changed |= pm_seed_locals_poly(c, ms, posts[i]);
+    changed |= pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "rest"));
+    changed |= pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "left"));
+    changed |= pm_seed_locals_poly(c, ms, nt_ref(nt, pat, "right"));
+    return changed;
+  }
+  return 0;
+}
+
+/* Is this pattern node a container whose inner bindings arrive boxed? */
+static int pm_is_container_pat(const NodeTable *nt, int pat) {
+  const char *pty = pat >= 0 ? nt_type(nt, pat) : NULL;
+  return pty && (sp_streq(pty, "ArrayPatternNode") || sp_streq(pty, "FindPatternNode") ||
+                 sp_streq(pty, "HashPatternNode"));
+}
+
 static int infer_case_pattern_locals(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -549,9 +602,22 @@ static int infer_case_pattern_locals(Compiler *c) {
           const char *ety = nt_type(nt, pelms[k]);
           if (!ety || !sp_streq(ety, "AssocNode")) continue;
           int ptgt = nt_ref(nt, pelms[k], "value");
-          if (ptgt < 0 || !nt_type(nt, ptgt) ||
-              !sp_streq(nt_type(nt, ptgt), "LocalVariableTargetNode")) continue;
-          const char *lnm = nt_str(nt, ptgt, "name");
+          if (ptgt < 0 || !nt_type(nt, ptgt)) continue;
+          /* a nested container value ({a: {b:}}, {data: [*, y, *]}) delivers
+             its inner bindings boxed */
+          if (pm_is_container_pat(nt, ptgt)) {
+            changed |= pm_seed_locals_poly(c, ms, ptgt);
+            continue;
+          }
+          int btgt = ptgt;  /* `k: PAT => v` binds v to the value */
+          if (sp_streq(nt_type(nt, ptgt), "CapturePatternNode")) {
+            int cv = nt_ref(nt, ptgt, "value");
+            if (pm_is_container_pat(nt, cv)) changed |= pm_seed_locals_poly(c, ms, cv);
+            btgt = nt_ref(nt, ptgt, "target");
+            if (btgt < 0 || !nt_type(nt, btgt)) continue;
+          }
+          if (!sp_streq(nt_type(nt, btgt), "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, btgt, "name");
           LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
           TyKind et = (vt != TY_UNKNOWN && vt != TY_NIL) ? vt : TY_POLY;
@@ -581,8 +647,15 @@ static int infer_case_pattern_locals(Compiler *c) {
         const int *reqs = nt_arr(nt, pat, "requireds", &rn);
         for (int k = 0; k < rn; k++) {
           const char *lty2 = nt_type(nt, reqs[k]);
-          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
-          const char *lnm = nt_str(nt, reqs[k], "name");
+          if (!lty2) continue;
+          int tgt = reqs[k];
+          /* a `lit => x` window capture binds its target to an element */
+          if (sp_streq(lty2, "CapturePatternNode")) {
+            tgt = nt_ref(nt, reqs[k], "target");
+            if (tgt < 0 || !nt_type(nt, tgt)) continue;
+          }
+          if (!sp_streq(nt_type(nt, tgt), "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, tgt, "name");
           LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
           TyKind et = (elem_t != TY_UNKNOWN) ? elem_t : TY_POLY;
@@ -606,7 +679,14 @@ static int infer_case_pattern_locals(Compiler *c) {
         const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
         for (int k = 0; k < apn; k++) {
           const char *lty2 = nt_type(nt, reqs[k]);
-          if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
+          if (!lty2) continue;
+          /* a hash/find element pattern ([{name:}]) delivers its inner
+             bindings boxed; nested array elements keep their own typing */
+          if (sp_streq(lty2, "HashPatternNode") || sp_streq(lty2, "FindPatternNode")) {
+            changed |= pm_seed_locals_poly(c, ms, reqs[k]);
+            continue;
+          }
+          if (!sp_streq(lty2, "LocalVariableTargetNode")) continue;
           const char *lnm = nt_str(nt, reqs[k], "name");
           LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
           if (!lv || lv->is_param || lv->is_block_param) continue;
