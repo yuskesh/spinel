@@ -568,6 +568,40 @@ void mark_ie_subtree(Compiler *c, int node, int cls) {
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, node, i, &n); for (int k = 0; k < n; k++) mark_ie_subtree(c, ids[k], cls); }
 }
 
+/* `ENV` is compile-time modeled only as a call RECEIVER (`ENV[...]`,
+   `ENV.fetch`, ...). Flowing it as a VALUE -- an argument, a parameter
+   default, an assignment -- would smuggle a class-typed value into
+   hash-typed uses and mis-emit C. Reject loudly with the read-at-the-
+   use-site convention instead. defined?(ENV) evaluates nothing and is
+   exempt. */
+static void reject_env_value_uses(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  char *ok = calloc((size_t)nt->count, 1);
+  if (!ok) { perror("calloc"); exit(1); }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r >= 0) ok[r] = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_DefinedNode, id) {
+    int v = nt_ref(nt, id, "value");
+    if (v >= 0) ok[v] = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ConstantReadNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "ENV") || ok[id]) continue;
+    int ln  = (int)nt_int(nt, id, "node_line", 0);
+    int fid = (int)nt_int(nt, id, "node_file", 0);
+    const char *file = nt_file_path(nt, fid);
+    if (!file || !*file) file = nt->source_file;
+    fprintf(stderr, "spinel: %s:%d: `ENV` cannot flow as a value (it is "
+                    "compile-time modeled as a call receiver only); read "
+                    "ENV[\"KEY\"] at the use site and pass the string\n",
+            file ? file : "source.rb", ln);
+    exit(1);
+  }
+  free(ok);
+}
+
 /* `A = SomeClass` (a constant aliasing a class) then `A.foo`: rewrite the
    ConstantRead receiver's name to the underlying class so class-method dispatch
    resolves it exactly like the direct `SomeClass.foo`. Mirrors the `class CONST`
@@ -578,7 +612,12 @@ void rewrite_const_alias_receivers(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "ConstantReadNode")) continue;
+    if (recv < 0 || !nt_type(nt, recv)) continue;
+    const char *rvty = nt_type(nt, recv);
+    /* A ConstantPathNode whose LEAF is the alias (`Outer::OC.five` where
+       `OC = Util`) resolves the same way: constants register by leaf name,
+       and a path receiver with a real class leaf already dispatches. */
+    if (!sp_streq(rvty, "ConstantReadNode") && !sp_streq(rvty, "ConstantPathNode")) continue;
     const char *rn = nt_str(nt, recv, "name");
     if (!rn || comp_class_index(c, rn) >= 0) continue;  /* already a class name */
     const char *real = resolve_class_alias(c, rn);
@@ -4641,6 +4680,7 @@ void analyze_program(Compiler *c) {
   register_undefs(c);
   register_globals_consts(c);
   rewrite_const_alias_receivers(c);
+  reject_env_value_uses(c);
   register_ffi_decls(c);
   topup_forwarding_arity(c);
 

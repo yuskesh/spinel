@@ -1321,14 +1321,26 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "ConstantPathNode")) {
     /* M::CONST -> the flat constant named by the final path component */
     const char *nm = nt_str(nt, id, "name");
+    int par_idc = nt_ref(nt, id, "parent");
+    const char *par_tyc = par_idc >= 0 ? nt_type(nt, par_idc) : NULL;
+    const char *par_nmc = (par_tyc && sp_streq(par_tyc, "ConstantReadNode")) ? nt_str(nt, par_idc, "name") : NULL;
+    /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
+       plain-constant table, or a same-leaf plain constant in another module
+       silently claims the reference (and its type). */
+    if (par_nmc && nm) {
+      for (int fci = 0; fci < c->n_ffi_consts; fci++) {
+        if (sp_streq(c->ffi_consts[fci].mod, par_nmc) &&
+            sp_streq(c->ffi_consts[fci].name, nm)) {
+          buf_printf(b, "((mrb_int)%d)", c->ffi_consts[fci].val);
+          return;
+        }
+      }
+    }
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
     if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "cst_%s", nm); return; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return; }
     if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return; }
     /* well-known module constants */
-    int par_idc = nt_ref(nt, id, "parent");
-    const char *par_tyc = par_idc >= 0 ? nt_type(nt, par_idc) : NULL;
-    const char *par_nmc = (par_tyc && sp_streq(par_tyc, "ConstantReadNode")) ? nt_str(nt, par_idc, "name") : NULL;
     if (par_nmc && sp_streq(par_nmc, "Float") && nm) {
       if (sp_streq(nm, "MAX"))      { buf_puts(b, "DBL_MAX"); return; }
       if (sp_streq(nm, "MIN"))      { buf_puts(b, "DBL_MIN"); return; }
