@@ -1,0 +1,3 @@
+class Router
+  def path_params: () -> Hash[String, String]
+end

@@ -2274,10 +2274,17 @@ void process_include_body(Compiler *c, int ci, int body_node) {
            call chain and can be spliced (a collector builder `col(&b) = build(tag,
            &b)` forwarding into a self-rebinding instance_exec); shared, it emits as
            a real function that lifts the block to a proc and breaks the chain. */
-        if ((is_builtin_class_name(c->classes[ci].name) || scope_body_has_super(c, ms) ||
-             scope_body_has_receiverless_ie(c, ms) || scope_body_uses_ivar(c, ms) ||
-             (src->blk_param && src->blk_param[0])) &&
-            src->body >= 0) {
+        /* Clone UNCONDITIONALLY: a shared body carries ONE node-type cache
+           and ONE scope attribution across every includer, so when two
+           includers' call sites settle the params differently (an --rbs
+           StrStr pin in one test class, symbol-keyed fixtures in another)
+           the signature is emitted from the emitting includer's scope while
+           the body reads the LAST-walked includer's types -- a hard C
+           mismatch (#2008). Per-includer cloning is how CRuby's iclass
+           semantics resolve self/ivars/blocks anyway (the previous
+           conditions); divergent inference makes it necessary for every
+           method. */
+        if (src->body >= 0) {
           int nb = nt_clone_subtree((NodeTable *)nt, src->body);
           if (nb >= 0) {
             comp_grow_node_arrays(c);

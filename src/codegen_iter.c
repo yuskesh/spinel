@@ -1282,6 +1282,16 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(name, "each") && rt == TY_POLY && block >= 0) {
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    /* The gate read the cached node type (poly); a cloned-body local can have
+       settled to a TYPED container since (a per-includer module-method clone
+       whose param pinned later, #2008). Re-infer and box the concrete kind --
+       a raw typed pointer must never initialize the sp_RbVal receiver. */
+    TyKind fresh_rt = infer_type(c, recv);
+    if (fresh_rt != TY_POLY && (ty_is_hash(fresh_rt) || ty_is_array(fresh_rt))) {
+      Buf bx; memset(&bx, 0, sizeof bx);
+      emit_boxed_text(c, fresh_rt, rb.p ? rb.p : "", &bx);
+      free(rb.p); rb = bx;
+    }
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
     /* Root the boxed receiver so a GC fired by the loop body doesn't free a
        freshly-built collection held only by this temp. */

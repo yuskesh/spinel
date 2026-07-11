@@ -510,6 +510,12 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
 	  "$$tmp/b" > "$$tmp/b.out" 2>/dev/null; \
 	  cmp -s "$$tmp/b.out" test/rbs-seed/boundary.expected || { echo "rbs-seed-test: FAIL (#1417 boundary output mismatch)"; diff -u test/rbs-seed/boundary.expected "$$tmp/b.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#1417 boundary coercion C did not compile)"; ok=0; fi; \
+	$(SPINEL) test/rbs-seed/module_clone_divergent.rb --rbs test/rbs-seed/sig \
+	  -c --no-line-map -o "$$tmp/mc.c" 2>/dev/null; \
+	if $(CC) -O0 -Ilib "$$tmp/mc.c" $(SP_RT_LIB) -lm -o "$$tmp/mc" 2>"$$tmp/mc.err"; then \
+	  "$$tmp/mc" > "$$tmp/mc.out" 2>/dev/null; \
+	  cmp -s "$$tmp/mc.out" test/rbs-seed/module_clone_divergent.expected || { echo "rbs-seed-test: FAIL (#2008 module-clone divergent-hash output mismatch)"; diff -u test/rbs-seed/module_clone_divergent.expected "$$tmp/mc.out" || true; ok=0; }; \
+	else echo "rbs-seed-test: FAIL (#2008 module-clone divergent-hash C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/void_block_tail.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/v.c" 2>/dev/null; \
 	if $(CC) -O0 -Ilib "$$tmp/v.c" $(SP_RT_LIB) -lm -o "$$tmp/v" 2>"$$tmp/v.err"; then \
