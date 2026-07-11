@@ -2422,6 +2422,7 @@ else {
          ints.sum(0.0) or ints.sum(0.0) { |x| x }), regardless of the block. */
       if (argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
       /* a String / Array initial value folds by concatenation */
+      if (argc == 1 && infer_type(c, argv[0]) == TY_STRING) return TY_STRING;
       if (argc == 1 && blk < 0) {
         TyKind sit = infer_type(c, argv[0]);
         if (sit == TY_STRING) return TY_STRING;
@@ -2517,6 +2518,10 @@ else {
         (sp_streq(name, "sample") && argc == 1))
       return rt;  /* n-arg form -> subarray */
     if (sp_streq(name, "slice") && argc == 2) return rt;
+    if ((sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 1)
+      return rt;  /* pop(n)/shift(n): the removed subarray */
+    if (sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0)
+      return rt;  /* blockless cycle(n): the receiver repeated n times */
     if (sp_streq(name, "first") || sp_streq(name, "last") ||
         sp_streq(name, "min") || sp_streq(name, "max") ||
         sp_streq(name, "sample") ||
@@ -2589,6 +2594,10 @@ else {
     if ((sp_streq(name, "delete_at") || sp_streq(name, "delete")) && argc == 1)
       return ty_array_elem(rt);
     if (sp_streq(name, "shift") && argc == 0) return ty_array_elem(rt);
+    if ((sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 1) return rt;  /* removed subarray */
+    if (sp_streq(name, "slice") && argc == 1 && nt_ref(nt, id, "block") < 0)
+      /* slice(range) is a subarray; slice(i) one element (mirrors #[]) */
+      return infer_type(c, argv[0]) == TY_RANGE ? rt : ty_array_elem(rt);
     if (sp_streq(name, "slice!") && argc == 2) return rt;  /* removed subarray */
     if (sp_streq(name, "slice!") && argc == 1)
       /* slice!(range) removes a subarray; slice!(i) removes one element */

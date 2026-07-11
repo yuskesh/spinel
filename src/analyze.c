@@ -2064,6 +2064,44 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         }
       }
     }
+    /* each_entry is each for the sequential-yield shapes spinel compiles */
+    if (sp_streq(nm, "each_entry")) {
+      nt_node_set_str(nt, id, "name", "each");
+      continue;
+    }
+    /* max(n) { cmp } / min(n) { cmp }: the n extremes by the comparator --
+       sort { cmp } then take from the appropriate end (max descends). */
+    if ((sp_streq(nm, "max") || sp_streq(nm, "min")) && recv >= 0 &&
+        nt_ref(nt, id, "block") >= 0) {
+      int margs = nt_ref(nt, id, "arguments");
+      int man = 0;
+      if (margs >= 0) nt_arr(nt, margs, "arguments", &man);
+      int mblk = nt_ref(nt, id, "block");
+      const char *mbty = mblk >= 0 ? nt_type(nt, mblk) : NULL;
+      if (man == 1 && mbty && sp_streq(mbty, "BlockNode")) {
+        int sortc = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, sortc, "name", "sort");
+        nt_node_set_ref(nt, sortc, "receiver", recv);
+        nt_node_set_ref(nt, sortc, "block", mblk);
+        if (sp_streq(nm, "min")) {
+          nt_node_set_str(nt, id, "name", "first");
+          nt_node_set_ref(nt, id, "receiver", sortc);
+          nt_node_set_ref(nt, id, "block", -1);
+        }
+        else {
+          int lastc = nt_new_node(nt, "CallNode");
+          nt_node_set_str(nt, lastc, "name", "last");
+          nt_node_set_ref(nt, lastc, "receiver", sortc);
+          nt_node_set_ref(nt, lastc, "arguments", margs);
+          nt_node_set_str(nt, id, "name", "reverse");
+          nt_node_set_ref(nt, id, "receiver", lastc);
+          nt_node_set_ref(nt, id, "arguments", -1);
+          nt_node_set_ref(nt, id, "block", -1);
+        }
+        comp_grow_node_arrays(c);
+        continue;
+      }
+    }
     /* :sym.to_proc (explicit): rewrite to the equivalent lambda -- one
        parameter calling the method, or two for the binary operators
        (:+.to_proc adds its two arguments). The &:sym shorthand stays on its

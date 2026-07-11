@@ -1539,13 +1539,16 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
   TyKind acct = comp_ntype(c, bb[bn - 1]);
-  if (acct != TY_INT && acct != TY_FLOAT) return 0;
+  if (acct != TY_INT && acct != TY_FLOAT && acct != TY_STRING) return 0;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   /* a float initial value promotes the whole sum to Float, even when the block
      yields integers (matches analyze and CRuby): accumulate in floating point
      rather than truncating the init into an integer accumulator. */
   if (argc == 1 && argv && comp_ntype(c, argv[0]) == TY_FLOAT) acct = TY_FLOAT;
+  /* a String accumulator requires a String initial value (CRuby raises on
+     sum() over strings without one; that shape keeps the loud reject) */
+  if (acct == TY_STRING && !(argc == 1 && argv && comp_ntype(c, argv[0]) == TY_STRING)) return 0;
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
   /* Float accumulation uses Kahan-Babuska-Neumaier compensation (matches
      CRuby's Array#sum), so it needs a running compensation temp plus
@@ -1589,6 +1592,9 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     if (inner.p) buf_puts(b, inner.p);
     if (acct == TY_INT) {
       buf_printf(b, "_t%d = sp_int_add(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "0");
+    }
+    else if (acct == TY_STRING) {
+      buf_printf(b, "_t%d = sp_str_concat(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "\"\"");
     }
     else {
       /* KBN step: fold the low-order bits dropped by _tacc + _tx into _tc. */

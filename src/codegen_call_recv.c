@@ -58,6 +58,25 @@ static void emit_filter_bang_result(const char *name, int trecv, int torig,
 }
 
 int emit_array_call(Compiler *c, int id, Buf *b) {
+  /* Array#slice(i) / #slice(range) are exactly #[](...) -- reuse that arm
+     through a rename re-entry (the two-argument slice already works). */
+  {
+    const NodeTable *nt0 = c->nt;
+    const char *nm0 = nt_str(nt0, id, "name");
+    if (nm0 && sp_streq(nm0, "slice")) {
+      int recv0 = nt_ref(nt0, id, "receiver");
+      int args0 = nt_ref(nt0, id, "arguments");
+      int an0 = 0;
+      if (args0 >= 0) nt_arr(nt0, args0, "arguments", &an0);
+      if (recv0 >= 0 && an0 == 1 && ty_is_array(comp_ntype(c, recv0)) &&
+          nt_ref(nt0, id, "block") < 0) {
+        nt_node_set_str((NodeTable *)nt0, id, "name", "[]");
+        int h = emit_array_call(c, id, b);
+        nt_node_set_str((NodeTable *)nt0, id, "name", "slice");
+        if (h) return 1;
+      }
+    }
+  }
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
@@ -165,6 +184,28 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       else
         buf_printf(b, "_t%d; })", tn2);
       return 1;
+    }
+    if ((sp_streq(name, "concat") || sp_streq(name, "<<")) && argc >= 1) {
+      /* a STRBUF-promoted local (repeated `<<`) appends in place: the read
+         form sp_String_cstr(lv) is not an lvalue, so the generic write-back
+         below would emit an invalid assignment (#2020) */
+      const char *rvt0 = nt_type(nt, recv);
+      if (rvt0 && sp_streq(rvt0, "LocalVariableReadNode")) {
+        const char *rnm0 = nt_str(nt, recv, "name");
+        Scope *rsc0 = rnm0 ? comp_scope_of(c, recv) : NULL;
+        LocalVar *rlv0 = rsc0 ? scope_local(rsc0, rnm0) : NULL;
+        if (rlv0 && rlv0->type == TY_STRBUF) {
+          int tb2 = ++g_tmp;
+          buf_printf(b, "({ sp_String *_t%d = lv_%s;", tb2, rename_local(rnm0));
+          for (int j = 0; j < argc; j++) {
+            buf_printf(b, " sp_String_append(_t%d, ", tb2);
+            emit_str_expr(c, argv[j], b);
+            buf_puts(b, ");");
+          }
+          buf_printf(b, " sp_String_cstr(_t%d); })", tb2);
+          return 1;
+        }
+      }
     }
     if ((sp_streq(name, "concat") || sp_streq(name, "<<") ||
          sp_streq(name, "prepend")) && argc >= 1) {
@@ -549,6 +590,29 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (init_t == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { emit_expr(c, argv[0], b); }
       buf_puts(b, " + sp_PolyArray_sum_int("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return 1;
+    }
+    if (rt == TY_POLY_ARRAY && sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+      int t = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp, tj = ++g_tmp, ti2 = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); mrb_int _t%d = ", t, tn2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr2, tr2);
+      buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)", tj, tj, tn2, tj);
+      buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti2, ti2, t, ti2);
+      buf_printf(b, " sp_PolyArray_push(_t%d, _t%d->data[_t%d]);", tr2, t, ti2);
+      buf_printf(b, " _t%d; })", tr2);
+      return 1;
+    }
+    if (rt == TY_POLY_ARRAY && (sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 1) {
+      int t = ++g_tmp, tn2 = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); mrb_int _t%d = ", t, tn2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tn2);
+      buf_printf(b, " if (_t%d > _t%d->len) _t%d = _t%d->len;", tn2, t, tn2, t);
+      if (sp_streq(name, "pop"))
+        buf_printf(b, " sp_PolyArray_slice_bang(_t%d, _t%d->len - _t%d, _t%d); })", t, t, tn2, tn2);
+      else
+        buf_printf(b, " sp_PolyArray_slice_bang(_t%d, 0, _t%d); })", t, tn2);
       return 1;
     }
     if (rt == TY_POLY_ARRAY && (sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 0) {
@@ -994,6 +1058,32 @@ else {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
         buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
+        return 1;
+      }
+      if (sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+        /* blockless cycle(n): the receiver repeated n times, materialized */
+        int t = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp, tj = ++g_tmp, ti2 = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = ", tn2); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);", k, tr2, k, tr2);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)", tj, tj, tn2, tj);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti2, ti2, t, ti2);
+        buf_printf(b, " sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));", k, tr2, k, t, ti2);
+        buf_printf(b, " _t%d; })", tr2);
+        return 1;
+      }
+      if ((sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 1) {
+        /* pop(n)/shift(n): the removed subarray, via the slice! splice
+           (pop takes the tail, shift the head; n clamps to the length) */
+        int t = ++g_tmp, tn2 = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = ", tn2); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");", tn2);
+        buf_printf(b, " if (_t%d > _t%d->len) _t%d = _t%d->len;", tn2, t, tn2, t);
+        if (sp_streq(name, "pop"))
+          buf_printf(b, " sp_%sArray_slice_bang(_t%d, _t%d->len - _t%d, _t%d); })", k, t, t, tn2, tn2);
+        else
+          buf_printf(b, " sp_%sArray_slice_bang(_t%d, 0, _t%d); })", k, t, tn2);
         return 1;
       }
       if ((sp_streq(name, "shift") || sp_streq(name, "pop")) && argc == 0) {

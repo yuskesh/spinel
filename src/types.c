@@ -154,6 +154,7 @@ static int ty_is_array_elem_iter(const char *n) {
          sp_streq(n, "find") || sp_streq(n, "detect") || sp_streq(n, "find_all") ||
          sp_streq(n, "sort_by") || sp_streq(n, "min_by") || sp_streq(n, "max_by") ||
          sp_streq(n, "count") || sp_streq(n, "sum") || sp_streq(n, "flat_map") ||
+         sp_streq(n, "collect_concat") ||
          sp_streq(n, "filter_map") || sp_streq(n, "partition") || sp_streq(n, "group_by") ||
          sp_streq(n, "any?") || sp_streq(n, "all?") || sp_streq(n, "none?") ||
          sp_streq(n, "one?") || sp_streq(n, "take_while") || sp_streq(n, "drop_while") ||

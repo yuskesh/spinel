@@ -4477,7 +4477,8 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!") ||
               sp_streq(name, "uniq") || sp_streq(name, "uniq!") ||
               sp_streq(name, "keep_if") || sp_streq(name, "delete_if") ||
-              sp_streq(name, "flat_map") || sp_streq(name, "each_with_object") ||
+              sp_streq(name, "flat_map") || sp_streq(name, "collect_concat") ||
+              sp_streq(name, "each_with_object") ||
               sp_streq(name, "chunk") || sp_streq(name, "group_by") ||
               sp_streq(name, "tally_by") || sp_streq(name, "min_by_all") ||
               sp_streq(name, "filter_map") || sp_streq(name, "count_by") ||
@@ -4928,7 +4929,8 @@ int infer_block_params(Compiler *c) {
        Also handles each_with_object { |(k,v), memo| } and mutating
        iteration (delete_if / select! / reject! / keep_if). */
     if ((sp_streq(name, "each") || sp_streq(name, "each_pair") || sp_streq(name, "map") ||
-         sp_streq(name, "collect") || sp_streq(name, "flat_map") || sp_streq(name, "select") ||
+         sp_streq(name, "collect") || sp_streq(name, "flat_map") ||
+         sp_streq(name, "collect_concat") || sp_streq(name, "select") ||
          sp_streq(name, "filter") || sp_streq(name, "reject") || sp_streq(name, "find") ||
          sp_streq(name, "detect") || sp_streq(name, "sort_by") || sp_streq(name, "min_by") ||
          sp_streq(name, "max_by") || sp_streq(name, "count") || sp_streq(name, "sum") ||
