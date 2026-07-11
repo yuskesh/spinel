@@ -254,6 +254,51 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
+    /* chained append in value position (`t = s << a << b`): the generic form
+       below writes back only when the receiver is a direct lvalue read, so a
+       chain's outer links never reach the base -- `s` kept just the first
+       append. Unroll the chain onto the base, one write-back per link, and
+       yield the base (each `<<` returns its receiver). */
+    if (sp_streq(name, "<<") && argc == 1) {
+      int chain[64]; int nchain = 0; int cur = recv;
+      while (nchain < 64) {
+        while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
+          int pb = nt_ref(nt, cur, "body");
+          if (pb < 0) break;
+          int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
+          if (bn != 1) break;
+          cur = bb[0];
+        }
+        const char *cty = nt_type(nt, cur);
+        if (!cty || !sp_streq(cty, "CallNode")) break;
+        const char *cnm = nt_str(nt, cur, "name");
+        int crecv = nt_ref(nt, cur, "receiver");
+        if (!cnm || !sp_streq(cnm, "<<") || crecv < 0 || comp_ntype(c, crecv) != TY_STRING) break;
+        int cargs = nt_ref(nt, cur, "arguments");
+        int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
+        if (cac != 1) break;
+        chain[nchain++] = cav[0];
+        cur = crecv;
+      }
+      const char *bty = nt_type(nt, cur);
+      LocalVar *blv = (bty && sp_streq(bty, "LocalVariableReadNode"))
+                      ? scope_local(comp_scope_of(c, cur), nt_str(nt, cur, "name")) : NULL;
+      if (nchain > 0 && bty && !(blv && blv->type == TY_STRBUF) &&
+          (sp_streq(bty, "LocalVariableReadNode") || sp_streq(bty, "InstanceVariableReadNode"))) {
+        buf_puts(b, "({ ");
+        for (int j = nchain; j >= 0; j--) {  /* innermost link first, outer arg last */
+          int arg = j > 0 ? chain[j - 1] : argv[0];
+          buf_puts(b, "sp_str_check_mutable("); emit_expr(c, cur, b); buf_puts(b, "); ");
+          emit_expr(c, cur, b); buf_puts(b, " = sp_str_concat(");
+          emit_expr(c, cur, b); buf_puts(b, ", ");
+          emit_str_expr(c, arg, b);
+          buf_puts(b, "); ");
+        }
+        emit_expr(c, cur, b);
+        buf_puts(b, "; })");
+        return 1;
+      }
+    }
     if ((sp_streq(name, "concat") || sp_streq(name, "<<") ||
          sp_streq(name, "prepend")) && argc >= 1) {
       const char *rvt2 = nt_type(nt, recv);

@@ -6648,6 +6648,34 @@ else {
   buf_puts(b, ";\n");
 }
 
+/* The base receiver of a string append chain: `s << a << b` bottoms out at
+   `s` (unwrapping parens); a plain `s << x` yields its receiver unchanged.
+   Mirrors the chain walks in emit_array_mutate_stmt, so after the statement
+   form has run a tail `<<` can return the base instead of re-evaluating the
+   inner links (which would append their arguments a second time). */
+static int str_append_chain_base(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int cur = id;
+  for (;;) {
+    while (nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "ParenthesesNode")) {
+      int pb = nt_ref(nt, cur, "body");
+      if (pb < 0) break;
+      int bn = 0; const int *bb = nt_arr(nt, pb, "body", &bn);
+      if (bn != 1) break;
+      cur = bb[0];
+    }
+    const char *cty = nt_type(nt, cur);
+    if (!cty || !sp_streq(cty, "CallNode")) return cur;
+    const char *cnm = nt_str(nt, cur, "name");
+    int crecv = nt_ref(nt, cur, "receiver");
+    if (!cnm || (!sp_streq(cnm, "<<") && !sp_streq(cnm, "concat")) || crecv < 0) return cur;
+    int cargs = nt_ref(nt, cur, "arguments");
+    int cac = 0; if (cargs >= 0) nt_arr(nt, cargs, "arguments", &cac);
+    if (cac != 1) return cur;
+    cur = crecv;
+  }
+}
+
 /* Tail position: the value of this statement is the method's return value. */
 void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
@@ -6788,10 +6816,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     if (_srecv >= 0 && _snm && sp_streq(_snm, "<<") &&
         comp_ntype(c, _srecv) == TY_STRING &&
         emit_array_mutate_stmt(c, id, b, indent)) {
+      /* return the chain's BASE receiver: for `buf << a << b` the immediate
+         receiver is the inner `<<` call, and re-emitting it would run the
+         inner links a second time (doubling the appended text -- and writing
+         the doubled string back through a byref param) */
+      int _sbase = str_append_chain_base(c, id);
       emit_indent(b, indent); emit_tail_lead(b);
       int _wp = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
-      if (_wp) emit_boxed(c, _srecv, b);
-      else emit_expr(c, _srecv, b);
+      if (_wp) emit_boxed(c, _sbase, b);
+      else emit_expr(c, _sbase, b);
       buf_puts(b, ";\n");
       return;
     }
