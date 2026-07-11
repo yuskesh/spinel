@@ -2361,6 +2361,22 @@ void process_include_body(Compiler *c, int ci, int body_node) {
       else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
       int mod_id = mname ? comp_class_index(c, mname) : -1;
       if (mod_id < 0) continue;
+      /* record membership for `rescue M` matching (dedup across reopenings) */
+      {
+        ClassInfo *cif = &c->classes[ci];
+        int seen = 0;
+        for (int m = 0; m < cif->nincluded_mods; m++)
+          if (cif->included_mods[m] == mod_id) { seen = 1; break; }
+        if (!seen) {
+          if (cif->nincluded_mods >= cif->cincluded_mods) {
+            cif->cincluded_mods = cif->cincluded_mods ? cif->cincluded_mods * 2 : 4;
+            int *nm2 = realloc(cif->included_mods, sizeof(int) * (size_t)cif->cincluded_mods);
+            if (!nm2) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+            cif->included_mods = nm2;
+          }
+          cif->included_mods[cif->nincluded_mods++] = mod_id;
+        }
+      }
       /* snapshot count before adding new scopes to avoid re-scanning them */
       int snap = c->nscopes;
       for (int ms = 0; ms < snap; ms++) {

@@ -4102,8 +4102,27 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
       else if (qbuf[0])
         buf_printf(b, "(sp_str_eq(_rcls_%d, \"%s\") || sp_str_eq(_rcls_%d, \"%s\"))",
                    rc, ename, rc, qbuf);
-      else
-        buf_printf(b, "sp_str_eq(_rcls_%d, \"%s\")", rc, ename);
+      else {
+        /* `rescue M` where M is an included module: an exception matches when
+           its class (or an ancestor) includes M, so expand to the exception
+           classes carrying the module. A module nobody includes keeps the
+           plain name compare (which, like CRuby, never matches a class). */
+        buf_printf(b, "(sp_str_eq(_rcls_%d, \"%s\")", rc, ename);
+        if (uci >= 0) {
+          for (int k = 0; k < c->nclasses; k++) {
+            if (!class_is_exc_subclass(c, k)) continue;
+            int inc = 0;
+            for (int a = k; a >= 0 && !inc; a = c->classes[a].parent)
+              for (int m = 0; m < c->classes[a].nincluded_mods; m++)
+                if (c->classes[a].included_mods[m] == uci) { inc = 1; break; }
+            if (!inc) continue;
+            const char *kq = class_ruby_name(c, k);
+            buf_printf(b, " || sp_exc_cls_matches(_rcls_%d, \"%s\")",
+                       rc, kq ? kq : c->classes[k].name);
+          }
+        }
+        buf_puts(b, ")");
+      }
     }
     if (first) buf_puts(b, "1");  /* no usable type -> always */
     }
@@ -4136,9 +4155,20 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   emit_indent(b, indent);
   if (spec_cid >= 0) {
     const char *xn = c->classes[spec_cid].name;
-    buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
-                  " : (sp_Exception *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
-               rc, xn, rc, rc);
+    if (bare) {
+      /* A bare arm matches any StandardError, so the carried-object cast to
+         the specialized class must be guarded by a class match: a foreign
+         exception arriving here binds a fresh zero-ivar struct instead. */
+      const char *qn = class_ruby_name(c, spec_cid);
+      buf_printf(b, "sp_Exception *_ce_%d = (sp_exc_obj[sp_exc_top] && sp_exc_cls_matches(_rcls_%d, \"%s\"))"
+                    " ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : (sp_Exception *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
+                 rc, rc, qn ? qn : xn, xn, rc, rc);
+    }
+    else
+      buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : (sp_Exception *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
+                 rc, xn, rc, rc);
   }
   else
     buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
