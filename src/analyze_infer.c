@@ -3458,6 +3458,7 @@ else {
         sp_streq(name, "delete")) return TY_STRING;
     if (sp_streq(name, "slice!")) return TY_STRING;  /* removed part, or nil */
     if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "byteslice") ||
+        sp_streq(name, "bytesplice") ||
         sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) return TY_STRING;
     if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;
     if (sp_streq(name, "index") && argc == 1) {
@@ -3467,9 +3468,17 @@ else {
       if (aty && sp_streq(aty, "RegularExpressionNode")) return TY_INT;
       if (infer_type(c, argv[0]) == TY_REGEX) return TY_INT;
     }
+    /* casecmp/casecmp? with a statically non-string argument: CRuby answers
+       nil rather than raising, so the call types nil (the emitter drops the
+       comparison and evaluates the argument for effect). */
+    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1) {
+      TyKind at0 = infer_type(c, argv[0]);
+      if (at0 == TY_POLY) return TY_POLY;  /* runtime tag decides: boxed result or nil */
+      if (at0 != TY_STRING && at0 != TY_UNKNOWN) return TY_NIL;
+      return sp_streq(name, "casecmp") ? TY_INT : TY_BOOL;
+    }
     if (sp_streq(name, "index") || sp_streq(name, "to_i") || sp_streq(name, "count") ||
         sp_streq(name, "oct") || sp_streq(name, "hex") || sp_streq(name, "ord") ||
-        sp_streq(name, "casecmp") ||
         sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
     if (sp_streq(name, "scrub") || sp_streq(name, "crypt")) return TY_STRING;
     if (sp_streq(name, "sum") && argc == 0) return TY_INT;
@@ -3493,12 +3502,15 @@ else {
         sp_streq(name, "concat") || sp_streq(name, "<<") || sp_streq(name, "prepend") ||
         sp_streq(name, "insert") || sp_streq(name, "replace"))
       return TY_STRING;
-    if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
+    if (sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
     if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
     if ((sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
          sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
+    if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+      return TY_ENUMERATOR;  /* each_line(chomp: ...) blockless */
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
       if (blk >= 0 && (sp_streq(name, "chars") || sp_streq(name, "lines"))) return TY_STRING;

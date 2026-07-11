@@ -3080,7 +3080,7 @@ static int subtree_mutates_local(Compiler *c, int root, const char *name) {
         static const char *const mut[] = {"push","pop","shift","unshift","<<","[]=","delete",
           "delete_at","clear","insert","replace","concat","sort!","sort_by!","reverse!","compact!","uniq!",
           "merge!","store","update","fill","prepend","gsub!","sub!","upcase!","downcase!",
-          "strip!","chomp!","slice!","squeeze!","force_encoding", NULL};
+          "strip!","chomp!","slice!","squeeze!","force_encoding","bytesplice", NULL};
         for (int i = 0; mut[i]; i++) if (sp_streq(mn, mut[i])) return 1;
       }
     }

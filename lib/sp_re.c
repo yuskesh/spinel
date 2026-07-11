@@ -144,6 +144,29 @@ const char *sp_str_splice_re(mrb_regexp_pattern *pat, const char *s, const char 
   if (n <= 0) { sp_raise_cls("IndexError", "regexp not matched"); return s; }
   return sp_sprintf("%.*s%s%s", (int)caps[0], s, val, s + caps[1]);
 }
+/* String#slice!(regexp): the removed match (or NULL when unmatched), with
+   the receiver's remainder written through rest_out and the match
+   registers set (cleared on no-match, like sp_re_match). */
+const char *sp_str_slice_re(mrb_regexp_pattern *pat, const char *s, const char **rest_out) {
+  if (!s) s = &("\xff" "")[1];  /* header-safe empty: s flows to sp_str_byteslice -> sp_str_byte_len(s[-1]) */
+  int64_t slen = (int64_t)strlen(s);
+  int n = re_exec(pat, s, slen, 0, sp_re_caps, 32, 0);
+  if (n <= 0) {
+    for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
+    sp_re_last_str = NULL;
+    sp_re_match_str = NULL;
+    sp_re_match_pre = NULL;
+    sp_re_match_post = NULL;
+    if (rest_out) *rest_out = s;
+    return NULL;
+  }
+  int mb = sp_re_caps[0], me = sp_re_caps[1];
+  sp_re_set_captures(s, sp_re_caps, n / 2);
+  const char *m = sp_str_byteslice(s, mb, me - mb);
+  SP_GC_ROOT_STR(m);
+  if (rest_out) *rest_out = sp_sprintf("%.*s%s", mb, s, s + me);
+  return m;
+}
 mrb_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {
   int64_t slen = (int64_t)strlen(str);
   int caps[2];
@@ -218,8 +241,17 @@ void sp_re_expand_rep(const mrb_regexp_pattern *pat,
     char c = rep[i];
     if (c == '\\' && i + 1 < rlen) {
       char d = rep[i+1];
-      if ((d >= '0' && d <= '9') || d == '&') {
-        int gi = (d == '&') ? 0 : (d - '0');
+      if ((d >= '0' && d <= '9') || d == '&' || d == '+') {
+        int gi = (d == '&') ? 0 : (d == '+') ? 0 : (d - '0');
+        if (d == '+') {
+          /* \+: the highest-numbered group that participated in the match;
+             none participating expands to "" (gi stays 0 with caps[0] the
+             whole match -- so scan for a real group first) */
+          gi = -1;
+          for (int g = 1; (g * 2) + 1 < ncaps; g++)
+            if (caps[g*2] >= 0 && caps[(g*2)+1] >= 0) gi = g;
+          if (gi < 0) { i += 2; continue; }
+        }
         if ((gi*2) + 1 < ncaps && caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
           int g_len = caps[(gi*2)+1] - caps[gi*2];
           if (olen + g_len + 1 >= cap) { cap = ((olen + g_len) * 2) + 64; out = (char*)realloc(out, cap); }

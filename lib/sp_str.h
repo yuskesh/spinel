@@ -70,6 +70,7 @@ sp_StrArray *sp_str_rpartition(const char *s, const char *sep);
 sp_StrArray*sp_str_lines(const char*s);
 sp_StrArray*sp_str_lines_chomp(const char*s);
 const char*sp_str_byteslice(const char*s,mrb_int start,mrb_int len);
+const char*sp_str_bytesplice(const char*s,mrb_int start,mrb_int len,const char*val);
 int sp_str_ascii_only(const char*s);
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a);
 const char*sp_str_sub(const char*s,const char*pat,const char*rep);
