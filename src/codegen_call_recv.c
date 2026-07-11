@@ -5546,6 +5546,35 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
   /* range value methods (evaluate the range once into a temp) */
   if (recv >= 0 && rt == TY_RANGE) {
     int block = nt_ref(nt, id, "block");
+    /* endless literal: size is infinite; take/first(n) count from the start
+       (an endless range cannot materialize) */
+    {
+      int rn9 = unwrap_parens(c, recv);
+      if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
+          nt_ref(nt, rn9, "left") < 0 && sp_streq(name, "size") && argc == 0) {
+        /* beginless: CRuby cannot iterate from nil */
+        buf_puts(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\"); (mrb_int)0; })");
+        return 1;
+      }
+      if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
+          nt_ref(nt, rn9, "right") < 0 && nt_ref(nt, rn9, "left") >= 0) {
+        if (sp_streq(name, "size") && argc == 0) {
+          buf_puts(b, "(HUGE_VAL)");
+          return 1;
+        }
+        if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1) {
+          int lo9 = nt_ref(nt, rn9, "left");
+          int ts9 = ++g_tmp, tn9 = ++g_tmp, ti9 = ++g_tmp, to9 = ++g_tmp;
+          buf_printf(b, "({ mrb_int _t%d = ", ts9); emit_int_expr(c, lo9, b);
+          buf_printf(b, "; mrb_int _t%d = ", tn9); emit_int_expr(c, argv[0], b);
+          buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);"
+                        " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
+                        " sp_IntArray_push(_t%d, _t%d + _t%d); _t%d; })",
+                     to9, to9, ti9, ti9, tn9, ti9, to9, ts9, ti9, to9);
+          return 1;
+        }
+      }
+    }
     if (sp_streq(name, "step") && argc == 1 && block < 0) {
       emit_range_step_array(c, id, b);
       return 1;
@@ -5655,6 +5684,15 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "size") || sp_streq(name, "count"))
         buf_printf(b, "sp_range_count(_t%d)", t);
+      else if (sp_streq(name, "sum") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_puts(b, "(("); emit_expr(c, argv[0], b);
+        buf_printf(b, ") + (double)sp_IntArray_sum(sp_range_to_ia(_t%d), 0))", t);
+      }
+      else if (sp_streq(name, "sum") && argc == 1) {
+        buf_printf(b, "sp_IntArray_sum(sp_range_to_ia(_t%d), ", t);
+        emit_int_expr(c, argv[0], b);
+        buf_puts(b, ")");
+      }
       else if (sp_streq(name, "sum"))
         buf_printf(b, "sp_IntArray_sum(sp_range_to_ia(_t%d), 0)", t);
       else if (sp_streq(name, "exclude_end?"))

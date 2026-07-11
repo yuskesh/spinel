@@ -609,6 +609,25 @@ TyKind infer_call(Compiler *c, int id) {
   if (!g_infer_ignore_brk && call_breaks(c, id)) return TY_POLY;
 
   TyKind rt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+  /* endless literal range: size is the Float infinity; take/first with a
+     count materialize just the counted prefix (nothing else can) */
+  if (rt == TY_RANGE && recv >= 0) {
+    int rnA = recv;
+    while (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "ParenthesesNode")) {
+      int pbA = nt_ref(nt, rnA, "body"); int pnA = 0;
+      const int *ppA = pbA >= 0 ? nt_arr(nt, pbA, "body", &pnA) : NULL;
+      rnA = pnA == 1 ? ppA[0] : -1;
+    }
+    if (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "RangeNode") &&
+        nt_ref(nt, rnA, "right") < 0 && nt_ref(nt, rnA, "left") >= 0) {
+      if (sp_streq(name, "size") && argc == 0) return TY_FLOAT;
+      if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1)
+        return TY_INT_ARRAY;
+    }
+  }
+  if (rt == TY_RANGE && sp_streq(name, "sum") && argc == 1 &&
+      nt_ref(nt, id, "block") < 0)
+    return infer_type(c, argv[0]) == TY_FLOAT ? TY_FLOAT : TY_INT;
   /* A Range Enumerable method spinel serves by materializing to an int array:
      infer it as the array version (the array arms below key on `rt`). */
   if (rt == TY_RANGE && range_enum_redispatch(c, id)) rt = TY_INT_ARRAY;
