@@ -1760,7 +1760,9 @@ else {
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect") || sp_streq(name, "strftime") ||
         sp_streq(name, "zone") || sp_streq(name, "asctime") ||
         sp_streq(name, "ctime")) return TY_STRING;
-    if (sp_streq(name, "to_f") || sp_streq(name, "subsec")) return TY_FLOAT;
+    if (sp_streq(name, "to_f")) return TY_FLOAT;
+    /* Integer 0 for a whole second, else a Rational -- boxed at the arm */
+    if (sp_streq(name, "subsec")) return TY_POLY;
     if (sp_streq(name, "utc?") || sp_streq(name, "gmt?") || sp_streq(name, "dst?") ||
         sp_streq(name, "isdst") ||
         sp_streq(name, "sunday?") || sp_streq(name, "monday?") ||

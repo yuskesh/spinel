@@ -2500,6 +2500,54 @@ static int class_new_pos_arity(Compiler *c, int ci, int *pmin, int *pmax) {
    (argc is not the true positional count), or when the arity is variable.
    Returns 1 if a raise was emitted (caller still emits the -- now dead --
    construction so the expression stays well-typed). */
+/* Civil-argument Time constructor forms, shared by `Time.new(...)` (via the
+   generic constant-new path) and Time.local/mktime/utc/gm. Up to 6 civil
+   fields with CRuby's defaults (month/day 1, rest 0); a 7th positional
+   argument is the utc_offset for Time.new but the usec-of-second count for
+   the named class methods. Returns 1 when it emitted. */
+static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
+  if (argc < 1 || argc > 7) return 0;
+  long lit_off = 0;
+  int have_lit_off = 0;
+  if (argc == 7 && is_new) {
+    /* utc_offset: an Integer-second expression, or a literal "+HH:MM" */
+    const char *oty = nt_type(nt, argv[6]);
+    if (oty && sp_streq(oty, "StringNode")) {
+      const char *sv = nt_str(nt, argv[6], "content");
+      if (!sv || strlen(sv) != 6 || (sv[0] != '+' && sv[0] != '-') || sv[3] != ':' ||
+          sv[1] < '0' || sv[1] > '9' || sv[2] < '0' || sv[2] > '9' ||
+          sv[4] < '0' || sv[4] > '9' || sv[5] < '0' || sv[5] > '9')
+        return 0;
+      lit_off = ((sv[1] - '0') * 10 + (sv[2] - '0')) * 3600 +
+                ((sv[4] - '0') * 10 + (sv[5] - '0')) * 60;
+      if (sv[0] == '-') lit_off = -lit_off;
+      have_lit_off = 1;
+    }
+else {
+      TyKind ot = comp_ntype(c, argv[6]);
+      if (ot != TY_INT && ot != TY_UNKNOWN) return 0;
+    }
+    buf_puts(b, "sp_time_new_off(");
+  }
+else if (argc == 7) buf_printf(b, "sp_time_with_usec(sp_time_new%s(", is_utc ? "_utc" : "");
+else buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
+  for (int i = 0; i < 6; i++) {
+    if (i) buf_puts(b, ", ");
+    if (i < argc) emit_expr(c, argv[i], b);
+    else buf_puts(b, (i == 1 || i == 2) ? "1" : "0");
+  }
+  if (argc == 7) {
+    buf_puts(b, is_new ? ", " : "), ");
+    if (have_lit_off) buf_printf(b, "%ld", lit_off);
+    else emit_expr(c, argv[6], b);
+  }
+  buf_puts(b, ")");
+  return 1;
+}
+
 static int emit_new_arity_check(Compiler *c, int ci, int argc,
                                 const int *argv, Buf *pre) {
   const NodeTable *nt = c->nt;
@@ -3027,13 +3075,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       }
       if (cn && sp_streq(cn, "Time")) {
         if (argc == 0) { buf_puts(b, "sp_time_now()"); return 1; }
-        buf_printf(b, "sp_time_new(");
-        for (int i = 0; i < 6; i++) {
-          if (i) buf_puts(b, ", ");
-          if (i < argc) emit_expr(c, argv[i], b);
-          else buf_puts(b, (i == 1 || i == 2) ? "1" : "0");
-        }
-        buf_puts(b, ")");
+        if (emit_time_civil_ctor(c, id, 0, 1, b)) return 1;
+        unsupported(c, id, "Time.new argument form");
         return 1;
       }
       /* `.new` on a constant Spinel could not resolve -- not a user class, not a
@@ -7920,15 +7963,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if ((sp_streq(name, "local") || sp_streq(name, "mktime") ||
          sp_streq(name, "utc") || sp_streq(name, "gm") || sp_streq(name, "new")) && argc >= 1) {
-      /* y[,mo,d,h,mi,s] -- missing trailing parts default (mo/d=1, rest 0) */
       int is_utc = (sp_streq(name, "utc") || sp_streq(name, "gm"));
-      buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
-      for (int i = 0; i < 6; i++) {
-        if (i) buf_puts(b, ", ");
-        if (i < argc) emit_expr(c, argv[i], b);
-        else buf_puts(b, (i == 1 || i == 2) ? "1" : "0");
-      }
-      buf_puts(b, ")");
+      if (emit_time_civil_ctor(c, id, is_utc, sp_streq(name, "new"), b)) return;
+      unsupported(c, id, "Time constructor argument form");
       return;
     }
   }

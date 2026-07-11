@@ -1937,7 +1937,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
           break;
         }
         case SP_BUILTIN_RANGE: puts(sp_Range_inspect((sp_Range *)v.v.p)); break;
-        case SP_BUILTIN_TIME: puts(sp_Time_inspect((sp_Time *)v.v.p)); break;
+        case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
         case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
         case SP_BUILTIN_REGEX: puts(sp_re_to_s_str(v.v.p)); break;
@@ -1986,7 +1986,7 @@ static inline const char *sp_poly_to_s(sp_RbVal v) {
         case SP_BUILTIN_SYM_ARRAY: return sp_SymArray_inspect((sp_IntArray *)v.v.p);
         case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect((sp_PtrArray *)v.v.p);
         case SP_BUILTIN_RANGE: return sp_Range_inspect((sp_Range *)v.v.p);
-        case SP_BUILTIN_TIME: return sp_Time_inspect((sp_Time *)v.v.p);
+        case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
         case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
         case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
         case SP_BUILTIN_REGEX: return sp_re_to_s_str(v.v.p);
@@ -4313,6 +4313,12 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
         /* unsigned arithmetic: signed mrb_int multiply/add could overflow (UB) */
         return r ? (mrb_int)(((uintptr_t)r->num * 31) + (uintptr_t)r->den) : 0;
       }
+      if (v.cls_id == SP_BUILTIN_TIME) {
+        /* value-based so equal instants hash alike (Time#== compares the
+           instant), serving both Time#hash and Time-keyed Hash buckets. */
+        sp_Time *t = (sp_Time *)v.v.p;
+        return t ? (mrb_int)sp_time_hash(*t) : 0;
+      }
       if (sp_obj_hash_hook) return sp_obj_hash_hook(v.cls_id, v.v.p);
       return (mrb_int)((uintptr_t)v.v.p);
   }
@@ -4357,6 +4363,11 @@ static mrb_bool sp_rbval_eql_key(sp_RbVal a, sp_RbVal b) {
            value-based hash above). */
         sp_Rational *ra = (sp_Rational *)a.v.p, *rb = (sp_Rational *)b.v.p;
         return (ra && rb) ? (ra->num == rb->num && ra->den == rb->den) : (ra == rb);
+      }
+      if (a.cls_id == SP_BUILTIN_TIME) {
+        /* instant equality, paired with the value-based hash above */
+        sp_Time *ta = (sp_Time *)a.v.p, *tb = (sp_Time *)b.v.p;
+        return (ta && tb) ? (ta->tv_sec == tb->tv_sec && ta->tv_nsec == tb->tv_nsec) : (ta == tb);
       }
       if (sp_obj_eql_hook) return sp_obj_eql_hook(a.cls_id, a.v.p, b.v.p);
       return FALSE;
