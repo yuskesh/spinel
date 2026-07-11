@@ -719,13 +719,25 @@ TyKind infer_call(Compiler *c, int id) {
   }
   if (rt == TY_RATIONAL) {
     if (sp_streq(name, "numerator") || sp_streq(name, "denominator")) return TY_INT;
-    if (sp_streq(name, "to_f")) return TY_FLOAT;
-    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "truncate")) return TY_INT;
+    if (sp_streq(name, "to_f") || sp_streq(name, "fdiv")) return TY_FLOAT;
+    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "div")) return TY_INT;
+    /* round/truncate: no digits (or a literal <= 0) is an Integer, a literal
+       positive precision keeps the Rational, and a non-literal precision boxes
+       to poly so the class is chosen from the runtime value. */
+    if (sp_streq(name, "round") || sp_streq(name, "truncate")) {
+      if (argc == 1) {
+        if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode"))
+          return nt_int(nt, argv[0], "value", 0) > 0 ? TY_RATIONAL : TY_INT;
+        return TY_POLY;
+      }
+      return TY_INT;
+    }
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
         sp_streq(name, "-@") || sp_streq(name, "+@") || sp_streq(name, "abs")) return TY_RATIONAL;
     TyKind a0r = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-    if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")))
+    if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
+                      sp_streq(name, "/") || sp_streq(name, "quo")))
       return a0r == TY_FLOAT ? TY_FLOAT : TY_RATIONAL;
     if (argc == 1 && sp_streq(name, "**")) return a0r == TY_INT ? TY_RATIONAL : TY_FLOAT;
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||

@@ -44,6 +44,10 @@ sp_Rational sp_rational_div(sp_Rational a, sp_Rational b);
 sp_Rational sp_rational_neg(sp_Rational a);
 sp_Rational sp_rational_abs(sp_Rational a);
 sp_Rational sp_rational_pow(sp_Rational a, mrb_int e);
+mrb_int sp_rational_round_i(sp_Rational a);              /* Rational#round (no digits) */
+mrb_int sp_rational_idiv(sp_Rational a, sp_Rational b);  /* Rational#div (floor) */
+sp_Rational sp_rational_round_prec(sp_Rational a, mrb_int nd);
+sp_Rational sp_rational_truncate_prec(sp_Rational a, mrb_int nd);
 mrb_int sp_rational_cmp(sp_Rational a, sp_Rational b);
 mrb_bool sp_rational_eq(sp_Rational a, sp_Rational b);
 mrb_float sp_rational_to_f(sp_Rational a);

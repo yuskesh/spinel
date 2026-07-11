@@ -330,6 +330,52 @@ sp_Rational sp_float_rationalize0(mrb_float f) {
   if (!found) return sp_float_to_rational(f);  /* fallback: exact bit ratio */
   return sp_rational_new_wide(neg ? -num : num, den);
 }
+/* Rational#round with no digits: nearest integer, ties away from zero
+   (CRuby's Rational#round default; den > 0 by construction). */
+mrb_int sp_rational_round_i(sp_Rational a) {
+  sp_rat_wide q = a.num / a.den, r = a.num % a.den;
+  if (r != 0) {
+    sp_rat_wide r2 = (r < 0 ? -r : r) * 2;
+    if (r2 >= a.den) q += a.num < 0 ? -1 : 1;
+  }
+  return sp_rat_fit(q);
+}
+/* Rational#div: floor division to an Integer (CRuby Numeric#div). */
+mrb_int sp_rational_idiv(sp_Rational a, sp_Rational b) {
+  if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  sp_rat_wide n = (sp_rat_wide)a.num * b.den, d = (sp_rat_wide)a.den * b.num;
+  if (d < 0) { n = -n; d = -d; }
+  sp_rat_wide q = n / d;
+  if (n % d != 0 && n < 0) q--;
+  return sp_rat_fit(q);
+}
+/* 10^e as a wide integer, raising RangeError past the mrb_int range. */
+static sp_rat_wide sp_rat_pow10(mrb_int e) {
+  sp_rat_wide r = 1;
+  for (mrb_int i = 0; i < e; i++) {
+    if (r > (sp_rat_wide)INTPTR_MAX / 10)
+      sp_raise_cls("RangeError", "Rational out of mrb_int range");
+    r *= 10;
+  }
+  return r;
+}
+/* Rational#round/#truncate with a precision: scale by 10^nd, round or chop to
+   an integer, scale back. nd <= 0 yields an integer-valued Rational (den 1);
+   codegen realizes the Integer class from the literal precision. */
+sp_Rational sp_rational_round_prec(sp_Rational a, mrb_int nd) {
+  sp_rat_wide p = sp_rat_pow10(nd < 0 ? -nd : nd);
+  sp_Rational s = nd >= 0 ? sp_rational_new_wide((sp_rat_wide)a.num * p, a.den)
+                          : sp_rational_new_wide(a.num, (sp_rat_wide)a.den * p);
+  mrb_int q = sp_rational_round_i(s);
+  return nd >= 0 ? sp_rational_new_wide(q, p) : sp_rational_new_wide((sp_rat_wide)q * p, 1);
+}
+sp_Rational sp_rational_truncate_prec(sp_Rational a, mrb_int nd) {
+  sp_rat_wide p = sp_rat_pow10(nd < 0 ? -nd : nd);
+  sp_Rational s = nd >= 0 ? sp_rational_new_wide((sp_rat_wide)a.num * p, a.den)
+                          : sp_rational_new_wide(a.num, (sp_rat_wide)a.den * p);
+  mrb_int q = s.num / s.den;  /* toward zero */
+  return nd >= 0 ? sp_rational_new_wide(q, p) : sp_rational_new_wide((sp_rat_wide)q * p, 1);
+}
 static sp_rat_wide sp_rat_ipow(sp_rat_wide base, mrb_int e) {
   sp_rat_wide r = 1;
   for (mrb_int i = 0; i < e; i++) {

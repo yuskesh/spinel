@@ -1229,7 +1229,33 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "inspect")) { buf_puts(b, "sp_rational_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "to_f")) && argc == 0) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) { emit_expr(c, recv, b); return 1; }
-      if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "truncate")) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return 1; }
+      if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
+           (sp_streq(name, "truncate") && argc == 0))) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return 1; }
+      if (sp_streq(name, "round") && argc == 0) { buf_puts(b, "sp_rational_round_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      /* round/truncate with a literal precision: nd > 0 keeps a Rational, nd <= 0
+         realizes the Integer value (.num of the den-1 result). */
+      if ((sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1 &&
+          nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode")) {
+        long long nd = nt_int(nt, argv[0], "value", 0);
+        const char *fn = name[0] == 'r' ? "round" : "truncate";
+        buf_printf(b, "%ssp_rational_%s_prec(", nd > 0 ? "" : "(", fn);
+        emit_expr(c, recv, b);
+        buf_printf(b, ", %lld)%s", nd, nd > 0 ? "" : ".num)");
+        return 1;
+      }
+      /* Non-literal precision: the result class depends on the runtime value
+         (Rational for nd > 0, Integer otherwise), so box to poly and choose at
+         runtime. Both operands are value types -- nothing to GC-root. */
+      if ((sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
+        const char *fn = name[0] == 'r' ? "round" : "truncate";
+        int tr = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", tr); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = (mrb_int)(", tn); emit_expr(c, argv[0], b);
+        buf_printf(b, "); _t%d > 0 ? sp_box_rational(sp_rational_%s_prec(_t%d, _t%d))"
+                      " : sp_box_int(sp_rational_%s_prec(_t%d, _t%d).num); })",
+                   tn, fn, tr, tn, fn, tr, tn);
+        return 1;
+      }
       if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_rational_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return 1; }
       if (sp_streq(name, "abs") && argc == 0) { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
@@ -1241,14 +1267,32 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       /* arithmetic against another Rational or an Integer yields a Rational;
          against a Float, coerce self to float (CRuby semantics). */
       if (rat_ok && argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") ||
-                        sp_streq(name, "*") || sp_streq(name, "/"))) {
+                        sp_streq(name, "*") || sp_streq(name, "/") || sp_streq(name, "quo"))) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         if (rat == TY_FLOAT) {
-          const char *op = name;
+          const char *op = name[0] == 'q' ? "/" : name;  /* quo against a Float divides */
           buf_puts(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_printf(b, ") %s ", op); emit_expr(c, argv[0], b); buf_puts(b, ")");
           return 1;
         }
         buf_printf(b, "sp_rational_%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      /* fdiv: float division regardless of operand kind. */
+      if (rat_ok && argc == 1 && sp_streq(name, "fdiv")) {
+        buf_puts(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ") / ");
+        if (rat == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_float_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+      /* div: floor division to an Integer (CRuby Numeric#div). */
+      if (rat_ok && argc == 1 && sp_streq(name, "div")) {
+        if (rat == TY_FLOAT) {
+          buf_puts(b, "((mrb_int)floor(sp_rational_to_f("); emit_expr(c, recv, b);
+          buf_puts(b, ") / ("); emit_expr(c, argv[0], b); buf_puts(b, ")))");
+          return 1;
+        }
+        buf_puts(b, "sp_rational_idiv("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (rat_ok && argc == 1 && sp_streq(name, "**")) {
