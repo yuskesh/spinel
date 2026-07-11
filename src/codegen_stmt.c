@@ -1737,7 +1737,20 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) return 0;
       if (nt_ref(nt, elms[i], "key") < 0) return 0;
       int classpat = pm_hash_value_class(nt, nt_ref(nt, elms[i], "value"));
-      if (classpat == PM_HASH_VAL_REJECT) return 0;
+      if (classpat == PM_HASH_VAL_REJECT) {
+        /* a value sub-pattern (literal, range, alternation, pin, container):
+           trial-emit the recursive condition against the fetched value's type
+           and reject when the recursion cannot check it. The trial may write
+           prelude text; roll g_pre back so a reject leaves no half-built code. */
+        size_t gp_len = g_pre->len;
+        int tt = ++g_tmp;
+        Buf trial; memset(&trial, 0, sizeof trial);
+        int ok = emit_pm_cond(c, nt_ref(nt, elms[i], "value"), tt, hvt, &trial);
+        free(trial.p);
+        if (g_pre->p) { g_pre->len = gp_len; g_pre->p[gp_len] = 0; }
+        if (!ok) return 0;
+        continue;
+      }
       if (classpat >= 0 && hvt == TY_POLY) {
         Buf probe; memset(&probe, 0, sizeof probe);
         int ok = emit_poly_class_when(c, classpat, "_v", &probe);
@@ -1749,10 +1762,26 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = 1;\n", hcond);
     for (int i = 0; i < en; i++) {
       int key = nt_ref(nt, elms[i], "key");
-      int classpat = pm_hash_value_class(nt, nt_ref(nt, elms[i], "value"));
+      int vchk = nt_ref(nt, elms[i], "value");
+      int classpat = pm_hash_value_class(nt, vchk);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, t);
       emit_expr(c, key, g_pre); buf_puts(g_pre, ");\n");
+      if (classpat == PM_HASH_VAL_REJECT) {
+        /* fetch the value into a typed temp and AND in the recursive check
+           (validated to succeed above) */
+        int vtmp = ++g_tmp;
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "{ ");
+        emit_ctype(c, hvt, g_pre);
+        buf_printf(g_pre, " _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, t);
+        emit_expr(c, key, g_pre); buf_puts(g_pre, "); ");
+        Buf vc; memset(&vc, 0, sizeof vc);
+        emit_pm_cond(c, vchk, vtmp, hvt, &vc);
+        buf_printf(g_pre, "_t%d = _t%d && (%s); }\n", hcond, hcond, vc.p ? vc.p : "1");
+        free(vc.p);
+        continue;
+      }
       if (classpat < 0) continue;
       if (hvt == TY_POLY) {
         int vtmp = ++g_tmp;
@@ -5644,6 +5673,23 @@ else {
     if (sp_streq(pty, "ArrayPatternNode")) {
       int rn = 0;
       const int *reqs = nt_arr(nt, pattern, "requireds", &rn);
+      int pon = 0;
+      const int *posts = nt_arr(nt, pattern, "posts", &pon);
+      /* `[a, *mid, b]`: the splat absorbs the middle; length becomes a floor. */
+      int rest = nt_ref(nt, pattern, "rest");
+      int has_rest = 0, rest_tgt = -1;
+      /* Both a splat (`[a, *]`/`[a, *mid]`) and a trailing-comma implicit rest
+         (`[a,]`, an ImplicitRestNode) make the length a floor, not exact; only
+         the named splat binds a target. Mirrors the case/in array path. */
+      if (rest >= 0 && nt_type(nt, rest) &&
+          (sp_streq(nt_type(nt, rest), "SplatNode") || sp_streq(nt_type(nt, rest), "ImplicitRestNode"))) {
+        has_rest = 1;
+        if (sp_streq(nt_type(nt, rest), "SplatNode")) {
+          int rex = nt_ref(nt, rest, "expression");
+          if (rex >= 0 && nt_type(nt, rex) && sp_streq(nt_type(nt, rex), "LocalVariableTargetNode"))
+            rest_tgt = rex;
+        }
+      }
       TyKind vt = comp_ntype(c, value);
       int tarr = ++g_tmp;
       const char *k;
@@ -5677,18 +5723,27 @@ else {
         emit_indent(b, indent);
         buf_printf(b, "SP_GC_ROOT(_t%d);\n", tarr);
       }
-      /* Length check: raise NoMatchingPatternError if sizes differ. */
+      /* Length check: raise NoMatchingPatternError if sizes differ (a splat
+         makes the required+post count a floor instead of an exact size). */
       emit_indent(b, indent);
-      buf_printf(b, "if (!_t%d || _t%d->len != %dLL) sp_raise_cls(\"NoMatchingPatternError\", \"[array pattern mismatch]\");\n", tarr, tarr, (long long)rn);
-      for (int i = 0; i < rn; i++) {
-        const char *lty2 = nt_type(nt, reqs[i]);
+      if (has_rest)
+        buf_printf(b, "if (!_t%d || _t%d->len < %dLL) sp_raise_cls(\"NoMatchingPatternError\", \"[array pattern mismatch]\");\n", tarr, tarr, (long long)(rn + pon));
+      else
+        buf_printf(b, "if (!_t%d || _t%d->len != %dLL) sp_raise_cls(\"NoMatchingPatternError\", \"[array pattern mismatch]\");\n", tarr, tarr, (long long)rn);
+      for (int i = 0; i < rn + pon; i++) {
+        int tnode = i < rn ? reqs[i] : posts[i - rn];
+        const char *lty2 = nt_type(nt, tnode);
         if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
-        const char *lnm = nt_str(nt, reqs[i], "name");
+        const char *lnm = nt_str(nt, tnode, "name");
         if (!lnm) continue;
         emit_indent(b, indent);
         buf_printf(b, "lv_%s = ", lnm);
         LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
-        char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        char gx[80];
+        if (i < rn)
+          snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
+        else
+          snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d->len - %dLL)", k, tarr, tarr, pon - (i - rn));
         if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) {
           Buf bx; memset(&bx, 0, sizeof bx);
           emit_boxed_text(c, ty_array_elem(vt != TY_UNKNOWN ? vt : TY_INT_ARRAY), gx, &bx);
@@ -5696,6 +5751,24 @@ else {
         }
         else buf_puts(b, gx);
         buf_puts(b, ";\n");
+      }
+      if (rest_tgt >= 0) {
+        const char *rnm = nt_str(nt, rest_tgt, "name");
+        if (rnm) {
+          LocalVar *rlv = scope_local(comp_scope_of(c, id), rnm);
+          char sx[96];
+          snprintf(sx, sizeof sx, "sp_%sArray_slice(_t%d, %dLL, _t%d->len - %dLL)",
+                   k, tarr, rn, tarr, rn + pon);
+          emit_indent(b, indent);
+          buf_printf(b, "lv_%s = ", rnm);
+          if (rlv && rlv->type == TY_POLY && !sp_streq(k, "Poly")) {
+            Buf bx; memset(&bx, 0, sizeof bx);
+            emit_boxed_text(c, vt != TY_UNKNOWN ? vt : TY_INT_ARRAY, sx, &bx);
+            buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
+          }
+          else buf_puts(b, sx);
+          buf_puts(b, ";\n");
+        }
       }
     }
     else if (sp_streq(pty, "HashPatternNode")) {
@@ -5778,6 +5851,70 @@ else {
         else {
           buf_printf(b, "lv_%s = sp_%sHash_get(_t%d, ", lnm, hn, thash);
           emit_expr(c, pkey, b); buf_puts(b, ");\n");
+        }
+      }
+      /* `**rest`: copy every pair whose key is not among the listed ones
+         (mirrors the case/in arm binder). */
+      int hp_rest = nt_ref(nt, pattern, "rest");
+      if (hn && hp_rest >= 0 && nt_type(nt, hp_rest) &&
+          sp_streq(nt_type(nt, hp_rest), "AssocSplatNode")) {
+        int rin = nt_ref(nt, hp_rest, "value");
+        const char *rnm = (rin >= 0 && nt_type(nt, rin) &&
+                           sp_streq(nt_type(nt, rin), "LocalVariableTargetNode"))
+                          ? nt_str(nt, rin, "name") : NULL;
+        if (rnm) {
+          TyKind hkt = ty_hash_key(vt);
+          int tr = ++g_tmp, ti2 = ++g_tmp, tk2 = ++g_tmp;
+          emit_indent(b, indent);
+          buf_printf(b, "{ sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);\n", hn, tr, hn, tr);
+          emit_indent(b, indent + 1);
+          buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti2, ti2, thash, ti2);
+          emit_indent(b, indent + 2);
+          emit_ctype(c, hkt, b);
+          if (vt == TY_POLY_POLY_HASH)
+            buf_printf(b, " _t%d = _t%d->keys[_t%d->order[_t%d]];\n", tk2, thash, thash, ti2);
+          else
+            buf_printf(b, " _t%d = _t%d->order[_t%d];\n", tk2, thash, ti2);
+          for (int i = 0; i < pn; i++) {
+            if (!nt_type(nt, pelms[i]) || !sp_streq(nt_type(nt, pelms[i]), "AssocNode")) continue;
+            int key = nt_ref(nt, pelms[i], "key");
+            if (key < 0) continue;
+            {
+              const char *kty2 = nt_type(nt, key);
+              if ((kty2 && sp_streq(kty2, "SymbolNode") && (hkt == TY_STRING)) ||
+                  (kty2 && sp_streq(kty2, "StringNode") && (hkt == TY_SYMBOL || hkt == TY_INT)) ||
+                  (kty2 && sp_streq(kty2, "IntegerNode") && (hkt == TY_STRING || hkt == TY_SYMBOL)))
+                continue;  /* can't be present: no exclusion needed */
+            }
+            emit_indent(b, indent + 2);
+            if (hkt == TY_POLY) {
+              buf_printf(b, "if (sp_poly_eq(_t%d, ", tk2); emit_boxed(c, key, b);
+            }
+            else if (hkt == TY_STRING) {
+              buf_printf(b, "if (_t%d && strcmp(_t%d, ", tk2, tk2); emit_expr(c, key, b); buf_puts(b, ") == 0");
+            }
+            else {
+              buf_printf(b, "if (_t%d == (", tk2); emit_expr(c, key, b);
+            }
+            buf_puts(b, ")) continue;\n");
+          }
+          emit_indent(b, indent + 2);
+          buf_printf(b, "sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d));\n",
+                     hn, tr, tk2, hn, thash, tk2);
+          emit_indent(b, indent + 1); buf_puts(b, "}\n");
+          emit_indent(b, indent + 1);
+          {
+            LocalVar *rlv2 = scope_local(comp_scope_of(c, id), rnm);
+            if (rlv2 && rlv2->type == TY_POLY) {
+              char rv[24]; snprintf(rv, sizeof rv, "_t%d", tr);
+              Buf bx; memset(&bx, 0, sizeof bx);
+              emit_boxed_text(c, vt, rv, &bx);
+              buf_printf(b, "lv_%s = %s;\n", rnm, bx.p ? bx.p : rv);
+              free(bx.p);
+            }
+            else buf_printf(b, "lv_%s = _t%d;\n", rnm, tr);
+          }
+          emit_indent(b, indent); buf_puts(b, "}\n");
         }
       }
     }

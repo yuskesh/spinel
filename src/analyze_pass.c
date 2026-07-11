@@ -1273,16 +1273,36 @@ int infer_write_types(Compiler *c) {
       if (ty_is_array(vinf_a)) arr_elem = ty_array_elem(vinf_a);
       else if (ty_is_object(vinf_a) && c->classes[ty_object_class(vinf_a)].is_struct)
         arr_elem = TY_POLY;   /* Struct/Data #deconstruct boxes members to poly */
-      for (int i = 0; i < rn; i++) {
-        const char *lty2 = nt_type(nt, reqs[i]);
+      int pon = 0;
+      const int *posts = nt_arr(nt, pattern, "posts", &pon);
+      for (int i = 0; i < rn + pon; i++) {
+        int tnode = i < rn ? reqs[i] : posts[i - rn];
+        const char *lty2 = nt_type(nt, tnode);
         if (!lty2 || !sp_streq(lty2, "LocalVariableTargetNode")) continue;
-        const char *lnm = nt_str(nt, reqs[i], "name");
+        const char *lnm = nt_str(nt, tnode, "name");
         LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
         if (!lv || lv->is_param || lv->is_block_param) continue;
-        TyKind et = (els && i < en) ? infer_type(c, els[i]) : arr_elem;
+        TyKind et = (els && i < rn && i < en) ? infer_type(c, els[i]) : arr_elem;
         if (et == TY_UNKNOWN || et == TY_NIL) continue;
         TyKind mg = ty_unify(lv->type, et);
         if (mg != lv->type) { lv->type = mg; changed = 1; }
+      }
+      /* `*mid` binds the middle slice as the scrutinee's array kind */
+      int ap_rest = nt_ref(nt, pattern, "rest");
+      if (ap_rest >= 0 && nt_type(nt, ap_rest) &&
+          sp_streq(nt_type(nt, ap_rest), "SplatNode")) {
+        int rex = nt_ref(nt, ap_rest, "expression");
+        if (rex >= 0 && nt_type(nt, rex) &&
+            sp_streq(nt_type(nt, rex), "LocalVariableTargetNode")) {
+          const char *rnm = nt_str(nt, rex, "name");
+          LocalVar *rlv = rnm ? scope_local(ms, rnm) : NULL;
+          TyKind at = ty_is_array(vinf_a) ? vinf_a
+                    : (arr_elem == TY_POLY ? TY_POLY_ARRAY : TY_UNKNOWN);
+          if (rlv && !rlv->is_param && !rlv->is_block_param && at != TY_UNKNOWN) {
+            TyKind mg = ty_unify(rlv->type, at);
+            if (mg != rlv->type) { rlv->type = mg; changed = 1; }
+          }
+        }
       }
     }
     else if (sp_streq(pty, "HashPatternNode")) {
