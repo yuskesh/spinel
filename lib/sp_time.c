@@ -25,6 +25,18 @@ sp_Time sp_time_at_int(int64_t sec) {
   return (sp_Time){ sec, 0, 0 };
 }
 
+/* Time.at(Rational): the exact num/den epoch, floored to the nanosecond
+   (Time.at(-1r/3) is second -1, nanosecond 666666666). den is positive by
+   sp_Rational's normalized-sign invariant. */
+sp_Time sp_time_at_div(int64_t num, int64_t den) {
+  if (den == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  int64_t sec = num / den;
+  int64_t rem = num % den;
+  if (rem < 0) { sec -= 1; rem += den; }
+  int64_t ns = (int64_t)(((__int128)rem * 1000000000) / den);
+  return (sp_Time){ sec, (int32_t)ns, 0 };
+}
+
 /* Exact Float -> (sec, nsec) shift. CRuby converts the Float through to_r,
    so the EXACT binary value of the double decides the nanosecond, floored
    (Time.at(100) - 1.3 has usec 699999, not 700000, because the double
@@ -34,6 +46,11 @@ sp_Time sp_time_at_int(int64_t sec) {
    floors negatives) instead of multiplying in double precision. */
 static void sp_time_shift_ns(double secs, int64_t base_sec, int32_t base_ns,
                              int64_t *out_sec, int32_t *out_ns) {
+  /* CRuby routes the Float through to_r, so a non-finite value raises
+     FloatDomainError (Time.at(Float::INFINITY), t + Float::NAN, ...) rather
+     than reaching frexp -- where (int64_t)(NaN/Inf * 2^53) would be UB. */
+  if (!isfinite(secs))
+    sp_raise_cls("FloatDomainError", isnan(secs) ? "NaN" : (secs < 0 ? "-Infinity" : "Infinity"));
   int e;
   double m = frexp(secs, &e);
   int64_t mi = (int64_t)(m * 9007199254740992.0); /* m * 2^53, exact */
@@ -116,6 +133,59 @@ sp_Time sp_time_with_usec(sp_Time t, int64_t usec) {
     sp_raise_cls("ArgumentError", "subsecx out of range");
   t.tv_nsec = (int32_t)(usec * 1000);
   return t;
+}
+
+/* Time.new(String): the fixed CRuby form "YYYY-MM-DD HH:MM:SS[.frac]" with
+   an optional " +HH:MM" / " -HH:MM" / " UTC" zone suffix. A date without a
+   time and any other shape raise CRuby's ArgumentError messages; anything
+   the grammar does not cover must be loud, never a guessed instant. */
+sp_Time sp_time_parse(const char *s) {
+  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
+  int y, mo, d, h, mi, sec, n = 0;
+  if (sscanf(s, "%4d-%2d-%2d%n", &y, &mo, &d, &n) != 3 || n == 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
+  const char *p = s + n;
+  if (*p == 0)
+    sp_raise_cls("ArgumentError", "no time information");
+  n = 0;
+  if (sscanf(p, " %2d:%2d:%2d%n", &h, &mi, &sec, &n) != 3 || n == 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
+  p += n;
+  int32_t nsec = 0;
+  if (*p == '.') {
+    p++;
+    int digits = 0;
+    int64_t frac = 0;
+    while (*p >= '0' && *p <= '9' && digits < 9) { frac = frac * 10 + (*p - '0'); p++; digits++; }
+    if (digits == 0)
+      sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
+    while (*p >= '0' && *p <= '9') p++;  /* sub-ns digits are beyond sp_Time */
+    while (digits < 9) { frac *= 10; digits++; }
+    nsec = (int32_t)frac;
+  }
+  while (*p == ' ') p++;
+  if (*p == 0) {
+    /* no zone: host-local, like the civil Time.new */
+    sp_Time t = sp_time_new(y, mo, d, h, mi, sec);
+    t.tv_nsec = nsec;
+    return t;
+  }
+  if (strcmp(p, "UTC") == 0 || strcmp(p, "Z") == 0) {
+    sp_Time t = sp_time_new_utc(y, mo, d, h, mi, sec);
+    t.tv_nsec = nsec;
+    return t;
+  }
+  int oh, om;
+  n = 0;
+  if ((*p == '+' || *p == '-') && sscanf(p + 1, "%2d:%2d%n", &oh, &om, &n) == 2 &&
+      n > 0 && p[1 + n] == 0) {
+    int64_t off = (int64_t)oh * 3600 + (int64_t)om * 60;
+    if (*p == '-') off = -off;
+    sp_Time t = sp_time_new_off(y, mo, d, h, mi, sec, off);
+    t.tv_nsec = nsec;
+    return t;
+  }
+  sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
 }
 
 sp_Time sp_time_utc(sp_Time t) {

@@ -2509,6 +2509,24 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
   const NodeTable *nt = c->nt;
   int argc;
   const int *argv = call_args(nt, id, &argc);
+  /* Time.new("YYYY-MM-DD HH:MM:SS[.frac][ zone]") string-parsing form */
+  if (is_new && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+    buf_puts(b, "sp_time_parse(");
+    emit_expr(c, argv[0], b);
+    buf_puts(b, ")");
+    return 1;
+  }
+  /* the 10-argument reversed form (sec, min, hour, day, mon, year, wday,
+     yday, isdst, tz) accepted by the named class methods */
+  if (!is_new && argc == 10) {
+    buf_printf(b, "sp_time_new%s(", is_utc ? "_utc" : "");
+    for (int i = 5; i >= 0; i--) {
+      emit_expr(c, argv[i], b);
+      if (i) buf_puts(b, ", ");
+    }
+    buf_puts(b, ")");
+    return 1;
+  }
   if (argc < 1 || argc > 7) return 0;
   long lit_off = 0;
   int have_lit_off = 0;
@@ -2527,8 +2545,11 @@ static int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf
       have_lit_off = 1;
     }
 else {
+      /* sp_time_new_off's 7th param is int64_t; only TY_INT guarantees an
+         int-compatible emission. A TY_UNKNOWN offset can emit a boxed value
+         (invalid C), so fall back to the generic "unsupported form" error. */
       TyKind ot = comp_ntype(c, argv[6]);
-      if (ot != TY_INT && ot != TY_UNKNOWN) return 0;
+      if (ot != TY_INT) return 0;
     }
     buf_puts(b, "sp_time_new_off(");
   }
@@ -7957,6 +7978,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if ((sp_streq(name, "now") || sp_streq(name, "new")) && argc == 0) { buf_puts(b, "sp_time_now()"); return; }
     if (sp_streq(name, "at") && argc == 1) {
       TyKind at = comp_ntype(c, argv[0]);
+      if (at == TY_TIME) { emit_expr(c, argv[0], b); return; }  /* value copy */
+      if (at == TY_RATIONAL) {
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", tr);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; sp_time_at_div(_t%d.num, _t%d.den); })", tr, tr);
+        return;
+      }
+      /* a non-numeric argument raises CRuby's TypeError; the expression
+         still needs the arm's sp_Time type for downstream emitters */
+      const char *atc = at == TY_STRING ? "String" : at == TY_SYMBOL ? "Symbol" :
+                        at == TY_NIL ? "NilClass" : NULL;
+      if (atc) {
+        buf_printf(b, "({ sp_raise_cls(\"TypeError\", "
+                      "\"can't convert %s into an exact number\"); (sp_Time){0, 0, 0}; })", atc);
+        return;
+      }
       buf_printf(b, "sp_time_at_%s(", at == TY_FLOAT ? "float" : "int");
       emit_expr(c, argv[0], b); buf_puts(b, ")");
       return;
