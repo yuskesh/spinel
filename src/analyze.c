@@ -2022,7 +2022,9 @@ static int is_array_enum_method(const char *nm) {
     "any?", "all?", "none?", "one?", "take", "drop", "take_while", "drop_while",
     "filter_map", "partition", "group_by", "each_with_object", "tally",
     "find_all", "zip", "grep", "grep_v", "to_h", "uniq", "reverse",
-    "member?", "minmax", "join", "index", "each", NULL };
+    "member?", "minmax", "join", "index", "each",
+    "each_cons", "each_slice", "chunk", "chunk_while", "slice_when",
+    "minmax_by", "cycle", "lazy", "each_entry", NULL };
   for (int k = 0; names[k]; k++) if (sp_streq(nm, names[k])) return 1;
   return 0;
 }
@@ -3006,6 +3008,78 @@ int desugar_enum_method_recv(Compiler *c) {
               c->nscope[toa] = c->nscope[wrecv];
               changed = 1;
             }
+          }
+        }
+      }
+    }
+    /* Array#entries is #to_a; the array emitters only know to_a. */
+    if (nm && sp_streq(nm, "entries") && nt_ref(nt, id, "block") < 0) {
+      int erecv2 = nt_ref(nt, id, "receiver");
+      int ea2 = nt_ref(nt, id, "arguments");
+      int eac2 = 0;
+      if (ea2 >= 0) nt_arr(nt, ea2, "arguments", &eac2);
+      if (erecv2 >= 0 && eac2 == 0 && ty_is_array(infer_type(c, erecv2))) {
+        nt_node_set_str(nt, id, "name", "to_a");
+        changed = 1;
+        continue;
+      }
+    }
+    /* poly-array sum { blk } == map { blk }.sum (the typed-array redispatch
+       serves int/float receivers natively) */
+    if (nm && sp_streq(nm, "sum") && nt_ref(nt, id, "block") >= 0) {
+      int srecv = nt_ref(nt, id, "receiver");
+      int sa = nt_ref(nt, id, "arguments");
+      int sac = 0;
+      if (sa >= 0) nt_arr(nt, sa, "arguments", &sac);
+      if (srecv >= 0 && sac == 0 && infer_type(c, srecv) == TY_POLY_ARRAY) {
+        int mapc = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, mapc, "name", "map");
+        nt_node_set_ref(nt, mapc, "receiver", srecv);
+        nt_node_set_ref(nt, mapc, "block", nt_ref(nt, id, "block"));
+        nt_node_set_str(nt, id, "name", "sum");
+        nt_node_set_ref(nt, id, "receiver", mapc);
+        nt_node_set_ref(nt, id, "block", -1);
+        comp_grow_node_arrays(c);
+        c->nscope[mapc] = c->nscope[id];
+        changed = 1;
+        continue;
+      }
+    }
+    /* Range no-block enumerator chains: interpose to_a so the array machinery
+       serves them ((1..5).each_with_index.to_a, (1..3).map.with_index { },
+       (1..3).cycle.first(7)). Blockless `each` (and each_slice/each_cons,
+       whose runtime ctors take any boxed source) keep their first-class
+       Enumerator arms. A beginless/endless literal has no array to build and
+       falls through to the loud reject. */
+    if (nm && nt_ref(nt, id, "block") < 0) {
+      static const char *const RENUM0[] = { "each_with_index", "each_index",
+                                            "map", "collect", "cycle", NULL };
+      int rargs = nt_ref(nt, id, "arguments");
+      int rac = 0;
+      if (rargs >= 0) nt_arr(nt, rargs, "arguments", &rac);
+      int hit = 0;
+      if (rac == 0) { for (int k = 0; RENUM0[k]; k++) if (sp_streq(nm, RENUM0[k])) { hit = 1; break; } }
+      if (hit) {
+        int rrecv = nt_ref(nt, id, "receiver");
+        if (rrecv >= 0 && infer_type(c, rrecv) == TY_RANGE) {
+          int rlit = rrecv;
+          while (rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "ParenthesesNode")) {
+            int pb = nt_ref(nt, rlit, "body");
+            int pn = 0;
+            const int *pv = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+            rlit = (pn == 1 && pv) ? pv[0] : -1;
+          }
+          int open_ended = rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "RangeNode") &&
+                           (nt_ref(nt, rlit, "left") < 0 || nt_ref(nt, rlit, "right") < 0);
+          if (!open_ended) {
+            int toa = nt_new_node(nt, "CallNode");
+            nt_node_set_str(nt, toa, "name", "to_a");
+            nt_node_set_ref(nt, toa, "receiver", rrecv);
+            nt_node_set_ref(nt, id, "receiver", toa);
+            comp_grow_node_arrays(c);
+            c->nscope[toa] = c->nscope[id];
+            changed = 1;
+            continue;
           }
         }
       }

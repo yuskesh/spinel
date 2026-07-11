@@ -4296,6 +4296,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_minmax_cmp_expr(c, id, b)) return;
   if (emit_step_array_expr(c, id, b)) return;
   if (emit_chunk_while_expr(c, id, b)) return;
+  if (emit_chunk_family_poly_expr(c, id, b)) return;
   if (emit_chunk_first_class_expr(c, id, b)) return;
   if (emit_cycle_bounded_expr(c, id, b)) return;
   if (emit_slice_when_chunk_inspect_expr(c, id, b)) return;
@@ -5207,7 +5208,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
        /* a bare [] literal types UNKNOWN until pushes promote it */
        (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
-      (sp_streq(name, "each") || sp_streq(name, "reverse_each"))) {
+      (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
+       sp_streq(name, "map") || sp_streq(name, "collect"))) {
+    /* a blockless map is the same element snapshot; only its #inspect method
+       name differs (the deferred mapping is supplied by a later block form,
+       which the chain emitters match before this arm) */
+    if (sp_streq(name, "map") || sp_streq(name, "collect")) {
+      int te = ++g_tmp;
+      buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_from(", te);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "); _t%d->meth = \"map\"; _t%d; })", te, te);
+      return;
+    }
     buf_printf(b, "sp_Enumerator_new_from%s(", sp_streq(name, "reverse_each") ? "_rev" : "");
     emit_boxed(c, recv, b); buf_puts(b, ")");
     return;
@@ -5251,6 +5263,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
      sliding windows of length n. */
   if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
       (ty_is_array(comp_ntype(c, recv)) ||
+       comp_ntype(c, recv) == TY_RANGE ||
        (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
       (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) {

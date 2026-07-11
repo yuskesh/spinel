@@ -1972,6 +1972,117 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* poly_array.{chunk_while|slice_when|chunk} { }.to_a -> a poly array of runs
+   (or [key, run] pairs for chunk). The int-array twins above keep their lean
+   typed loops; this one drives boxed elements, so a redirected user-Enumerable
+   receiver (obj.__enum_to_a.chunk_while { }) is served too. Block params pin
+   to TY_POLY for the body emission. Returns 1 if handled. */
+int emit_chunk_family_poly_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "to_a")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
+  const char *m = nt_str(nt, recv, "name");
+  if (!m) return 0;
+  int is_sw = sp_streq(m, "slice_when");
+  int is_cw = sp_streq(m, "chunk_while");
+  int is_ck = sp_streq(m, "chunk");
+  if (!is_sw && !is_cw && !is_ck) return 0;
+  int block = nt_ref(nt, recv, "block");
+  if (block < 0) return 0;
+  int pr = nt_ref(nt, recv, "receiver");
+  if (pr < 0 || comp_ntype(c, pr) != TY_POLY_ARRAY) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  const char *p0n = block_param_name(c, block, 0);
+  if (!p0n) return 0;
+  const char *p1n = block_param_name(c, block, 1);
+  if ((is_sw || is_cw) && !p1n) return 0;
+  const char *p0 = rename_local(p0n);
+  const char *p1 = p1n ? rename_local(p1n) : NULL;
+
+  Scope *bsc = comp_scope_of(c, block);
+  LocalVar *lva = bsc ? scope_local(bsc, p0n) : NULL;
+  LocalVar *lvb = (bsc && p1n) ? scope_local(bsc, p1n) : NULL;
+  TyKind pta = lva ? lva->type : TY_UNKNOWN, ptb = lvb ? lvb->type : TY_UNKNOWN;
+  if (lva) lva->type = TY_POLY;
+  if (lvb) lvb->type = TY_POLY;
+
+  int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, ti = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta); free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tcur, tcur);
+  int tpk = -1, thas = -1;
+  if (is_ck) {
+    tpk = ++g_tmp; thas = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tpk, tpk);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "int _t%d = 0;\n", thas);
+  }
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
+  if (is_ck) {
+    int tk = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, ti);
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    int save = g_indent; g_indent += 1;
+    Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tk, kb.p ? kb.p : "sp_box_nil()", tk); free(kb.p);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (!_t%d || !sp_poly_eq(_t%d, _t%d)) {\n", thas, tk, tpk);
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "if (_t%d) {\n", thas);
+    emit_indent(g_pre, g_indent + 3);
+    buf_printf(g_pre, "sp_PolyArray *_pr = sp_PolyArray_new(); SP_GC_ROOT(_pr); sp_PolyArray_push(_pr, _t%d); sp_PolyArray_push(_pr, sp_box_poly_array(_t%d)); sp_PolyArray_push(_t%d, sp_box_poly_array(_pr));\n", tpk, tcur, tout);
+    emit_indent(g_pre, g_indent + 2); buf_puts(g_pre, "}\n");
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "_t%d = sp_PolyArray_new(); _t%d = _t%d; _t%d = 1;\n", tcur, tpk, tk, thas);
+    emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n", tcur, ta, ti);
+  }
+  else {
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d > 0) {\n", ti);
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d - 1);\n", p0, ta, ti);
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p1, ta, ti);
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
+    int save = g_indent; g_indent += 2;
+    Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = save;
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, is_sw ? "if (%s) {\n" : "if (!(%s)) {\n", cb.p ? cb.p : "0"); free(cb.p);
+    emit_indent(g_pre, g_indent + 3);
+    buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tout, tcur);
+    emit_indent(g_pre, g_indent + 3);
+    buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", tcur);
+    emit_indent(g_pre, g_indent + 2); buf_puts(g_pre, "}\n");
+    emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n", tcur, ta, ti);
+  }
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent);
+  if (is_ck)
+    buf_printf(g_pre, "if (_t%d) { sp_PolyArray *_pr = sp_PolyArray_new(); SP_GC_ROOT(_pr); sp_PolyArray_push(_pr, _t%d); sp_PolyArray_push(_pr, sp_box_poly_array(_t%d)); sp_PolyArray_push(_t%d, sp_box_poly_array(_pr)); }\n", thas, tpk, tcur, tout);
+  else
+    buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) > 0) sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tcur, tout, tcur);
+  if (lva) lva->type = pta;
+  if (lvb) lvb->type = ptb;
+  buf_printf(b, "_t%d", tout);
+  return 1;
+}
+
 /* int_array.product(int_array)[.to_a].inspect -> the Cartesian product
    rendered as a nested-array string. The product result has no first-class
    type, so only this inline inspect chain is supported. Returns 1 if handled. */

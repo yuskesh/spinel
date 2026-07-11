@@ -476,6 +476,18 @@ static int infer_int_shl_overflows(long long base, long long amount) {
    or consumed by an enumerator method (#next/#peek/#rewind/#size). When it is
    the receiver of a collection method (.to_a/.map/.select/...), it materializes
    to a typed array instead, so those chains keep the fast unboxed path. */
+/* True when `id` is the receiver of an enclosing call that carries a block:
+   the chain emitters own that shape (arr.map.with_index { }), so the inner
+   blockless call must keep its legacy typing. */
+static int call_is_chain_receiver_with_block(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    if (nt_ref(nt, n, "receiver") != id) continue;
+    return nt_ref(nt, n, "block") >= 0;
+  }
+  return 0;
+}
+
 static int range_each_is_external(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
@@ -867,7 +879,7 @@ TyKind infer_call(Compiler *c, int id) {
     int pr = nt_ref(nt, recv, "receiver");
     if (pr >= 0) {
       TyKind prt = infer_type(c, pr);
-      if (prt == TY_INT_ARRAY ||
+      if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY ||
           (prt == TY_RANGE && range_enum_redispatch(c, recv)))
         return TY_POLY_ARRAY;
     }
@@ -2478,6 +2490,12 @@ else {
     if (block < 0 && argc == 0 &&
         (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
          sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) return TY_ENUMERATOR;
+    /* a blockless map/collect is a usable Enumerator too (size/class/next);
+       chained block forms (map.with_index { }) are typed by their own arms
+       before this one. */
+    if (block < 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+        (sp_streq(name, "map") || sp_streq(name, "collect")) &&
+        !call_is_chain_receiver_with_block(c, id)) return TY_ENUMERATOR;
     /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
        Enumerator of slices / windows. The direct-block form has block >= 0 and
        is excluded; a .map/.collect chain consumer is typed by its own arm above
@@ -3108,6 +3126,8 @@ else {
         sp_streq(name, "none?") || sp_streq(name, "one?")) return TY_BOOL;
     if (sp_streq(name, "each") && nt_ref(nt, id, "block") < 0)
       return range_each_is_external(c, id) ? TY_ENUMERATOR : TY_INT_ARRAY;
+    if ((sp_streq(name, "each_slice") || sp_streq(name, "each_cons")) &&
+        argc == 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
     if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) return TY_INT_ARRAY;
     if (sp_streq(name, "sum") || sp_streq(name, "min") || sp_streq(name, "max") ||
         sp_streq(name, "first") || sp_streq(name, "last") ||
