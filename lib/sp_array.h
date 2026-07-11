@@ -182,6 +182,7 @@ void sp_StrArray_reverse_bang(sp_StrArray *a);
 void sp_StrArray_rotate_bang(sp_StrArray *a, mrb_int n);
 void sp_StrArray_sort_bang(sp_StrArray *a);
 void sp_StrArray_uniq_bang(sp_StrArray *a);
+sp_StrArray *sp_StrArray_uniq(sp_StrArray *a);
 const char *sp_StrArray_join(sp_StrArray *a, const char *sep);
 mrb_bool sp_StrArray_include(sp_StrArray *a, const char *v);
 sp_StrArray *sp_StrArray_intersect(sp_StrArray *a, sp_StrArray *b);
