@@ -410,6 +410,15 @@ sp_Rational sp_rational_round_prec(sp_Rational a, mrb_int nd) {
   mrb_int q = sp_rational_round_i(s);
   return nd >= 0 ? sp_rational_new_wide(q, p) : sp_rational_new_wide((sp_rat_wide)q * p, 1);
 }
+sp_Rational sp_rational_mod(sp_Rational a, sp_Rational b) {
+  mrb_int q = sp_rational_idiv(a, b);
+  return sp_rational_sub(a, sp_rational_mul(b, sp_rational_new(q, 1)));
+}
+sp_Rational sp_rational_rem(sp_Rational a, sp_Rational b) {
+  sp_Rational d = sp_rational_div(a, b);
+  mrb_int q = d.num / d.den;   /* toward zero */
+  return sp_rational_sub(a, sp_rational_mul(b, sp_rational_new(q, 1)));
+}
 sp_Rational sp_rational_floor_prec(sp_Rational a, mrb_int nd) {
   sp_rat_wide p = sp_rat_pow10(nd < 0 ? -nd : nd);
   sp_Rational s = nd >= 0 ? sp_rational_new_wide((sp_rat_wide)a.num * p, a.den)

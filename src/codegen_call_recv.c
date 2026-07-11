@@ -311,32 +311,38 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     const char *rvt2 = nt_type(nt, recv);
     int sb_asgn = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
                            sp_streq(rvt2, "InstanceVariableReadNode"));
-    if (sb_asgn && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
       int tp2 = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", tp2); emit_expr(c, argv[0], b);
       buf_printf(b, "; const char *_hit%d = (_t%d && ", tp2, tp2);
       emit_expr(c, recv, b);
       buf_printf(b, ") ? strstr(", tp2); emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d) : NULL; if (_hit%d) ", tp2, tp2);
-      emit_expr(c, recv, b);
-      buf_printf(b, " = sp_str_sub("); emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d, (&(\"\\xff\")[1])); _hit%d ? _t%d : (const char *)0; })", tp2, tp2, tp2);
+      buf_printf(b, ", _t%d) : NULL;", tp2);
+      if (sb_asgn) {
+        buf_printf(b, " if (_hit%d) ", tp2);
+        emit_expr(c, recv, b);
+        buf_printf(b, " = sp_str_sub("); emit_expr(c, recv, b);
+        buf_printf(b, ", _t%d, (&(\"\\xff\")[1]));", tp2);
+      }
+      buf_printf(b, " _hit%d ? _t%d : (const char *)0; })", tp2, tp2);
       return 1;
     }
-    if (sb_asgn && argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+    if (argc == 1 && re_lit_index(c, argv[0]) >= 0) {
       /* slice!(/re/): remove the first match, evaluate to it (or nil).
          sp_re_match fills sp_re_match_str with the matched run; the splice
          helper replaces it with the empty string. */
       int tm3 = ++g_tmp, ts3 = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = ", ts3); emit_expr(c, recv, b);
       buf_printf(b, "; mrb_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
-                    " const char *_hit%d = _t%d >= 0 ? sp_re_match_str : NULL;"
-                    " if (_hit%d) ",
-                 tm3, re_lit_index(c, argv[0]), ts3, tm3, tm3, tm3);
-      emit_expr(c, recv, b);
-      buf_printf(b, " = sp_str_splice_re(sp_re_pat_%d, _t%d, (&(\"\\xff\")[1]));"
-                    " _hit%d; })",
-                 re_lit_index(c, argv[0]), ts3, tm3);
+                    " const char *_hit%d = _t%d >= 0 ? sp_re_match_str : NULL;",
+                 tm3, re_lit_index(c, argv[0]), ts3, tm3, tm3);
+      if (sb_asgn) {
+        buf_printf(b, " if (_hit%d) ", tm3);
+        emit_expr(c, recv, b);
+        buf_printf(b, " = sp_str_splice_re(sp_re_pat_%d, _t%d, (&(\"\\xff\")[1]));",
+                   re_lit_index(c, argv[0]), ts3);
+      }
+      buf_printf(b, " _hit%d; })", tm3);
       return 1;
     }
     if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {

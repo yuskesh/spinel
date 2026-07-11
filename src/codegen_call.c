@@ -1279,6 +1279,17 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t%d.re); })", t, t);
         return 1;
       }
+      if (sp_streq(name, "<=>") && argc == 1 &&
+          (cxa == TY_COMPLEX || cxa == TY_INT || cxa == TY_FLOAT)) {
+        int ta3 = ++g_tmp, tb3 = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", ta3); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Complex _t%d = ", tb3); emit_complex_coerce(c, argv[0], b);
+        buf_printf(b, "; (_t%d.im == 0.0 && _t%d.im == 0.0)"
+                      " ? (_t%d.re < _t%d.re ? (mrb_int)-1 : _t%d.re > _t%d.re ? (mrb_int)1 : (mrb_int)0)"
+                      " : SP_INT_NIL; })",
+                   ta3, tb3, ta3, tb3, ta3, tb3);
+        return 1;
+      }
       if (sp_streq(name, "zero?") && argc == 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
@@ -1438,6 +1449,33 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_rational(", tp);
         emit_expr(c, recv, b);
         buf_printf(b, ")); _t%d; })", tp);
+        return 1;
+      }
+      /* % / modulo / remainder / divmod against a Rational or Integer operand */
+      if ((sp_streq(name, "%") || sp_streq(name, "modulo") ||
+           sp_streq(name, "remainder") || sp_streq(name, "divmod")) && argc == 1 &&
+          (comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[0]) == TY_INT)) {
+        int is_int_arg = comp_ntype(c, argv[0]) == TY_INT;
+        if (sp_streq(name, "divmod")) {
+          int ta2 = ++g_tmp, tb2 = ++g_tmp, tq2 = ++g_tmp, tp2 = ++g_tmp;
+          buf_printf(b, "({ sp_Rational _t%d = ", ta2); emit_expr(c, recv, b);
+          buf_printf(b, "; sp_Rational _t%d = ", tb2);
+          if (is_int_arg) { buf_puts(b, "sp_rational_new("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+          else emit_expr(c, argv[0], b);
+          buf_printf(b, "; mrb_int _t%d = sp_rational_idiv(_t%d, _t%d);"
+                        " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                        " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                        " sp_PolyArray_push(_t%d, sp_box_rational(sp_rational_mod(_t%d, _t%d)));"
+                        " _t%d; })",
+                     tq2, ta2, tb2, tp2, tp2, tp2, tq2, tp2, ta2, tb2, tp2);
+        }
+        else {
+          const char *rfn = name[0] == 'r' ? "sp_rational_rem" : "sp_rational_mod";
+          buf_printf(b, "%s(", rfn); emit_expr(c, recv, b); buf_puts(b, ", ");
+          if (is_int_arg) { buf_puts(b, "sp_rational_new("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
+          else emit_expr(c, argv[0], b);
+          buf_puts(b, ")");
+        }
         return 1;
       }
       /* Rational ** Rational computes as floats (CRuby; a negative base would
@@ -9754,7 +9792,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* h.default = v in value position: store when the receiver is a typed
      hash lvalue; a literal {} receiver just yields the value. */
-  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && !ty_is_hash(rt)) {
+  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && !ty_is_hash(rt) &&
+      nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
     TyKind vt = comp_ntype(c, argv[0]);
     int t = ++g_tmp;
     buf_puts(b, "({ ");

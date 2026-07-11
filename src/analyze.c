@@ -3093,6 +3093,24 @@ int desugar_enum_method_recv(Compiler *c) {
       }
       continue;
     }
+    if (nm && (sp_streq(nm, "default=") || sp_streq(nm, "default"))) {
+      /* default access on an un-narrowed empty-hash local: give it the
+         symbol-keyed poly variant so the setter has a slot to store into
+         (`a = {}; a.default = 9; a.default`) */
+      int drc = nt_ref(nt, id, "receiver");
+      if (drc >= 0 && nt_type(nt, drc) &&
+          sp_streq(nt_type(nt, drc), "LocalVariableReadNode") &&
+          infer_type(c, drc) == TY_UNKNOWN) {
+        Scope *dsc = comp_scope_of(c, drc);
+        const char *dvn = nt_str(nt, drc, "name");
+        LocalVar *dlv = (dsc && dvn) ? scope_local(dsc, dvn) : NULL;
+        if (dlv && dlv->type == TY_UNKNOWN) {
+          dlv->type = TY_SYM_POLY_HASH;
+          changed = 1;
+        }
+      }
+      continue;
+    }
     if (nm && sp_streq(nm, "%")) {
       /* (range) % n is Range#step(n) (the arithmetic-sequence operator) */
       int prc = nt_ref(nt, id, "receiver");

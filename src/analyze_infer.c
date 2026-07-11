@@ -720,6 +720,7 @@ TyKind infer_call(Compiler *c, int id) {
         sp_streq(name, "integer?") || sp_streq(name, "finite?") ||
         sp_streq(name, "eql?")) return TY_BOOL;
     if (sp_streq(name, "infinite?")) return TY_INT;      /* 1 or nil (sentinel) */
+    if (sp_streq(name, "<=>") && argc == 1) return TY_INT;  /* -1/0/1 or nil (sentinel) */
     if (sp_streq(name, "rationalize") && argc == 0) return TY_RATIONAL;
     if (sp_streq(name, "fdiv") && argc == 1) return TY_COMPLEX;
     if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
@@ -775,6 +776,9 @@ TyKind infer_call(Compiler *c, int id) {
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
                       sp_streq(name, ">=") || sp_streq(name, "==") || sp_streq(name, "!="))) return TY_BOOL;
     if (argc == 1 && sp_streq(name, "<=>")) return TY_INT;
+    if (argc == 1 && (sp_streq(name, "%") || sp_streq(name, "modulo") ||
+                      sp_streq(name, "remainder"))) return TY_RATIONAL;
+    if (argc == 1 && sp_streq(name, "divmod")) return TY_POLY_ARRAY;
   }
 
   /* Safe navigation &. : nil receiver always short-circuits to nil */
@@ -3147,10 +3151,12 @@ else {
   }
   /* h.default = v as a value: the assigned value (works for the untyped {}
      literal receiver too) */
-  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 &&
-      (ty_is_hash(rt) || rt == TY_UNKNOWN)) {
+  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && ty_is_hash(rt))
     return infer_type(c, argv[0]);
-  }
+  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && rt == TY_UNKNOWN &&
+      nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")))
+    return infer_type(c, argv[0]);
   /* fetch(key, default) on an unknown/empty hash: return the default type */
   if (recv >= 0 && sp_streq(name, "fetch") && argc >= 2 && !ty_is_hash(rt)) {
     TyKind dt = infer_type(c, argv[1]);

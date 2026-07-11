@@ -51,6 +51,8 @@ mrb_int sp_rational_floor_i(sp_Rational a);              /* Rational#floor (no d
 mrb_int sp_rational_ceil_i(sp_Rational a);               /* Rational#ceil (no digits) */
 sp_Rational sp_rational_round_prec(sp_Rational a, mrb_int nd);
 sp_Rational sp_rational_truncate_prec(sp_Rational a, mrb_int nd);
+sp_Rational sp_rational_mod(sp_Rational a, sp_Rational b);   /* Rational#% (floor) */
+sp_Rational sp_rational_rem(sp_Rational a, sp_Rational b);   /* Rational#remainder */
 sp_Rational sp_rational_floor_prec(sp_Rational a, mrb_int nd);
 sp_Rational sp_rational_ceil_prec(sp_Rational a, mrb_int nd);
 mrb_int sp_rational_cmp(sp_Rational a, sp_Rational b);
