@@ -1094,6 +1094,25 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     return;
   }
+  if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
+    /* `$g += v` as a value: parenthesized assignment yielding the updated
+       slot, the same shapes as the statement form (string + concatenates). */
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    if (!lv) { unsupported(c, id, "global variable op-write (unregistered global)"); return; }
+    const char *op = nt_str(nt, id, "binary_operator");
+    int v = nt_ref(nt, id, "value");
+    if (lv->type == TY_STRING && op && sp_streq(op, "+")) {
+      buf_printf(b, "(gv_%s = sp_str_concat(gv_%s, ", rn, rn);
+      emit_expr(c, v, b); buf_puts(b, "))");
+    }
+    else {
+      buf_printf(b, "(gv_%s %s= ", rn, op ? op : "+");
+      emit_expr(c, v, b); buf_puts(b, ")");
+    }
+    return;
+  }
   if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");

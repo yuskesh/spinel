@@ -3829,6 +3829,20 @@ TyKind infer_uncached(Compiler *c, int id) {
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
     return lv ? lv->type : TY_UNKNOWN;
   }
+  if (nk == NK_GlobalVariableOperatorWriteNode) {
+    /* `$g += v` evaluates to the updated value (the local/ivar op-write forms
+       above already do; #1484). Plain `$g = v` and `||=`/`&&=` stay untyped
+       statements, mirroring the local-variable policy. */
+    const char *nm = nt_str(nt, id, "name");
+    const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
+    LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
+    TyKind ct = lv ? lv->type : TY_UNKNOWN;
+    TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
+    if (ct == TY_STRING) return TY_STRING;
+    if (ty_is_numeric(ct) && ty_is_numeric(vt))
+      return (ct == TY_FLOAT || vt == TY_FLOAT) ? TY_FLOAT : TY_INT;
+    return ct != TY_UNKNOWN ? ct : vt;
+  }
   if (nk == NK_ConstantReadNode) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
