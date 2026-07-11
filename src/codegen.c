@@ -4305,7 +4305,7 @@ char *codegen_program(const NodeTable *nt) {
       buf_puts(&b, "extern ");
       buf_puts(&b, ffi_c_type(ret));
       buf_puts(&b, " ");
-      buf_puts(&b, cf->ffi_funcs[fi].name);
+      buf_puts(&b, cf->ffi_funcs[fi].csym ? cf->ffi_funcs[fi].csym : cf->ffi_funcs[fi].name);
       buf_puts(&b, "(");
       for (int ai = 0; ai < na; ai++) {
         if (ai) buf_puts(&b, ", ");
