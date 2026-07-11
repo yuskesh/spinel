@@ -2491,7 +2491,21 @@ else {
       return ty_array_elem(rt);
     }
     if (sp_streq(name, "at") && argc == 1) return ty_array_elem(rt);  /* like [i] */
-    if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) return ty_array_elem(rt);
+    if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
+      TyKind et = ty_array_elem(rt);
+      if (argc == 2) {
+        TyKind dt = infer_type(c, argv[1]);
+        return (dt == TY_UNKNOWN || dt == et) ? et : TY_POLY;
+      }
+      int fblk = nt_ref(nt, id, "block");
+      if (fblk >= 0) {
+        int fb = nt_ref(nt, fblk, "body");
+        int fn = 0; const int *fbb = fb >= 0 ? nt_arr(nt, fb, "body", &fn) : NULL;
+        TyKind bt = fn > 0 ? infer_type(c, fbb[fn - 1]) : TY_NIL;
+        return (bt == TY_UNKNOWN || bt == et) ? et : TY_POLY;
+      }
+      return et;
+    }
     if (sp_streq(name, "dig") && argc >= 1) {
       if (argc == 1) return ty_array_elem(rt);
       return TY_POLY;
@@ -2672,6 +2686,7 @@ else {
     if (sp_streq(name, "repeated_combination") && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "combination") && argc == 1 && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "permutation") && (argc == 1 || argc == 0) && block < 0) return TY_POLY_ARRAY;
+    if (sp_streq(name, "repeated_permutation") && argc == 1 && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "frozen?")) return TY_BOOL;
     /* delete(v) { fallback }: the not-found block's value mixes in -> poly */
     if (sp_streq(name, "delete") && argc == 1 && nt_ref(nt, id, "block") >= 0)
@@ -3051,6 +3066,20 @@ else {
       nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "HashNode") ||
                              sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
     return TY_POLY; /* {}.default -> nil (poly nil) */
+  }
+  /* a literal Hash.new(d) receiver that never narrowed: .default and [] both
+     yield the default (no write can have reached it) */
+  if (recv >= 0 && rt == TY_UNKNOWN &&
+      ((sp_streq(name, "default") && argc == 0) ||
+       (sp_streq(name, "[]") && argc == 1))) {
+    int dn = hash_new_default_arg(c, recv);
+    if (dn >= 0) return infer_type(c, dn);
+  }
+  /* h.default = v as a value: the assigned value (works for the untyped {}
+     literal receiver too) */
+  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 &&
+      (ty_is_hash(rt) || rt == TY_UNKNOWN)) {
+    return infer_type(c, argv[0]);
   }
   /* fetch(key, default) on an unknown/empty hash: return the default type */
   if (recv >= 0 && sp_streq(name, "fetch") && argc >= 2 && !ty_is_hash(rt)) {

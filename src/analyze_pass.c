@@ -4927,6 +4927,14 @@ int infer_block_params(Compiler *c) {
       continue;
     }
 
+    /* array.fetch(i) { |i| } binds the (int) index */
+    if (sp_streq(name, "fetch") && ty_is_array(rt) && p0) {
+      Scope *afs = comp_scope_of(c, block);
+      LocalVar *ap = scope_local_intern(afs, p0); ap->is_block_param = 1;
+      TyKind am = ty_unify(ap->type, TY_INT);
+      if (am != ap->type) { ap->type = am; changed = 1; }
+      continue;
+    }
     /* hash.fetch(key) { |k| } binds the looked-up key */
     if (sp_streq(name, "fetch") && ty_is_hash(rt)) {
       Scope *fs = comp_scope_of(c, block);

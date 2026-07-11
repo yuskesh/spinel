@@ -2921,6 +2921,19 @@ int desugar_enum_method_recv(Compiler *c) {
         }
       }
     }
+    /* Hash#store(k, v) is exactly []= (whose value form already works) */
+    if (nm && sp_streq(nm, "store")) {
+      int hrc = nt_ref(nt, id, "receiver");
+      int ha = nt_ref(nt, id, "arguments");
+      int hac = 0;
+      if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
+      if (hrc >= 0 && hac == 2 && nt_ref(nt, id, "block") < 0 &&
+          ty_is_hash(infer_type(c, hrc))) {
+        nt_node_set_str(nt, id, "name", "[]=");
+        changed = 1;
+      }
+      continue;
+    }
     /* struct[member_literal] = v rewrites to the generated writer, so the
        member's type unifies with the value like any accessor write */
     if (nm && sp_streq(nm, "[]=")) {

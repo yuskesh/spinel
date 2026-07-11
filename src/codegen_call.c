@@ -9514,6 +9514,38 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (emit_range_call(c, id, b)) return;
 
   /* hash value methods */
+  /* A literal Hash.new(d) receiver that never narrowed: .default and []
+     both fold to the default value (no write can have reached the hash);
+     the key/receiver still evaluate for their side effects. */
+  if (recv >= 0 && rt == TY_UNKNOWN &&
+      ((sp_streq(name, "default") && argc == 0) ||
+       (sp_streq(name, "[]") && argc == 1))) {
+    int dn = hash_new_default_arg(c, recv);
+    if (dn >= 0) {
+      TyKind dt = comp_ntype(c, dn);
+      int t = ++g_tmp;
+      buf_puts(b, "({ ");
+      emit_ctype(c, dt, b);
+      buf_printf(b, " _t%d = ", t);
+      emit_expr(c, dn, b);
+      buf_puts(b, "; ");
+      if (argc == 1) { buf_puts(b, "(void)("); emit_boxed(c, argv[0], b); buf_puts(b, "); "); }
+      buf_printf(b, "_t%d; })", t);
+      return;
+    }
+  }
+  /* h.default = v in value position: store when the receiver is a typed
+     hash lvalue; a literal {} receiver just yields the value. */
+  if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && !ty_is_hash(rt)) {
+    TyKind vt = comp_ntype(c, argv[0]);
+    int t = ++g_tmp;
+    buf_puts(b, "({ ");
+    emit_ctype(c, vt, b);
+    buf_printf(b, " _t%d = ", t);
+    emit_expr(c, argv[0], b);
+    buf_printf(b, "; _t%d; })", t);
+    return;
+  }
   /* {}.default (empty hash literal with unknown type) always returns nil */
   if (recv >= 0 && sp_streq(name, "default") && argc == 0 && !ty_is_hash(rt)) {
     buf_puts(b, "sp_box_nil()");

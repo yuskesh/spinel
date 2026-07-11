@@ -118,6 +118,29 @@ int class_var_static_ci(Compiler *c, int node) {
   return found;
 }
 
+/* `Hash.new(d)` (or the desugared __hash_new_default) as a bare expression:
+   return the default-value argument node, or -1. Lets a literal receiver's
+   .default / [] / fetch fold to the default when the hash type never
+   narrows (no writes ever reach it). */
+int hash_new_default_arg(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return -1;
+  const char *nm = nt_str(nt, recv, "name");
+  if (!nm || (!sp_streq(nm, "new") && !sp_streq(nm, "__hash_new_default"))) return -1;
+  int cr = nt_ref(nt, recv, "receiver");
+  if (cr < 0 || !nt_type(nt, cr) || !sp_streq(nt_type(nt, cr), "ConstantReadNode")) return -1;
+  const char *cn = nt_str(nt, cr, "name");
+  if (!cn || !sp_streq(cn, "Hash")) return -1;
+  if (nt_ref(nt, recv, "block") >= 0) return -1;   /* block default: dproc path */
+  int a = nt_ref(nt, recv, "arguments");
+  int ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (ac != 1 || !av) return -1;
+  const char *aty = nt_type(nt, av[0]);
+  if (aty && sp_streq(aty, "KeywordHashNode")) return -1;
+  return av[0];
+}
+
 int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode) {
   const NodeTable *nt = c->nt;
   const char *kty = nt_type(nt, keynode);
