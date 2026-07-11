@@ -1662,6 +1662,8 @@ sp_Bigint *sp_bigint_new_int(int64_t v);
 sp_Bigint *sp_bigint_add(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_sub(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_mul(sp_Bigint *a, sp_Bigint *b);
+sp_Bigint *sp_bigint_shl(sp_Bigint *a, int64_t n);
+sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp);
 int sp_bigint_sign(sp_Bigint *b);
 size_t sp_bigint_byte_len(sp_Bigint *b);
 size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);
@@ -2461,7 +2463,36 @@ static mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
   }
   return r;
 }
-static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i < 0) sp_raise_cls("RangeError", "negative exponent"); double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b)); if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT && b.v.i >= 0) return sp_box_int((mrb_int)r); return sp_box_float((mrb_float)r); }
+static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
+  /* int ** int: exact square-and-multiply (the old double round-trip lost
+     precision above 2^53 and saturated on overflow); an overflowing result
+     promotes to Bignum under --int-overflow=promote, else sp_int_pow
+     raises/wraps per mode. */
+  if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) {
+    if (b.v.i < 0) sp_raise_cls("RangeError", "negative exponent");
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+    mrb_int r = 1, base = a.v.i, exp = b.v.i;
+    int ovf = 0;
+    while (exp > 0 && !ovf) {
+      if (exp & 1) ovf |= sp_int_mul_overflow_p(r, base, &r);
+      exp >>= 1;
+      if (exp) ovf |= sp_int_mul_overflow_p(base, base, &base);
+    }
+    if (ovf || r == SP_INT_NIL)
+      return sp_box_bigint(sp_bigint_pow(sp_bigint_new_int(a.v.i), b.v.i));
+    return sp_box_int(r);
+#else
+    return sp_box_int(sp_int_pow(a.v.i, b.v.i));
+#endif
+  }
+  if (a.tag == SP_TAG_BIGINT && (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT)) {
+    mrb_int e = sp_poly_to_i(b);
+    if (e < 0) sp_raise_cls("RangeError", "negative exponent");
+    return sp_box_bigint(sp_bigint_pow((sp_Bigint *)a.v.p, e));
+  }
+  double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b));
+  return sp_box_float((mrb_float)r);
+}
 /* sp_poly_shl is defined after sp_PolyArray_push (below) so the
    push-dispatch path can call it directly. The Integer-bit-shift
    semantics fall through when the recv isn't an array. */
@@ -2614,7 +2645,22 @@ static sp_RbVal sp_poly_shl(sp_RbVal a, sp_RbVal b) {
   /* String#<< appends (sp_str_concat treats NULL as the empty string) */
   if (a.tag == SP_TAG_STR && b.tag == SP_TAG_STR)
     return sp_box_str(sp_str_concat(a.v.s, b.v.s));
-  return sp_box_int(sp_poly_to_i(a) << sp_poly_to_i(b));
+  /* Integer#<<. A Bignum receiver shifts as a Bignum; an int receiver whose
+     result escapes the word promotes under --int-overflow=promote and
+     raises/wraps per mode otherwise (sp_int_shl carries those semantics). */
+  if (a.tag == SP_TAG_BIGINT)
+    return sp_box_bigint(sp_bigint_shl((sp_Bigint *)a.v.p, sp_poly_to_i(b)));
+  {
+    mrb_int x = sp_poly_to_i(a), n = sp_poly_to_i(b);
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+    if (n >= 0 && x != 0) {
+      mrb_int r = n >= 64 ? 0 : (mrb_int)((uintptr_t)x << n);
+      if (n >= 64 || (r >> n) != x || r == SP_INT_NIL)
+        return sp_box_bigint(sp_bigint_shl(sp_bigint_new_int(x), n));
+    }
+#endif
+    return sp_box_int(sp_int_shl(x, n));
+  }
 }
 static mrb_int sp_PolyArray_length(sp_PolyArray *a) { if (!a) return 0; return a->len; }
 /* Helpers for iterating over a poly value that holds a boxed array. */
