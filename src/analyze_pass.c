@@ -3227,7 +3227,11 @@ static int curry_chain(Compiler *c, int node, int *applied, int *arity, TyKind *
     }
     if (sp_streq(nm, "[]") || sp_streq(nm, "call") || sp_streq(nm, "()")) {
       if (!curry_chain(c, recv, applied, arity, ret, depth + 1)) return 0;
-      (*applied)++;
+      /* one application per argument: curry[a, b] applies two */
+      int a2 = nt_ref(nt, node, "arguments");
+      int ac2 = 0;
+      if (a2 >= 0) nt_arr(nt, a2, "arguments", &ac2);
+      *applied += ac2;
       return 1;
     }
     return 0;

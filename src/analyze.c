@@ -2346,7 +2346,54 @@ static int desugar_builtin_method_obj(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "method")) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0) continue;
+    if (recv < 0) {
+      /* receiverless method(:Integer) etc.: a Kernel builtin has no C target
+         for the bound-method fn slot, so synthesize a forwarding top-level
+         def and retarget the symbol at it (`def __bam_N(__bam_r) = Integer(__bam_r)`).
+         The wrapper's param types from the Method's call sites like any def. */
+      static const char *const KFN0[] = { "Integer", "Float", "String", "Array",
+                                          "Rational", "Complex", "puts", "print",
+                                          "p", "pp", NULL };
+      const char *ksym = method_sym_arg(c, id);
+      if (!ksym || !ksym[0] || ksym[0] == '_') continue;
+      int kknown = 0;
+      for (int k = 0; KFN0[k]; k++) if (sp_streq(ksym, KFN0[k])) { kknown = 1; break; }
+      if (!kknown) continue;
+      if (comp_method_index(c, ksym) >= 0) continue;   /* a user def wins */
+      char kwname[48];
+      snprintf(kwname, sizeof kwname, "__bam_%d", id);
+      if (comp_method_index(c, kwname) >= 0) continue;
+      int krp = nt_new_node(nt, "RequiredParameterNode");
+      nt_node_set_str(nt, krp, "name", "__bam_r");
+      int kparams = nt_new_node(nt, "ParametersNode");
+      nt_node_set_arr(nt, kparams, "requireds", &krp, 1);
+      int krread = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, krread, "name", "__bam_r");
+      int kargs = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, kargs, "arguments", &krread, 1);
+      int kcall = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, kcall, "name", ksym);
+      nt_node_set_ref(nt, kcall, "arguments", kargs);
+      int kbody = nt_new_node(nt, "StatementsNode");
+      nt_node_set_arr(nt, kbody, "body", &kcall, 1);
+      int kdef = nt_new_node(nt, "DefNode");
+      nt_node_set_str(nt, kdef, "name", kwname);
+      nt_node_set_ref(nt, kdef, "parameters", kparams);
+      nt_node_set_ref(nt, kdef, "body", kbody);
+      Scope *kws = comp_scope_new(c, kwname, kdef);
+      kws->class_id = -1;
+      kws->body = kbody;
+      int kws_idx = c->nscopes - 1;
+      scope_add_param(kws, "__bam_r", -1);
+      comp_grow_node_arrays(c);
+      walk_scope(c, kbody, kws_idx, -1);
+      int kargsn = nt_ref(nt, id, "arguments");
+      int kan = 0;
+      const int *kav = kargsn >= 0 ? nt_arr(nt, kargsn, "arguments", &kan) : NULL;
+      if (kan == 1 && kav) nt_node_set_str(nt, kav[0], "value", kwname);
+      changed = 1;
+      continue;
+    }
     const char *sym = method_sym_arg(c, id);
     if (!sym || !sym[0] || sym[0] == '_') continue;   /* already rewritten / internal */
     if (!(sym[0] >= 'a' && sym[0] <= 'z')) continue;  /* operators: not a 0-arg wrapper */
@@ -2562,6 +2609,67 @@ static int desugar_symbol_string_methods(Compiler *c) {
    (reduce/inject/sort/min/max/minmax) get the two-parameter form so operator
    symbols (`op = :+`) apply both arguments. A `sym_var.to_proc` call gets the
    same treatment as an explicit lambda. */
+/* `m(&method(:Integer))` where :Integer names a Kernel builtin (no user def):
+   the Method-object route has no C target for a builtin, so rewrite the block
+   argument into an explicit one-parameter block calling the builtin:
+   m { |__bmk_N| Integer(__bmk_N) }. User-defined names keep the Method path. */
+static int desugar_kernel_method_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  static const char *const KFN[] = { "Integer", "Float", "String", "Array",
+                                     "Rational", "Complex", "puts", "print",
+                                     "p", "pp", NULL };
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "CallNode")) continue;
+    const char *exn = nt_str(nt, ex, "name");
+    if (!exn || !sp_streq(exn, "method")) continue;
+    if (nt_ref(nt, ex, "receiver") >= 0) continue;      /* recv.method(:x): wrapper path */
+    const char *sym = method_sym_arg(c, ex);
+    if (!sym) continue;
+    int known = 0;
+    for (int k = 0; KFN[k]; k++) if (sp_streq(sym, KFN[k])) { known = 1; break; }
+    if (!known) continue;
+    if (comp_method_index(c, sym) >= 0) continue;       /* a user def wins */
+    char pn[32];
+    snprintf(pn, sizeof pn, "__bmk_%d", id);
+    int kpa = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, kpa, "name", pn);
+    int params = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, params, "requireds", &kpa, 1);
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, bparams, "parameters", params);
+    int ra = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, ra, "name", pn);
+    int sargs = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, sargs, "arguments", &ra, 1);
+    int call = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, call, "name", sym);
+    nt_node_set_ref(nt, call, "arguments", sargs);
+    int blkbody = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, blkbody, "body", &call, 1);
+    int blk2 = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, blk2, "parameters", bparams);
+    nt_node_set_ref(nt, blk2, "body", blkbody);
+    comp_grow_node_arrays(c);
+    int ns2[8] = { kpa, params, bparams, ra, sargs, call, blkbody, blk2 };
+    for (int j = 0; j < 8; j++) c->nscope[ns2[j]] = c->nscope[id];
+    Scope *sc2 = comp_scope_of(c, id);
+    if (sc2) {
+      LocalVar *lva = scope_local_intern(sc2, pn);
+      if (lva) lva->is_block_param = 1;
+    }
+    nt_node_set_ref(nt, id, "block", blk2);
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_symbol_var_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -4285,6 +4393,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
+    ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
     ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
     ch |= desugar_binding_lvget(c);            /* binding.local_variable_get(:x) -> x.itself */

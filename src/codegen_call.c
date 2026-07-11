@@ -1184,14 +1184,20 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "sp_curry_new("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
-    if (crt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()")) && argc == 1) {
+    if (crt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()")) && argc >= 1) {
       /* The application that reaches the proc's arity realizes the curry to its
-         (int) result; earlier applications return another curry. */
+         (int) result; earlier applications return another curry. curry[a, b]
+         chains one apply per argument. */
       int complete = 0; TyKind cret = TY_UNKNOWN;
       int realize = curry_apply_info(c, id, &complete, &cret) && complete && cret == TY_INT;
       if (realize) buf_puts(b, "sp_curry_to_int(");
-      buf_puts(b, "sp_curry_apply("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)(");
-      emit_expr(c, argv[0], b); buf_puts(b, "))");
+      for (int k = 0; k < argc; k++) buf_puts(b, "sp_curry_apply(");
+      emit_expr(c, recv, b);
+      for (int k = 0; k < argc; k++) {
+        buf_puts(b, ", (mrb_int)(");
+        emit_expr(c, argv[k], b);
+        buf_puts(b, "))");
+      }
       if (realize) buf_puts(b, ")");
       return 1;
     }
@@ -3990,7 +3996,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       TyKind bt = infer_type(c, id);
-      if (bt != TY_UNKNOWN && bt != TY_NIL) {
+      /* a value-less `break` (or none at all) makes the loop's value nil:
+         ride the poly slot so the nil default is the result */
+      if (bt == TY_UNKNOWN || bt == TY_NIL) bt = TY_POLY;
+      {
         int t = ++g_tmp;
         emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", t,
@@ -4494,7 +4503,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
       else buf_puts(b, "(mrb_int)0");  /* builtin/Kernel method: no callable address */
     }
     buf_puts(b, ", ");
-    emit_str_literal(b, sym);
+    /* a synthesized __bam_N forwarder is an implementation detail: Method#name
+       must report the original method, recovered from the wrapper's body call */
+    const char *disp = sym;
+    if (strncmp(sym, "__bam_", 6) == 0 && mi >= 0 && c->scopes[mi].body >= 0) {
+      int wb = c->scopes[mi].body;
+      int wn2 = 0; const int *wbb = nt_arr(nt, wb, "body", &wn2);
+      if (wn2 == 1 && nt_type(nt, wbb[0]) && sp_streq(nt_type(nt, wbb[0]), "CallNode")) {
+        const char *orig = nt_str(nt, wbb[0], "name");
+        if (orig) disp = orig;
+      }
+    }
+    emit_str_literal(b, disp);
     buf_puts(b, ")");
     return;
   }
@@ -5369,6 +5389,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      argument as the value (statement position has its own emitter). The
      value is boxed once, printed through the poly inspect (which consults
      the user-object hook), and unboxed back to the static type. */
+  /* p(a, b, ...) as a value: prints each argument's inspect, returns the
+     argument array. */
+  if (recv < 0 && (sp_streq(name, "p") || sp_streq(name, "pp")) && argc >= 2 && nt_ref(nt, id, "block") < 0) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
+    for (int k = 0; k < argc; k++) {
+      buf_printf(b, "sp_PolyArray_push(_t%d, ", t);
+      emit_boxed(c, argv[k], b);
+      buf_puts(b, "); ");
+    }
+    buf_printf(b, "for (mrb_int _i%d = 0; _i%d < _t%d->len; _i%d++) { "
+                  "fputs(sp_poly_inspect(_t%d->data[_i%d]), stdout); putchar('\\n'); } _t%d; })",
+               t, t, t, t, t, t, t);
+    return;
+  }
   if (recv < 0 && (sp_streq(name, "p") || sp_streq(name, "pp")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
     TyKind at = comp_ntype(c, argv[0]);
     int t = ++g_tmp;

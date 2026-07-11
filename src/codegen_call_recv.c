@@ -76,6 +76,27 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         if (h) return 1;
       }
     }
+    /* Array#equal? -- object identity is pointer identity; a non-pointer or
+       differently-shaped argument can never be the same object. */
+    if (nm0 && sp_streq(nm0, "equal?")) {
+      int recv0 = nt_ref(nt0, id, "receiver");
+      int args0 = nt_ref(nt0, id, "arguments");
+      int an0 = 0;
+      const int *av0 = args0 >= 0 ? nt_arr(nt0, args0, "arguments", &an0) : NULL;
+      if (recv0 >= 0 && an0 == 1 && ty_is_array(comp_ntype(c, recv0))) {
+        TyKind at0 = comp_ntype(c, av0[0]);
+        if (ty_is_array(at0) || ty_is_hash(at0)) {
+          Buf rb = expr_buf(c, recv0), ab = expr_buf(c, av0[0]);
+          buf_printf(b, "((void *)(%s) == (void *)(%s))",
+                     rb.p ? rb.p : "0", ab.p ? ab.p : "0");
+          free(rb.p); free(ab.p);
+        }
+        else {
+          buf_puts(b, "0");
+        }
+        return 1;
+      }
+    }
   }
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -2588,6 +2609,20 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
        compare_by_identity cannot be honored (keys are compared by value) and is
        rejected loudly rather than silently no-op'd. */
     if (sp_streq(name, "compare_by_identity?") && argc == 0) { buf_puts(b, "0"); return 1; }
+    /* Hash#equal? -- object identity is pointer identity */
+    if (sp_streq(name, "equal?") && argc == 1) {
+      TyKind at0 = comp_ntype(c, argv[0]);
+      if (ty_is_hash(at0) || ty_is_array(at0)) {
+        Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
+        buf_printf(b, "((void *)(%s) == (void *)(%s))",
+                   rb.p ? rb.p : "0", ab.p ? ab.p : "0");
+        free(rb.p); free(ab.p);
+      }
+      else {
+        buf_puts(b, "0");
+      }
+      return 1;
+    }
     if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
       unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
     const char *hn = ty_hash_cname(rt);

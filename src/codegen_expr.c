@@ -2202,6 +2202,22 @@ else {
     }
   }
 
+  /* retry in value position (e.g. the tail of a parenthesized group): the
+     jump back to its begin makes the value dead -- emit the goto as a
+     prelude statement, exactly like the statement form. */
+  if (sp_streq(ty, "RetryNode")) {
+    if (g_retry_label) {
+      /* inline, not a g_pre prelude: statements sequenced before the retry in
+         the same group (e.g. `(c = false; retry)`) must run first. GCC/clang
+         permit a goto out of a statement expression; the dead 0 satisfies the
+         value slot. */
+      buf_printf(b, "({ %sgoto %s; 0; })",
+                 g_rescue_save_depth > 0 ? "sp_rescue_sp--; " : "", g_retry_label);
+    }
+    else unsupported(c, id, "retry (outside rescue)");
+    return;
+  }
+
   unsupported(c, id, "expression");
 }
 

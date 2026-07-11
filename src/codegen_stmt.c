@@ -3976,6 +3976,17 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     }
     g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth };
 
+    /* retry in the rescue restarts the body; the ensure runs only when the
+       begin finally exits (matching CRuby, where an aborted attempt does not
+       run it). Same label mechanism as the no-ensure path below. */
+    int ens_has_retry = (rescue >= 0) && subtree_has_retry(c->nt, rescue);
+    char ens_retry_label[32]; ens_retry_label[0] = 0;
+    const char *ens_saved_retry = g_retry_label;
+    if (ens_has_retry) {
+      snprintf(ens_retry_label, sizeof ens_retry_label, "_retry_%d", eid);
+      buf_printf(b, "%s:;\n", ens_retry_label);
+      g_retry_label = ens_retry_label;
+    }
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
@@ -4091,6 +4102,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       emit_indent(b, indent);
       buf_printf(b, "if (_excf%d) sp_raise_cls(_exccls%d, _excmsg%d);\n", eid, eid, eid);
     }
+    g_retry_label = ens_saved_retry;
     return;
   }
 
@@ -6622,6 +6634,8 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "UnlessNode")) { emit_if(c, id, b, indent, 1, 1); return; }
   if (sp_streq(ty, "CaseMatchNode")) { emit_case_match(c, id, b, indent, 1, -1); return; }
   if (sp_streq(ty, "ReturnNode")) { emit_return(c, id, b, indent); return; }
+  /* a tail `retry` diverges (goto back to its begin); the value is dead */
+  if (sp_streq(ty, "RetryNode")) { emit_stmt_inner(c, id, b, indent); return; }
   /* a tail `break` in a lambda/proc body diverges (return / brk-throw): emit
      it as a statement, like `raise` below; the fall-through value is dead. */
   if (sp_streq(ty, "BreakNode") && g_proc_body_kind != 0) {

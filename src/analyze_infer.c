@@ -1513,6 +1513,8 @@ else {
   /* Kernel#p returns its argument (one arg; several return the array), so it
      composes as an expression: x = p(y), f(p(y)). Statement-position p keeps
      its own emitter; this types the value form. */
+  if (recv < 0 && (sp_streq(name, "p") || sp_streq(name, "pp")) && nt_ref(nt, id, "block") < 0 && argc >= 2)
+    return TY_POLY_ARRAY;   /* p(a, b, ...) returns the array of its arguments */
   if (recv < 0 && (sp_streq(name, "p") || sp_streq(name, "pp")) && nt_ref(nt, id, "block") < 0 && argc == 1)
     return infer_type(c, argv[0]);
   /* Object#instance_variables: a static symbol list for a typed object */
