@@ -1842,6 +1842,27 @@ static sp_RbVal sp_box_rational(sp_Rational v) {
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_RATIONAL);
 }
+/* An Integer-classed (fl bit clear) whole component boxes as an Integer;
+   anything else keeps the Float class. The INTPTR guard mirrors
+   sp_complex_mag: casting an out-of-range double to mrb_int is UB. */
+static sp_RbVal sp_complex_comp_v(mrb_float v, int is_f) {
+  if (!is_f && v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_float)(mrb_int)v)
+    return sp_box_int((mrb_int)v);
+  return sp_box_float(v);
+}
+/* CRuby Complex#abs: Integer only via the zero-component shortcut (|other|)
+   on an all-Integer complex; hypot is always a Float. #abs2 is Integer iff
+   both components are Integer-classed. */
+static sp_RbVal sp_complex_abs_v(sp_Complex a) {
+  if (a.fl == 0 && a.im == 0) return sp_complex_comp_v(a.re < 0 ? -a.re : a.re, 0);
+  if (a.fl == 0 && a.re == 0) return sp_complex_comp_v(a.im < 0 ? -a.im : a.im, 0);
+  return sp_box_float(sp_complex_abs(a));
+}
+static sp_RbVal sp_complex_abs2_v(sp_Complex a) {
+  mrb_float v = sp_complex_abs2(a);
+  if (a.fl == 0) return sp_complex_comp_v(v, 0);
+  return sp_box_float(v);
+}
 /* sp_Range_inspect moved to lib/sp_format.c (cold). */
 /* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
    tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers
@@ -2197,6 +2218,8 @@ static mrb_float sp_num_to_f(sp_RbVal v) {
   if (v.tag == SP_TAG_FLT) return v.v.f;
   if (v.tag == SP_TAG_INT) return (mrb_float)v.v.i;
   if (v.tag == SP_TAG_BIGINT) return (mrb_float)sp_bigint_to_int((sp_Bigint *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RATIONAL && v.v.p)
+    return sp_rational_to_f(*(sp_Rational *)v.v.p);
   const char *w = v.tag == SP_TAG_NIL ? "nil"
                 : v.tag == SP_TAG_BOOL ? (v.v.b ? "true" : "false")
                 : sp_poly_class_name(v);
@@ -2464,12 +2487,12 @@ static mrb_int sp_int_pow(mrb_int base, mrb_int exp) {
   return r;
 }
 static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
-  /* int ** int: exact square-and-multiply (the old double round-trip lost
-     precision above 2^53 and saturated on overflow); an overflowing result
-     promotes to Bignum under --int-overflow=promote, else sp_int_pow
-     raises/wraps per mode. */
   if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) {
-    if (b.v.i < 0) sp_raise_cls("RangeError", "negative exponent");
+    /* CRuby: a negative integer exponent yields a Rational. The non-negative
+       path squares-and-multiplies exactly (the old pow(double) round-trip was
+       lossy past 2^53); an overflowing result promotes to Bignum under
+       --int-overflow=promote, else sp_int_pow raises/wraps per mode. */
+    if (b.v.i < 0) return sp_box_rational(sp_rational_pow(sp_rational_new(a.v.i, 1), b.v.i));
 #ifdef SP_INT_OVERFLOW_MODE_PROMOTE
     mrb_int r = 1, base = a.v.i, exp = b.v.i;
     int ovf = 0;

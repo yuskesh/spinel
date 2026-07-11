@@ -644,6 +644,16 @@ TyKind infer_call(Compiler *c, int id) {
         infer_int_pow_overflows(base, exp))
       return TY_BIGINT;
   }
+  /* Integer ** <negative literal>: a Rational in CRuby, typed statically. A
+     runtime exponent keeps the static Integer result (typing it poly would
+     cascade through every int-arithmetic consumer -- see limitations.md); the
+     negative case raises loudly, and the poly-dispatched path (promote-mode
+     params) resolves the class at runtime in sp_poly_pow. */
+  if (sp_streq(name, "**") && recv >= 0 && argc == 1 &&
+      infer_type(c, recv) == TY_INT && a0 == TY_INT) {
+    long long exp;
+    if (infer_const_int_node(nt, argv[0], &exp) && exp < 0) return TY_RATIONAL;
+  }
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
      is a Bignum -- type it bigint so codegen emits a bigint shift, not a UB C
      `1LL << 64LL`. */
@@ -675,7 +685,8 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
     if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        sp_streq(nt_str(nt, recv, "name"), "Complex") && sp_streq(name, "polar"))
+        sp_streq(nt_str(nt, recv, "name"), "Complex") &&
+        (sp_streq(name, "polar") || sp_streq(name, "rect") || sp_streq(name, "rectangular")))
       return TY_COMPLEX;
   }
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
@@ -687,8 +698,13 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
   }
   if (rt == TY_COMPLEX) {
+    if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) return TY_FLOAT;
+    /* real/imaginary/abs/abs2 box to poly: each component keeps its CRuby
+       class (Integer or Float) -- the class is a runtime property. */
     if (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
-        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2")) return TY_FLOAT;
+        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2")) return TY_POLY;
+    if (sp_streq(name, "polar") || sp_streq(name, "rect") || sp_streq(name, "rectangular"))
+      return TY_POLY_ARRAY;
     if (sp_streq(name, "conjugate") || sp_streq(name, "conj") || sp_streq(name, "to_c") ||
         sp_streq(name, "-@") || sp_streq(name, "+@") ||
         sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;
@@ -719,13 +735,25 @@ TyKind infer_call(Compiler *c, int id) {
   }
   if (rt == TY_RATIONAL) {
     if (sp_streq(name, "numerator") || sp_streq(name, "denominator")) return TY_INT;
-    if (sp_streq(name, "to_f")) return TY_FLOAT;
-    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "truncate")) return TY_INT;
+    if (sp_streq(name, "to_f") || sp_streq(name, "fdiv")) return TY_FLOAT;
+    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "div")) return TY_INT;
+    /* round/truncate: no digits (or a literal <= 0) is an Integer, a literal
+       positive precision keeps the Rational, and a non-literal precision boxes
+       to poly so the class is chosen from the runtime value. */
+    if (sp_streq(name, "round") || sp_streq(name, "truncate")) {
+      if (argc == 1) {
+        if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode"))
+          return nt_int(nt, argv[0], "value", 0) > 0 ? TY_RATIONAL : TY_INT;
+        return TY_POLY;
+      }
+      return TY_INT;
+    }
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
         sp_streq(name, "-@") || sp_streq(name, "+@") || sp_streq(name, "abs")) return TY_RATIONAL;
     TyKind a0r = argc == 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-    if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")))
+    if (argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") ||
+                      sp_streq(name, "/") || sp_streq(name, "quo")))
       return a0r == TY_FLOAT ? TY_FLOAT : TY_RATIONAL;
     if (argc == 1 && sp_streq(name, "**")) return a0r == TY_INT ? TY_RATIONAL : TY_FLOAT;
     if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") ||
@@ -1377,14 +1405,14 @@ else {
          sp_streq(name, "tanh") || sp_streq(name, "asinh") || sp_streq(name, "acosh") ||
          sp_streq(name, "atanh") || sp_streq(name, "exp") || sp_streq(name, "log") ||
          sp_streq(name, "log2") || sp_streq(name, "log10") || sp_streq(name, "sqrt") ||
-         sp_streq(name, "cbrt") || sp_streq(name, "hypot") || sp_streq(name, "frexp") ||
+         sp_streq(name, "cbrt") || sp_streq(name, "hypot") ||
          sp_streq(name, "ldexp") || sp_streq(name, "erf") || sp_streq(name, "erfc") ||
          sp_streq(name, "gamma")))
       return TY_FLOAT;
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Math") &&
-        sp_streq(name, "lgamma") && argc == 1)
-      return TY_POLY_ARRAY;  /* [log(|gamma|), sign] */
+        (sp_streq(name, "lgamma") || sp_streq(name, "frexp")) && argc == 1)
+      return TY_POLY_ARRAY;  /* [log(|gamma|), sign] / [fraction, exponent] */
     /* JSON.generate/dump return type comes from the native binding
        (packages/json, inferred in the FFI/native block above), not a hardcoded
        arm. */
@@ -3372,6 +3400,7 @@ else {
         sp_streq(name, "abs") || sp_streq(name, "magnitude") ||
         sp_streq(name, "modulo") || sp_streq(name, "to_f") ||
         (sp_streq(name, "fdiv") && argc == 1)) return TY_FLOAT;
+    if ((sp_streq(name, "numerator") || sp_streq(name, "denominator")) && argc == 0) return TY_INT;
     if ((sp_streq(name, "to_r") && argc == 0) ||
         (sp_streq(name, "rationalize") && (argc == 0 || argc == 1))) return TY_RATIONAL;
     if (sp_streq(name, "eql?") && argc == 1) return TY_BOOL;

@@ -547,13 +547,19 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
    comparison op. */
 static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_RATIONAL) { emit_expr(c, node, b); return; }
+  if (comp_ntype(c, node) == TY_FLOAT) {
+    /* the exact rational value of the double, not a truncating int cast */
+    buf_puts(b, "sp_float_to_rational("); emit_expr(c, node, b); buf_puts(b, ")");
+    return;
+  }
   buf_puts(b, "sp_rational_new((mrb_int)("); emit_expr(c, node, b); buf_puts(b, "), 1)");
 }
 /* Emit a node as an sp_Complex: a Complex stays as-is, an Integer/Float
-   becomes re+0i. Used to coerce the other operand of a Complex op. */
+   becomes re+0i (a Float operand marks the real component Float-classed). */
 static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
-  buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b); buf_puts(b, "), 0})");
+  buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b);
+  buf_printf(b, "), 0, %d})", comp_ntype(c, node) == TY_FLOAT ? 1 : 0);
 }
 
 /* Returns 1 if `id` is a `Float::INFINITY` / `nil` / absent range endpoint. */
@@ -1070,14 +1076,17 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   /* ---- Complex / Rational value types ---- */
-  /* Kernel#Complex(re[, im]) */
+  /* Kernel#Complex(re[, im]): a Float argument marks its component
+     Float-classed so rendering and abs/abs2 keep CRuby's classes. */
   if (recv < 0 && sp_streq(name, "Complex") && argc >= 1) {
+    int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
+             (argc >= 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
     buf_puts(b, "((sp_Complex){(mrb_float)(");
     emit_expr(c, argv[0], b);
     buf_puts(b, "), (mrb_float)(");
     if (argc >= 2) emit_expr(c, argv[1], b);
     else buf_puts(b, "0");
-    buf_puts(b, ")})");
+    buf_printf(b, "), %d})", fl);
     return 1;
   }
   if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) {
@@ -1087,6 +1096,29 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       Buf sb = expr_buf(c, argv[0]);
       buf_printf(b, "sp_str_to_r(%s)", sb.p ? sb.p : "\"\"");
       free(sb.p);
+      return 1;
+    }
+    /* Rational(Float) is the exact value of the double (5/2 for 2.5), not the
+       truncating int cast; a Rational passes through unchanged. */
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+      Buf sb = expr_buf(c, argv[0]);
+      buf_printf(b, "sp_float_to_rational(%s)", sb.p ? sb.p : "0");
+      free(sb.p);
+      return 1;
+    }
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      emit_expr(c, argv[0], b);
+      return 1;
+    }
+    /* Rational(a, b) with a Float or Rational operand: the exact quotient of
+       the two values (sp_rational_div raises ZeroDivisionError at b == 0). */
+    if (argc == 2 && (comp_ntype(c, argv[0]) == TY_FLOAT || comp_ntype(c, argv[1]) == TY_FLOAT ||
+                      comp_ntype(c, argv[0]) == TY_RATIONAL || comp_ntype(c, argv[1]) == TY_RATIONAL)) {
+      buf_puts(b, "sp_rational_div(");
+      emit_rat_coerce(c, argv[0], b);
+      buf_puts(b, ", ");
+      emit_rat_coerce(c, argv[1], b);
+      buf_puts(b, ")");
       return 1;
     }
     if (argc == 2) {
@@ -1121,16 +1153,70 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", ");
       if (argc >= 2) emit_float_expr(c, argv[1], b);
       else buf_puts(b, "0");
-      buf_puts(b, ")");
+      buf_printf(b, ", %d)", comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0);
+      return 1;
+    }
+    /* Complex.rect(re[, im]) / .rectangular: the component-pair constructor. */
+    if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "Complex") &&
+        (sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc >= 1 && argc <= 2) {
+      int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
+               (argc == 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
+      buf_puts(b, "((sp_Complex){(mrb_float)(");
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "), (mrb_float)(");
+      if (argc == 2) emit_expr(c, argv[1], b);
+      else buf_puts(b, "0");
+      buf_printf(b, "), %d})", fl);
       return 1;
     }
     TyKind crt = comp_ntype(c, recv);
     if (crt == TY_COMPLEX) {
-      if (sp_streq(name, "real"))      { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").re"); return 1; }
-      if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").im"); return 1; }
+      /* real/imaginary return the component with its CRuby class (Integer for
+         an Integer-classed component), so box to poly via comp_v. */
+      if (sp_streq(name, "real")) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_complex_comp_v(_t%d.re, _t%d.fl & SP_CPLX_RE_F); })", t, t);
+        return 1;
+      }
+      if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_complex_comp_v(_t%d.im, _t%d.fl & SP_CPLX_IM_F); })", t, t);
+        return 1;
+      }
       if (sp_streq(name, "conjugate") || sp_streq(name, "conj")) { buf_puts(b, "sp_complex_conjugate("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-      if ((sp_streq(name, "abs") || sp_streq(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-      if (sp_streq(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      /* abs/abs2 box to poly: the CRuby class depends on the component classes
+         (Integer via the zero-component shortcut / all-Integer abs2). */
+      if ((sp_streq(name, "abs") || sp_streq(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs_v("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      if (sp_streq(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2_v("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; atan2(_t%d.im, _t%d.re); })", t, t);
+        return 1;
+      }
+      /* instance #polar ([abs, arg]) and #rect ([re, im]): poly pairs, since
+         each element's class follows its component. */
+      if (sp_streq(name, "polar") && argc == 0) {
+        int t = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " sp_PolyArray_push(_t%d, sp_complex_abs_v(_t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_float(atan2(_t%d.im, _t%d.re))); _t%d; })",
+                   o, o, t, o, t, t, o);
+        return 1;
+      }
+      if (sp_streq(name, "rectangular") || sp_streq(name, "rect")) {
+        int t = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " sp_PolyArray_push(_t%d, sp_complex_comp_v(_t%d.re, _t%d.fl & SP_CPLX_RE_F));"
+                      " sp_PolyArray_push(_t%d, sp_complex_comp_v(_t%d.im, _t%d.fl & SP_CPLX_IM_F)); _t%d; })",
+                   o, o, t, t, o, t, t, o);
+        return 1;
+      }
       if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_complex_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return 1; }
       if ((sp_streq(name, "to_c")) && argc == 0) { emit_expr(c, recv, b); return 1; }
@@ -1170,7 +1256,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_complex_%s(((sp_Complex){(mrb_float)(", fn); emit_expr(c, recv, b);
-        buf_puts(b, "), 0}), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        buf_printf(b, "), 0, %d}), ", crt == TY_FLOAT ? 1 : 0); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "==") || sp_streq(name, "!=")) {
@@ -1207,6 +1293,16 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
+    /* Integer ** <negative literal>: a Rational in CRuby (2 ** -2 == (1/4)).
+       The non-literal-exponent form types poly and resolves in sp_poly_pow. */
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "**") &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
+        !nt_str(nt, argv[0], "bigval") && nt_int(nt, argv[0], "value", 0) < 0) {
+      buf_puts(b, "sp_rational_pow(sp_rational_new((mrb_int)(");
+      emit_expr(c, recv, b);
+      buf_printf(b, "), 1), %lldLL)", (long long)nt_int(nt, argv[0], "value", 0));
+      return 1;
+    }
     /* An Integer viewed as a Rational: numerator is self, denominator is 1. */
     if (crt == TY_INT && sp_streq(name, "numerator") && argc == 0) {
       buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1;
@@ -1220,7 +1316,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     /* n.to_c is Complex(n, 0) for an Integer or Float receiver. */
     if ((crt == TY_INT || crt == TY_FLOAT) && sp_streq(name, "to_c") && argc == 0) {
-      buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, recv, b); buf_puts(b, "), 0})"); return 1;
+      buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, recv, b);
+      buf_printf(b, "), 0, %d})", crt == TY_FLOAT ? 1 : 0); return 1;
     }
     if (crt == TY_RATIONAL) {
       if (sp_streq(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return 1; }
@@ -1229,7 +1326,33 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "inspect")) { buf_puts(b, "sp_rational_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "to_f")) && argc == 0) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "to_r") || sp_streq(name, "rationalize")) && argc == 0) { emit_expr(c, recv, b); return 1; }
-      if (sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "truncate")) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return 1; }
+      if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
+           (sp_streq(name, "truncate") && argc == 0))) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return 1; }
+      if (sp_streq(name, "round") && argc == 0) { buf_puts(b, "sp_rational_round_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      /* round/truncate with a literal precision: nd > 0 keeps a Rational, nd <= 0
+         realizes the Integer value (.num of the den-1 result). */
+      if ((sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1 &&
+          nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode")) {
+        long long nd = nt_int(nt, argv[0], "value", 0);
+        const char *fn = name[0] == 'r' ? "round" : "truncate";
+        buf_printf(b, "%ssp_rational_%s_prec(", nd > 0 ? "" : "(", fn);
+        emit_expr(c, recv, b);
+        buf_printf(b, ", %lld)%s", nd, nd > 0 ? "" : ".num)");
+        return 1;
+      }
+      /* Non-literal precision: the result class depends on the runtime value
+         (Rational for nd > 0, Integer otherwise), so box to poly and choose at
+         runtime. Both operands are value types -- nothing to GC-root. */
+      if ((sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1) {
+        const char *fn = name[0] == 'r' ? "round" : "truncate";
+        int tr = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = ", tr); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = (mrb_int)(", tn); emit_expr(c, argv[0], b);
+        buf_printf(b, "); _t%d > 0 ? sp_box_rational(sp_rational_%s_prec(_t%d, _t%d))"
+                      " : sp_box_int(sp_rational_%s_prec(_t%d, _t%d).num); })",
+                   tn, fn, tr, tn, fn, tr, tn);
+        return 1;
+      }
       if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_rational_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return 1; }
       if (sp_streq(name, "abs") && argc == 0) { buf_puts(b, "sp_rational_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
@@ -1241,14 +1364,32 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       /* arithmetic against another Rational or an Integer yields a Rational;
          against a Float, coerce self to float (CRuby semantics). */
       if (rat_ok && argc == 1 && (sp_streq(name, "+") || sp_streq(name, "-") ||
-                        sp_streq(name, "*") || sp_streq(name, "/"))) {
+                        sp_streq(name, "*") || sp_streq(name, "/") || sp_streq(name, "quo"))) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         if (rat == TY_FLOAT) {
-          const char *op = name;
+          const char *op = name[0] == 'q' ? "/" : name;  /* quo against a Float divides */
           buf_puts(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_printf(b, ") %s ", op); emit_expr(c, argv[0], b); buf_puts(b, ")");
           return 1;
         }
         buf_printf(b, "sp_rational_%s(", fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
+      /* fdiv: float division regardless of operand kind. */
+      if (rat_ok && argc == 1 && sp_streq(name, "fdiv")) {
+        buf_puts(b, "(sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ") / ");
+        if (rat == TY_RATIONAL) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_float_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+      /* div: floor division to an Integer (CRuby Numeric#div). */
+      if (rat_ok && argc == 1 && sp_streq(name, "div")) {
+        if (rat == TY_FLOAT) {
+          buf_puts(b, "((mrb_int)floor(sp_rational_to_f("); emit_expr(c, recv, b);
+          buf_puts(b, ") / ("); emit_expr(c, argv[0], b); buf_puts(b, ")))");
+          return 1;
+        }
+        buf_puts(b, "sp_rational_idiv("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_rat_coerce(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (rat_ok && argc == 1 && sp_streq(name, "**")) {
@@ -3857,6 +3998,10 @@ static void emit_math_arg(Compiler *c, int node, Buf *out) {
   TyKind t = comp_ntype(c, node);
   if (t == TY_INT || t == TY_FLOAT) {
     buf_puts(out, "(mrb_float)("); emit_expr(c, node, out); buf_puts(out, ")");
+    return;
+  }
+  if (t == TY_RATIONAL) {
+    buf_puts(out, "sp_rational_to_f("); emit_expr(c, node, out); buf_puts(out, ")");
     return;
   }
   buf_puts(out, "sp_num_to_f("); emit_boxed(c, node, out); buf_puts(out, ")");
@@ -7141,6 +7286,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "lgamma") && argc == 1) {
       /* Math.lgamma(x) -> [log(|gamma(x)|), sign] as a poly array */
       buf_puts(b, "sp_math_lgamma("); emit_math_arg(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
+    /* Math.frexp(x) -> [fraction, exponent] as a poly array */
+    if (sp_streq(name, "frexp") && argc == 1) {
+      int te = ++g_tmp, tf = ++g_tmp, o = ++g_tmp;
+      buf_printf(b, "({ int _t%d; mrb_float _t%d = frexp(", te, tf);
+      emit_math_arg(c, argv[0], b);
+      buf_printf(b, ", &_t%d); sp_PolyArray *_t%d = sp_PolyArray_new();"
+                    " sp_PolyArray_push(_t%d, sp_box_float(_t%d));"
+                    " sp_PolyArray_push(_t%d, sp_box_int(_t%d)); _t%d; })",
+                 te, o, o, tf, o, te, o);
       return;
     }
     /* Math.log(x) or Math.log(x, base) */

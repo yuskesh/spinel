@@ -476,10 +476,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   if (sp_streq(ty, "FloatNode")) { const char *v = nt_content(nt, id); buf_puts(b, v ? v : "0.0"); return; }
   if (sp_streq(ty, "ImaginaryNode")) {
     int num = nt_ref(nt, id, "numeric");
+    const char *numty = num >= 0 ? nt_type(nt, num) : NULL;
     buf_puts(b, "((sp_Complex){0.0, (mrb_float)(");
     if (num >= 0) emit_expr(c, num, b);
     else buf_puts(b, "0");
-    buf_puts(b, ")})");
+    /* 3.5i marks the imaginary component Float-classed; 4i stays Integer */
+    buf_printf(b, "), %d})", numty && sp_streq(numty, "FloatNode") ? 2 : 0);
     return;
   }
   if (sp_streq(ty, "RationalNode")) {

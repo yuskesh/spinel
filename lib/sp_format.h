@@ -21,7 +21,7 @@ const char *sp_Time_inspect(sp_Time *t);
 /* Value-type arithmetic (cold: only reached when a program actually uses
    Complex / Rational; optcarrot touches Complex only under --nestopia-palette).
    Emitted by codegen via the sp_complex_%s / sp_rational_%s operator dispatch. */
-sp_Complex sp_complex_polar(mrb_float m, mrb_float a);
+sp_Complex sp_complex_polar(mrb_float m, mrb_float a, int m_is_f);
 sp_Complex sp_complex_add(sp_Complex a, sp_Complex b);
 sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b);
 sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b);
@@ -44,6 +44,10 @@ sp_Rational sp_rational_div(sp_Rational a, sp_Rational b);
 sp_Rational sp_rational_neg(sp_Rational a);
 sp_Rational sp_rational_abs(sp_Rational a);
 sp_Rational sp_rational_pow(sp_Rational a, mrb_int e);
+mrb_int sp_rational_round_i(sp_Rational a);              /* Rational#round (no digits) */
+mrb_int sp_rational_idiv(sp_Rational a, sp_Rational b);  /* Rational#div (floor) */
+sp_Rational sp_rational_round_prec(sp_Rational a, mrb_int nd);
+sp_Rational sp_rational_truncate_prec(sp_Rational a, mrb_int nd);
 mrb_int sp_rational_cmp(sp_Rational a, sp_Rational b);
 mrb_bool sp_rational_eq(sp_Rational a, sp_Rational b);
 mrb_float sp_rational_to_f(sp_Rational a);

@@ -1,17 +1,22 @@
-# Integer ** with a negative exponent has no Rational result in Spinel, so it
-# raises RangeError instead of returning (1/2). Non-negative integer ** and
-# Float ** are unchanged. See docs/limitations.md.
+# Integer ** with a literal negative exponent yields a Rational (CRuby
+# semantics), typed statically. A statically int-typed runtime exponent keeps
+# the Integer result and raises on a negative value (see limitations.md).
+# Integer#pow(negative, mod) raises RangeError with CRuby's message.
 puts 2 ** 10
 puts 0 ** 0
 puts 3 ** 4
 puts(2.0 ** -1)
+p(2 ** -1)        # (1/2)
+p(2 ** -2)        # (1/4)
+p((-2) ** -2)     # (1/4)
+p((-2) ** -3)     # (-1/8)
 begin
-  puts 2 ** -1
-rescue RangeError => e
-  puts "raised: #{e.message}"
+  p(0 ** -1)
+rescue ZeroDivisionError => e
+  puts "#{e.class}: #{e.message}"
 end
 begin
-  2 ** -3
-rescue StandardError => e
-  puts "is_standard_error: #{e.is_a?(StandardError)}"
+  2.pow(-1, 5)
+rescue RangeError => e
+  puts "#{e.class}: #{e.message}"
 end
