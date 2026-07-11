@@ -132,8 +132,8 @@ typedef struct {
   X(LocalVariableReadNode) \
   X(LocalVariableTargetNode) \
   X(LocalVariableWriteNode) \
-  X(MatchRequiredNode) \
   X(MatchPredicateNode) \
+  X(MatchRequiredNode) \
   X(ModuleNode) \
   X(MultiTargetNode) \
   X(MultiWriteNode) \
