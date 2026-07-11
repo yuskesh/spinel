@@ -1152,6 +1152,18 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ")");
       return 1;
     }
+    /* Complex.rect(re[, im]) / .rectangular: the component-pair constructor. */
+    if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
+        sp_streq(nt_str(nt, recv, "name"), "Complex") &&
+        (sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc >= 1 && argc <= 2) {
+      buf_puts(b, "((sp_Complex){(mrb_float)(");
+      emit_expr(c, argv[0], b);
+      buf_puts(b, "), (mrb_float)(");
+      if (argc == 2) emit_expr(c, argv[1], b);
+      else buf_puts(b, "0");
+      buf_puts(b, ")})");
+      return 1;
+    }
     TyKind crt = comp_ntype(c, recv);
     if (crt == TY_COMPLEX) {
       if (sp_streq(name, "real"))      { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").re"); return 1; }
@@ -1159,6 +1171,32 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "conjugate") || sp_streq(name, "conj")) { buf_puts(b, "sp_complex_conjugate("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "abs") || sp_streq(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; atan2(_t%d.im, _t%d.re); })", t, t);
+        return 1;
+      }
+      /* instance #polar: [abs, arg] */
+      if (sp_streq(name, "polar") && argc == 0) {
+        int t = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
+                      " sp_FloatArray_push(_t%d, sp_complex_abs(_t%d));"
+                      " sp_FloatArray_push(_t%d, atan2(_t%d.im, _t%d.re)); _t%d; })",
+                   o, o, t, o, t, t, o);
+        return 1;
+      }
+      if (sp_streq(name, "rectangular") || sp_streq(name, "rect")) {
+        /* [re, im] pair */
+        int t = ++g_tmp, o = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
+                      " sp_FloatArray_push(_t%d, _t%d.re);"
+                      " sp_FloatArray_push(_t%d, _t%d.im); _t%d; })",
+                   o, o, t, o, t, o);
+        return 1;
+      }
       if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_complex_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if (sp_streq(name, "+@") && argc == 0) { emit_expr(c, recv, b); return 1; }
       if ((sp_streq(name, "to_c")) && argc == 0) { emit_expr(c, recv, b); return 1; }

@@ -675,7 +675,8 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0) {
     const char *rrty = nt_type(nt, recv);
     if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
-        sp_streq(nt_str(nt, recv, "name"), "Complex") && sp_streq(name, "polar"))
+        sp_streq(nt_str(nt, recv, "name"), "Complex") &&
+        (sp_streq(name, "polar") || sp_streq(name, "rect") || sp_streq(name, "rectangular")))
       return TY_COMPLEX;
   }
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
@@ -688,7 +689,10 @@ TyKind infer_call(Compiler *c, int id) {
   }
   if (rt == TY_COMPLEX) {
     if (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
-        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2")) return TY_FLOAT;
+        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2") ||
+        sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) return TY_FLOAT;
+    if (sp_streq(name, "polar") || sp_streq(name, "rect") || sp_streq(name, "rectangular"))
+      return TY_FLOAT_ARRAY;
     if (sp_streq(name, "conjugate") || sp_streq(name, "conj") || sp_streq(name, "to_c") ||
         sp_streq(name, "-@") || sp_streq(name, "+@") ||
         sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;
