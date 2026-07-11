@@ -3412,6 +3412,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     char argbuf[160];
     int obj_operand = 0;
     int pcid = -1;
+    const char *scalar_guard = NULL;  /* operand tag a scalar-typed param requires */
     if (ty_is_object(pt)) {
       int pcls = ty_object_class(pt);
       const char *pcn = c->classes[pcls].name;
@@ -3421,12 +3422,23 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       obj_operand = 1;
     } else if (pt == TY_POLY) {
       snprintf(argbuf, sizeof argbuf, "b");
+    } else if (pt == TY_INT) {
+      /* a scalar-typed `<=>` param (bound from scalar call sites) still gets
+         an arm: guard the operand's tag, unbox, and let the body's own nil
+         return (the is_a? mismatch branch) drive the not-comparable path */
+      scalar_guard = "SP_TAG_INT";
+      snprintf(argbuf, sizeof argbuf, "b.v.i");
+    } else if (pt == TY_FLOAT) {
+      scalar_guard = "SP_TAG_FLT";
+      snprintf(argbuf, sizeof argbuf, "b.v.f");
     } else {
       continue;
     }
     buf_printf(b, "    case %d: {\n", cid);
     if (obj_operand)
       buf_printf(b, "      if (b.tag != SP_TAG_OBJ || b.cls_id != %d) { *comparable = FALSE; return 0; }\n", pcid);
+    if (scalar_guard)
+      buf_printf(b, "      if (b.tag != %s) { *comparable = FALSE; return 0; }\n", scalar_guard);
     if (m->ret == TY_INT) {
       buf_printf(b, "      *comparable = TRUE; return (mrb_int)sp_%s_%s(%s(sp_%s *)a.v.p, %s);\n",
                  dcn, mc("<=>"), self_vt ? "*" : "", dcn, argbuf);

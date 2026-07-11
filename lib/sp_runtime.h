@@ -2344,13 +2344,24 @@ static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_in
 static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp <= 0) : FALSE; }
 static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp > 0) : FALSE; }
 static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp >= 0) : FALSE; }
+/* rb_cmperr operand description: special constants and Floats read as their
+   inspect (3, 1.5, nil, true, :sym), everything else as its class name --
+   "comparison of VerN with 3 failed", not "... with Integer failed". */
+static const char *sp_cmperr_desc(sp_RbVal v) __attribute__((unused));
+static const char *sp_cmperr_desc(sp_RbVal v) {
+  switch (v.tag) {
+    case SP_TAG_INT: case SP_TAG_FLT: case SP_TAG_BOOL: case SP_TAG_NIL: case SP_TAG_SYM:
+      return sp_poly_inspect(v);
+    default: return sp_poly_class_name(v);
+  }
+}
 /* rb_cmpint-checked comparison: an incomparable pair (nil `<=>`) raises the
    Comparable ArgumentError. Backs the object <,<=,>,>=,between? emitters when
    the user `<=>` can return nil (a TY_INT `<=>` keeps the inline fast path). */
 static mrb_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) __attribute__((unused));
 static mrb_int sp_poly_cmp_ck(sp_RbVal a, sp_RbVal b) {
   mrb_bool ok = FALSE; mrb_int r = sp_poly_cmp(a, b, &ok);
-  if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a), sp_poly_class_name(b)));
+  if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a), sp_cmperr_desc(b)));
   return r;
 }
 /* Comparable#==: identity is equal; a nil `<=>` makes it false, never an
@@ -3771,7 +3782,7 @@ static sp_RbVal sp_PolyArray_max(sp_PolyArray *a) {
     mrb_bool ok = FALSE;
     mrb_int r = sp_poly_cmp(a->data[i], best, &ok);
     if (!ok) r = sp_poly_cmp_int_arrays(a->data[i], best, &ok);
-    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a->data[i]), sp_poly_class_name(best)));
+    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a->data[i]), sp_cmperr_desc(best)));
     if (r > 0) best = a->data[i];
   }
   return best;
@@ -3785,7 +3796,7 @@ static sp_RbVal sp_PolyArray_min(sp_PolyArray *a) {
     mrb_bool ok = FALSE;
     mrb_int r = sp_poly_cmp(a->data[i], best, &ok);
     if (!ok) r = sp_poly_cmp_int_arrays(a->data[i], best, &ok);
-    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a->data[i]), sp_poly_class_name(best)));
+    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(a->data[i]), sp_cmperr_desc(best)));
     if (r < 0) best = a->data[i];
   }
   return best;
@@ -3809,7 +3820,7 @@ static void sp_PolyArray_sort_bang(sp_PolyArray *a) {
     _sp_sort_incomparable = prev;
     _sp_sort_inc_a = prev_a;
     _sp_sort_inc_b = prev_b;
-    if (inc) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(ia), sp_poly_class_name(ib)));
+    if (inc) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(ia), sp_cmperr_desc(ib)));
   }
 }
 static sp_PolyArray *sp_PolyArray_sort(sp_PolyArray *a) { sp_PolyArray *b = sp_PolyArray_dup(a); sp_PolyArray_sort_bang(b); return b; }
@@ -3857,7 +3868,7 @@ static void *sp_PtrArray_minmax_obj(sp_PtrArray *a, int cls_id, int want_max) {
     sp_RbVal bi = sp_box_nullable_obj(a->data[i], cls_id);
     sp_RbVal bb = sp_box_nullable_obj(best, cls_id);
     mrb_int r = sp_poly_cmp(bi, bb, &ok);
-    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(bi), sp_poly_class_name(bb)));
+    if (!ok) sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(bi), sp_cmperr_desc(bb)));
     if (want_max ? (r > 0) : (r < 0)) best = a->data[i];
   }
   return best;

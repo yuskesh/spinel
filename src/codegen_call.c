@@ -3127,9 +3127,10 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
    comparators (sp_poly_cmp_ck / sp_poly_cmp_eq, dispatching the user `<=>`
    via sp_obj_cmp_hook) so an incomparable pair raises the Comparable
    ArgumentError like CRuby; a TY_INT `<=>` keeps the zero-cost inline
-   `<op> 0` path. Value-type classes stay inline (never boxed). */
+   `<op> 0` path. Value-type classes take the checked path too when their
+   `<=>` can return nil: the direct `<op> 0` emit would compare an sp_RbVal
+   (invalid C), and sp_box_vobj / the cmp hook's by-value deref handle them. */
 static int user_cmp_needs_check(Compiler *c, int cid) {
-  if (c->classes[cid].is_value_type) return 0;
   int def = -1;
   int mi = comp_method_in_chain(c, cid, "<=>", &def);
   if (mi < 0) return 0;   /* no user <=> reachable: keep the inline path */

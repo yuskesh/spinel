@@ -1,0 +1,12 @@
+true
+false
+true
+true
+true
+3
+AE: comparison of VerN with 3 failed
+AE: comparison of VerN with 1 failed
+AE: comparison of VerN with 1 failed
+true
+AE: comparison of HeapV with :sym failed
+AE: comparison of HeapV with nil failed
