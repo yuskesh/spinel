@@ -53,3 +53,7 @@ p(catch(:n) { throw :n, 99 })
 
 # float value
 p(catch(:f) { throw :f, 2.5 })
+
+# an Integer TAG matches by identity (Fixnum value equality), not content
+p(catch(42) { throw 42, "int-tag" })
+p(catch(7) { 99 })   # no throw: the block value rides through

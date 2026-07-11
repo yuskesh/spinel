@@ -479,7 +479,16 @@ TyKind proc_node_ret(Compiler *c, int create) {
   const char *ty = nt_type(nt, create);
   int body;
   if (ty && sp_streq(ty, "LambdaNode")) body = nt_ref(nt, create, "body");
-  else { int blk = nt_ref(nt, create, "block"); body = blk >= 0 ? nt_ref(nt, blk, "body") : -1; }
+  else {
+    int blk = nt_ref(nt, create, "block");
+    /* `Proc.new(&b)` / `proc(&b)`: no body of its own -- the value is the
+       forwarded proc, whose return is unknowable here (a block param's
+       actual block lives at the caller). TY_UNKNOWN maps to the boxed poly
+       return at the .call site instead of a silent nil. */
+    if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode"))
+      return TY_UNKNOWN;
+    body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+  }
   if (body < 0) return TY_NIL;
   int bn = 0;
   const int *bb = nt_arr(nt, body, "body", &bn);

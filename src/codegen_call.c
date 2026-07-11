@@ -489,10 +489,7 @@ void emit_proc_call_args(Compiler *c, int argc, const int *argv, Buf *b, int for
   }
   buf_printf(b, "%d, ", argc);
   if (any_poly) {
-    if (!g_needs_proc_poly_argslot) {
-      g_needs_proc_poly_argslot = 1;
-      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
-    }
+    g_needs_proc_poly_argslot = 1;  /* channel array now lives in sp_runtime.h */
     /* Each argument is evaluated once into a natural-typed temp so it can be
        published both unboxed (the mrb_int[] slot, for a concrete parameter)
        and boxed (the side-channel, for a poly parameter). A nil/unknown arg
@@ -1449,8 +1446,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
          (int) result; earlier applications return another curry. curry[a, b]
          chains one apply per argument. */
       int complete = 0; TyKind cret = TY_UNKNOWN;
-      int realize = curry_apply_info(c, id, &complete, &cret) && complete && cret == TY_INT;
-      if (realize) buf_puts(b, "sp_curry_to_int(");
+      int realize = curry_apply_info(c, id, &complete, &cret) && complete;
+      if (realize) buf_puts(b, cret == TY_INT ? "sp_curry_to_int(" : "sp_curry_realize_poly(");
       for (int k = 0; k < argc; k++) buf_puts(b, "sp_curry_apply(");
       emit_expr(c, recv, b);
       for (int k = 0; k < argc; k++) {
@@ -4770,7 +4767,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
         int lit_nil = v1ty && sp_streq(v1ty, "NilNode");
         if (evt == TY_STRING || lit_nil) {
           int tk = ++g_tmp, tv = ++g_tmp;
-          buf_printf(b, "({ const char *_t%d = ", tk); emit_expr(c, argv[0], b);
+          buf_printf(b, "({ const char *_t%d = ", tk); emit_str_expr(c, argv[0], b);
           buf_printf(b, "; const char *_t%d = ", tv); emit_str_expr(c, argv[1], b);
           buf_printf(b, "; if (_t%d) setenv(_t%d, _t%d, 1); else unsetenv(_t%d); _t%d; })",
                      tv, tk, tv, tk, tv);
@@ -4779,7 +4776,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
           /* runtime-typed RHS: nil deletes, a String sets, anything else
              raises CRuby's TypeError (naming the actual class) */
           buf_puts(b, "sp_env_aset(");
-          emit_expr(c, argv[0], b);
+          emit_str_expr(c, argv[0], b);
           buf_puts(b, ", ");
           emit_boxed(c, argv[1], b);
           buf_puts(b, ")");
@@ -4820,7 +4817,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
         int tk = ++g_tmp, tky = ++g_tmp, tv = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = ", tky); emit_expr(c, argv[0], b);
+        buf_printf(b, "({ const char *_t%d = ", tky); emit_str_expr(c, argv[0], b);
         buf_printf(b, "; const char *_t%d = getenv(_t%d)", tk, tky);
         buf_printf(b, "; const char *_t%d = _t%d ? sp_str_dup_external(_t%d) : ", tv, tk, tk);
         if (argc >= 2) emit_expr(c, argv[1], b);
@@ -4857,7 +4854,20 @@ void emit_call(Compiler *c, int id, Buf *b) {
       const char *_bty = nt_type(nt, _blk);
       if (_bty && sp_streq(_bty, "BlockArgumentNode")) {
         int _fwd = nt_ref(nt, _blk, "expression");
+        /* forwarding the enclosing (inlined) method's block param
+           (`Proc.new(&b)` inside `def make(&b)`): the real block is the
+           literal active at the inline splice, so materialize THAT --
+           the param's own name does not exist in the spliced context. */
+        const char *_fnm = (_fwd >= 0 && nt_type(nt, _fwd) &&
+                            sp_streq(nt_type(nt, _fwd), "LocalVariableReadNode"))
+                           ? nt_str(nt, _fwd, "name") : NULL;
+        if (_fnm && g_block_id >= 0 && g_block_param_name &&
+            sp_streq(_fnm, g_block_param_name)) {
+          emit_proc_literal(c, g_block_id, b);
+          return;
+        }
         if (_fwd >= 0 && comp_ntype(c, _fwd) == TY_PROC) { emit_expr(c, _fwd, b); return; }
+        if (g_block_id >= 0) { emit_proc_literal(c, g_block_id, b); return; }
       }
       emit_proc_literal(c, id, b); return;
     }
@@ -5272,6 +5282,55 @@ void emit_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "%d", arity);
         return;
       }
+    }
+  }
+  /* <method>.to_proc -> a first-class Proc trampolining into the compiled
+     method. The proc ABI publishes every argument boxed on the side-channel
+     (a type-erased proc call always force-boxes), so the trampoline unboxes
+     each argument to the target's parameter type and boxes the result. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_METHOD && argc == 0 &&
+      sp_streq(name, "to_proc")) {
+    int mn = method_recv_node(c, recv);
+    int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
+    if (target >= 0 && target_recvless) {
+      Scope *ts = &c->scopes[target];
+      int pid = ++g_proc_counter;
+      buf_printf(&g_proc_protos, "static mrb_int _proc_%d(void *_cap, mrb_int argc, mrb_int *args);\n", pid);
+      Buf *pb = &g_procs;
+      buf_printf(pb, "static mrb_int _proc_%d(void *_cap, mrb_int argc, mrb_int *args) {\n", pid);
+      buf_puts(pb, "  (void)_cap; (void)argc; (void)args;\n");
+      Buf callb; memset(&callb, 0, sizeof callb);
+      emit_method_cname(c, ts, &callb);
+      buf_puts(&callb, "(");
+      int ok_params = 1;
+      for (int k = 0; k < ts->nparams && k < 16; k++) {
+        LocalVar *pv = scope_local(ts, ts->pnames[k]);
+        TyKind pt = pv ? pv->type : TY_INT;
+        if (k) buf_puts(&callb, ", ");
+        char slot[40]; snprintf(slot, sizeof slot, "_sp_proc_poly_args[%d]", k);
+        if (pt == TY_POLY) buf_puts(&callb, slot);
+        else if (ty_is_object(pt)) {
+          buf_puts(&callb, "(");
+          emit_ctype(c, pt, &callb);
+          buf_printf(&callb, ")%s.v.p", slot);
+        }
+        else if (c_type_name(pt)) emit_unbox_text(c, pt, slot, &callb);
+        else ok_params = 0;
+      }
+      buf_puts(&callb, ")");
+      if (ok_params && ts->nparams <= 16) {
+        buf_puts(pb, "  _sp_proc_poly_ret = ");
+        if (ts->ret == TY_POLY) buf_printf(pb, "%s", callb.p ? callb.p : "");
+        else emit_boxed_text(c, ts->ret, callb.p ? callb.p : "", pb);
+        buf_puts(pb, ";\n  return 0;\n}\n");
+        g_needs_proc_poly_argslot = 1;
+        buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, NULL, NULL, %d, TRUE, 0, NULL, NULL)",
+                   pid, ts->nparams);
+        free(callb.p);
+        return;
+      }
+      free(callb.p);
     }
   }
   /* <method>.call(args) / [] -> invoke the bound function. A top-level

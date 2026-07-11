@@ -787,8 +787,8 @@ TyKind infer_call(Compiler *c, int id) {
   if (rt == TY_PROC && sp_streq(name, "curry")) return TY_CURRY;
   if (rt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()"))) {
     int complete = 0; TyKind cret = TY_UNKNOWN;
-    if (curry_apply_info(c, id, &complete, &cret) && complete && cret == TY_INT)
-      return TY_INT;
+    if (curry_apply_info(c, id, &complete, &cret) && complete)
+      return cret == TY_INT ? TY_INT : TY_POLY;   /* boxed realization otherwise */
     return TY_CURRY;
   }
 
@@ -1097,6 +1097,7 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_METHOD && argc == 0) {
     if (sp_streq(name, "name")) return TY_SYMBOL;
     if (sp_streq(name, "arity")) return TY_INT;
+    if (sp_streq(name, "to_proc")) return TY_PROC;
   }
   /* <poly>.call(args): a boxed Proc/Method called through the runtime ABI,
      which returns mrb_int. (Skip when a user class defines `call`: that goes

@@ -10,3 +10,5 @@ UncaughtThrowError
 uncaught throw :elsewhere
 99
 2.5
+"int-tag"
+99

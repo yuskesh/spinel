@@ -6925,6 +6925,11 @@ static sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
    (SP_TLS): a concurrent Proc#call would otherwise race, and no safepoint poll
    lies between a body's store and the call site's read. */
 static SP_TLS sp_RbVal _sp_proc_poly_ret;
+/* Boxed-argument side-channel of the same ABI: a poly (or float) proc
+   parameter reads its argument back from here, since it does not fit the
+   mrb_int[] slot. Declared here so the compose/curry/to_proc trampolines
+   below can publish through it like every generated call site does. */
+static SP_TLS sp_RbVal _sp_proc_poly_args[16];
 static mrb_int sp_proc_arity(sp_Proc *p) { return p ? p->arity : 0; }
 static mrb_bool sp_proc_lambda_p(sp_Proc *p) { return p ? p->lambda_p : FALSE; }
 static mrb_int sp_proc_call(sp_Proc *p, mrb_int argc, mrb_int *args) { if (!p || !p->fn) return 0; if (!args) { mrb_int noargs[16] = {0}; return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, 0, noargs); } return ((mrb_int (*)(void *, mrb_int, mrb_int *))p->fn)(p->cap, argc, args); }
@@ -6966,12 +6971,16 @@ static mrb_int sp_proc_compose_fn(void *cap, mrb_int argc, mrb_int *args) {
   sp_ProcCompose *c = (sp_ProcCompose *)cap;
   mrb_int inner_args[16] = {0};
   if (args && argc > 0) inner_args[0] = args[0];
-  /* the inner proc publishes its (boxed) result through the return slot; read
-     it back to thread through the outer proc's mrb_int arg channel. */
+  /* the caller already published the boxed argument to the side-channel, so
+     the inner proc reads it back regardless of its parameter's static type */
   sp_proc_call(c->inner, 1, inner_args);
-  mrb_int mid = sp_poly_to_i(_sp_proc_poly_ret);
+  /* the inner proc publishes its (boxed) result through the return slot;
+     thread it to the outer proc on BOTH channels -- a poly parameter reads
+     the side-channel, a concrete one reads the mrb_int slot. */
+  sp_RbVal mid = _sp_proc_poly_ret;
   mrb_int outer_args[16] = {0};
-  outer_args[0] = mid;
+  outer_args[0] = sp_poly_to_i(mid);
+  _sp_proc_poly_args[0] = mid;
   /* the outer proc publishes the composed result into the slot; our own raw
      return is unread (the call site reads the slot). */
   return sp_proc_call(c->outer, 1, outer_args);
@@ -6991,21 +7000,42 @@ static sp_Proc *sp_proc_compose(sp_Proc *outer, sp_Proc *inner) {
 typedef struct { sp_Proc *target; mrb_int nargs; mrb_int args[16]; } sp_Curry;
 static void sp_curry_scan(void *p) { sp_Curry *c = (sp_Curry *)p; if (c->target) sp_gc_mark(c->target); }
 static sp_Curry *sp_curry_new(sp_Proc *p) {
+  SP_GC_ROOT(p);  /* the target proc has no other root across this alloc */
   sp_Curry *c = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
   c->target = p; c->nargs = 0;
   return c;
 }
 static sp_Curry *sp_curry_apply(sp_Curry *c, mrb_int arg) {
+  /* root the source accumulator: in a chained apply it is only referenced
+     from a C argument slot, and this allocation can collect */
+  SP_GC_ROOT(c);
   sp_Curry *n = (sp_Curry *)sp_gc_alloc(sizeof(sp_Curry), NULL, sp_curry_scan);
   *n = *c;
   if (n->nargs < 16) n->args[n->nargs++] = arg;
   return n;
 }
+/* Publish the accumulated (int) args on the boxed side-channel too: a
+   poly-param target reads its arguments back from there. */
+static void sp_curry_publish_args(sp_Curry *c) {
+  for (mrb_int i = 0; i < c->nargs && i < 16; i++)
+    _sp_proc_poly_args[i] = sp_box_int(c->args[i]);
+}
 static mrb_int sp_curry_to_int(sp_Curry *c) {
   if (!c || !c->target) return 0;
+  SP_GC_ROOT(c);  /* c->args is read during the call; the target can allocate */
+  sp_curry_publish_args(c);
   /* the target publishes its (boxed) result through the return slot */
   sp_proc_call(c->target, c->nargs, c->args);
   return sp_poly_to_i(_sp_proc_poly_ret);
+}
+/* Realization for a target whose return is not statically int: the boxed
+   result flows through unchanged. */
+static sp_RbVal sp_curry_realize_poly(sp_Curry *c) {
+  if (!c || !c->target) return sp_box_nil();
+  SP_GC_ROOT(c);
+  sp_curry_publish_args(c);
+  sp_proc_call(c->target, c->nargs, c->args);
+  return _sp_proc_poly_ret;
 }
 
 /* Hash#to_proc cap-scan: the proc's `cap` field IS the source hash

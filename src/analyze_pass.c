@@ -3326,6 +3326,27 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
       int val = nt_ref(nt, w, "value");
       if (val >= 0 && is_proc_create(c, val)) { create = val; break; }
     }
+    /* a method param holding the callable: resolve through a call site's
+       argument expression (the first site passing a proc literal wins) */
+    if (create < 0 && vn && sc && sc->name) {
+      int pidx = -1;
+      for (int pi = 0; pi < sc->nparams; pi++)
+        if (sc->pnames[pi] && sp_streq(sc->pnames[pi], vn)) { pidx = pi; break; }
+      if (pidx >= 0) {
+        NT_FOREACH_KIND(nt, NK_CallNode, cs2) {
+          if (comp_scope_of(c, cs2) == sc) continue;   /* not our own body */
+          const char *cn2 = nt_str(nt, cs2, "name");
+          if (!cn2 || !sp_streq(cn2, sc->name) || nt_ref(nt, cs2, "receiver") >= 0) continue;
+          int a3 = nt_ref(nt, cs2, "arguments");
+          int ac3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &ac3) : NULL;
+          if (pidx < ac3 && av3 && nt_type(nt, av3[pidx]) &&
+              (sp_streq(nt_type(nt, av3[pidx]), "LambdaNode") || is_proc_create(c, av3[pidx]))) {
+            create = av3[pidx];
+            break;
+          }
+        }
+      }
+    }
   }
   if (create < 0) return 0;
   *out_body = a_proc_body(c, create);

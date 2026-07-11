@@ -927,7 +927,23 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
     buf_puts(b, "(const char *)("); emit_expr(c, id, b); buf_puts(b, ").v.p");
     return 1;
   }
-  emit_expr(c, id, b);
+  if (t == TY_STRING) {
+    /* a dynamic string tag: a valid pointer, matched by content (like the
+       StringNode-literal arm above) */
+    emit_expr(c, id, b);
+    return 0;
+  }
+  if (t == TY_INT) {
+    /* an Integer tag: CRuby matches by identity, which for a Fixnum is value
+       equality -- carry the value in the pointer slot and match by identity. */
+    buf_puts(b, "(const char *)(intptr_t)("); emit_expr(c, id, b); buf_puts(b, ")");
+    return 1;
+  }
+  /* A Float/boolean/nil/Bignum tag would emit a non-pointer (or a struct)
+     into the const char* tag slot -- invalid C, and (0/1 truncation) a wrong
+     match. These are vanishingly rare as catch/throw tags; reject loudly
+     rather than miscompile. */
+  unsupported(c, id, "catch/throw with a Float, boolean, nil, or Bignum tag (use a Symbol, String, Integer, or object tag)");
   return 0;
 }
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
