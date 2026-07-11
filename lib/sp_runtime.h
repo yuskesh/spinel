@@ -5289,15 +5289,19 @@ static sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {
   sp_Exception *e = (sp_Exception *)sp_gc_alloc(sizeof(sp_Exception), NULL, sp_exc_gc_scan);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->parent_cls_name = NULL;
-  e->msg = (msg && msg[0]) ? msg : (cls_name ? cls_name : "RuntimeError");
+  e->msg = NULL;    /* set below; scan-safe if the copy triggers a GC */
   e->cause = NULL;  /* set all fields explicitly; sp_exc_gc_scan reads cause */
   e->result = sp_box_nil();
+  /* Launder the message into a GC-heap string: sp_exc_gc_scan marks it via
+     the tag byte at msg[-1], which only heap strings carry -- keeping a
+     raise site's rodata literal would under-read one byte before it. */
+  SP_GC_ROOT(e);
+  e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (cls_name ? cls_name : "RuntimeError"));
   return e;
 }
 static sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {
-  sp_Exception *e = sp_exc_new(cls_name, msg);
+  sp_Exception *e = sp_exc_new(cls_name, msg);   /* empty msg already fell back to cls_name */
   e->parent_cls_name = parent_cls;
-  if (!msg || !msg[0]) e->msg = cls_name ? cls_name : "RuntimeError";
   return e;
 }
 /* Allocate a zeroed exception-subclass struct of `sz` bytes with the base
@@ -5309,9 +5313,12 @@ static void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *m
   sp_Exception *e = (sp_Exception *)sp_gc_alloc(sz, NULL, sp_exc_gc_scan);
   memset(e, 0, sz);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
-  e->msg = (msg && msg[0]) ? msg : e->cls_name;
   e->result = sp_box_nil();   /* memset left tag 0 (int 0); StopIteration#result wants nil */
   if (sp_user_exc_parent_fn) e->parent_cls_name = sp_user_exc_parent_fn(e->cls_name);
+  /* heap-launder the message (see sp_exc_new); memset left msg NULL, so a GC
+     during the copy scans a consistent struct */
+  SP_GC_ROOT(e);
+  e->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : e->cls_name);
   return e;
 }
 /* Accept `volatile` pointers: LV slots holding sp_Exception * are
