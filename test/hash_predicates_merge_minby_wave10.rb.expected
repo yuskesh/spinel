@@ -1,0 +1,22 @@
+true
+false
+true
+true
+false
+true
+{a: 1, b: 2}
+{name: "x", age: 3}
+{name: "x", age: 3}
+{a: 31}
+{a: 1, b: 2, c: 3}
+{"x" => 5}
+[1, 2]
+[10, nil]
+[[:b, 1], [:c, 2]]
+[[:a, 3], [:c, 2]]
+[1, 4]
+[5, 4]
+{a: 1, c: 3}
+{a: 1, c: 3}
+nil
+{a: 1}

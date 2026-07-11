@@ -2403,6 +2403,11 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* Hash[k: v] desugared to a bare hash literal: emit the receiver */
+  if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) {
+    emit_expr(c, recv, b);
+    return 1;
+  }
   /* <StructClass>.members at the class level: the member symbol list */
   if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
     const char *mrty = nt_type(nt, recv);

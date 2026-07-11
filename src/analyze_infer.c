@@ -981,6 +981,8 @@ TyKind infer_call(Compiler *c, int id) {
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) return TY_POLY_ARRAY;
   }
+  /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
+  if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) return infer_type(c, recv);
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
@@ -3160,6 +3162,11 @@ else {
          sp_streq(name, "each_key") || sp_streq(name, "each_value") ||
          sp_streq(name, "each_with_index")))
       return TY_ENUMERATOR;
+    if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
+        (sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "all?")))
+      return TY_BOOL;
+    if (sp_streq(name, "deconstruct_keys") && argc == 1) return rt;
+    if (sp_streq(name, "compact!") && argc == 0) return TY_POLY;  /* self or nil */
     if (sp_streq(name, "to_proc")) return TY_PROC;
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
     if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */

@@ -2103,8 +2103,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       }
       continue;
     }
-    if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0 &&
-        nt_ref(nt, id, "block") < 0) {
+    if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0) {
       /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!
          chains the same way because it returns self. */
       int argsn = nt_ref(nt, id, "arguments");
@@ -2114,6 +2113,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         const char *mname = sp_streq(nm, "merge!") ? "merge!" : "merge";
         int av[64];
         memcpy(av, av0, (size_t)an * sizeof(int));
+        int mblk = nt_ref(nt, id, "block");
         int cur = recv;
         for (int j = 0; j < an - 1; j++) {
           int call = nt_new_node(nt, "CallNode");
@@ -2123,6 +2123,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
           nt_node_set_str(nt, call, "name", mname);
           nt_node_set_ref(nt, call, "receiver", cur);
           nt_node_set_ref(nt, call, "arguments", one);
+          /* a conflict block applies at every merge step */
+          if (mblk >= 0) nt_node_set_ref(nt, call, "block", mblk);
           cur = call;
         }
         if (cur >= 0) {
@@ -2764,6 +2766,56 @@ static int desugar_kernel_method_block_arg(Compiler *c) {
   return changed;
 }
 
+/* `m(&h)` where h is a Hash: Hash#to_proc -- rewrite the block argument into
+   an explicit one-parameter block indexing the hash (`m { |x| h[x] }`). */
+static int desugar_hash_block_arg(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "LocalVariableReadNode")) continue;
+    if (!ty_is_hash(infer_type(c, ex))) continue;
+    char pn[32];
+    snprintf(pn, sizeof pn, "__bhp_%d", id);
+    int kpa = nt_new_node(nt, "RequiredParameterNode");
+    nt_node_set_str(nt, kpa, "name", pn);
+    int params = nt_new_node(nt, "ParametersNode");
+    nt_node_set_arr(nt, params, "requireds", &kpa, 1);
+    int bparams = nt_new_node(nt, "BlockParametersNode");
+    nt_node_set_ref(nt, bparams, "parameters", params);
+    int ra = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, ra, "name", pn);
+    int sargs = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, sargs, "arguments", &ra, 1);
+    int call = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, call, "name", "[]");
+    nt_node_set_ref(nt, call, "receiver", ex);
+    nt_node_set_ref(nt, call, "arguments", sargs);
+    int blkbody = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, blkbody, "body", &call, 1);
+    int blk2 = nt_new_node(nt, "BlockNode");
+    nt_node_set_ref(nt, blk2, "parameters", bparams);
+    nt_node_set_ref(nt, blk2, "body", blkbody);
+    comp_grow_node_arrays(c);
+    int ns2[7] = { kpa, params, bparams, ra, sargs, call, blkbody };
+    for (int j = 0; j < 7; j++) c->nscope[ns2[j]] = c->nscope[id];
+    c->nscope[blk2] = c->nscope[id];
+    Scope *sc2 = comp_scope_of(c, id);
+    if (sc2) {
+      LocalVar *lva = scope_local_intern(sc2, pn);
+      if (lva) lva->is_block_param = 1;
+    }
+    nt_node_set_ref(nt, id, "block", blk2);
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_symbol_var_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -2920,6 +2972,86 @@ int desugar_enum_method_recv(Compiler *c) {
           }
         }
       }
+    }
+    /* min_by(n)/max_by(n) { b }: sort_by { b } then take the n smallest /
+       largest (largest reversed, matching CRuby's descending max_by order) */
+    if (nm && (sp_streq(nm, "min_by") || sp_streq(nm, "max_by"))) {
+      int mrc = nt_ref(nt, id, "receiver");
+      int mbk = nt_ref(nt, id, "block");
+      int ma = nt_ref(nt, id, "arguments");
+      int mac = 0;
+      const int *mav = ma >= 0 ? nt_arr(nt, ma, "arguments", &mac) : NULL;
+      if (mrc >= 0 && mbk >= 0 && mac == 1 && ty_is_hash(infer_type(c, mrc))) {
+        /* hash receivers only: arrays already have a native count form */
+        int is_max = nm[1] == 'a';
+        int sortc = nt_new_node(nt, "CallNode");
+        nt_node_set_str(nt, sortc, "name", "sort_by");
+        nt_node_set_ref(nt, sortc, "receiver", mrc);
+        nt_node_set_ref(nt, sortc, "block", mbk);
+        if (is_max) {
+          int lastc = nt_new_node(nt, "CallNode");
+          int largs = nt_new_node(nt, "ArgumentsNode");
+          int mn = mav[0];
+          nt_node_set_arr(nt, largs, "arguments", &mn, 1);
+          nt_node_set_str(nt, lastc, "name", "last");
+          nt_node_set_ref(nt, lastc, "receiver", sortc);
+          nt_node_set_ref(nt, lastc, "arguments", largs);
+          nt_node_set_str(nt, id, "name", "reverse");
+          nt_node_set_ref(nt, id, "receiver", lastc);
+          nt_node_set_ref(nt, id, "arguments", -1);
+          nt_node_set_ref(nt, id, "block", -1);
+          comp_grow_node_arrays(c);
+          c->nscope[sortc] = c->nscope[id];
+          c->nscope[lastc] = c->nscope[id];
+          c->nscope[largs] = c->nscope[id];
+        }
+        else {
+          int fargs = nt_new_node(nt, "ArgumentsNode");
+          int mn = mav[0];
+          nt_node_set_arr(nt, fargs, "arguments", &mn, 1);
+          nt_node_set_str(nt, id, "name", "first");
+          nt_node_set_ref(nt, id, "receiver", sortc);
+          nt_node_set_ref(nt, id, "arguments", fargs);
+          nt_node_set_ref(nt, id, "block", -1);
+          comp_grow_node_arrays(c);
+          c->nscope[sortc] = c->nscope[id];
+          c->nscope[fargs] = c->nscope[id];
+        }
+        changed = 1;
+        continue;
+      }
+    }
+    /* Hash[k: v, ...] with a keyword-hash argument IS the hash literal */
+    if (nm && sp_streq(nm, "[]")) {
+      int krc = nt_ref(nt, id, "receiver");
+      const char *krt2 = krc >= 0 ? nt_type(nt, krc) : NULL;
+      if (krt2 && sp_streq(krt2, "ConstantReadNode") &&
+          nt_str(nt, krc, "name") && sp_streq(nt_str(nt, krc, "name"), "Hash")) {
+        int ka = nt_ref(nt, id, "arguments");
+        int kac = 0;
+        const int *kav = ka >= 0 ? nt_arr(nt, ka, "arguments", &kac) : NULL;
+        if (kac == 1 && kav && nt_type(nt, kav[0]) &&
+            sp_streq(nt_type(nt, kav[0]), "KeywordHashNode")) {
+          /* rewrite this call node into a plain HashNode with the same
+             element list */
+          int en2 = 0;
+          const int *els2 = nt_arr(nt, kav[0], "elements", &en2);
+          int hn2 = nt_new_node(nt, "HashNode");
+          nt_node_set_arr(nt, hn2, "elements", els2, en2);
+          comp_grow_node_arrays(c);
+          c->nscope[hn2] = c->nscope[id];
+          /* graft: turn the CallNode into itself... easiest is retarget via
+             receiver replacement not possible; instead rewrite in place by
+             changing this node's type is unsupported -- wrap: make the call
+             `(hash_literal).itself`-free by pointing the parent at hn2 is
+             also unavailable here, so emit-side handles it; mark via rename */
+          nt_node_set_str(nt, id, "name", "__hash_brackets_kw");
+          nt_node_set_ref(nt, id, "receiver", hn2);
+          nt_node_set_ref(nt, id, "arguments", -1);
+          changed = 1;
+        }
+      }
+      continue;
     }
     /* Hash#store(k, v) is exactly []= (whose value form already works) */
     if (nm && sp_streq(nm, "store")) {
@@ -4554,6 +4686,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
+    ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
     ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
     ch |= desugar_binding_lvget(c);            /* binding.local_variable_get(:x) -> x.itself */

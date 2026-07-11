@@ -2819,6 +2819,52 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
        compare_by_identity cannot be honored (keys are compared by value) and is
        rejected loudly rather than silently no-op'd. */
     if (sp_streq(name, "compare_by_identity?") && argc == 0) { buf_puts(b, "0"); return 1; }
+    /* compact!: drop nil-valued pairs in place; self when changed, nil
+       when a no-op (only the poly-valued variants can hold nil) */
+    if (sp_streq(name, "compact!") && argc == 0 &&
+        (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) {
+      const char *hnc = ty_hash_cname(rt);
+      int th = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, tc2 = ++g_tmp;
+      buf_printf(b, "({ sp_%sHash *_t%d = ", hnc, th); emit_expr(c, recv, b);
+      buf_printf(b, "; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {"
+                    " sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);"
+                    " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _t%d->order[_t%d], _t%d); }"
+                    " int _t%d = _t%d->len != _t%d->len;"
+                    " if (_t%d) sp_%sHash_replace(_t%d, _t%d);"
+                    " _t%d ? sp_box_obj(_t%d, %s) : sp_box_nil(); })",
+                 hnc, tf, hnc, tf,
+                 ti, ti, th, ti,
+                 tv, hnc, th, th, ti,
+                 tv, hnc, tf, th, ti, tv,
+                 tc2, tf, th,
+                 tc2, hnc, th, tf,
+                 tc2, th, hash_box_cls(rt));
+      return 1;
+    }
+    /* blockless Enumerable predicates fold on the pair count (a pair is
+       always truthy, so all? is unconditionally true) */
+    if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
+        (sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "all?"))) {
+      const char *hn0 = ty_hash_cname(rt);
+      if (hn0) {
+        int th0 = ++g_tmp;
+        buf_printf(b, "({ sp_%sHash *_t%d = ", hn0, th0); emit_expr(c, recv, b);
+        if (sp_streq(name, "any?")) buf_printf(b, "; (_t%d && _t%d->len > 0); })", th0, th0);
+        else if (sp_streq(name, "none?")) buf_printf(b, "; (!_t%d || _t%d->len == 0); })", th0, th0);
+        else buf_printf(b, "; (void)_t%d; 1; })", th0);
+        return 1;
+      }
+    }
+    /* deconstruct_keys(keys or nil): CRuby returns the hash itself */
+    if (sp_streq(name, "deconstruct_keys") && argc == 1) {
+      buf_puts(b, "((void)(");
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, "), ");
+      emit_expr(c, recv, b);
+      buf_puts(b, ")");
+      return 1;
+    }
     /* Hash#equal? -- object identity is pointer identity */
     if (sp_streq(name, "equal?") && argc == 1) {
       TyKind at0 = comp_ntype(c, argv[0]);
