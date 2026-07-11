@@ -97,6 +97,7 @@ int is_method_obj_call(Compiler *c, int node);
 int method_obj_target_mi(Compiler *c, int node);
 int method_recv_node(Compiler *c, int recv);
 int proc_to_proc_method_node(Compiler *c, int recv);
+int local_sole_range_node(Compiler *c, int recv);
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name);
 int method_call_param_shift(Compiler *c, int mn, int mi);
 

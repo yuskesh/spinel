@@ -648,6 +648,11 @@ TyKind infer_call(Compiler *c, int id) {
       const int *ppA = pbA >= 0 ? nt_arr(nt, pbA, "body", &pnA) : NULL;
       rnA = pnA == 1 ? ppA[0] : -1;
     }
+    /* a local holding only such a literal counts too (sole-assignment) */
+    if (rnA >= 0 && nt_type(nt, rnA) && !sp_streq(nt_type(nt, rnA), "RangeNode")) {
+      int slA = local_sole_range_node(c, rnA);
+      if (slA >= 0) rnA = slA;
+    }
     if (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "RangeNode") &&
         (nt_ref(nt, rnA, "right") < 0 ||
          infer_end_is_float_inf(c, nt_ref(nt, rnA, "right"))) &&

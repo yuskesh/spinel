@@ -724,3 +724,53 @@ int call_user_yield_mi(Compiler *c, int id) {
   if (!m->yields || scope_has_return(c, mi)) return -1;
   return mi;
 }
+
+/* The RangeNode behind a TY_RANGE local-variable read, when the local has
+   exactly one write anywhere in the program (a plain LocalVariableWriteNode
+   in the read's own scope) and that write's value is a (possibly
+   parenthesized) range literal. Lets endpoint-shape checks (endless /
+   Float::INFINITY size, take/first prefix) see through the local, e.g.
+   `r = (1..Float::INFINITY); r.size`. Same-name writes elsewhere -- other
+   scopes, destructures, or/and/op-assigns -- disqualify conservatively
+   (there is no depth field to tell a captured outer write apart).
+   Returns -1 when the receiver has any other origin. */
+int local_sole_range_node(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return -1;
+  const char *rty = nt_type(nt, recv);
+  if (!rty || !sp_streq(rty, "LocalVariableReadNode")) return -1;
+  const char *vn = nt_str(nt, recv, "name");
+  if (!vn) return -1;
+  Scope *sc = comp_scope_of(c, recv);
+  int val = -1;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind k = nt_kind(nt, w);
+    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode &&
+        k != NK_LocalVariableAndWriteNode && k != NK_LocalVariableOperatorWriteNode &&
+        k != NK_LocalVariableTargetNode)
+      continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    if (k != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc || val >= 0)
+      return -1;
+    val = nt_ref(nt, w, "value");
+  }
+  while (val >= 0 && nt_kind(nt, val) == NK_ParenthesesNode) {
+    int pb = nt_ref(nt, val, "body");
+    int pn = 0;
+    const int *pp = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+    val = pn == 1 ? pp[0] : -1;
+  }
+  if (val < 0 || nt_kind(nt, val) != NK_RangeNode) return -1;
+  /* callers re-emit the endpoints at the use site (take/first prefix loops),
+     so both must be pure: literals or constant reads only */
+  for (int e = 0; e < 2; e++) {
+    int ep = nt_ref(nt, val, e ? "right" : "left");
+    if (ep < 0) continue;
+    NodeKind ek = nt_kind(nt, ep);
+    if (ek != NK_IntegerNode && ek != NK_FloatNode && ek != NK_NilNode &&
+        ek != NK_ConstantReadNode && ek != NK_ConstantPathNode)
+      return -1;
+  }
+  return val;
+}

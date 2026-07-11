@@ -676,7 +676,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_range_new(");
     if (left >= 0) emit_int_expr(c, left, b); else buf_puts(b, "INTPTR_MIN");  /* beginless */
     buf_puts(b, ", ");
-    if (right >= 0) emit_int_expr(c, right, b); else buf_puts(b, "INTPTR_MAX");  /* endless */
+    /* a Float::INFINITY end materializes like an endless range: passing the
+       emitted (1.0/0.0) through the mrb_int parameter is UB (the converted
+       value is unspecified -- a stale register in practice) */
+    if (right >= 0 && !lazy_endpoint_is_infinite(c, right))
+      emit_int_expr(c, right, b);
+    else
+      buf_puts(b, "INTPTR_MAX");  /* endless */
     buf_printf(b, ", %d)", excl);
     return;
   }

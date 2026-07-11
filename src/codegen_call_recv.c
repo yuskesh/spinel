@@ -5808,6 +5808,13 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        (an endless range cannot materialize) */
     {
       int rn9 = unwrap_parens(c, recv);
+      /* a local holding only such a literal counts too (sole-assignment);
+         the arms below never evaluate the receiver, so skipping the local
+         read loses no side effect */
+      if (rn9 >= 0 && nt_type(nt, rn9) && !sp_streq(nt_type(nt, rn9), "RangeNode")) {
+        int sl9 = local_sole_range_node(c, rn9);
+        if (sl9 >= 0) rn9 = sl9;
+      }
       if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
           nt_ref(nt, rn9, "left") < 0 && sp_streq(name, "size") && argc == 0) {
         /* beginless: CRuby cannot iterate from nil */
