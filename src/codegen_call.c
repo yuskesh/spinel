@@ -2113,6 +2113,24 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
+  /* Symbol receiver: the case conversions and succ/next stay SYMBOLS
+     (round-trip through the name text and re-intern); to_s and friends
+     keep their existing string paths. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_SYMBOL && argc == 0 &&
+      nt_ref(nt, id, "block") < 0) {
+    const char *symfn = NULL;
+    if (sp_streq(name, "upcase")) symfn = "sp_str_upcase";
+    else if (sp_streq(name, "downcase")) symfn = "sp_str_downcase";
+    else if (sp_streq(name, "capitalize")) symfn = "sp_str_capitalize";
+    else if (sp_streq(name, "swapcase")) symfn = "sp_str_swapcase";
+    else if (sp_streq(name, "succ") || sp_streq(name, "next")) symfn = "sp_str_succ";
+    if (symfn) {
+      buf_printf(b, "sp_sym_intern(%s(sp_sym_to_s(", symfn);
+      emit_expr(c, recv, b);
+      buf_puts(b, ")))");
+      return;
+    }
+  }
   /* Class.new(args) -> sp_<Class>_new(args) */
   if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
     const char *rty = nt_type(nt, recv);

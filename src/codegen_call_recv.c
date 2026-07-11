@@ -3465,6 +3465,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_re_scan_poly(sp_re_pat_%d, %s)", re_lit_index(c, argv[0]), r);
       }
       else if (sp_streq(name, "to_sym") || sp_streq(name, "intern")) buf_printf(b, "sp_sym_intern(%s)", r);
+      else if (sp_streq(name, "to_c") && argc == 0) buf_printf(b, "sp_str_to_c(%s)", r);
+      else if (sp_streq(name, "chr") && argc == 0) buf_printf(b, "sp_str_substr(%s, 0, 1)", r);
       else if (sp_streq(name, "length") || sp_streq(name, "size")) {
         if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
             sp_streq(nt_type(nt, recv), "LocalVariableReadNode") && nt_str(nt, recv, "name") &&
@@ -3690,7 +3692,19 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
       else if (sp_streq(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "byteslice") && argc == 1) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
-      else if (sp_streq(name, "setbyte") && argc == 2) { buf_printf(b, "sp_str_setbyte(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "setbyte") && argc == 2) {
+        /* copy-on-write: rebind an lvalue receiver to the mutated copy
+           (a literal's bytes live in static storage, #2029) */
+        const char *rvt2 = nt_type(nt, recv);
+        int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
+                           sp_streq(rvt2, "InstanceVariableReadNode"));
+        int tv2 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", tv2); emit_expr(c, argv[1], b);
+        buf_puts(b, "; ");
+        if (lvw) { emit_expr(c, recv, b); buf_puts(b, " = "); }
+        buf_printf(b, "sp_str_setbyte_cow(%s, ", r); emit_expr(c, argv[0], b);
+        buf_printf(b, ", _t%d); _t%d; })", tv2, tv2);
+      }
       else if (sp_streq(name, "getbyte") && argc == 1) {
         /* Bounds/negative-correct: a negative index counts from the end and an
            out-of-range index is nil (SP_INT_NIL) -- getbyte is a nullable int. */
@@ -5282,10 +5296,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         }
       }
     }
-    if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_box_str(sp_str_upcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (sp_streq(name, "downcase"))   { buf_puts(b, "sp_box_str(sp_str_downcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (sp_streq(name, "capitalize")) { buf_puts(b, "sp_box_str(sp_str_capitalize(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
-    if (sp_streq(name, "swapcase"))   { buf_puts(b, "sp_box_str(sp_str_swapcase(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
+    if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) {
+      buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_succ)"); return 1;
+    }
+    if (sp_streq(name, "upcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_upcase)"); return 1; }
+    if (sp_streq(name, "downcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_downcase)"); return 1; }
+    if (sp_streq(name, "capitalize"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_capitalize)"); return 1; }
+    if (sp_streq(name, "swapcase"))     { buf_puts(b, "sp_poly_case_conv("); emit_expr(c, recv, b); buf_puts(b, ", sp_str_swapcase)"); return 1; }
     if (sp_streq(name, "strip"))      { buf_puts(b, "sp_box_str(sp_str_strip(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "reverse"))    { buf_puts(b, "sp_box_str(sp_str_reverse(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }
     if (sp_streq(name, "chomp"))      { buf_puts(b, "sp_box_str(sp_str_chomp(sp_poly_to_s("); emit_expr(c, recv, b); buf_puts(b, ")))"); return 1; }

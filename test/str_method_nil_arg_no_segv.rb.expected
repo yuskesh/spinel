@@ -3,5 +3,5 @@ count: no implicit conversion of nil into String
 nil
 6
 send-lshift: can't modify frozen String: "foo"
-frozen literal: can't modify frozen String: "a"
+literal not frozen: b
 b

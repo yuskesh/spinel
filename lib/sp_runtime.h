@@ -2052,6 +2052,67 @@ static mrb_int sp_float_to_i_checked(mrb_float f) {
   return (mrb_int)f;
 }
 static mrb_float sp_poly_to_f_opt(sp_RbVal v) { return v.tag == SP_TAG_NIL ? sp_float_nil() : sp_poly_to_f(v); }
+/* Case conversions / succ preserve the receiver's class: a Symbol converts
+   through its name and re-interns, a String stays a String (CRuby). */
+/* String#to_c: CRuby's lenient complex parse -- a leading real part, an
+   optional [+-]imag i tail, or a bare "Ni"; unparseable input is (0+0i). */
+/* String#setbyte over value-semantics strings: copy-on-write (a literal's
+   bytes are static storage). The caller re-binds an lvalue receiver. */
+static const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v) {
+  if (!s) s = "";
+  /* an explicitly frozen string (or a frozen-string-literal file's literal,
+     both carry the 0xf1 marker) still raises; a HEAP string mutates in
+     place so aliases observe the write (CRuby identity semantics); only a
+     plain literal -- static storage, marker 0xff -- copies (#2029). */
+  sp_str_check_mutable(s);
+  mrb_int n = (mrb_int)strlen(s);
+  if (i < 0) i += n;
+  if (i < 0 || i >= n) {
+    sp_raise_cls("IndexError", sp_sprintf("index %lld out of string", (long long)i));
+    return s;
+  }
+  {
+    unsigned char m = ((const unsigned char *)s)[-1];
+    if (m == 0xfe || m == 0xfc) {
+      (((sp_str_hdr *)(s - 1)) - 1)->hash = 0;  /* invalidate cached key hash */
+      ((char *)s)[i] = (char)(v & 0xff);
+      return s;
+    }
+    if (m == 0xfd) { ((char *)s)[i] = (char)(v & 0xff); return s; }
+  }
+  char *r = sp_str_alloc((size_t)n);
+  memcpy(r, s, (size_t)n);
+  r[n] = 0;
+  r[i] = (char)(v & 0xff);
+  return r;
+}
+static sp_Complex sp_str_to_c(const char *s) {
+  double re = 0, im = 0;
+  if (s) {
+    const char *p = s;
+    while (*p == ' ' || *p == '\t') p++;
+    char *end = NULL;
+    double a = strtod(p, &end);
+    if (end != p) {
+      if (*end == 'i') im = a;
+      else {
+        re = a;
+        const char *q = end;
+        double b2 = strtod(q, &end);
+        if (end != q && *end == 'i') im = b2;
+        else if ((*q == '+' || *q == '-') && q[1] == 'i') im = (*q == '-') ? -1.0 : 1.0;
+      }
+    }
+    else if (*p == 'i') im = 1;
+    else if ((*p == '+' || *p == '-') && p[1] == 'i') im = (*p == '-') ? -1.0 : 1.0;
+  }
+  return (sp_Complex){ (mrb_float)re, (mrb_float)im };
+}
+static sp_RbVal sp_poly_case_conv(sp_RbVal v, const char *(*fn)(const char *)) {
+  if (v.tag == SP_TAG_SYM && sp_sym_name_fn && sp_json_sym_intern_fn)
+    return sp_box_sym(sp_json_sym_intern_fn(fn(sp_sym_name_fn((sp_sym)v.v.i))));
+  return sp_box_str(fn(sp_poly_to_s(v)));
+}
 static mrb_bool sp_poly_numeric_p(sp_RbVal v) { return v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT || v.tag == SP_TAG_BIGINT; }
 /* Display form of a value in a `can't convert %s into ...` TypeError:
    nil/true/false render lowercase, everything else by class name (CRuby). */

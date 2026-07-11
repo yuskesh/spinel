@@ -1920,7 +1920,7 @@ else {
                 sp_streq(name, "index"))
               return TY_INT;
             if (sp_streq(name, "to_f")) return TY_FLOAT;
-            if (sp_streq(name, "to_sym")) return TY_SYMBOL;
+            if (sp_streq(name, "to_sym") || sp_streq(name, "intern")) return TY_SYMBOL;
             if (sp_streq(name, "empty?") || sp_streq(name, "include?") ||
                 sp_streq(name, "start_with?") || sp_streq(name, "end_with?") ||
                 sp_streq(name, "==") || sp_streq(name, "!="))
@@ -2712,6 +2712,7 @@ else {
            sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
            sp_streq(name, "strip") || sp_streq(name, "reverse") ||
            sp_streq(name, "chomp") || sp_streq(name, "chop") ||
+           sp_streq(name, "succ") || sp_streq(name, "next") ||
            sp_streq(name, "chr")))
         return TY_POLY;
       /* poly.bytes / poly.codepoints on a value that is really a String (a
@@ -3212,6 +3213,8 @@ else {
     if (sp_streq(name, "bytes") || sp_streq(name, "codepoints")) return TY_INT_ARRAY;
     if (sp_streq(name, "unpack") && (argc == 1 || argc == 2)) return TY_POLY_ARRAY;
     if (sp_streq(name, "chars")) return TY_STR_ARRAY;
+    if (sp_streq(name, "intern") && argc == 0) return TY_SYMBOL;
+    if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
     if (sp_streq(name, "gsub") || sp_streq(name, "sub") || sp_streq(name, "tr") ||
         sp_streq(name, "center") || sp_streq(name, "ljust") || sp_streq(name, "rjust"))
       return TY_STRING;

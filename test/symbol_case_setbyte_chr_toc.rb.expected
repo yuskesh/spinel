@@ -1,0 +1,12 @@
+[:HELLO, :WORLD]
+[:ba]
+:HELLO
+:SYM_IN_VAR
+"Hello"
+72
+"a"
+:x
+(42+0i)
+(3+4i)
+(1.5-2i)
+(0+4i)

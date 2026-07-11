@@ -31,10 +31,10 @@ rescue FrozenError => e
   puts "send-lshift: " + e.message
 end
 
-# setbyte on a literal: spinel adopts frozen-string-literal: true
-# semantics globally, so literals raise FrozenError on mutation.
-# Heap-allocated strings (via .dup, +, etc.) mutate as usual.
-# Test pins both behaviors: literal -> raise, dup -> mutate.
+# setbyte on a literal: WITHOUT the frozen_string_literal magic comment a
+# literal is mutable (CRuby); the write copies the static bytes and rebinds
+# the variable (#2029). A frozen-string-literal file or an explicit .freeze
+# still raises (pinned by bundle_classd_43).
 (str = "a")
 begin
   str.setbyte(0, 98)
