@@ -2108,6 +2108,33 @@ static sp_Complex sp_str_to_c(const char *s) {
   }
   return (sp_Complex){ (mrb_float)re, (mrb_float)im };
 }
+/* Hash subset/superset comparisons (boxed, any variant pairing): every pair
+   of `a` present in `b` with an equal value; strict adds len <. */
+static void sp_poly_hash_pair(sp_RbVal v, mrb_int i, sp_RbVal *k, sp_RbVal *out);
+static mrb_bool sp_poly_eq(sp_RbVal a, sp_RbVal b);
+static mrb_int sp_poly_length(sp_RbVal v);
+static sp_RbVal sp_poly_hash_get_pair_val(sp_RbVal h, sp_RbVal key, mrb_bool *found) {
+  mrb_int n = sp_poly_length(h);
+  for (mrb_int i = 0; i < n; i++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(h, i, &k, &v);
+    if (sp_poly_eq(k, key)) { *found = TRUE; return v; }
+  }
+  *found = FALSE;
+  return sp_box_nil();
+}
+static mrb_bool sp_poly_hash_subset(sp_RbVal a, sp_RbVal b, int strict) {
+  mrb_int na = sp_poly_length(a), nb = sp_poly_length(b);
+  if (strict ? (na >= nb) : (na > nb)) return FALSE;
+  for (mrb_int i = 0; i < na; i++) {
+    sp_RbVal k, v;
+    sp_poly_hash_pair(a, i, &k, &v);
+    mrb_bool found = FALSE;
+    sp_RbVal bv = sp_poly_hash_get_pair_val(b, k, &found);
+    if (!found || !sp_poly_eq(v, bv)) return FALSE;
+  }
+  return TRUE;
+}
 static sp_RbVal sp_poly_case_conv(sp_RbVal v, const char *(*fn)(const char *)) {
   if (v.tag == SP_TAG_SYM && sp_sym_name_fn && sp_json_sym_intern_fn)
     return sp_box_sym(sp_json_sym_intern_fn(fn(sp_sym_name_fn((sp_sym)v.v.i))));

@@ -617,7 +617,8 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     int blk = nt_ref(nt, cur, "block");
     if (blk < 0 || nops >= 16) return 0;
     if (sp_streq(nm, "map") || sp_streq(nm, "collect")) ops[nops].kind = OP_MAP, ops[nops].negate = 0;
-    else if (sp_streq(nm, "select") || sp_streq(nm, "filter")) ops[nops].kind = OP_FILTER, ops[nops].negate = 0;
+    else if (sp_streq(nm, "select") || sp_streq(nm, "filter") ||
+             sp_streq(nm, "find_all")) ops[nops].kind = OP_FILTER, ops[nops].negate = 0;
     else if (sp_streq(nm, "reject")) ops[nops].kind = OP_FILTER, ops[nops].negate = 1;
     else if (sp_streq(nm, "take_while")) ops[nops].kind = OP_TAKEWHILE, ops[nops].negate = 0;
     else return 0;
@@ -8847,6 +8848,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         buf_printf(b, " %s 0)", name);
         return;
       }
+    }
+    /* Hash subset/superset: < <= > >= over any hash-variant pairing */
+    if (ty_is_hash(rt) && argc == 1 && ty_is_hash(comp_ntype(c, argv[0]))) {
+      int strict = sp_streq(name, "<") || sp_streq(name, ">");
+      int flip = sp_streq(name, ">") || sp_streq(name, ">=");
+      buf_puts(b, "sp_poly_hash_subset(");
+      if (flip) { emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, recv, b); }
+      else { emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); }
+      buf_printf(b, ", %d)", strict);
+      return;
     }
     unsupported(c, id, "comparison");
   }

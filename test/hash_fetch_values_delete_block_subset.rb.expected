@@ -1,0 +1,21 @@
+[1, 2]
+[1, "missing z"]
+2
+"gone z"
+{a: 1}
+true
+true
+true
+true
+false
+true
+false
+false
+true
+false
+true
+false
+[[:b, 2]]
+[]
+[2, 3]
+[2]

@@ -2814,7 +2814,30 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           if (vt == TY_POLY) buf_puts(b, getexpr);
           else emit_boxed_text(c, vt, getexpr, b);
           buf_puts(b, ");");
-          if (is_fetch) {
+          int fv_blk = nt_ref(nt, id, "block");
+          if (is_fetch && fv_blk >= 0 && nt_type(nt, fv_blk) &&
+              sp_streq(nt_type(nt, fv_blk), "BlockNode")) {
+            /* fetch_values(...) { |k| fallback }: the block supplies the
+               value for each MISSING key instead of raising */
+            const char *fp0 = block_param_name(c, fv_blk, 0);
+            int fvb = nt_ref(nt, fv_blk, "body");
+            int fvn = 0; const int *fvv = fvb >= 0 ? nt_arr(nt, fvb, "body", &fvn) : NULL;
+            buf_puts(b, " else {");
+            if (fp0) {
+              char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
+              buf_printf(b, " lv_%s = ", rename_local(fp0));
+              if (kt == TY_POLY) buf_puts(b, keytmp);
+              else emit_boxed_text(c, kt, keytmp, b);
+              buf_puts(b, ";");
+            }
+            if (fvn > 0) {
+              buf_printf(b, " sp_PolyArray_push(_t%d, ", tr);
+              emit_boxed(c, fvv[fvn - 1], b);
+              buf_puts(b, ");");
+            }
+            buf_puts(b, " }");
+          }
+          else if (is_fetch) {
             char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
             buf_puts(b, " else sp_raise_key_not_found(");
             emit_boxed_text(c, kt, keytmp, b);
@@ -3350,6 +3373,33 @@ else {
         int th = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
         buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tk); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
+        int hd_blk = nt_ref(nt, id, "block");
+        if (hd_blk >= 0 && nt_type(nt, hd_blk) && sp_streq(nt_type(nt, hd_blk), "BlockNode")) {
+          /* delete(key) { |k| fallback }: the block's value stands in for a
+             missing key (boxed: the fallback can be any type) */
+          const char *dp0 = block_param_name(c, hd_blk, 0);
+          int hdb = nt_ref(nt, hd_blk, "body");
+          int hdn = 0; const int *hdv = hdb >= 0 ? nt_arr(nt, hdb, "body", &hdn) : NULL;
+          int tvv = ++g_tmp;
+          buf_printf(b, "; sp_RbVal _t%d; if (sp_%sHash_has_key(_t%d, _t%d)) { _t%d = ",
+                     tvv, hn, th, tk, tvv);
+          { char getx[96]; snprintf(getx, sizeof getx, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
+            if (vt == TY_POLY) buf_puts(b, getx);
+            else emit_boxed_text(c, vt, getx, b); }
+          buf_printf(b, "; sp_%sHash_delete(_t%d, _t%d); } else {", hn, th, tk);
+          if (dp0) {
+            char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
+            buf_printf(b, " lv_%s = ", rename_local(dp0));
+            if (ty_hash_key(rt) == TY_POLY) buf_puts(b, keytmp);
+            else emit_boxed_text(c, ty_hash_key(rt), keytmp, b);
+            buf_puts(b, ";");
+          }
+          buf_printf(b, " _t%d = ", tvv);
+          if (hdn > 0) emit_boxed(c, hdv[hdn - 1], b);
+          else buf_puts(b, "sp_box_nil()");
+          buf_printf(b, "; } _t%d; })", tvv);
+          return 1;
+        }
         buf_printf(b, "; %s _t%d = sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : %s;",
                    c_type_name(vt), tv, hn, th, tk, hn, th, tk, vt == TY_POLY ? "sp_box_nil()" : default_value(vt));
         buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); _t%d; })", hn, th, tk, tv);
@@ -5028,7 +5078,14 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     snprintf(g_argov_text[g_n_argov], sizeof g_argov_text[0], "_t%d", ta);
     g_n_argov++;
     TyKind sv = c->ntype[recv]; c->ntype[recv] = TY_POLY_ARRAY;
+    /* find_all on the pair array is Enumerable select (a hash receiver only
+       lands here through the redispatch, so the hash-returning Hash#select
+       emitter is out of the picture) */
+    const char *svn = nt_str(c->nt, id, "name");
+    int fa = svn && sp_streq(svn, "find_all");
+    if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "select");
     emit_call(c, id, b);
+    if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "find_all");
     c->ntype[recv] = sv;
     g_n_argov--;
     return 1;

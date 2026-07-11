@@ -2069,6 +2069,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_str(nt, id, "name", "each");
       continue;
     }
+
     /* max(n) { cmp } / min(n) { cmp }: the n extremes by the comparator --
        sort { cmp } then take from the appropriate end (max descends). */
     if ((sp_streq(nm, "max") || sp_streq(nm, "min")) && recv >= 0 &&
@@ -2690,6 +2691,15 @@ int desugar_enum_method_recv(Compiler *c) {
     if (!nm || !is_array_enum_method(nm)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
+    /* find_all == select once the receiver is ARRAY-shaped (a hash receiver
+       reaches here as the redispatched pair array, so the result is the
+       Enumerable pair list, not a hash) */
+    if (sp_streq(nm, "find_all") && nt_ref(nt, id, "block") >= 0 &&
+        (ty_is_array(comp_ntype(c, recv)) || ty_is_array(infer_type(c, recv)))) {
+      nt_node_set_str(nt, id, "name", "select");
+      changed = 1;
+      continue;
+    }
     /* already redirected through __enum_to_a -> leave it (idempotent) */
     if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
       const char *rn = nt_str(nt, recv, "name");

@@ -563,6 +563,7 @@ int hash_enum_redispatch(Compiler *c, int id) {
   /* comparator-block min/max/minmax compare the [k, v] pairs like the
      blockless forms (min_by/max_by keep their dedicated hash emitters) */
   if (sp_streq(name, "min") || sp_streq(name, "max") || sp_streq(name, "minmax")) return 1;
+  if (sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "find_all")) return 1;
   if (sp_streq(name, "each_with_index")) return 1;
   if (sp_streq(name, "reduce") || sp_streq(name, "inject")) return 1;
   /* each_with_object / flat_map keep their dedicated hash emitters */
@@ -2379,7 +2380,8 @@ else {
         return TY_POLY_POLY_HASH;
       }
       if (sp_streq(name, "select") || sp_streq(name, "reject") ||
-          sp_streq(name, "filter") || sp_streq(name, "sort_by") ||
+          sp_streq(name, "filter") || sp_streq(name, "find_all") ||
+          sp_streq(name, "sort_by") ||
           sp_streq(name, "sort_by!") ||
           sp_streq(name, "take_while") || sp_streq(name, "drop_while"))
         return rt;
@@ -3018,6 +3020,11 @@ else {
     if (sp_streq(name, "default") && argc == 0) return TY_POLY;
     if (sp_streq(name, "length") || sp_streq(name, "size") ||
         sp_streq(name, "count")) return TY_INT;
+    if ((sp_streq(name, "<") || sp_streq(name, "<=") ||
+         sp_streq(name, ">") || sp_streq(name, ">=")) && argc == 1)
+      return TY_BOOL;  /* subset/superset comparisons */
+    if (sp_streq(name, "delete") && argc == 1 && nt_ref(nt, id, "block") >= 0)
+      return TY_POLY;  /* deleted value, or the block's fallback */
     if (sp_streq(name, "keys"))   return ty_array_of(ty_hash_key(rt));
     if (sp_streq(name, "values")) return ty_array_of(ty_hash_val(rt));
     if (sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) return TY_POLY_ARRAY;

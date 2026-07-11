@@ -4471,6 +4471,7 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "sum") || sp_streq(name, "count") ||
               sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
               sp_streq(name, "one?") || sp_streq(name, "each_with_index") ||
+              sp_streq(name, "find_all") ||
               sp_streq(name, "bsearch") || sp_streq(name, "find_index") ||
               sp_streq(name, "index") || sp_streq(name, "rindex") ||
               sp_streq(name, "map!") || sp_streq(name, "collect!") ||

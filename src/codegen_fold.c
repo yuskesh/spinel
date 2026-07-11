@@ -2461,7 +2461,8 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
   if (!name) return 0;
   int is_map = sp_streq(name, "map") || sp_streq(name, "collect");
   int is_fmap = sp_streq(name, "filter_map");
-  int is_sel = sp_streq(name, "select") || sp_streq(name, "filter");
+  int is_sel = sp_streq(name, "select") || sp_streq(name, "filter") ||
+               sp_streq(name, "find_all");
   int is_rej = sp_streq(name, "reject");
   int is_toa = sp_streq(name, "to_a") || sp_streq(name, "entries");
   int is_cnt = sp_streq(name, "count");
