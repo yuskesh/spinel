@@ -6411,7 +6411,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     TyKind drt = comp_ntype(c, recv);
     if (dargc == 0 && ty_is_object(drt) && !comp_ty_value_obj(c, drt)) {
       int cid = ty_object_class(drt);
-      if (!class_is_exc_subclass(c, cid)) {
+      /* native-bound classes have no generated pool/struct copy; their dup
+         dispatches to a declared native_method instead */
+      if (!class_is_exc_subclass(c, cid) && !c->classes[cid].is_native_class) {
         ClassInfo *dci = &c->classes[cid];
         const char *cn = dci->c_name;
         int defcls = -1;
@@ -6453,13 +6455,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        sp_streq(name, "dup") || sp_streq(name, "clone"))) {
     int args = nt_ref(nt, id, "arguments");
     int argc0 = 0; if (args >= 0) nt_arr(nt, args, "arguments", &argc0);
-    /* hash, string, and array dup/clone require real copies (they are mutable
-       reference types) -- skip the identity shortcut for them so the dedicated
-       sp_*_dup paths run. freeze/itself on any value stay identity. */
+    /* hash, string, array, and native-bound object dup/clone require real
+       copies (mutable reference types; a native class declares its own dup) --
+       skip the identity shortcut for them so the dedicated copy paths run.
+       freeze/itself on any value stay identity. */
     TyKind recv_t = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
     int is_dup_clone = sp_streq(name, "dup") || sp_streq(name, "clone");
+    int recv_native = ty_is_object(recv_t) &&
+                      c->classes[ty_object_class(recv_t)].is_native_class;
     if (argc0 == 0 && !ty_is_hash(recv_t) &&
-        !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t)))) {
+        !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_native))) {
       emit_expr(c, recv, b); return;
     }
     if (argc0 == 0 && recv_t == TY_STRING && is_dup_clone) {
@@ -8018,7 +8023,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)"); return;
     }
   }
-  if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL &&
+  /* Object receivers (incl. native-bound classes like StringScanner) dispatch
+     their own match?/match methods; only string-ish receivers belong here. */
+  if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL && !ty_is_object(rt) &&
       (sp_streq(name, "match?") || sp_streq(name, "!~") || sp_streq(name, "=~") || sp_streq(name, "match"))) {
     int are = re_lit_index(c, argv[0]);
     if (are >= 0 && sp_streq(name, "=~") && rt == TY_STRING) {
