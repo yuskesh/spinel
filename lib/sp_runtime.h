@@ -353,7 +353,16 @@ static mrb_bool sp_range_eq(sp_Range a,sp_Range b){return a.first==b.first&&a.la
    emit_poly_builtin_dispatch can land on a single C expression. An
    exclusive range stops one short of `last`, so the upper bound is
    `last - excl` (excl is 0 or 1). */
-static mrb_bool sp_range_include(sp_Range *r, mrb_int x){mrb_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);return sp_range_count(*r)>0 && lo<=x && x<=hi;}
+static mrb_bool sp_range_include(sp_Range *r, mrb_int x){
+  /* beginless/endless sentinels (INTPTR_MIN/MAX) clamp one side open */
+  if (r->first == INTPTR_MIN || r->last == INTPTR_MAX) {
+    if (r->first != INTPTR_MIN && x < r->first) return 0;
+    if (r->last != INTPTR_MAX && (r->excl ? x >= r->last : x > r->last)) return 0;
+    return 1;
+  }
+  mrb_int lo=sp_range_min_v(*r),hi=sp_range_max_v(*r);
+  return sp_range_count(*r)>0 && lo<=x && x<=hi;
+}
 
 /* ---- Class object ----
    Value-type Class reference: a single class id that indexes into

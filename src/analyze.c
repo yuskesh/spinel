@@ -1973,6 +1973,32 @@ static int is_array_enum_method(const char *nm) {
 static void desugar_enum_chain_shapes(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
+  /* A string-bounded range literal bound to a variable (`cr = ('a'..'e')`)
+     has no sp_Range representation (int bounds only): materialize it into a
+     string array at the assignment, like the literal-receiver interpose
+     below (#1934 shape). Range-only methods on the variable then reject
+     loudly instead of miscompiling. */
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "LocalVariableWriteNode")) continue;
+    int val = nt_ref(nt, id, "value");
+    int rn = val;
+    while (rn >= 0 && nt_type(nt, rn) && sp_streq(nt_type(nt, rn), "ParenthesesNode")) {
+      int pb = nt_ref(nt, rn, "body"); int pbn = 0;
+      const int *pbb = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
+      rn = pbn == 1 ? pbb[0] : -1;
+    }
+    if (rn < 0 || !nt_type(nt, rn) || !sp_streq(nt_type(nt, rn), "RangeNode")) continue;
+    int rlo = nt_ref(nt, rn, "left");
+    const char *rloty = rlo >= 0 ? nt_type(nt, rlo) : NULL;
+    if (!rloty || !sp_streq(rloty, "StringNode")) continue;
+    int toa = nt_new_node(nt, "CallNode");
+    if (toa < 0) continue;
+    nt_node_set_str(nt, toa, "name", "to_a");
+    nt_node_set_ref(nt, toa, "receiver", val);
+    nt_node_set_ref(nt, id, "value", toa);
+    c->nscope[toa] = c->nscope[id];
+    comp_grow_node_arrays(c);
+  }
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -2826,6 +2852,19 @@ int desugar_enum_method_recv(Compiler *c) {
           }
         }
       }
+    }
+    if (nm && sp_streq(nm, "%")) {
+      /* (range) % n is Range#step(n) (the arithmetic-sequence operator) */
+      int prc = nt_ref(nt, id, "receiver");
+      int pa = nt_ref(nt, id, "arguments");
+      int pac = 0;
+      if (pa >= 0) nt_arr(nt, pa, "arguments", &pac);
+      if (prc >= 0 && pac == 1 && nt_ref(nt, id, "block") < 0 &&
+          infer_type(c, prc) == TY_RANGE) {
+        nt_node_set_str(nt, id, "name", "step");
+        changed = 1;
+      }
+      continue;
     }
     if (!nm || !is_array_enum_method(nm)) continue;
     int recv = nt_ref(nt, id, "receiver");

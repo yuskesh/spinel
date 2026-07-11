@@ -4028,7 +4028,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_num_clamp(sp_box_int(%s), ", r); emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "clamp") && argc == 2) { buf_printf(b, "sp_int_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
-      else if (sp_streq(name, "clamp") && argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) {
+      else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
         /* the helper raises on an exclusive range with a real end (CRuby) */
         buf_printf(b, "sp_int_clamp_range_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
@@ -4318,6 +4318,26 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     if (same_cls) buf_puts(b, ".v.p)");
     return 1;
+  }
+  /* Comparable#clamp(lo_obj..hi_obj) with same-class endpoints in a literal
+     range: unfold to the two-argument object clamp (an sp_Range cannot carry
+     the endpoints' class, so the range helper would compare raw pointers). */
+  if (recv >= 0 && ty_is_object(rt) && sp_streq(name, "clamp") && argc == 1 &&
+      comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
+    int rn2 = unwrap_parens(c, argv[0]);
+    if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
+      int rlo = nt_ref(nt, rn2, "left"), rhi = nt_ref(nt, rn2, "right");
+      if (rlo >= 0 && rhi >= 0 &&
+          comp_ntype(c, rlo) == rt && comp_ntype(c, rhi) == rt) {
+        buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")");
+        buf_puts(b, "sp_obj_clamp(");
+        emit_boxed(c, recv, b); buf_puts(b, ", ");
+        emit_boxed(c, rlo, b); buf_puts(b, ", ");
+        emit_boxed(c, rhi, b);
+        buf_puts(b, ").v.p)");
+        return 1;
+      }
+    }
   }
   /* Comparable#clamp(range) on a user object: int endpoints become bounds fed
      to the user `<=>`; beginless/endless clamp one-sided; an exclusive range
@@ -4996,6 +5016,9 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     /* `sum` with a block is Enumerable#sum { }: the native Range sum ignored
        the block; let it fall through to the int-array redispatch below. */
     if (sp_streq(name, "sum") && block >= 0) known = 0;
+    /* min(n)/max(n) return arrays of the smallest/largest n: Enumerable forms,
+       served by the int-array redispatch below (the native arm is argless). */
+    if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc >= 1) known = 0;
     if (known) {
       /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
       if ((sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) {

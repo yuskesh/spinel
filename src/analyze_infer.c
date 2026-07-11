@@ -543,6 +543,13 @@ int range_enum_redispatch(Compiler *c, int id) {
   if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && argc >= 1 && block < 0) return 1;
   /* count: the block / argument forms (bare count is size, handled natively). */
   if (sp_streq(name, "count")) return block >= 0 || argc >= 1;
+  /* take/drop and reverse_each materialize transparently (the results carry
+     the range's own ints); filter_map has array block-param typing. */
+  if ((sp_streq(name, "take") || sp_streq(name, "drop")) && argc == 1) return 1;
+  if (sp_streq(name, "reverse_each")) return 1;
+  if (sp_streq(name, "filter_map") && block >= 0) return 1;
+  /* min(n)/max(n)/minmax with a count return arrays of the range's ints */
+  if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc >= 1) return 1;
   return 0;
 }
 
@@ -1790,7 +1797,22 @@ else {
       return ((lo == rt || lo == TY_NIL) && (hi == rt || hi == TY_NIL)) ? rt : TY_POLY;
     }
     if (sp_streq(name, "clamp") && argc == 1 && infer_type(c, argv[0]) == TY_RANGE &&
-        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) return TY_POLY;
+        comp_method_in_chain(c, cid, "<=>", NULL) >= 0) {
+      /* a literal range with same-class endpoints unfolds to the object
+         clamp, whose result is one of the three same-class values */
+      int rn2 = argv[0];
+      while (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "ParenthesesNode")) {
+        int pb2 = nt_ref(nt, rn2, "body"); int pbn2 = 0;
+        const int *pbb2 = pb2 >= 0 ? nt_arr(nt, pb2, "body", &pbn2) : NULL;
+        rn2 = pbn2 == 1 ? pbb2[0] : -1;
+      }
+      if (rn2 >= 0 && nt_type(nt, rn2) && sp_streq(nt_type(nt, rn2), "RangeNode")) {
+        int rlo2 = nt_ref(nt, rn2, "left"), rhi2 = nt_ref(nt, rn2, "right");
+        if (rlo2 >= 0 && rhi2 >= 0 &&
+            infer_type(c, rlo2) == rt && infer_type(c, rhi2) == rt) return rt;
+      }
+      return TY_POLY;
+    }
     /* Comparable#between?(lo, hi) on an object with `<=>` is a boolean. */
     if (sp_streq(name, "between?") && argc == 2 &&
         comp_method_in_chain(c, cid, "<=>", NULL) >= 0) return TY_BOOL;

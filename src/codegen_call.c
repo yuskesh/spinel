@@ -9060,6 +9060,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (mi_b >= 0) {
         int ts = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
         const char *cname = c->classes[defcls_b].name;
+        /* the `<=>` param may have widened to poly (sp_obj_clamp and the
+           checked-comparison helpers call it through the boxed ABI): match
+           the signature by boxing the bound temps when it did */
+        Scope *cmp_sc = &c->scopes[mi_b];
+        LocalVar *cp0 = cmp_sc->nparams > 0 && cmp_sc->pnames[0]
+                        ? scope_local(cmp_sc, cmp_sc->pnames[0]) : NULL;
+        int arg_poly = cp0 && cp0->type == TY_POLY;
         /* Compute each RHS into a local buffer first: emit_expr may itself
            hoist temps into g_pre (e.g. an arg `Temp.new(5)` roots its boxed
            int there). Doing that before writing our own `T _tN = ` prefix
@@ -9068,13 +9075,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         emit_indent(g_pre, g_indent);
         emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", ts);
         buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-        Buf lb = expr_buf(c, argv[0]);
+        Buf lb; memset(&lb, 0, sizeof lb);
+        if (arg_poly) emit_boxed(c, argv[0], &lb); else { Buf t = expr_buf(c, argv[0]); lb = t; }
         emit_indent(g_pre, g_indent);
-        emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", tlo);
+        if (arg_poly) buf_puts(g_pre, "sp_RbVal"); else emit_ctype(c, rt, g_pre);
+        buf_printf(g_pre, " _t%d = ", tlo);
         buf_puts(g_pre, lb.p ? lb.p : ""); buf_puts(g_pre, ";\n"); free(lb.p);
-        Buf hb = expr_buf(c, argv[1]);
+        Buf hb; memset(&hb, 0, sizeof hb);
+        if (arg_poly) emit_boxed(c, argv[1], &hb); else { Buf t = expr_buf(c, argv[1]); hb = t; }
         emit_indent(g_pre, g_indent);
-        emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", thi);
+        if (arg_poly) buf_puts(g_pre, "sp_RbVal"); else emit_ctype(c, rt, g_pre);
+        buf_printf(g_pre, " _t%d = ", thi);
         buf_puts(g_pre, hb.p ? hb.p : ""); buf_puts(g_pre, ";\n"); free(hb.p);
         buf_printf(b, "(sp_%s_%s((sp_%s *)_t%d, _t%d) >= 0 && sp_%s_%s((sp_%s *)_t%d, _t%d) <= 0)",
                    cname, mc("<=>"), cname, ts, tlo,
