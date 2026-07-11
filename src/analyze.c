@@ -1978,6 +1978,37 @@ static void desugar_enum_chain_shapes(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     int recv = nt_ref(nt, id, "receiver");
+    /* enum.to_set == Set.new(enum) whenever the set package's Set class is
+       in the program (an in-place rewrite; Set's initialize adds each
+       element, deduplicating). */
+    if (sp_streq(nm, "to_set") && recv >= 0 &&
+        nt_ref(nt, id, "block") < 0 && nt_ref(nt, id, "arguments") < 0) {
+      /* this desugar runs before class collection: scan the AST for the
+         class (lazily, at most once per program) */
+      static int has_set_cls = -1;
+      if (has_set_cls < 0) {
+        has_set_cls = 0;
+        for (int k = 0; k < n0 && !has_set_cls; k++) {
+          const char *kty = nt_type(nt, k);
+          if (!kty || !sp_streq(kty, "ClassNode")) continue;
+          int cp = nt_ref(nt, k, "constant_path");
+          const char *kn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+          if (kn && sp_streq(kn, "Set")) has_set_cls = 1;
+        }
+      }
+      if (!has_set_cls) continue;
+      int cst = nt_new_node(nt, "ConstantReadNode");
+      int one = nt_new_node(nt, "ArgumentsNode");
+      if (cst >= 0 && one >= 0) {
+        nt_node_set_str(nt, cst, "name", "Set");
+        nt_node_set_arr(nt, one, "arguments", &recv, 1);
+        nt_node_set_str(nt, id, "name", "new");
+        nt_node_set_ref(nt, id, "receiver", cst);
+        nt_node_set_ref(nt, id, "arguments", one);
+        comp_grow_node_arrays(c);
+      }
+      continue;
+    }
     if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0 &&
         nt_ref(nt, id, "block") < 0) {
       /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!

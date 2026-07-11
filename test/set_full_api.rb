@@ -38,3 +38,6 @@ p s
 p(Set[1, 2, 3].classify { |x| x.odd? })
 p(Set[1, 2, 3].divide { |x| x.odd? })
 p(Set[Set[1, 2], Set[3]].flatten)
+p [1, 2, 2, 3].to_set
+p((1..4).to_set)
+p %w[a b a].to_set
