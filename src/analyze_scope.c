@@ -2576,12 +2576,25 @@ void specialize_inherited_cls_new(Compiler *c) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0) continue;
-    const char *rty = nt_type(nt, recv);
-    if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
-    const char *cn = nt_str(nt, recv, "name");
-    int ci = cn ? comp_class_index(c, cn) : -1;
-    if (ci < 0) continue;
+    int ci = -1;
+    if (recv < 0 ||
+        (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"))) {
+      /* a bare (or explicit-self: this pass runs before the desugar that
+         drops such receivers) call inside a class-method body: self is the
+         class there, so an inherited factory's `new` must construct the
+         CALLING class. Clone for the enclosing class exactly like the
+         Const-receiver form (`def self.upsert; build { |kv| ... }; end`). */
+      Scope *encl = comp_scope_of(c, id);
+      if (!encl || !encl->is_cmethod || encl->class_id < 0) continue;
+      ci = encl->class_id;
+    }
+    else {
+      const char *rty = nt_type(nt, recv);
+      if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
+      const char *cn = nt_str(nt, recv, "name");
+      ci = cn ? comp_class_index(c, cn) : -1;
+      if (ci < 0) continue;
+    }
     const char *mname = nt_str(nt, id, "name");
     if (!mname || sp_streq(mname, "new")) continue;
     if (comp_cmethod_in_class(c, ci, mname) >= 0) continue;  /* defined on ci */
@@ -2631,6 +2644,18 @@ void specialize_inherited_cls_new(Compiler *c) {
       if (!nt_str(nt, id, "name") || !sp_streq(nt_str(nt, id, "name"), src->name)) continue;
       int r = nt_ref(nt, id, "receiver");
       if (comp_class_index(c, nt_str(nt, r, "name")) == src->class_id) called_direct = 1;
+    }
+    /* ... or if a bare call inside some class-method body still resolves to
+       this source (a class with no specialized copy of its own) */
+    for (int id = 0; id < node_count && !called_direct; id++) {
+      if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+      int r2 = nt_ref(nt, id, "receiver");
+      if (r2 >= 0 && !(nt_type(nt, r2) && sp_streq(nt_type(nt, r2), "SelfNode"))) continue;
+      const char *nm2 = nt_str(nt, id, "name");
+      if (!nm2 || !sp_streq(nm2, src->name)) continue;
+      Scope *encl = comp_scope_of(c, id);
+      if (!encl || !encl->is_cmethod || encl->class_id < 0) continue;
+      if (comp_cmethod_in_chain(c, encl->class_id, nm2, NULL) == s) called_direct = 1;
     }
     if (!called_direct) src->is_transplanted_source = 1;
   }
