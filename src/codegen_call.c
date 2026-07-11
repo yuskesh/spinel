@@ -2367,10 +2367,15 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_SizedQueue_new("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
       }
       if (cn && sp_streq(cn, "Random")) {
-        buf_puts(b, "sp_Random_new(");
-        if (argc >= 1) emit_expr(c, argv[0], b);
-        else buf_puts(b, "(mrb_int)time(NULL)");
-        buf_puts(b, ")");
+        if (argc >= 1) {
+          buf_puts(b, "sp_Random_new(");
+          emit_expr(c, argv[0], b);
+          buf_puts(b, ")");
+        }
+        else {
+          /* no seed: auto-seed uniquely (time alone repeats within a second) */
+          buf_puts(b, "sp_Random_new_auto()");
+        }
         return 1;
       }
       /* Hash.new / Hash.new(default) whose variant was pinned on the node
@@ -4876,6 +4881,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "rand")) {
       if (argc >= 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
         buf_puts(b, "sp_Random_rand_float_bound("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
+      else if (argc >= 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        buf_puts(b, "sp_Random_rand_range("); emit_expr(c, recv, b); buf_puts(b, ", ");
         emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (argc >= 1) {
