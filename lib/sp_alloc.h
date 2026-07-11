@@ -176,7 +176,7 @@ static inline const char *sp_str_dup_external(const char *s) {
    readers such as lib/sp_json.c can format numbers without sp_runtime.h. */
 /* Interpolation writers: append one part into a caller-provided buffer and
    return the new tail. emit_interp sizes the buffer from static bounds
-   (SP_W_INT_MAX digits per int, literal lengths) plus sp_str_byte_len of the
+   (SP_W_INT_MAX digits per int, literal lengths) plus strlen of the
    pre-evaluated dynamic parts, so one sp_str_alloc_raw serves the whole
    string (previously: one heap string per part + an sp_sprintf pass). */
 #define SP_W_INT_MAX 21  /* -9223372036854775808 */
@@ -190,6 +190,10 @@ static inline char *sp_w_int(char *p, mrb_int n) {
   while (i > 0) *p++ = tmp[--i];
   return p;
 }
+/* NOTE: s must be a marked spinel string (heap or codegen literal) --
+   sp_str_byte_len reads the marker byte at s[-1], which is out of bounds on
+   a foreign C literal. emit_interp therefore uses strlen + memcpy for
+   dynamic string parts instead of this helper. */
 static inline char *sp_w_str(char *p, const char *s) {
   if (!s) return p;
   size_t l = sp_str_byte_len(s);

@@ -242,11 +242,16 @@ void emit_interp(Compiler *c, int id, Buf *b) {
       }
       #undef EMIT_IV
       /* Pre-evaluate into an ordered temp. A dynamic part's string is rooted
-         (its byte length is read after later parts may allocate, and the
-         final allocation itself can collect); bounded scalars need none.
+         (its bytes are copied after later parts may allocate, and the final
+         allocation itself can collect); bounded scalars need none.
          Collected into `decls` and emitted as a leading sequence of a
          statement-expression below -- NOT into g_pre, since emit_interp may
-         run while g_pre holds a half-written enclosing statement. */
+         run while g_pre holds a half-written enclosing statement.
+         The length is taken with strlen, NOT sp_str_byte_len: string values
+         can be foreign C literals with no sp_str_hdr and no marker byte
+         (lib raise messages, class names, "" fallbacks), so reading s[-1]
+         here is out of bounds -- and if the preceding byte happens to match
+         a heap marker, the garbage header length corrupts the copy. */
       int tv2 = ++g_tmp;
       if (wkind == WK_INT) {
         buf_printf(&decls, "mrb_int _t%d = %s; ", tv2, conv.p ? conv.p : "0");
@@ -261,8 +266,8 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         tv2 = -1;
       }
       else {
-        buf_printf(&decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); ",
-                   tv2, conv.p ? conv.p : "sp_str_empty", tv2);
+        buf_printf(&decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); size_t _l%d = strlen(_t%d); ",
+                   tv2, conv.p ? conv.p : "sp_str_empty", tv2, tv2, tv2);
       }
       free(conv.p);
       wp[nwp].kind = wkind; wp[nwp].tmp = tv2;
@@ -291,7 +296,7 @@ void emit_interp(Compiler *c, int id, Buf *b) {
   buf_printf(b, "({ %s", decls.p ? decls.p : "");
   buf_printf(b, "size_t _cap%d = %ldUL", rid, fixed_cap);
   for (int k = 0; k < nwp; k++)
-    if (wp[k].kind == WK_DYN) buf_printf(b, " + sp_str_byte_len(_t%d)", wp[k].tmp);
+    if (wp[k].kind == WK_DYN) buf_printf(b, " + _l%d", wp[k].tmp);
   buf_puts(b, "; ");
   buf_printf(b, "char *_t%d = sp_str_alloc_raw(_cap%d + 1); ", rid, rid);
   buf_printf(b, "char *_t%d = _t%d; ", wpid, rid);
@@ -312,7 +317,8 @@ void emit_interp(Compiler *c, int id, Buf *b) {
       case WK_NIL:
         break;
       default:
-        buf_printf(b, "_t%d = sp_w_str(_t%d, _t%d); ", wpid, wpid, wp[k].tmp);
+        buf_printf(b, "memcpy(_t%d, _t%d, _l%d); _t%d += _l%d; ",
+                   wpid, wp[k].tmp, wp[k].tmp, wpid, wp[k].tmp);
         break;
     }
   }
