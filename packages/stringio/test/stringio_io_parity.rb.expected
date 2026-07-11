@@ -1,0 +1,19 @@
+StringIO
+"abcdef"
+"a-"
+"b-"
+"c"
+nil
+6
+2
+3
+Errno::EINVAL: Invalid argument
+"123"
+"123 x=4.5"
+"1\n2\n3\n"
+"1\n2\n3\ndone\n"
+"a\nb\n\n"
+"line1\n"
+"line2\n"
+EOFError: end of file reached
+["line1\n", "line2\n"]

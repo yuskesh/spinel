@@ -12,9 +12,13 @@
 
 typedef struct sp_StringIO_s {
   mrb_int cls_id;      /* object header: runtime class id, compiler-stamped */
-  char *buf;           /* malloc'd, grown on demand; freed by the finalizer */
+  char *buf;           /* malloc'd, grown on demand; freed by the finalizer --
+                          or, while `borrowed`, the constructor's GC string
+                          shared read-only so #string keeps identity (the
+                          first mutation copies it private) */
   int64_t len, cap, pos, lineno;
   int closed;
+  int borrowed;
 } sp_StringIO;
 
 sp_StringIO *sp_StringIO_new(mrb_int cls_id);
@@ -46,5 +50,16 @@ sp_StringIO *sp_StringIO_flush(sp_StringIO *s);
 mrb_bool sp_StringIO_sync(sp_StringIO *s);
 mrb_bool sp_StringIO_isatty(sp_StringIO *s);
 mrb_int sp_StringIO_zero(sp_StringIO *s);   /* fsync/fileno/pid: always 0 */
+sp_StringIO *sp_StringIO_shl(sp_StringIO *s, const char *str);   /* << returns self */
+const char *sp_StringIO_gets_sep(sp_StringIO *s, const char *sep);
+mrb_int sp_StringIO_seek2(sp_StringIO *s, mrb_int off, mrb_int whence);
+const char *sp_StringIO_readline(sp_StringIO *s);
+sp_RbVal sp_StringIO_readlines(sp_StringIO *s);
+mrb_int sp_StringIO_print_v1(sp_StringIO *s, sp_RbVal a);
+mrb_int sp_StringIO_print_v2(sp_StringIO *s, sp_RbVal a, sp_RbVal b);
+mrb_int sp_StringIO_print_v3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbVal c2);
+mrb_int sp_StringIO_puts_v1(sp_StringIO *s, sp_RbVal a);
+mrb_int sp_StringIO_puts_v2(sp_StringIO *s, sp_RbVal a, sp_RbVal b);
+mrb_int sp_StringIO_puts_v3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbVal c2);
 void sp_StringIO_free(void *p);             /* GC finalizer: frees buf */
 #endif /* SP_STRINGIO_H */

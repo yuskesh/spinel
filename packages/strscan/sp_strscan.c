@@ -43,7 +43,9 @@ typedef struct sp_StringScanner_s {
   const char *source;
   const char *matched;
   int64_t     pos;
-  int64_t     last_pos;
+  int64_t     last_pos;    /* pos before the last advance (unscan rewinds here) */
+  int64_t     match_start; /* where the last match begins (pre/post_match) --
+                              differs from last_pos after scan_until */
   int         matched_p; /* int (not mrb_bool) — keep the layout
                             compact; FALSE=0, TRUE=1 */
   int         ncaps;
@@ -63,9 +65,18 @@ sp_StringScanner *sp_StringScanner_new(mrb_int cls_id, const char *str) {
   sc->matched = sp_str_empty;
   sc->pos = 0;
   sc->last_pos = 0;
+  sc->match_start = 0;
   sc->matched_p = 0;
   sc->ncaps = 0;
   return sc;
+}
+
+/* StringScanner#dup / #clone: an independent scanner sharing the source
+   string (CRuby shares the string too; scan state is copied). */
+sp_StringScanner *sp_StringScanner_dup(sp_StringScanner *sc) {
+  sp_StringScanner *d = (sp_StringScanner *)sp_gc_alloc(sizeof(sp_StringScanner), NULL, sp_StringScanner_scan_gc);
+  *d = *sc;
+  return d;
 }
 
 /* Clamp re_exec's returned ncap to the stored caps[] size. */
@@ -75,21 +86,32 @@ static int sc_clamp_ncaps(int n) {
   return n;
 }
 
-/* Anchored match: succeed only when re_exec finds a match
-   starting at exactly `pos`. Returns matched length, or -1. */
+/* Both matchers run the pattern against the REST of the string (source + pos)
+   so `^` and `\A` re-anchor at the scan pointer, as in CRuby's strscan (the
+   scan pointer is the beginning of the subject). Stored capture offsets are
+   shifted back to absolute source offsets. */
+static void sc_shift_caps(int *caps, int ncap, int64_t pos) {
+  for (int i = 0; i < ncap; i++)
+    if (caps[i] >= 0) caps[i] += (int)pos;
+}
+
+/* Anchored match: succeed only when the match starts exactly at the scan
+   pointer. Returns matched length, or -1. */
 static int64_t sc_match_at_pos(const mrb_regexp_pattern *pat, const char *str, int64_t slen, int64_t pos, int *caps, int *ncap_out) {
-  int n = re_exec(pat, str, slen, pos, caps, SP_SS_MAXCAP);
+  int n = re_exec(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP);
   *ncap_out = sc_clamp_ncaps(n);
-  if (n <= 0 || caps[0] != pos) return -1;
+  if (n <= 0 || caps[0] != 0) { *ncap_out = 0; return -1; }
+  sc_shift_caps(caps, *ncap_out, pos);
   return caps[1] - caps[0];
 }
 
-/* Forward-search match: returns offset of first match at or
+/* Forward-search match: returns the absolute offset of the first match at or
    after pos, and writes matched length to *mlen. -1 on miss. */
 static int64_t sc_match_forward(const mrb_regexp_pattern *pat, const char *str, int64_t slen, int64_t pos, int64_t *mlen, int *caps, int *ncap_out) {
-  int n = re_exec(pat, str, slen, pos, caps, SP_SS_MAXCAP);
+  int n = re_exec(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP);
   *ncap_out = sc_clamp_ncaps(n);
-  if (n <= 0 || caps[0] < 0) return -1;
+  if (n <= 0 || caps[0] < 0) { *ncap_out = 0; return -1; }
+  sc_shift_caps(caps, *ncap_out, pos);
   *mlen = caps[1] - caps[0];
   return caps[0];
 }
@@ -129,6 +151,7 @@ const char *sp_StringScanner_scan(sp_StringScanner *sc, mrb_regexp_pattern *pat)
   }
   char *m = sc_substr(sc->source, sc->pos, mlen);
   sc->last_pos = sc->pos;
+  sc->match_start = sc->pos;
   sc->matched = m;
   sc->matched_p = 1;
   sc->pos += mlen;
@@ -147,6 +170,7 @@ const char *sp_StringScanner_check(sp_StringScanner *sc, mrb_regexp_pattern *pat
   }
   char *m = sc_substr(sc->source, sc->pos, mlen);
   sc->last_pos = sc->pos;
+  sc->match_start = sc->pos;
   sc->matched = m;
   sc->matched_p = 1;
   return m;
@@ -167,19 +191,123 @@ const char *sp_StringScanner_scan_until(sp_StringScanner *sc, mrb_regexp_pattern
   char *taken = sc_substr(sc->source, sc->pos, consumed);
   char *m = sc_substr(sc->source, mstart, mlen);
   sc->last_pos = sc->pos;
+  sc->match_start = mstart;  /* pre_match is everything before the MATCH */
   sc->matched = m;
   sc->matched_p = 1;
   sc->pos = mstart + mlen;
   return taken;
 }
 
+/* StringScanner#check_until: scan_until without advancing the pointer. */
+const char *sp_StringScanner_check_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) {
+  if (!sc || !pat) return NULL;
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  int64_t mlen = 0;
+  int64_t mstart = sc_match_forward(pat, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
+  if (mstart < 0) {
+    sc->matched = sp_str_empty;
+    sc->matched_p = 0;
+    sc->ncaps = 0;
+    return NULL;
+  }
+  char *taken = sc_substr(sc->source, sc->pos, (mstart + mlen) - sc->pos);
+  sc->last_pos = sc->pos;
+  sc->match_start = mstart;
+  sc->matched = sc_substr(sc->source, mstart, mlen);
+  sc->matched_p = 1;
+  return taken;
+}
+
+/* StringScanner#match?: anchored like scan, records match state, returns the
+   matched byte length without advancing (nil on miss). */
+sp_RbVal sp_StringScanner_match_q(sp_StringScanner *sc, mrb_regexp_pattern *pat) {
+  if (!sc || !pat) return sp_box_nil();
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  int64_t mlen = sc_match_at_pos(pat, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
+  if (mlen < 0) {
+    sc->matched = sp_str_empty;
+    sc->matched_p = 0;
+    sc->ncaps = 0;
+    return sp_box_nil();
+  }
+  sc->last_pos = sc->pos;
+  sc->match_start = sc->pos;
+  sc->matched = sc_substr(sc->source, sc->pos, mlen);
+  sc->matched_p = 1;
+  return sp_box_int((mrb_int)mlen);
+}
+
+/* StringScanner#skip: anchored like scan, advances, returns the matched byte
+   length (nil on miss). */
+sp_RbVal sp_StringScanner_skip(sp_StringScanner *sc, mrb_regexp_pattern *pat) {
+  if (!sc || !pat) return sp_box_nil();
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  int64_t mlen = sc_match_at_pos(pat, sc->source, slen, sc->pos, sc->caps, &sc->ncaps);
+  if (mlen < 0) {
+    sc->matched = sp_str_empty;
+    sc->matched_p = 0;
+    sc->ncaps = 0;
+    return sp_box_nil();
+  }
+  sc->last_pos = sc->pos;
+  sc->match_start = sc->pos;
+  sc->matched = sc_substr(sc->source, sc->pos, mlen);
+  sc->matched_p = 1;
+  sc->pos += mlen;
+  return sp_box_int((mrb_int)mlen);
+}
+
+/* StringScanner#exist?: forward search without advancing; returns the byte
+   distance from the pointer to the END of the match (nil on miss). */
+sp_RbVal sp_StringScanner_exist_q(sp_StringScanner *sc, mrb_regexp_pattern *pat) {
+  if (!sc || !pat) return sp_box_nil();
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  int64_t mlen = 0;
+  int64_t mstart = sc_match_forward(pat, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
+  if (mstart < 0) {
+    sc->matched = sp_str_empty;
+    sc->matched_p = 0;
+    sc->ncaps = 0;
+    return sp_box_nil();
+  }
+  sc->last_pos = sc->pos;
+  sc->match_start = mstart;
+  sc->matched = sc_substr(sc->source, mstart, mlen);
+  sc->matched_p = 1;
+  return sp_box_int((mrb_int)((mstart + mlen) - sc->pos));
+}
+
+/* StringScanner#skip_until: forward search, advances past the match, returns
+   the consumed byte count (nil on miss). */
+sp_RbVal sp_StringScanner_skip_until(sp_StringScanner *sc, mrb_regexp_pattern *pat) {
+  if (!sc || !pat) return sp_box_nil();
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  int64_t mlen = 0;
+  int64_t mstart = sc_match_forward(pat, sc->source, slen, sc->pos, &mlen, sc->caps, &sc->ncaps);
+  if (mstart < 0) {
+    sc->matched = sp_str_empty;
+    sc->matched_p = 0;
+    sc->ncaps = 0;
+    return sp_box_nil();
+  }
+  int64_t consumed = (mstart + mlen) - sc->pos;
+  sc->last_pos = sc->pos;
+  sc->match_start = mstart;
+  sc->matched = sc_substr(sc->source, mstart, mlen);
+  sc->matched_p = 1;
+  sc->pos = mstart + mlen;
+  return sp_box_int((mrb_int)consumed);
+}
+
 /* StringScanner#[n] -- the nth capture group of the last scan/check.
-   Group 0 is the whole match. Returns NULL (Ruby nil) when there was
-   no match, the index is out of range, or the group didn't
-   participate. */
+   Group 0 is the whole match; a negative index counts back from the last
+   group. Returns NULL (Ruby nil) when there was no match, the index is out
+   of range, or the group didn't participate. */
 const char *sp_StringScanner_aref(sp_StringScanner *sc, mrb_int n) {
-  if (!sc || !sc->matched_p || n < 0) return NULL;
+  if (!sc || !sc->matched_p) return NULL;
   int idx = (int)n;
+  if (idx < 0) idx += sc->ncaps / 2;
+  if (idx < 0) return NULL;
   if (2 * idx + 1 >= sc->ncaps) return NULL;
   int st = sc->caps[2 * idx];
   int en = sc->caps[2 * idx + 1];
@@ -204,7 +332,13 @@ mrb_int sp_StringScanner_pos(sp_StringScanner *sc) {
 
 mrb_int sp_StringScanner_pos_set(sp_StringScanner *sc, mrb_int p) {
   if (!sc) return 0;
-  sc->pos = (int64_t)p;
+  /* CRuby: a negative position counts from the end; anything out of the
+     [0, bytesize] range raises RangeError (never index out of the buffer). */
+  int64_t slen = (int64_t)sp_str_byte_len(sc->source);
+  int64_t np = (int64_t)p;
+  if (np < 0) np += slen;
+  if (np < 0 || np > slen) sp_raise_cls("RangeError", "index out of range");
+  sc->pos = np;
   return p;
 }
 
@@ -225,6 +359,7 @@ const char *sp_StringScanner_getch(sp_StringScanner *sc) {
   int64_t clen = sc_char_len(sc->source, sc->pos, slen);
   char *c = sc_substr(sc->source, sc->pos, clen);
   sc->last_pos = sc->pos;
+  sc->match_start = sc->pos;
   sc->matched = c;
   sc->matched_p = 1;
   sc->pos += clen;
@@ -291,14 +426,14 @@ const char *sp_StringScanner_string(sp_StringScanner *sc) {
 
 const char *sp_StringScanner_pre_match(sp_StringScanner *sc) {
   if (!sc || !sc->matched_p) return NULL;
-  if (sc->last_pos <= 0) return sp_str_empty;
-  return sc_substr(sc->source, 0, sc->last_pos);
+  if (sc->match_start <= 0) return sp_str_empty;
+  return sc_substr(sc->source, 0, sc->match_start);
 }
 
 const char *sp_StringScanner_post_match(sp_StringScanner *sc) {
   if (!sc || !sc->matched_p) return NULL;
   int64_t mlen = (int64_t)sp_str_byte_len(sc->matched);
-  int64_t start = sc->last_pos + mlen;
+  int64_t start = sc->match_start + mlen;
   int64_t slen = (int64_t)sp_str_byte_len(sc->source);
   int64_t rem = slen - start;
   if (rem <= 0) return sp_str_empty;

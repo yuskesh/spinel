@@ -6730,6 +6730,24 @@ static sp_Random *sp_Random_new(mrb_int seed) {
   r->state = (uint64_t)seed ^ 0x9E3779B97F4A7C15ULL;
   return r;
 }
+/* Random.new with no seed: OS-entropy-ish auto seed. time() alone made two
+   instances created in the same second identical; mix in a per-thread counter
+   and the object address so every instance gets its own stream. */
+static sp_Random *sp_Random_new_auto(void) {
+  static SP_TLS uint64_t sp_random_auto_ctr = 0;
+  sp_Random *r = (sp_Random *)sp_gc_alloc(sizeof(sp_Random), NULL, NULL);
+  r->state = (((uint64_t)time(NULL)) << 20) ^ (++sp_random_auto_ctr * 0x9E3779B97F4A7C15ULL) ^
+             (uint64_t)(uintptr_t)r;
+  if (!r->state) r->state = 0x9E3779B97F4A7C15ULL;
+  return r;
+}
+/* Random#rand(Range): an integer in the (int-endpoint) range, empty raises. */
+static mrb_int sp_Random_rand_range(sp_Random *r, sp_Range rg) {
+  mrb_int lo = rg.first, hi = rg.excl ? rg.last - 1 : rg.last;
+  if (hi < lo) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %s", sp_Range_inspect(&rg)));
+  if (!r) return lo;
+  return lo + (mrb_int)(sp_random_next(r) % ((uint64_t)(hi - lo) + 1));
+}
 static mrb_int sp_Random_rand_int(sp_Random *r, mrb_int n) {
   if (n <= 0) sp_raise_cls("ArgumentError", sp_sprintf("invalid argument - %lld", (long long)n));
   if (!r) return 0;

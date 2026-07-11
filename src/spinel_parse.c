@@ -1751,6 +1751,25 @@ static char **sp_included_paths = NULL;
 static int sp_included_count = 0;
 static int sp_included_cap = 0;
 
+/* Whether `src` references the Set constant (identifier-boundary scan: the
+   char before is not part of an identifier or a `::`/`.` qualifier, the char
+   after doesn't extend the word -- so `Set[`, `Set.new`, `Set(` hit while
+   `Settings`, `OffSet`, `Foo::Set` don't) or calls `.to_set`. Drives the
+   implicit `require "set"` splice below. */
+static int source_references_set(const char *src) {
+  for (const char *p = strstr(src, "Set"); p; p = strstr(p + 1, "Set")) {
+    char prev = p == src ? 0 : p[-1];
+    char next = p[3];
+    int prev_ok = prev == 0 ||
+                  (!((prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') ||
+                     (prev >= '0' && prev <= '9') || prev == '_' || prev == ':' || prev == '.'));
+    int next_ok = !((next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') ||
+                    (next >= '0' && next <= '9') || next == '_');
+    if (prev_ok && next_ok) return 1;
+  }
+  return strstr(src, ".to_set") != NULL;
+}
+
 /* ---- require-gate: features enabled by a `require "name"` ----
    SPINEL_REQUIRE_GATE: when set, a require-gated stdlib feature (stringio,
    io/console, ...) is provided only if its `require` textually appears in the
@@ -2725,6 +2744,26 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
     free(entry_canon);
   }
   g_require_gate = getenv("SPINEL_REQUIRE_GATE") ? 1 : 0;
+  /* CRuby (3.2+) provides Set without an explicit require. Mirror it: when
+     the program references the Set constant or calls to_set and never
+     requires "set" (and doesn't define its own Set), prepend the require so
+     the bundled shim splices ahead of its uses -- class-method call typing
+     reads definitions in document order. The require-splice line map keeps
+     diagnostics attributed to the right user lines. The checks are textual,
+     so a `require "set"` appearing only in a comment also suppresses the
+     splice -- acceptable for a convenience heuristic. */
+  if (!strstr(source, "require \"set\"") && !strstr(source, "require 'set'") &&
+      !strstr(source, "class Set") && source_references_set(source)) {
+    const char *head = "require \"set\"\n";
+    size_t sl = strlen(source), hl = strlen(head);
+    char *ns = (char *)malloc(sl + hl + 1);
+    if (ns) {
+      memcpy(ns, head, hl);
+      memcpy(ns + hl, source, sl + 1);
+      free(source);
+      source = ns;
+    }
+  }
   unsigned char *fsl = NULL; size_t fsl_n = 0;
   char *resolved = resolve_requires(source, source_file, &fsl, &fsl_n);
   free(source);
