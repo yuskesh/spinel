@@ -17,6 +17,7 @@ const char *sp_rational_inspect(sp_Rational r);
 const char *sp_rational_to_s(sp_Rational r);
 const char *sp_Range_inspect(sp_Range *r);
 const char *sp_Time_inspect(sp_Time *t);
+const char *sp_Time_to_s(sp_Time *t);
 
 /* Value-type arithmetic (cold: only reached when a program actually uses
    Complex / Rational; optcarrot touches Complex only under --nestopia-palette).

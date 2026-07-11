@@ -87,18 +87,27 @@ const char *sp_Range_inspect(sp_Range *r) {
 
 /* "YYYY-MM-DD HH:MM:SS UTC" via gmtime: the spinel runtime keeps Time
    timezone-naive, so UTC is the unambiguous choice that needs no tzdata. */
-const char *sp_Time_inspect(sp_Time *t) {
-  char *buf = sp_str_alloc_raw(40);
+static const char *sp_Time_fmt(sp_Time *t, int frac) {
+  char *buf = sp_str_alloc_raw(48);
   time_t sec = (time_t)t->tv_sec;
   struct tm *tm_ = gmtime(&sec);
   if (tm_) {
-    strftime(buf, 40, "%Y-%m-%d %H:%M:%S UTC", tm_);
+    size_t n = strftime(buf, 48, "%Y-%m-%d %H:%M:%S", tm_);
+    if (frac && t->tv_nsec != 0) {
+      /* fractional seconds, trailing zeros trimmed (matches sp_time_inspect_v) */
+      n += (size_t)snprintf(buf + n, 48 - n, ".%09d", (int)t->tv_nsec);
+      while (buf[n - 1] == '0') buf[--n] = 0;
+    }
+    snprintf(buf + n, 48 - n, " UTC");
   }
   else {
-    snprintf(buf, 40, "Time(%lld)", (long long)t->tv_sec);
+    snprintf(buf, 48, "Time(%lld)", (long long)t->tv_sec);
   }
   return buf;
 }
+/* Time#inspect renders fractional seconds; Time#to_s does not. */
+const char *sp_Time_inspect(sp_Time *t) { return sp_Time_fmt(t, 1); }
+const char *sp_Time_to_s(sp_Time *t)    { return sp_Time_fmt(t, 0); }
 
 /* ---- Complex arithmetic ---- */
 /* Component-class (fl) propagation mirrors CRuby's numeric tower: add/sub act

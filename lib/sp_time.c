@@ -7,6 +7,7 @@
  * trampolines for them.
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -24,17 +25,54 @@ sp_Time sp_time_at_int(int64_t sec) {
   return (sp_Time){ sec, 0, 0 };
 }
 
+/* Time.at(Rational): the exact num/den epoch, floored to the nanosecond
+   (Time.at(-1r/3) is second -1, nanosecond 666666666). den is positive by
+   sp_Rational's normalized-sign invariant. */
+sp_Time sp_time_at_div(int64_t num, int64_t den) {
+  if (den == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  int64_t sec = num / den;
+  int64_t rem = num % den;
+  if (rem < 0) { sec -= 1; rem += den; }
+  int64_t ns = (int64_t)(((__int128)rem * 1000000000) / den);
+  return (sp_Time){ sec, (int32_t)ns, 0 };
+}
+
+/* Exact Float -> (sec, nsec) shift. CRuby converts the Float through to_r,
+   so the EXACT binary value of the double decides the nanosecond, floored
+   (Time.at(100) - 1.3 has usec 699999, not 700000, because the double
+   nearest -1.3 is -1.3000000000000000444...). Reproduce that with integer
+   math: decompose the double into mantissa * 2^exp via frexp, widen the
+   mantissa-nanoseconds product to 128 bits, and arithmetic-shift (which
+   floors negatives) instead of multiplying in double precision. */
+static void sp_time_shift_ns(double secs, int64_t base_sec, int32_t base_ns,
+                             int64_t *out_sec, int32_t *out_ns) {
+  /* CRuby routes the Float through to_r, so a non-finite value raises
+     FloatDomainError (Time.at(Float::INFINITY), t + Float::NAN, ...) rather
+     than reaching frexp -- where (int64_t)(NaN/Inf * 2^53) would be UB. */
+  if (!isfinite(secs))
+    sp_raise_cls("FloatDomainError", isnan(secs) ? "NaN" : (secs < 0 ? "-Infinity" : "Infinity"));
+  int e;
+  double m = frexp(secs, &e);
+  int64_t mi = (int64_t)(m * 9007199254740992.0); /* m * 2^53, exact */
+  e -= 53;
+  __int128 ns = (__int128)mi * 1000000000;
+  if (e > 0) ns = (e > 34) ? (ns < 0 ? INT64_MIN : INT64_MAX) : ns << e;
+  else if (e < 0) ns = (-e > 126) ? (ns < 0 ? -1 : 0) : ns >> -e;
+  __int128 total = ((__int128)base_sec * 1000000000 + base_ns) + ns;
+  int64_t sec = (int64_t)(total / 1000000000);
+  int64_t rem = (int64_t)(total % 1000000000);
+  if (rem < 0) { sec -= 1; rem += 1000000000; }
+  *out_sec = sec;
+  *out_ns = (int32_t)rem;
+}
+
 /* POSIX convention: keep tv_nsec in [0, 1e9). For negative epoch with
    a non-integer fractional part, decrement tv_sec and roll the fraction
    into the positive nsec range — so Time.at(-0.5).to_i returns -1, not 0. */
 sp_Time sp_time_at_float(double epoch) {
-  int64_t sec = (int64_t)epoch;
-  double frac = epoch - (double)sec;
-  if (frac < 0.0) {
-    sec -= 1;
-    frac += 1.0;
-  }
-  return (sp_Time){ sec, (int32_t)(frac * 1e9), 0 };
+  sp_Time r = { 0, 0, 0 };
+  sp_time_shift_ns(epoch, 0, 0, &r.tv_sec, &r.tv_nsec);
+  return r;
 }
 
 /* Time.new(y[,mo[,d[,h[,mi[,s]]]]]) — local construction. mktime
@@ -56,19 +94,98 @@ sp_Time sp_time_new(int64_t y, int64_t mo, int64_t d,
   return (sp_Time){ (int64_t)e, 0, 0 };
 }
 
-/* Time.utc(y, m, d, h, mi, s) — UTC construction. Avoid timegm
+/* Civil (y, mo, d, h, mi, s) -> UTC epoch seconds. Avoid timegm
    (not portable; absent on MSVCRT). Compute the epoch via Howard
    Hinnant's days_from_civil + a manual hour/minute/second add. */
-sp_Time sp_time_new_utc(int64_t y, int64_t mo, int64_t d,
-                        int64_t h, int64_t mi, int64_t s) {
+static int64_t sp_time_civil_epoch(int64_t y, int64_t mo, int64_t d,
+                                   int64_t h, int64_t mi, int64_t s) {
   int64_t yy = y - (mo <= 2 ? 1 : 0);
   int64_t era = (yy >= 0 ? yy : yy - 399) / 400;
   int64_t yoe = yy - era * 400;
   int64_t doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
   int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
   int64_t days = era * 146097 + doe - 719468;
-  int64_t e = days * 86400 + h * 3600 + mi * 60 + s;
-  return (sp_Time){ e, 0, 1 };
+  return days * 86400 + h * 3600 + mi * 60 + s;
+}
+
+/* Time.utc(y, m, d, h, mi, s) — UTC construction. */
+sp_Time sp_time_new_utc(int64_t y, int64_t mo, int64_t d,
+                        int64_t h, int64_t mi, int64_t s) {
+  return (sp_Time){ sp_time_civil_epoch(y, mo, d, h, mi, s), 0, 1 };
+}
+
+/* Time.new(y, mo, d, h, mi, s, utc_offset) — the civil value is read in a
+   fixed zone off seconds east of UTC, so the epoch is the UTC epoch of the
+   same civil value minus that offset. CRuby bounds the offset to a day. */
+sp_Time sp_time_new_off(int64_t y, int64_t mo, int64_t d,
+                        int64_t h, int64_t mi, int64_t s, int64_t off) {
+  if (off <= -86400 || off >= 86400)
+    sp_raise_cls("ArgumentError", "utc_offset out of range");
+  sp_Time t = { sp_time_civil_epoch(y, mo, d, h, mi, s) - off, 0, 2 };
+  t.utc_off = (int32_t)off;
+  return t;
+}
+
+/* Time.utc/local(y, mo, d, h, mi, s, usec) — the 7th positional argument is
+   microseconds of second. */
+sp_Time sp_time_with_usec(sp_Time t, int64_t usec) {
+  if (usec < 0 || usec >= 1000000)
+    sp_raise_cls("ArgumentError", "subsecx out of range");
+  t.tv_nsec = (int32_t)(usec * 1000);
+  return t;
+}
+
+/* Time.new(String): the fixed CRuby form "YYYY-MM-DD HH:MM:SS[.frac]" with
+   an optional " +HH:MM" / " -HH:MM" / " UTC" zone suffix. A date without a
+   time and any other shape raise CRuby's ArgumentError messages; anything
+   the grammar does not cover must be loud, never a guessed instant. */
+sp_Time sp_time_parse(const char *s) {
+  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
+  int y, mo, d, h, mi, sec, n = 0;
+  if (sscanf(s, "%4d-%2d-%2d%n", &y, &mo, &d, &n) != 3 || n == 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
+  const char *p = s + n;
+  if (*p == 0)
+    sp_raise_cls("ArgumentError", "no time information");
+  n = 0;
+  if (sscanf(p, " %2d:%2d:%2d%n", &h, &mi, &sec, &n) != 3 || n == 0)
+    sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
+  p += n;
+  int32_t nsec = 0;
+  if (*p == '.') {
+    p++;
+    int digits = 0;
+    int64_t frac = 0;
+    while (*p >= '0' && *p <= '9' && digits < 9) { frac = frac * 10 + (*p - '0'); p++; digits++; }
+    if (digits == 0)
+      sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
+    while (*p >= '0' && *p <= '9') p++;  /* sub-ns digits are beyond sp_Time */
+    while (digits < 9) { frac *= 10; digits++; }
+    nsec = (int32_t)frac;
+  }
+  while (*p == ' ') p++;
+  if (*p == 0) {
+    /* no zone: host-local, like the civil Time.new */
+    sp_Time t = sp_time_new(y, mo, d, h, mi, sec);
+    t.tv_nsec = nsec;
+    return t;
+  }
+  if (strcmp(p, "UTC") == 0 || strcmp(p, "Z") == 0) {
+    sp_Time t = sp_time_new_utc(y, mo, d, h, mi, sec);
+    t.tv_nsec = nsec;
+    return t;
+  }
+  int oh, om;
+  n = 0;
+  if ((*p == '+' || *p == '-') && sscanf(p + 1, "%2d:%2d%n", &oh, &om, &n) == 2 &&
+      n > 0 && p[1 + n] == 0) {
+    int64_t off = (int64_t)oh * 3600 + (int64_t)om * 60;
+    if (*p == '-') off = -off;
+    sp_Time t = sp_time_new_off(y, mo, d, h, mi, sec, off);
+    t.tv_nsec = nsec;
+    return t;
+  }
+  sp_raise_cls("ArgumentError", sp_sprintf("can't parse: \"%s\"", s));
 }
 
 sp_Time sp_time_utc(sp_Time t) {
@@ -87,7 +204,16 @@ sp_Time sp_time_localtime(sp_Time t) {
    name, not ±HHMM). */
 void sp_time_vtm(sp_Time t, struct tm *bd, int32_t *off, char *zbuf) {
   time_t s = (time_t)t.tv_sec;
-  if (t.is_utc) {
+  if (t.is_utc == 2) {
+    /* fixed offset: the civil value is the UTC civil value shifted east */
+    time_t sh = s + (time_t)t.utc_off;
+    struct tm *g = gmtime(&sh);
+    if (g) { *bd = *g; }
+else { memset(bd, 0, sizeof(*bd)); }
+    if (off) *off = t.utc_off;
+    if (zbuf) zbuf[0] = 0;
+  }
+else if (t.is_utc) {
     struct tm *g = gmtime(&s);
     if (g) { *bd = *g; }
 else { memset(bd, 0, sizeof(*bd)); }
@@ -120,17 +246,13 @@ int64_t sp_time_yday(sp_Time t){struct tm b;sp_time_vtm(t,&b,NULL,NULL);return (
 int64_t sp_time_isdst(sp_Time t){struct tm b;sp_time_vtm(t,&b,NULL,NULL);return (int64_t)(b.tm_isdst>0?1:0);}
 int64_t sp_time_utc_offset(sp_Time t){int32_t o;struct tm b;sp_time_vtm(t,&b,&o,NULL);return (int64_t)o;}
 
-/* Time + Numeric / Time - Numeric. secs may be fractional, so split
-   into whole seconds plus a sub-second carry and keep tv_nsec
-   normalized to [0,1e9). is_utc is inherited from the receiver. */
+/* Time + Numeric / Time - Numeric. secs may be fractional; the shift is
+   exact in the double's binary value (see sp_time_shift_ns). The zone kind
+   and offset are inherited from the receiver. */
 sp_Time sp_time_add(sp_Time t, double secs) {
-  int64_t whole = (int64_t)secs;
-  double frac = secs - (double)whole;
-  int64_t ns = (int64_t)t.tv_nsec + (int64_t)(frac * 1e9);
-  int64_t carry = ns / 1000000000;
-  ns -= carry * 1000000000;
-  if (ns < 0) { ns += 1000000000; carry -= 1; }
-  return (sp_Time){ t.tv_sec + whole + carry, (int32_t)ns, t.is_utc };
+  sp_Time r = t;
+  sp_time_shift_ns(secs, t.tv_sec, t.tv_nsec, &r.tv_sec, &r.tv_nsec);
+  return r;
 }
 
 /* strftime returns 0 -- never overruns the buffer -- when the formatted
@@ -199,8 +321,8 @@ const char *sp_time_zone(sp_Time t) {
    UTC "YYYY-MM-DD HH:MM:SS UTC". The poly-box path keeps its own
    sp_Time_inspect; this value-taking variant is for the scalar
    p/puts/to_s codegen path. */
-const char *sp_time_inspect_v(sp_Time t) {
-  char buf[40];
+static const char *sp_time_fmt(sp_Time t, int frac) {
+  char buf[64];
   size_t cap = sizeof(buf);
   struct tm b;
   int32_t off;
@@ -210,8 +332,13 @@ const char *sp_time_inspect_v(sp_Time t) {
     snprintf(buf, cap, "Time(%lld)", (long long)t.tv_sec);
     return sp_str_dup_external(buf);
   }
-  if (n + 8 < cap) {
-    if (t.is_utc) {
+  if (frac && t.tv_nsec != 0 && n + 11 < cap) {
+    /* fractional seconds, trailing zeros trimmed (".123456", ".5") */
+    n += (size_t)snprintf(buf + n, cap - n, ".%09d", (int)t.tv_nsec);
+    while (buf[n - 1] == '0') buf[--n] = 0;
+  }
+  if (n + 10 < cap) {
+    if (t.is_utc == 1) {
       buf[n++]=' '; buf[n++]='U'; buf[n++]='T'; buf[n++]='C'; buf[n]=0;
     }
 else {
@@ -219,14 +346,22 @@ else {
       long a = off < 0 ? -(long)off : (long)off;
       int oh = (int)(a / 3600);
       int om = (int)((a / 60) % 60);
+      int os = (int)(a % 60);
       buf[n++]=' '; buf[n++]=sign;
       buf[n++]=(char)('0'+oh/10); buf[n++]=(char)('0'+oh%10);
       buf[n++]=(char)('0'+om/10); buf[n++]=(char)('0'+om%10);
+      if (os) { /* CRuby renders a sub-minute offset as +HHMMSS */
+        buf[n++]=(char)('0'+os/10); buf[n++]=(char)('0'+os%10);
+      }
       buf[n]=0;
     }
   }
   return sp_str_dup_external(buf);
 }
+
+/* Time#inspect renders fractional seconds; Time#to_s does not. */
+const char *sp_time_inspect_v(sp_Time t) { return sp_time_fmt(t, 1); }
+const char *sp_time_to_s_v(sp_Time t)    { return sp_time_fmt(t, 0); }
 
 /* ---- comparison + shifts (moved from sp_runtime.h; cold) ---- */
 int sp_time_cmp(sp_Time a, sp_Time b) {
@@ -237,27 +372,23 @@ int sp_time_cmp(sp_Time a, sp_Time b) {
   return 0;
 }
 sp_Time sp_time_add_f(sp_Time t, double secs) {
-  long long ns = (long long)(secs * 1000000000.0);
-  long long total_ns = ((long long)t.tv_sec * 1000000000LL) + t.tv_nsec + ns;
-  sp_Time r;
-  r.tv_sec = (time_t)(total_ns / 1000000000LL);
-  r.tv_nsec = (int32_t)(total_ns % 1000000000LL);
-  if (r.tv_nsec < 0) { r.tv_sec--; r.tv_nsec += 1000000000; }
-  r.is_utc = t.is_utc;
-  return r;
+  return sp_time_add(t, secs);
+}
+/* Value hash: equal (tv_sec, tv_nsec) pairs must hash equal regardless of
+   zone kind, mirroring Time#== which compares the instant only. */
+int64_t sp_time_hash(sp_Time t) {
+  uint64_t h = (uint64_t)t.tv_sec * 1000000007ULL + (uint64_t)(uint32_t)t.tv_nsec;
+  h ^= h >> 33;
+  return (int64_t)(h & 0x3fffffffffffffffULL);
 }
 sp_Time sp_time_add_i(sp_Time t, int64_t secs) {
-  sp_Time r;
+  sp_Time r = t;
   r.tv_sec = t.tv_sec + (time_t)secs;
-  r.tv_nsec = t.tv_nsec;
-  r.is_utc = t.is_utc;
   return r;
 }
 sp_Time sp_time_sub_i(sp_Time t, int64_t secs) {
-  sp_Time r;
+  sp_Time r = t;
   r.tv_sec = t.tv_sec - (time_t)secs;
-  r.tv_nsec = t.tv_nsec;
-  r.is_utc = t.is_utc;
   return r;
 }
 double sp_time_sub_t(sp_Time a, sp_Time b) {

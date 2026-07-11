@@ -96,7 +96,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_TIME) {
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_Time _t%d = ", tv); emit_expr(c, arg, b);
-    buf_printf(b, "; const char *_ts = sp_time_inspect_v(_t%d); fputs(_ts, stdout); putchar('\\n'); }\n", tv);
+    buf_printf(b, "; const char *_ts = sp_time_to_s_v(_t%d); fputs(_ts, stdout); putchar('\\n'); }\n", tv);
   }
   else if (t == TY_RANGE) {
     /* puts of a Range renders its to_s ("first..last"), then a newline. */

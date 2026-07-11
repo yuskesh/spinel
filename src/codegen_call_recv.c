@@ -5613,13 +5613,20 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
     else if (sp_streq(name, "yday")) buf_printf(b, "sp_time_yday(%s)", r);
     else if (sp_streq(name, "to_i") || sp_streq(name, "tv_sec")) buf_printf(b, "(%s).tv_sec", r);
     else if (sp_streq(name, "to_f")) buf_printf(b, "((mrb_float)(%s).tv_sec + (mrb_float)(%s).tv_nsec / 1e9)", r, r);
-    else if (sp_streq(name, "subsec")) buf_printf(b, "((mrb_float)(%s).tv_nsec / 1e9)", r);
+    else if (sp_streq(name, "subsec")) {
+      /* CRuby: Integer 0 for a whole second, else the exact Rational */
+      int tt = ++g_tmp;
+      buf_printf(b, "({ sp_Time _t%d = %s; _t%d.tv_nsec == 0 ? sp_box_int(0) "
+                    ": sp_box_rational(sp_rational_new((mrb_int)_t%d.tv_nsec, 1000000000)); })",
+                 tt, r, tt, tt);
+    }
     else if (sp_streq(name, "tv_usec") || sp_streq(name, "usec")) buf_printf(b, "((mrb_int)(%s).tv_nsec / 1000)", r);
     else if (sp_streq(name, "tv_nsec") || sp_streq(name, "nsec")) buf_printf(b, "((mrb_int)(%s).tv_nsec)", r);
-    else if (sp_streq(name, "utc?") || sp_streq(name, "gmt?")) buf_printf(b, "((%s).is_utc != 0)", r);
+    else if (sp_streq(name, "utc?") || sp_streq(name, "gmt?")) buf_printf(b, "((%s).is_utc == 1)", r);
     else if (sp_streq(name, "dst?") || sp_streq(name, "isdst")) buf_printf(b, "(sp_time_isdst(%s) != 0)", r);
     else if (sp_streq(name, "utc_offset") || sp_streq(name, "gmt_offset") || sp_streq(name, "gmtoff")) buf_printf(b, "sp_time_utc_offset(%s)", r);
-    else if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
+    else if (sp_streq(name, "inspect")) buf_printf(b, "sp_time_inspect_v(%s)", r);
+    else if (sp_streq(name, "to_s")) buf_printf(b, "sp_time_to_s_v(%s)", r);
     else if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) buf_printf(b, "sp_time_iso8601(%s)", r);
     else if (sp_streq(name, "zone")) buf_printf(b, "sp_time_zone(%s)", r);
     else if (sp_streq(name, "class")) buf_puts(b, "((sp_Class){(mrb_int)-1, \"Time\"})");
