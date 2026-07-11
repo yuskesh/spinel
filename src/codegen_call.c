@@ -175,7 +175,13 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
        table emitted the unrenamed lv_<name> (undeclared identifier, or a
        silent capture of a same-named caller local). */
     int sv = g_nren; g_nren = saved_nren;
+    /* args are CALL-SITE expressions: an ivar arg (`Set.new(@data)`) must
+       read the caller's self, not the freshly-allocated instance g_self was
+       repointed at for the inlined body */
+    const char *svs = g_self, *svd = g_self_deref;
+    g_self = saved_self; g_self_deref = saved_self_deref;
     emit_arg_or_default(c, m, i, provided, b);
+    g_self = svs; g_self_deref = svd;
     g_nren = sv;
     buf_puts(b, ";\n");
   }
@@ -6283,6 +6289,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           buf_puts(b, ")");
           return;
         }
+        /* yielding initialize: inline its body at the call site exactly as
+           the Klass.new receiver path does -- the emitted constructor only
+           allocates, so without the inline the body's @ivar writes vanish
+           (with or without a block at this site) */
+        if (initm >= 0 && c->scopes[initm].yields &&
+            emit_ctor_yield_inline(c, id, new_cls, b)) return;
         buf_printf(b, "sp_%s_new(", ncls->c_name);
         if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
         buf_puts(b, ")");

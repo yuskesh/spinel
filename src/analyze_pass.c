@@ -2456,9 +2456,31 @@ int infer_param_types(Compiler *c) {
     else if (rt == TY_POLY) {
       /* poly receiver: the call may dispatch to any user method of this name,
          so bind every candidate's params (they would otherwise stay UNKNOWN
-         and fail to compile). */
-      for (int k = 0; k < c->nclasses; k++)
-        changed |= bind_call_params(c, id, comp_method_in_chain(c, k, name, NULL));
+         and fail to compile). EXCEPT an operator whose every argument is a
+         builtin scalar: the runtime poly operator serves those tags before
+         any user-class arm, so binding would only poison the user method's
+         params -- a poly block-param's `x + 1` must not widen Set#+'s
+         operand (which then breaks Set#| for every caller). */
+      static const char *const POLY_SCALAR_OPS[] = {
+        "+", "-", "*", "/", "%", "**", "&", "|", "^", "<<", ">>", NULL };
+      int op_scalar = 0;
+      if (name)
+        for (int o = 0; POLY_SCALAR_OPS[o]; o++)
+          if (sp_streq(name, POLY_SCALAR_OPS[o])) { op_scalar = 1; break; }
+      if (op_scalar) {
+        int args2 = nt_ref(nt, id, "arguments");
+        int ac2 = 0;
+        const int *av2 = args2 >= 0 ? nt_arr(nt, args2, "arguments", &ac2) : NULL;
+        if (ac2 == 0) op_scalar = 0;
+        for (int a2 = 0; a2 < ac2 && op_scalar; a2++) {
+          TyKind at2 = infer_type(c, av2[a2]);
+          if (!(at2 == TY_INT || at2 == TY_FLOAT || at2 == TY_STRING ||
+                at2 == TY_BOOL || at2 == TY_SYMBOL)) op_scalar = 0;
+        }
+      }
+      if (!op_scalar)
+        for (int k = 0; k < c->nclasses; k++)
+          changed |= bind_call_params(c, id, comp_method_in_chain(c, k, name, NULL));
     }
   }
   return changed;

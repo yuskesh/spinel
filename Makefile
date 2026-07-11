@@ -146,10 +146,14 @@ build/csrc/%.o: src/%.c $(SPINEL_HDRS) | build/csrc
 
 # Build revision, embedded in `spinel --version` (and spin's probe records).
 # cmp-guarded so only a HEAD move recompiles main.o, not every build.
+# The tmp name carries the PID: gate runs test/bench/optcarrot as parallel
+# sub-makes, each re-evaluating this FORCE target -- a shared tmp name races
+# (one job's rm strands the other's mv mid-flight).
 build/csrc/spinel_rev.h: FORCE | build/csrc
 	@r=$$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown); \
-	echo "#define SPINEL_BUILD_REV \"$$r\"" > $@.tmp; \
-	if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
+	t=$@.tmp.$$$$; \
+	echo "#define SPINEL_BUILD_REV \"$$r\"" > $$t; \
+	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
 
 build/csrc/main.o: build/csrc/spinel_rev.h
 

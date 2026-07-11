@@ -15,7 +15,13 @@ class Set
 
   def initialize(enum = nil)
     @data = []
-    enum.each { |x| add(x) } if enum
+    if enum
+      if block_given?
+        enum.each { |x| add(yield(x)) }
+      else
+        enum.each { |x| add(x) }
+      end
+    end
   end
 
   def add(x)
@@ -81,6 +87,48 @@ class Set
     r
   end
   alias collect map
+
+  # In-place block methods. map!/collect! replace the elements (re-deduplicating);
+  # keep_if/delete_if always return self; select!/reject! return self when
+  # anything changed and nil otherwise (CRuby's Set contract).
+  def map!
+    r = []
+    @data.each { |x| v = yield(x); r.push(v) unless r.include?(v) }
+    @data = r
+    self
+  end
+  alias collect! map!
+
+  def keep_if
+    r = []
+    @data.each { |x| r.push(x) if yield(x) }
+    @data = r
+    self
+  end
+
+  def delete_if
+    r = []
+    @data.each { |x| r.push(x) unless yield(x) }
+    @data = r
+    self
+  end
+
+  def select!
+    n = @data.size
+    r = []
+    @data.each { |x| r.push(x) if yield(x) }
+    @data = r
+    @data.size == n ? nil : self
+  end
+  alias filter! select!
+
+  def reject!
+    n = @data.size
+    r = []
+    @data.each { |x| r.push(x) unless yield(x) }
+    @data = r
+    @data.size == n ? nil : self
+  end
 
   def merge(enum)
     enum.each { |x| add(x) }
