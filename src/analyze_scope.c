@@ -1691,25 +1691,40 @@ void register_ffi_decls(Compiler *c) {
         continue;
       }
 
-      if (sp_streq(dname, "ffi_func")) {
-        if (an < 3)
-          ffi_decl_error(c, s, "`ffi_func` needs a name, an argument-type array, and a return type");
+      if (sp_streq(dname, "ffi_func") || sp_streq(dname, "attach_function")) {
+        /* ffi-gem compat: `attach_function :name, [types], :ret` is
+           `ffi_func`; the gem's 4-arg rename form
+           `attach_function :ruby_name, :c_name, [types], :ret` supplies
+           the C symbol separately. */
+        if (an < 3) {
+          char emsg[128];
+          snprintf(emsg, sizeof emsg, "`%s` needs a name, an argument-type array, and a return type", dname);
+          ffi_decl_error(c, s, emsg);
+        }
+        int a_arr = args[1], a_ret = args[2], a_csym = -1;
+        if (sp_streq(dname, "attach_function") && an >= 4) {
+          a_csym = args[1]; a_arr = args[2]; a_ret = args[3];
+        }
         const char *fname = ffi_arg_str(nt, args[0]);
         if (!fname) continue;  /* non-literal name: tolerate */
         /* arg type array */
-        int arr_id = args[1];
-        const char *arr_ty = nt_type(nt, arr_id);
+        const char *arr_ty = nt_type(nt, a_arr);
         if (!arr_ty || !sp_streq(arr_ty, "ArrayNode")) continue;
         int en = 0;
-        const int *elems = nt_arr(nt, arr_id, "elements", &en);
+        const int *elems = nt_arr(nt, a_arr, "elements", &en);
         char **arg_specs = malloc(sizeof(char*) * (size_t)(en + 1));
         if (!arg_specs) { perror("malloc"); exit(1); }
         for (int ei = 0; ei < en; ei++) {
           const char *spec = ffi_arg_str(nt, elems[ei]);
           arg_specs[ei] = strdup(spec ? spec : "");
         }
-        const char *ret_spec = ffi_arg_str(nt, args[2]);
-        if (!ret_spec) { free(arg_specs); continue; }
+        const char *ret_spec = ffi_arg_str(nt, a_ret);
+        if (!ret_spec) {
+          for (int ei = 0; ei < en; ei++) free(arg_specs[ei]);
+          free(arg_specs);
+          continue;
+        }
+        const char *csym = a_csym >= 0 ? ffi_arg_str(nt, a_csym) : NULL;
         /* grow array */
         if (c->n_ffi_funcs >= c->c_ffi_funcs) {
           c->c_ffi_funcs = c->c_ffi_funcs ? c->c_ffi_funcs * 2 : 16;
@@ -1720,6 +1735,7 @@ void register_ffi_decls(Compiler *c) {
         int fi = c->n_ffi_funcs++;
         c->ffi_funcs[fi].mod  = strdup(mname);
         c->ffi_funcs[fi].name = strdup(fname);
+        c->ffi_funcs[fi].csym = csym ? strdup(csym) : NULL;
         c->ffi_funcs[fi].ret   = strdup(ret_spec);
         c->ffi_funcs[fi].args  = arg_specs;
         c->ffi_funcs[fi].nargs = en;
@@ -1786,7 +1802,7 @@ void register_ffi_decls(Compiler *c) {
 
       /* ffi_callback :name, [arg_specs], ret_spec -- declares a C
          function-pointer type usable as an ffi_func arg spec. */
-      if (sp_streq(dname, "ffi_callback")) {
+      if (sp_streq(dname, "ffi_callback") || sp_streq(dname, "callback")) {
         if (an < 3) continue;
         const char *cbname = ffi_arg_str(nt, args[0]);
         const char *arr_ty = nt_type(nt, args[1]);

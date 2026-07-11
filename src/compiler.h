@@ -185,7 +185,9 @@ typedef struct {
    "size_t"/"long"/"bool". args: malloc'd array of arg specs. */
 typedef struct {
   char *mod;       /* module name */
-  char *name;      /* function name */
+  char *name;      /* Ruby-visible function name */
+  char *csym;      /* C symbol when it differs from name (the ffi gem's
+                      4-arg attach_function rename form), or NULL */
   char *ret;       /* return spec */
   char **args;     /* arg specs array (malloc'd) */
   int nargs;

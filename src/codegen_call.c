@@ -8048,9 +8048,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             buf_puts(&call_buf, ffi_c_type(c->ffi_funcs[fi].args[ai]));
           }
           if (fixed_argc) buf_puts(&call_buf, ", ");
-          buf_printf(&call_buf, "...))%s)", c->ffi_funcs[fi].name);
+          buf_printf(&call_buf, "...))%s)", c->ffi_funcs[fi].csym ? c->ffi_funcs[fi].csym : c->ffi_funcs[fi].name);
         }
-        else buf_puts(&call_buf, c->ffi_funcs[fi].name);
+        else buf_puts(&call_buf, c->ffi_funcs[fi].csym ? c->ffi_funcs[fi].csym : c->ffi_funcs[fi].name);
         buf_puts(&call_buf, "(");
         for (int ai = 0; ai < fixed_argc && ai < argc; ai++) {
           if (ai) buf_puts(&call_buf, ", ");

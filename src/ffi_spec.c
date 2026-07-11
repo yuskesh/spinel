@@ -25,6 +25,22 @@ static const FfiSpecInfo FFI_SPECS[] = {
   { "float_array", TY_FLOAT_ARRAY, "const double *"  },
   { "int_array",   TY_INT_ARRAY,   "const int64_t *" },
   { "void",        TY_NIL,         "void"            },
+  /* ffi-gem (CRuby `ffi`) spellings, accepted as aliases so the gem's
+     `attach_function` declarations compile unchanged. LP64 target. */
+  { "string",      TY_STRING,      "const char *"    },
+  { "pointer",     TY_POLY,        "void *"          },
+  { "buffer_in",   TY_POLY,        "void *"          },
+  { "buffer_out",  TY_POLY,        "void *"          },
+  { "buffer_inout",TY_POLY,        "void *"          },
+  { "char",        TY_INT,         "int8_t"          },
+  { "uchar",       TY_INT,         "uint8_t"         },
+  { "short",       TY_INT,         "int16_t"         },
+  { "ushort",      TY_INT,         "uint16_t"        },
+  { "uint",        TY_INT,         "uint32_t"        },
+  { "ulong",       TY_INT,         "unsigned long"   },
+  { "long_long",   TY_INT,         "int64_t"         },
+  { "ulong_long",  TY_INT,         "uint64_t"        },
+  { "uint64",      TY_INT,         "uint64_t"        },
 };
 
 const FfiSpecInfo *ffi_spec_lookup(const char *spec) {

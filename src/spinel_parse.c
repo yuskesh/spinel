@@ -2200,7 +2200,10 @@ static int sp_lib_is_native(const char *name) {
    no-ops (the feature is already loaded), so the require-gate tolerates them
    rather than failing with "cannot load such file". */
 static int sp_require_tolerated(const char *name) {
-  static const char *const tolerated[] = { "thread", "enumerator", "fiber", NULL };
+  /* "ffi": the builtin FFI DSL accepts the ffi gem's spellings
+     (attach_function/callback, :string/:pointer/... types, extend
+     FFI::Library as a no-op), so the require is satisfied natively. */
+  static const char *const tolerated[] = { "thread", "enumerator", "fiber", "ffi", NULL };
   for (int i = 0; tolerated[i]; i++) {
     if (strcmp(name, tolerated[i]) == 0) return 1;
   }
@@ -2377,9 +2380,10 @@ else {
           sp_feature_mark(lib_name);
           content = strdup("# require provided by Spinel runtime");
         }
-else if (g_require_gate && sp_require_tolerated(lib_name)) {
-          /* A core capability Spinel provides without a file (Thread, Enumerator,
-             Fiber); the require is a harmless no-op, like modern CRuby. */
+else if (sp_require_tolerated(lib_name)) {
+          /* A core capability Spinel provides without a file (Thread,
+             Enumerator, Fiber, the ffi DSL); the require is a harmless
+             no-op, like modern CRuby -- gate or no gate. */
           content = strdup("# require no-op (core feature)");
         }
 else if (g_require_gate) {
