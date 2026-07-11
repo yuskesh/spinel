@@ -2186,31 +2186,26 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           emit_indent(b, indent + 1);
           buf_printf(b, "_t%d = _t%d && sp_%sHash_has_key(_t%d, ", hcond, hcond, hn, arm_t);
           emit_expr(c, key, b); buf_puts(b, ");\n");
-          /* value class check: `k: Class` or `k: Class => v` */
-          int classpat = -1;
-          if (vpat >= 0 && nt_type(nt, vpat)) {
-            if (sp_streq(nt_type(nt, vpat), "CapturePatternNode")) classpat = nt_ref(nt, vpat, "value");
-            else if (sp_streq(nt_type(nt, vpat), "ConstantReadNode")) classpat = vpat;
-          }
-          if (classpat >= 0 && nt_type(nt, classpat) && sp_streq(nt_type(nt, classpat), "ConstantReadNode")) {
-            if (hvt == TY_POLY) {
-              int vtmp = ++g_tmp;
-              emit_indent(b, indent + 1);
-              buf_printf(b, "{ sp_RbVal _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, arm_t);
-              emit_expr(c, key, b); buf_puts(b, "); ");
-              char vn[24]; snprintf(vn, sizeof vn, "_t%d", vtmp);
-              Buf cw; memset(&cw, 0, sizeof cw);
-              if (emit_poly_class_when(c, classpat, vn, &cw))
-                buf_printf(b, "_t%d = _t%d && (%s);", hcond, hcond, cw.p ? cw.p : "1");
-              free(cw.p);
-              buf_puts(b, " }\n");
-            }
-            else {
-              const char *cn = nt_str(nt, classpat, "name");
-              if (cn && ty_matches_class(hvt, cn, 0) <= 0) {
-                emit_indent(b, indent + 1); buf_printf(b, "_t%d = 0;\n", hcond);
-              }
-            }
+          /* value sub-pattern: `k: 0`, `k: Class`, `k: 1 | 2`, `k: PAT => v`,
+             a nested container pattern... -- fetch the value and recurse into
+             the general matcher. A bare LV target is a pure binding (bound
+             below), so only presence gates it. */
+          int vchk = vpat;
+          if (vchk >= 0 && nt_type(nt, vchk) && sp_streq(nt_type(nt, vchk), "CapturePatternNode"))
+            vchk = nt_ref(nt, vchk, "value");
+          if (vchk >= 0 && nt_type(nt, vchk) &&
+              !sp_streq(nt_type(nt, vchk), "LocalVariableTargetNode")) {
+            int vtmp = ++g_tmp;
+            emit_indent(b, indent + 1);
+            emit_ctype(c, hvt, b);
+            buf_printf(b, " _t%d = sp_%sHash_get(_t%d, ", vtmp, hn, arm_t);
+            emit_expr(c, key, b); buf_puts(b, ");\n");
+            Buf vcb = {NULL, 0, 0};
+            int hv = emit_pm_cond(c, vchk, vtmp, hvt, &vcb);
+            emit_indent(b, indent + 1);
+            buf_printf(b, "_t%d = _t%d && (%s);\n", hcond, hcond,
+                       (hv && vcb.p) ? vcb.p : "1");
+            free(vcb.p);
           }
         }
       }

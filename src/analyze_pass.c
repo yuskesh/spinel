@@ -536,6 +536,29 @@ static int infer_case_pattern_locals(Compiler *c) {
         /* in [first, *rest] or in Array(head, *tail) */
         array_pat = pat; array_scrutinee = pm_deconstruct_arr_ty(c, scrutinee_t);
       }
+      else if (sp_streq(pty, "HashPatternNode")) {
+        /* in {k:, k2: subpat} -- an AssocNode value that is an LV target binds
+           the deconstructed value: the hash variant's value type for a hash
+           scrutinee, boxed poly for a Struct/Data scrutinee (deconstruct_keys
+           synthesizes a SymPolyHash), poly otherwise. */
+        TyKind vt = TY_POLY;
+        if (ty_is_hash(scrutinee_t)) vt = ty_hash_val(scrutinee_t);
+        int pn = 0;
+        const int *pelms = nt_arr(nt, pat, "elements", &pn);
+        for (int k = 0; k < pn; k++) {
+          const char *ety = nt_type(nt, pelms[k]);
+          if (!ety || !sp_streq(ety, "AssocNode")) continue;
+          int ptgt = nt_ref(nt, pelms[k], "value");
+          if (ptgt < 0 || !nt_type(nt, ptgt) ||
+              !sp_streq(nt_type(nt, ptgt), "LocalVariableTargetNode")) continue;
+          const char *lnm = nt_str(nt, ptgt, "name");
+          LocalVar *lv = lnm ? scope_local(ms, lnm) : NULL;
+          if (!lv || lv->is_param || lv->is_block_param) continue;
+          TyKind et = (vt != TY_UNKNOWN && vt != TY_NIL) ? vt : TY_POLY;
+          TyKind mg = ty_unify(lv->type, et);
+          if (mg != lv->type) { lv->type = mg; changed = 1; }
+        }
+      }
       else if (sp_streq(pty, "FindPatternNode")) {
         /* in [*head, a, b, *tail] -- the two splats bind to arrays of the
            scrutinee's element type; required LV targets bind to an element. */
