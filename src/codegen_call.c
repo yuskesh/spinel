@@ -9397,6 +9397,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
   }
+  /* boolean receiver & | ^ with a non-boolean/non-int operand: logical ops
+     on the operand's truthiness */
+  if (recv >= 0 && rt == TY_BOOL && argc == 1 &&
+      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+    TyKind bat = comp_ntype(c, argv[0]);
+    if (bat != TY_BOOL && bat != TY_INT) {
+      int tb3 = ++g_tmp;
+      buf_printf(b, "({ mrb_bool _t%d = ", tb3); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_bool _a%d = sp_poly_truthy(", tb3);
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, "); ");
+      if (sp_streq(name, "&")) buf_printf(b, "(_t%d && _a%d); })", tb3, tb3);
+      else if (sp_streq(name, "|")) buf_printf(b, "(_t%d || _a%d); })", tb3, tb3);
+      else buf_printf(b, "(_t%d != _a%d); })", tb3, tb3);
+      return;
+    }
+  }
   /* true/false receiver: equal?/eql?/=== are value identity */
   if (recv >= 0 && rt == TY_BOOL && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==="))) {
@@ -9407,6 +9424,28 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
   /* Symbol receiver: equal?/eql? compare the interned id */
+  /* A statically-typed user object is_a? the universal ancestors */
+  if (recv >= 0 && ty_is_object(rt) && argc == 1 &&
+      (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?"))) {
+    const char *acn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
+                        ? nt_str(nt, argv[0], "name") : NULL;
+    if (acn && (sp_streq(acn, "Object") || sp_streq(acn, "BasicObject") ||
+                sp_streq(acn, "Kernel"))) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
+      return;
+    }
+  }
+  /* Symbol#encoding: US-ASCII when the name is pure ASCII, UTF-8 otherwise */
+  if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding")) {
+    int te = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_sym_to_s(", te);
+    emit_expr(c, recv, b);
+    buf_printf(b, "); int _a%d = 1; for (const char *_p%d = _t%d; *_p%d; _p%d++)"
+                  " if ((unsigned char)*_p%d >= 0x80) { _a%d = 0; break; }"
+                  " sp_box_encoding(_a%d ? sp_encoding_us_ascii() : sp_encoding_utf8()); })",
+               te, te, te, te, te, te, te, te);
+    return;
+  }
   if (recv >= 0 && rt == TY_SYMBOL && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
       comp_ntype(c, argv[0]) == TY_SYMBOL) {

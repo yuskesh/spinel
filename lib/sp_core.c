@@ -253,11 +253,39 @@ mrb_float sp_str_to_f_strict(const char *s) {
         continue;                         /* a valid digit separator: strip */
       }
       if (hex) {
+        /* hex FLOATS are valid Float() input: 0x1p4 / 0x1.8p-1 (hex digits,
+           an optional single point before the mandatory p-exponent, then
+           decimal exponent digits with an optional sign) */
+        static const int HEXP = 2;   /* marker via sawdigit bits is overkill; track locally */
+        (void)HEXP;
+        if (ch == 'p' || ch == 'P') {
+          if (!sawdigit || strchr(buf, 'p') || strchr(buf, 'P')) goto bad;
+          buf[o++] = ch;
+          if (q[1] == '+' || q[1] == '-') { buf[o++] = q[1]; q++; }
+          if (!isdigit((unsigned char)q[1])) goto bad;
+          continue;
+        }
+        if (strchr(buf, 'p') || strchr(buf, 'P')) {
+          if (!isdigit((unsigned char)ch)) goto bad;
+          buf[o++] = ch;
+          continue;
+        }
+        if (ch == '.') {
+          if (strchr(buf, '.') || !isxdigit((unsigned char)q[1])) goto bad;
+          buf[o++] = ch;
+          continue;
+        }
         if (!isxdigit((unsigned char)ch)) goto bad;
         sawdigit = 1;
       }
       else {
-        if (ch == '.' && !isdigit((unsigned char)q[1])) goto bad;
+        if (ch == '.' && !isdigit((unsigned char)q[1])) {
+          /* a trailing '.' after digits is valid ("5." == 5.0, CRuby 4.0) */
+          const char *t2 = q + 1;
+          while (isspace((unsigned char)*t2)) t2++;
+          if (*t2 || !sawdigit) goto bad;
+          continue;   /* drop the trailing dot for strtod */
+        }
         if (isdigit((unsigned char)ch)) sawdigit = 1;
       }
       buf[o++] = ch;
