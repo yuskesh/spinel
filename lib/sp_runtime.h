@@ -5710,14 +5710,22 @@ void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError"
 #define SP_CATCH_STACK_MAX 64
 static SP_TLS jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];   /* per-worker (see sp_exc_stack) */
 static SP_TLS const char *sp_catch_tag[SP_CATCH_STACK_MAX];
-static SP_TLS mrb_int sp_catch_val[SP_CATCH_STACK_MAX];
+/* 0 = name tag (symbol/string, matched by content); 1 = object tag (matched
+   by pointer identity, CRuby's non-symbol tag semantics) */
+static SP_TLS unsigned char sp_catch_tag_kind[SP_CATCH_STACK_MAX];
+/* boxed value channel, like sp_brk_val: any thrown value carries faithfully */
+static SP_TLS sp_RbVal sp_catch_val[SP_CATCH_STACK_MAX];
 static SP_TLS int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
 static SP_TLS int sp_catch_rootmark[SP_CATCH_STACK_MAX]; /* GC-root watermark at entry (see sp_exc_rootmark) */
 static SP_TLS volatile int sp_catch_top = 0;
-static void sp_throw(const char *tag, mrb_int val) {
+/* shared counter (not SP_TLS) so `catch { |tag| }` autotags are globally
+   unique; see sp_brk_seq for the same shape */
+static mrb_int sp_catch_seq = 0;
+static void sp_throw(const char *tag, int kind, sp_RbVal val) {
   int i = sp_catch_top - 1;
   while (i >= 0) {
-    if (strcmp(sp_catch_tag[i], tag) == 0) {
+    if (sp_catch_tag_kind[i] == kind &&
+        (kind ? sp_catch_tag[i] == tag : strcmp(sp_catch_tag[i], tag) == 0)) {
       sp_catch_val[i] = val; sp_catch_top = i + 1;
       if (sp_exc_top > sp_catch_exc_top[i]) {       /* run intervening ensures first */
         sp_unwind_kind = SP_UNWIND_THROW; sp_unwind_target = i; sp_unwind_exc_top = sp_catch_exc_top[i];
@@ -5727,6 +5735,7 @@ static void sp_throw(const char *tag, mrb_int val) {
     }
     i--;
   }
+  if (kind) sp_raise_cls("UncaughtThrowError", "uncaught throw");
   sp_raise_cls("UncaughtThrowError", sp_sprintf("uncaught throw :%s", tag));
 }
 
@@ -5806,6 +5815,9 @@ static void __attribute__((noreturn)) sp_brk_throw(mrb_int serial, sp_RbVal v) {
    can allocate and collect. Called from sp_re_mark_globals. */
 static void sp_mark_brk_vals(void) {
   for (int i = 0; i < sp_brk_top; i++) sp_mark_rbval(sp_brk_val[i]);
+  /* in-flight catch/throw values: same throw-to-landing lifetime story
+     (slots are nil-initialized at catch entry, so every entry is valid) */
+  for (int i = 0; i < sp_catch_top; i++) sp_mark_rbval(sp_catch_val[i]);
 }
 
 /* ---- non-lambda proc `return` (non-local return to the home method) -------
@@ -5928,7 +5940,7 @@ static void sp_unwind_resume(void) {
    free there). These are non-static: reached by name from libspinel_rt.a. */
 typedef struct {
   jmp_buf *es; const char **em; const char **ec; void **eo; int en, ecap;
-  jmp_buf *cs; const char **ct; mrb_int *cv; int *cet;    int cn, ccap;
+  jmp_buf *cs; const char **ct; unsigned char *ctk; sp_RbVal *cv; int *cet;  int cn, ccap;
   jmp_buf *bs; sp_RbVal *bv; mrb_int *bser; int *bet;     int bn, bcap;  /* break scopes */
   sp_proc_home *prhead;  /* this fiber's proc-return chain head (nodes on its C stack) */
   int uk, ut, ue; sp_proc_home *uh;  /* transient unwind state (in flight only while running ensures) */
@@ -5941,7 +5953,7 @@ void sp_exc_ctx_free(void *p) {
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
   free(x->es); free(x->em); free(x->ec); free(x->eo);
-  free(x->cs); free(x->ct); free(x->cv); free(x->cet);
+  free(x->cs); free(x->ct); free(x->ctk); free(x->cv); free(x->cet);
   free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x->shand); free(x);
 }
 void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
@@ -5959,10 +5971,12 @@ void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
   if (m > x->ccap) { x->ccap = m;
     x->cs = (jmp_buf *)realloc(x->cs, sizeof(jmp_buf) * m);
     x->ct = (const char **)realloc(x->ct, sizeof(char *) * m);
-    x->cv = (mrb_int *)realloc(x->cv, sizeof(mrb_int) * m);
+    x->ctk = (unsigned char *)realloc(x->ctk, sizeof(unsigned char) * m);
+    x->cv = (sp_RbVal *)realloc(x->cv, sizeof(sp_RbVal) * m);
     x->cet = (int *)realloc(x->cet, sizeof(int) * m); }
   for (int i = 0; i < m; i++) { memcpy(x->cs[i], sp_catch_stack[i], sizeof(jmp_buf));
-    x->ct[i] = sp_catch_tag[i]; x->cv[i] = sp_catch_val[i]; x->cet[i] = sp_catch_exc_top[i]; }
+    x->ct[i] = sp_catch_tag[i]; x->ctk[i] = sp_catch_tag_kind[i];
+    x->cv[i] = sp_catch_val[i]; x->cet[i] = sp_catch_exc_top[i]; }
   x->cn = m;
   int bn = sp_brk_top;
   if (bn > x->bcap) { x->bcap = bn;
@@ -5989,7 +6003,8 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
     sp_exc_msg[i] = x->em[i]; sp_exc_cls[i] = x->ec[i]; sp_exc_obj[i] = x->eo[i]; }
   sp_exc_top = x->en;
   for (int i = 0; i < x->cn; i++) { memcpy(sp_catch_stack[i], x->cs[i], sizeof(jmp_buf));
-    sp_catch_tag[i] = x->ct[i]; sp_catch_val[i] = x->cv[i]; sp_catch_exc_top[i] = x->cet[i]; }
+    sp_catch_tag[i] = x->ct[i]; sp_catch_tag_kind[i] = x->ctk[i];
+    sp_catch_val[i] = x->cv[i]; sp_catch_exc_top[i] = x->cet[i]; }
   sp_catch_top = x->cn;
   for (int i = 0; i < x->bn; i++) { memcpy(sp_brk_stack[i], x->bs[i], sizeof(jmp_buf));
     sp_brk_val[i] = x->bv[i]; sp_brk_serial[i] = x->bser[i]; sp_brk_exc_top[i] = x->bet[i]; }

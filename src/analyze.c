@@ -4991,6 +4991,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
     ch |= infer_block_params(c);
     ch |= infer_for_index(c);
+    ch |= infer_catch_block_params(c);
     /* Resolve constant types before ivar inference: a destructured constant
        (`CLK_1,.. = (1..8).map{...}`) is transiently poly in infer_write_types
        before its array element type settles, and a monotonic ivar that reads
@@ -5082,6 +5083,7 @@ void analyze_program(Compiler *c) {
         ch |= infer_default_param_types(c);
         ch |= infer_block_params(c);
         ch |= infer_for_index(c);
+        ch |= infer_catch_block_params(c);
         ch |= infer_global_const_types(c);
         ch |= infer_multiwrite_const_types(c);
         ch |= infer_ivar_types(c);

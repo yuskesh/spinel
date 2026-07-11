@@ -2653,6 +2653,28 @@ int infer_for_index(Compiler *c) {
   return changed;
 }
 
+/* `catch { |tag| ... }` binds its block param to the auto-generated tag,
+   which codegen mints as a content-unique heap string. */
+int infer_catch_block_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "catch") || nt_ref(nt, id, "receiver") >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &an);
+    if (an > 0) continue;                       /* explicit tag: no block param */
+    int blk = nt_ref(nt, id, "block");
+    const char *bp0 = blk >= 0 ? block_param_name(c, blk, 0) : NULL;
+    if (!bp0) continue;
+    LocalVar *lv = scope_local_intern(comp_scope_of(c, id), bp0);
+    lv->is_block_param = 1;   /* survives the write-types reset */
+    if (lv->type != TY_STRING) { lv->type = TY_STRING; changed = 1; }
+  }
+  return changed;
+}
+
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");      /* BlockParametersNode */

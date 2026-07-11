@@ -995,8 +995,9 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_NIL;
   }
 
-  /* catch(:tag) { ... [throw :tag, val] ... } -> unify the block's last
-     value with every throw value targeting the tag */
+  /* catch(:tag) { ... } -> unify the block's last value with every throw
+     value that can target the tag, across method boundaries (the throw need
+     not be syntactically inside the body). */
   if (recv < 0 && sp_streq(name, "catch")) {
     int blk = nt_ref(nt, id, "block");
     TyKind result = TY_UNKNOWN;
@@ -1005,9 +1006,16 @@ TyKind infer_call(Compiler *c, int id) {
       if (body >= 0) {
         int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
         if (bn > 0) result = infer_type(c, bb[bn - 1]);
-        TyKind tt = scan_throw_type(c, body, 0);
-        if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
       }
+      const char *tag = NULL;
+      int targ = nt_ref(nt, id, "arguments");
+      int tac = 0; const int *tav = targ >= 0 ? nt_arr(nt, targ, "arguments", &tac) : NULL;
+      if (tac >= 1 && nt_type(nt, tav[0])) {
+        if (sp_streq(nt_type(nt, tav[0]), "SymbolNode")) tag = nt_str(nt, tav[0], "value");
+        else if (sp_streq(nt_type(nt, tav[0]), "StringNode")) tag = nt_str(nt, tav[0], "unescaped");
+      }
+      TyKind tt = scan_throw_type(c, tag);
+      if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
     }
     return result == TY_UNKNOWN ? TY_NIL : result;
   }

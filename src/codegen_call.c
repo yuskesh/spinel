@@ -4571,7 +4571,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* catch(:tag) { ... [throw :tag, val] ... } as expression: a setjmp scope
      whose value is the block's last expression, or the thrown value. */
-  if (recv < 0 && sp_streq(name, "catch") && argc == 1) {
+  if (recv < 0 && sp_streq(name, "catch") && argc <= 1) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
       TyKind bt = comp_ntype(c, id);
@@ -4581,10 +4581,32 @@ void emit_call(Compiler *c, int id, Buf *b) {
       int t = ++g_tmp;
       emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
       buf_printf(g_pre, " _t%d = %s;\n", t, default_value(bt));
+      int tag_kind = 0;
+      if (argc == 1) {
+        emit_indent(g_pre, g_indent);
+        buf_puts(g_pre, "sp_catch_tag[sp_catch_top] = ");
+        tag_kind = emit_catch_tag(c, argv[0], g_pre);
+        buf_puts(g_pre, ";\n");
+      }
+      else {
+        /* `catch { |tag| ... }`: mint a fresh, content-unique heap tag per
+           entry (CRuby mints a new Object; a serial-unique name string gives
+           the same only-this-invocation matching). Rooted for the body's
+           duration -- the body can allocate. */
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "const char *_ctag%d = sp_sprintf(\"#<catch:%%lld>\", (long long)++sp_catch_seq);\n", t);
+        emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_STR(_ctag%d);\n", t);
+        emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_catch_tag[sp_catch_top] = _ctag%d;\n", t);
+        const char *bp0 = block_param_name(c, blk, 0);
+        if (bp0) {
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "lv_%s = _ctag%d;\n", rename_local(bp0), t);
+        }
+      }
       emit_indent(g_pre, g_indent);
-      buf_puts(g_pre, "sp_catch_tag[sp_catch_top] = ");
-      emit_catch_tag(c, argv[0], g_pre);
-      buf_puts(g_pre, ";\n");
+      buf_printf(g_pre, "sp_catch_tag_kind[sp_catch_top] = %d;\n", tag_kind);
+      emit_indent(g_pre, g_indent);
+      buf_puts(g_pre, "sp_catch_val[sp_catch_top] = sp_box_nil();\n");
       /* record the exception-handler depth at this catch's entry so a `throw`
          can run intervening `ensure` blocks before delivering here. */
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_exc_top[sp_catch_top] = sp_exc_top;\n");
@@ -4625,18 +4647,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
       emit_indent(g_pre, g_indent + 1);
       if (ptr) {
         buf_printf(g_pre, "_t%d = (", t); emit_ctype(c, bt, g_pre);
-        buf_printf(g_pre, ")(uintptr_t)sp_catch_val[sp_catch_top];\n");
+        buf_printf(g_pre, ")sp_catch_val[sp_catch_top].v.p;\n");
       }
       else if (bt == TY_POLY) {
-        /* A poly-typed catch (e.g. its block's value is poly): the mrb_int
-           value channel can't carry a tagged value, so box the thrown int.
-           Common shape is a poly block return with no matching throw, where
-           this arm is dead; a thrown non-int to a poly catch is a separate
-           limitation of the int-only throw channel. */
-        buf_printf(g_pre, "_t%d = sp_box_int(sp_catch_val[sp_catch_top]);\n", t);
+        buf_printf(g_pre, "_t%d = sp_catch_val[sp_catch_top];\n", t);
       }
       else {
-        buf_printf(g_pre, "_t%d = sp_catch_val[sp_catch_top];\n", t);
+        buf_printf(g_pre, "_t%d = ", t);
+        emit_unbox_text(c, bt, "sp_catch_val[sp_catch_top]", g_pre);
+        buf_puts(g_pre, ";\n");
       }
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
       buf_printf(b, "_t%d", t);
@@ -4646,17 +4665,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
 
   /* throw :tag[, val] -> non-local jump to the matching catch scope. */
   if (recv < 0 && sp_streq(name, "throw")) {
-    buf_puts(b, "sp_throw(");
-    if (argc >= 1) emit_catch_tag(c, argv[0], b);
-    else buf_puts(b, "(&(\"\\xff\")[1])");
-    buf_puts(b, ", ");
-    if (argc >= 2) {
-      if (proc_slot_is_ptr(comp_ntype(c, argv[1]))) {
-        buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[1], b); buf_puts(b, ")");
-      }
-      else emit_expr(c, argv[1], b);
-    }
-    else buf_puts(b, "0");
+    int tag_kind = 0;
+    Buf tb; memset(&tb, 0, sizeof tb);
+    if (argc >= 1) tag_kind = emit_catch_tag(c, argv[0], &tb);
+    else buf_puts(&tb, "(&(\"\\xff\")[1])");
+    buf_printf(b, "sp_throw(%s, %d, ", tb.p ? tb.p : "", tag_kind);
+    free(tb.p);
+    if (argc >= 2) emit_boxed(c, argv[1], b);
+    else buf_puts(b, "sp_box_nil()");
     buf_puts(b, ")");
     return;
   }

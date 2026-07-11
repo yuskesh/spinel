@@ -906,11 +906,29 @@ void emit_str_literal(Buf *b, const char *content) {
   if (!content) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
   emit_str_literal_n(b, content, strlen(content), 0);
 }
-void emit_catch_tag(Compiler *c, int id, Buf *b) {
+/* Emit a catch/throw tag expression; returns the tag KIND (0 = name tag
+   matched by content, 1 = object tag matched by pointer identity). */
+int emit_catch_tag(Compiler *c, int id, Buf *b) {
   const char *ty = nt_type(c->nt, id);
-  if (ty && sp_streq(ty, "SymbolNode")) { emit_str_literal(b, nt_str(c->nt, id, "value")); return; }
-  if (ty && sp_streq(ty, "StringNode")) { emit_str_literal(b, nt_str(c->nt, id, "unescaped")); return; }
+  if (ty && sp_streq(ty, "SymbolNode")) { emit_str_literal(b, nt_str(c->nt, id, "value")); return 0; }
+  if (ty && sp_streq(ty, "StringNode")) { emit_str_literal(b, nt_str(c->nt, id, "unescaped")); return 0; }
+  TyKind t = comp_ntype(c, id);
+  if (t == TY_SYMBOL) {
+    buf_puts(b, "sp_sym_to_s("); emit_expr(c, id, b); buf_puts(b, ")");
+    return 0;
+  }
+  if (ty_is_object(t)) {
+    /* a non-symbol object tag matches by identity: carry its pointer */
+    buf_puts(b, "(const char *)(void *)("); emit_expr(c, id, b); buf_puts(b, ")");
+    return 1;
+  }
+  if (t == TY_POLY) {
+    /* boxed object tag: identity via the boxed pointer */
+    buf_puts(b, "(const char *)("); emit_expr(c, id, b); buf_puts(b, ").v.p");
+    return 1;
+  }
   emit_expr(c, id, b);
+  return 0;
 }
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   TyKind actual = comp_ntype(c, key);
