@@ -2637,7 +2637,7 @@ static int expand_literal_splat_args(Compiler *c) {
     for (int j = 0; j < sp_at; j++) na[m0++] = av[j];
     for (int j = 0; j < en; j++) na[m0++] = ev[j];
     for (int j = sp_at + 1; j < an; j++) na[m0++] = av[j];
-    nt_node_set_arr(nt, (int)argsn, "arguments", na, m0);
+    nt_node_set_arr((NodeTable *)nt, (int)argsn, "arguments", na, m0);
     changed = 1;
   }
   return changed;
