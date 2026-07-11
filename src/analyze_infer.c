@@ -917,6 +917,13 @@ TyKind infer_call(Compiler *c, int id) {
       if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY ||
           (prt == TY_RANGE && range_enum_redispatch(c, recv)))
         return TY_POLY_ARRAY;
+      /* hash.chunk { |k, v| key }.to_a materializes the same way (the chunk
+         first-class emitter iterates the hash directly); gated to the named
+         two-param block shape the emitter serves. */
+      if (ty_is_hash(prt) && sp_streq(nt_str(nt, recv, "name"), "chunk") &&
+          block_param_name(c, nt_ref(nt, recv, "block"), 0) &&
+          block_param_name(c, nt_ref(nt, recv, "block"), 1))
+        return TY_POLY_ARRAY;
     }
   }
 
@@ -3292,6 +3299,9 @@ else {
       return TY_BOOL;
     if (sp_streq(name, "deconstruct_keys") && argc == 1) return rt;
     if (sp_streq(name, "compact!") && argc == 0) return TY_POLY;  /* self or nil */
+    /* chunk { |k, v| key } is an enumerator of [key, [[k, v], ...]] pairs;
+       the .to_a consumer arm types the materialized chain as a poly array. */
+    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) return TY_ENUMERATOR;
     if (sp_streq(name, "to_proc")) return TY_PROC;
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
     if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */

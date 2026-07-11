@@ -1781,6 +1781,121 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* hash.chunk { |k, v| key }.to_a -> a poly array of [key, [[k, v], ...]] pairs
+   grouping consecutive entries by the block key. The key is boxed, so any key
+   type works, and CRuby's separator protocol applies: a nil or :_separator key
+   drops the entry and breaks the current run; :_alone chunks one entry per
+   group. Emits setup to g_pre and the result variable to b. */
+static int emit_hash_chunk_first_class(Compiler *c, int pr, TyKind prt, int block, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *hn = ty_hash_cname(prt);
+  if (!hn) return 0;
+  int body = nt_ref(nt, block, "body");
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn < 1) return 0;
+  const char *p0n = block_param_name(c, block, 0);
+  const char *p1n = block_param_name(c, block, 1);
+  if (!p0n || !p1n) return 0;
+  const char *p0 = rename_local(p0n);
+  const char *p1 = rename_local(p1n);
+  TyKind kt = ty_hash_key(prt), vt = ty_hash_val(prt);
+  int sep_id = comp_sym_intern(c, "_separator");
+  int alone_id = comp_sym_intern(c, "_alone");
+
+  int th = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, tpair = ++g_tmp, tkv = ++g_tmp;
+  int tkey = ++g_tmp, tpk = ++g_tmp, thas = ++g_tmp, tnew = ++g_tmp, ti = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_%sHash *_t%d = %s; SP_GC_ROOT(_t%d);\n", hn, th, rb.p ? rb.p : "", th);
+  free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tcur, tcur);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tpair, tpair);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tkv, tkv);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tkey, tkey);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tpk, tpk);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "int _t%d = 0, _t%d = 0;\n", thas, tnew);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, th, ti);
+
+  /* typed key/value sources, following the hash-each iteration idiom */
+  char ksrc[256], vsrc[256];
+  if (prt == TY_POLY_POLY_HASH) {
+    snprintf(ksrc, sizeof ksrc, "_t%d->keys[_t%d->order[_t%d]]", th, th, ti);
+    snprintf(vsrc, sizeof vsrc, "_t%d->vals[_t%d->order[_t%d]]", th, th, ti);
+  }
+  else {
+    snprintf(ksrc, sizeof ksrc, "_t%d->order[_t%d]", th, ti);
+    snprintf(vsrc, sizeof vsrc, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, th, th, ti);
+  }
+  Scope *bsc = comp_scope_of(c, block);
+  LocalVar *lv0 = bsc ? scope_local(bsc, p0n) : NULL;
+  LocalVar *lv1 = bsc ? scope_local(bsc, p1n) : NULL;
+  int box0 = lv0 && lv0->type == TY_POLY && kt != TY_POLY;
+  int box1 = lv1 && lv1->type == TY_POLY && vt != TY_POLY;
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "lv_%s = ", p0);
+  if (box0) emit_boxed_text(c, kt, ksrc, g_pre); else buf_puts(g_pre, ksrc);
+  buf_puts(g_pre, ";\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "lv_%s = ", p1);
+  if (box1) emit_boxed_text(c, vt, vsrc, g_pre); else buf_puts(g_pre, vsrc);
+  buf_puts(g_pre, ";\n");
+
+  for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+  int save = g_indent; g_indent++;
+  Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "_t%d = %s;\n", tkey, kb.p ? kb.p : "sp_box_nil()"); free(kb.p);
+
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "if (_t%d.tag == SP_TAG_NIL || (_t%d.tag == SP_TAG_SYM && _t%d.v.i == (sp_sym)%d))"
+                    " { _t%d = 0; continue; }\n", tkey, tkey, tkey, sep_id, thas);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "if (_t%d.tag == SP_TAG_SYM && _t%d.v.i == (sp_sym)%d) { _t%d = 1; _t%d = 0; }\n",
+             tkey, tkey, alone_id, tnew, thas);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "else if (!_t%d || !sp_poly_eq(_t%d, _t%d)) { _t%d = 1; _t%d = 1; _t%d = _t%d; }\n",
+             thas, tkey, tpk, tnew, thas, tpk, tkey);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "else _t%d = 0;\n", tnew);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "if (_t%d) {\n", tnew);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", tcur);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", tpair);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tpair, tkey);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tpair, tcur);
+  emit_indent(g_pre, g_indent + 2);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tout, tpair);
+  emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", tkv);
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tkv);
+  if (kt == TY_POLY) buf_puts(g_pre, ksrc); else emit_boxed_text(c, kt, ksrc, g_pre);
+  buf_puts(g_pre, ");\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", tkv);
+  if (vt == TY_POLY) buf_puts(g_pre, vsrc); else emit_boxed_text(c, vt, vsrc, g_pre);
+  buf_puts(g_pre, ");\n");
+  emit_indent(g_pre, g_indent + 1);
+  buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tcur, tkv);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "_t%d", tout);
+  return 1;
+}
+
 /* int_array.chunk { |x| int_key }.to_a -> a poly array of [key, [members]] pairs
    (each a 2-element poly array), first-class so p/indexing/iteration work.
    Integer keys only, matching the chunk inspect path. Returns 1 if handled. */
@@ -1795,7 +1910,10 @@ int emit_chunk_first_class_expr(Compiler *c, int id, Buf *b) {
   int block = nt_ref(nt, recv, "block");
   if (block < 0) return 0;
   int pr = nt_ref(nt, recv, "receiver");
-  if (pr < 0 || comp_ntype(c, pr) != TY_INT_ARRAY) return 0;
+  if (pr < 0) return 0;
+  TyKind prt = comp_ntype(c, pr);
+  if (ty_is_hash(prt)) return emit_hash_chunk_first_class(c, pr, prt, block, b);
+  if (prt != TY_INT_ARRAY) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
@@ -5728,11 +5846,20 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     const char *mname = mname_orig ? rename_local(mname_orig) : NULL;
     const char *pairname = pairname_orig ? rename_local(pairname_orig) : NULL;
     TyKind accT = infer_type(c, argv[0]);
+    int seed_empty_hash = 0;
     if (accT == TY_UNKNOWN) {
       const char *a0ty = nt_type(nt, argv[0]);
       int an0 = 0;
-      if (a0ty && sp_streq(a0ty, "ArrayNode")) nt_arr(nt, argv[0], "elements", &an0);
+      if (a0ty && (sp_streq(a0ty, "ArrayNode") || sp_streq(a0ty, "HashNode") ||
+                   sp_streq(a0ty, "KeywordHashNode")))
+        nt_arr(nt, argv[0], "elements", &an0);
       if (a0ty && sp_streq(a0ty, "ArrayNode") && an0 == 0) accT = TY_INT_ARRAY;
+      /* an empty {} seed accumulates a hash; the memo's settled type (from the
+         block-body writes) picks the variant, defaulting to PolyPoly */
+      else if (a0ty && (sp_streq(a0ty, "HashNode") || sp_streq(a0ty, "KeywordHashNode")) && an0 == 0) {
+        seed_empty_hash = 1;
+        accT = TY_POLY_POLY_HASH;
+      }
       else return 0;
     }
     /* Receiver */
@@ -5747,7 +5874,11 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     int tacc = ++g_tmp;
     { Buf ab; memset(&ab, 0, sizeof ab); emit_expr(c, argv[0], &ab);
       emit_indent(g_pre, g_indent); emit_ctype(c, memo_decl, g_pre);
-      if (memo_decl != accT) {
+      if (seed_empty_hash || (memo_decl != accT && ty_is_hash(memo_decl))) {
+        const char *hn2 = ty_hash_cname(memo_decl);
+        buf_printf(g_pre, " _t%d = sp_%sHash_new();\n", tacc, hn2 ? hn2 : "PolyPoly");
+      }
+      else if (memo_decl != accT) {
         const char *nk2 = (memo_decl == TY_POLY_ARRAY) ? "Poly"
                         : (memo_decl == TY_STR_ARRAY) ? "Str"
                         : (memo_decl == TY_FLOAT_ARRAY) ? "Float" : "Int";

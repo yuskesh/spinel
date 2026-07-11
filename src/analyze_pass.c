@@ -2230,26 +2230,36 @@ int infer_hash_params(Compiler *c) {
    Runs inside the fixpoint so array params without typed callers still resolve. */
 int infer_array_params(Compiler *c) {
   const NodeTable *nt = c->nt;
-  static const char *const arr_meths[] = {
-    "push","pop","shift","unshift","concat","flatten","compact","transpose",
-    "each_with_index","each_with_object","zip","combination","permutation",NULL
+  /* Genuinely array-only names may override a caller-side hash widening
+     (a param that receives push() is an array, not a hash); names Hash also
+     answers (compact, flatten, each_with_index, each_with_object, zip) only
+     fill a parameter that is still UNKNOWN, so a hash-typed caller wins. */
+  static const char *const arr_only_meths[] = {
+    "push","pop","shift","unshift","concat","transpose",
+    "combination","permutation",NULL
+  };
+  static const char *const arr_or_hash_meths[] = {
+    "flatten","compact","each_with_index","each_with_object","zip",NULL
   };
   int changed = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
-    int is_arr = 0;
-    for (int k = 0; arr_meths[k]; k++) if (sp_streq(name, arr_meths[k])) { is_arr = 1; break; }
-    if (!is_arr) continue;
+    int strong = 0, weak = 0;
+    for (int k = 0; arr_only_meths[k]; k++) if (sp_streq(name, arr_only_meths[k])) { strong = 1; break; }
+    if (!strong)
+      for (int k = 0; arr_or_hash_meths[k]; k++) if (sp_streq(name, arr_or_hash_meths[k])) { weak = 1; break; }
+    if (!strong && !weak) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;
     const char *rty = nt_type(nt, recv);
     if (!rty || !sp_streq(rty, "LocalVariableReadNode")) continue;
     Scope *s = comp_scope_of(c, id);
     LocalVar *lv = scope_local(s, nt_str(nt, recv, "name"));
-    /* If caller-side [] read already widened this param to a hash type,
-       push wins: a param that receives push() is an array, not a hash. */
-    if (lv && lv->is_param && !lv->rbs_seeded && (lv->type == TY_UNKNOWN || ty_is_hash(lv->type))) { lv->type = TY_POLY_ARRAY; changed = 1; }
+    if (lv && lv->is_param && !lv->rbs_seeded &&
+        (lv->type == TY_UNKNOWN || (strong && ty_is_hash(lv->type)))) {
+      lv->type = TY_POLY_ARRAY; changed = 1;
+    }
   }
   return changed;
 }
@@ -5196,7 +5206,7 @@ int infer_block_params(Compiler *c) {
          sp_streq(name, "detect") || sp_streq(name, "sort_by") || sp_streq(name, "min_by") ||
          sp_streq(name, "max_by") || sp_streq(name, "count") || sp_streq(name, "sum") ||
          sp_streq(name, "filter_map") || sp_streq(name, "partition") || sp_streq(name, "group_by") ||
-         sp_streq(name, "collect_concat") ||
+         sp_streq(name, "collect_concat") || sp_streq(name, "chunk") ||
          sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
          sp_streq(name, "delete_if") || sp_streq(name, "select!") || sp_streq(name, "reject!") ||
          sp_streq(name, "filter!") || sp_streq(name, "keep_if") ||

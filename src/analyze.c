@@ -2417,6 +2417,15 @@ static void desugar_enum_chain_shapes(Compiler *c) {
           nt_node_set_ref(nt, id, "arguments", -1);
           continue;
         }
+        /* Hash[arg] with any single non-literal argument: the same pairs.to_h
+           rewrite (this desugar runs pre-type, so no array check is possible;
+           to_h itself raises on a non-convertible receiver, as Hash[] does). */
+        if (an == 1) {
+          nt_node_set_str(nt, id, "name", "to_h");
+          nt_node_set_ref(nt, id, "receiver", av0[0]);
+          nt_node_set_ref(nt, id, "arguments", -1);
+          continue;
+        }
         if (an >= 2 && an % 2 == 0 && an <= 64) {
           /* Hash[k1, v1, k2, v2, ...] == [[k1, v1], [k2, v2], ...].to_h */
           int av[64];
