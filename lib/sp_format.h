@@ -31,6 +31,7 @@ sp_Complex sp_complex_div_int(sp_Complex a, mrb_int b);
 sp_Complex sp_complex_neg(sp_Complex a);
 sp_Complex sp_complex_conjugate(sp_Complex a);
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e);
+sp_Complex sp_complex_pow_c(sp_Complex z, sp_Complex w);   /* z ** w (general) */
 mrb_float sp_complex_abs(sp_Complex a);
 mrb_float sp_complex_abs2(sp_Complex a);
 mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b);
@@ -46,8 +47,12 @@ sp_Rational sp_rational_abs(sp_Rational a);
 sp_Rational sp_rational_pow(sp_Rational a, mrb_int e);
 mrb_int sp_rational_round_i(sp_Rational a);              /* Rational#round (no digits) */
 mrb_int sp_rational_idiv(sp_Rational a, sp_Rational b);  /* Rational#div (floor) */
+mrb_int sp_rational_floor_i(sp_Rational a);              /* Rational#floor (no digits) */
+mrb_int sp_rational_ceil_i(sp_Rational a);               /* Rational#ceil (no digits) */
 sp_Rational sp_rational_round_prec(sp_Rational a, mrb_int nd);
 sp_Rational sp_rational_truncate_prec(sp_Rational a, mrb_int nd);
+sp_Rational sp_rational_floor_prec(sp_Rational a, mrb_int nd);
+sp_Rational sp_rational_ceil_prec(sp_Rational a, mrb_int nd);
 mrb_int sp_rational_cmp(sp_Rational a, sp_Rational b);
 mrb_bool sp_rational_eq(sp_Rational a, sp_Rational b);
 mrb_float sp_rational_to_f(sp_Rational a);

@@ -143,6 +143,22 @@ sp_Complex sp_complex_neg(sp_Complex a) { sp_Complex c; c.re = -a.re; c.im = -a.
 mrb_float sp_complex_abs2(sp_Complex a) { return (a.re * a.re) + (a.im * a.im); }
 mrb_float sp_complex_abs(sp_Complex a) { return sqrt((a.re * a.re) + (a.im * a.im)); }
 mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b) { return a.re == b.re && a.im == b.im; }
+/* z ** w for a non-integer exponent: exp(w * ln z); an integral real w
+   defers to the exact integer power (preserving component classes). */
+sp_Complex sp_complex_pow_c(sp_Complex z, sp_Complex w) {
+  if (w.im == 0.0 && w.re == (mrb_float)(mrb_int)w.re && !(w.fl & SP_CPLX_RE_F))
+    return sp_complex_pow(z, (mrb_int)w.re);
+  mrb_float lr = 0.5 * log(z.re * z.re + z.im * z.im);
+  mrb_float th = atan2(z.im, z.re);
+  mrb_float xa = w.re * lr - w.im * th;
+  mrb_float xb = w.re * th + w.im * lr;
+  mrb_float m = exp(xa);
+  sp_Complex r;
+  r.re = m * cos(xb);
+  r.im = m * sin(xb);
+  r.fl = SP_CPLX_RE_F | SP_CPLX_IM_F;
+  return r;
+}
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e) {
   sp_Complex r; r.re = 1; r.im = 0; r.fl = 0;
   mrb_int k = e < 0 ? -e : e;
@@ -381,11 +397,31 @@ static sp_rat_wide sp_rat_pow10(mrb_int e) {
 /* Rational#round/#truncate with a precision: scale by 10^nd, round or chop to
    an integer, scale back. nd <= 0 yields an integer-valued Rational (den 1);
    codegen realizes the Integer class from the literal precision. */
+mrb_int sp_rational_floor_i(sp_Rational a) {
+  return a.num >= 0 ? a.num / a.den : -((-a.num + a.den - 1) / a.den);
+}
+mrb_int sp_rational_ceil_i(sp_Rational a) {
+  return a.num >= 0 ? (a.num + a.den - 1) / a.den : -((-a.num) / a.den);
+}
 sp_Rational sp_rational_round_prec(sp_Rational a, mrb_int nd) {
   sp_rat_wide p = sp_rat_pow10(nd < 0 ? -nd : nd);
   sp_Rational s = nd >= 0 ? sp_rational_new_wide((sp_rat_wide)a.num * p, a.den)
                           : sp_rational_new_wide(a.num, (sp_rat_wide)a.den * p);
   mrb_int q = sp_rational_round_i(s);
+  return nd >= 0 ? sp_rational_new_wide(q, p) : sp_rational_new_wide((sp_rat_wide)q * p, 1);
+}
+sp_Rational sp_rational_floor_prec(sp_Rational a, mrb_int nd) {
+  sp_rat_wide p = sp_rat_pow10(nd < 0 ? -nd : nd);
+  sp_Rational s = nd >= 0 ? sp_rational_new_wide((sp_rat_wide)a.num * p, a.den)
+                          : sp_rational_new_wide(a.num, (sp_rat_wide)a.den * p);
+  mrb_int q = sp_rational_floor_i(s);
+  return nd >= 0 ? sp_rational_new_wide(q, p) : sp_rational_new_wide((sp_rat_wide)q * p, 1);
+}
+sp_Rational sp_rational_ceil_prec(sp_Rational a, mrb_int nd) {
+  sp_rat_wide p = sp_rat_pow10(nd < 0 ? -nd : nd);
+  sp_Rational s = nd >= 0 ? sp_rational_new_wide((sp_rat_wide)a.num * p, a.den)
+                          : sp_rational_new_wide(a.num, (sp_rat_wide)a.den * p);
+  mrb_int q = sp_rational_ceil_i(s);
   return nd >= 0 ? sp_rational_new_wide(q, p) : sp_rational_new_wide((sp_rat_wide)q * p, 1);
 }
 sp_Rational sp_rational_truncate_prec(sp_Rational a, mrb_int nd) {

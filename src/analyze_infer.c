@@ -711,6 +711,13 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "**")) return TY_COMPLEX;
     if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
+    if (sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
+        sp_streq(name, "denominator")) return TY_INT;
+    if (sp_streq(name, "to_f")) return TY_FLOAT;
+    if (sp_streq(name, "to_r")) return TY_RATIONAL;
+    if (sp_streq(name, "numerator")) return TY_COMPLEX;
+    if (sp_streq(name, "fdiv") && argc == 1) return TY_COMPLEX;
+    if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
   }
   /* Proc#curry and curry application via []. A curried call stays TY_CURRY until
      it reaches the proc's arity, when it realizes to the proc's return type (the
@@ -740,7 +747,8 @@ TyKind infer_call(Compiler *c, int id) {
     /* round/truncate: no digits (or a literal <= 0) is an Integer, a literal
        positive precision keeps the Rational, and a non-literal precision boxes
        to poly so the class is chosen from the runtime value. */
-    if (sp_streq(name, "round") || sp_streq(name, "truncate")) {
+    if (sp_streq(name, "round") || sp_streq(name, "truncate") ||
+        sp_streq(name, "floor") || sp_streq(name, "ceil")) {
       if (argc == 1) {
         if (nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode"))
           return nt_int(nt, argv[0], "value", 0) > 0 ? TY_RATIONAL : TY_INT;
@@ -748,6 +756,9 @@ TyKind infer_call(Compiler *c, int id) {
       }
       return TY_INT;
     }
+    if (sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
+        sp_streq(name, "negative?")) return TY_BOOL;
+    if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "to_r") || sp_streq(name, "rationalize") ||
         sp_streq(name, "-@") || sp_streq(name, "+@") || sp_streq(name, "abs")) return TY_RATIONAL;

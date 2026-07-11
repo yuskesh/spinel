@@ -1079,6 +1079,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   /* Kernel#Complex(re[, im]): a Float argument marks its component
      Float-classed so rendering and abs/abs2 keep CRuby's classes. */
   if (recv < 0 && sp_streq(name, "Complex") && argc >= 1) {
+    /* Complex("2+3i"): parse like String#to_c */
+    if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+      Buf sb = expr_buf(c, argv[0]);
+      buf_printf(b, "sp_str_to_c(%s)", sb.p ? sb.p : "\"\"");
+      free(sb.p);
+      return 1;
+    }
     int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
              (argc >= 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
     buf_puts(b, "((sp_Complex){(mrb_float)(");
@@ -1246,6 +1253,52 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "sp_complex_pow("); emit_expr(c, recv, b); buf_puts(b, ", (mrb_int)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
         return 1;
       }
+      if (argc == 1 && sp_streq(name, "**") && (cxa == TY_FLOAT || cxa == TY_COMPLEX)) {
+        buf_puts(b, "sp_complex_pow_c("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_complex_coerce(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+      /* to_i/to_f/to_r require a zero imaginary part (RangeError otherwise);
+         numerator/denominator model the Integer-component case (den 1). */
+      if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Integer\"); (mrb_int)_t%d.re; })", t, t);
+        return 1;
+      }
+      if (sp_streq(name, "to_f") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Float\"); _t%d.re; })", t, t);
+        return 1;
+      }
+      if (sp_streq(name, "to_r") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t%d.re); })", t, t);
+        return 1;
+      }
+      if (sp_streq(name, "numerator") && argc == 0) { emit_expr(c, recv, b); return 1; }
+      if (sp_streq(name, "denominator") && argc == 0) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)1)");
+        return 1;
+      }
+      if (sp_streq(name, "fdiv") && argc == 1 && (cxa == TY_INT || cxa == TY_FLOAT)) {
+        buf_puts(b, "sp_complex_div_real("); emit_expr(c, recv, b);
+        buf_puts(b, ", (mrb_float)("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        return 1;
+      }
+      if (sp_streq(name, "coerce") && argc == 1 && (cxa == TY_INT || cxa == TY_FLOAT)) {
+        int tp = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_complex(", tp, tp, tp);
+        emit_complex_coerce(c, argv[0], b);
+        buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_complex(", tp);
+        emit_expr(c, recv, b);
+        buf_printf(b, ")); _t%d; })", tp);
+        return 1;
+      }
       if (cx_ok && argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!="))) {
         buf_printf(b, "(%ssp_complex_eq(", name[0] == '!' ? "!" : ""); emit_expr(c, recv, b); buf_puts(b, ", "); emit_complex_coerce(c, argv[0], b); buf_puts(b, "))");
         return 1;
@@ -1329,12 +1382,47 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") ||
            (sp_streq(name, "truncate") && argc == 0))) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num / ("); emit_expr(c, recv, b); buf_puts(b, ").den)"); return 1; }
       if (sp_streq(name, "round") && argc == 0) { buf_puts(b, "sp_rational_round_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-      /* round/truncate with a literal precision: nd > 0 keeps a Rational, nd <= 0
-         realizes the Integer value (.num of the den-1 result). */
-      if ((sp_streq(name, "round") || sp_streq(name, "truncate")) && argc == 1 &&
+      if (sp_streq(name, "floor") && argc == 0) { buf_puts(b, "sp_rational_floor_i("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      if (sp_streq(name, "ceil") && argc == 0)  { buf_puts(b, "sp_rational_ceil_i(");  emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      if (sp_streq(name, "zero?") && argc == 0)     { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num == 0)"); return 1; }
+      if (sp_streq(name, "positive?") && argc == 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num > 0)"); return 1; }
+      if (sp_streq(name, "negative?") && argc == 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ").num < 0)"); return 1; }
+      /* coerce(n): [n as Rational, self] boxed pair */
+      if (sp_streq(name, "coerce") && argc == 1 &&
+          (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RATIONAL)) {
+        int tp = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_rational(", tp, tp, tp);
+        if (comp_ntype(c, argv[0]) == TY_INT) {
+          buf_puts(b, "sp_rational_new(");
+          emit_expr(c, argv[0], b);
+          buf_puts(b, ", 1)");
+        }
+        else emit_expr(c, argv[0], b);
+        buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_rational(", tp);
+        emit_expr(c, recv, b);
+        buf_printf(b, ")); _t%d; })", tp);
+        return 1;
+      }
+      /* Rational ** Rational computes as floats (CRuby; a negative base would
+         be Complex, out of the value model -- it yields NaN here) */
+      if (sp_streq(name, "**") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+        buf_puts(b, "pow(sp_rational_to_f(");
+        emit_expr(c, recv, b);
+        buf_puts(b, "), sp_rational_to_f(");
+        emit_expr(c, argv[0], b);
+        buf_puts(b, "))");
+        return 1;
+      }
+      /* round/truncate/floor/ceil with a literal precision: nd > 0 keeps a
+         Rational, nd <= 0 realizes the Integer value (.num of the den-1 result). */
+      if ((sp_streq(name, "round") || sp_streq(name, "truncate") ||
+           sp_streq(name, "floor") || sp_streq(name, "ceil")) && argc == 1 &&
           nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode")) {
         long long nd = nt_int(nt, argv[0], "value", 0);
-        const char *fn = name[0] == 'r' ? "round" : "truncate";
+        const char *fn = name[0] == 'r' ? "round"
+                       : name[0] == 't' ? "truncate"
+                       : name[0] == 'f' ? "floor" : "ceil";
         buf_printf(b, "%ssp_rational_%s_prec(", nd > 0 ? "" : "(", fn);
         emit_expr(c, recv, b);
         buf_printf(b, ", %lld)%s", nd, nd > 0 ? "" : ".num)");
