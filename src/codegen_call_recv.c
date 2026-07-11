@@ -390,6 +390,18 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _hit%d; })", tm3);
       return 1;
     }
+    if (argc == 1 && re_lit_index(c, argv[0]) >= 0) {
+      /* slice!(regexp): the removed first match (or nil), reassigning an
+         lvalue receiver with the remainder; sets the match registers. */
+      int to = ++g_tmp, ts2 = ++g_tmp, tr2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b);
+      buf_printf(b, "; const char *_t%d = _t%d;"
+                    " const char *_t%d = sp_str_slice_re(sp_re_pat_%d, _t%d, &_t%d);",
+                 ts2, to, tr2, re_lit_index(c, argv[0]), to, ts2);
+      if (sb_asgn) { buf_puts(b, " "); emit_expr(c, recv, b); buf_printf(b, " = _t%d;", ts2); }
+      buf_printf(b, " _t%d; })", tr2);
+      return 1;
+    }
     if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
       /* slice!(i) / slice!(range): the removed part (or nil), reassigning an
          lvalue receiver; a literal receiver just yields the removed part. */
@@ -454,6 +466,23 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
                  ti2, tl2, tn2, ti2, tl2, tr2);
       return 1;
     }
+  }
+  /* String#bytesplice(start, len, str): byte-range replace returning self
+     (value-semantics strings: the helper builds the new value and an lvalue
+     receiver is rebound to it). */
+  if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
+    const char *rvt2 = nt_type(nt, recv);
+    int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
+                       sp_streq(rvt2, "InstanceVariableReadNode"));
+    int tn2 = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_str_bytesplice(", tn2);
+    emit_expr(c, recv, b);
+    buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
+    buf_puts(b, ", "); emit_expr(c, argv[2], b); buf_puts(b, ")");
+    if (lvw) { buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d", tn2); }
+    buf_printf(b, "; _t%d; })", tn2);
+    return 1;
   }
 
   if (recv >= 0 && ty_is_array(rt)) {

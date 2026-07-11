@@ -1,0 +1,15 @@
+["XYZlo world", "XYZlo world", true]
+["h--ello", "h--ello", true]
+["ho", "ho", true]
+["helLO", "helLO", true]
+["h!", "h!", true]
+["seed", "seed", true]
+"JELLO"
+"IndexError: negative length -1"
+"IndexError: index 5 out of string"
+"IndexError: index -9 out of string"
+["12", "abcd"]
+[nil, "no digits"]
+["12", "ab34"]
+["user", "example"]
+"v.2.3"

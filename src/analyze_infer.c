@@ -3458,6 +3458,7 @@ else {
         sp_streq(name, "delete")) return TY_STRING;
     if (sp_streq(name, "slice!")) return TY_STRING;  /* removed part, or nil */
     if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "byteslice") ||
+        sp_streq(name, "bytesplice") ||
         sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) return TY_STRING;
     if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;
     if (sp_streq(name, "index") && argc == 1) {
