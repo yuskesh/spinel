@@ -3418,6 +3418,13 @@ int desugar_enum_method_recv(Compiler *c) {
        (member-pair to_h, ordered to_a/values, size, dig, ...); the flat
        element array would change their semantics */
     if (c->classes[cid].is_struct) {
+      /* A member accessor always beats the inherited Enumerable surface:
+         CRuby defines accessors directly on the Struct/Data subclass, so
+         Data.define(:count).new(count: 7).count reads the member (7), never
+         Enumerable#count (the member total). Members are not methods in the
+         chain (codegen serves them natively), so check them explicitly. */
+      char mn[272]; snprintf(mn, sizeof mn, "@%s", nm);
+      if (comp_ivar_index(&c->classes[cid], mn) >= 0) continue;
       static const char *const snative[] = {
         "to_a", "entries", "values", "to_h", "members", "size", "length",
         "dig", "deconstruct", "deconstruct_keys", "with", "inspect", "to_s",
