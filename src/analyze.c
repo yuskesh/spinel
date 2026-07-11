@@ -2817,8 +2817,11 @@ static int desugar_hash_block_arg(Compiler *c) {
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockArgumentNode")) continue;
     int ex = nt_ref(nt, blk, "expression");
-    if (ex < 0 || !nt_type(nt, ex) || !sp_streq(nt_type(nt, ex), "LocalVariableReadNode")) continue;
-    if (!ty_is_hash(infer_type(c, ex))) continue;
+    if (ex < 0 || !nt_type(nt, ex)) continue;
+    const char *exty = nt_type(nt, ex);
+    int ex_is_lit = sp_streq(exty, "HashNode") || sp_streq(exty, "KeywordHashNode");
+    if (!ex_is_lit &&
+        !(sp_streq(exty, "LocalVariableReadNode") && ty_is_hash(infer_type(c, ex)))) continue;
     char pn[32];
     snprintf(pn, sizeof pn, "__bhp_%d", id);
     int kpa = nt_new_node(nt, "RequiredParameterNode");
@@ -3242,6 +3245,30 @@ int desugar_enum_method_recv(Compiler *c) {
         }
       }
       continue;
+    }
+    if (nm && (sp_streq(nm, "any?") || sp_streq(nm, "none?") ||
+               sp_streq(nm, "all?") || sp_streq(nm, "one?") ||
+               sp_streq(nm, "empty?"))) {
+      /* blockless predicate on an un-narrowed empty-hash local: adopt the
+         symbol-keyed poly variant so the hash fold arm serves it
+         (`b = {}; b.none?`). Every write must be an empty {} literal, so an
+         empty-ARRAY local can never be pulled into a hash type here. */
+      int qa = nt_ref(nt, id, "arguments");
+      int qac = 0;
+      if (qa >= 0) nt_arr(nt, qa, "arguments", &qac);
+      int qrc = nt_ref(nt, id, "receiver");
+      if (qac == 0 && nt_ref(nt, id, "block") < 0 && qrc >= 0 &&
+          nt_type(nt, qrc) && sp_streq(nt_type(nt, qrc), "LocalVariableReadNode") &&
+          infer_type(c, qrc) == TY_UNKNOWN) {
+        Scope *qsc = comp_scope_of(c, qrc);
+        const char *qvn = nt_str(nt, qrc, "name");
+        LocalVar *qlv = (qsc && qvn) ? scope_local(qsc, qvn) : NULL;
+        if (qlv && qlv->type == TY_UNKNOWN && local_all_writes_empty_hash(c, qsc, qvn)) {
+          qlv->type = TY_SYM_POLY_HASH;
+          changed = 1;
+        }
+      }
+      /* no rewrite of this node: fall through to the remaining arms */
     }
     if (nm && sp_streq(nm, "yield")) {
       /* Proc#yield is exactly #call */

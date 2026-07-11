@@ -476,6 +476,23 @@ static int infer_int_shl_overflows(long long base, long long amount) {
    or consumed by an enumerator method (#next/#peek/#rewind/#size). When it is
    the receiver of a collection method (.to_a/.map/.select/...), it materializes
    to a typed array instead, so those chains keep the fast unboxed path. */
+/* Literal Float::INFINITY as a range endpoint (the infer-side twin of
+   codegen's lazy_endpoint_is_infinite; nil/missing ends are checked by the
+   callers directly). */
+static int infer_end_is_float_inf(Compiler *c, int right) {
+  const NodeTable *nt = c->nt;
+  if (right < 0) return 0;
+  const char *rty = nt_type(nt, right);
+  if (!rty || !sp_streq(rty, "ConstantPathNode")) return 0;
+  const char *cpnm = nt_str(nt, right, "name");
+  if (!cpnm || !sp_streq(cpnm, "INFINITY")) return 0;
+  int par = nt_ref(nt, right, "parent");
+  const char *parnm = (par >= 0 && nt_type(nt, par) &&
+                       sp_streq(nt_type(nt, par), "ConstantReadNode"))
+                      ? nt_str(nt, par, "name") : NULL;
+  return parnm && sp_streq(parnm, "Float");
+}
+
 /* True when `id` is the receiver of an enclosing call that carries a block:
    the chain emitters own that shape (arr.map.with_index { }), so the inner
    blockless call must keep its legacy typing. */
@@ -632,7 +649,9 @@ TyKind infer_call(Compiler *c, int id) {
       rnA = pnA == 1 ? ppA[0] : -1;
     }
     if (rnA >= 0 && nt_type(nt, rnA) && sp_streq(nt_type(nt, rnA), "RangeNode") &&
-        nt_ref(nt, rnA, "right") < 0 && nt_ref(nt, rnA, "left") >= 0) {
+        (nt_ref(nt, rnA, "right") < 0 ||
+         infer_end_is_float_inf(c, nt_ref(nt, rnA, "right"))) &&
+        nt_ref(nt, rnA, "left") >= 0) {
       if (sp_streq(name, "size") && argc == 0) return TY_FLOAT;
       if ((sp_streq(name, "take") || sp_streq(name, "first")) && argc == 1)
         return TY_INT_ARRAY;
@@ -774,10 +793,20 @@ TyKind infer_call(Compiler *c, int id) {
       ((nt_ref(nt, argv[0], "left") >= 0 && infer_type(c, nt_ref(nt, argv[0], "left")) == TY_FLOAT) ||
        (nt_ref(nt, argv[0], "right") >= 0 && infer_type(c, nt_ref(nt, argv[0], "right")) == TY_FLOAT)))
     return TY_POLY;
+  /* a non-float bound can be returned as-is: a float receiver's mixed
+     2-arg clamp is boxed (0.5.clamp(1, 3) is the Integer 1) */
+  if (rt == TY_FLOAT && sp_streq(name, "clamp") && argc == 2 &&
+      !(infer_type(c, argv[0]) == TY_FLOAT && infer_type(c, argv[1]) == TY_FLOAT) &&
+      (infer_type(c, argv[0]) == TY_INT || infer_type(c, argv[0]) == TY_FLOAT) &&
+      (infer_type(c, argv[1]) == TY_INT || infer_type(c, argv[1]) == TY_FLOAT)) return TY_POLY;
   if (rt == TY_INT && sp_streq(name, "divmod") && argc == 1 &&
       comp_ntype(c, argv[0]) == TY_FLOAT) return TY_POLY_ARRAY;
   if (rt == TY_INT && sp_streq(name, "modulo") && argc == 1 &&
       comp_ntype(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+  if (rt == TY_INT && sp_streq(name, "remainder") && argc == 1 &&
+      comp_ntype(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
+  if (rt == TY_FLOAT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL &&
+      (sp_streq(name, "%") || sp_streq(name, "modulo"))) return TY_FLOAT;
   if (rt == TY_FLOAT && sp_streq(name, "clamp") && argc == 1 &&
       comp_ntype(c, argv[0]) == TY_RANGE) return TY_POLY;
   if (rt == TY_INT && sp_streq(name, "round") && argc >= 1 &&
@@ -788,6 +817,8 @@ TyKind infer_call(Compiler *c, int id) {
      arithmetic, Bool/Int for comparisons). */
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
     if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_RATIONAL;
+    if (sp_streq(name, "%") || sp_streq(name, "modulo") || sp_streq(name, "remainder")) return TY_RATIONAL;
+    if (sp_streq(name, "divmod")) return TY_POLY_ARRAY;
     if (sp_streq(name, "<") || sp_streq(name, ">") || sp_streq(name, "<=") || sp_streq(name, ">=") ||
         sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     if (sp_streq(name, "<=>")) return TY_INT;

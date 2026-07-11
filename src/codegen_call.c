@@ -563,7 +563,7 @@ static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
 }
 
 /* Returns 1 if `id` is a `Float::INFINITY` / `nil` / absent range endpoint. */
-static int lazy_endpoint_is_infinite(Compiler *c, int right) {
+int lazy_endpoint_is_infinite(Compiler *c, int right) {
   const NodeTable *nt = c->nt;
   if (right < 0) return 1;
   const char *rty = nt_type(nt, right);
@@ -1644,8 +1644,22 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* Float % Rational: floor modulo in doubles (1.5 % (1/2r) is 0.0) */
+    if (crt == TY_FLOAT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL &&
+        (sp_streq(name, "%") || sp_streq(name, "modulo"))) {
+      int tx = ++g_tmp, ty2 = ++g_tmp;
+      buf_printf(b, "({ double _t%d = ", tx); emit_expr(c, recv, b);
+      buf_printf(b, "; double _t%d = sp_rational_to_f(", ty2); emit_expr(c, argv[0], b);
+      buf_printf(b, "); _t%d - _t%d * floor(_t%d / _t%d); })", tx, ty2, tx, ty2);
+      return 1;
+    }
     /* Integer <op> Rational: lift the Integer to n/1 (covers `2/3r`, `1 + r`). */
     if (crt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      if (sp_streq(name, "%") || sp_streq(name, "modulo")) {
+        buf_puts(b, "sp_rational_mod(sp_rational_new((mrb_int)("); emit_expr(c, recv, b);
+        buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_rational_%s(sp_rational_new((mrb_int)(", fn); emit_expr(c, recv, b);

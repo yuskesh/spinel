@@ -2848,6 +2848,29 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
                  tc2, th, hash_box_cls(rt));
       return 1;
     }
+    /* any?(pattern) / none? / one? / count with one arg: compare each
+       [key, value] pair by == (sp_poly_eq covers array-vs-array value
+       equality, which is what a pair pattern is) */
+    if (argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        (sp_streq(name, "any?") || sp_streq(name, "none?") ||
+         sp_streq(name, "one?") || sp_streq(name, "count"))) {
+      int th = ++g_tmp, tv = ++g_tmp, tn = ++g_tmp, tc2 = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", th);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", th, tv);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); mrb_int _t%d = sp_poly_length(_t%d); mrb_int _t%d = 0;",
+                 tv, tn, th, tc2);
+      buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {"
+                    " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);"
+                    " if (sp_poly_eq(_t%d, _t%d)) _t%d++; }",
+                 ti, ti, tn, ti, tp, th, ti, tp, tv, tc2);
+      if (sp_streq(name, "any?"))       buf_printf(b, " _t%d > 0; })", tc2);
+      else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc2);
+      else if (sp_streq(name, "one?"))  buf_printf(b, " _t%d == 1; })", tc2);
+      else                              buf_printf(b, " _t%d; })", tc2);
+      return 1;
+    }
     /* blockless Enumerable predicates fold on the pair count (a pair is
        always truthy, so all? is unconditionally true) */
     if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
@@ -4339,7 +4362,8 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                       " sp_PolyArray_push(_t%d, sp_box_float((double)(%s) - (double)_t%d * _t%d)); _t%d; })",
                    tb, tq, r, tb, o, o, o, tq, o, r, tq, tb, o);
       }
-      else if (sp_streq(name, "divmod") && argc == 1) {
+      else if (sp_streq(name, "divmod") && argc == 1 &&
+               comp_ntype(c, argv[0]) != TY_RATIONAL) {
         int tb = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
@@ -4356,14 +4380,43 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "lcm") && argc == 1) { buf_printf(b, "sp_lcm(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "magnitude") && argc == 0) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
       else if (sp_streq(name, "modulo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-        int tb = ++g_tmp, tq = ++g_tmp;
+        int tb = ++g_tmp;
         buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
-        buf_printf(b, "; mrb_int _t%d = (mrb_int)floor((double)(%s) / _t%d);"
-                      " (double)(%s) - (double)_t%d * _t%d; })",
-                   tb, tq, r, tb, r, tq, tb);
+        buf_printf(b, "; (double)(%s) - _t%d * floor((double)(%s) / _t%d); })",
+                   r, tb, r, tb);
+      }
+      else if ((sp_streq(name, "modulo") || sp_streq(name, "%%")) && argc == 1 &&
+               comp_ntype(c, argv[0]) == TY_RATIONAL) {
+        /* Integer % Rational lifts the receiver to n/1 (floor modulo) */
+        buf_printf(b, "sp_rational_mod(sp_rational_new((mrb_int)(%s), 1), ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "remainder") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        /* x - y * (x/y).truncate, in doubles (7.remainder(2.5) is 2.0) */
+        int tb = ++g_tmp;
+        buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
+        buf_printf(b, "; (double)(%s) - _t%d * trunc((double)(%s) / _t%d); })",
+                   r, tb, r, tb);
+      }
+      else if (sp_streq(name, "remainder") && argc == 1 &&
+               comp_ntype(c, argv[0]) == TY_RATIONAL) {
+        buf_printf(b, "sp_rational_rem(sp_rational_new((mrb_int)(%s), 1), ", r);
+        emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "remainder") && argc == 1) { buf_printf(b, "sp_iremainder(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+        /* [floor quotient (Integer), self - q*b (Rational)] */
+        int ta = ++g_tmp, tb2 = ++g_tmp, tq2 = ++g_tmp, to2 = ++g_tmp;
+        buf_printf(b, "({ sp_Rational _t%d = sp_rational_new((mrb_int)(%s), 1); sp_Rational _t%d = ", ta, r, tb2);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = sp_rational_floor_i(sp_rational_div(_t%d, _t%d));"
+                      " sp_Rational _r = sp_rational_sub(_t%d, sp_rational_mul(sp_rational_new(_t%d, 1), _t%d));"
+                      " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_rational(_r)); _t%d; })",
+                   tq2, ta, tb2, ta, tq2, tb2, to2, to2, to2, tq2, to2, to2);
+      }
       else if (sp_streq(name, "size") && argc == 0) buf_puts(b, "((mrb_int)sizeof(mrb_int))");
       else if (sp_streq(name, "gcdlcm") && argc == 1) {
         int ta = ++g_tmp, o = ++g_tmp;
@@ -4506,20 +4559,57 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         }
       }
       else if (sp_streq(name, "clamp") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
-        /* the clamped-to bound is the range's Integer endpoint itself; an
-           in-range receiver stays the Float */
-        int tf2 = ++g_tmp, trg2 = ++g_tmp;
-        buf_printf(b, "({ double _t%d = (%s); sp_Range _t%d = ", tf2, r, trg2);
-        emit_expr(c, argv[0], b);
-        buf_printf(b, "; if (_t%d.excl && _t%d.last != INTPTR_MAX)"
-                      " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");"
-                      " (_t%d.first != INTPTR_MIN && _t%d < (double)_t%d.first) ? sp_box_int(_t%d.first)"
-                      " : (_t%d.last != INTPTR_MAX && _t%d > (double)_t%d.last) ? sp_box_int(_t%d.last)"
-                      " : sp_box_float(_t%d); })",
-                   trg2, trg2,
-                   trg2, tf2, trg2, trg2,
-                   trg2, tf2, trg2, trg2,
-                   tf2);
+        /* the clamped-to bound is the range's endpoint itself (keeping its
+           own class); an in-range receiver stays the Float. A literal range
+           with a Float bound cannot ride sp_Range (mrb_int bounds truncate
+           it), so it clamps against typed endpoint temps directly. */
+        int rn3 = unwrap_parens(c, argv[0]);
+        int is_lit = rn3 >= 0 && nt_type(nt, rn3) && sp_streq(nt_type(nt, rn3), "RangeNode");
+        int flo = is_lit ? nt_ref(nt, rn3, "left") : -1;
+        int fhi = is_lit ? nt_ref(nt, rn3, "right") : -1;
+        int any_f = is_lit && ((flo >= 0 && comp_ntype(c, flo) == TY_FLOAT) ||
+                               (fhi >= 0 && comp_ntype(c, fhi) == TY_FLOAT));
+        if (any_f) {
+          int excl3 = (int)(nt_int(nt, rn3, "flags", 0) & 4) ? 1 : 0;
+          int tf3 = ++g_tmp, tlo = -1, thi = -1;
+          int lo_f = flo >= 0 && comp_ntype(c, flo) == TY_FLOAT;
+          int hi_f = fhi >= 0 && comp_ntype(c, fhi) == TY_FLOAT;
+          buf_printf(b, "({ double _t%d = (%s);", tf3, r);
+          if (flo >= 0) {
+            tlo = ++g_tmp;
+            buf_printf(b, " %s _t%d = ", lo_f ? "double" : "mrb_int", tlo);
+            emit_expr(c, flo, b); buf_puts(b, ";");
+          }
+          if (fhi >= 0) {
+            thi = ++g_tmp;
+            buf_printf(b, " %s _t%d = ", hi_f ? "double" : "mrb_int", thi);
+            emit_expr(c, fhi, b); buf_puts(b, ";");
+          }
+          if (excl3 && fhi >= 0)
+            buf_puts(b, " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");");
+          buf_puts(b, " ");
+          if (flo >= 0)
+            buf_printf(b, "(_t%d < (double)_t%d) ? %s(_t%d) : ", tf3, tlo,
+                       lo_f ? "sp_box_float" : "sp_box_int", tlo);
+          if (fhi >= 0)
+            buf_printf(b, "(_t%d > (double)_t%d) ? %s(_t%d) : ", tf3, thi,
+                       hi_f ? "sp_box_float" : "sp_box_int", thi);
+          buf_printf(b, "sp_box_float(_t%d); })", tf3);
+        }
+        else {
+          int tf2 = ++g_tmp, trg2 = ++g_tmp;
+          buf_printf(b, "({ double _t%d = (%s); sp_Range _t%d = ", tf2, r, trg2);
+          emit_expr(c, argv[0], b);
+          buf_printf(b, "; if (_t%d.excl && _t%d.last != INTPTR_MAX)"
+                        " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");"
+                        " (_t%d.first != INTPTR_MIN && _t%d < (double)_t%d.first) ? sp_box_int(_t%d.first)"
+                        " : (_t%d.last != INTPTR_MAX && _t%d > (double)_t%d.last) ? sp_box_int(_t%d.last)"
+                        " : sp_box_float(_t%d); })",
+                     trg2, trg2,
+                     trg2, tf2, trg2, trg2,
+                     trg2, tf2, trg2, trg2,
+                     tf2);
+        }
       }
       else if (sp_streq(name, "to_i"))  buf_printf(b, "sp_float_to_i_checked(%s)", r);
       else if (sp_streq(name, "to_f"))  buf_printf(b, "(%s)", r);
@@ -4578,6 +4668,28 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "clamp") && argc == 2 &&
                comp_ntype(c, argv[0]) == TY_FLOAT && comp_ntype(c, argv[1]) == TY_FLOAT) {
         buf_printf(b, "sp_float_clamp_ck(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "clamp") && argc == 2 &&
+               (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_FLOAT) &&
+               (comp_ntype(c, argv[1]) == TY_INT || comp_ntype(c, argv[1]) == TY_FLOAT)) {
+        /* mixed-class bounds: the applied bound keeps its own class, so the
+           result is boxed (0.5.clamp(1, 3) is the Integer 1) */
+        int lo_f2 = comp_ntype(c, argv[0]) == TY_FLOAT;
+        int hi_f2 = comp_ntype(c, argv[1]) == TY_FLOAT;
+        int tf4 = ++g_tmp, tlo2 = ++g_tmp, thi2 = ++g_tmp;
+        buf_printf(b, "({ double _t%d = (%s); %s _t%d = ", tf4, r, lo_f2 ? "double" : "mrb_int", tlo2);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; %s _t%d = ", hi_f2 ? "double" : "mrb_int", thi2);
+        emit_expr(c, argv[1], b);
+        buf_printf(b, "; if ((double)_t%d > (double)_t%d)"
+                      " sp_raise_cls(\"ArgumentError\", \"min argument must be less than or equal to max argument\");"
+                      " (_t%d < (double)_t%d) ? %s(_t%d)"
+                      " : (_t%d > (double)_t%d) ? %s(_t%d)"
+                      " : sp_box_float(_t%d); })",
+                   tlo2, thi2,
+                   tf4, tlo2, lo_f2 ? "sp_box_float" : "sp_box_int", tlo2,
+                   tf4, thi2, hi_f2 ? "sp_box_float" : "sp_box_int", thi2,
+                   tf4);
       }
       else if (sp_streq(name, "coerce") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
@@ -5562,8 +5674,35 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\"); (mrb_int)0; })");
         return 1;
       }
+      /* a Float begin cannot iterate: size raises like CRuby */
       if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
-          nt_ref(nt, rn9, "right") < 0 && nt_ref(nt, rn9, "left") >= 0) {
+          nt_ref(nt, rn9, "left") >= 0 &&
+          comp_ntype(c, nt_ref(nt, rn9, "left")) == TY_FLOAT &&
+          sp_streq(name, "size") && argc == 0) {
+        buf_puts(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); (mrb_int)0; })");
+        return 1;
+      }
+      /* an int begin with a finite Float end sizes by the floored span */
+      if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
+          nt_ref(nt, rn9, "left") >= 0 && nt_ref(nt, rn9, "right") >= 0 &&
+          comp_ntype(c, nt_ref(nt, rn9, "right")) == TY_FLOAT &&
+          !lazy_endpoint_is_infinite(c, nt_ref(nt, rn9, "right")) &&
+          sp_streq(name, "size") && argc == 0) {
+        int excl9 = (int)(nt_int(nt, rn9, "flags", 0) & 4) ? 1 : 0;
+        int tb9 = ++g_tmp, te9 = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", tb9);
+        emit_int_expr(c, nt_ref(nt, rn9, "left"), b);
+        buf_printf(b, "; double _t%d = ", te9);
+        emit_expr(c, nt_ref(nt, rn9, "right"), b);
+        buf_printf(b, "; double _d = _t%d - (double)_t%d;"
+                      " _d < 0 ? 0 : (%d && _t%d == floor(_t%d)) ? (mrb_int)_d : (mrb_int)floor(_d) + 1; })",
+                   te9, tb9, excl9, te9, te9);
+        return 1;
+      }
+      if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
+          (nt_ref(nt, rn9, "right") < 0 ||
+           lazy_endpoint_is_infinite(c, nt_ref(nt, rn9, "right"))) &&
+          nt_ref(nt, rn9, "left") >= 0) {
         if (sp_streq(name, "size") && argc == 0) {
           buf_puts(b, "(HUGE_VAL)");
           return 1;

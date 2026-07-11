@@ -219,7 +219,7 @@ int infer_param_hash_value(Compiler *c) {
    assigns an empty `{}` hash literal -- i.e. it is a hash container whose
    contents come from elsewhere (passed by reference into a callee). Such a
    local can safely adopt a hash type from a parameter it is passed to. */
-static int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
+int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name) {
   const NodeTable *nt = c->nt;
   int saw = 0;
   for (int id = 0; id < nt->count; id++) {
