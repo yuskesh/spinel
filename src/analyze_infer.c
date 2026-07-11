@@ -568,6 +568,9 @@ int range_enum_redispatch(Compiler *c, int id) {
     return 1;
   if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) && block >= 0)
     return 1;
+  /* cycle { }: the array emitter serves both the counted and endless forms;
+     the yielded elements are the range's own ints */
+  if (sp_streq(name, "cycle") && block >= 0) return 1;
   if ((sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) && block >= 0) return 1;
   /* reduce/inject: the explicit symbol / initial-value forms (no block). */
   if ((sp_streq(name, "reduce") || sp_streq(name, "inject")) && argc >= 1 && block < 0) return 1;

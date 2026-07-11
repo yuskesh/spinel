@@ -1849,11 +1849,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     return 1;
   }
 
-  /* array.cycle(n) { |p| body } -- repeat n times over the array */
+  /* array.cycle(n) { |p| body } -- repeat n times over the array; the
+     argless form cycles forever (a block `break` is the only exit) */
   if (sp_streq(name, "cycle") && ty_is_array(rt)) {
     int args = nt_ref(nt, id, "arguments");
     int cyc_argc = 0; const int *cyc_argv = args >= 0 ? nt_arr(nt, args, "arguments", &cyc_argc) : NULL;
-    if (cyc_argc != 1) return 0;
+    if (cyc_argc > 1) return 0;
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     if (!k) return 0;
     TyKind et = ty_array_elem(rt);
@@ -1865,10 +1866,15 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); emit_ctype(c, rt, b);
     buf_printf(b, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
-    emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = ", tn);
-    emit_expr(c, cyc_argv[0], b); buf_puts(b, ";\n");
     emit_indent(b, indent);
-    buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+    if (cyc_argc == 1) {
+      buf_printf(b, "mrb_int _t%d = ", tn);
+      emit_expr(c, cyc_argv[0], b); buf_puts(b, ";\n");
+      emit_indent(b, indent);
+      buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);
+    }
+    else
+      buf_puts(b, "for (;;) {\n");
     emit_indent(b, indent + 1);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", tj, tj, k, ta, tj);
     int innerIndent = indent + 2;
