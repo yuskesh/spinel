@@ -501,29 +501,31 @@ const char*sp_str_undump(const char*s){SP_GC_ROOT_STR(s);
   }
   out[oi]=0;return out;
 }
-const char*sp_str_succ_impl(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("succ");size_t l=strlen(s);if(l==0){char*r=sp_str_alloc_raw(1);r[0]=0;return r;}/* Find start of last codepoint */size_t lc=l-1;while(lc>0&&((unsigned char)s[lc]&0xC0)==0x80)lc--;if((unsigned char)s[lc]>=0x80){/* Multibyte tail: increment its codepoint */uint32_t cp;sp_utf8_decode(s+lc,&cp);cp++;char enc[4];int el=sp_utf8_encode(cp,enc);char*r=sp_str_alloc_raw(lc+el+1);memcpy(r,s,lc);memcpy(r+lc,enc,el);r[lc+el]=0;return r;}
-  /* ASCII: CRuby carries over the ALPHANUMERIC characters only, skipping
-     everything else ("<<koala>>".succ == "<<koalb>>"); when no alnum exists
-     the rightmost byte increments. A carry past the leftmost alnum inserts
-     the carry character ('1' for a digit run, 'a'/'A' for a letter run)
-     just before it ("zz" -> "aaa", "a9" -> "b0", "Zz" -> "AAa"). */
-  char*r=sp_str_alloc_raw(l+2);memcpy(r,s,l+1);
-  int has_alnum=0;for(size_t k=0;k<l;k++){unsigned char c=(unsigned char)r[k];if((c>='0'&&c<='9')||(c>='a'&&c<='z')||(c>='A'&&c<='Z')){has_alnum=1;break;}}
-  if(!has_alnum){r[l-1]=(char)((unsigned char)r[l-1]+1);return r;}
-  mrb_int i=(mrb_int)l-1;mrb_int last_alnum=-1;char carry_ch='1';
-  while(i>=0){
-    unsigned char c=(unsigned char)r[i];
-    int is_d=(c>='0'&&c<='9'),is_lo=(c>='a'&&c<='z'),is_up=(c>='A'&&c<='Z');
-    if(!is_d&&!is_lo&&!is_up){i--;continue;}
-    last_alnum=i;
-    if(is_d){if(c<'9'){r[i]=c+1;return r;}r[i]='0';carry_ch='1';i--;continue;}
-    if(is_lo){if(c<'z'){r[i]=c+1;return r;}r[i]='a';carry_ch='a';i--;continue;}
-    if(c<'Z'){r[i]=c+1;return r;}r[i]='A';carry_ch='A';i--;continue;
-  }
-  /* full carry: insert the carry character before the leftmost alnum */
-  memmove(r+last_alnum+1,r+last_alnum,l+1-(size_t)last_alnum);
-  r[last_alnum]=carry_ch;
-  return r;}
+const char*sp_str_succ_impl(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("succ");size_t l=strlen(s);if(l==0){char*r=sp_str_alloc_raw(1);r[0]=0;return r;}/* Find start of last codepoint */size_t lc=l-1;while(lc>0&&((unsigned char)s[lc]&0xC0)==0x80)lc--;if((unsigned char)s[lc]>=0x80){/* Multibyte tail: increment its codepoint */uint32_t cp;sp_utf8_decode(s+lc,&cp);cp++;char enc[4];int el=sp_utf8_encode(cp,enc);char*r=sp_str_alloc_raw(lc+el+1);memcpy(r,s,lc);memcpy(r+lc,enc,el);r[lc+el]=0;return r;}/* ASCII tail: CRuby's alnum-aware carry. The rightmost alphanumeric
+   increments; a wrap (9->0, z->a, Z->A) carries into the adjacent character
+   when it is alphanumeric of any class, else into the nearest alphanumeric
+   to the left of the SAME class (digit vs alpha); with no carry target left,
+   the wrapped class's carry character (1/a/A) is inserted at the wrap
+   position. A string with no alphanumerics increments its last byte. */
+char*r=sp_str_alloc_raw(l+2);memcpy(r,s,l+1);
+#define SP_SUCC_AL(ch) (((ch)>='0'&&(ch)<='9')||((ch)>='a'&&(ch)<='z')||((ch)>='A'&&(ch)<='Z'))
+mrb_int i=(mrb_int)l-1;
+while(i>=0&&!SP_SUCC_AL((unsigned char)r[i]))i--;
+if(i<0){r[l-1]=(char)((unsigned char)r[l-1]+1);return r;}
+for(;;){
+  unsigned char c=(unsigned char)r[i];
+  if(c!='9'&&c!='z'&&c!='Z'){r[i]=(char)(c+1);return r;}
+  int dig=(c=='9');
+  char ins=(c=='9')?'1':(c=='z')?'a':'A';
+  r[i]=(c=='9')?'0':(c=='z')?'a':'A';
+  if(i>0&&SP_SUCC_AL((unsigned char)r[i-1])){i--;continue;}
+  mrb_int j=i-1;
+  while(j>=0&&!SP_SUCC_AL((unsigned char)r[j]))j--;
+  if(j>=0){unsigned char cj=(unsigned char)r[j];int jdig=(cj>='0'&&cj<='9');if(jdig==dig){i=j;continue;}}
+  memmove(r+i+1,r+i,l-(size_t)i+1);r[i]=ins;return r;
+}
+#undef SP_SUCC_AL
+}
 /* The ASCII same-length carry paths in succ_impl allocate l+2 bytes (room for
    a prepend) but return a string of length l, leaving the heap header's len
    field one too large. Callers that read sp_str_byte_len (e.g. concat) then
@@ -665,13 +667,15 @@ mrb_int sp_str_byterindex(const char*s,const char*sub){if(!s)sp_nil_recv("byteri
 mrb_int sp_str_byterindex_from(const char*s,const char*sub,mrb_int pos){if(!s)sp_nil_recv("byterindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");mrb_int bl=(mrb_int)sp_str_byte_len(s);if(pos<0)pos+=bl;if(pos<0)return SP_INT_NIL;if(pos>bl)pos=bl;size_t sl=sp_str_byte_len(sub);if(sl==0)return pos;const char*end=s+bl;const char*p=s;mrb_int best=-1;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;mrb_int off=(mrb_int)(f-s);if(off>pos)break;best=off;p=f+1;}return best<0?SP_INT_NIL:best;}
 /* start/len are codepoint indices/counts. */
 /* `s[start, len]` char-indexed slice (UTF-8 aware). Negative start counts
-   back from the char length. A single-char ASCII result aliases the
-   per-process sp_char_cache so common indexing avoids an allocation. */
-const char*sp_str_sub_range(const char*s,mrb_int start,mrb_int len){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);return r;}
+   back from the char length. CRuby's nil contract: start past the length
+   (or before -length) and a negative len return NULL; start == length and
+   len == 0 return "". A single-char ASCII result aliases the per-process
+   sp_char_cache so common indexing avoids an allocation. */
+const char*sp_str_sub_range(const char*s,mrb_int start,mrb_int len){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");mrb_int cl=sp_str_length(s);if(start<0)start+=cl;if(start<0||start>cl||len<0)return NULL;if(start==cl||len==0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);return r;}
 /* Single-character `s[i]`. Returns NULL on out-of-bounds so the caller can
    yield CRuby's `"hello"[20] -> nil`. */
 const char*sp_str_char_at_or_nil(const char*s,mrb_int i){if(!s)sp_nil_recv("[]");mrb_int cl=sp_str_length(s);if(i<0)i+=cl;if(i<0||i>=cl)return NULL;return sp_str_sub_range(s,i,1);}
-const char*sp_str_sub_range_len(const char*s,mrb_int cl,mrb_int start,mrb_int len){SP_GC_ROOT_STR(s);if(start<0)start+=cl;if(start<0)start=0;if(start>=cl||len<=0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);return r;}
+const char*sp_str_sub_range_len(const char*s,mrb_int cl,mrb_int start,mrb_int len){SP_GC_ROOT_STR(s);if(start<0)start+=cl;if(start<0||start>cl||len<0)return NULL;if(start==cl||len==0){return &("\xff" "")[1];}if(start+len>cl)len=cl-start;size_t boff=sp_utf8_byte_offset(s,start);size_t blen_total=sp_str_byte_len(s);size_t bp=boff;mrb_int rem=len;while(rem>0&&bp<blen_total){bp+=sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);return r;}
 const char*sp_str_sub_range_r(const char*s,mrb_int start,mrb_int end_,mrb_int excl){if(!s)sp_nil_recv("[]");mrb_int cl=sp_str_length(s);if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 const char*sp_str_sub_range_len_r(const char*s,mrb_int cl,mrb_int start,mrb_int end_,mrb_int excl){if(end_<0)end_+=cl;if(start<0)start+=cl;mrb_int n=end_-start+(excl?0:1);if(n<0||start<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 const char*sp_str_reverse(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("reverse");size_t bl=strlen(s);char*r=sp_str_alloc_raw(bl+1);size_t end=bl;const char*p=s;while(*p){int cn=sp_utf8_advance(p);end-=cn;memcpy(r+end,p,cn);p+=cn;}r[bl]=0;return r;}

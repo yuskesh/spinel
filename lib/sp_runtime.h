@@ -2871,7 +2871,7 @@ static sp_PolyArray *sp_PolyArray_slice_range(sp_PolyArray *a, mrb_int start, mr
 /* 2-arg slice on a poly receiver: dispatch to the typed slice functions. */
 typedef struct sp_BoundMethod { void *self; mrb_int fn; const char *name; } sp_BoundMethod;
 static sp_RbVal sp_poly_slice(sp_RbVal a, mrb_int start, mrb_int len) {
-  if (a.tag == SP_TAG_STR) return sp_box_str(sp_str_sub_range(a.v.s ? a.v.s : "", start, len));
+  if (a.tag == SP_TAG_STR) return sp_box_nullable_str(sp_str_sub_range(a.v.s ? a.v.s : "", start, len));
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
   /* bm[a, b]: a boxed bound Method called with two int arguments (optcarrot's
      store dispatch table: `@store[addr][addr, value]`). */

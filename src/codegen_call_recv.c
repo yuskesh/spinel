@@ -4230,6 +4230,25 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "encoding") && argc == 0) buf_printf(b, "((void)(%s), sp_box_encoding(sp_encoding_utf8()))", r);
       else if (sp_streq(name, "dump") && argc == 0) buf_printf(b, "sp_str_dump(%s)", r);
       else if (sp_streq(name, "undump") && argc == 0) buf_printf(b, "sp_str_undump(%s)", r);
+      else if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
+               comp_ntype(c, argv[0]) == TY_POLY) {
+        /* runtime tag decides: a string argument compares, anything else is
+           nil (the call typed TY_POLY) */
+        int tb2 = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tb2); emit_expr(c, argv[0], b);
+        buf_printf(b, "; _t%d.tag == SP_TAG_STR ? ", tb2);
+        if (sp_streq(name, "casecmp"))
+          buf_printf(b, "sp_box_int(sp_str_casecmp(%s, _t%d.v.s ? _t%d.v.s : \"\"))", r, tb2, tb2);
+        else
+          buf_printf(b, "sp_box_bool(sp_str_casecmp(%s, _t%d.v.s ? _t%d.v.s : \"\") == 0)", r, tb2, tb2);
+        buf_puts(b, " : sp_box_nil(); })");
+      }
+      else if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
+               comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_UNKNOWN) {
+        /* statically non-string argument: nil (the call typed TY_NIL); the
+           argument still evaluates for effect */
+        buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+      }
       else if (sp_streq(name, "casecmp") && argc == 1) { buf_printf(b, "sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "casecmp?") && argc == 1) { buf_printf(b, "(sp_str_casecmp(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ") == 0)"); }
       else if (sp_streq(name, "byteslice") && argc == 2) { buf_printf(b, "sp_str_byteslice(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")"); }

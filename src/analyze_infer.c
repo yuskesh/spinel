@@ -3468,9 +3468,17 @@ else {
       if (aty && sp_streq(aty, "RegularExpressionNode")) return TY_INT;
       if (infer_type(c, argv[0]) == TY_REGEX) return TY_INT;
     }
+    /* casecmp/casecmp? with a statically non-string argument: CRuby answers
+       nil rather than raising, so the call types nil (the emitter drops the
+       comparison and evaluates the argument for effect). */
+    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1) {
+      TyKind at0 = infer_type(c, argv[0]);
+      if (at0 == TY_POLY) return TY_POLY;  /* runtime tag decides: boxed result or nil */
+      if (at0 != TY_STRING && at0 != TY_UNKNOWN) return TY_NIL;
+      return sp_streq(name, "casecmp") ? TY_INT : TY_BOOL;
+    }
     if (sp_streq(name, "index") || sp_streq(name, "to_i") || sp_streq(name, "count") ||
         sp_streq(name, "oct") || sp_streq(name, "hex") || sp_streq(name, "ord") ||
-        sp_streq(name, "casecmp") ||
         sp_streq(name, "bytesize") || sp_streq(name, "setbyte") || sp_streq(name, "getbyte")) return TY_INT;
     if (sp_streq(name, "scrub") || sp_streq(name, "crypt")) return TY_STRING;
     if (sp_streq(name, "sum") && argc == 0) return TY_INT;
@@ -3494,7 +3502,7 @@ else {
         sp_streq(name, "concat") || sp_streq(name, "<<") || sp_streq(name, "prepend") ||
         sp_streq(name, "insert") || sp_streq(name, "replace"))
       return TY_STRING;
-    if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
+    if (sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
     if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;
     if ((sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
