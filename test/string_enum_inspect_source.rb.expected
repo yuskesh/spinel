@@ -1,0 +1,8 @@
+#<Enumerator: "abc":each_char>
+#<Enumerator: "a\nb\n":each_line>
+#<Enumerator: "ab":each_byte>
+#<Enumerator: "ab":each_codepoint>
+#<Enumerator: "x\ny\n":each_line(chomp: true)>
+"h"
+"i"
+["h", "i"]

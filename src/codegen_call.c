@@ -5363,15 +5363,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
       nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
        sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint"))) {
+    /* spill the receiver once: it feeds both the snapshot and the
+       inspect-visible source stamp */
+    int tsrc = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tsrc);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsrc);
     if (sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) {
       const char *fn = sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";
-      buf_printf(b, "sp_Enumerator_new_from(sp_box_int_array(%s(", fn);
-      emit_expr(c, recv, b); buf_puts(b, ")))");
+      buf_printf(b, "sp_enum_with_src(sp_Enumerator_new_from(sp_box_int_array(%s(_t%d))), "
+                    "sp_box_str(_t%d), \"%s\"); })", fn, tsrc, tsrc, name);
       return;
     }
     const char *itemfn = sp_streq(name, "each_char") ? "sp_str_chars_poly" : "sp_str_lines_poly";
-    buf_printf(b, "sp_Enumerator_new_from_items(%s(", itemfn);
-    emit_expr(c, recv, b); buf_puts(b, "))");
+    buf_printf(b, "sp_enum_with_src(sp_Enumerator_new_from_items(%s(_t%d)), "
+                  "sp_box_str(_t%d), \"%s\"); })", itemfn, tsrc, tsrc, name);
     return;
   }
   /* str.each_line(chomp: ...) with no block -> an Enumerator over the
@@ -5382,9 +5388,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int chomp_v = struct_kwarg_value(c, argv[0], "chomp");
     int is_chomp = (chomp_v >= 0 && nt_type(nt, chomp_v) &&
                     sp_streq(nt_type(nt, chomp_v), "TrueNode"));
-    buf_printf(b, "sp_Enumerator_new_from(sp_box_str_array(%s(",
-               is_chomp ? "sp_str_lines_chomp" : "sp_str_lines");
-    emit_expr(c, recv, b); buf_puts(b, ")))");
+    int tsrc2 = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tsrc2);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); "
+                  "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(%s(_t%d))), "
+                  "sp_box_str(_t%d), \"each_line(chomp: %s)\"); })",
+               tsrc2, is_chomp ? "sp_str_lines_chomp" : "sp_str_lines", tsrc2, tsrc2,
+               is_chomp ? "true" : "false");
     return;
   }
   /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized

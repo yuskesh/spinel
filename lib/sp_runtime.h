@@ -6604,6 +6604,15 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr; e->meth = "each";
   return e;
 }
+/* Stamp the iterated receiver and creating method onto a fresh Enumerator so
+   #inspect shows the true origin (`#<Enumerator: "abc":each_char>`), not the
+   materialized snapshot. Returns the enumerator for ctor-expression chaining. */
+static sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth) __attribute__((unused));
+static sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth) {
+  e->source = src;
+  e->meth = meth;
+  return e;
+}
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
   mrb_int n = sp_poly_length(h);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
