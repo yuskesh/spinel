@@ -3602,6 +3602,42 @@ static sp_PolyArray *sp_PolyArray_sort_by_first(sp_PolyArray *a) {
   for (mrb_int i = 0; b && i < b->len; i++) sp_PolyArray_push(r, sp_poly_arr_get(b->data[i], 1));
   return r;
 }
+/* value-form bangs: CRuby returns self when the call CHANGED the receiver
+   and nil when it was a no-op. The plain *_bang statements stay void. */
+static void sp_PolyArray_uniq_bang(sp_PolyArray *a);
+static sp_RbVal sp_PolyArray_uniq_bangq(sp_PolyArray *a) {
+  if (!a) return sp_box_nil();
+  mrb_int n = a->len;
+  sp_PolyArray_uniq_bang(a);
+  return a->len != n ? sp_box_poly_array(a) : sp_box_nil();
+}
+static sp_RbVal sp_PolyArray_compact_bangq(sp_PolyArray *a) {
+  if (!a) return sp_box_nil();
+  mrb_int n = a->len;
+  sp_PolyArray_compact_bang(a);
+  return a->len != n ? sp_box_poly_array(a) : sp_box_nil();
+}
+static sp_RbVal sp_PolyArray_flatten_bangq(sp_PolyArray *a) {
+  if (!a) return sp_box_nil();
+  int ch = 0;
+  for (mrb_int i = 0; i < a->len && !ch; i++)
+    if (a->data[i].tag == SP_TAG_OBJ && sp_poly_is_array_kind(a->data[i].cls_id)) ch = 1;
+  if (!ch) return sp_box_nil();
+  sp_PolyArray_flatten_bang(a);
+  return sp_box_poly_array(a);
+}
+static sp_RbVal sp_IntArray_uniq_bangq(sp_IntArray *a) {
+  if (!a) return sp_box_nil();
+  mrb_int n = a->len;
+  sp_IntArray_uniq_bang(a);
+  return a->len != n ? sp_box_int_array(a) : sp_box_nil();
+}
+static sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
+  if (!a) return sp_box_nil();
+  mrb_int n = a->len;
+  sp_StrArray_uniq_bang(a);
+  return a->len != n ? sp_box_str_array(a) : sp_box_nil();
+}
 static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eq(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[(mrb_int)(rand()%a->len)]; }
 

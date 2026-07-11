@@ -2543,6 +2543,8 @@ else {
     }
     if ((sp_streq(name, "select!") || sp_streq(name, "filter!") || sp_streq(name, "reject!")) &&
         block >= 0) return TY_POLY;  /* self, or nil when nothing was removed */
+    if ((sp_streq(name, "uniq!") || sp_streq(name, "compact!") || sp_streq(name, "flatten!")) &&
+        argc == 0 && block < 0) return TY_POLY;  /* self, or nil when a no-op */
     if ((sp_streq(name, "keep_if") || sp_streq(name, "delete_if")) && block >= 0)
       return rt;  /* always self */
     if (sp_streq(name, "find_index") || sp_streq(name, "index") || sp_streq(name, "rindex")) return TY_INT;  /* int or nil */
@@ -2563,12 +2565,12 @@ else {
     if (sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append") ||
         sp_streq(name, "reverse") || sp_streq(name, "sort") || sp_streq(name, "uniq") ||
         sp_streq(name, "to_a") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
-        sp_streq(name, "compact") || sp_streq(name, "compact!") || sp_streq(name, "flatten") || sp_streq(name, "clear") ||
+        sp_streq(name, "compact") || sp_streq(name, "flatten") || sp_streq(name, "clear") ||
         sp_streq(name, "transpose") ||
         sp_streq(name, "shuffle") ||
         (sp_streq(name, "union") && argc == 0) ||
         sp_streq(name, "reverse!") || sp_streq(name, "sort!") || sp_streq(name, "shuffle!") ||
-        sp_streq(name, "uniq!") ||
+
         sp_streq(name, "rotate!") || sp_streq(name, "rotate") || sp_streq(name, "insert") || sp_streq(name, "unshift") || sp_streq(name, "prepend") || sp_streq(name, "concat") || sp_streq(name, "freeze") ||
         (sp_streq(name, "fill") && ((block < 0 && argc >= 1 && argc <= 3) ||
                                     (block >= 0 && argc <= 2))) ||
@@ -3163,6 +3165,17 @@ else {
     if ((sp_streq(name, "byteindex") || sp_streq(name, "byterindex")) &&
         (argc == 1 || argc == 2) && comp_ntype(c, argv[0]) == TY_STRING) return TY_INT;
     if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
+    /* value-form mutators: the post-mutation string; the no-change bang
+       contract carries nil as NULL through the nullable string. */
+    if (sp_streq(name, "gsub!") || sp_streq(name, "sub!") || sp_streq(name, "upcase!") ||
+        sp_streq(name, "downcase!") || sp_streq(name, "capitalize!") || sp_streq(name, "swapcase!") ||
+        sp_streq(name, "strip!") || sp_streq(name, "lstrip!") || sp_streq(name, "rstrip!") ||
+        sp_streq(name, "chomp!") || sp_streq(name, "chop!") || sp_streq(name, "squeeze!") ||
+        sp_streq(name, "tr!") || sp_streq(name, "delete!") || sp_streq(name, "reverse!") ||
+        sp_streq(name, "succ!") || sp_streq(name, "next!") ||
+        sp_streq(name, "concat") || sp_streq(name, "<<") || sp_streq(name, "prepend") ||
+        sp_streq(name, "insert") || sp_streq(name, "replace"))
+      return TY_STRING;
     if (sp_streq(name, "casecmp?") || sp_streq(name, "ascii_only?") || sp_streq(name, "valid_encoding?")) return TY_BOOL;
     if (sp_streq(name, "to_f"))  return TY_FLOAT;
     if (sp_streq(name, "to_r") && argc == 0) return TY_RATIONAL;

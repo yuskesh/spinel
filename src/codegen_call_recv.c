@@ -131,6 +131,91 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     return 0;  /* unsupported obj-array op: pass should have prevented this. */
   }
+  /* String value-form mutators: the expression yields the post-mutation
+     string -- or nil for the no-change bang contract -- and reassigns an
+     lvalue receiver (value-semantics strings). The transform reuses the
+     non-bang emitter through a temporary node rename. */
+  if (rt == TY_STRING && recv >= 0) {
+    static const struct { const char *bang, *plain; int nil_nc; } SBANG[] = {
+      {"gsub!", "gsub", 1}, {"sub!", "sub", 1}, {"upcase!", "upcase", 1},
+      {"downcase!", "downcase", 1}, {"capitalize!", "capitalize", 1},
+      {"swapcase!", "swapcase", 1}, {"strip!", "strip", 1}, {"lstrip!", "lstrip", 1},
+      {"rstrip!", "rstrip", 1}, {"chomp!", "chomp", 1}, {"chop!", "chop", 1},
+      {"squeeze!", "squeeze", 1}, {"tr!", "tr", 1}, {"delete!", "delete", 1},
+      {"reverse!", "reverse", 0}, {"succ!", "succ", 0}, {"next!", "next", 0},
+      {NULL, NULL, 0}
+    };
+    int sbi = -1;
+    for (int j = 0; SBANG[j].bang; j++) if (sp_streq(name, SBANG[j].bang)) { sbi = j; break; }
+    if (sbi >= 0) {
+      const char *rvt2 = nt_type(nt, recv);
+      int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
+                         sp_streq(rvt2, "InstanceVariableReadNode"));
+      int to = ++g_tmp, tn2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
+      nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].plain);
+      Buf nb; memset(&nb, 0, sizeof nb);
+      emit_expr(c, id, &nb);
+      nt_node_set_str((NodeTable *)nt, id, "name", SBANG[sbi].bang);
+      buf_printf(b, "const char *_t%d = %s; ", tn2, nb.p ? nb.p : "");
+      free(nb.p);
+      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      if (SBANG[sbi].nil_nc)
+        buf_printf(b, "sp_str_eq(_t%d, _t%d) ? NULL : _t%d; })", to, tn2, tn2);
+      else
+        buf_printf(b, "_t%d; })", tn2);
+      return 1;
+    }
+    if ((sp_streq(name, "concat") || sp_streq(name, "<<") ||
+         sp_streq(name, "prepend")) && argc >= 1) {
+      const char *rvt2 = nt_type(nt, recv);
+      int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
+                         sp_streq(rvt2, "InstanceVariableReadNode"));
+      int tn2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", tn2);
+      if (sp_streq(name, "prepend")) {
+        /* args first (in order), then the receiver */
+        for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
+        emit_str_expr(c, argv[0], b);
+        for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
+        buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ")");
+      }
+      else {
+        for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
+        emit_expr(c, recv, b);
+        for (int j = 0; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
+      }
+      buf_puts(b, "; ");
+      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      buf_printf(b, "_t%d; })", tn2);
+      return 1;
+    }
+    if (sp_streq(name, "insert") && argc == 2) {
+      const char *rvt2 = nt_type(nt, recv);
+      int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
+                         sp_streq(rvt2, "InstanceVariableReadNode"));
+      int to = ++g_tmp, ti2 = ++g_tmp, tn2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; if (_t%d < 0) _t%d += (mrb_int)sp_str_length(_t%d) + 1;", ti2, ti2, to);
+      buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d, 0, ", tn2, to, ti2);
+      emit_str_expr(c, argv[1], b); buf_puts(b, ", 0); ");
+      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      buf_printf(b, "_t%d; })", tn2);
+      return 1;
+    }
+    if (sp_streq(name, "replace") && argc == 1) {
+      const char *rvt2 = nt_type(nt, recv);
+      int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
+                         sp_streq(rvt2, "InstanceVariableReadNode"));
+      int tn2 = ++g_tmp;
+      buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+      buf_printf(b, "); const char *_t%d = ", tn2); emit_str_expr(c, argv[0], b); buf_puts(b, "; ");
+      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      buf_printf(b, "_t%d; })", tn2);
+      return 1;
+    }
+  }
   /* String#slice! in VALUE position: returns the removed part (or nil) and
      reassigns the receiver; statement position has its own arm. The
      receiver must be an lvalue (re-read and re-assigned). */
@@ -148,6 +233,43 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, recv, b);
       buf_printf(b, " = sp_str_sub("); emit_expr(c, recv, b);
       buf_printf(b, ", _t%d, (&(\"\\xff\")[1])); _hit%d ? _t%d : (const char *)0; })", tp2, tp2, tp2);
+      return 1;
+    }
+    if (argc == 1 && (comp_ntype(c, argv[0]) == TY_INT || comp_ntype(c, argv[0]) == TY_RANGE)) {
+      /* slice!(i) / slice!(range): the removed part (or nil), reassigning an
+         lvalue receiver; a literal receiver just yields the removed part. */
+      int to = ++g_tmp, tb2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp, tr2 = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b);
+      buf_printf(b, "; mrb_int _t%d = (mrb_int)sp_str_length(_t%d); mrb_int _t%d, _t%d;",
+                 tn2, to, tb2, tl2);
+      if (comp_ntype(c, argv[0]) == TY_RANGE) {
+        int trg = ++g_tmp;
+        buf_printf(b, " sp_Range _t%d = ", trg); emit_expr(c, argv[0], b);
+        buf_printf(b, "; _t%d = _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
+                   tb2, trg, trg, tn2, trg);
+        buf_printf(b, " _t%d = (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
+                   tl2, trg, trg, tn2, trg, tb2, trg);
+        buf_printf(b, " if (_t%d < 0) _t%d = 0;", tl2, tl2);
+      }
+      else {
+        buf_printf(b, " _t%d = ", tb2); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; _t%d = 1; if (_t%d < 0) _t%d += _t%d;", tl2, tb2, tb2, tn2);
+      }
+      buf_printf(b, " const char *_t%d = NULL;"
+                    " if (_t%d >= 0 && _t%d < _t%d && _t%d > 0) {"
+                    " if (_t%d > _t%d - _t%d) _t%d = _t%d - _t%d;"
+                    " _t%d = sp_str_sub_range(_t%d, _t%d, _t%d);",
+                 tr2,
+                 tb2, tb2, tn2, tl2,
+                 tl2, tn2, tb2, tl2, tn2, tb2,
+                 tr2, to, tb2, tl2);
+      if (sb_asgn) {
+        buf_puts(b, " ");
+        emit_expr(c, recv, b);
+        buf_printf(b, " = sp_str_concat(sp_str_sub_range(_t%d, 0, _t%d), sp_str_sub_range(_t%d, _t%d + _t%d, _t%d - _t%d - _t%d));",
+                   to, tb2, to, tb2, tl2, tn2, tb2, tl2);
+      }
+      buf_printf(b, " } _t%d; })", tr2);
       return 1;
     }
     if (sb_asgn && argc == 2) {
@@ -920,13 +1042,24 @@ else {
         if      (sp_streq(name, "reverse!")) base = "reverse_bang";
         else if (sp_streq(name, "sort!"))    base = "sort_bang";
         else if (sp_streq(name, "shuffle!")) base = "shuffle_bang";
-        else if (sp_streq(name, "uniq!"))    base = "uniq_bang";
         if (base && argc == 0) {
           int t = ++g_tmp;
           buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
           buf_printf(b, "; sp_%sArray_%s(_t%d); _t%d; })", k, base, t, t);
           return 1;
         }
+      }
+      if (sp_streq(name, "uniq!") && argc == 0 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+        /* value form: self when changed, nil when a no-op (CRuby) */
+        buf_printf(b, "sp_%sArray_uniq_bangq(", k); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+      if ((sp_streq(name, "flatten!") || sp_streq(name, "compact!")) && argc == 0 &&
+          (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) {
+        /* a typed array can hold neither sub-arrays nor nils: both bangs are
+           always a no-op, and CRuby's no-op contract is nil */
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_box_nil())");
+        return 1;
       }
       if ((sp_streq(name, "dup") || sp_streq(name, "clone")) && (argc == 0 || argc == 1)) {
         /* a real copy: arrays are mutable, so dup/clone must not alias.
@@ -1095,11 +1228,25 @@ else {
         buf_printf(b, "); _t%d; })", t);
         return 1;
       }
-      if (sp_streq(name, "insert") && argc == 2 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
-        int t = ++g_tmp;
+      if (sp_streq(name, "insert") && argc >= 2 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+        /* insert(i, v1, v2, ...): normalize a negative index ONCE against the
+           pre-insert length (per-element normalization would drift as the
+           array grows), then insert consecutively. */
+        int t = ++g_tmp, ti2 = ++g_tmp, to2 = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_%sArray_insert(_t%d, ", k, t); emit_expr(c, argv[0], b);
-        buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_printf(b, "); _t%d; })", t);
+        buf_printf(b, "; mrb_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+        /* normalize ONCE, keeping the too-negative IndexError the runtime
+           helper would have raised (it must not see a pre-added index) */
+        buf_printf(b, "; mrb_int _t%d = _t%d; if (_t%d < 0) { _t%d += (_t%d ? _t%d->len : 0) + 1;"
+                      " if (_t%d < 0) sp_raise_cls(\"IndexError\","
+                      " sp_sprintf(\"index %%lld too small for array; minimum: %%lld\","
+                      " (long long)_t%d, (long long)(-((_t%d ? _t%d->len : 0) + 1)))); }",
+                   to2, ti2, ti2, ti2, t, t, ti2, to2, t, t);
+        for (int a2 = 1; a2 < argc; a2++) {
+          buf_printf(b, " sp_%sArray_insert(_t%d, _t%d + %d, ", k, t, ti2, a2 - 1);
+          emit_expr(c, argv[a2], b); buf_puts(b, ");");
+        }
+        buf_printf(b, " _t%d; })", t);
         return 1;
       }
       if (sp_streq(name, "delete_at") && argc == 1) {
@@ -1906,10 +2053,17 @@ else {
         return 1;
       }
       if (sp_streq(name, "insert") && argc >= 2) {
-        int t = ++g_tmp, ti2 = ++g_tmp;
+        int t = ++g_tmp, ti2 = ++g_tmp, to2 = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); mrb_int _t%d = ", t, ti2); emit_int_expr(c, argv[0], b);
         buf_puts(b, ";");
+        /* normalize ONCE (per-element normalization would drift as the array
+           grows), keeping the too-negative IndexError the helper would raise */
+        buf_printf(b, " mrb_int _t%d = _t%d; if (_t%d < 0) { _t%d += (_t%d ? _t%d->len : 0) + 1;"
+                      " if (_t%d < 0) sp_raise_cls(\"IndexError\","
+                      " sp_sprintf(\"index %%lld too small for array; minimum: %%lld\","
+                      " (long long)_t%d, (long long)(-((_t%d ? _t%d->len : 0) + 1)))); }",
+                   to2, ti2, ti2, ti2, t, t, ti2, to2, t, t);
         for (int a2 = 1; a2 < argc; a2++) {
           buf_printf(b, " sp_PolyArray_insert(_t%d, _t%d + %d, ", t, ti2, a2 - 1);
           emit_boxed(c, argv[a2], b); buf_puts(b, ");");
@@ -2011,7 +2165,8 @@ else {
         return 1;
       }
       if (sp_streq(name, "compact!") && argc == 0) {
-        buf_puts(b, "sp_PolyArray_compact_bang("); emit_expr(c, recv, b); buf_puts(b, ")");
+        /* value form: self when changed, nil when a no-op (CRuby) */
+        buf_puts(b, "sp_PolyArray_compact_bangq("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "flatten") && argc <= 1) {
@@ -2020,7 +2175,8 @@ else {
         return 1;
       }
       if (sp_streq(name, "flatten!") && argc == 0) {
-        buf_puts(b, "sp_PolyArray_flatten_bang("); emit_expr(c, recv, b); buf_puts(b, ")");
+        /* value form: self when changed, nil when a no-op (CRuby) */
+        buf_puts(b, "sp_PolyArray_flatten_bangq("); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "transpose") && argc == 0) {
@@ -2114,13 +2270,17 @@ else {
         if      (sp_streq(name, "reverse!")) base = "reverse_bang";
         else if (sp_streq(name, "shuffle!")) base = "shuffle_bang";
         else if (sp_streq(name, "sort!"))    base = "sort_bang";
-        else if (sp_streq(name, "uniq!"))    base = "uniq_bang";
         if (base && argc == 0) {
           int t = ++g_tmp;
           buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
           buf_printf(b, "; sp_PolyArray_%s(_t%d); _t%d; })", base, t, t);
           return 1;
         }
+      }
+      if (sp_streq(name, "uniq!") && argc == 0) {
+        /* value form: self when changed, nil when a no-op (CRuby) */
+        buf_puts(b, "sp_PolyArray_uniq_bangq("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
       }
       if (sp_streq(name, "product") && argc == 1 && a0 == TY_POLY_ARRAY) {
         int ta = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, tpair = ++g_tmp;
