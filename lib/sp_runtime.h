@@ -3440,7 +3440,42 @@ else {
       if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
       else if (v.tag == SP_TAG_FLT) lv = (long long)v.v.f;
       else if (v.tag == SP_TAG_STR && v.v.s) lv = strtoll(v.v.s, NULL, 10);
-      wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
+      if (lv < 0 && (conv == 'x' || conv == 'X' || conv == 'o')) {
+        /* Ruby renders a negative under a non-decimal base as an infinite
+           two's complement: ".." + (base-1 digit) + the digits that differ
+           (a '+'/' ' flag switches to the signed magnitude form instead). */
+        int has_sign_flag = 0;
+        for (size_t fi = 1; fi < sl - 1; fi++)
+          if (spec[fi] == '+' || spec[fi] == ' ') { has_sign_flag = 1; break; }
+        int b2 = conv == 'o' ? 8 : 16;
+        if (has_sign_flag) {
+          char core[64]; int cn = 0;
+          unsigned long long uv = (unsigned long long)(-lv);
+          if (conv == 'o') cn = snprintf(core, sizeof core, "%llo", uv);
+          else if (conv == 'x') cn = snprintf(core, sizeof core, "%llx", uv);
+          else cn = snprintf(core, sizeof core, "%llX", uv);
+          (void)cn;
+          wn = snprintf(tmp, sizeof(tmp), "-%s", core);
+        }
+        else {
+          char digs[64]; int nd2 = 0;
+          long long w2 = lv;
+          while (w2 != -1) {
+            long long d2 = w2 % b2;
+            if (d2 < 0) d2 += b2;
+            digs[nd2++] = (char)(d2 < 10 ? '0' + d2
+                                : (conv == 'X' ? 'A' : 'a') + (d2 - 10));
+            w2 = (w2 - d2) / b2;
+          }
+          char top = conv == 'o' ? '7' : (conv == 'X' ? 'F' : 'f');
+          int o2 = 0;
+          tmp[o2++] = '.'; tmp[o2++] = '.'; tmp[o2++] = top;
+          for (int di = nd2 - 1; di >= 0; di--) tmp[o2++] = digs[di];
+          tmp[o2] = 0;
+          wn = o2;
+        }
+      }
+      else wn = snprintf(tmp, sizeof(tmp), fmt_use, lv);
     }
 else if (conv == 'b' || conv == 'B') {
       long long lv = 0;

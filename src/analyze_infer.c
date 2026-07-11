@@ -2193,6 +2193,7 @@ else {
       if (at == TY_INT)    return TY_INT_ARRAY;    /* Array(int)   -> [int]   */
       if (at == TY_FLOAT)  return TY_FLOAT_ARRAY;  /* Array(float) -> [float] */
       if (at == TY_STRING) return TY_STR_ARRAY;    /* Array(str)   -> [str]   */
+      if (at == TY_RANGE)  return TY_INT_ARRAY;    /* Array(range) enumerates */
       return TY_POLY_ARRAY;
     }
     if ((sp_streq(name, "format") || sp_streq(name, "sprintf")) && argc >= 1) return TY_STRING;

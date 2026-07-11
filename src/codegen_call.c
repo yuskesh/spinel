@@ -5627,6 +5627,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
          routes through the runtime coercion, which yields a poly array. */
       TyKind at = comp_ntype(c, av[0]);
       if (ty_is_array(at)) emit_expr(c, av[0], b);
+      else if (at == TY_RANGE) {
+        /* Array(range) enumerates it */
+        int tr6 = ++g_tmp;
+        buf_printf(b, "({ sp_Range _t%d = ", tr6); emit_expr(c, av[0], b);
+        buf_printf(b, "; sp_range_to_ia(_t%d); })", tr6);
+      }
+      else if (ty_is_hash(at) && ty_hash_cname(at)) {
+        /* Array(hash) is the pair list */
+        buf_puts(b, "sp_enum_items_from(");
+        emit_boxed(c, av[0], b);
+        buf_puts(b, ")");
+      }
       else if (at == TY_INT || at == TY_FLOAT || at == TY_STRING) {
         const char *ak = at == TY_INT ? "Int" : at == TY_FLOAT ? "Float" : "Str";
         int t = ++g_tmp;

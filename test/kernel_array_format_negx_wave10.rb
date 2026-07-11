@@ -1,0 +1,20 @@
+# Kernel#Array enumerates Ranges and Hashes; format %x/%X/%o of a negative
+# renders Ruby's infinite-two's-complement ..-notation (sign flags switch
+# to signed magnitude). Complex(String) and the Rational division family.
+p(Complex("2+3i"))
+p(Rational(7,2) % Rational(1,3))
+p(Rational(7,2).divmod(Rational(1,3)))
+p(Rational(7,2).div(Rational(1,3)))
+p(Rational(7,2).fdiv(Rational(1,3)))
+p(Rational(7,2).quo(Rational(1,3)))
+p(Rational(7,2).remainder(Rational(1,3)))
+p(Array(1..3))
+p(Array({a: 1}))
+p(Array(nil))
+p(format("%x", -1))
+p(format("%o", -8))
+p(format("%x", 255))
+p(format("%+x", -1))
+p(format("%X", -1))
+p(format("%x", -256))
+p(format("%o", 64))
