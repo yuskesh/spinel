@@ -238,7 +238,7 @@ mrb_float sp_str_to_f_strict(const char *s) {
     char *buf = n < sizeof sbuf ? sbuf : (char *)malloc(n + 1);
     if (!buf) { perror("malloc"); exit(1); }
     size_t o = 0;
-    int hex = 0, sawdigit = 0;
+    int hex = 0, sawdigit = 0, sawp = 0, sawdot = 0;
     const char *q = s;
     while (isspace((unsigned char)*q)) q++;
     const char *start = q;
@@ -256,22 +256,26 @@ mrb_float sp_str_to_f_strict(const char *s) {
         /* hex FLOATS are valid Float() input: 0x1p4 / 0x1.8p-1 (hex digits,
            an optional single point before the mandatory p-exponent, then
            decimal exponent digits with an optional sign) */
-        static const int HEXP = 2;   /* marker via sawdigit bits is overkill; track locally */
-        (void)HEXP;
+        /* sawp/sawdot flags, NOT strchr(buf, ...): buf is not yet
+           NUL-terminated inside this loop, so strchr read past the written
+           prefix into uninitialized stack (a stray 'p' there failed valid
+           inputs like "0xa" depending on the caller's stack residue) */
         if (ch == 'p' || ch == 'P') {
-          if (!sawdigit || strchr(buf, 'p') || strchr(buf, 'P')) goto bad;
+          if (!sawdigit || sawp) goto bad;
+          sawp = 1;
           buf[o++] = ch;
           if (q[1] == '+' || q[1] == '-') { buf[o++] = q[1]; q++; }
           if (!isdigit((unsigned char)q[1])) goto bad;
           continue;
         }
-        if (strchr(buf, 'p') || strchr(buf, 'P')) {
+        if (sawp) {
           if (!isdigit((unsigned char)ch)) goto bad;
           buf[o++] = ch;
           continue;
         }
         if (ch == '.') {
-          if (strchr(buf, '.') || !isxdigit((unsigned char)q[1])) goto bad;
+          if (sawdot || !isxdigit((unsigned char)q[1])) goto bad;
+          sawdot = 1;
           buf[o++] = ch;
           continue;
         }

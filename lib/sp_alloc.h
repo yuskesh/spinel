@@ -174,6 +174,33 @@ static inline const char *sp_str_dup_external(const char *s) {
 
 /* Integer / Float -> decimal string. Shared here (over the string heap) so cold
    readers such as lib/sp_json.c can format numbers without sp_runtime.h. */
+/* Interpolation writers: append one part into a caller-provided buffer and
+   return the new tail. emit_interp sizes the buffer from static bounds
+   (SP_W_INT_MAX digits per int, literal lengths) plus sp_str_byte_len of the
+   pre-evaluated dynamic parts, so one sp_str_alloc_raw serves the whole
+   string (previously: one heap string per part + an sp_sprintf pass). */
+#define SP_W_INT_MAX 21  /* -9223372036854775808 */
+static inline char *sp_w_int(char *p, mrb_int n) {
+  if (n == SP_INT_NIL) return p;  /* a nil int slot interpolates as "" */
+  uint64_t u;
+  if (n < 0) { *p++ = '-'; u = (uint64_t)(-(n + 1)) + 1; }
+  else u = (uint64_t)n;
+  char tmp[SP_W_INT_MAX]; int i = 0;
+  do { tmp[i++] = (char)('0' + (u % 10)); u /= 10; } while (u > 0);
+  while (i > 0) *p++ = tmp[--i];
+  return p;
+}
+static inline char *sp_w_str(char *p, const char *s) {
+  if (!s) return p;
+  size_t l = sp_str_byte_len(s);
+  memcpy(p, s, l);
+  return p + l;
+}
+static inline char *sp_w_bool(char *p, mrb_bool v) {
+  if (v) { memcpy(p, "true", 4); return p + 4; }
+  memcpy(p, "false", 5); return p + 5;
+}
+
 static inline const char *sp_int_to_s(mrb_int n){char*b=sp_str_alloc_raw(32);int len=snprintf(b,32,"%lld",(long long)n);if(len<0)len=0;sp_str_set_len(b,(size_t)len);return b;}
 /* Float#to_s (Ruby semantics): the shortest decimal that round-trips, fixed
    point for a decimal exponent in [-4, 15], scientific otherwise; NaN, ±Infinity
@@ -182,6 +209,18 @@ static inline const char*sp_float_to_s(mrb_float f){
   if(f!=f){char*r=sp_str_alloc_raw(4);r[0]='N';r[1]='a';r[2]='N';r[3]=0;return r;}
   if(f==HUGE_VAL||f==-HUGE_VAL){if(f<0){char*r=sp_str_alloc_raw(10);memcpy(r,"-Infinity",10);return r;}char*r=sp_str_alloc_raw(9);memcpy(r,"Infinity",9);return r;}
   if(f==0.0){if(signbit(f)){char*r=sp_str_alloc_raw(5);memcpy(r,"-0.0",5);return r;}char*r=sp_str_alloc_raw(4);memcpy(r,"0.0",4);return r;}
+  /* integer-valued doubles skip the shortest-representation search below
+     (up to 18 snprintf+strtod probes): write the integer digits + ".0"
+     directly. |f| < 2^53 keeps the mrb_int cast exact. */
+  if(f>-1e15&&f<1e15&&f==(mrb_float)(mrb_int)f){
+    /* bound matches the fixed-notation window below (decimal exponent <= 15);
+       larger integer-valued doubles print scientific like CRuby */
+    char*r=sp_str_alloc_raw(32);
+    char*e=sp_w_int(r,(mrb_int)f);
+    *e++='.';*e++='0';*e=0;
+    sp_str_set_len(r,(size_t)(e-r));
+    return r;
+  }
   char tmp[64];int p;
   for(p=0;p<=17;p++){snprintf(tmp,sizeof(tmp),"%.*e",p,(double)f);if(strtod(tmp,NULL)==f)break;}
   int neg=(tmp[0]=='-')?1:0;const char*s=tmp+neg;char digits[32];int dlen=0;

@@ -64,32 +64,50 @@ void emit_interp(Compiler *c, int id, Buf *b) {
   int *flat = NULL, fcap = 0;
   interp_flatten(nt, id, &flat, &n, &fcap);
   const int *parts = flat;
-  Buf fmt; memset(&fmt, 0, sizeof fmt);
-  Buf argbuf; memset(&argbuf, 0, sizeof argbuf);
-  Buf decls; memset(&decls, 0, sizeof decls);  /* rooted %s-arg temp decls */
-  int nargs = 0;
+
+  /* Single-buffer construction: every part is either an escaped literal
+     (compile-time length), a bounded-width scalar (int <= 21 digits, bool
+     <= 5), or a dynamic part pre-evaluated -- in part order, preserving
+     side-effect order -- into a rooted `const char *` temp whose byte length
+     feeds the capacity sum. One sp_str_alloc_raw then serves the whole
+     string; sp_w_* writers append each part. (The previous lowering built
+     one heap string per part and ran an sp_sprintf pass over them.) */
+  enum { WK_LIT, WK_INT, WK_BOOL, WK_NIL, WK_DYN };
+  typedef struct { int kind; int tmp; int lit_off; int lit_esc_len; long lit_len; } WPart;
+  WPart *wp = malloc(sizeof(WPart) * (size_t)(n > 0 ? n : 1));
+  if (!wp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int nwp = 0, ndyn_or_scalar = 0;
+  Buf lits; memset(&lits, 0, sizeof lits);   /* escaped literal texts, concatenated */
+  Buf decls; memset(&decls, 0, sizeof decls);
+  long fixed_cap = 0;
 
   for (int k = 0; k < n; k++) {
     int pid = parts[k];
     const char *pty = nt_type(nt, pid);
     if (pty && sp_streq(pty, "StringNode")) {
       const char *content = nt_str(nt, pid, "content");
-      for (const char *p = content ? content : ""; *p; p++) {
+      int off = lits.len;
+      long blen = 0;
+      for (const char *p = content ? content : ""; *p; p++, blen++) {
         unsigned char ch = (unsigned char)*p;
-        if (ch == '%') buf_puts(&fmt, "%%");
-        else if (ch == '\\') buf_puts(&fmt, "\\\\");
-        else if (ch == '"') buf_puts(&fmt, "\\\"");
-        else if (ch == '\n') buf_puts(&fmt, "\\n");
-        else if (ch == '\t') buf_puts(&fmt, "\\t");
-        else if (ch == '\r') buf_puts(&fmt, "\\r");
-        else if (ch >= 0x20 && ch < 0x7f) buf_printf(&fmt, "%c", ch);
-        else buf_printf(&fmt, "\\%03o", ch);
+        if (ch == '\\') buf_puts(&lits, "\\\\");
+        else if (ch == '"') buf_puts(&lits, "\\\"");
+        else if (ch == '\n') buf_puts(&lits, "\\n");
+        else if (ch == '\t') buf_puts(&lits, "\\t");
+        else if (ch == '\r') buf_puts(&lits, "\\r");
+        else if (ch >= 0x20 && ch < 0x7f) buf_printf(&lits, "%c", ch);
+        else buf_printf(&lits, "\\%03o", ch);
       }
+      wp[nwp].kind = WK_LIT; wp[nwp].tmp = -1;
+      wp[nwp].lit_off = off; wp[nwp].lit_esc_len = lits.len - off;
+      wp[nwp].lit_len = blen;
+      nwp++;
+      fixed_cap += blen;
     }
     else if (pty && sp_streq(pty, "EmbeddedStatementsNode")) {
-      int s = nt_ref(nt, pid, "statements");
+      int st = nt_ref(nt, pid, "statements");
       int bn = 0;
-      const int *body = s >= 0 ? nt_arr(nt, s, "body", &bn) : NULL;
+      const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
       int expr = bn > 0 ? body[bn - 1] : -1;
       /* `#{ s1; s2; ...; sN }` evaluates every statement in order and uses sN's
          value. Run the leading statements for side effects; if sN is itself an
@@ -126,84 +144,81 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, " _t%d = ", tv); emit_local_ref(c, expr, vn, g_pre); buf_puts(g_pre, ";\n");
         snprintf(vexpr, sizeof vexpr, "_t%d", tv);
       }
-      /* Build this part's conversion into its own buffer; a %s arg that
-         allocates a fresh string (sp_poly_to_s / sp_*_to_s / *_inspect …)
-         is then hoisted into a rooted temp so a sibling arg's allocation
-         (or sp_sprintf's own) cannot free it mid-call. */
+      /* Build this part's conversion expression. Bounded scalars keep their
+         native C type (written digit-by-digit later); everything else
+         converts to a marker-carrying string whose byte length is summed. */
       Buf conv; memset(&conv, 0, sizeof conv);
-      int is_str_arg = 1;
+      int wkind = WK_DYN;
       #define EMIT_IV() do { if (vexpr[0]) buf_puts(&conv, vexpr); else emit_expr(c, expr, &conv); } while (0)
       if (t == TY_INT) {
-        /* nil-aware: an int slot holding the nil sentinel interpolates as ""
-           (the helper returns a rooted decimal string otherwise). */
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_int_interp(");
-        EMIT_IV(); buf_puts(&conv, ")");
+        /* nil-aware: an int slot holding the nil sentinel writes nothing */
+        wkind = WK_INT;
+        EMIT_IV();
       }
       else if (t == TY_STRING) {
         /* a nullable string (NULL) interpolates as the empty string */
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "("); EMIT_IV(); buf_puts(&conv, " ?: \"\")");
+        buf_puts(&conv, "("); EMIT_IV(); buf_puts(&conv, " ?: sp_str_empty)");
       }
       else if (t == TY_FLOAT) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_float_to_s(");
+        buf_puts(&conv, "sp_float_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_BOOL) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "(");
-        EMIT_IV(); buf_puts(&conv, " ? \"true\" : \"false\")");
+        wkind = WK_BOOL;
+        EMIT_IV();
       }
       else if (t == TY_SYMBOL) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_sym_to_s(");
+        buf_puts(&conv, "sp_sym_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_POLY) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_poly_to_s(");
+        buf_puts(&conv, "sp_poly_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_EXCEPTION) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_exc_message(");
+        buf_puts(&conv, "sp_exc_message(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_NIL) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "((void)(");
-        EMIT_IV(); buf_puts(&conv, "), \"\")");
+        wkind = WK_NIL;
+        EMIT_IV();
       }
       else if (t == TY_RATIONAL) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_rational_to_s(");
+        buf_puts(&conv, "sp_rational_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_COMPLEX) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_complex_to_s(");
+        buf_puts(&conv, "sp_complex_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_REGEX) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_re_to_s_str((void *)(");
+        buf_puts(&conv, "sp_re_to_s_str((void *)(");
         EMIT_IV(); buf_puts(&conv, "))");
       }
       else if (t == TY_POLY_ARRAY) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_PolyArray_inspect(");
+        buf_puts(&conv, "sp_PolyArray_inspect(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (ty_is_array(t) && array_kind(t)) {
-        buf_puts(&fmt, "%s"); buf_printf(&conv, "sp_%sArray_inspect(", array_kind(t));
+        buf_printf(&conv, "sp_%sArray_inspect(", array_kind(t));
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
         const char *cn = obj_str_cname(c, ty_object_class(t), 0);
-        buf_puts(&fmt, "%s"); buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
+        buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (ty_is_hash(t) && ty_hash_cname(t)) {
-        buf_puts(&fmt, "%s"); buf_printf(&conv, "sp_%sHash_inspect(", ty_hash_cname(t));
+        buf_printf(&conv, "sp_%sHash_inspect(", ty_hash_cname(t));
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_CLASS) {
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_class_to_s(");
+        buf_puts(&conv, "sp_class_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (ty_is_object(t)) {
         /* user object without to_s: fall back to poly_to_s of boxed value */
         int cid2 = ty_object_class(t);
-        buf_puts(&fmt, "%s");
         buf_printf(&conv, "sp_poly_to_s(sp_box_obj(");
         EMIT_IV(); buf_printf(&conv, ", %d))", cid2);
       }
@@ -211,65 +226,99 @@ void emit_interp(Compiler *c, int id, Buf *b) {
                (nt_arr(nt, expr, "elements", (int[]){0}), 1)) {
         /* a bare empty array literal interpolates as "[]" */
         int en = 0; nt_arr(nt, expr, "elements", &en);
-        if (en == 0) { buf_puts(&fmt, "%s"); buf_puts(&conv, "\"[]\""); }
-        else { free(fmt.p); free(argbuf.p); free(decls.p); free(conv.p); free(flat); unsupported(c, pid, "interpolation value"); }
+        if (en == 0) { buf_puts(&conv, "(&(\"\\xff\" \"[]\")[1])"); }
+        else { free(conv.p); free(lits.p); free(decls.p); free(wp); free(flat); unsupported(c, pid, "interpolation value"); }
       }
       else if (t == TY_UNKNOWN) {
         /* An untyped value (e.g. a method resolved only through an included
            module) is already emitted as a boxed sp_RbVal, so stringify it the
            same way as a poly value rather than rejecting the interpolation. */
-        buf_puts(&fmt, "%s"); buf_puts(&conv, "sp_poly_to_s(");
+        buf_puts(&conv, "sp_poly_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else {
-        free(fmt.p); free(argbuf.p); free(decls.p); free(conv.p); free(flat);
+        free(conv.p); free(lits.p); free(decls.p); free(wp); free(flat);
         unsupported(c, pid, "interpolation value");
       }
       #undef EMIT_IV
-      /* Hoist a %s arg's (possibly freshly-allocated) string into a rooted
-         temp. Collected into `decls` and emitted as a leading sequence of a
-         statement-expression below — NOT into g_pre, since emit_interp may
+      /* Pre-evaluate into an ordered temp. A dynamic part's string is rooted
+         (its byte length is read after later parts may allocate, and the
+         final allocation itself can collect); bounded scalars need none.
+         Collected into `decls` and emitted as a leading sequence of a
+         statement-expression below -- NOT into g_pre, since emit_interp may
          run while g_pre holds a half-written enclosing statement. */
-      if (is_str_arg) {
-        int tv = ++g_tmp;
-        buf_printf(&decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); ",
-                   tv, conv.p ? conv.p : "\"\"", tv);
-        buf_printf(&argbuf, ", _t%d", tv);
+      int tv2 = ++g_tmp;
+      if (wkind == WK_INT) {
+        buf_printf(&decls, "mrb_int _t%d = %s; ", tv2, conv.p ? conv.p : "0");
+        fixed_cap += 21;  /* SP_W_INT_MAX: -9223372036854775808 */
       }
-else {
-        buf_printf(&argbuf, ", %s", conv.p ? conv.p : "0");
+      else if (wkind == WK_BOOL) {
+        buf_printf(&decls, "mrb_bool _t%d = %s; ", tv2, conv.p ? conv.p : "0");
+        fixed_cap += 5;
+      }
+      else if (wkind == WK_NIL) {
+        buf_printf(&decls, "(void)(%s); ", conv.p ? conv.p : "0");
+        tv2 = -1;
+      }
+      else {
+        buf_printf(&decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); ",
+                   tv2, conv.p ? conv.p : "sp_str_empty", tv2);
       }
       free(conv.p);
-      nargs++;
+      wp[nwp].kind = wkind; wp[nwp].tmp = tv2;
+      wp[nwp].lit_off = 0; wp[nwp].lit_esc_len = 0; wp[nwp].lit_len = 0;
+      nwp++;
+      ndyn_or_scalar++;
     }
     else {
-      free(fmt.p); free(argbuf.p); free(flat);
+      free(lits.p); free(decls.p); free(wp); free(flat);
       unsupported(c, pid, "interpolation part");
     }
   }
 
-  if (nargs == 0) {
+  if (ndyn_or_scalar == 0) {
     /* adjacent literals ("a" "b") fold to one literal: frozen per the
        InterpolatedStringNode's own file pragma flag */
     buf_printf(b, "(&(\"%s\" \"", nt_int(c->nt, id, "fzl", 0) ? "\\xf1" : "\\xff");
-    for (const char *p = fmt.p ? fmt.p : ""; *p; p++) {
-      if (p[0] == '%' && p[1] == '%') { buf_puts(b, "%"); p++; }
-      else buf_printf(b, "%c", *p);
-    }
+    for (int k = 0; k < nwp; k++)
+      buf_printf(b, "%.*s", wp[k].lit_esc_len, (lits.p ? lits.p : "") + wp[k].lit_off);
     buf_puts(b, "\")[1])");
+    free(lits.p); free(decls.p); free(wp); free(flat);
+    return;
   }
-  else if (!decls.p) {
-    /* all args are plain int values — no rooting needed, emit directly */
-    buf_printf(b, "sp_sprintf(\"%s\"%s)", fmt.p ? fmt.p : "", argbuf.p ? argbuf.p : "");
+
+  int rid = ++g_tmp, wpid = ++g_tmp;
+  buf_printf(b, "({ %s", decls.p ? decls.p : "");
+  buf_printf(b, "size_t _cap%d = %ldUL", rid, fixed_cap);
+  for (int k = 0; k < nwp; k++)
+    if (wp[k].kind == WK_DYN) buf_printf(b, " + sp_str_byte_len(_t%d)", wp[k].tmp);
+  buf_puts(b, "; ");
+  buf_printf(b, "char *_t%d = sp_str_alloc_raw(_cap%d + 1); ", rid, rid);
+  buf_printf(b, "char *_t%d = _t%d; ", wpid, rid);
+  for (int k = 0; k < nwp; k++) {
+    switch (wp[k].kind) {
+      case WK_LIT:
+        if (wp[k].lit_len > 0)
+          buf_printf(b, "memcpy(_t%d, \"%.*s\", %ld); _t%d += %ld; ",
+                     wpid, wp[k].lit_esc_len, (lits.p ? lits.p : "") + wp[k].lit_off,
+                     wp[k].lit_len, wpid, wp[k].lit_len);
+        break;
+      case WK_INT:
+        buf_printf(b, "_t%d = sp_w_int(_t%d, _t%d); ", wpid, wpid, wp[k].tmp);
+        break;
+      case WK_BOOL:
+        buf_printf(b, "_t%d = sp_w_bool(_t%d, _t%d); ", wpid, wpid, wp[k].tmp);
+        break;
+      case WK_NIL:
+        break;
+      default:
+        buf_printf(b, "_t%d = sp_w_str(_t%d, _t%d); ", wpid, wpid, wp[k].tmp);
+        break;
+    }
   }
-  else {
-    /* at least one %s arg was hoisted into a rooted temp: wrap the whole
-       thing in a statement-expression so the temps (and their roots) are
-       self-contained and valid in any expression position. */
-    buf_printf(b, "({ %ssp_sprintf(\"%s\"%s); })",
-               decls.p, fmt.p ? fmt.p : "", argbuf.p ? argbuf.p : "");
-  }
-  free(fmt.p); free(argbuf.p); free(decls.p); free(flat);
+  buf_printf(b, "*_t%d = 0; sp_str_set_len(_t%d, (size_t)(_t%d - _t%d)); (const char *)_t%d; })",
+             wpid, rid, wpid, rid, rid);
+  free(lits.p); free(decls.p); free(wp); free(flat);
 }
 
 /* ---- expression ---- */
