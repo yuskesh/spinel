@@ -2865,10 +2865,24 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
     buf_printf(b, "_cr%d = %s; ", cr, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
     return;
   }
+  /* Emit the tail value with a CAPTURED prelude: a tail whose lowering hoists
+     setup statements (an array/hash literal's construction, a rooted call
+     argument) must run INSIDE this branch. The ambient g_pre flushes once
+     before the whole case statement, which would evaluate every arm's setup
+     unconditionally -- a raising call in an untaken arm fired (mirrors the
+     ternary emitter's captured-prelude form). */
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf val; memset(&val, 0, sizeof val);
+  Buf *sv_pre = g_pre;
+  g_pre = &pre;
+  if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], &val); else emit_expr(c, bb[n - 1], &val); }
+  else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
+  g_pre = sv_pre;
+  if (pre.p) buf_puts(b, pre.p);
   buf_printf(b, "_cr%d = ", cr);
-  if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], b); else emit_expr(c, bb[n - 1], b); }
-  else buf_puts(b, rt == TY_POLY ? "sp_box_nil()" : default_value(rt));
+  buf_puts(b, val.p ? val.p : "");
   buf_puts(b, "; ");
+  free(pre.p); free(val.p);
 }
 
 /* `case` in expression position: a GCC statement-expression yielding the
