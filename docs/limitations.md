@@ -191,6 +191,17 @@ Complex(Rational(1, 2), Rational(1, 3)) # => (0.5+0.3333333333333333i)
 `Rational` and `Complex` values box into heterogeneous (poly) arrays and hashes
 normally.
 
+#### `Hash#compare_by_identity`
+
+`compare_by_identity` is rejected at compile time (never silently ignored).
+Spinel's hashes are typed storage variants keyed by VALUE -- string keys hash
+and compare by content, and string literals are shared through a frozen pool.
+Identity-keyed comparison cannot be honored on that representation: two
+equal-content String keys may be the *same* object in Spinel where CRuby sees
+two distinct ones, so even a dedicated identity mode would diverge from CRuby
+on the exact programs that need it. Restructure identity-keyed lookups to use
+an explicit unique key (an Integer id, a Symbol) instead.
+
 #### `defined?`
 
 `defined?` is resolved **statically at compile time** from the operand's
