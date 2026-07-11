@@ -1586,6 +1586,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, acct == TY_FLOAT ? "0.0" : "0");
   }
   if (acct == TY_FLOAT) buf_printf(b, "; mrb_float _t%d = 0.0", tc);
+  if (acct == TY_STRING) buf_printf(b, "; SP_GC_ROOT(_t%d)", tacc);
   buf_printf(b, "; for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) { ", ti, ti, tn, ti);
   if (p0) buf_printf(b, "lv_%s = sp_%sArray_get(_t%d, _t%d); ", p0, k, ta, ti);
   /* The block's value expression may spill setup statements to g_pre (e.g.
@@ -2347,21 +2348,36 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
 
   /* Accumulator type comes from the seed init when provided, else from the element type. */
   TyKind acc_ty = et;
+  int init_empty_arr = 0;
   if (init >= 0) {
     TyKind it = comp_ntype(c, init);
+    /* an empty array-literal seed accumulates a poly array (mirrors the
+       inference rule; the block decides the element mix) */
+    if (it == TY_UNKNOWN && nt_type(nt, init) && sp_streq(nt_type(nt, init), "ArrayNode")) {
+      int sen = 0; nt_arr(nt, init, "elements", &sen);
+      if (sen == 0) { it = TY_POLY_ARRAY; init_empty_arr = 1; }
+    }
     if (it != TY_UNKNOWN) acc_ty = it;
   }
   /* An int seed folded over floats accumulates float (matches the reduce
      return-type promotion in infer_type); keep the C accumulator type in step.
      Only a numeric body promotes -- a poly body keeps the seed type (codegen
-     re-types the params and re-infers the body under the shadow below). */
-  { TyKind bt = comp_ntype(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt); }
+     re-types the params and re-infers the body under the shadow below), and an
+     array accumulator never numeric-promotes (the pre-shadow body may have
+     typed `a << x` as an int shift). */
+  if (!ty_is_array(acc_ty)) { TyKind bt = comp_ntype(c, bb[bn - 1]); if (ty_is_numeric(bt)) acc_ty = ty_promote_numeric(acc_ty, bt); }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");
   emit_ctype(c, acc_ty, b); buf_printf(b, " _t%d = ", tacc);
   int start;
-  if (init >= 0) { emit_expr(c, init, b); buf_puts(b, "; "); start = 0; }
+  if (init_empty_arr) {
+    /* the empty [] would emit as an IntArray without the poly context; the
+       heap accumulator is rooted since block-body pushes may collect */
+    buf_printf(b, "sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tacc);
+    start = 0;
+  }
+  else if (init >= 0) { emit_expr(c, init, b); buf_puts(b, "; "); start = 0; }
   else if (nested) { buf_printf(b, "sp_PolyArray_length(_t%d) > 0 ? (sp_IntArray *)sp_PolyArray_get(_t%d, 0).v.p : sp_IntArray_new(); ", ta, ta); start = 1; }
   else { buf_printf(b, "sp_%sArray_length(_t%d) > 0 ? sp_%sArray_get(_t%d, 0) : %s; ", k, ta, k, ta,
                     acc_ty == TY_INT ? "SP_INT_NIL" : acc_ty == TY_FLOAT ? "sp_float_nil()"

@@ -2692,13 +2692,21 @@ else {
         int is_sym_op = a0ty && sp_streq(a0ty, "SymbolNode") && argc == 1;
         if (!is_sym_op) {
           TyKind it = infer_type(c, argv[0]);
+          /* An empty array-literal seed accumulates an array: poly, since the
+             block decides the element mix (`reduce([]) { |a, x| a << x }`). */
+          if (it == TY_UNKNOWN && a0ty && sp_streq(a0ty, "ArrayNode")) {
+            int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
+            if (sen == 0) it = TY_POLY_ARRAY;
+          }
           if (it != TY_UNKNOWN) {
             /* The accumulator is reassigned to the block body each iteration,
-               so an int seed folded over floats accumulates float. */
+               so an int seed folded over floats accumulates float. An array
+               seed never numeric-promotes (`a << x` pre-types as an int shift
+               before the accumulator's type shadows the block param). */
             int rblk = nt_ref(nt, id, "block");
             int rbody = rblk >= 0 ? nt_ref(nt, rblk, "body") : -1;
             int rbn = 0; const int *rbb = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
-            if (rbn > 0) { TyKind bt = infer_type(c, rbb[rbn - 1]); if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt); }
+            if (rbn > 0 && !ty_is_array(it)) { TyKind bt = infer_type(c, rbb[rbn - 1]); if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt); }
             return it;
           }
         }
