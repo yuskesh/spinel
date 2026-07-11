@@ -4084,6 +4084,19 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* M::CONST -> resolve by the final path component (constants register
        under their unqualified name) */
     const char *nm = nt_str(nt, id, "name");
+    /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
+       plain-constant table, or a same-leaf plain constant in another module
+       silently claims the reference (and its type). */
+    {
+      int fpar = nt_ref(nt, id, "parent");
+      const char *fpty = fpar >= 0 ? nt_type(nt, fpar) : NULL;
+      const char *fpnm = (fpty && sp_streq(fpty, "ConstantReadNode")) ? nt_str(nt, fpar, "name") : NULL;
+      if (fpnm && nm)
+        for (int fci = 0; fci < c->n_ffi_consts; fci++)
+          if (sp_streq(c->ffi_consts[fci].mod, fpnm) &&
+              sp_streq(c->ffi_consts[fci].name, nm))
+            return TY_INT;
+    }
     LocalVar *lv = nm ? comp_const(c, nm) : NULL;
     if (lv) return lv->type;
     if (nm && sp_streq(nm, "ARGV")) return TY_STR_ARRAY;
