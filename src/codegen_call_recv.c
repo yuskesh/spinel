@@ -4425,6 +4425,52 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, " _t%d; })", rh);
       return 1;
     }
+    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
+      char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
+      if (comp_ivar_index(sc, szn) < 0) {
+        Buf rb = expr_buf(c, recv);
+        buf_printf(b, "((void)(%s), %dLL)", rb.p ? rb.p : "0", sc->nivars);
+        free(rb.p);
+        return 1;
+      }
+    }
+    /* deconstruct_keys([:a, :b]) / deconstruct_keys(nil): the requested
+       members (all for nil) as a symbol-keyed hash. */
+    if (sp_streq(name, "deconstruct_keys") && argc == 1) {
+      int keyed[64]; int nkey = 0; int ok = 1;
+      const char *aty = nt_type(nt, argv[0]);
+      if (aty && sp_streq(aty, "NilNode")) {
+        for (int i = 0; i < sc->nivars && nkey < 64; i++) keyed[nkey++] = i;
+      }
+      else if (aty && sp_streq(aty, "ArrayNode")) {
+        int en = 0; const int *els = nt_arr(nt, argv[0], "elements", &en);
+        for (int e = 0; e < en && ok; e++) {
+          const char *ety = nt_type(nt, els[e]);
+          if (!ety || !sp_streq(ety, "SymbolNode")) { ok = 0; break; }
+          char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, els[e], "value"));
+          int mi2 = comp_ivar_index(sc, ivn);
+          if (mi2 < 0 || nkey >= 64) { ok = 0; break; }
+          keyed[nkey++] = mi2;
+        }
+      }
+      else ok = 0;
+      if (ok) {
+        int t = ++g_tmp, rh = ++g_tmp;
+        Buf rb = expr_buf(c, recv);
+        buf_printf(b, "({ sp_%s *_t%d = %s; sp_SymPolyHash *_t%d = sp_SymPolyHash_new(); SP_GC_ROOT(_t%d);",
+                   sc->c_name, t, rb.p ? rb.p : "", rh, rh);
+        free(rb.p);
+        for (int e = 0; e < nkey; e++) {
+          int i = keyed[e];
+          buf_printf(b, " sp_SymPolyHash_set(_t%d, (sp_sym)%d, ", rh, comp_sym_intern(c, sc->ivars[i] + 1));
+          char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d->iv_%s", t, sc->ivars[i] + 1);
+          emit_boxed_text(c, sc->ivar_types[i], fb2, b);
+          buf_puts(b, ");");
+        }
+        buf_printf(b, " _t%d; })", rh);
+        return 1;
+      }
+    }
     if ((sp_streq(name, "members")) && argc == 0) {
       int rm = ++g_tmp;
       buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
@@ -4512,6 +4558,39 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         if (v >= 0 && v < sc->nivars) mi = v;
       }
       if (mi >= 0) {
+        /* nested struct members resolve the remaining literal keys at compile
+           time: n.dig(:b, :c) walks member structs field by field */
+        {
+          char path[512]; path[0] = 0;
+          ClassInfo *cur = sc; int cmi = mi; int di = 1; int all = 1;
+          while (di < argc) {
+            TyKind mt2 = cur->ivar_types[cmi];
+            if (!ty_is_object(mt2) || !c->classes[ty_object_class(mt2)].is_struct) { all = 0; break; }
+            ClassInfo *nx = &c->classes[ty_object_class(mt2)];
+            const char *k2ty = nt_type(nt, argv[di]);
+            int nmi = -1;
+            if (k2ty && sp_streq(k2ty, "SymbolNode")) {
+              char ivn2[256]; snprintf(ivn2, sizeof ivn2, "@%s", nt_str(nt, argv[di], "value"));
+              nmi = comp_ivar_index(nx, ivn2);
+            }
+            else if (k2ty && sp_streq(k2ty, "IntegerNode")) {
+              int v2 = (int)nt_int(nt, argv[di], "value", -1);
+              if (v2 >= 0 && v2 < nx->nivars) nmi = v2;
+            }
+            if (nmi < 0) { all = 0; break; }
+            size_t pl = strlen(path);
+            snprintf(path + pl, sizeof path - pl, "->iv_%s", cur->ivars[cmi] + 1);
+            cur = nx; cmi = nmi; di++;
+          }
+          if (all && di == argc && argc >= 2) {
+            int t2 = ++g_tmp;
+            Buf rb2 = expr_buf(c, recv);
+            buf_printf(b, "({ sp_%s *_t%d = %s; _t%d%s->iv_%s; })",
+                       sc->c_name, t2, rb2.p ? rb2.p : "", t2, path, cur->ivars[cmi] + 1);
+            free(rb2.p);
+            return 1;
+          }
+        }
         int t = ++g_tmp;
         Buf rb = expr_buf(c, recv);
         char fld[300]; snprintf(fld, sizeof fld, "_t%d->iv_%s", t, sc->ivars[mi] + 1);
@@ -4535,9 +4614,13 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       /* struct[:sym] or struct[int_literal]: return member value boxed to poly */
       int mi = -1;
       const char *kty = nt_type(nt, argv[0]);
-      if (kty && sp_streq(kty, "SymbolNode") && nt_str(nt, argv[0], "value")) {
-        char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nt_str(nt, argv[0], "value"));
-        mi = comp_ivar_index(sc, ivn);
+      if (kty && (sp_streq(kty, "SymbolNode") || sp_streq(kty, "StringNode"))) {
+        const char *kv = sp_streq(kty, "SymbolNode") ? nt_str(nt, argv[0], "value")
+                                                     : nt_str(nt, argv[0], "content");
+        if (kv) {
+          char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kv);
+          mi = comp_ivar_index(sc, ivn);
+        }
       }
       else if (kty && sp_streq(kty, "IntegerNode")) {
         long long v = (long long)nt_int(nt, argv[0], "value", 0);

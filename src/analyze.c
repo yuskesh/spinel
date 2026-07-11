@@ -1741,6 +1741,74 @@ static int te_stmts1(NodeTable *nt, int s) {
    real call passing the block as a proc. Unused helpers are pruned by
    reachability, so this is inert for programs that never call enum_for/to_enum
    (the self-host compiler included). */
+/* Synthesize, on each Struct/Data class with no user #each, the standard
+   member iterator
+
+       def each; yield @m1; ...; yield @mN; self; end
+
+   so every inherited Enumerable method (map/select/sum/min/include?/...)
+   rides the __enum_to_a machinery synthesized right below. Unused copies
+   prune by reachability. */
+static void synth_struct_each(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int ncls0 = c->nclasses;
+  for (int ci = 0; ci < ncls0; ci++) {
+    ClassInfo *cls = &c->classes[ci];
+    if (!cls->is_struct || cls->nivars == 0) continue;
+    if (comp_method_in_class(c, ci, "each") >= 0) continue;
+    int stmts[65]; int nst = 0;
+    for (int j = 0; j < cls->nivars && nst < 64; j++) {
+      int ivr = nt_new_node(nt, "InstanceVariableReadNode");
+      nt_node_set_str(nt, ivr, "name", cls->ivars[j]);
+      int yargs = nt_new_node(nt, "ArgumentsNode");
+      nt_node_set_arr(nt, yargs, "arguments", &ivr, 1);
+      int yn = nt_new_node(nt, "YieldNode");
+      nt_node_set_ref(nt, yn, "arguments", yargs);
+      stmts[nst++] = yn;
+    }
+    stmts[nst++] = nt_new_node(nt, "SelfNode");
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", stmts, nst);
+    int def = nt_new_node(nt, "DefNode");
+    nt_node_set_str(nt, def, "name", "each");
+    nt_node_set_ref(nt, def, "body", body);
+    Scope *ms = comp_scope_new(c, "each", def);
+    ms->class_id = ci;
+    ms->body = body;
+    ms->yields = 1;
+    comp_grow_node_arrays(c);
+    walk_scope(c, body, c->nscopes - 1, ci);
+    /* def each_pair; yield :m1, @m1; ...; self; end */
+    if (comp_method_in_class(c, ci, "each_pair") < 0) {
+      int pst[65]; int pn = 0;
+      for (int j = 0; j < cls->nivars && pn < 64; j++) {
+        int sy = nt_new_node(nt, "SymbolNode");
+        nt_node_set_str(nt, sy, "value", cls->ivars[j] + 1);
+        int ivr = nt_new_node(nt, "InstanceVariableReadNode");
+        nt_node_set_str(nt, ivr, "name", cls->ivars[j]);
+        int ya[2] = { sy, ivr };
+        int yargs = nt_new_node(nt, "ArgumentsNode");
+        nt_node_set_arr(nt, yargs, "arguments", ya, 2);
+        int yn = nt_new_node(nt, "YieldNode");
+        nt_node_set_ref(nt, yn, "arguments", yargs);
+        pst[pn++] = yn;
+      }
+      pst[pn++] = nt_new_node(nt, "SelfNode");
+      int pbody = nt_new_node(nt, "StatementsNode");
+      nt_node_set_arr(nt, pbody, "body", pst, pn);
+      int pdef = nt_new_node(nt, "DefNode");
+      nt_node_set_str(nt, pdef, "name", "each_pair");
+      nt_node_set_ref(nt, pdef, "body", pbody);
+      Scope *ps = comp_scope_new(c, "each_pair", pdef);
+      ps->class_id = ci;
+      ps->body = pbody;
+      ps->yields = 1;
+      comp_grow_node_arrays(c);
+      walk_scope(c, pbody, c->nscopes - 1, ci);
+    }
+  }
+}
+
 static void synth_enum_to_a(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (c->nscopes == 0) return;
@@ -1996,8 +2064,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
     nt_node_set_str(nt, toa, "name", "to_a");
     nt_node_set_ref(nt, toa, "receiver", val);
     nt_node_set_ref(nt, id, "value", toa);
-    c->nscope[toa] = c->nscope[id];
     comp_grow_node_arrays(c);
+    c->nscope[toa] = c->nscope[id];
   }
   for (int id = 0; id < n0; id++) {
     if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
@@ -2853,6 +2921,33 @@ int desugar_enum_method_recv(Compiler *c) {
         }
       }
     }
+    /* struct[member_literal] = v rewrites to the generated writer, so the
+       member's type unifies with the value like any accessor write */
+    if (nm && sp_streq(nm, "[]=")) {
+      int wrc = nt_ref(nt, id, "receiver");
+      int wa = nt_ref(nt, id, "arguments");
+      int wac = 0;
+      const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wac) : NULL;
+      TyKind wrt = wrc >= 0 ? infer_type(c, wrc) : TY_UNKNOWN;
+      if (wac == 2 && ty_is_object(wrt) && c->classes[ty_object_class(wrt)].is_struct) {
+        ClassInfo *wsc = &c->classes[ty_object_class(wrt)];
+        int wmi = struct_member_idx(c, wsc, wav[0]);
+        if (wmi >= 0) {
+          char wn[300]; snprintf(wn, sizeof wn, "%s=", wsc->ivars[wmi] + 1);
+          int one = nt_new_node(nt, "ArgumentsNode");
+          if (one >= 0) {
+            int varg = wav[1];
+            nt_node_set_arr(nt, one, "arguments", &varg, 1);
+            nt_node_set_str(nt, id, "name", wn);
+            nt_node_set_ref(nt, id, "arguments", one);
+            comp_grow_node_arrays(c);
+            c->nscope[one] = c->nscope[id];
+            changed = 1;
+          }
+        }
+      }
+      continue;
+    }
     if (nm && sp_streq(nm, "%")) {
       /* (range) % n is Range#step(n) (the arithmetic-sequence operator) */
       int prc = nt_ref(nt, id, "receiver");
@@ -2968,6 +3063,18 @@ int desugar_enum_method_recv(Compiler *c) {
     int cid = ty_object_class(rt);
     if (comp_method_in_chain(c, cid, "__enum_to_a", NULL) < 0) continue;  /* not an #each class */
     if (comp_method_in_chain(c, cid, nm, NULL) >= 0) continue;            /* class defines it */
+    /* a Struct/Data class serves these natively in the struct emit section
+       (member-pair to_h, ordered to_a/values, size, dig, ...); the flat
+       element array would change their semantics */
+    if (c->classes[cid].is_struct) {
+      static const char *const snative[] = {
+        "to_a", "entries", "values", "to_h", "members", "size", "length",
+        "dig", "deconstruct", "deconstruct_keys", "with", "inspect", "to_s",
+        NULL };
+      int nat = 0;
+      for (int t = 0; snative[t]; t++) if (sp_streq(nm, snative[t])) { nat = 1; break; }
+      if (nat) continue;
+    }
     int wrap = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, wrap, "name", "__enum_to_a");
     nt_node_set_ref(nt, wrap, "receiver", recv);
@@ -4277,6 +4384,7 @@ void analyze_program(Compiler *c) {
      is typed, and before reachability so it is kept only when actually called.
      Explicit `to_enum`/`enum_for` no longer route here -- synth_to_enum_generators
      builds a real lazy Enumerator helper, retargeted by desugar_to_enum. */
+  synth_struct_each(c);
   synth_enum_to_a(c);
   synth_to_enum_generators(c);
 

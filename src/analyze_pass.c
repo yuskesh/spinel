@@ -4315,8 +4315,22 @@ int infer_block_params(Compiler *c) {
           const char *bp = block_param_name(c, block, k);
           if (!bp) continue;
           LocalVar *lv = scope_local_intern(bs, bp); lv->is_block_param = 1;
-          TyKind m = ty_unify(lv->type, as_elem != TY_UNKNOWN ? as_elem
-                                                              : infer_type(c, yargs[k]));
+          /* unify position k across EVERY yield in the method: a mixed-type
+             yielder (a heterogeneous Struct's synthesized each) delivers the
+             union, not the first yield's type */
+          TyKind at = as_elem;
+          if (at == TY_UNKNOWN) {
+            at = infer_type(c, yargs[k]);
+            for (int _yi = 0; _yi < nt->count; _yi++) {
+              if (nt_kind(nt, _yi) != NK_YieldNode) continue;
+              if (c->nscope[_yi] != yld_mi || _yi == yn) continue;
+              int _ya2 = nt_ref(nt, _yi, "arguments");
+              int _yc2 = 0;
+              const int *_yv2 = _ya2 >= 0 ? nt_arr(nt, _ya2, "arguments", &_yc2) : NULL;
+              if (k < _yc2) at = ty_unify(at, infer_type(c, _yv2[k]));
+            }
+          }
+          TyKind m = ty_unify(lv->type, at);
           if (m != lv->type) { lv->type = m; changed = 1; }
         }
         /* Params beyond the first yield's arity might still be nil if there

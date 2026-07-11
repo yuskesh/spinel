@@ -2138,11 +2138,45 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* <StructClass>.members at the class level: the member symbol list */
+  if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
+    const char *mrty = nt_type(nt, recv);
+    int mci = -1;
+    if (mrty && (sp_streq(mrty, "ConstantReadNode") || sp_streq(mrty, "ConstantPathNode")))
+      mci = comp_class_index(c, nt_str(nt, recv, "name"));
+    else if (mrty && sp_streq(mrty, "LocalVariableReadNode"))
+      mci = class_var_static_ci(c, recv);
+    if (mci >= 0 && c->classes[mci].is_struct &&
+        comp_cmethod_in_chain(c, mci, "members", NULL) < 0) {
+      ClassInfo *mcl = &c->classes[mci];
+      int rm = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", rm, rm);
+      for (int i = 0; i < mcl->nivars; i++)
+        buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym((sp_sym)%d));", rm, comp_sym_intern(c, mcl->ivars[i] + 1));
+      buf_printf(b, " _t%d; })", rm);
+      return 1;
+    }
+  }
   /* Class.new(args) -> sp_<Class>_new(args) */
   if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
     const char *rty = nt_type(nt, recv);
-    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"))) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    /* a local statically holding one class constant dispatches like the
+       constant itself (k = Klass; k.new(...)) */
+    if (rty && sp_streq(rty, "LocalVariableReadNode") && class_var_static_ci(c, recv) >= 0) {
+      int ci = class_var_static_ci(c, recv);
+      if (emit_native_ctor(c, id, ci, argc, argv, b)) return 1;
+      if (ci >= 0 && !c->classes[ci].is_struct) {
+        buf_printf(b, "sp_%s_new(", c->classes[ci].c_name);
+        int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+        if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
+        buf_puts(b, ")");
+        return 1;
+      }
+    }
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode") ||
+                (sp_streq(rty, "LocalVariableReadNode") && class_var_static_ci(c, recv) >= 0))) {
+      int ci = sp_streq(rty, "LocalVariableReadNode") ? class_var_static_ci(c, recv)
+                                                      : comp_class_index(c, nt_str(nt, recv, "name"));
       /* native (C-backed) class: the declared constructor (see emit_native_ctor) */
       if (emit_native_ctor(c, id, ci, argc, argv, b)) return 1;
       if (ci >= 0 && c->classes[ci].is_struct) {
@@ -2170,6 +2204,21 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           return 1;
         }
         int kwh = (argc == 1 && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) ? argv[0] : -1;
+        /* more positional args than members is a struct-size ArgumentError
+           (fewer are allowed for Struct: nil fill); evaluate args first for
+           any side effects, then raise before constructing */
+        if (kwh < 0 && argc > cls->nivars) {
+          buf_puts(b, "({ ");
+          for (int a2 = 0; a2 < argc; a2++) { buf_puts(b, "(void)("); emit_boxed(c, argv[a2], b); buf_puts(b, "); "); }
+          buf_puts(b, "sp_raise_cls(\"ArgumentError\", (&(\"\\xff\" \"struct size differs\")[1])); ");
+          buf_printf(b, "sp_%s_new(", cls->c_name);
+          for (int a2 = 0; a2 < cls->nivars; a2++) {
+            if (a2) buf_puts(b, ", ");
+            buf_puts(b, default_value(cls->ivar_types[a2]));
+          }
+          buf_puts(b, "); })");
+          return 1;
+        }
         buf_printf(b, "sp_%s_new(", cls->c_name);
         for (int a = 0; a < cls->nivars; a++) {
           if (a) buf_puts(b, ", ");

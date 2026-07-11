@@ -918,6 +918,17 @@ TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* <StructClass>.members at the class level: symbol array */
+  if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
+    const char *mrty = nt_type(nt, recv);
+    int mci = -1;
+    if (mrty && (sp_streq(mrty, "ConstantReadNode") || sp_streq(mrty, "ConstantPathNode")))
+      mci = comp_class_index(c, nt_str(nt, recv, "name"));
+    else if (mrty && sp_streq(mrty, "LocalVariableReadNode"))
+      mci = class_var_static_ci(c, recv);
+    if (mci >= 0 && c->classes[mci].is_struct &&
+        comp_cmethod_in_chain(c, mci, "members", NULL) < 0) return TY_POLY_ARRAY;
+  }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
@@ -1220,9 +1231,9 @@ else {
                  sp_streq(cn, "Random") || sp_streq(cn, "IO") || sp_streq(cn, "File") ||
                  sp_streq(cn, "GzipReader") || sp_streq(cn, "GzipWriter"))) return TY_POLY;
     }
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
-      const char *cn = nt_str(nt, recv, "name");
-      int ci = comp_class_index(c, cn);
+    if (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "LocalVariableReadNode"))) {
+      const char *cn = sp_streq(rty, "ConstantReadNode") ? nt_str(nt, recv, "name") : NULL;
+      int ci = cn ? comp_class_index(c, cn) : class_var_static_ci(c, recv);
       if (ci >= 0) {
         /* an exception-subclass instance keeps its concrete class (its custom
            methods must dispatch); the exception-shaped queries route through
@@ -1698,11 +1709,30 @@ else {
       }
       return TY_SYM_POLY_HASH;
     }
+    if ((sp_streq(name, "size") || sp_streq(name, "length")) && argc == 0) {
+      /* a member of that name wins: its generated reader is the method */
+      char szn[272]; snprintf(szn, sizeof szn, "@%s", name);
+      if (comp_ivar_index(sc, szn) < 0) return TY_INT;
+    }
+    if (sp_streq(name, "deconstruct_keys") && argc == 1) return TY_SYM_POLY_HASH;
     if (sp_streq(name, "dig") && argc >= 1) {
       int mi = struct_member_idx(c, sc, argv[0]);
       if (mi >= 0) {
         TyKind mt = sc->ivar_types[mi];
         if (argc == 1) return mt;
+        /* nested struct members: walk the remaining literal keys */
+        {
+          ClassInfo *cur = sc; int cmi = mi; int di = 1;
+          while (di < argc) {
+            TyKind mt2 = cur->ivar_types[cmi];
+            if (!ty_is_object(mt2) || !c->classes[ty_object_class(mt2)].is_struct) break;
+            ClassInfo *nx = &c->classes[ty_object_class(mt2)];
+            int nmi = struct_member_idx(c, nx, argv[di]);
+            if (nmi < 0) break;
+            cur = nx; cmi = nmi; di++;
+          }
+          if (di == argc && di > 1) return cur->ivar_types[cmi];
+        }
         /* dig(member, key, ...): index into the member's container */
         if (ty_is_hash(mt) && argc == 2) return ty_hash_val(mt);
         if (ty_is_array(mt) && argc == 2) return ty_array_elem(mt);

@@ -90,12 +90,41 @@ int is_void_call(const char *name) {
     "raise", "warn", "printf", NULL};
   return str_in(name, set);
 }
+/* A local variable that statically holds exactly one user class (every write
+   in its scope assigns the same class constant) resolves to that class index;
+   -1 when dynamic. Lets `k = Klass; k.new(...)` and `k.members` dispatch
+   statically. */
+int class_var_static_ci(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, node);
+  if (!ty || !sp_streq(ty, "LocalVariableReadNode")) return -1;
+  const char *vn = nt_str(nt, node, "name");
+  if (!vn) return -1;
+  Scope *sc = comp_scope_of(c, node);
+  int found = -1;
+  for (int w = 0; w < nt->count; w++) {
+    const char *wty = nt_type(nt, w);
+    if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+    int val = nt_ref(nt, w, "value");
+    const char *vty = val >= 0 ? nt_type(nt, val) : NULL;
+    int ci = (vty && sp_streq(vty, "ConstantReadNode"))
+             ? comp_class_index(c, nt_str(nt, val, "name")) : -1;
+    if (ci < 0) return -1;                   /* a non-class write: dynamic */
+    if (found >= 0 && found != ci) return -1; /* two classes: dynamic */
+    found = ci;
+  }
+  return found;
+}
+
 int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode) {
   const NodeTable *nt = c->nt;
   const char *kty = nt_type(nt, keynode);
   if (!kty) return -1;
-  if (sp_streq(kty, "SymbolNode")) {
-    const char *kn = nt_str(nt, keynode, "value");
+  if (sp_streq(kty, "SymbolNode") || sp_streq(kty, "StringNode")) {
+    const char *kn = sp_streq(kty, "SymbolNode") ? nt_str(nt, keynode, "value")
+                                                 : nt_str(nt, keynode, "content");
     if (!kn) return -1;
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", kn);
     int iv = comp_ivar_index(sc, ivn);
@@ -306,6 +335,11 @@ else {
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   int last = scope_body_last(c, mi);
   int is_yield = last >= 0 && nt_type(c->nt, last) && sp_streq(nt_type(c->nt, last), "YieldNode");
+  /* A force-lowered Enumerable #each returns self (its ret is pinned to the
+     defining class), not the block's value -- the per-call-site block typing
+     below is only for the value-carrying (self-recursive) lowering. */
+  if (c->scopes[mi].is_lowered_yield && ty_is_object(c->scopes[mi].ret))
+    return c->scopes[mi].ret;
   /* Lowered yield methods (self-recursive + yield) carry the block's return value:
      return the per-call-site block body type so puts/assign use the right type. */
   if (c->scopes[mi].is_lowered_yield || is_yield || is_blk_param_call(c, last, mi)) {
