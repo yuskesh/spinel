@@ -716,6 +716,11 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "to_f")) return TY_FLOAT;
     if (sp_streq(name, "to_r")) return TY_RATIONAL;
     if (sp_streq(name, "numerator")) return TY_COMPLEX;
+    if (sp_streq(name, "zero?") || sp_streq(name, "real?") ||
+        sp_streq(name, "integer?") || sp_streq(name, "finite?") ||
+        sp_streq(name, "eql?")) return TY_BOOL;
+    if (sp_streq(name, "infinite?")) return TY_INT;      /* 1 or nil (sentinel) */
+    if (sp_streq(name, "rationalize") && argc == 0) return TY_RATIONAL;
     if (sp_streq(name, "fdiv") && argc == 1) return TY_COMPLEX;
     if (sp_streq(name, "coerce") && argc == 1) return TY_POLY_ARRAY;
   }
@@ -2830,7 +2835,14 @@ else {
         int has_user = 0;
         for (int k = 0; k < c->nclasses && !has_user; k++)
           if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
-        if (!has_user) return TY_POLY;  /* boxed result (array/hash/rational/complex) */
+        if (!has_user) {
+          /* concrete result types, matching the TY_NIL receiver arm so a
+             local settled on an early (pre-widening) pass stays consistent */
+          if (sp_streq(name, "to_a")) return TY_POLY_ARRAY;
+          if (sp_streq(name, "to_h")) return TY_SYM_POLY_HASH;
+          if (sp_streq(name, "to_r")) return TY_RATIONAL;
+          return TY_COMPLEX;
+        }
       }
       if (argc == 1 && sp_streq(name, "===")) {
         int has_user = 0;
@@ -3108,9 +3120,10 @@ else {
                              sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
     return TY_POLY; /* {}.default -> nil (poly nil) */
   }
-  /* a literal Hash.new(d) receiver that never narrowed: .default and [] both
-     yield the default (no write can have reached it) */
-  if (recv >= 0 && rt == TY_UNKNOWN &&
+  /* a literal (or single-assignment variable) Hash.new(d) receiver that
+     never narrowed: .default and [] both yield the default (no write can
+     have reached it). The variable form widens to poly, hence both gates. */
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_POLY) &&
       ((sp_streq(name, "default") && argc == 0) ||
        (sp_streq(name, "[]") && argc == 1))) {
     int dn = hash_new_default_arg(c, recv);

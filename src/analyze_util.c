@@ -124,7 +124,28 @@ int class_var_static_ci(Compiler *c, int node) {
    narrows (no writes ever reach it). */
 int hash_new_default_arg(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return -1;
+  if (recv < 0 || !nt_type(nt, recv)) return -1;
+  /* a local whose every same-scope write is the same Hash.new(d) shape
+     resolves like the literal (`a = Hash.new(7); a.default`) */
+  if (sp_streq(nt_type(nt, recv), "LocalVariableReadNode")) {
+    const char *vn = nt_str(nt, recv, "name");
+    if (!vn) return -1;
+    Scope *sc = comp_scope_of(c, recv);
+    int found = -1;
+    for (int w = 0; w < nt->count; w++) {
+      const char *wty = nt_type(nt, w);
+      if (!wty || !sp_streq(wty, "LocalVariableWriteNode")) continue;
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      int val = nt_ref(nt, w, "value");
+      int dn = val >= 0 ? hash_new_default_arg(c, val) : -1;
+      if (dn < 0) return -1;                 /* a non-matching write: dynamic */
+      if (found >= 0) return -1;             /* multiple writes: dynamic */
+      found = dn;
+    }
+    return found;
+  }
+  if (!sp_streq(nt_type(nt, recv), "CallNode")) return -1;
   const char *nm = nt_str(nt, recv, "name");
   if (!nm || (!sp_streq(nm, "new") && !sp_streq(nm, "__hash_new_default"))) return -1;
   int cr = nt_ref(nt, recv, "receiver");

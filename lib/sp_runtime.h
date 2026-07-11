@@ -4796,7 +4796,10 @@ static sp_RbVal sp_marv_box_rational(mrb_int n, mrb_int d) { return sp_box_ratio
    itself, anything else raises NoMethodError like CRuby. */
 static sp_RbVal sp_poly_to_a_m(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return sp_box_poly_array(sp_PolyArray_new());
-  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) return v;
+  /* normalize any array kind into a PolyArray so callers can rely on the
+     unboxed representation (the nil case dominates; identity is not kept) */
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id))
+    return sp_box_poly_array(sp_poly_to_poly_array(v));
   sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_a' for %s", sp_poly_class_name(v)));
 }
 static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {

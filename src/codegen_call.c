@@ -1279,6 +1279,42 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t%d.re); })", t, t);
         return 1;
       }
+      if (sp_streq(name, "zero?") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; (_t%d.re == 0.0 && _t%d.im == 0.0); })", t, t);
+        return 1;
+      }
+      if ((sp_streq(name, "real?") || sp_streq(name, "integer?")) && argc == 0) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+        return 1;
+      }
+      if (sp_streq(name, "finite?") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; (isfinite(_t%d.re) && isfinite(_t%d.im)); })", t, t);
+        return 1;
+      }
+      if (sp_streq(name, "infinite?") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; (isinf(_t%d.re) || isinf(_t%d.im)) ? (mrb_int)1 : SP_INT_NIL; })", t, t);
+        return 1;
+      }
+      if (sp_streq(name, "eql?") && argc == 1 && comp_ntype(c, argv[0]) == TY_COMPLEX) {
+        int t = ++g_tmp, u = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_Complex _t%d = ", u); emit_expr(c, argv[0], b);
+        buf_printf(b, "; (_t%d.re == _t%d.re && _t%d.im == _t%d.im && _t%d.fl == _t%d.fl); })",
+                   t, u, t, u, t, u);
+        return 1;
+      }
+      if (sp_streq(name, "rationalize") && argc == 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; if (_t%d.im != 0.0) sp_raise_cls(\"RangeError\", \"can't convert into Rational\"); sp_float_to_rational(_t%d.re); })", t, t);
+        return 1;
+      }
       if (sp_streq(name, "numerator") && argc == 0) { emit_expr(c, recv, b); return 1; }
       if (sp_streq(name, "denominator") && argc == 0) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)1)");
@@ -9655,7 +9691,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* A literal Hash.new(d) receiver that never narrowed: .default and []
      both fold to the default value (no write can have reached the hash);
      the key/receiver still evaluate for their side effects. */
-  if (recv >= 0 && rt == TY_UNKNOWN &&
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_POLY) &&
       ((sp_streq(name, "default") && argc == 0) ||
        (sp_streq(name, "[]") && argc == 1))) {
     int dn = hash_new_default_arg(c, recv);

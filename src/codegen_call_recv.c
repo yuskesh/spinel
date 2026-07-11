@@ -5380,7 +5380,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      correct for any hash this mutator never (successfully) ran on. */
   if (sp_streq(name, "compare_by_identity"))  /* any arity: identity hashing is unsupported */
     unsupported(c, id, "Hash#compare_by_identity (identity-keyed hashing)");
-  /* nil-aware conversions on a boxed receiver (a nil local widens to poly) */
+  /* nil-aware conversions on a boxed receiver (a nil local widens to poly).
+     The call's settled type may predate the widening (the receiver inferred
+     TY_NIL on an early fixpoint pass and typed a captured local concretely);
+     unbox the helper's boxed result to match it -- the receiver provably held
+     nil there, so the payload really is the concrete kind. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
        sp_streq(name, "to_r") || sp_streq(name, "to_c"))) {
@@ -5388,9 +5392,32 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
     if (!has_user) {
-      buf_printf(b, "sp_poly_%s_m(", name);
-      emit_expr(c, recv, b);
-      buf_puts(b, ")");
+      if (sp_streq(name, "to_a")) {
+        buf_puts(b, "((sp_PolyArray *)sp_poly_to_a_m(");
+        emit_expr(c, recv, b);
+        buf_puts(b, ").v.p)");
+      }
+      else if (sp_streq(name, "to_r")) {
+        buf_puts(b, "(*(sp_Rational *)sp_poly_to_r_m(");
+        emit_expr(c, recv, b);
+        buf_puts(b, ").v.p)");
+      }
+      else if (sp_streq(name, "to_c")) {
+        buf_puts(b, "(*(sp_Complex *)sp_poly_to_c_m(");
+        emit_expr(c, recv, b);
+        buf_puts(b, ").v.p)");
+      }
+      else {
+        /* to_h: the helper passes a real hash through unchanged, so guard
+           the variant before unboxing (a non-sym-keyed hash rejects loudly
+           rather than reading through the wrong layout) */
+        int th2 = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = sp_poly_to_h_m(", th2);
+        emit_expr(c, recv, b);
+        buf_printf(b, "); if (_t%d.cls_id != SP_BUILTIN_SYM_POLY_HASH)"
+                      " sp_raise_cls(\"TypeError\", \"to_h on a non-symbol-keyed boxed hash\");"
+                      " (sp_SymPolyHash *)_t%d.v.p; })", th2, th2);
+      }
       return 1;
     }
   }
