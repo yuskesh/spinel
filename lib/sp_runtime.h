@@ -6613,6 +6613,20 @@ static sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const cha
   e->meth = meth;
   return e;
 }
+/* Enumerator#with_index block form returns whatever the enumerator's each
+   returns with that block: for an `each`/`each_with_index` enumerator that is
+   the source receiver itself. A stored collector enumerator (blockless map/
+   select/...) would have to rebuild its collected result here -- reject that
+   loudly rather than hand back the wrong value. */
+static sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) __attribute__((unused));
+static sp_RbVal sp_enum_with_index_value(sp_Enumerator *e) {
+  if (e->meth && (strcmp(e->meth, "each") == 0 || strcmp(e->meth, "each_with_index") == 0))
+    return e->source;
+  sp_raise_cls("NotImplementedError",
+               sp_sprintf("Enumerator#with_index return value for a stored %s enumerator",
+                          e->meth ? e->meth : "generator"));
+  return sp_box_nil();
+}
 static sp_PolyArray *sp_enum_hash_side(sp_RbVal h, int keyside) {
   mrb_int n = sp_poly_length(h);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);

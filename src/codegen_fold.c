@@ -3911,6 +3911,74 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* <stored enumerator>.with_index(off) { |x, i| } in VALUE position: drain
+   the snapshot once, drive the block with the offset index, and yield the
+   enumerator's with_index return -- the boxed source for an each-family
+   enumerator (the meth-gated runtime helper raises loudly for a stored
+   collector enumerator, whose result we cannot rebuild here). The statement
+   form is served by the iter emitter; immediate array chains by
+   emit_with_index_expr above. Returns 1 if handled. */
+int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "with_index")) return 0;
+  int block = nt_ref(nt, id, "block");
+  if (block < 0) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_ENUMERATOR) return 0;
+  int wargs = nt_ref(nt, id, "arguments");
+  int wargc = 0;
+  const int *wargv = wargs >= 0 ? nt_arr(nt, wargs, "arguments", &wargc) : NULL;
+  if (wargc > 1) return 0;
+  const char *p0_orig = block_param_name(c, block, 0);
+  const char *p0 = p0_orig ? rename_local(p0_orig) : NULL;
+  const char *p1_orig = block_param_name(c, block, 1);
+  const char *p1 = p1_orig ? rename_local(p1_orig) : NULL;
+  int body = nt_ref(nt, block, "body");
+  int te = ++g_tmp, ta = ++g_tmp, ti = ++g_tmp, toff = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n",
+             te, rb.p ? rb.p : "", te);
+  free(rb.p);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_PolyArray *_t%d = sp_Enumerator_to_a(_t%d); SP_GC_ROOT(_t%d);\n",
+             ta, te, ta);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "mrb_int _t%d = ", toff);
+  if (wargc == 1 && wargv) emit_int_expr(c, wargv[0], g_pre);
+  else buf_puts(g_pre, "0");
+  buf_puts(g_pre, ";\n");
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n",
+             ti, ti, ta, ti);
+  Scope *bs = comp_scope_of(c, block);
+  if (p0) {
+    LocalVar *b0 = p0_orig ? scope_local(bs, p0_orig) : NULL;
+    TyKind p0t = (b0 && b0->type != TY_UNKNOWN) ? b0->type : TY_POLY;
+    char vb0[48];
+    snprintf(vb0, sizeof vb0, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "lv_%s = ", p0);
+    if (p0t == TY_POLY) buf_puts(g_pre, vb0);
+    else emit_unbox_text(c, p0t, vb0, g_pre);
+    buf_puts(g_pre, ";\n");
+  }
+  if (p1) {
+    LocalVar *b1 = p1_orig ? scope_local(bs, p1_orig) : NULL;
+    TyKind p1t = (b1 && b1->type != TY_UNKNOWN) ? b1->type : TY_POLY;
+    emit_indent(g_pre, g_indent + 1);
+    if (p1t == TY_POLY)
+      buf_printf(g_pre, "lv_%s = sp_box_int(_t%d + _t%d);\n", p1, ti, toff);
+    else
+      buf_printf(g_pre, "lv_%s = _t%d + _t%d;\n", p1, ti, toff);
+  }
+  emit_loop_body(c, body, g_pre, g_indent + 1);
+  emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+  buf_printf(b, "sp_enum_with_index_value(_t%d)", te);
+  return 1;
+}
+
 /* all?/any?/none?/one? with a block: loop, count the truthy block results,
    and reduce to the predicate. Returns 1 if handled. */
 int emit_predicate_expr(Compiler *c, int id, Buf *b) {

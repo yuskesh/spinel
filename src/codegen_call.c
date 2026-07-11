@@ -4394,6 +4394,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_lazy_pipeline_expr(c, id, b)) return;
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;
+  if (emit_enum_with_index_expr(c, id, b)) return;
   if (emit_each_with_index_chain(c, id, b)) return;
   if (emit_each_with_index_terminal(c, id, b)) return;
   if (emit_collect_expr(c, id, b)) return;

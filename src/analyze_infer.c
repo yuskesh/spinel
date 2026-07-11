@@ -1676,6 +1676,23 @@ else {
     /* blockless enum.with_index(off) is another materialized Enumerator (over
        [element, index] pairs); the block/terminal-chain forms are typed below */
     if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
+    /* Stored-enumerator block form returns the underlying each return (the
+       boxed source). Immediate chains (arr.each.with_index { } and the
+       map/select shapes) keep their own typed arms below -- skip a blockless
+       iter-shaped CallNode receiver over an array. */
+    if (sp_streq(name, "with_index") && argc <= 1 && nt_ref(nt, id, "block") >= 0) {
+      int wchain = 0;
+      if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode") &&
+          nt_ref(nt, recv, "block") < 0) {
+        const char *wnm = nt_str(nt, recv, "name");
+        int wrcv = nt_ref(nt, recv, "receiver");
+        if (wnm && wrcv >= 0 &&
+            (sp_streq(wnm, "each") || ty_iter_shape(wnm) != TY_ITER_NONE) &&
+            ty_is_array(infer_type(c, wrcv)))
+          wchain = 1;
+      }
+      if (!wchain) return TY_POLY;
+    }
     /* #size is nil for a generator with no size, an Integer for a materialized
        snapshot, or whatever a stored size value/callable yields -- hence poly. */
     if (sp_streq(name, "size")) return TY_POLY;

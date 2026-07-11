@@ -483,6 +483,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b);
 int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b);
 int emit_collect_expr(Compiler *c, int id, Buf *b);
 int emit_with_index_expr(Compiler *c, int id, Buf *b);
+int emit_enum_with_index_expr(Compiler *c, int id, Buf *b);
 int emit_each_with_index_chain(Compiler *c, int id, Buf *b);
 int emit_each_with_index_terminal(Compiler *c, int id, Buf *b);
 int emit_chunk_while_expr(Compiler *c, int id, Buf *b);
