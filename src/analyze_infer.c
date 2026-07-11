@@ -2532,6 +2532,7 @@ else {
        call above and never reach this. */
     if (block < 0 && argc == 0 &&
         (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
+         sp_streq(name, "each_entry") ||
          sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) return TY_ENUMERATOR;
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
        chained block forms (map.with_index { }) are typed by their own arms
@@ -2542,9 +2543,12 @@ else {
     /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
        Enumerator of slices / windows. The direct-block form has block >= 0 and
        is excluded; a .map/.collect chain consumer is typed by its own arm above
-       (which accepts this TY_ENUMERATOR receiver and keeps the array result). */
+       (which accepts this TY_ENUMERATOR receiver and keeps the array result).
+       cycle(n) and slice_before/slice_after(pattern) materialize the same way. */
     if (block < 0 && argc == 1 &&
-        (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) return TY_ENUMERATOR;
+        (sp_streq(name, "each_slice") || sp_streq(name, "each_cons") ||
+         sp_streq(name, "cycle") ||
+         sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) return TY_ENUMERATOR;
     /* chunk { } with no chained consumer is an enumerator of [key, run]
        pairs; the desugar interposes to_a so .map/.count chains compose. */
     if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) return TY_ENUMERATOR;

@@ -5337,7 +5337,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
        (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
       (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
-       sp_streq(name, "map") || sp_streq(name, "collect"))) {
+       sp_streq(name, "map") || sp_streq(name, "collect") ||
+       sp_streq(name, "each_entry"))) {
     /* a blockless map is the same element snapshot; only its #inspect method
        name differs (the deferred mapping is supplied by a later block form,
        which the chain emitters match before this arm) */
@@ -5411,6 +5412,26 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_Enumerator_new_%s(", sp_streq(name, "each_slice") ? "slices" : "cons");
     emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+    return;
+  }
+  /* arr.cycle(n) with no block -> a materialized Enumerator of the elements
+     repeated n times (the unbounded blockless form stays a loud reject). */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_array(comp_ntype(c, recv)) && sp_streq(name, "cycle")) {
+    buf_puts(b, "sp_Enumerator_new_cycle(");
+    emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+    return;
+  }
+  /* arr.slice_before(pat) / slice_after(pat) with no block -> a materialized
+     Enumerator over the groups. */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_array(comp_ntype(c, recv)) &&
+      (sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) {
+    buf_printf(b, "sp_Enumerator_new_from_items(sp_poly_slice_groups(");
+    emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, ", %d))", sp_streq(name, "slice_after") ? 1 : 0);
     return;
   }
   /* hash.each / hash.each_pair with no block -> an external Enumerator over the

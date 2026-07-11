@@ -1293,7 +1293,6 @@ static sp_PtrArray*sp_IntArray_combination(sp_IntArray*a,mrb_int k){sp_PtrArray*
    recursion restarts at `i` rather than `i+1`. */
 static void sp_int_repeated_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<src->len;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_repeated_combination_recur(src,i,k-1,acc,out);acc->len--;}}
 static sp_PtrArray*sp_IntArray_repeated_combination(sp_IntArray*a,mrb_int k){sp_PtrArray*out=sp_PtrArray_new();if(!a||k<0)return out;sp_IntArray*acc=sp_IntArray_new();sp_int_repeated_combination_recur(a,0,k,acc,out);return out;}
-
 /* Cartesian product of two int arrays. Returns a PtrArray of
    2-element IntArrays. */
 /* Array#permutation(k) -- ordered k-permutations. */
@@ -6674,6 +6673,37 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
    the consecutive non-overlapping slices of length n (the last may be short).
    `slice` is block-scoped, so its GC root pops each iteration; `out` keeps the
    pushed slices alive. */
+/* arr.cycle(n) with no block: the elements repeated n whole times. */
+static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, mrb_int n) {
+  sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  mrb_int len = items ? items->len : 0;
+  for (mrb_int r = 0; r < n; r++)
+    for (mrb_int i = 0; i < len; i++) sp_PolyArray_push(out, items->data[i]);
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
+}
+/* slice_before/slice_after with a pattern VALUE: start a new group before
+   (after) each element == pattern. Groups are poly arrays. */
+static sp_PolyArray *sp_poly_slice_groups(sp_RbVal arr, sp_RbVal pat, int after) {
+  sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  sp_PolyArray *cur = sp_PolyArray_new(); SP_GC_ROOT(cur);
+  mrb_int len = items ? items->len : 0;
+  for (mrb_int i = 0; i < len; i++) {
+    sp_RbVal e = items->data[i];
+    if (!after && cur->len > 0 && sp_poly_eq(e, pat)) {
+      sp_PolyArray_push(out, sp_box_poly_array(cur));
+      cur = sp_PolyArray_new();
+    }
+    sp_PolyArray_push(cur, e);
+    if (after && sp_poly_eq(e, pat)) {
+      sp_PolyArray_push(out, sp_box_poly_array(cur));
+      cur = sp_PolyArray_new();
+    }
+  }
+  if (cur->len > 0) sp_PolyArray_push(out, sp_box_poly_array(cur));
+  return out;
+}
 static sp_Enumerator *sp_Enumerator_new_slices(sp_RbVal arr, mrb_int n) {
   if (n < 1) sp_raise_cls("ArgumentError", "invalid slice size");
   sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
