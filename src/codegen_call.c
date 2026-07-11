@@ -5309,6 +5309,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b); buf_puts(b, "))");
     return;
   }
+  /* str.each_line(chomp: ...) with no block -> an Enumerator over the
+     (possibly chomped) lines. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 1 &&
+      nt_ref(nt, id, "block") < 0 && sp_streq(name, "each_line") &&
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
+    int chomp_v = struct_kwarg_value(c, argv[0], "chomp");
+    int is_chomp = (chomp_v >= 0 && nt_type(nt, chomp_v) &&
+                    sp_streq(nt_type(nt, chomp_v), "TrueNode"));
+    buf_printf(b, "sp_Enumerator_new_from(sp_box_str_array(%s(",
+               is_chomp ? "sp_str_lines_chomp" : "sp_str_lines");
+    emit_expr(c, recv, b); buf_puts(b, ")))");
+    return;
+  }
   /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
      Enumerator over the slices (non-overlapping, last may be short) or the
      sliding windows of length n. */

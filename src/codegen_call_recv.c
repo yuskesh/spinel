@@ -3921,20 +3921,20 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "scan") && argc == 1 && re_lit_index(c, argv[0]) >= 0 &&
                nt_ref(nt, id, "block") >= 0) {
         /* value-form scan { }: iterate in the prelude; the value is the
-           receiver string (CRuby returns self from the block form). A
-           capturing pattern yields each captures array, a plain one each
-           whole match. */
+           receiver string (CRuby returns self from the block form). With
+           capture groups the rows come from sp_re_scan_poly: one param
+           binds the group row itself, several destructure it (a group that
+           did not participate binds nil). */
         int blk = nt_ref(nt, id, "block");
-        const char *p0o = block_param_name(c, blk, 0);
-        const char *p0r = p0o ? rename_local(p0o) : NULL;
+        int has_cap = re_has_captures(re_lit_src(c, argv[0]));
+        int np = 0; while (block_param_name(c, blk, np)) np++;
         int body = nt_ref(nt, blk, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        int caps = re_has_captures(re_lit_src(c, argv[0]));
         int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
         emit_indent(g_pre, g_indent);
-        if (caps)
+        if (has_cap)
           buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
                      tm, re_lit_index(c, argv[0]), tr, tm);
         else
@@ -3942,29 +3942,24 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                      tm, re_lit_index(c, argv[0]), tr, tm);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, tm, ti);
-        if (p0r && caps) {
-          int blk2 = nt_ref(nt, id, "block");
-          if (block_param_name(c, blk2, 1)) {
-            int trow = ++g_tmp;
+        if (has_cap && np >= 2) {
+          int trow = ++g_tmp;
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", trow, tm, ti);
+          for (int pj = 0; pj < np; pj++) {
+            const char *pn = rename_local(block_param_name(c, blk, pj));
             emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n",
-                       trow, tm, ti);
-            for (int pk = 0; ; pk++) {
-              const char *pn2 = block_param_name(c, blk2, pk);
-              if (!pn2) break;
-              emit_indent(g_pre, g_indent + 1);
-              buf_printf(g_pre, "lv_%s = (_t%d && %d < _t%d->len) ? sp_poly_to_s(sp_PolyArray_get(_t%d, %d)) : NULL;\n",
-                         rename_local(pn2), trow, pk, trow, trow, pk);
-            }
-          }
-          else {
-            emit_indent(g_pre, g_indent + 1);
-            buf_printf(g_pre, "lv_%s = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", p0r, tm, ti);
+            buf_printf(g_pre, "lv_%s = (_t%d && _t%d->len > %d && _t%d->data[%d].tag == SP_TAG_STR) ? _t%d->data[%d].v.s : NULL;\n",
+                       pn, trow, trow, pj, trow, pj, trow, pj);
           }
         }
-        else if (p0r) {
+        else if (block_param_name(c, blk, 0)) {
+          const char *p0r = rename_local(block_param_name(c, blk, 0));
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
+          if (has_cap)
+            buf_printf(g_pre, "lv_%s = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", p0r, tm, ti);
+          else
+            buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
         }
         int svind = g_indent; g_indent++;
         for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);

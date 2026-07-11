@@ -148,7 +148,7 @@ const char *sp_str_splice_re(mrb_regexp_pattern *pat, const char *s, const char 
    the receiver's remainder written through rest_out and the match
    registers set (cleared on no-match, like sp_re_match). */
 const char *sp_str_slice_re(mrb_regexp_pattern *pat, const char *s, const char **rest_out) {
-  if (!s) s = "";
+  if (!s) s = &("\xff" "")[1];  /* header-safe empty: s flows to sp_str_byteslice -> sp_str_byte_len(s[-1]) */
   int64_t slen = (int64_t)strlen(s);
   int n = re_exec(pat, s, slen, 0, sp_re_caps, 32, 0);
   if (n <= 0) {
@@ -241,8 +241,17 @@ void sp_re_expand_rep(const mrb_regexp_pattern *pat,
     char c = rep[i];
     if (c == '\\' && i + 1 < rlen) {
       char d = rep[i+1];
-      if ((d >= '0' && d <= '9') || d == '&') {
-        int gi = (d == '&') ? 0 : (d - '0');
+      if ((d >= '0' && d <= '9') || d == '&' || d == '+') {
+        int gi = (d == '&') ? 0 : (d == '+') ? 0 : (d - '0');
+        if (d == '+') {
+          /* \+: the highest-numbered group that participated in the match;
+             none participating expands to "" (gi stays 0 with caps[0] the
+             whole match -- so scan for a real group first) */
+          gi = -1;
+          for (int g = 1; (g * 2) + 1 < ncaps; g++)
+            if (caps[g*2] >= 0 && caps[(g*2)+1] >= 0) gi = g;
+          if (gi < 0) { i += 2; continue; }
+        }
         if ((gi*2) + 1 < ncaps && caps[gi*2] >= 0 && caps[(gi*2)+1] >= 0) {
           int g_len = caps[(gi*2)+1] - caps[gi*2];
           if (olen + g_len + 1 >= cap) { cap = ((olen + g_len) * 2) + 64; out = (char*)realloc(out, cap); }

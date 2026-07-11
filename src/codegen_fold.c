@@ -1505,7 +1505,16 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
   if (p0) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_str_substr(_t%d + _t%d, _t%d, _t%d - _t%d);\n", p0, ts, tpos, tms, tme, tms); }
   for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
   int save = g_indent; g_indent++;
-  Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
+  /* CRuby stringifies a non-string block value (gsub { 2 } -> "2"): box a
+     concretely non-string result and render it through sp_poly_to_s. */
+  TyKind gvt = infer_type(c, bb[bn - 1]);
+  Buf vb; memset(&vb, 0, sizeof vb);
+  if (gvt == TY_POLY) { buf_puts(&vb, "sp_poly_to_s("); emit_expr(c, bb[bn - 1], &vb); buf_puts(&vb, ")"); }
+  else if (gvt != TY_STRING && gvt != TY_UNKNOWN) {
+    buf_puts(&vb, "sp_poly_to_s("); emit_boxed(c, bb[bn - 1], &vb); buf_puts(&vb, ")");
+  }
+  else emit_expr(c, bb[bn - 1], &vb);
+  g_indent = save;
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append(_t%d, %s);\n", tout, vb.p ? vb.p : "\"\""); free(vb.p);
   if (once) {
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_String_append(_t%d, _t%d + _t%d + _t%d); break;\n", tout, ts, tpos, tme);

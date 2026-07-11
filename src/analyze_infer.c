@@ -3508,6 +3508,9 @@ else {
     if ((sp_streq(name, "each_char") || sp_streq(name, "each_line") ||
          sp_streq(name, "each_byte") || sp_streq(name, "each_codepoint")) && argc == 0 &&
         nt_ref(nt, id, "block") < 0) return TY_ENUMERATOR;
+    if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
+      return TY_ENUMERATOR;  /* each_line(chomp: ...) blockless */
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
       if (blk >= 0 && (sp_streq(name, "chars") || sp_streq(name, "lines"))) return TY_STRING;
