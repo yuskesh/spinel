@@ -6550,6 +6550,9 @@ typedef struct {
   sp_RbVal gen_result;                    /* generator body's return -> StopIteration#result */
   sp_RbVal source;                        /* the iterated receiver -> materialized StopIteration#result */
   const char *meth;                       /* creating method name, for #inspect ("each", ...) */
+  mrb_bool gen_label;                     /* #inspect as a Generator wrapper (chunk_while & co.):
+                                             the items are an eager snapshot, but CRuby shows
+                                             #<Enumerator: #<Enumerator::Generator:0x..>:each> */
 } sp_Enumerator;
 static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ) {
@@ -6611,6 +6614,13 @@ static sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const cha
 static sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth) {
   e->source = src;
   e->meth = meth;
+  return e;
+}
+/* Mark an eagerly-materialized enumerator to #inspect as a Generator wrapper
+   (what CRuby shows for chunk_while / slice_when / chunk without a terminal). */
+static sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) __attribute__((unused));
+static sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) {
+  e->gen_label = TRUE;
   return e;
 }
 /* Enumerator#with_index block form returns whatever the enumerator's each
@@ -6789,7 +6799,9 @@ static sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, 
    receiver and renders a Generator placeholder (CRuby shows its address). */
 static const char *sp_enum_inspect(sp_Enumerator *e) {
   if (!e) return "nil";
-  if (e->gen) return "#<Enumerator: #<Enumerator::Generator>:each>";
+  if (e->gen || e->gen_label)
+    return sp_sprintf("#<Enumerator: #<Enumerator::Generator:0x%016llx>:each>",
+                      (unsigned long long)(uintptr_t)e);
   sp_RbVal src = (e->source.tag != SP_TAG_NIL) ? e->source
                : sp_box_poly_array(e->items ? e->items : sp_PolyArray_new());
   return sp_sprintf("#<Enumerator: %s:%s>", sp_poly_inspect(src), e->meth ? e->meth : "each");

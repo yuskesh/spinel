@@ -928,6 +928,24 @@ TyKind infer_call(Compiler *c, int id) {
     }
   }
 
+  /* chunk_while/slice_when/chunk { } standing on its own (no .to_a terminal,
+     which the arm above claims first): a first-class Enumerator over the
+     eagerly materialized runs */
+  if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
+      (sp_streq(name, "chunk_while") || sp_streq(name, "slice_when") ||
+       sp_streq(name, "chunk"))) {
+    TyKind crt = infer_type(c, recv);
+    if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_STR_ARRAY) {
+      int wrapped = 0;
+      NT_FOREACH_KIND(nt, NK_CallNode, w) {
+        if (nt_ref(nt, w, "receiver") != id) continue;
+        const char *wn = nt_str(nt, w, "name");
+        if (wn && sp_streq(wn, "to_a")) wrapped = 1;
+      }
+      if (!wrapped) return TY_ENUMERATOR;
+    }
+  }
+
   /* an empty array literal used directly as a receiver (`[].flatten`) has no
      usage to fold an element type from; treat it as an empty poly array so
      array methods dispatch instead of falling through to unresolved. */

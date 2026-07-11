@@ -4410,6 +4410,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_step_array_expr(c, id, b)) return;
   if (emit_chunk_while_expr(c, id, b)) return;
   if (emit_chunk_family_poly_expr(c, id, b)) return;
+  if (emit_chunk_family_enum_expr(c, id, b)) return;
   if (emit_chunk_first_class_expr(c, id, b)) return;
   if (emit_cycle_bounded_expr(c, id, b)) return;
   if (emit_slice_when_chunk_inspect_expr(c, id, b)) return;

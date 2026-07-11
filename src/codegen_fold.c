@@ -1981,34 +1981,33 @@ int emit_chunk_while_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
-/* poly_array.{chunk_while|slice_when|chunk} { }.to_a -> a poly array of runs
-   (or [key, run] pairs for chunk). The int-array twins above keep their lean
-   typed loops; this one drives boxed elements, so a redirected user-Enumerable
-   receiver (obj.__enum_to_a.chunk_while { }) is served too. Block params pin
-   to TY_POLY for the body emission. Returns 1 if handled. */
-int emit_chunk_family_poly_expr(Compiler *c, int id, Buf *b) {
+/* Core of the chunk-family emissions: emit the runs poly-array (or [key,
+   run] pairs for chunk) for the chunk-family call node `ck` into g_pre and
+   return its temp id (-1 when the shape is not servable). The receiver may
+   be a poly array (a redirected user-Enumerable receiver included) or a
+   typed int/str array, snapshotted through sp_enum_items_from. Block params
+   pin to TY_POLY for the body emission. */
+static int emit_chunk_family_runs(Compiler *c, int ck) {
   const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
-  if (!name || !sp_streq(name, "to_a")) return 0;
-  int recv = nt_ref(nt, id, "receiver");
-  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
-  const char *m = nt_str(nt, recv, "name");
-  if (!m) return 0;
+  const char *m = nt_str(nt, ck, "name");
+  if (!m) return -1;
   int is_sw = sp_streq(m, "slice_when");
   int is_cw = sp_streq(m, "chunk_while");
   int is_ck = sp_streq(m, "chunk");
-  if (!is_sw && !is_cw && !is_ck) return 0;
-  int block = nt_ref(nt, recv, "block");
-  if (block < 0) return 0;
-  int pr = nt_ref(nt, recv, "receiver");
-  if (pr < 0 || comp_ntype(c, pr) != TY_POLY_ARRAY) return 0;
+  if (!is_sw && !is_cw && !is_ck) return -1;
+  int block = nt_ref(nt, ck, "block");
+  if (block < 0) return -1;
+  int pr = nt_ref(nt, ck, "receiver");
+  TyKind prt = pr >= 0 ? comp_ntype(c, pr) : TY_UNKNOWN;
+  if (pr < 0 || (prt != TY_POLY_ARRAY && prt != TY_INT_ARRAY && prt != TY_STR_ARRAY))
+    return -1;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-  if (bn < 1) return 0;
+  if (bn < 1) return -1;
   const char *p0n = block_param_name(c, block, 0);
-  if (!p0n) return 0;
+  if (!p0n) return -1;
   const char *p1n = block_param_name(c, block, 1);
-  if ((is_sw || is_cw) && !p1n) return 0;
+  if ((is_sw || is_cw) && !p1n) return -1;
   const char *p0 = rename_local(p0n);
   const char *p1 = p1n ? rename_local(p1n) : NULL;
 
@@ -2016,13 +2015,24 @@ int emit_chunk_family_poly_expr(Compiler *c, int id, Buf *b) {
   LocalVar *lva = bsc ? scope_local(bsc, p0n) : NULL;
   LocalVar *lvb = (bsc && p1n) ? scope_local(bsc, p1n) : NULL;
   TyKind pta = lva ? lva->type : TY_UNKNOWN, ptb = lvb ? lvb->type : TY_UNKNOWN;
-  if (lva) lva->type = TY_POLY;
-  if (lvb) lvb->type = TY_POLY;
+  /* A poly receiver pins the params poly for the body emission. A typed
+     int/str receiver keeps the pass-assigned param types -- the snapshot's
+     boxed elements unbox into them below. */
+  int pin_poly = (prt == TY_POLY_ARRAY);
+  if (pin_poly && lva) lva->type = TY_POLY;
+  if (pin_poly && lvb) lvb->type = TY_POLY;
+  TyKind at0 = (!pin_poly && lva && lva->type != TY_UNKNOWN) ? lva->type : TY_POLY;
+  TyKind at1 = (!pin_poly && lvb && lvb->type != TY_UNKNOWN) ? lvb->type : TY_POLY;
 
   int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, ti = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta); free(rb.p);
+  if (prt == TY_POLY_ARRAY)
+    buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta);
+  else
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_enum_items_from(sp_box_%s_array(%s)); SP_GC_ROOT(_t%d);\n",
+               ta, prt == TY_INT_ARRAY ? "int" : "str", rb.p ? rb.p : "", ta);
+  free(rb.p);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
   emit_indent(g_pre, g_indent);
@@ -2040,7 +2050,12 @@ int emit_chunk_family_poly_expr(Compiler *c, int id, Buf *b) {
   if (is_ck) {
     int tk = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p0, ta, ti);
+    {
+      char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+      buf_printf(g_pre, "lv_%s = ", p0);
+      if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
+      buf_puts(g_pre, ";\n");
+    }
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
     int save = g_indent; g_indent += 1;
     Buf kb; memset(&kb, 0, sizeof kb); emit_boxed(c, bb[bn - 1], &kb); g_indent = save;
@@ -2063,9 +2078,19 @@ int emit_chunk_family_poly_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "if (_t%d > 0) {\n", ti);
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d - 1);\n", p0, ta, ti);
+    {
+      char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d - 1)", ta, ti);
+      buf_printf(g_pre, "lv_%s = ", p0);
+      if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
+      buf_puts(g_pre, ";\n");
+    }
     emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", p1, ta, ti);
+    {
+      char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+      buf_printf(g_pre, "lv_%s = ", p1);
+      if (at1 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at1, gv, g_pre);
+      buf_puts(g_pre, ";\n");
+    }
     for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 2);
     int save = g_indent; g_indent += 2;
     Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = save;
@@ -2088,7 +2113,34 @@ int emit_chunk_family_poly_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "if (sp_PolyArray_length(_t%d) > 0) sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tcur, tout, tcur);
   if (lva) lva->type = pta;
   if (lvb) lvb->type = ptb;
+  return tout;
+}
+
+/* array.{chunk_while|slice_when|chunk} { }.to_a -> a poly array of runs
+   (or [key, run] pairs for chunk). The int-array twins above keep their lean
+   typed loops for int receivers reached through them; this one drives boxed
+   elements. Returns 1 if handled. */
+int emit_chunk_family_poly_expr(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || !sp_streq(name, "to_a")) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !nt_type(nt, recv) || !sp_streq(nt_type(nt, recv), "CallNode")) return 0;
+  int tout = emit_chunk_family_runs(c, recv);
+  if (tout < 0) return 0;
   buf_printf(b, "_t%d", tout);
+  return 1;
+}
+
+/* array.{chunk_while|slice_when|chunk} { } standing on its own (stored in a
+   local, passed to p, ...): a first-class Enumerator over the eagerly
+   materialized runs, inspecting as the Generator wrapper CRuby shows.
+   Terminal chains (.to_a and the typed int-array forms) are matched earlier
+   at their terminal node and never reach this. Returns 1 if handled. */
+int emit_chunk_family_enum_expr(Compiler *c, int id, Buf *b) {
+  int tout = emit_chunk_family_runs(c, id);
+  if (tout < 0) return 0;
+  buf_printf(b, "sp_enum_as_gen(sp_Enumerator_new_from_items(_t%d))", tout);
   return 1;
 }
 
