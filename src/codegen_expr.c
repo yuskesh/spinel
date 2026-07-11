@@ -1491,6 +1491,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
         const char *cn = nt_str(nt, v, "name");
         if (cn && comp_method_index(c, cn) >= 0) res = "method";
+        /* an implicit-self call inside a class resolves through the
+           enclosing class's method chain (readers included) */
+        else if (cn && comp_scope_of(c, id) && comp_scope_of(c, id)->class_id >= 0 &&
+                 (comp_method_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL) >= 0 ||
+                  comp_reader_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL)))
+          res = "method";
         /* builtin kernel functions the compiler always resolves */
         else if (cn) {
           static const char *const kfns[] = {

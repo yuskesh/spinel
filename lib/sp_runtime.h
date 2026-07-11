@@ -2058,6 +2058,21 @@ SP_NORETURN SP_COLD static void sp_raise_no_str_conversion(sp_RbVal v) {
   snprintf(buf, sizeof buf, "no implicit conversion of %s into String", sp_poly_class_name(v));
   sp_raise_cls("TypeError", buf);
 }
+/* ENV[key] = value with a boxed RHS: a String sets, nil deletes, anything
+   else raises CRuby's TypeError. Returns the assigned string (NULL = nil),
+   matching the statically-string path's expression type. */
+static const char *sp_env_aset(const char *k, sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) { unsetenv(k); return NULL; }
+  if (v.tag != SP_TAG_STR) sp_raise_no_str_conversion(v);
+  if (v.v.s) setenv(k, v.v.s, 1); else unsetenv(k);
+  return v.v.s;
+}
+static mrb_int sp_env_size(void) {
+  extern char **environ;
+  mrb_int n = 0;
+  for (char **e = environ; e && *e; e++) n++;
+  return n;
+}
 static mrb_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
 static mrb_float sp_poly_to_f(sp_RbVal v);  /* defined below; used by the bigint+float arms */
 static inline int sp_poly_is_array_kind(int cls_id);                       /* defined below; used by the poly `+` array arm */

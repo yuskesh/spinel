@@ -5192,12 +5192,22 @@ else {
     const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
     int sc = comp_scope_of(c, id)->class_id;
+    /* same scope ladder as the plain-write form: class body civ_, then the
+       Toplevel pseudo-class global (a bare `self` here is undeclared C) */
+    if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
+    if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
     TyKind vt = TY_UNKNOWN;
     if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) vt = c->classes[sc].ivar_types[iv]; }
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);
+    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
+             g_class_body_id >= 0)
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, nm + 1);
+    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
+             comp_class_index(c, "Toplevel") >= 0)
+      snprintf(ref, sizeof ref, "civ_Toplevel_%s", nm + 1);
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     emit_indent(b, indent);

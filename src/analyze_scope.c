@@ -1397,6 +1397,13 @@ void register_globals_consts(Compiler *c) {
         if (sp_streq(ty, "ConstantPathWriteNode")) cv->const_def_write = 1;
       }
     }
+    else if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode") ||
+             sp_streq(ty, "ConstantOperatorWriteNode")) {
+      /* `CONST ||= v` (and friends) may be the constant's only definition */
+      const char *nm = nt_str(nt, id, "name");
+      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0)
+        comp_const_intern(c, nm);
+    }
     else if (sp_streq(ty, "ConstantWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
       /* a constant bound to a regex literal is resolved at compile time to a
@@ -2128,6 +2135,18 @@ int infer_global_const_types(Compiler *c) {
       const char *nm = nt_str(nt, id, "name");
       if (nm) lv = comp_const(c, nm);
       vt = infer_type(c, nt_ref(nt, id, "value"));
+    }
+    else if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode") ||
+             sp_streq(ty, "ConstantOperatorWriteNode")) {
+      const char *nm = nt_str(nt, id, "name");
+      if (nm) lv = comp_const(c, nm);
+      int is_orand = !sp_streq(ty, "ConstantOperatorWriteNode");
+      /* An or/and-write-only constant has no definite value before its first
+         use, so it must default to nil (poly) for the truthiness check. */
+      if (is_orand && lv && !lv->const_def_write)
+        vt = TY_POLY;
+      else
+        vt = infer_type(c, nt_ref(nt, id, "value"));
     }
     else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
              sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {

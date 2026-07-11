@@ -4740,11 +4740,37 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
-        int tk = ++g_tmp, tv = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = ", tk); emit_expr(c, argv[0], b);
-        buf_printf(b, "; const char *_t%d = ", tv); emit_str_expr(c, argv[1], b);
-        buf_printf(b, "; if (_t%d) setenv(_t%d, _t%d, 1); else unsetenv(_t%d); _t%d; })",
-                   tv, tk, tv, tk, tv);
+        TyKind evt = comp_ntype(c, argv[1]);
+        const char *v1ty = nt_type(nt, argv[1]);
+        int lit_nil = v1ty && sp_streq(v1ty, "NilNode");
+        if (evt == TY_STRING || lit_nil) {
+          int tk = ++g_tmp, tv = ++g_tmp;
+          buf_printf(b, "({ const char *_t%d = ", tk); emit_expr(c, argv[0], b);
+          buf_printf(b, "; const char *_t%d = ", tv); emit_str_expr(c, argv[1], b);
+          buf_printf(b, "; if (_t%d) setenv(_t%d, _t%d, 1); else unsetenv(_t%d); _t%d; })",
+                     tv, tk, tv, tk, tv);
+        }
+        else {
+          /* runtime-typed RHS: nil deletes, a String sets, anything else
+             raises CRuby's TypeError (naming the actual class) */
+          buf_puts(b, "sp_env_aset(");
+          emit_expr(c, argv[0], b);
+          buf_puts(b, ", ");
+          emit_boxed(c, argv[1], b);
+          buf_puts(b, ")");
+        }
+        return;
+      }
+    }
+  }
+  /* ENV.size/count/length -> environ entry count */
+  if (recv >= 0 && argc == 0 &&
+      (sp_streq(name, "size") || sp_streq(name, "count") || sp_streq(name, "length"))) {
+    const char *rty2 = nt_type(nt, recv);
+    if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
+      const char *rn = nt_str(nt, recv, "name");
+      if (rn && sp_streq(rn, "ENV")) {
+        buf_puts(b, "sp_env_size()");
         return;
       }
     }
@@ -4768,11 +4794,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
-        int tk = ++g_tmp, tv = ++g_tmp;
-        buf_printf(b, "({ const char *_t%d = getenv(", tk); emit_expr(c, argv[0], b);
-        buf_printf(b, "); const char *_t%d = _t%d ? sp_str_dup_external(_t%d) : ", tv, tk, tk);
+        int tk = ++g_tmp, tky = ++g_tmp, tv = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", tky); emit_expr(c, argv[0], b);
+        buf_printf(b, "; const char *_t%d = getenv(_t%d)", tk, tky);
+        buf_printf(b, "; const char *_t%d = _t%d ? sp_str_dup_external(_t%d) : ", tv, tk, tk);
         if (argc >= 2) emit_expr(c, argv[1], b);
-        else buf_puts(b, "NULL");
+        else
+          /* no default: CRuby raises KeyError naming the key */
+          buf_printf(b, "(sp_raise_cls(\"KeyError\", sp_sprintf(\"key not found: \\\"%%s\\\"\", _t%d)), (const char *)0)", tky);
         buf_printf(b, "; _t%d; })", tv);
         return;
       }

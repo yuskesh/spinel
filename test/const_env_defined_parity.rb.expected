@@ -1,0 +1,13 @@
+11
+5
+["method", "method", nil]
+"set"
+"fallback"
+KeyError
+key not found: "SPINEL_PARITY_MISSING"
+nil
+nil
+TypeError: no implicit conversion of Integer into String
+"ok"
+true
+true
