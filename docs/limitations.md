@@ -170,19 +170,19 @@ CRuby does:
 Rational(10**18, 1) * Rational(10**18, 1)   # RangeError (CRuby: a Bigint Rational)
 ```
 
-`Complex` is stored as a pair of `mrb_float` components, so unlike CRuby it does
-not preserve `Integer`/`Rational` component types. Operators and display match
-CRuby for the common cases, but `#real` / `#imaginary` / `#abs2` return `Float`,
-and exact division yields `Float` components instead of `Rational`:
+`Complex` stores its components as `mrb_float` plus a per-component class tag,
+so `#real` / `#imaginary` / `#abs2` and display report `Integer` components like
+CRuby for integer-valued inputs. What the representation cannot express is a
+`Rational` component: exact division yields `Float` components instead of
+`Rational`:
 
 ```ruby
-Complex(1, 2).real          # => 1.0   (CRuby: 1)
+Complex(1, 2).real               # => 1     (matches CRuby)
 Complex(1, 2) / Complex(3, -1)   # => (0.1+0.7i)   (CRuby: ((1/10)+(7/10)*i))
 ```
 
-Storing a `Rational` or `Complex` in a heterogeneous (poly) array is not yet
-supported -- the 16-byte value does not fit the boxed-value union, so such an
-element reads back as `nil`.
+`Rational` and `Complex` values box into heterogeneous (poly) arrays and hashes
+normally.
 
 #### `defined?`
 
