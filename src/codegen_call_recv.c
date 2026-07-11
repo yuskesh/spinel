@@ -4727,7 +4727,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       comp_method_in_chain(c, ty_object_class(rt), "<=>", NULL) >= 0) {
     TyKind clo = comp_ntype(c, argv[0]), chi = comp_ntype(c, argv[1]);
     int same_cls = (clo == rt || clo == TY_NIL) && (chi == rt || chi == TY_NIL);
-    if (same_cls) { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }
+    /* a by-value receiver class unboxes by dereferencing the heap copy the
+       boxing made (v.p is always a pointer); a ref class casts the pointer */
+    if (same_cls && comp_ty_value_obj(c, rt))
+      buf_printf(b, "(*(sp_%s *)", c->classes[ty_object_class(rt)].c_name);
+    else if (same_cls) { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }
     buf_puts(b, "sp_obj_clamp(");
     emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b); buf_puts(b, ", ");
@@ -4746,7 +4750,9 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       int rlo = nt_ref(nt, rn2, "left"), rhi = nt_ref(nt, rn2, "right");
       if (rlo >= 0 && rhi >= 0 &&
           comp_ntype(c, rlo) == rt && comp_ntype(c, rhi) == rt) {
-        buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")");
+        if (comp_ty_value_obj(c, rt))
+          buf_printf(b, "(*(sp_%s *)", c->classes[ty_object_class(rt)].c_name);
+        else { buf_puts(b, "(("); emit_ctype(c, rt, b); buf_puts(b, ")"); }
         buf_puts(b, "sp_obj_clamp(");
         emit_boxed(c, recv, b); buf_puts(b, ", ");
         emit_boxed(c, rlo, b); buf_puts(b, ", ");

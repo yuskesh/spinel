@@ -47,7 +47,8 @@ void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
        then segfaults on the first field/method read (renderer draw_wall_column
        `texture.width`). A value-type object (a small Struct passed by value) is
        never NULL and `expr` is not a pointer, so the plain box is correct. */
-    if (comp_ty_value_obj(c, t)) buf_printf(b, "sp_box_obj(%s, %d)", expr, ty_object_class(t));
+    if (comp_ty_value_obj(c, t))
+      buf_printf(b, "sp_box_vobj_%s(%s)", c->classes[ty_object_class(t)].c_name, expr);
     else buf_printf(b, "sp_box_nullable_obj((void *)(%s), %d)", expr, ty_object_class(t));
     return;
   }
@@ -264,9 +265,10 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
        NULL v.p (which passes `unless x` then segfaults on the first field
        read). A value-type object is never NULL and is not a pointer. */
     int is_val = comp_ty_value_obj(c, t);
-    buf_printf(b, is_val ? "sp_box_obj(" : "sp_box_nullable_obj((void *)(");
+    if (is_val) buf_printf(b, "sp_box_vobj_%s(", c->classes[ty_object_class(t)].c_name);
+    else buf_puts(b, "sp_box_nullable_obj((void *)(");
     emit_expr(c, node, b);
-    buf_printf(b, is_val ? ", %d)" : "), %d)", ty_object_class(t));
+    buf_printf(b, is_val ? ")" : "), %d)", ty_object_class(t));
     return;
   }
   if (ty_is_hash(t)) {
@@ -2713,6 +2715,26 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       buf_puts(b, ");\n");
     }
     buf_puts(b, "  return self;\n}\n");
+    /* Boxing a by-value instance into a poly slot heap-copies it, like
+       sp_box_range (the poly dispatch unboxes with *(sp_X *)v.p, so v.p must
+       be a heap pointer). The value is fully evaluated at the call boundary;
+       its heap ivars are rooted across the allocation. */
+    buf_printf(b, "__attribute__((unused)) static sp_RbVal sp_box_vobj_%s(sp_%s v) {\n",
+               ci->c_name, ci->c_name);
+    for (int i = 0; i < ci->nivars; i++) {
+      TyKind it = ci->ivar_types[i];
+      const char *iv = ci->ivars[i] + 1;
+      if (it == TY_STRING) buf_printf(b, "  SP_GC_ROOT(v.iv_%s);\n", iv);
+      else if (it == TY_POLY) buf_printf(b, "  SP_GC_ROOT_RBVAL(v.iv_%s);\n", iv);
+      else if (needs_root(it)) buf_printf(b, "  SP_GC_ROOT(v.iv_%s);\n", iv);
+    }
+    if (class_needs_scan(ci))
+      buf_printf(b, "  sp_%s *p = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s_scan);\n",
+                 ci->c_name, ci->c_name, ci->c_name, ci->c_name);
+    else
+      buf_printf(b, "  sp_%s *p = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, NULL);\n",
+                 ci->c_name, ci->c_name, ci->c_name);
+    buf_printf(b, "  *p = v;\n  return sp_box_obj(p, %d);\n}\n", cid);
     return;
   }
   /* per-class free-list pool: sp_gc_collect recycles unmarked instances onto
