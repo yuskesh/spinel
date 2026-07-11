@@ -21,7 +21,7 @@ const char *sp_Time_inspect(sp_Time *t);
 /* Value-type arithmetic (cold: only reached when a program actually uses
    Complex / Rational; optcarrot touches Complex only under --nestopia-palette).
    Emitted by codegen via the sp_complex_%s / sp_rational_%s operator dispatch. */
-sp_Complex sp_complex_polar(mrb_float m, mrb_float a);
+sp_Complex sp_complex_polar(mrb_float m, mrb_float a, int m_is_f);
 sp_Complex sp_complex_add(sp_Complex a, sp_Complex b);
 sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b);
 sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b);

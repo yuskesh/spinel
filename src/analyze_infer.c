@@ -688,11 +688,13 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
   }
   if (rt == TY_COMPLEX) {
+    if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) return TY_FLOAT;
+    /* real/imaginary/abs/abs2 box to poly: each component keeps its CRuby
+       class (Integer or Float) -- the class is a runtime property. */
     if (sp_streq(name, "real") || sp_streq(name, "imaginary") || sp_streq(name, "imag") ||
-        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2") ||
-        sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) return TY_FLOAT;
+        sp_streq(name, "abs") || sp_streq(name, "magnitude") || sp_streq(name, "abs2")) return TY_POLY;
     if (sp_streq(name, "polar") || sp_streq(name, "rect") || sp_streq(name, "rectangular"))
-      return TY_FLOAT_ARRAY;
+      return TY_POLY_ARRAY;
     if (sp_streq(name, "conjugate") || sp_streq(name, "conj") || sp_streq(name, "to_c") ||
         sp_streq(name, "-@") || sp_streq(name, "+@") ||
         sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) return TY_COMPLEX;

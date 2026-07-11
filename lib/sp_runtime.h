@@ -1842,6 +1842,27 @@ static sp_RbVal sp_box_rational(sp_Rational v) {
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_RATIONAL);
 }
+/* An Integer-classed (fl bit clear) whole component boxes as an Integer;
+   anything else keeps the Float class. The INTPTR guard mirrors
+   sp_complex_mag: casting an out-of-range double to mrb_int is UB. */
+static sp_RbVal sp_complex_comp_v(mrb_float v, int is_f) {
+  if (!is_f && v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_float)(mrb_int)v)
+    return sp_box_int((mrb_int)v);
+  return sp_box_float(v);
+}
+/* CRuby Complex#abs: Integer only via the zero-component shortcut (|other|)
+   on an all-Integer complex; hypot is always a Float. #abs2 is Integer iff
+   both components are Integer-classed. */
+static sp_RbVal sp_complex_abs_v(sp_Complex a) {
+  if (a.fl == 0 && a.im == 0) return sp_complex_comp_v(a.re < 0 ? -a.re : a.re, 0);
+  if (a.fl == 0 && a.re == 0) return sp_complex_comp_v(a.im < 0 ? -a.im : a.im, 0);
+  return sp_box_float(sp_complex_abs(a));
+}
+static sp_RbVal sp_complex_abs2_v(sp_Complex a) {
+  mrb_float v = sp_complex_abs2(a);
+  if (a.fl == 0) return sp_complex_comp_v(v, 0);
+  return sp_box_float(v);
+}
 /* sp_Range_inspect moved to lib/sp_format.c (cold). */
 /* Same heap-box rationale as sp_Range: sp_Time is 12+ bytes (tv_sec +
    tv_nsec), wider than sp_RbVal's 8-byte union. No internal pointers

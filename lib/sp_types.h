@@ -138,7 +138,12 @@ typedef struct{mrb_int first;mrb_int last;mrb_int excl;mrb_int step;}sp_Range;
    Errno:: family and many builtin error classes have no assigned cls_id). It
    takes precedence over cls_id for to_s / boxing / equality. */
 typedef struct{mrb_int cls_id;const char *name;}sp_Class;
-typedef struct{mrb_float re;mrb_float im;}sp_Complex;
+/* fl marks a component as Float-classed (renders "2.0"); clear bits keep the
+   Integer-style rendering for whole values. Zero-init (every positional
+   compound literal) is the Integer-classed default. */
+typedef struct{mrb_float re;mrb_float im;unsigned char fl;}sp_Complex;
+#define SP_CPLX_RE_F 1
+#define SP_CPLX_IM_F 2
 typedef struct{mrb_int num;mrb_int den;}sp_Rational;
 typedef struct{const char *name;}sp_Encoding;
 

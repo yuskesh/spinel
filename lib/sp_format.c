@@ -8,11 +8,13 @@
 #include <time.h>       /* gmtime / strftime for sp_Time_inspect */
 
 /* Format a non-negative Complex-component magnitude the way MRI does: infinite
-   and NaN values become the Ruby names Infinity/NaN (not C's inf/nan), a whole
-   value stays integer-looking, else %g. Returns the written length. */
-static int sp_complex_mag(char *out, size_t sz, mrb_float v) {
+   and NaN values become the Ruby names Infinity/NaN (not C's inf/nan), a
+   Float-classed component (is_f) renders Ruby-float style ("2.0"), a whole
+   Integer-classed value stays integer-looking, else %g. Returns the length. */
+static int sp_complex_mag(char *out, size_t sz, mrb_float v, int is_f) {
   if (isinf(v)) return snprintf(out, sz, "Infinity");
   if (isnan(v)) return snprintf(out, sz, "NaN");
+  if (is_f) return snprintf(out, sz, "%s", sp_float_to_s(v));
   /* a float outside mrb_int's range makes (mrb_int)v undefined behavior; only
      integer-print a whole value that fits, else fall through to %g. */
   if (v >= -(mrb_float)INTPTR_MAX && v <= (mrb_float)INTPTR_MAX && v == (mrb_int)v)
@@ -22,19 +24,19 @@ static int sp_complex_mag(char *out, size_t sz, mrb_float v) {
 /* Append the imaginary part ("+<mag>i" / "-<mag>i") to buf. MRI inserts a `*`
    before a non-numeric magnitude (Infinity/NaN) so `Infinity*i` stays readable,
    while a plain number is written as `10i`. */
-static int sp_complex_imag(char *buf, int n, size_t sz, mrb_float im) {
+static int sp_complex_imag(char *buf, int n, size_t sz, mrb_float im, int is_f) {
   if (n < 0 || (size_t)n >= sz) return 0;
   char mag[64];
-  sp_complex_mag(mag, sizeof mag, im < 0 ? -im : im);
+  sp_complex_mag(mag, sizeof mag, im < 0 ? -im : im, is_f);
   const char *sep = (mag[0] >= '0' && mag[0] <= '9') ? "" : "*";
   return snprintf(buf + n, sz - (size_t)n, "%c%s%si", im < 0 ? '-' : '+', mag, sep);
 }
 const char *sp_complex_inspect(sp_Complex c) {
   char buf[128], re[64];
-  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re);
+  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re, c.fl & SP_CPLX_RE_F);
   int n = snprintf(buf, sizeof buf, "(%s%s", c.re < 0 ? "-" : "", re);
   if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
-  n += sp_complex_imag(buf, n, sizeof buf, c.im);
+  n += sp_complex_imag(buf, n, sizeof buf, c.im, c.fl & SP_CPLX_IM_F);
   if (n < (int)sizeof buf) n += snprintf(buf + n, sizeof(buf) - (size_t)n, ")");
   if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
   char *r = sp_str_alloc_raw(n + 1);
@@ -45,10 +47,10 @@ const char *sp_complex_inspect(sp_Complex c) {
 /* Complex#to_s: bare `re+imi` (no surrounding parens, unlike #inspect). */
 const char *sp_complex_to_s(sp_Complex c) {
   char buf[128], re[64];
-  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re);
+  sp_complex_mag(re, sizeof re, c.re < 0 ? -c.re : c.re, c.fl & SP_CPLX_RE_F);
   int n = snprintf(buf, sizeof buf, "%s%s", c.re < 0 ? "-" : "", re);
   if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
-  n += sp_complex_imag(buf, n, sizeof buf, c.im);
+  n += sp_complex_imag(buf, n, sizeof buf, c.im, c.fl & SP_CPLX_IM_F);
   if (n < 0) n = 0; else if (n >= (int)sizeof buf) n = (int)sizeof buf - 1;
   char *r = sp_str_alloc_raw(n + 1);
   memcpy(r, buf, n);
@@ -99,36 +101,53 @@ const char *sp_Time_inspect(sp_Time *t) {
 }
 
 /* ---- Complex arithmetic ---- */
-sp_Complex sp_complex_polar(mrb_float m, mrb_float a) { sp_Complex c; c.re = m * cos(a); c.im = m * sin(a); return c; }
-sp_Complex sp_complex_add(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re + b.re; c.im = a.im + b.im; return c; }
-sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = (a.re * b.re) - (a.im * b.im); c.im = (a.re * b.im) + (a.im * b.re); return c; }
-sp_Complex sp_complex_conjugate(sp_Complex a) { sp_Complex c; c.re = a.re; c.im = -a.im; return c; }
-sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re - b.re; c.im = a.im - b.im; return c; }
+/* Component-class (fl) propagation mirrors CRuby's numeric tower: add/sub act
+   per component, so each Float bit carries through independently; mul/div mix
+   all four components, so any Float input floats both results. */
+/* Complex.polar: CRuby resolves an angle of exactly 0, pi/2, or pi without
+   cos/sin (the magnitude keeps its class, the other component is 0.0);
+   any other angle computes both components as Floats. m_is_f carries the
+   magnitude's static class from codegen. */
+sp_Complex sp_complex_polar(mrb_float m, mrb_float a, int m_is_f) {
+  sp_Complex c;
+  int mf = m_is_f ? 1 : 0;
+  if (a == 0)      { c.re = m;  c.im = 0.0; c.fl = (unsigned char)((mf ? SP_CPLX_RE_F : 0) | SP_CPLX_IM_F); return c; }
+  if (a == M_PI_2) { c.re = 0.0; c.im = m;  c.fl = (unsigned char)(SP_CPLX_RE_F | (mf ? SP_CPLX_IM_F : 0)); return c; }
+  if (a == M_PI)   { c.re = -m; c.im = 0.0; c.fl = (unsigned char)((mf ? SP_CPLX_RE_F : 0) | SP_CPLX_IM_F); return c; }
+  c.re = m * cos(a); c.im = m * sin(a); c.fl = SP_CPLX_RE_F | SP_CPLX_IM_F;
+  return c;
+}
+sp_Complex sp_complex_add(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re + b.re; c.im = a.im + b.im; c.fl = a.fl | b.fl; return c; }
+sp_Complex sp_complex_mul(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = (a.re * b.re) - (a.im * b.im); c.im = (a.re * b.im) + (a.im * b.re); c.fl = (a.fl | b.fl) ? (SP_CPLX_RE_F | SP_CPLX_IM_F) : 0; return c; }
+sp_Complex sp_complex_conjugate(sp_Complex a) { sp_Complex c; c.re = a.re; c.im = -a.im; c.fl = a.fl; return c; }
+sp_Complex sp_complex_sub(sp_Complex a, sp_Complex b) { sp_Complex c; c.re = a.re - b.re; c.im = a.im - b.im; c.fl = a.fl | b.fl; return c; }
 sp_Complex sp_complex_div(sp_Complex a, sp_Complex b) {
   mrb_float d = (b.re * b.re) + (b.im * b.im); sp_Complex c;
-  c.re = ((a.re * b.re) + (a.im * b.im)) / d; c.im = ((a.im * b.re) - (a.re * b.im)) / d; return c;
+  c.re = ((a.re * b.re) + (a.im * b.im)) / d; c.im = ((a.im * b.re) - (a.re * b.im)) / d;
+  c.fl = (a.fl | b.fl) ? (SP_CPLX_RE_F | SP_CPLX_IM_F) : 0;
+  return c;
 }
 /* Complex divided by a real scalar divides each component -- unlike the
    conjugate formula, this yields Infinity (not NaN) when the divisor is 0.0,
    matching MRI's Complex#/ against a Float. */
 sp_Complex sp_complex_div_real(sp_Complex a, mrb_float b) {
-  sp_Complex c; c.re = a.re / b; c.im = a.im / b; return c;
+  sp_Complex c; c.re = a.re / b; c.im = a.im / b; c.fl = SP_CPLX_RE_F | SP_CPLX_IM_F; return c;
 }
 /* Complex divided by an Integer follows integer zero-division rules: dividing
    by 0 raises ZeroDivisionError, as in MRI (a Float divisor gives Infinity). */
 sp_Complex sp_complex_div_int(sp_Complex a, mrb_int b) {
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-  sp_Complex c; c.re = a.re / (mrb_float)b; c.im = a.im / (mrb_float)b; return c;
+  sp_Complex c; c.re = a.re / (mrb_float)b; c.im = a.im / (mrb_float)b; c.fl = a.fl; return c;
 }
-sp_Complex sp_complex_neg(sp_Complex a) { sp_Complex c; c.re = -a.re; c.im = -a.im; return c; }
+sp_Complex sp_complex_neg(sp_Complex a) { sp_Complex c; c.re = -a.re; c.im = -a.im; c.fl = a.fl; return c; }
 mrb_float sp_complex_abs2(sp_Complex a) { return (a.re * a.re) + (a.im * a.im); }
 mrb_float sp_complex_abs(sp_Complex a) { return sqrt((a.re * a.re) + (a.im * a.im)); }
 mrb_bool sp_complex_eq(sp_Complex a, sp_Complex b) { return a.re == b.re && a.im == b.im; }
 sp_Complex sp_complex_pow(sp_Complex a, mrb_int e) {
-  sp_Complex r; r.re = 1; r.im = 0;
+  sp_Complex r; r.re = 1; r.im = 0; r.fl = 0;
   mrb_int k = e < 0 ? -e : e;
   for (mrb_int i = 0; i < k; i++) r = sp_complex_mul(r, a);
-  if (e < 0) { sp_Complex one; one.re = 1; one.im = 0; r = sp_complex_div(one, r); }
+  if (e < 0) { sp_Complex one; one.re = 1; one.im = 0; one.fl = 0; r = sp_complex_div(one, r); }
   return r;
 }
 

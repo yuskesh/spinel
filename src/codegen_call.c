@@ -555,10 +555,11 @@ static void emit_rat_coerce(Compiler *c, int node, Buf *b) {
   buf_puts(b, "sp_rational_new((mrb_int)("); emit_expr(c, node, b); buf_puts(b, "), 1)");
 }
 /* Emit a node as an sp_Complex: a Complex stays as-is, an Integer/Float
-   becomes re+0i. Used to coerce the other operand of a Complex op. */
+   becomes re+0i (a Float operand marks the real component Float-classed). */
 static void emit_complex_coerce(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_COMPLEX) { emit_expr(c, node, b); return; }
-  buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b); buf_puts(b, "), 0})");
+  buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, node, b);
+  buf_printf(b, "), 0, %d})", comp_ntype(c, node) == TY_FLOAT ? 1 : 0);
 }
 
 /* Returns 1 if `id` is a `Float::INFINITY` / `nil` / absent range endpoint. */
@@ -1075,14 +1076,17 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
   int argc;
   const int *argv = call_args(nt, id, &argc);
   /* ---- Complex / Rational value types ---- */
-  /* Kernel#Complex(re[, im]) */
+  /* Kernel#Complex(re[, im]): a Float argument marks its component
+     Float-classed so rendering and abs/abs2 keep CRuby's classes. */
   if (recv < 0 && sp_streq(name, "Complex") && argc >= 1) {
+    int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
+             (argc >= 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
     buf_puts(b, "((sp_Complex){(mrb_float)(");
     emit_expr(c, argv[0], b);
     buf_puts(b, "), (mrb_float)(");
     if (argc >= 2) emit_expr(c, argv[1], b);
     else buf_puts(b, "0");
-    buf_puts(b, ")})");
+    buf_printf(b, "), %d})", fl);
     return 1;
   }
   if (recv < 0 && sp_streq(name, "Rational") && (argc == 1 || argc == 2)) {
@@ -1149,52 +1153,68 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", ");
       if (argc >= 2) emit_float_expr(c, argv[1], b);
       else buf_puts(b, "0");
-      buf_puts(b, ")");
+      buf_printf(b, ", %d)", comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0);
       return 1;
     }
     /* Complex.rect(re[, im]) / .rectangular: the component-pair constructor. */
     if (rrty && sp_streq(rrty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Complex") &&
         (sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc >= 1 && argc <= 2) {
+      int fl = (comp_ntype(c, argv[0]) == TY_FLOAT ? 1 : 0) |
+               (argc == 2 && comp_ntype(c, argv[1]) == TY_FLOAT ? 2 : 0);
       buf_puts(b, "((sp_Complex){(mrb_float)(");
       emit_expr(c, argv[0], b);
       buf_puts(b, "), (mrb_float)(");
       if (argc == 2) emit_expr(c, argv[1], b);
       else buf_puts(b, "0");
-      buf_puts(b, ")})");
+      buf_printf(b, "), %d})", fl);
       return 1;
     }
     TyKind crt = comp_ntype(c, recv);
     if (crt == TY_COMPLEX) {
-      if (sp_streq(name, "real"))      { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").re"); return 1; }
-      if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").im"); return 1; }
+      /* real/imaginary return the component with its CRuby class (Integer for
+         an Integer-classed component), so box to poly via comp_v. */
+      if (sp_streq(name, "real")) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_complex_comp_v(_t%d.re, _t%d.fl & SP_CPLX_RE_F); })", t, t);
+        return 1;
+      }
+      if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_complex_comp_v(_t%d.im, _t%d.fl & SP_CPLX_IM_F); })", t, t);
+        return 1;
+      }
       if (sp_streq(name, "conjugate") || sp_streq(name, "conj")) { buf_puts(b, "sp_complex_conjugate("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-      if ((sp_streq(name, "abs") || sp_streq(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
-      if (sp_streq(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      /* abs/abs2 box to poly: the CRuby class depends on the component classes
+         (Integer via the zero-component shortcut / all-Integer abs2). */
+      if ((sp_streq(name, "abs") || sp_streq(name, "magnitude")) && argc == 0) { buf_puts(b, "sp_complex_abs_v("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+      if (sp_streq(name, "abs2") && argc == 0) { buf_puts(b, "sp_complex_abs2_v("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
       if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
         buf_printf(b, "; atan2(_t%d.im, _t%d.re); })", t, t);
         return 1;
       }
-      /* instance #polar: [abs, arg] */
+      /* instance #polar ([abs, arg]) and #rect ([re, im]): poly pairs, since
+         each element's class follows its component. */
       if (sp_streq(name, "polar") && argc == 0) {
         int t = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
-                      " sp_FloatArray_push(_t%d, sp_complex_abs(_t%d));"
-                      " sp_FloatArray_push(_t%d, atan2(_t%d.im, _t%d.re)); _t%d; })",
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " sp_PolyArray_push(_t%d, sp_complex_abs_v(_t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_float(atan2(_t%d.im, _t%d.re))); _t%d; })",
                    o, o, t, o, t, t, o);
         return 1;
       }
       if (sp_streq(name, "rectangular") || sp_streq(name, "rect")) {
-        /* [re, im] pair */
         int t = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ sp_Complex _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
-                      " sp_FloatArray_push(_t%d, _t%d.re);"
-                      " sp_FloatArray_push(_t%d, _t%d.im); _t%d; })",
-                   o, o, t, o, t, o);
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " sp_PolyArray_push(_t%d, sp_complex_comp_v(_t%d.re, _t%d.fl & SP_CPLX_RE_F));"
+                      " sp_PolyArray_push(_t%d, sp_complex_comp_v(_t%d.im, _t%d.fl & SP_CPLX_IM_F)); _t%d; })",
+                   o, o, t, t, o, t, t, o);
         return 1;
       }
       if (sp_streq(name, "-@") && argc == 0) { buf_puts(b, "sp_complex_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
@@ -1236,7 +1256,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "*") || sp_streq(name, "/")) {
         const char *fn = name[0] == '+' ? "add" : name[0] == '-' ? "sub" : name[0] == '*' ? "mul" : "div";
         buf_printf(b, "sp_complex_%s(((sp_Complex){(mrb_float)(", fn); emit_expr(c, recv, b);
-        buf_puts(b, "), 0}), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        buf_printf(b, "), 0, %d}), ", crt == TY_FLOAT ? 1 : 0); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "==") || sp_streq(name, "!=")) {
@@ -1286,7 +1306,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     /* n.to_c is Complex(n, 0) for an Integer or Float receiver. */
     if ((crt == TY_INT || crt == TY_FLOAT) && sp_streq(name, "to_c") && argc == 0) {
-      buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, recv, b); buf_puts(b, "), 0})"); return 1;
+      buf_puts(b, "((sp_Complex){(mrb_float)("); emit_expr(c, recv, b);
+      buf_printf(b, "), 0, %d})", crt == TY_FLOAT ? 1 : 0); return 1;
     }
     if (crt == TY_RATIONAL) {
       if (sp_streq(name, "numerator"))   { buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ").num"); return 1; }
