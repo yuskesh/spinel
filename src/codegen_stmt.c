@@ -3794,11 +3794,37 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
          alone would only ever match the bare name. */
       char qbuf[160]; qbuf[0] = 0;
       if (sp_streq(en, "ConstantPathNode") && uci < 0 && ename && !is_exc_name(ename)) {
+        /* Rebuild the qualified name by walking the parent chain: a plain
+           `JSON::ParserError` has a ConstantReadNode parent; a root-anchored
+           `::JSON::ParserError` nests a parent-less ConstantPathNode (the
+           leading `::`), which must resolve to the same qualified string. */
+        char segs[8][64]; int nseg = 0;
         int qpar = nt_ref(nt, exc[i], "parent");
-        const char *qp = (qpar >= 0 && nt_type(nt, qpar) &&
-                          sp_streq(nt_type(nt, qpar), "ConstantReadNode"))
-                         ? nt_str(nt, qpar, "name") : NULL;
-        if (qp) snprintf(qbuf, sizeof qbuf, "%s::%s", qp, ename);
+        int ok = 1;
+        while (qpar >= 0 && nseg < 8) {
+          const char *pty = nt_type(nt, qpar);
+          const char *pn = nt_str(nt, qpar, "name");
+          if (!pty || !pn) { ok = 0; break; }
+          if (sp_streq(pty, "ConstantReadNode")) {
+            snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
+            break;
+          }
+          if (sp_streq(pty, "ConstantPathNode")) {
+            snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
+            qpar = nt_ref(nt, qpar, "parent");   /* -1 = root anchor: done */
+            continue;
+          }
+          ok = 0; break;
+        }
+        if (ok && nseg > 0) {
+          size_t o = 0;
+          for (int si = nseg - 1; si >= 0; si--) {
+            int w = snprintf(qbuf + o, sizeof qbuf - o, "%s::", segs[si]);
+            if (w < 0 || (size_t)w >= sizeof qbuf - o) { qbuf[0] = 0; break; }
+            o += (size_t)w;
+          }
+          if (qbuf[0]) snprintf(qbuf + o, sizeof qbuf - o, "%s", ename);
+        }
       }
       if (is_exc_cls)
         buf_printf(b, "sp_exc_cls_matches(_rcls_%d, \"%s\")", rc, ename);

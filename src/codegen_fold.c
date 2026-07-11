@@ -5032,7 +5032,9 @@ else {
            implicit hash argument rather than using the default. */
         LocalVar *p = scope_local(m, m->pnames[i]);
         TyKind pt = p ? p->type : TY_INT;
-        int use_kwh = (kwh >= 0 && ty_is_hash(pt));
+        /* a POLY param (widened over hash + non-hash call sites) takes the
+           packed keywords boxed, same as a hash-typed one (#2009). */
+        int use_kwh = (kwh >= 0 && (ty_is_hash(pt) || pt == TY_POLY));
         emit_arg_rooted(c, m, i, use_kwh ? kwh : -1, out);
       }
     }
