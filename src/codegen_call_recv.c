@@ -2930,6 +2930,51 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* Hash#default_proc: wrap the stored Hash.new{} dproc (a raw C fn +
+       captures pointer) in a first-class Proc via a per-variant trampoline
+       that adapts the sp_proc_call ABI (boxed side-channel args) back to the
+       dproc signature. A hash without a dproc -- or a variant that cannot
+       carry one -- yields NULL (nil). */
+    if (sp_streq(name, "default_proc") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      const char *hnn = ty_hash_cname(rt);
+      int hdp_v = !hnn ? -1
+                : sp_streq(hnn, "SymPoly") ? 0
+                : sp_streq(hnn, "StrPoly") ? 1
+                : sp_streq(hnn, "PolyPoly") ? 2 : -1;
+      if (hdp_v < 0) {
+        buf_puts(b, "((void)(");
+        emit_expr(c, recv, b);
+        buf_puts(b, "), (sp_Proc *)NULL)");
+        return 1;
+      }
+      static char hdp_done[3];
+      if (!hdp_done[hdp_v]) {
+        hdp_done[hdp_v] = 1;
+        if (!g_needs_proc_poly_argslot) {
+          g_needs_proc_poly_argslot = 1;
+          buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
+        }
+        const char *kexpr = hdp_v == 0 ? "(sp_sym)sp_poly_to_i(_sp_proc_poly_args[1])"
+                          : hdp_v == 1 ? "_sp_proc_poly_args[1].v.s"
+                          : "_sp_proc_poly_args[1]";
+        buf_printf(&g_procs,
+          "static mrb_int _hdp_tramp_%s(void *cap, mrb_int argc, mrb_int *args) {\n"
+          "  sp_%sHash *src = (sp_%sHash *)cap; (void)args;\n"
+          "  sp_%sHash *h = (argc >= 1 && _sp_proc_poly_args[0].tag == SP_TAG_OBJ)"
+          " ? (sp_%sHash *)_sp_proc_poly_args[0].v.p : src;\n"
+          "  _sp_proc_poly_ret = (src && src->dproc && argc >= 2)"
+          " ? src->dproc(h, %s, src->dproc_self) : sp_box_nil();\n"
+          "  return 0;\n}\n"
+          "static sp_Proc *_hdp_%s(sp_%sHash *h) {\n"
+          "  if (!h || !h->dproc) return NULL;\n"
+          "  return sp_proc_new_meta((void *)_hdp_tramp_%s, h, sp_bm_cap_scan, 2, FALSE, 0, NULL, NULL);\n}\n",
+          hnn, hnn, hnn, hnn, hnn, kexpr, hnn, hnn, hnn);
+      }
+      buf_printf(b, "_hdp_%s(", hnn);
+      emit_expr(c, recv, b);
+      buf_puts(b, ")");
+      return 1;
+    }
     /* deconstruct_keys(keys or nil): CRuby returns the hash itself */
     if (sp_streq(name, "deconstruct_keys") && argc == 1) {
       buf_puts(b, "((void)(");

@@ -6870,6 +6870,14 @@ static sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {
 static void sp_proc_lambda_arity_check(mrb_int argc, mrb_int req, mrb_int opt, mrb_bool has_rest) {
   if (argc < req || (!has_rest && argc > req + opt)) sp_raise_cls("ArgumentError", "wrong number of arguments");
 }
+/* Proc#inspect: CRuby prints "#<Proc:0xADDR file:line (lambda)>"; the
+   source location is not tracked, so the address form (+ lambda marker) is
+   the best-effort rendering. */
+static const char *sp_proc_inspect(sp_Proc *p) {
+  if (!p) return "nil";
+  return sp_sprintf(p->lambda_p ? "#<Proc:0x%016llx (lambda)>" : "#<Proc:0x%016llx>",
+                    (unsigned long long)(uintptr_t)p);
+}
 static sp_PolyArray *sp_proc_parameters(sp_Proc *p) { sp_PolyArray *r = sp_PolyArray_new(); if (!p || p->param_count <= 0 || !p->param_kinds) return r; SP_GC_ROOT(r); for (mrb_int i = 0; i < p->param_count; i++) { sp_PolyArray *pair = sp_PolyArray_new(); sp_PolyArray_push(pair, sp_box_sym(p->param_kinds[i])); if (p->param_names && p->param_names[i] >= 0) sp_PolyArray_push(pair, sp_box_sym(p->param_names[i])); sp_PolyArray_push(r, sp_box_poly_array(pair)); } return r; }
 
 /* Proc#<< / Proc#>> composition. The composed proc captures the two

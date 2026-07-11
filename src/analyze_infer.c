@@ -1120,7 +1120,12 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "arity")) return TY_INT;
     if (sp_streq(name, "lambda?")) return TY_BOOL;
     if (sp_streq(name, "parameters")) return TY_POLY_ARRAY;
+    if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
   }
+  /* Hash#default_proc: the stored Hash.new{} block as a first-class Proc
+     (NULL-encoded nil when the hash has none) */
+  if (recv >= 0 && ty_is_hash(rt) && argc == 0 && sp_streq(name, "default_proc"))
+    return TY_PROC;
 
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
      Exception: self.class.new(...) resolves to the enclosing class statically. */

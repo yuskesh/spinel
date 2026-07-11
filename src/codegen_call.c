@@ -5244,6 +5244,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "parameters")) {
     buf_puts(b, "sp_proc_parameters("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
+      (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
+    buf_puts(b, "sp_proc_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
+  }
 
   if (emit_concurrency_call(c, id, b)) return;
 
