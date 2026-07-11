@@ -1477,6 +1477,130 @@ __attribute__((noreturn)) static void ffi_decl_error(Compiler *c, int node, cons
   exit(1);
 }
 
+/* Lexically collapse "." and ".." segments of an absolute-or-relative path,
+   in place (the folded-string buffer is ours). Mirrors File.expand_path's
+   lexical behavior for the compile-time folds below. */
+static void ffi_path_collapse(char *p, size_t size) {
+  char out[1024]; size_t o = 0;
+  int abs = p[0] == '/';
+  const char *s = p;
+  while (*s) {
+    while (*s == '/') s++;
+    const char *seg = s;
+    while (*s && *s != '/') s++;
+    size_t sl = (size_t)(s - seg);
+    if (sl == 0) continue;
+    if (sl == 1 && seg[0] == '.') continue;
+    if (sl == 2 && seg[0] == '.' && seg[1] == '.') {
+      /* A relative path keeps a leading ".." (nothing precedes it to pop),
+         and stacks further ".." onto an already-leading ".." run -- lexical
+         cleanpath, like Pathname#cleanpath. An absolute path's ".." above
+         root is dropped. */
+      int prev_dotdot = o >= 3 && out[o - 1] == '.' && out[o - 2] == '.' && out[o - 3] == '/';
+      if (!abs && (o == 0 || prev_dotdot)) {
+        if (o + 4 >= sizeof out) return;
+        out[o++] = '/'; out[o++] = '.'; out[o++] = '.';
+      } else {
+        while (o > 0 && out[o - 1] != '/') o--;  /* pop the previous segment */
+        if (o > 0) o--;
+      }
+      continue;
+    }
+    if (o + 1 + sl + 1 >= sizeof out) return;  /* too long: leave as-is */
+    out[o++] = '/';
+    memcpy(out + o, seg, sl); o += sl;
+  }
+  out[o] = 0;
+  if (abs) snprintf(p, size, "%s", o ? out : "/");
+  else snprintf(p, size, "%s", o ? out + 1 : ".");
+}
+
+/* Fold a compile-time string expression for FFI decl arguments: a plain
+   literal, adjacent literals ("a" "b"), String#+ of foldable halves,
+   __dir__, and File.expand_path(<foldable>[, <foldable>]). Returns a
+   malloc'd string, or NULL when the expression is not compile-time
+   foldable. (test/i1011.rb pins the contract.) */
+static char *ffi_fold_str(Compiler *c, int nid) {
+  const NodeTable *nt = c->nt;
+  if (nid < 0) return NULL;
+  const char *ty = nt_type(nt, nid);
+  if (!ty) return NULL;
+  if (sp_streq(ty, "StringNode")) {
+    const char *s = nt_str(nt, nid, "content");
+    if (!s) s = nt_str(nt, nid, "unescaped");
+    return s ? strdup(s) : NULL;
+  }
+  if (sp_streq(ty, "InterpolatedStringNode")) {
+    /* adjacent literals fold; any embedded expression does not */
+    int pn = 0; const int *parts = nt_arr(nt, nid, "parts", &pn);
+    size_t total = 1;
+    for (int i = 0; i < pn; i++) {
+      if (!nt_type(nt, parts[i]) || !sp_streq(nt_type(nt, parts[i]), "StringNode")) return NULL;
+      const char *p = nt_str(nt, parts[i], "content");
+      if (!p) p = nt_str(nt, parts[i], "unescaped");
+      if (!p) return NULL;
+      total += strlen(p);
+    }
+    char *r = malloc(total);
+    if (!r) { perror("malloc"); exit(1); }
+    r[0] = 0;
+    for (int i = 0; i < pn; i++) {
+      const char *p = nt_str(nt, parts[i], "content");
+      if (!p) p = nt_str(nt, parts[i], "unescaped");
+      strcat(r, p);
+    }
+    return r;
+  }
+  if (sp_streq(ty, "CallNode")) {
+    const char *nm = nt_str(nt, nid, "name");
+    int rcv = nt_ref(nt, nid, "receiver");
+    int args = nt_ref(nt, nid, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (nm && sp_streq(nm, "+") && rcv >= 0 && an == 1) {
+      char *l = ffi_fold_str(c, rcv);
+      char *r = l ? ffi_fold_str(c, av[0]) : NULL;
+      if (l && r) {
+        size_t n = strlen(l) + strlen(r) + 1;
+        char *j = malloc(n);
+        if (!j) { perror("malloc"); exit(1); }
+        snprintf(j, n, "%s%s", l, r);
+        free(l); free(r);
+        return j;
+      }
+      free(l); free(r);
+      return NULL;
+    }
+    if (nm && sp_streq(nm, "__dir__") && rcv < 0 && an == 0) {
+      /* the source file's directory (same convention as the codegen fold) */
+      const char *sf = nt->source_file;
+      char dir[1024];
+      if (sf && strrchr(sf, '/')) {
+        size_t n = (size_t)(strrchr(sf, '/') - sf);
+        if (n >= sizeof dir) n = sizeof dir - 1;
+        if (n == 0) { dir[0] = '/'; dir[1] = 0; }
+        else { memcpy(dir, sf, n); dir[n] = 0; }
+      }
+      else { dir[0] = '.'; dir[1] = 0; }
+      return strdup(dir);
+    }
+    if (nm && sp_streq(nm, "expand_path") && rcv >= 0 && (an == 1 || an == 2) &&
+        nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "ConstantReadNode") &&
+        nt_str(nt, rcv, "name") && sp_streq(nt_str(nt, rcv, "name"), "File")) {
+      char *rel = ffi_fold_str(c, av[0]);
+      if (!rel) return NULL;
+      char *base = NULL;
+      if (an == 2) { base = ffi_fold_str(c, av[1]); if (!base) { free(rel); return NULL; } }
+      char joined[1024];
+      if (rel[0] == '/' || !base) snprintf(joined, sizeof joined, "%s", rel);
+      else snprintf(joined, sizeof joined, "%s/%s", base, rel);
+      free(rel); free(base);
+      ffi_path_collapse(joined, sizeof joined);
+      return strdup(joined);
+    }
+  }
+  return NULL;
+}
+
 /* Append `add` to a semicolon-joined per-module list, allocating the string or
    growing it in place. The ffi_lib and ffi_cflags merges share this. */
 static void ffi_semi_append(char **slot, const char *add) {
@@ -1670,8 +1794,15 @@ void register_ffi_decls(Compiler *c) {
 
       if (sp_streq(dname, "ffi_cflags")) {
         if (an < 1) ffi_decl_error(c, s, "`ffi_cflags` needs a flag string");
-        const char *cflag = ffi_arg_str(nt, args[0]);
-        if (!cflag) continue;  /* non-literal (e.g. "-I" + File.expand_path): tolerate */
+        char *cflag = ffi_fold_str(c, args[0]);
+        /* A flag string that silently vanishes fails the LINK with an opaque
+           error much later; a non-foldable argument is a loud analyze error
+           instead (adjacent literals, String#+, __dir__ and
+           File.expand_path all fold). */
+        if (!cflag)
+          ffi_decl_error(c, s, "`ffi_cflags` expects a compile-time string "
+                               "(a literal, adjacent literals, String#+, __dir__, "
+                               "or File.expand_path of those)");
         /* find or create the per-module cflag entry, then semicolon-merge */
         int mi = -1;
         for (int ci = 0; ci < c->n_ffi_cflags; ci++)
@@ -1688,6 +1819,7 @@ void register_ffi_decls(Compiler *c) {
           c->n_ffi_cflags++;
         }
         else ffi_semi_append(&c->ffi_cflags[mi].val, cflag);
+        free(cflag);
         continue;
       }
 
