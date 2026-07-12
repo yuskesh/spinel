@@ -2067,6 +2067,13 @@ else {
     }
   }
 
+  /* frozen? on an immutable value type: constantly-true bool */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?") &&
+      (rt == TY_INT || rt == TY_FLOAT || rt == TY_SYMBOL || rt == TY_BOOL ||
+       rt == TY_NIL || rt == TY_RANGE || rt == TY_COMPLEX || rt == TY_RATIONAL ||
+       rt == TY_BIGINT))
+    return TY_BOOL;
+
   /* obj.method(...) -> the method's return type (walks the superclass chain) */
   if (recv >= 0 && ty_is_object(rt)) {
     int cid = ty_object_class(rt);

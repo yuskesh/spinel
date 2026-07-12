@@ -7568,6 +7568,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
+  /* frozen? on an immutable value type is constantly true (CRuby freezes
+     Integer/Float/Symbol/booleans/nil/Range/Complex/Rational values) */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?")) {
+    TyKind fvt = comp_ntype(c, recv);
+    if (fvt == TY_NIL) { buf_puts(b, "1"); return; }
+    if (fvt == TY_INT || fvt == TY_FLOAT || fvt == TY_SYMBOL || fvt == TY_BOOL ||
+        fvt == TY_RANGE || fvt == TY_COMPLEX || fvt == TY_RATIONAL ||
+        fvt == TY_BIGINT) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
+      return;
+    }
+  }
+
   /* identity methods -> the receiver itself */
   if (recv >= 0 &&
       (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
