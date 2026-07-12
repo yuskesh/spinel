@@ -1171,7 +1171,13 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
   TyKind bvt = infer_type(c, bb[bn - 1]);
-  if (bvt != TY_INT && bvt != TY_FLOAT && bvt != TY_POLY) return 0;
+  if (bvt != TY_INT && bvt != TY_FLOAT && bvt != TY_POLY &&
+      bvt != TY_STRING && bvt != TY_SYMBOL) return 0;
+  /* A String/Symbol key orders lexicographically: box it and compare with the
+     poly ordering (sp_poly_lt/gt use String#<=>). Only the plain min_by/max_by
+     form is wired for it here; the count and minmax_by forms keep rejecting. */
+  int key_box = (bvt == TY_STRING || bvt == TY_SYMBOL);
+  TyKind bvt_slot = key_box ? TY_POLY : bvt;
   /* 2+-param block over a poly array of sub-arrays: auto-splat each element
      across the params. The winning element is stored from an element temp
      rather than the (now per-position) block param. */
@@ -1184,7 +1190,7 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
      descending). */
   int mb_args = nt_ref(nt, id, "arguments");
   int mb_argc = 0; const int *mb_argv = mb_args >= 0 ? nt_arr(nt, mb_args, "arguments", &mb_argc) : NULL;
-  if ((is_min || is_max) && mb_argc == 1 && p0 && !autosplat) {
+  if ((is_min || is_max) && mb_argc == 1 && p0 && !autosplat && !key_box) {
     int trv = ++g_tmp, tn = ++g_tmp, tkeys = ++g_tmp, tidx = ++g_tmp, ti = ++g_tmp,
         tres = ++g_tmp, tcnt = ++g_tmp, ttake = ++g_tmp, tg = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
@@ -1233,7 +1239,7 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
      loudly rather than silently returning a single winner. */
   if (mb_argc != 0) return 0;
 
-  if (is_minmax) {
+  if (is_minmax && !key_box) {
     /* track the min-keyed and max-keyed elements in one pass; yield a fresh
        same-kind [min, max] array. Strict comparisons keep the first occurrence
        of a tied key, matching Ruby. */
@@ -1312,7 +1318,10 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   else { emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trecv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); }
   free(rb.p);
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbest, et == TY_RANGE ? "(sp_Range){0}" : default_value(et));
-  emit_indent(g_pre, g_indent); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s; int _t%d = 1;\n", tbv, default_value(bvt), tf);
+  emit_indent(g_pre, g_indent); emit_ctype(c, bvt_slot, g_pre); buf_printf(g_pre, " _t%d = %s; int _t%d = 1;\n", tbv, default_value(bvt_slot), tf);
+  /* A boxed String/Symbol best-so-far key persists across iterations whose block
+     bodies allocate, so root its slot (as with the receiver above). */
+  if (bvt_slot == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tbv); }
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, k, trecv, ti);
   char mmelem[24];
   if (autosplat) {
@@ -1333,9 +1342,12 @@ int emit_minmax_by_expr(Compiler *c, int id, Buf *b) {
   int save = g_indent; g_indent++;
   Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, bb[bn - 1], &vb); g_indent = save;
   if (mlv0) mlv0->type = mpt0;
-  emit_indent(g_pre, g_indent + 1); emit_ctype(c, bvt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tcur, vb.p ? vb.p : default_value(bvt)); free(vb.p);
+  emit_indent(g_pre, g_indent + 1); emit_ctype(c, bvt_slot, g_pre); buf_printf(g_pre, " _t%d = ", tcur);
+  if (key_box) { Buf kx; memset(&kx, 0, sizeof kx); emit_boxed_text(c, bvt, vb.p ? vb.p : default_value(bvt), &kx); buf_puts(g_pre, kx.p ? kx.p : "sp_box_nil()"); free(kx.p); }
+  else buf_puts(g_pre, vb.p ? vb.p : default_value(bvt));
+  buf_puts(g_pre, ";\n"); free(vb.p);
   emit_indent(g_pre, g_indent + 1);
-  if (bvt == TY_POLY)
+  if (bvt_slot == TY_POLY)
     buf_printf(g_pre, "if (_t%d || sp_poly_%s(_t%d, _t%d)) { _t%d = %s; _t%d = _t%d; _t%d = 0; }\n",
                tf, is_max ? "gt" : "lt", tcur, tbv, tbest, mmelem, tbv, tcur, tf);
   else
