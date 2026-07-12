@@ -4959,10 +4959,22 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                 int iv = comp_ivar_index(&c->classes[defc < 0 ? rc : defc], ivn);
                 TyKind ivt = iv >= 0 ? c->classes[defc < 0 ? rc : defc].ivar_types[iv] : TY_UNKNOWN;
                 emit_indent(b, indent);
-                buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", base);
+                int fo = rc >= 0 && rc < c->nclasses &&
+                         c->classes[rc].freeze_observed && !c->classes[rc].is_value_type;
+                int tw = fo ? ++g_tmp : -1;
+                if (fo) {
+                  char twn[32]; snprintf(twn, sizeof twn, "_t%d", tw);
+                  buf_printf(b, "{ sp_%s *_t%d = ", c->classes[rc].c_name, tw);
+                  emit_expr(c, recv, b); buf_puts(b, "; ");
+                  emit_frozen_obj_guard(c, rc, twn, b);
+                  buf_printf(b, "_t%d->iv_%s = ", tw, base);
+                }
+                else {
+                  buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", base);
+                }
                 if (ivt == TY_POLY && comp_ntype(c, argv[0]) != TY_POLY) emit_boxed(c, argv[0], b);
                 else emit_expr(c, argv[0], b);
-                buf_puts(b, ";\n");
+                buf_puts(b, fo ? "; }\n" : ";\n");
                 return;
               }
             }
@@ -4987,7 +4999,10 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                   int iv = comp_ivar_index(&c->classes[k], ivn);
                   TyKind ivt = iv >= 0 ? c->classes[k].ivar_types[iv] : at;
                   if (at != ivt && at != TY_POLY && ivt != TY_POLY) continue;
-                  buf_printf(b, " case %d: ((sp_%s *)_t%d)->iv_%s = ", k, c->classes[k].c_name, tp, base);
+                  buf_printf(b, " case %d: ", k);
+                  { char tpn[32]; snprintf(tpn, sizeof tpn, "_t%d", tp);
+                    emit_frozen_obj_guard(c, k, tpn, b); }
+                  buf_printf(b, "((sp_%s *)_t%d)->iv_%s = ", c->classes[k].c_name, tp, base);
                   if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
                   else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
                   else buf_puts(b, src);
@@ -5270,8 +5285,11 @@ else {
       emit_indent(b, indent);
       if (cws && cws->is_cmethod && cws->class_id >= 0)
         buf_printf(b, "civ_%s_%s = ", c->classes[cws->class_id].name, nm + 1);
-      else
+      else {
+        if (cws && cws->class_id >= 0)
+          emit_frozen_obj_guard(c, cws->class_id, g_self ? g_self : "self", b);
         buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, nm + 1);
+      }
     }
     const char *vty = nt_type(nt, v);
     int sc = cws ? cws->class_id : -1;

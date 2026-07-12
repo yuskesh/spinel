@@ -1277,6 +1277,13 @@ TyKind infer_call(Compiler *c, int id) {
     if (s && s->class_id >= 0 && comp_method_in_chain(c, s->class_id, name, NULL) < 0)
       return ty_object(s->class_id);
   }
+  /* bareword frozen? reads the instance's GC-header bit (see the codegen arm) */
+  if (recv < 0 && argc == 0 && nt_ref(c->nt, id, "block") < 0 && sp_streq(name, "frozen?")) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id >= 0 && !s->is_cmethod &&
+        comp_method_in_chain(c, s->class_id, name, NULL) < 0)
+      return TY_BOOL;
+  }
 
   /* x.class -> a first-class Class value for every known receiver kind
      (name-backed for builtins, id-backed for user objects) */

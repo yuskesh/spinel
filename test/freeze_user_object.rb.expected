@@ -1,0 +1,15 @@
+true
+1
+FrozenError: can't modify frozen Sealed: #<Sealed:0xADDR @x=1, @tag="s">
+FrozenError: can't modify frozen Sealed: #<Sealed:0xADDR @x=1, @tag="s">
+FrozenError: can't modify frozen Sealed: #<Sealed:0xADDR @x=1, @tag="s">
+1
+false
+11
+true
+true
+FrozenError: can't modify frozen Lazy: #<Lazy:0xADDR @v=11>
+11
+"custom"
+false
+7

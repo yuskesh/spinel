@@ -822,20 +822,26 @@ void emit_expr(Compiler *c, int id, Buf *b) {
         v_empty_hash2 = (nt_arr(nt, v, "elements", &hen2), hen2 == 0);
     }
     char ref2e[300];
+    int fz_cid = -1;  /* instance-path writes guard the frozen bit */
     if (cws && cws->is_cmethod && cid2 >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_%s_%s", c->classes[cid2].name, nm + 1);
-    else if (cid2 < 0 && g_ie_class_id >= 0)
+    else if (cid2 < 0 && g_ie_class_id >= 0) {
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, nm + 1);
+      fz_cid = g_ie_class_id;
+    }
     else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", nm + 1);
-    else
+    else {
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, nm + 1);
+      fz_cid = cid2;
+    }
     /* `@a = @b = nil` as expression: inner writes become statements inside the
        stmt-expr; this target takes its own typed nil (not the inner slot). */
     {
       int ncb = comp_nil_chain_bottom(nt, v);
       if (ncb >= 0) {
         buf_puts(b, "({ ");
+        if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
         emit_stmt_inner(c, v, b, 0);
         buf_printf(b, "%s = ", ref2e);
         if (ivt2 == TY_RANGE) buf_puts(b, "(sp_Range){0}");
@@ -849,6 +855,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       }
     }
     buf_puts(b, "({ ");
+    if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
     buf_printf(b, "%s = ", ref2e);
     if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
     else if (v_empty_array2 && array_kind(ivt2)) buf_printf(b, "sp_%sArray_new()", array_kind(ivt2));

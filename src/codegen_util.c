@@ -1168,3 +1168,18 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
                                      t == TY_ENUMERATOR)) return 1;
   return 0;
 }
+
+/* `if (frozen) raise FrozenError` guard preceding an ivar store on a
+   freeze-observed class ("can't modify frozen <Name>: <inspect>"); emits
+   nothing when instances of the class are never frozen. `selfexpr` is a C
+   expression for the instance pointer, evaluated twice (bind a temp first
+   when it has effects). */
+void emit_frozen_obj_guard(Compiler *c, int cid, const char *selfexpr, Buf *b) {
+  if (cid < 0 || cid >= c->nclasses) return;
+  if (!c->classes[cid].freeze_observed || c->classes[cid].is_value_type) return;
+  const char *rn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
+  buf_printf(b,
+      "if (sp_gc_is_frozen((void *)%s)) "
+      "sp_raise_frozen_obj(sp_box_obj((void *)%s, %d), (&(\"\\xff\" \"can't modify frozen %s\")[1])); ",
+      selfexpr, selfexpr, cid, rn);
+}

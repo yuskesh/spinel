@@ -1,7 +1,7 @@
-# Bareword freeze (implicit self) inside an instance method is a no-op that
-# returns self. spinel has no per-object frozen state, so this is behaviorally
-# faithful for the common defensive-freeze idiom; frozen? (which would need
-# that state) stays unsupported rather than reporting a wrong value.
+# Bareword freeze (implicit self) inside an instance method sets the
+# instance's GC-header frozen bit and returns self, so the defensive-freeze
+# idiom carries real state (frozen? reads it back; mutation raises).
+# Reads after freeze are unaffected.
 class Config
   def initialize(v)
     @v = v

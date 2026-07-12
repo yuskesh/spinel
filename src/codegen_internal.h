@@ -351,6 +351,7 @@ void emit_boxed(Compiler *c, int node, Buf *b);
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b);
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 int emit_iter_bind_rest(Compiler *c, int block, int np, TyKind elem_t, const char *elem_src, Buf *b, int indent);
+void emit_frozen_obj_guard(Compiler *c, int cid, const char *selfexpr, Buf *b);
 /* For a reference-backed builtin type (a genuinely nilable C pointer that can
    be NULL), return the name of its SP_BUILTIN_* class-id constant; else NULL.
    Such a value must box via sp_box_nullable_obj so a NULL becomes SP_TAG_NIL. */

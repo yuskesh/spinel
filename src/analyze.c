@@ -6385,6 +6385,37 @@ void analyze_program(Compiler *c) {
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty) continue;
+    /* freeze/frozen? reaching a class's instances needs the GC-header frozen
+       bit, which a by-value struct doesn't have: force heap representation
+       and mark the class so codegen guards its ivar stores. A poly-receiver
+       freeze can hit any boxable instance, so it marks every class. */
+    if (sp_streq(ty, "CallNode")) {
+      const char *fzn = nt_str(c->nt, id, "name");
+      if (fzn && (sp_streq(fzn, "freeze") || sp_streq(fzn, "frozen?"))) {
+        int frecv = nt_ref(c->nt, id, "receiver");
+        int q = -1;
+        if (frecv >= 0) {
+          TyKind frt = comp_ntype(c, frecv);
+          if (ty_is_object(frt)) q = ty_object_class(frt);
+          else if (frt == TY_POLY && sp_streq(fzn, "freeze"))
+            /* a poly-receiver freeze can hit any class's instance, so every
+               class must carry the GC-header frozen bit -- disqualify them all
+               from the by-value layout too, matching the single-class path */
+            for (int q2 = 0; q2 < c->nclasses; q2++) {
+              c->classes[q2].is_value_type = 0;
+              c->classes[q2].freeze_observed = 1;
+            }
+        }
+        else {
+          Scope *fs = comp_scope_of(c, id);
+          if (fs && fs->class_id >= 0 && !fs->is_cmethod) q = fs->class_id;
+        }
+        if (q >= 0 && q < c->nclasses) {
+          c->classes[q].is_value_type = 0;
+          c->classes[q].freeze_observed = 1;
+        }
+      }
+    }
     /* nil-witness: a slot holding `nil | W` encodes nil as the heap
        pointer's NULL; a by-value struct has no nil representation, so any
        nil witness on a W-typed slot disqualifies the value layout (#1686).

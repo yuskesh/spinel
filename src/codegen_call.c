@@ -6319,20 +6319,31 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     return;
   }
 
-  /* Bareword Object#freeze (implicit self) inside an instance method: freeze is
-     a no-op returning self, which is behaviorally faithful for the common
-     defensive-freeze idiom (`def initialize; ...; freeze; end`) since nothing
-     downstream can observe the difference without a frozen-state query. The
-     companion frozen? (and FrozenError on mutation) needs per-object frozen
-     state spinel does not track, so a bareword frozen? deliberately stays a
-     loud reject rather than silently reporting false. A class that defines its
-     own freeze keeps its method. */
-  if (recv < 0 && argc == 0 && nt_ref(nt, id, "block") < 0 && sp_streq(name, "freeze")) {
+  /* Bareword Object#freeze / frozen? (implicit self) inside an instance
+     method: heap-represented instances carry real frozen state in the GC
+     header (the analyze observation pass forces any freeze-touched class to
+     heap representation), so the defensive-freeze idiom
+     (`def initialize; ...; freeze; end`) sets the bit and `frozen?` reads it
+     back. A class that defines its own freeze/frozen? keeps its method; a
+     value-type self (unreachable for observed classes) keeps the identity
+     no-op for freeze and the loud reject for frozen?. */
+  if (recv < 0 && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "freeze") || sp_streq(name, "frozen?"))) {
     Scope *s = comp_scope_of(c, id);
     int scid = s ? s->class_id : -1;
     if (scid >= 0 && comp_method_in_chain(c, scid, name, NULL) < 0) {
-      buf_puts(b, g_self ? g_self : "self");
-      return;
+      if (!s->is_cmethod && !c->classes[scid].is_value_type) {
+        if (sp_streq(name, "freeze"))
+          buf_printf(b, "((sp_%s *)sp_gc_freeze((void *)%s))",
+                     c->classes[scid].c_name, g_self ? g_self : "self");
+        else
+          buf_printf(b, "sp_gc_is_frozen((void *)%s)", g_self ? g_self : "self");
+        return;
+      }
+      if (sp_streq(name, "freeze")) {
+        buf_puts(b, g_self ? g_self : "self");
+        return;
+      }
     }
   }
 

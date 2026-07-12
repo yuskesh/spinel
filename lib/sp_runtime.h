@@ -4111,6 +4111,17 @@ static inline const char *sp_poly_inspect(sp_RbVal v) {
     default:          return sp_str_empty;
   }
 }
+/* FrozenError for a frozen user instance: "can't modify frozen <Name>: <inspect>".
+   `what` carries the class-bearing prefix ("can't modify frozen C"), rodata
+   marker-prefixed at the emit site; the receiver renders through the full
+   poly inspect (per-class ivar walk). */
+static void __attribute__((noinline,cold)) sp_raise_frozen_obj(sp_RbVal v, const char *what) {
+  const char *ins = sp_poly_inspect(v);
+  SP_GC_ROOT_STR(ins);
+  const char *msg = sp_str_concat3(what, (&("\xff" ": ")[1]), ins);
+  SP_GC_ROOT_STR(msg);
+  sp_raise_cls("FrozenError", msg);
+}
 /* Raise Hash#fetch's KeyError with MRI's "key not found: <key.inspect>" text.
    Boxing the key lets one helper serve every key type (symbol, string, int,
    ...) via sp_poly_inspect. */

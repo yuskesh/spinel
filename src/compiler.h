@@ -155,6 +155,8 @@ typedef struct {
   int is_native_class;
   char *c_struct;      /* e.g. "sp_StringIO", or NULL */
   char *native_free;   /* finalizer C symbol, or NULL */
+  int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
+                          guards its ivar stores with the GC-header frozen bit */
   int is_value_type;   /* small immutable scalar-ivar class represented by value
                           (sp_X, not sp_X *): no heap alloc / GC. Set by
                           detect_value_types after analysis. */
