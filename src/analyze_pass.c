@@ -5234,10 +5234,13 @@ int infer_block_params(Compiler *c) {
     /* array.zip(other) { |a, b| } binds element of recv + element of other */
     if (sp_streq(name, "zip") && ty_is_array(rt)) {
       Scope *zs = comp_scope_of(c, block);
+      const char *zp1s = block_param_name(c, block, 1);
       LocalVar *ep0 = scope_local_intern(zs, p0); ep0->is_block_param = 1;
-      TyKind em0 = ty_unify(ep0->type, ty_array_elem(rt));
+      /* a SOLO param receives the boxed TUPLE ([e1, e2]); two params
+         auto-splat it */
+      TyKind em0 = ty_unify(ep0->type, zp1s ? ty_array_elem(rt) : TY_POLY);
       if (em0 != ep0->type) { ep0->type = em0; changed = 1; }
-      const char *zp1 = block_param_name(c, block, 1);
+      const char *zp1 = zp1s;
       if (zp1) {
         int zargs = nt_ref(nt, id, "arguments");
         int zargc = 0; const int *zargv = zargs >= 0 ? nt_arr(nt, zargs, "arguments", &zargc) : NULL;

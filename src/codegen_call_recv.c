@@ -84,7 +84,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         (sp_streq(nm0, "combination") || sp_streq(nm0, "permutation") ||
          sp_streq(nm0, "repeated_combination") || sp_streq(nm0, "repeated_permutation") ||
          sp_streq(nm0, "each_slice") || sp_streq(nm0, "each_cons") ||
-         sp_streq(nm0, "cycle"))) {
+         sp_streq(nm0, "cycle") || sp_streq(nm0, "zip"))) {
       int recv0 = nt_ref(nt0, id, "receiver");
       TyKind rt0 = recv0 >= 0 ? comp_ntype(c, recv0) : TY_UNKNOWN;
       if (recv0 >= 0 && ty_is_array(rt0)) {
@@ -100,8 +100,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "({ ");
         emit_stmt(c, id, b, 0);
         g_n_argov--;
-        if (sp_streq(nm0, "cycle"))
-          buf_puts(b, " sp_box_nil(); })");   /* cycle { } returns nil */
+        if (sp_streq(nm0, "cycle") || sp_streq(nm0, "zip"))
+          buf_puts(b, " sp_box_nil(); })");   /* cycle { } / zip { } return nil */
         else
           buf_printf(b, " _t%d; })", ta0);  /* the others return self (Ruby >= 3.1) */
         return 1;

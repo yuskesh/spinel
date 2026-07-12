@@ -2930,6 +2930,7 @@ else {
         sp_streq(name, "replace") ||
         sp_streq(name, "values_at")) return rt;
     if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;
+    if (sp_streq(name, "zip") && block >= 0) return TY_NIL;  /* block form returns nil */
     if (sp_streq(name, "product") && argc >= 1)
       return nt_ref(nt, id, "block") >= 0 ? rt : TY_POLY_ARRAY;  /* block form returns self */
     if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;

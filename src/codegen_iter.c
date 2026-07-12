@@ -1408,7 +1408,23 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(%s); _t%d++) {\n",
                  t, t, k, rb.p ? rb.p : "NULL", t);
-      if (p0 && zlv0) {
+      if (p0 && zlv0 && !p1n) {
+        /* SOLO param: the boxed [e1, e2] tuple (two params auto-splat it) */
+        int tpz = ++g_tmp;
+        char s1[512], s2[512];
+        snprintf(s1, sizeof s1, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+        snprintf(s2, sizeof s2, "sp_%sArray_get(%s, _t%d)", k2, ob.p ? ob.p : "NULL", t);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpz, tpz);
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, et, s1, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpz, bx.p ? bx.p : ""); free(bx.p);
+        memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, et2, s2, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpz, bx.p ? bx.p : ""); free(bx.p);
+        buf_printf(b, "sp_box_poly_array(_t%d); });\n", tpz);
+      }
+      else if (p0 && zlv0) {
         char src[512]; snprintf(src, sizeof src, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
         int box0 = zlv0->type == TY_POLY && et != TY_POLY;
         emit_indent(b, indent + 1); buf_printf(b, "lv_%s = ", p0);
