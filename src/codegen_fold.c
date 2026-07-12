@@ -920,6 +920,27 @@ int emit_bsearch_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
   }
+  else if (infer_type(c, bb[bn - 1]) == TY_POLY) {
+    /* a mixed block (int-or-nil ternary) is CRuby's combined dispatch: an
+       Integer is find-any (0 found, positive right, negative left), any
+       other truthy value is find-minimum, nil/false searches right */
+    int tv = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tv, cb.p ? cb.p : "sp_box_nil()");
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "if (_t%d.tag == SP_TAG_INT) {\n", tv);
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "if (_t%d.v.i == 0) { _t%d = _t%d; break; }\n", tv, tres, tmid);
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "else if (_t%d.v.i > 0) { _t%d = _t%d + 1; }\n", tv, tlo, tmid);
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "else { _t%d = _t%d - 1; }\n", thi, tmid);
+    emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "else if (sp_poly_truthy(_t%d)) { _t%d = _t%d; _t%d = _t%d - 1; }\n",
+               tv, tres, tmid, thi, tmid);
+    emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "else { _t%d = _t%d + 1; }\n", tlo, tmid);
+  }
   else {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "if (%s) { _t%d = _t%d; _t%d = _t%d - 1; }\n", cb.p ? cb.p : "0", tres, tmid, thi, tmid);
