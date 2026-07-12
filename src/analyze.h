@@ -77,6 +77,8 @@ const char *block_param_name(Compiler *c, int block, int idx);
 /* Name of a block's trailing rest parameter (`|*a|`), or NULL. */
 const char *block_rest_name(Compiler *c, int block);
 const char *block_opt_name(Compiler *c, int block, int idx);
+const char *block_post_name(Compiler *c, int block, int idx);
+int block_rest_marker(Compiler *c, int block);
 int block_opt_default(Compiler *c, int block, int idx);
 const char *block_keyword_name(Compiler *c, int block, int idx);
 int block_keyword_default(Compiler *c, int block, int idx);

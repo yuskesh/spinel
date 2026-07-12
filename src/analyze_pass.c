@@ -2759,6 +2759,33 @@ int block_opt_default(Compiler *c, int block, int idx) {
   return -1;
 }
 
+/* Name of a block's idx-th post-required parameter (`|a, *b, c|` -> c), or NULL. */
+const char *block_post_name(Compiler *c, int block, int idx) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  if (bp < 0) return NULL;
+  const char *bpty = nt_type(c->nt, bp);
+  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
+  int pn = nt_ref(c->nt, bp, "parameters");
+  if (pn < 0) return NULL;
+  int n = 0;
+  const int *posts = nt_arr(c->nt, pn, "posts", &n);
+  if (idx < n) return nt_str(c->nt, posts[idx], "name");
+  return NULL;
+}
+
+/* 1 when the block carries ANY rest marker: `*name`, a bare `*`, or the
+   implicit rest of a trailing comma (`|a, |`). block_rest_name answers only
+   the named form; the distribution (and the auto-splat gate) needs them all. */
+int block_rest_marker(Compiler *c, int block) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  if (bp < 0) return 0;
+  const char *bpty = nt_type(c->nt, bp);
+  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return 0;
+  int pn = nt_ref(c->nt, bp, "parameters");
+  if (pn < 0) return 0;
+  return nt_ref(c->nt, pn, "rest") >= 0;
+}
+
 /* Name of a block's idx-th keyword parameter (`|a:, b: 5|`), or NULL. */
 const char *block_keyword_name(Compiler *c, int block, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");
@@ -4653,16 +4680,22 @@ int infer_block_params(Compiler *c) {
         int yc = 0;
         const int *yargs = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
         Scope *bs = comp_scope_of(c, block);
-        /* CRuby auto-splat: one (non-splat) Array yielded to a 2+-param (or
-           required+rest) block binds elements, so type params from the
-           element type (mirrors emit_block_invoke). */
+        /* CRuby auto-splat: one (non-splat) Array yielded to a block taking
+           more than one binding slot -- or at least one slot plus a rest
+           marker -- binds elements (mirrors emit_block_invoke's gate). The
+           array's runtime length is unknown, so every destructured param can
+           bind nil; widen them through poly rather than the bare element
+           type (an int slot would render a missing position as 0). */
+        int p_pre = 0; while (block_param_name(c, block, p_pre)) p_pre++;
+        int p_opt = 0; while (block_opt_name(c, block, p_opt)) p_opt++;
+        int p_post = 0; while (block_post_name(c, block, p_post)) p_post++;
         TyKind as_elem = TY_UNKNOWN;
         if (yc == 1 &&
-            (block_param_name(c, block, 1) ||
-             (block_param_name(c, block, 0) && block_rest_name(c, block))) &&
+            (p_pre + p_opt + p_post > 1 ||
+             (p_pre + p_opt + p_post >= 1 && block_rest_marker(c, block))) &&
             !(nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))) {
           TyKind yat = infer_type(c, yargs[0]);
-          if (ty_is_array(yat)) as_elem = ty_array_elem(yat);
+          if (ty_is_array(yat)) as_elem = ty_unify(ty_array_elem(yat), TY_POLY);
         }
         for (int k = 0; k < yc; k++) {
           const char *bp = block_param_name(c, block, k);
@@ -4721,10 +4754,26 @@ int infer_block_params(Compiler *c) {
           if (!op) break;
           int yi = nreq_b + oi;
           TyKind ot;
-          if (yi < yc) ot = infer_type(c, yargs[yi]);
+          if (as_elem != TY_UNKNOWN) {
+            /* destructured: an optional binds an element or its default */
+            int dv = block_opt_default(c, block, oi);
+            ot = ty_unify(as_elem, dv >= 0 ? infer_type(c, dv) : TY_NIL);
+          }
+          else if (yi < yc) ot = infer_type(c, yargs[yi]);
           else { int dv = block_opt_default(c, block, oi); ot = dv >= 0 ? infer_type(c, dv) : TY_NIL; }
           LocalVar *lv = scope_local_intern(bs, op); lv->is_block_param = 1;
           TyKind m = ty_unify(lv->type, ot);
+          if (m != lv->type) { lv->type = m; changed = 1; }
+        }
+        /* Post-required block params (`|a, *b, c|` -> c): an element (or the
+           slot nil) in destructure mode, the positional yield arg otherwise;
+           the runtime consumption point is unknown here, so unify with poly. */
+        for (int qi = 0; ; qi++) {
+          const char *qp = block_post_name(c, block, qi);
+          if (!qp) break;
+          TyKind qt2 = as_elem != TY_UNKNOWN ? as_elem : TY_POLY;
+          LocalVar *lv = scope_local_intern(bs, qp); lv->is_block_param = 1;
+          TyKind m = ty_unify(lv->type, ty_unify(qt2, TY_POLY));
           if (m != lv->type) { lv->type = m; changed = 1; }
         }
         /* Keyword block params (`|a:, b: 5|`): type from the trailing yielded

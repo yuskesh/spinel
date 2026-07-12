@@ -447,6 +447,15 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   int yc = 0;
   const int *yargs = args_node >= 0 ? nt_arr(nt, args_node, "arguments", &yc) : NULL;
   Scope *bsc = comp_scope_of(c, blk);
+  /* CRuby's argument distribution needs the parameter shape up front:
+     P pre-required, O optionals, Q post-required, R any rest marker
+     (`*name`, bare `*`, or the implicit rest of a trailing comma `|a, |`).
+     Requireds (pre and post) bind first, optionals take what remains
+     left-to-right, a rest collects the leftover middle, extras drop. */
+  int P = 0; while (block_param_name(c, blk, P)) P++;
+  int O = 0; while (block_opt_name(c, blk, O)) O++;
+  int Q = 0; while (block_post_name(c, blk, Q)) Q++;
+  int R = block_rest_marker(c, blk);
   /* `yield(*arr)`: a single splat spreads the array across the block params
      (auto-splat). Evaluate it once into a rooted temp and bind each param (and
      any rest param) from its elements rather than from the splat AST node. */
@@ -456,10 +465,10 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (nt_type(nt, yargs[0]) && sp_streq(nt_type(nt, yargs[0]), "SplatNode"))
       inner = nt_ref(nt, yargs[0], "expression");
     /* CRuby auto-splat: a single (non-splat) Array yielded to a block taking
-       more than one parameter destructures across the params. Only-rest
-       blocks (`|*a|`) keep the array whole. */
-    else if (block_param_name(c, blk, 1) ||
-             (block_param_name(c, blk, 0) && block_rest_name(c, blk)))
+       more than one binding slot -- or at least one slot plus a rest marker --
+       destructures across the params. Only-rest blocks (`|*a|`) keep the
+       array whole, as does a single plain param. */
+    else if (P + O + Q > 1 || (P + O + Q >= 1 && R))
       inner = yargs[0];
     TyKind at = inner >= 0 ? comp_ntype(c, inner) : TY_UNKNOWN;
     if (ty_is_array(at) || at == TY_POLY_ARRAY) {
@@ -524,9 +533,25 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     }
     buf_puts(b, as_expr ? "; " : ";\n");
   }
-  /* Optional block params (`|a, b=10|`): bind from the yielded arg at the
-     optional's position, else evaluate the declared default expression. */
-  int nopt_base = 0; while (block_param_name(c, blk, nopt_base)) nopt_base++;
+  /* Distribution counts. Direct (non-splat) yields resolve statically from
+     yc; a splatted array's length is runtime, so the optional-take count and
+     the post start index become runtime temps. */
+  int ot_static = yc - P - Q;
+  if (ot_static < 0) ot_static = 0;
+  if (ot_static > O) ot_static = O;
+  int rl_static = R ? yc - P - ot_static - Q : 0;
+  if (rl_static < 0) rl_static = 0;
+  int t_ot = -1;
+  if (splat_tmp >= 0 && (O > 0 || Q > 0)) {
+    t_ot = ++g_tmp;
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "mrb_int _t%d = (_t%d ? _t%d->len : 0) - %d - %d;"
+                  " if (_t%d < 0) _t%d = 0; if (_t%d > %d) _t%d = %d;%s",
+               t_ot, splat_tmp, splat_tmp, P, Q,
+               t_ot, t_ot, t_ot, O, t_ot, O, as_expr ? " " : "\n");
+  }
+  /* Optional block params (`|a, b=10|`): bind from the args left over after
+     the requireds (pre AND post) are satisfied, else the declared default. */
   for (int oi = 0; ; oi++) {
     const char *op = block_opt_name(c, blk, oi);
     if (!op) break;
@@ -534,7 +559,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     LocalVar *ol = bsc ? scope_local(bsc, op) : NULL;
     TyKind ot = ol ? ol->type : TY_UNKNOWN;
     int dv = block_opt_default(c, blk, oi);
-    int yi = nopt_base + oi;
+    int yi = P + oi;
     const char *odflt = ot == TY_RANGE ? "(sp_Range){0}" : default_value(ot);
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "lv_%s = ", opr);
@@ -542,7 +567,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       TyKind et = ty_array_elem(splat_at);
       Buf eb; memset(&eb, 0, sizeof eb);
       emit_array_elem_at(splat_at, splat_tmp, yi, &eb);
-      buf_printf(b, "(%d < (_t%d ? _t%d->len : 0) ? ", yi, splat_tmp, splat_tmp);
+      buf_printf(b, "(%d < _t%d ? ", oi, t_ot);
       if (ot == TY_POLY && et != TY_POLY && et != TY_UNKNOWN) emit_boxed_text(c, et, eb.p ? eb.p : "0", b);
       else if (et == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) emit_unbox_text(c, ot, eb.p ? eb.p : "", b);
       else buf_puts(b, eb.p ? eb.p : "");
@@ -550,7 +575,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       if (dv >= 0) emit_block_arg_coerced(c, dv, ot, b); else buf_puts(b, odflt);
       buf_puts(b, ")");
       free(eb.p);
-    } else if (yi < yc) {
+    } else if (oi < ot_static) {
       emit_block_arg_coerced(c, yargs[yi], ot, b);
     } else if (dv >= 0) {
       emit_block_arg_coerced(c, dv, ot, b);
@@ -583,16 +608,28 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   const char *brest = block_rest_name(c, blk);
   if (brest) {
     const char *brestr = rename_local(brest);
-    int nreq = 0; while (block_param_name(c, blk, nreq)) nreq++;
+    /* Build into a fresh temp, assign the rest param LAST: a yielded arg can
+       reference the same (renamed) C slot the rest param occupies -- e.g. a
+       sole-rest block whose name collides with the inlined method's own
+       param (`def m(a) yield a end; m(x) { |*a| a }`). Assigning the slot
+       first made the push read the fresh empty array as its own element. */
+    int trest = ++g_tmp;
     if (!as_expr) emit_indent(b, indent);
-    buf_printf(b, "lv_%s = sp_PolyArray_new();%s", brestr, as_expr ? " " : "\n");
+    buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new();%s", trest, as_expr ? " " : "\n");
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "SP_GC_ROOT(_t%d);%s", trest, as_expr ? " " : "\n");
     if (splat_tmp >= 0) {
-      /* collect splat elements past the required params at runtime */
+      /* collect the leftover middle: past the pre-requireds and the taken
+         optionals, stopping short of the Q post-requireds */
       TyKind et = ty_array_elem(splat_at);
       int jj = ++g_tmp;
       if (!as_expr) emit_indent(b, indent);
-      buf_printf(b, "for (mrb_int _t%d = %d; _t%d && _t%d < _t%d->len; _t%d++) sp_PolyArray_push(lv_%s, ",
-                 jj, nreq, splat_tmp, jj, splat_tmp, jj, brestr);
+      if (t_ot >= 0)
+        buf_printf(b, "for (mrb_int _t%d = %d + _t%d; _t%d && _t%d < (_t%d->len - %d); _t%d++) sp_PolyArray_push(_t%d, ",
+                   jj, P, t_ot, splat_tmp, jj, splat_tmp, Q, jj, trest);
+      else
+        buf_printf(b, "for (mrb_int _t%d = %d; _t%d && _t%d < (_t%d->len - %d); _t%d++) sp_PolyArray_push(_t%d, ",
+                   jj, P, splat_tmp, jj, splat_tmp, Q, jj, trest);
       char acc[96];
       if (splat_at == TY_POLY_ARRAY) snprintf(acc, sizeof acc, "sp_PolyArray_get(_t%d, _t%d)", splat_tmp, jj);
       else snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d)", array_kind(splat_at) ? array_kind(splat_at) : "Int", splat_tmp, jj);
@@ -600,11 +637,80 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, et, acc, &bx); buf_puts(b, bx.p ? bx.p : acc); free(bx.p); }
       buf_puts(b, as_expr ? "); " : ");\n");
     }
-    else for (int j = nreq; j < yc; j++) {
+    else for (int j = P + ot_static; j < yc - Q; j++) {
       if (!as_expr) emit_indent(b, indent);
-      buf_printf(b, "sp_PolyArray_push(lv_%s, ", brestr);
+      buf_printf(b, "sp_PolyArray_push(_t%d, ", trest);
       emit_boxed(c, yargs[j], b);
       buf_puts(b, as_expr ? "); " : ");\n");
+    }
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "lv_%s = _t%d;%s", brestr, trest, as_expr ? " " : "\n");
+  }
+  /* Post-required params (`|a, *b, c, d|`): bind after the pre/optional/rest
+     consumption point, left-to-right; missing positions bind the slot nil. */
+  if (Q > 0) {
+    int t_ps = -1;
+    if (splat_tmp >= 0) {
+      t_ps = ++g_tmp;
+      if (!as_expr) emit_indent(b, indent);
+      if (R) {
+        /* a rest absorbs the middle: posts sit at len-Q, clamped down to the
+           pre/optional consumption point when the array is short */
+        buf_printf(b, "mrb_int _t%d = (_t%d ? _t%d->len : 0) - %d;"
+                      " { mrb_int _lo = %d%s%s%d; if (_t%d < _lo) _t%d = _lo; }%s",
+                   t_ps, splat_tmp, splat_tmp, Q,
+                   P, t_ot >= 0 ? " + _t" : " + ", t_ot >= 0 ? "" : "0",
+                   t_ot >= 0 ? t_ot : 0, t_ps, t_ps, as_expr ? " " : "\n");
+      }
+      else {
+        buf_printf(b, "mrb_int _t%d = %d%s%d;%s",
+                   t_ps, P, t_ot >= 0 ? " + _t" : " + ", t_ot >= 0 ? t_ot : 0,
+                   as_expr ? " " : "\n");
+      }
+    }
+    int ps_static = P + ot_static + rl_static;
+    for (int qi = 0; qi < Q; qi++) {
+      const char *qp = block_post_name(c, blk, qi);
+      if (!qp) continue;   /* anonymous post: consumes a slot, binds nothing */
+      const char *qpr = rename_local(qp);
+      LocalVar *ql = bsc ? scope_local(bsc, qp) : NULL;
+      TyKind qt = ql ? ql->type : TY_UNKNOWN;
+      const char *qdflt = qt == TY_RANGE ? "(sp_Range){0}" : default_value(qt);
+      if (!as_expr) emit_indent(b, indent);
+      buf_printf(b, "lv_%s = ", qpr);
+      if (splat_tmp >= 0) {
+        TyKind et = ty_array_elem(splat_at);
+        int te = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = _t%d + %d; (_t%d < (_t%d ? _t%d->len : 0) ? ",
+                   te, t_ps, qi, te, splat_tmp, splat_tmp);
+        char acc[96];
+        if (splat_at == TY_POLY_ARRAY) snprintf(acc, sizeof acc, "sp_PolyArray_get(_t%d, _t%d)", splat_tmp, te);
+        else snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d)", array_kind(splat_at) ? array_kind(splat_at) : "Int", splat_tmp, te);
+        if (qt == TY_POLY && et != TY_POLY && et != TY_UNKNOWN) {
+          Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, et, acc, &bx);
+          buf_puts(b, bx.p ? bx.p : acc); free(bx.p);
+        }
+        else if (et == TY_POLY && qt != TY_POLY && qt != TY_UNKNOWN)
+          emit_unbox_text(c, qt, acc, b);
+        else buf_puts(b, acc);
+        buf_printf(b, " : %s); })", qdflt);
+      }
+      else {
+        int idx = ps_static + qi;
+        if (idx < yc) {
+          LocalVar *bl2 = ql;
+          TyKind at = comp_ntype(c, yargs[idx]);
+          TyKind bt2 = bl2 ? bl2->type : TY_UNKNOWN;
+          if (bt2 == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed(c, yargs[idx], b);
+          else if (at == TY_POLY && bt2 != TY_POLY && bt2 != TY_UNKNOWN) {
+            Buf yb; memset(&yb, 0, sizeof yb); emit_expr(c, yargs[idx], &yb);
+            emit_unbox_text(c, bt2, yb.p ? yb.p : "", b); free(yb.p);
+          }
+          else emit_expr(c, yargs[idx], b);
+        }
+        else buf_puts(b, qdflt);
+      }
+      buf_puts(b, as_expr ? "; " : ";\n");
     }
   }
   /* Keep the rename table active for the block body: the block's variable

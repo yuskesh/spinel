@@ -1436,17 +1436,38 @@ void rename_shadowing_block_params(Compiler *c) {
     const char *pty = nt_type(nt, pn);
     if (!pty || !sp_streq(pty, "ParametersNode")) continue;  /* numbered params handled elsewhere */
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+    /* rest / post parameters shadow-rename the same way as the requireds: a
+       rest param sharing an outer local's name shares its C slot, so the
+       rest-packing assignment aliases the outer variable (a sole-rest block
+       whose name matches the inlined method's own param read garbage). */
+    int extras[129]; int ne = 0;
+    {
+      int rref = nt_ref(nt, pn, "rest");
+      if (rref >= 0 && nt_type(nt, rref) && sp_streq(nt_type(nt, rref), "RestParameterNode") &&
+          nt_str(nt, rref, "name")) extras[ne++] = rref;
+      int pon = 0; const int *posts = nt_arr(nt, pn, "posts", &pon);
+      for (int q = 0; q < pon && ne < 128; q++)
+        if (posts[q] >= 0 && nt_type(nt, posts[q]) &&
+            sp_streq(nt_type(nt, posts[q]), "RequiredParameterNode") &&
+            nt_str(nt, posts[q], "name")) extras[ne++] = posts[q];
+      int oon = 0; const int *opts = nt_arr(nt, pn, "optionals", &oon);
+      for (int q = 0; q < oon && ne < 128; q++)
+        if (opts[q] >= 0 && nt_type(nt, opts[q]) &&
+            sp_streq(nt_type(nt, opts[q]), "OptionalParameterNode") &&
+            nt_str(nt, opts[q], "name")) extras[ne++] = opts[q];
+    }
     /* block-locals (`; a, b`) live only in the BlockNode's comma-joined `locals`
        string; a block may carry them with no required params (`{ |; x| ... }`). */
     const char *locs = nt_str(nt, L, "locals");
     int have_locals = locs && *locs;
-    if (rn == 0 && !have_locals) continue;
+    if (rn == 0 && ne == 0 && !have_locals) continue;
     int body = nt_ref(nt, L, "body");
     if (body < 0) continue;
     gen++;
     blkp_stamp_subtree(nt, body, inbody, gen);
-    for (int i = 0; i < rn; i++) {
-      const char *p = nt_str(nt, reqs[i], "name");
+    for (int ii = 0; ii < rn + ne; ii++) {
+      int pnode = ii < rn ? reqs[ii] : extras[ii - rn];
+      const char *p = nt_str(nt, pnode, "name");
       if (!p) continue;
       /* collision: the name is used outside this block's body -- as a local
          write/read or as another block's parameter (param-vs-param, e.g. two
@@ -1462,6 +1483,7 @@ void rename_shadowing_block_params(Compiler *c) {
         if (is_param_node) {
           int own = 0;
           for (int q = 0; q < rn; q++) if (reqs[q] == w) { own = 1; break; }
+          for (int q = 0; q < ne && !own; q++) if (extras[q] == w) own = 1;
           if (own) continue;
         }
         const char *wn = nt_str(nt, w, "name");
@@ -1471,8 +1493,12 @@ void rename_shadowing_block_params(Compiler *c) {
       char oldn[160], newn[176];
       snprintf(oldn, sizeof oldn, "%s", p);   /* copy: nt_set_str frees p's storage */
       snprintf(newn, sizeof newn, "%s__bp%d", oldn, L);
-      nt_set_str((NodeTable *)nt, reqs[i], "name", newn);
+      nt_set_str((NodeTable *)nt, pnode, "name", newn);
       blkp_rewrite_refs(c, body, oldn, newn);
+      /* an optional's default expression can reference a renamed sibling
+         param (`|a, b=a|`); those reads live under the ParametersNode, not
+         the body, so rewrite there too */
+      blkp_rewrite_refs(c, pn, oldn, newn);
     }
     if (have_locals)
       rename_shadowing_block_locals(c, L, pn, body, inbody, gen, wp, wpn);
