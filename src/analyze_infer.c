@@ -4485,6 +4485,16 @@ TyKind infer_uncached(Compiler *c, int id) {
     int is_unless = nk == NK_UnlessNode;
     int then_b = nt_ref(nt, id, "statements");
     int else_b = nt_ref(nt, id, is_unless ? "else_clause" : "subsequent");
+    /* a statically-answered defined? predicate types as its live arm alone
+       (the dead arm is never emitted -- see the codegen folds) */
+    int dpred = nt_ref(nt, id, "predicate");
+    int df = comp_defined_guard_false(c, dpred);
+    int dt = df ? 0 : comp_defined_guard_true(c, dpred);
+    if (df || dt) {
+      int take_then = is_unless ? df : dt;
+      if (take_then) return then_b >= 0 ? infer_type(c, then_b) : TY_NIL;
+      return else_b >= 0 ? infer_type(c, else_b) : TY_NIL;
+    }
     TyKind tt = then_b >= 0 ? infer_type(c, then_b) : TY_NIL;
     TyKind et = else_b >= 0 ? infer_type(c, else_b) : TY_NIL;
     return ty_unify(tt, et);

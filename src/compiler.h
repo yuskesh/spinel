@@ -400,6 +400,8 @@ LocalVar *comp_const_intern(Compiler *c, const char *name);
    the left arm of an `&&` chain) over a constant that resolves to nothing;
    the guarded branch is compile-time dead. */
 int comp_defined_guard_false(Compiler *c, int pred);
+/* the dual: statically-true defined?(Const / Const::Path) guard */
+int comp_defined_guard_true(Compiler *c, int pred);
 
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);

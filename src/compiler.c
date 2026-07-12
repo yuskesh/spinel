@@ -657,6 +657,37 @@ int comp_defined_guard_false(Compiler *c, int pred) {
   return 0;
 }
 
+/* The dual: a defined? guard that is statically TRUE -- every segment of the
+   constant / constant path resolves at compile time. Lets value-position
+   `defined?(K) ? K : fallback` drop its dead fallback arm (which may not
+   type-unify with the live one). Deliberately narrow like
+   comp_defined_guard_false: plain constants / constant paths only, no `&&`
+   chains (a truthy left arm doesn't decide the conjunction). */
+int comp_defined_guard_true(Compiler *c, int pred) {
+  const NodeTable *nt = c->nt;
+  if (pred < 0) return 0;
+  const char *pt = nt_type(nt, pred);
+  if (!pt || !sp_streq(pt, "DefinedNode")) return 0;
+  int v = nt_ref(nt, pred, "value");
+  if (v < 0) return 0;
+  const char *vt = nt_type(nt, v);
+  if (vt && sp_streq(vt, "ConstantReadNode"))
+    return const_name_resolves(c, nt_str(nt, v, "name"));
+  if (vt && sp_streq(vt, "ConstantPathNode")) {
+    for (int seg = v; ; ) {
+      if (!const_name_resolves(c, nt_str(nt, seg, "name"))) return 0;
+      int par = nt_ref(nt, seg, "parent");
+      if (par < 0) return 1;                     /* ::Root form, all resolved */
+      const char *pty = nt_type(nt, par);
+      if (pty && sp_streq(pty, "ConstantPathNode")) { seg = par; continue; }
+      if (pty && sp_streq(pty, "ConstantReadNode"))
+        return const_name_resolves(c, nt_str(nt, par, "name"));
+      return 0;                                  /* dynamic parent: no fold */
+    }
+  }
+  return 0;
+}
+
 /* A literal ArrayNode whose elements are all integer literals (or empty). */
 static int is_int_array_literal(Compiler *c, int node) {
   const NodeTable *nt = c->nt;

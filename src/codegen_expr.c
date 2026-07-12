@@ -1527,6 +1527,11 @@ void emit_expr(Compiler *c, int id, Buf *b) {
           }
         }
       }
+      else if (sp_streq(vt, "ConstantPathNode")) {
+        /* a fully-resolved qualified path answers "constant"; any unresolved
+           segment leaves nil (the segment walk lives in the guard helpers) */
+        if (comp_defined_guard_true(c, id)) res = "constant";
+      }
       else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") >= 0) {
         /* an operator invocation on a defined receiver is a method call the
            compiler always resolves (defined?(x == 2) -> "method") */
@@ -1853,6 +1858,33 @@ else {
       else_stmts = nt_ref(nt, sub, "statements");
     int en = 0;
     const int *eb = else_stmts >= 0 ? nt_arr(nt, else_stmts, "body", &en) : NULL;
+    /* A statically-answered defined? predicate folds to its live arm alone:
+       the dead arm may reference the very constant defined? reported on (and
+       its NameError-raise value would not type-unify with the live arm), and
+       CRuby never evaluates it. Mirrors emit_if's statement-form fold and
+       the matching inference fold. */
+    {
+      int df = comp_defined_guard_false(c, pred);
+      int dt = df ? 0 : comp_defined_guard_true(c, pred);
+      if (df || dt) {
+        int take_then = is_unless ? df : dt;
+        if (!take_then && !is_unless && sub >= 0 && nt_type(nt, sub) &&
+            sp_streq(nt_type(nt, sub), "IfNode")) {
+          emit_expr(c, sub, b);  /* the elsif chain continues as the value */
+          return;
+        }
+        int live = take_then ? then_b : else_stmts;
+        int ln = 0;
+        const int *lb = live >= 0 ? nt_arr(nt, live, "body", &ln) : NULL;
+        if (ln == 0) { buf_puts(b, "sp_box_nil()"); return; }
+        if (ln == 1) { emit_expr(c, lb[0], b); return; }
+        buf_puts(b, "({ ");
+        for (int j = 0; j < ln - 1; j++) emit_stmt(c, lb[j], b, 0);
+        emit_expr(c, lb[ln - 1], b);
+        buf_puts(b, "; })");
+        return;
+      }
+    }
     if (tn == 1 && en == 1) {
       TyKind res = comp_ntype(c, id);
       /* A void/nil-typed if (e.g. an arm that is a writer call, doom's

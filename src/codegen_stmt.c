@@ -127,14 +127,17 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "{ const char *_ps = (const char *)(");
     buf_printf(b, "sp_%s_to_s((sp_%s *)", cn, cn);
     const char *rty = nt_type(c->nt, arg);
-    if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
+    if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode") || sp_streq(rty, "ConstantReadNode"))) {
       emit_expr(c, arg, b);
     }
     else {
+      /* evaluate the argument first: its emission may hoist declarations of
+         its own into g_pre, which must land as complete statements before
+         this temp's declaration head is written */
       int tt = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arg, &rb);
       emit_indent(g_pre, g_indent); emit_ctype(c, t, g_pre);
       buf_printf(g_pre, " _t%d = ", tt);
-      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arg, &rb);
       buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
       buf_printf(b, "_t%d", tt);
     }
@@ -231,9 +234,30 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
        its effect (it diverges or returns nil); print renders nil as nothing */
     buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, ");\n");
   }
+  else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
+    /* an object with #to_s: call it directly (like the puts arm); evaluate
+       the argument first so its hoisted declarations land whole in g_pre */
+    const char *cn = obj_str_cname(c, ty_object_class(t), 0);
+    buf_puts(b, "{ const char *_ps = (const char *)(");
+    buf_printf(b, "sp_%s_to_s((sp_%s *)", cn, cn);
+    const char *rty = nt_type(c->nt, arg);
+    if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode") || sp_streq(rty, "ConstantReadNode"))) {
+      emit_expr(c, arg, b);
+    }
+    else {
+      int tt = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, arg, &rb);
+      emit_indent(g_pre, g_indent); emit_ctype(c, t, g_pre);
+      buf_printf(g_pre, " _t%d = ", tt);
+      buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
+      buf_printf(b, "_t%d", tt);
+    }
+    buf_puts(b, ")); if (_ps) fputs(_ps, stdout); }\n");
+  }
   else if (t == TY_POLY || ty_is_object(t)) {
     int tv = ++g_tmp;
-    buf_printf(b, "{ sp_RbVal _t%d = ", tv); emit_expr(c, arg, b);
+    buf_printf(b, "{ sp_RbVal _t%d = ", tv);
+    if (t == TY_POLY) emit_expr(c, arg, b); else emit_boxed(c, arg, b);
     buf_printf(b, "; const char *_ps%d = sp_poly_to_s(_t%d); if (_ps%d) fputs(_ps%d, stdout); }\n", tv, tv, tv, tv);
   }
   else if (t == TY_RANGE) {
