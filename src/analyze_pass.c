@@ -5436,7 +5436,12 @@ int infer_block_params(Compiler *c) {
         const char *p1 = block_param_name(c, block, 1);
         int pair_solo = !p1 &&
                         (sp_streq(name, "flat_map") || sp_streq(name, "collect_concat") ||
-                         sp_streq(name, "filter_map") || sp_streq(name, "partition"));
+                         sp_streq(name, "filter_map") || sp_streq(name, "partition") ||
+                         sp_streq(name, "each") || sp_streq(name, "each_pair") ||
+                         sp_streq(name, "map") || sp_streq(name, "collect") ||
+                         sp_streq(name, "find") ||
+                         sp_streq(name, "detect") || sp_streq(name, "sort_by") ||
+                         sp_streq(name, "group_by") || sp_streq(name, "sum"));
         if (p0) {
           LocalVar *kp = scope_local_intern(hs, p0); kp->is_block_param = 1;
           TyKind km = ty_unify(kp->type, pair_solo ? TY_POLY : ty_hash_key(rt));

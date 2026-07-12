@@ -605,6 +605,8 @@ int hash_enum_redispatch(Compiler *c, int id) {
   if (block < 0 && (sp_streq(name, "min") || sp_streq(name, "max") ||
                     sp_streq(name, "minmax")))
     return 1;
+  /* blockless each_with_index: an external Enumerator of [[k, v], i] */
+  if (block < 0 && sp_streq(name, "each_with_index")) return 1;
   if (block < 0 || !nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
   /* comparator-block min/max/minmax compare the [k, v] pairs like the
      blockless forms (min_by/max_by keep their dedicated hash emitters) */

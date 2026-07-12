@@ -86,7 +86,9 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
   /* p0 is the key if 2 params; solo it binds by mode: 0 = key (Hash-specific
      methods yield k, v), 1 = value, 2 = the boxed [k, v] pair (Enumerable
      methods yield the pair as ONE argument). */
-  TyKind p0_actual = p1_orig ? kt : (p0_solo_is_value == 2 ? TY_POLY : vt);
+  TyKind p0_actual = p1_orig ? kt
+                   : p0_solo_is_value == 2 ? TY_POLY
+                   : p0_solo_is_value ? vt : kt;   /* mode 0 solo READS the key: type it so */
   TyKind p1_actual = vt;
   LocalVar *p0_lv = p0_orig ? scope_local(pscope, p0_orig) : NULL;
   LocalVar *p1_lv = p1_orig ? scope_local(pscope, p1_orig) : NULL;
@@ -288,7 +290,7 @@ int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
     TyKind bret;
-    char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 1, &bret);
+    char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 1 : 2, &bret);
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_%sArray_push(_t%d, ", rk, tres);
     if (res_poly && bret != TY_POLY) {
@@ -371,7 +373,7 @@ int emit_hash_reduce_search_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
   TyKind bret;
-  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   if (is_find) {
     emit_indent(g_pre, g_indent + 1);
     if (bret == TY_POLY)
@@ -430,7 +432,7 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
   TyKind bret;
-  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tup, tup);
   emit_indent(g_pre, g_indent + 1);
@@ -501,7 +503,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
   TyKind bret;
-  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   if (is_sum) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "_t%d = sp_poly_add(_t%d, ", tacc, tacc);
@@ -654,7 +656,7 @@ int emit_hash_group_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
   TyKind bret;
-  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bret);
+  char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, block_param_name(c, block, 1) ? 0 : 2, &bret);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_RbVal _t%d = ", tk);
   if (bret == TY_POLY) buf_puts(g_pre, vb ? vb : "sp_box_nil()");

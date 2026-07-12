@@ -1151,7 +1151,31 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "->len; _t%d++) {\n", t);
-    if (p0) {
+    if (p0 && !p1) {
+      /* a SOLO block param receives the boxed [k, v] PAIR (CRuby yields the
+         pair as one argument; two params auto-splat it below) */
+      int tpp = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "lv_%s = ({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", p0, tpp, tpp);
+      if (rt == TY_POLY_POLY_HASH) {
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s->keys[%s->order[_t%d]]); ", tpp, rb.p, rb.p, t);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s->vals[%s->order[_t%d]]); ", tpp, rb.p, rb.p, t);
+      }
+      else {
+        char kx[256], vx[288];
+        snprintf(kx, sizeof kx, "%s->order[_t%d]", rb.p, t);
+        snprintf(vx, sizeof vx, "sp_%sHash_get(%s, %s->order[_t%d])", hn, rb.p, rb.p, t);
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, ty_hash_key(rt), kx, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpp, bx.p ? bx.p : ""); free(bx.p);
+        memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, ty_hash_val(rt), vx, &bx);
+        buf_printf(b, "sp_PolyArray_push(_t%d, %s); ", tpp, bx.p ? bx.p : ""); free(bx.p);
+      }
+      buf_printf(b, "sp_box_poly_array(_t%d); })", tpp);
+      buf_puts(b, ";\n");
+    }
+    else if (p0) {
       /* The param may be poly (a name shared across hashes of differing element
          types); box a concrete key into the poly slot. */
       const char *raw0 = block_param_name(c, block, 0);
