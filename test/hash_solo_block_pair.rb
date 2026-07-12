@@ -5,3 +5,13 @@
 # Hash#each_with_index enumerator ([[k, v], i] pairs), and the mode-0 solo
 # key binding no longer types the slot as the VALUE (a latent compile
 # failure for select { |k| } on a sym-keyed hash).
+h = { a: 1, b: 2 }
+p h.map { |pair| pair }
+p h.each_pair.map { |pair| pair }
+p h.find { |pair| pair[1] == 2 }
+p h.sort_by { |pair| -pair[1] }
+p h.sum(0) { |pair| pair[1] }
+p h.map { |k, v| [k, v] }
+p h.select { |k| k == :a }
+p h.reject { |k| k == :a }
+p h.each_with_index.to_a
