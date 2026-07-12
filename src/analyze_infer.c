@@ -3373,12 +3373,14 @@ else {
       if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
       /* blockless counter stages fuse into the pipeline (codegen re-validates
          the single integer argument). */
-      if ((sp_streq(nm, "take") || sp_streq(nm, "drop")) && nt_ref(nt, cur, "block") < 0) {
+      if ((sp_streq(nm, "take") || sp_streq(nm, "drop") ||
+           (sp_streq(nm, "each_slice") && cur == recv)) && nt_ref(nt, cur, "block") < 0) {
         saw_op = 1; cur = nt_ref(nt, cur, "receiver"); continue;
       }
       if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
       if (!sp_streq(nm, "map") && !sp_streq(nm, "collect") && !sp_streq(nm, "select") &&
           !sp_streq(nm, "filter") && !sp_streq(nm, "reject") && !sp_streq(nm, "take_while") &&
+          !sp_streq(nm, "drop_while") &&
           !sp_streq(nm, "filter_map") && !sp_streq(nm, "flat_map") &&
           !sp_streq(nm, "collect_concat")) { ok = 0; break; }
       saw_op = 1;
