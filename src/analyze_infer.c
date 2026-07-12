@@ -1263,6 +1263,7 @@ TyKind infer_call(Compiler *c, int id) {
         rt == TY_RANGE || rt == TY_TIME || rt == TY_NIL || rt == TY_POLY ||
         rt == TY_METHOD || rt == TY_PROC || rt == TY_IO || rt == TY_ARGF ||
         rt == TY_MATCHDATA || rt == TY_REGEX ||
+        rt == TY_COMPLEX || rt == TY_RATIONAL ||
         rt == TY_FIBER || rt == TY_ENUMERATOR || ty_is_array(rt) || ty_is_hash(rt))
       return TY_CLASS;
   }

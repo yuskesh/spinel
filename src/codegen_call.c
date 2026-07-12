@@ -7056,6 +7056,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_MATCHDATA) cn = "MatchData";
     else if (rt == TY_REGEX) cn = "Regexp";
     else if (rt == TY_PROC) cn = "Proc";
+    else if (rt == TY_COMPLEX) cn = "Complex";
+    else if (rt == TY_RATIONAL) cn = "Rational";
     else if (ty_is_array(rt)) cn = "Array";
     else if (ty_is_hash(rt)) cn = "Hash";
     else if (ty_is_object(rt)) {
