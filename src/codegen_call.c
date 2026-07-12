@@ -3906,11 +3906,12 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     if (rt == TY_POLY_ARRAY) {
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
       buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+      buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative argument\");"
+                    " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                     " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
                     " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
                     " sp_PolyArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
-                 tr, tr,
+                 tn, tr, tr,
                  ti, ti, tn, ti,
                  tj, tj, ta, tj,
                  tr, ta, tj, tr);
@@ -3922,21 +3923,23 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
       buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
       if (has_start) {
-        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative argument\");"
+                      " sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
                       " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
                       " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
                       " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]); _t%d; })",
-                   k, tr, k, tr,
+                   tn, k, tr, k, tr,
                    ti, ti, tn, ti,
                    tj, tj, ta, tj,
                    k, tr, ta, ta, tj, tr);
       }
       else {
-        buf_printf(b, "; sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative argument\");"
+                      " sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);"
                       " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
                       " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)"
                       " sp_%sArray_push(_t%d, _t%d->data[_t%d]); _t%d; })",
-                   k, tr, k, tr,
+                   tn, k, tr, k, tr,
                    ti, ti, tn, ti,
                    tj, tj, ta, tj,
                    k, tr, ta, tj, tr);
