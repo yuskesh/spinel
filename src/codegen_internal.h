@@ -603,6 +603,11 @@ void emit_int_expr(Compiler *c, int node, Buf *b);
 void emit_str_expr(Compiler *c, int node, Buf *b);
 void emit_int_divisor(Compiler *c, int node, Buf *b);
 void emit_float_expr(Compiler *c, int node, Buf *b);
+/* Emit `node` as a scalar operand: like a plain emit_expr, except an
+   unresolved-constant read (which lowers to a NameError raise valued as an
+   sp_Class struct) is voided and replaced by `zero` ("0" / "0.0"), so the
+   raise survives but the struct never reaches an int/float slot. */
+void emit_scalar_operand(Compiler *c, int node, const char *zero, Buf *b);
 void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol);
 int scope_has_begin(Compiler *c, int si);
 void emit_scope_decls(Compiler *c, Scope *s, Buf *b);

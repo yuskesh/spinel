@@ -102,14 +102,27 @@ void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   else buf_printf(b, "(%s).v.i", expr);
 }
 
+/* An unresolved constant read lowers to a runtime NameError raise whose C
+   value is an sp_Class struct (the class-position shape). In a scalar slot
+   that struct fails the C compile ("incompatible types"), so the scalar
+   emitters keep the raise, void the struct, and yield a typed zero -- dead
+   code, the raise fires first. Text-matched on the gate's own token, like
+   emit_str_expr's sp_raise_nomethod coerce (the node stays TY_UNKNOWN). */
+static int coerce_const_raise(const char *txt, const char *zero, Buf *b) {
+  if (strncmp(txt, "(sp_raise_cls(", 14) != 0 || !strstr(txt, "(sp_Class)")) return 0;
+  buf_printf(b, "((void)%s, %s)", txt, zero);
+  return 1;
+}
+
 /* Emit a node as an mrb_int, coercing a poly value through sp_poly_to_i. Used
    where the runtime ABI demands a raw integer (array indices, etc.) but the
    expression's static type widened to poly. */
 void emit_int_expr(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_POLY) {
     buf_puts(b, "sp_poly_to_i("); emit_expr(c, node, b); buf_puts(b, ")");
+    return;
   }
-  else emit_expr(c, node, b);
+  emit_scalar_operand(c, node, "0", b);
 }
 
 /* Emit a node as an mrb_float. A poly value is unboxed via sp_poly_to_f; any
@@ -117,8 +130,24 @@ void emit_int_expr(Compiler *c, int node, Buf *b) {
 void emit_float_expr(Compiler *c, int node, Buf *b) {
   if (comp_ntype(c, node) == TY_POLY) {
     buf_puts(b, "sp_poly_to_f("); emit_expr(c, node, b); buf_puts(b, ")");
+    return;
   }
-  else { buf_puts(b, "(mrb_float)("); emit_expr(c, node, b); buf_puts(b, ")"); }
+  Buf tmp; memset(&tmp, 0, sizeof tmp);
+  emit_expr(c, node, &tmp);
+  if (!coerce_const_raise(tmp.p ? tmp.p : "", "0.0", b)) {
+    buf_puts(b, "(mrb_float)(");
+    buf_puts(b, tmp.p ? tmp.p : "");
+    buf_puts(b, ")");
+  }
+  free(tmp.p);
+}
+
+/* See codegen_internal.h. */
+void emit_scalar_operand(Compiler *c, int node, const char *zero, Buf *b) {
+  Buf tmp; memset(&tmp, 0, sizeof tmp);
+  emit_expr(c, node, &tmp);
+  if (!coerce_const_raise(tmp.p ? tmp.p : "", zero, b)) buf_puts(b, tmp.p ? tmp.p : "");
+  free(tmp.p);
 }
 
 /* Emit a node as a `const char *` string. A poly value (e.g. a `String | nil`
