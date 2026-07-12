@@ -1036,6 +1036,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
      the receiver's emission and type overridden -- the block-form mirror of
      the call_recv redispatch, keyed on the same predicate. */
   if (rt == TY_RANGE && range_enum_redispatch(c, id) && g_n_argov < MAX_ARG_OVERRIDE) {
+    if (range_float_begin(c, recv)) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from Float\");\n");
+      return 1;
+    }
     int ta = ++g_tmp, tr = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
@@ -1850,6 +1855,11 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
      representation, so materialize the succ-sequence as a StrArray and loop over
      it. The block param is shadow-typed String for the body. */
   if (sp_streq(name, "each") && rt == TY_RANGE && p0) {
+    if (range_float_begin(c, recv)) {
+      emit_indent(b, indent);
+      buf_puts(b, "sp_raise_cls(\"TypeError\", \"can't iterate from Float\");\n");
+      return 1;
+    }
     int rnode = unwrap_parens(c, recv);
     if (rnode >= 0 && nt_type(nt, rnode) && sp_streq(nt_type(nt, rnode), "RangeNode")) {
       int lo = nt_ref(nt, rnode, "left"), hi = nt_ref(nt, rnode, "right");

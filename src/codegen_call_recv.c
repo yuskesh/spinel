@@ -5982,12 +5982,18 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\"); (mrb_int)0; })");
         return 1;
       }
-      /* a Float begin cannot iterate: size raises like CRuby */
+      /* a Float begin cannot iterate: the enumerating forms raise like
+         CRuby (int begin + float end iterates fine; first/last/minmax read
+         endpoints without iterating and stay served below) */
       if (rn9 >= 0 && nt_type(nt, rn9) && sp_streq(nt_type(nt, rn9), "RangeNode") &&
           nt_ref(nt, rn9, "left") >= 0 &&
           comp_ntype(c, nt_ref(nt, rn9, "left")) == TY_FLOAT &&
-          sp_streq(name, "size") && argc == 0) {
-        buf_puts(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); (mrb_int)0; })");
+          ((argc == 0 && (sp_streq(name, "size") || sp_streq(name, "sum") ||
+                          sp_streq(name, "count") || sp_streq(name, "to_a"))) ||
+           (argc == 1 && (sp_streq(name, "first") || sp_streq(name, "last"))))) {
+        const char *dflt9 = (sp_streq(name, "to_a") || argc == 1)
+                              ? "(sp_IntArray*)0" : "(mrb_int)0";
+        buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); %s; })", dflt9);
         return 1;
       }
       /* an int begin with a finite Float end sizes by the floored span */

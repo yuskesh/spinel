@@ -4547,6 +4547,23 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
   }
+  /* Enumerating a float-begin range raises like CRuby ("can't iterate from
+     Float"): the int-backed sp_Range would otherwise silently truncate and
+     walk integers. `step` legitimately iterates from a Float, and tap/then
+     never enumerate; everything else block-taking on such a range raises. */
+  {
+    int rcv = nt_ref(nt, id, "receiver");
+    const char *cn = nt_str(nt, id, "name");
+    if (rcv >= 0 && cn && nt_ref(nt, id, "block") >= 0 &&
+        !sp_streq(cn, "step") && !sp_streq(cn, "tap") &&
+        !sp_streq(cn, "then") && !sp_streq(cn, "yield_self") &&
+        comp_ntype(c, rcv) == TY_RANGE && range_float_begin(c, rcv)) {
+      const char *dv = default_value(comp_ntype(c, id));
+      buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); %s; })",
+                 dv ? dv : "0");
+      return;
+    }
+  }
   if (emit_lazy_pipeline_expr(c, id, b)) return;
   if (emit_partition_expr(c, id, b)) return;
   if (emit_with_index_expr(c, id, b)) return;

@@ -1,0 +1,10 @@
+sum: can't iterate from Float
+each: can't iterate from Float
+to_a: can't iterate from Float
+map: can't iterate from Float
+count: can't iterate from Float
+size: can't iterate from Float
+[1, 2, 3, 4, 5]
+true
+local: can't iterate from Float
+[1.0, 3.0, 5.0]

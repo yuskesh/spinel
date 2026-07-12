@@ -990,6 +990,24 @@ int unwrap_parens(Compiler *c, int id) {
   }
   return id;
 }
+
+/* 1 when the receiver is a range whose begin endpoint is statically a Float
+   -- directly a (possibly parenthesized) RangeNode or through a
+   sole-assignment local. CRuby raises TypeError "can't iterate from Float"
+   when enumerating such a range (an int begin with a float end iterates
+   fine); the int-backed sp_Range would otherwise silently truncate. */
+int range_float_begin(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int rn = unwrap_parens(c, recv);
+  if (rn < 0) return 0;
+  const char *rty = nt_type(nt, rn);
+  if (!rty || !sp_streq(rty, "RangeNode")) {
+    rn = local_sole_range_node(c, rn);
+    if (rn < 0) return 0;
+  }
+  int lo = nt_ref(nt, rn, "left");
+  return lo >= 0 && comp_ntype(c, lo) == TY_FLOAT;
+}
 const char *int_arith_fn(const char *op) {
   if (sp_streq(op, "+"))  return "sp_int_add";
   if (sp_streq(op, "-"))  return "sp_int_sub";
