@@ -2994,6 +2994,74 @@ static int fwd_callable_arity(Compiler *c, int ex) {
   return rn;
 }
 
+/* A block's `*rest` param always binds an Array (CRuby packs the extra
+   yielded values); type every BlockNode rest local poly-array so bodies that
+   read it infer correctly on the specialized iterator lowerings too (the
+   yield-consumed path already types it as part of its arg-distribution
+   analysis; this is idempotent there). Lambdas are excluded -- their typed
+   prologue owns its params. */
+int type_block_rest_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "BlockNode")) continue;
+    const char *rn = block_rest_name(c, id);
+    if (!rn || !*rn) continue;
+    Scope *bs = comp_scope_of(c, id);
+    if (!bs) continue;
+    LocalVar *lv = scope_local_intern(bs, rn);
+    lv->is_block_param = 1;
+    if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+  }
+  return changed;
+}
+
+/* Specialized builtin-iterator lowerings that bind only named block params:
+   a block `*rest` param there would bind nil (or emit a misdeclared body), so
+   reject loudly. Receivers that resolve to user objects (or unknown) dispatch
+   through the yield/invoke path, which binds rest correctly -- only builtin
+   container/range/int receivers reach the specialized lowerings. The families
+   that DO bind rest (map/collect, select/reject/filter, each/reverse_each,
+   each_with_index, times/upto/downto/step, find/detect via their own
+   emitters) are deliberately absent from this list. */
+void check_block_rest_support(Compiler *c) {
+  static const char *const no_rest[] = {
+    "flat_map", "collect_concat", "sort_by", "min_by", "max_by", "group_by",
+    "partition", "sum", "count", "all?", "any?", "none?", "one?",
+    "take_while", "drop_while", "each_with_object", "each_slice", "each_cons",
+    "uniq", "chunk_while", "slice_when", "tally", "filter_map", "find_index",
+    "index", "cycle", "each_entry", "flat_map!", "sort_by!", "map!",
+    "collect!", "select!", "reject!", "keep_if", "delete_if", "bsearch",
+    NULL };
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockNode")) continue;
+    const char *rn = block_rest_name(c, blk);
+    if (!rn || !*rn) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int hit = 0;
+    for (int k = 0; no_rest[k]; k++) if (sp_streq(nm, no_rest[k])) { hit = 1; break; }
+    if (!hit) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    if (!(ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_INT ||
+          rt == TY_ENUMERATOR || rt == TY_STRING)) continue;
+    {
+      /* strip the internal __bp rename suffix from the reported param name */
+      char disp[128]; snprintf(disp, sizeof disp, "%s", rn);
+      char *bp = strstr(disp, "__bp"); if (bp) *bp = 0;
+      fprintf(stderr, "spinel: %s:%d: a block splat parameter (*%s) is not supported by the `%s` lowering\n",
+              nt->source_file ? nt->source_file : "source.rb",
+              (int)nt_int(nt, id, "node_line", 0), disp, nm);
+    }
+    exit(1);
+  }
+}
+
 /* `send(:m, args)` / `__send__("m", args)` / `public_send(:m, args)` with NO
    explicit receiver -> a direct implicit-self call to `m` with the remaining
    args. The literal symbol/string name resolves statically, the same model as

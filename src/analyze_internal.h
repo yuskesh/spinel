@@ -212,6 +212,8 @@ int desugar_value_callable_forwards(Compiler *c);
 int desugar_block_destructure_params(Compiler *c);
 int desugar_implicit_send(Compiler *c);
 int desugar_public_send_recv(Compiler *c);
+int type_block_rest_params(Compiler *c);
+void check_block_rest_support(Compiler *c);
 int desugar_dynamic_send(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);

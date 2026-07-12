@@ -914,6 +914,38 @@ void emit_iter_param_assign(Compiler *c, int block, const char *p0_orig,
   }
 }
 
+/* Bind a block's `*rest` param for one iteration. A splat-only block wraps
+   the yielded element whole (lv_rest = [elem] -- CRuby does not auto-splat a
+   splat-only block); with leading required params the rest is empty for a
+   statically non-array element (only array elements distribute across
+   |a, *r|, which the poly autosplat paths own). Declared in the loop body so
+   the form is self-contained (shadowing any method-scope slot is harmless).
+   Returns 1 when a rest param was bound, 0 when the block has none, and -1
+   for the unsupported poly-element distribute shape. */
+int emit_iter_bind_rest(Compiler *c, int block, int np, TyKind elem_t,
+                        const char *elem_src, Buf *b, int indent) {
+  const char *rn = block_rest_name(c, block);
+  if (!rn || !*rn) return 0;
+  if (np >= 1 && elem_t == TY_POLY) return -1;  /* would need runtime distribution */
+  const char *rren = rename_local(rn);
+  emit_indent(b, indent);
+  /* Assign the prologue-declared slot (type_block_rest_params registers the
+     rest param as a TY_POLY_ARRAY method local, so `lv_<rest>` is declared and
+     GC-rooted once in the prologue). SP_GC_ROOT roots the slot address `&lv_x`,
+     so this per-iteration reassignment is covered without re-rooting -- no
+     shadow declaration, no per-iteration root accumulation. */
+  buf_printf(b, "lv_%s = sp_PolyArray_new();\n", rren);
+  if (np == 0) {
+    emit_indent(b, indent);
+    Buf bx; memset(&bx, 0, sizeof bx);
+    if (elem_t == TY_POLY) buf_printf(&bx, "%s", elem_src);
+    else emit_boxed_text(c, elem_t, elem_src, &bx);
+    buf_printf(b, "sp_PolyArray_push(lv_%s, %s);\n", rren, bx.p ? bx.p : elem_src);
+    free(bx.p);
+  }
+  return 1;
+}
+
 /* Does the subtree contain a `redo` that belongs to THIS loop, i.e. one not
    nested inside a deeper loop/block/def (which would own it instead)? */
 int subtree_has_own_redo(const NodeTable *nt, int id) {
@@ -1238,6 +1270,9 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       char elem[64]; snprintf(elem, sizeof elem, "_t%d->data[_t%d]", t, ti);
       emit_iter_param_assign(c, block, p0_orig, p0, et, elem, b, indent + 1);
     }
+    { char rs_es[64]; snprintf(rs_es, sizeof rs_es, "_t%d->data[_t%d]", t, ti);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      emit_iter_bind_rest(c, block, rs_np, et, rs_es, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
@@ -1252,6 +1287,9 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < ", t, t);
     buf_puts(b, rb.p); buf_printf(b, "; _t%d++) {\n", t);
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
+    { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      emit_iter_bind_rest(c, block, rs_np, TY_INT, rs_es, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(rb.p);
@@ -1279,6 +1317,9 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
                  ts, t, tl, t, tl, t, ts);
       if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
+    { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      emit_iter_bind_rest(c, block, rs_np, TY_INT, rs_es, b, indent + 1); }
       emit_loop_body(c, body, b, indent + 1);
       emit_indent(b, indent); buf_puts(b, "}\n");
       return 1;
@@ -1300,6 +1341,9 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d <= _t%d; _t%d++) {\n", ti, ti, tn, ti);
     if (p0) { char fp_expr[64]; snprintf(fp_expr, sizeof fp_expr, "_t%d + _t%d * _t%d", tb, ti, ts); emit_iter_param_assign(c, block, p0_orig, p0, TY_FLOAT, fp_expr, b, indent + 1); }
+    { char rs_es[64]; snprintf(rs_es, sizeof rs_es, "_t%d + _t%d * _t%d", tb, ti, ts);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      emit_iter_bind_rest(c, block, rs_np, TY_FLOAT, rs_es, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;
@@ -1533,6 +1577,21 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent + 1);
       if (p1_box_poly) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", p1, t);
       else buf_printf(b, "lv_%s = _t%d;\n", p1, t);
+    }
+    /* splat-only block packs BOTH yielded values: [element, index] */
+    if (!p0 && !p1 && block_rest_name(c, block) && *block_rest_name(c, block)) {
+      const char *rr = rename_local(block_rest_name(c, block));
+      emit_indent(b, indent + 1);
+      /* assign the prologue-declared, slot-rooted rest local (see
+         emit_iter_bind_rest) rather than shadow-declaring a fresh one */
+      buf_printf(b, "lv_%s = sp_PolyArray_new();\n", rr);
+      char rsrc[512]; snprintf(rsrc, sizeof rsrc, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_PolyArray_push(lv_%s, ", rr);
+      emit_boxed_text(c, ewi_et, rsrc, b);
+      buf_puts(b, ");\n");
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_PolyArray_push(lv_%s, sp_box_int(_t%d));\n", rr, t);
     }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -1979,6 +2038,15 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
       }
     }
+    /* a `*rest` param (splat-only wraps the element; alongside requireds it
+       binds empty for scalar elements) */
+    { char rs_es[560]; snprintf(rs_es, sizeof rs_es, "sp_%sArray_get(%s, _t%d)", k, rb.p ? rb.p : "NULL", t);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      TyKind rs_et = ty_array_elem(rt);
+      if (emit_iter_bind_rest(c, block, rs_np, rs_et, rs_es, b, indent + 1) < 0) {
+        unsupported(c, id, "block splat parameter alongside required params over a poly element");
+        return 1;
+      } }
     each_body:
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
@@ -2173,6 +2241,9 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "; _t%d %s ", ti, up ? "<=" : ">="); buf_puts(b, hi.p);
     buf_printf(b, "; _t%d%s) {\n", ti, up ? "++" : "--");
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", ti); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
+    { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", ti);
+      int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+      emit_iter_bind_rest(c, block, rs_np, TY_INT, rs_es, b, indent + 1); }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     free(lo.p); free(hi.p);
