@@ -4692,12 +4692,16 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       if ((sp_streq(name, "floor") || sp_streq(name, "ceil") ||
            sp_streq(name, "round") || sp_streq(name, "truncate"))) {
         if (nonlit) {
-          /* _f = 10**n at runtime; round(x * _f) / _f gives the right value for
-             any n (n<=0 yields a whole number, still Float -- class-only divergence). */
-          int tf = ++g_tmp;
-          buf_printf(b, "({ double _t%d = pow(10, (double)(", tf);
-          emit_int_expr(c, argv[0], b);   /* ndigits: unbox a poly arg to int */
-          buf_printf(b, ")); %s((%s) * _t%d) / _t%d; })", cfn, r, tf, tf);
+          /* The class depends on the runtime ndigits: Float when n > 0, Integer
+             when n <= 0 (CRuby). Choose at runtime and return a boxed poly. */
+          int tn = ++g_tmp, tv = ++g_tmp;
+          buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+          buf_printf(b, "; double _t%d = (%s); (_t%d > 0)", tv, r, tn);
+          buf_printf(b, " ? ({ double _f = pow(10, (double)_t%d); sp_box_float(isinf(_f) ? _t%d : %s(_t%d * _f) / _f); })", tn, tv, cfn, tv);
+          buf_printf(b, " : ({ if (isinf(_t%d)) sp_raise_cls(\"FloatDomainError\", _t%d > 0 ? \"Infinity\" : \"-Infinity\");"
+                        " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
+                        " double _f = pow(10, (double)(-_t%d)); sp_box_int(isinf(_f) ? 0 : (mrb_int)(%s(_t%d / _f) * _f)); }); })",
+                     tv, tv, tv, tn, cfn, tv);
         }
         else if (ndig > 0)
           buf_printf(b, "({ double _f = pow(10, %d); %s((%s) * _f) / _f; })", ndig, cfn, r);

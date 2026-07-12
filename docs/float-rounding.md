@@ -25,25 +25,24 @@ For an `ndigits <= 0` result the float formula is cast to `mrb_int`, so
 both the value and `#class` match CRuby (`1234.5.round(-1)` is the
 Integer `1230`).
 
-## The residual divergence
+## Non-literal ndigits
 
-A **non-literal** `ndigits` keeps the static `Float` type:
+A **non-literal** `ndigits` is classified at runtime: the result is a boxed
+value that is an Integer when `ndigits <= 0` and a Float when `ndigits > 0`,
+matching CRuby's class exactly.
 
-- `x.round(n)` with a variable `n` would need an Integer-or-Float
-  return type chosen at runtime. Forcing it into a boxed/poly value to
-  carry both would discard static typing for every expression the
-  result flows into, which runs against spinel's static-typing design.
-- `x.round(*args)` / `x.round(*[])` can't be classified statically:
-  whether any argument is present, and its sign, are runtime facts.
+- `x.round(n)` with a variable `n` types as a poly (boxed) value and emits a
+  runtime branch on the sign of `n`, so both the value and `#class` match
+  CRuby (`x.round(n)` with `n == -1` returns the Integer `1230`).
 
-So `x.round(n)` where `n` is a variable holding a non-positive value
-returns a Float (`10.0`) where CRuby returns an Integer (`10`). The
-**value is still computed exactly** (`1.234.round(n)` with `n == 2` is
-`1.23`, `1234.5.round(n)` with `n == -1` is `1230.0`); the values are
-numerically equal to CRuby's and only `#class` and the default string
-form (`"10.0"` vs `"10"`) differ. Code that needs an Integer can convert
-explicitly: `x.round(n).to_i`.
+The one case still classified statically as `Float` is a splat whose presence
+and sign are not knowable at all:
 
-The implementation lives in `infer_call` (`src/analyze_infer.c`) and
-`emit_scalar_call` (`src/codegen_call.c`); both classify a literal-integer
-`ndigits` by sign and fall back to an exact Float computation otherwise.
+- `x.round(*args)` / `x.round(*[])` can't be classified statically -- whether
+  any argument is present, and its sign, are runtime facts the arity model does
+  not carry.
+
+The implementation lives in `infer_call` (`src/analyze_infer.c`) and the Float
+`round`/`floor`/`ceil`/`truncate` arm (`src/codegen_call_recv.c`): a
+literal-integer `ndigits` is classified by sign, and a non-literal one emits a
+runtime Integer-or-Float branch as a boxed value.

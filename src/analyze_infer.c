@@ -3752,7 +3752,9 @@ else {
         fr_argc--;
       if (fr_argc == 1) {
         const char *aty = nt_type(nt, argv[0]);
-        if (!aty || !sp_streq(aty, "IntegerNode")) return TY_FLOAT;  /* non-literal */
+        /* Non-literal ndigits: the class (Integer when <= 0, Float when > 0) is
+           only known at runtime, so the result is a boxed poly chosen there. */
+        if (!aty || !sp_streq(aty, "IntegerNode")) return TY_POLY;
         return nt_int(nt, argv[0], "value", 0) > 0 ? TY_FLOAT : TY_INT;
       }
       return TY_INT;  /* no arg -> self truncated to Integer */
