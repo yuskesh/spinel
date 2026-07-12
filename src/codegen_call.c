@@ -10481,6 +10481,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* Kernel#display prints to_s with no newline, returns nil */
   if (recv >= 0 && sp_streq(name, "display") && argc == 0) {
+    /* Struct#to_s IS inspect in CRuby ("#<struct Point x=1, y=2>"); the
+       boxed sp_poly_to_s default would print the bare-object form */
+    TyKind drt2 = comp_ntype(c, recv);
+    if (ty_is_object(drt2) && c->classes[ty_object_class(drt2)].is_struct &&
+        comp_method_in_chain(c, ty_object_class(drt2), "to_s", NULL) < 0 &&
+        comp_method_in_chain(c, ty_object_class(drt2), "inspect", NULL) < 0) {
+      buf_printf(b, "((void)fputs(sp_%s_inspect(",
+                 c->classes[ty_object_class(drt2)].c_name);
+      emit_expr(c, recv, b);
+      buf_puts(b, "), stdout))");
+      return;
+    }
     buf_puts(b, "((void)fputs(sp_poly_to_s(");
     emit_boxed(c, recv, b);
     buf_puts(b, "), stdout))");
