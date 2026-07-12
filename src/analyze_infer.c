@@ -935,12 +935,17 @@ TyKind infer_call(Compiler *c, int id) {
       nt_str(nt, recv, "name") &&
       (sp_streq(nt_str(nt, recv, "name"), "chunk_while") ||
        sp_streq(nt_str(nt, recv, "name"), "slice_when") ||
-       sp_streq(nt_str(nt, recv, "name"), "chunk")) &&
-      nt_ref(nt, recv, "block") >= 0) {
+       sp_streq(nt_str(nt, recv, "name"), "chunk") ||
+       sp_streq(nt_str(nt, recv, "name"), "slice_before") ||
+       sp_streq(nt_str(nt, recv, "name"), "slice_after")) &&
+      nt_ref(nt, recv, "block") >= 0 &&
+      (nt_ref(nt, recv, "arguments") < 0 ||
+       (!sp_streq(nt_str(nt, recv, "name"), "slice_before") &&
+        !sp_streq(nt_str(nt, recv, "name"), "slice_after")))) {
     int pr = nt_ref(nt, recv, "receiver");
     if (pr >= 0) {
       TyKind prt = infer_type(c, pr);
-      if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY ||
+      if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY || prt == TY_STR_ARRAY ||
           (prt == TY_RANGE && range_enum_redispatch(c, recv)))
         return TY_POLY_ARRAY;
       /* hash.chunk { |k, v| key }.to_a materializes the same way (the chunk
@@ -958,7 +963,9 @@ TyKind infer_call(Compiler *c, int id) {
      eagerly materialized runs */
   if (recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
       (sp_streq(name, "chunk_while") || sp_streq(name, "slice_when") ||
-       sp_streq(name, "chunk"))) {
+       sp_streq(name, "chunk") ||
+       ((sp_streq(name, "slice_before") || sp_streq(name, "slice_after")) &&
+        nt_ref(nt, id, "arguments") < 0))) {
     TyKind crt = infer_type(c, recv);
     if (crt == TY_POLY_ARRAY || crt == TY_INT_ARRAY || crt == TY_STR_ARRAY) {
       int wrapped = 0;

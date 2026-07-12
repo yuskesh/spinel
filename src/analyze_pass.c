@@ -4897,6 +4897,7 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "flat_map") || sp_streq(name, "collect_concat") ||
               sp_streq(name, "each_with_object") ||
               sp_streq(name, "chunk") || sp_streq(name, "group_by") ||
+              sp_streq(name, "slice_before") || sp_streq(name, "slice_after") ||
               sp_streq(name, "tally_by") || sp_streq(name, "min_by_all") ||
               sp_streq(name, "filter_map") || sp_streq(name, "count_by") ||
               sp_streq(name, "partition") || sp_streq(name, "each_slice") ||

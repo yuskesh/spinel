@@ -2166,7 +2166,11 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
   int is_sw = sp_streq(m, "slice_when");
   int is_cw = sp_streq(m, "chunk_while");
   int is_ck = sp_streq(m, "chunk");
-  if (!is_sw && !is_cw && !is_ck) return -1;
+  int is_sb = sp_streq(m, "slice_before");
+  int is_sa = sp_streq(m, "slice_after");
+  if (!is_sw && !is_cw && !is_ck && !is_sb && !is_sa) return -1;
+  /* the block forms only; the value-pattern forms are served elsewhere */
+  if ((is_sb || is_sa) && nt_ref(nt, ck, "arguments") >= 0) return -1;
   int block = nt_ref(nt, ck, "block");
   if (block < 0) return -1;
   int pr = nt_ref(nt, ck, "receiver");
@@ -2245,6 +2249,46 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
     emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n", tcur, ta, ti);
+  }
+  else if (is_sb || is_sa) {
+    /* single-element predicate: slice_before opens a new run at a true
+       element (flushing the current run first); slice_after closes the run
+       after a true element */
+    int tc = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    {
+      char gv[48]; snprintf(gv, sizeof gv, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
+      buf_printf(g_pre, "lv_%s = ", p0);
+      if (at0 == TY_POLY) buf_puts(g_pre, gv); else emit_unbox_text(c, at0, gv, g_pre);
+      buf_puts(g_pre, ";\n");
+    }
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+    int save = g_indent; g_indent += 1;
+    Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = save;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "int _t%d = (%s) ? 1 : 0;\n", tc, cb.p ? cb.p : "0"); free(cb.p);
+    if (is_sb) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (_t%d && sp_PolyArray_length(_t%d) > 0) {\n", tc, tcur);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tout, tcur);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", tcur);
+      emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n", tcur, ta, ti);
+    }
+    else {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n", tcur, ta, ti);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (_t%d) {\n", tc);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", tout, tcur);
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "_t%d = sp_PolyArray_new();\n", tcur);
+      emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
+    }
   }
   else {
     emit_indent(g_pre, g_indent + 1);
