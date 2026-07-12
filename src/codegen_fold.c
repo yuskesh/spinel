@@ -5113,21 +5113,33 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   if (argc == 1 && argv && nt_type(nt, argv[0]) &&
       sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
     Scope *encl = comp_scope_of(c, argv[0]);
+    /* A leading concrete param before `...` (`def f(a, ...)`) is NOT forwarded:
+       the forward carries only the __fwd_ slots (and synthesized keyword
+       params). Skip the enclosing method's leading concrete params by starting
+       at its first __fwd_ slot. */
+    int fwd_base = 0;
+    if (encl) {
+      while (fwd_base < encl->nparams &&
+             (!encl->pnames[fwd_base] ||
+              strncmp(encl->pnames[fwd_base], "__fwd_", 6) != 0)) fwd_base++;
+      if (fwd_base >= encl->nparams) fwd_base = 0;  /* no __fwd_ slot: forward all */
+    }
     for (int i = 0; i < m->nparams; i++) {
       buf_puts(out, i == 0 ? lead : ", ");
-      if (encl && i < encl->nparams) {
-        LocalVar *ep = scope_local(encl, encl->pnames[i]);
+      int ei = fwd_base + i;
+      if (encl && ei < encl->nparams) {
+        LocalVar *ep = scope_local(encl, encl->pnames[ei]);
         LocalVar *mp = scope_local(m, m->pnames[i]);
         TyKind et = ep ? ep->type : TY_POLY;
         TyKind mt = mp ? mp->type : TY_POLY;
         /* forwarding into a byref out-param slot: pass the enclosing param's
            slot (its cell when it is itself byref/celled, else its address) */
         if (mp && mp->byref_out && ep && et == TY_STRING) {
-          if (ep->is_cell) buf_printf(out, "_cell_%s", encl->pnames[i]);
-          else buf_printf(out, "&lv_%s", encl->pnames[i]);
+          if (ep->is_cell) buf_printf(out, "_cell_%s", encl->pnames[ei]);
+          else buf_printf(out, "&lv_%s", encl->pnames[ei]);
           continue;
         }
-        char txt[80]; snprintf(txt, sizeof txt, "lv_%s", encl->pnames[i]);
+        char txt[80]; snprintf(txt, sizeof txt, "lv_%s", encl->pnames[ei]);
         if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, out);
         else buf_puts(out, txt);
       }
@@ -5417,7 +5429,11 @@ else if (m->rest_idx >= 0 && m->npost_rest > 0 && i > m->rest_idx) {
       else
         emit_arg_rooted(c, m, i, -1, out);
     }
-else if (splat_tmp >= 0 && i >= splat_idx) {
+else if (splat_tmp >= 0 && i >= splat_idx &&
+         !(m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i])) &&
+         i != m->kwrest_idx &&
+         ({ int _nt = pos_argc - splat_idx - 1; int _end = m->nparams - _nt;
+            !(_nt > 0 && i >= _end && _end > splat_idx); })) {
       /* this param comes from the splatted array at offset (i - splat_idx) */
       int off = i - splat_idx;
       LocalVar *sp = (m && m->pnames[i]) ? scope_local(m, m->pnames[i]) : NULL;
@@ -5454,6 +5470,19 @@ else if (splat_tmp >= 0 && i >= splat_idx) {
       }
       else buf_puts(out, eb.p ? eb.p : "");
       free(eb.p);
+    }
+else if (splat_tmp >= 0 && i > splat_idx && i != m->kwrest_idx &&
+         !(m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i])) &&
+         ({ int _nt = pos_argc - splat_idx - 1; int _end = m->nparams - _nt;
+            _nt > 0 && i >= _end && _end > splat_idx; })) {
+      /* Trailing positional after a mid-list call-site splat (`g(1, *m, 4)`):
+         the splat fills the middle, so this tail param comes from the call
+         arguments after the splat, not from the (exhausted) splat array. */
+      int n_trailing = pos_argc - splat_idx - 1;
+      int splat_fill_end = m->nparams - n_trailing;
+      int aidx = splat_idx + 1 + (i - splat_fill_end);
+      if (argv && aidx >= 0 && aidx < pos_argc) emit_arg_rooted(c, m, i, argv[aidx], out);
+      else emit_arg_rooted(c, m, i, -1, out);
     }
 else {
       /* Check if this param has a keyword match (lookup by param name in kwh).
@@ -5546,9 +5575,19 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   /* `callee(...)`: forward the enclosing `def foo(...)` method's synthesized
      __fwd_* params positionally (#1288), same as the emit_args_filled path. */
   Scope *fwd_encl = NULL;
+  int fwd_base_d = 0;
   if (argc == 1 && argv && nt_type(nt, argv[0]) &&
-      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode"))
+      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
     fwd_encl = comp_scope_of(c, argv[0]);
+    /* skip the enclosing method's leading concrete params (`def f(a, ...)`) --
+       only the __fwd_ slots are forwarded. */
+    if (fwd_encl) {
+      while (fwd_base_d < fwd_encl->nparams &&
+             (!fwd_encl->pnames[fwd_base_d] ||
+              strncmp(fwd_encl->pnames[fwd_base_d], "__fwd_", 6) != 0)) fwd_base_d++;
+      if (fwd_base_d >= fwd_encl->nparams) fwd_base_d = 0;
+    }
+  }
   /* separate keyword-hash arg */
   int kwh_d = -1, pos_argc_d = argc;
   if (argc > 0 && nt_type(nt, argv[argc - 1]) &&
@@ -5617,10 +5656,10 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", atmp[k], ab.p ? ab.p : "sp_PolyArray_new()");
     }
-    else if (fwd_encl && k < fwd_encl->nparams) {
-      LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[k]);
+    else if (fwd_encl && fwd_base_d + k < fwd_encl->nparams) {
+      LocalVar *ep = scope_local(fwd_encl, fwd_encl->pnames[fwd_base_d + k]);
       TyKind et = ep ? ep->type : TY_POLY;
-      char txt[80]; snprintf(txt, sizeof txt, "lv_%s", fwd_encl->pnames[k]);
+      char txt[80]; snprintf(txt, sizeof txt, "lv_%s", fwd_encl->pnames[fwd_base_d + k]);
       if (p && (p->type == TY_POLY || p->type == TY_UNKNOWN) && et != TY_POLY) emit_boxed_text(c, et, txt, &ab);
       else buf_puts(&ab, txt);
       TyKind att = p ? (p->type == TY_UNKNOWN ? TY_POLY : p->type) : et;
