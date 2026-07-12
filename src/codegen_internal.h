@@ -65,6 +65,7 @@ int subtree_may_allocate(const NodeTable *nt, int id);
 extern int  g_yield_block_fallback;
 extern const char *g_yield_self_fallback;        /* see codegen_util.c */
 extern const char *g_yield_self_deref_fallback;
+extern int g_yield_emitting_class_fallback;
 /* Name of the `&block` parameter of the method currently being inlined, so
    `<blk>.call(args)` inside it expands the active block like `yield args`. */
 extern const char *g_block_param_name;

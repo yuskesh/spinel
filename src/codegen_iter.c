@@ -157,8 +157,12 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      nested emission (a frame only ever writes its own selfbuf). */
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
+  int saved_emcls_fb = g_yield_emitting_class_fallback;
   g_yield_self_fallback = g_self;
   g_yield_self_deref_fallback = g_self_deref;
+  /* captured here, BEFORE the receiver-context switch below, so it holds the
+     caller's class for the spliced (caller-code) block body */
+  g_yield_emitting_class_fallback = g_emitting_class_id;
   g_block_id = block;
   const char *saved_ypr = g_yield_proc_ref;
   TyKind saved_yslot = g_yield_slot_ty;
@@ -179,6 +183,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      value-type receiver is a by-value struct, so copy it and dereference its
      ivars with `.` (value types are immutable, so the copy is transparent). */
   const char *saved_deref = g_self_deref;
+  /* The receiver-context switch (g_self / g_self_deref / g_emitting_class_id)
+     is DEFERRED until after the argument binding below: those arg
+     expressions are call-site code and must resolve against the caller's
+     self and class (e.g. a caller's attr_reader interpolated into a
+     `fetch(key) { ... }` cache key). Only the receiver *temp* is declared
+     here — and the receiver expression itself is still emitted in the
+     caller's context (g_self unchanged at this point). */
+  const char *recv_self_deref = NULL;
   if (recv >= 0 && recv_class >= 0) {
     int self_is_val = c->classes[recv_class].is_value_type;
     int st = ++g_tmp;
@@ -187,16 +199,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     emit_expr(c, recv, b);
     buf_puts(b, ";\n");
     snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
-    g_self = selfbuf;
-    g_self_deref = self_is_val ? "." : "->";
-    /* The inlined body runs in the RECEIVER's class context, not the
-       caller's. An implicit-self call inside the body (e.g. `to_a` in
-       `def map; to_a.map { |x| yield x }; end`) resolves against
-       g_emitting_class_id; without this it would be looked up on the
-       caller's class and reported as an undefined method. Mirrors how a
-       normal method-body emission sets g_emitting_class_id to its own
-       class (codegen.c). */
-    g_emitting_class_id = recv_class;
+    recv_self_deref = self_is_val ? "." : "->";
   }
   int din = indent + 1;
 
@@ -257,6 +260,22 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     g_nren = sv;
     buf_puts(b, ";\n");
   }
+
+  /* Now switch into the RECEIVER's context for the method BODY. Both the
+     self binding and the emitting-class must move together, and only here
+     — AFTER argument binding — so that implicit-self references inside the
+     body (`to_a` in `def map; to_a.map { |x| yield x }; end`) resolve
+     against the receiver, while call-site arg expressions above stayed in
+     the caller's context (a caller's attr_reader interpolated into a
+     `fetch(key) { ... }` cache key must call the caller's method on the
+     caller's self, not the receiver temp). Mirrors how a normal method-
+     body emission sets g_self + g_emitting_class_id to its own object and
+     class (codegen.c). */
+  if (recv_self_deref) {
+    g_self = selfbuf;
+    g_self_deref = recv_self_deref;
+  }
+  if (recv_class >= 0) g_emitting_class_id = recv_class;
 
   /* per-inline return funnel (stack storage: the inliner recurses, and the
      saved outer label pointer must stay valid across a nested inline). */
@@ -327,6 +346,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_block_fallback = saved_yfb;
   g_yield_self_fallback = saved_self_fb;
   g_yield_self_deref_fallback = saved_deref_fb;
+  g_yield_emitting_class_fallback = saved_emcls_fb;
   return 1;
 }
 
@@ -538,9 +558,16 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   g_ret_type = g_fn_ret_type;
   g_method_pr_exc_depth = 0;   /* the real function's funnel sits at depth 0 */
   /* likewise, the block body's `self` is the CALLER's (an ivar read inside
-     the block must not resolve against the inlined method's receiver). */
+     the block must not resolve against the inlined method's receiver) — and
+     so is the block body's emitting-class, so an implicit-self *call* in the
+     block resolves against the caller's class, not the receiver's. */
   const char *sv_bself = g_self, *sv_bderef = g_self_deref;
-  if (g_yield_self_fallback) { g_self = g_yield_self_fallback; g_self_deref = g_yield_self_deref_fallback; }
+  int sv_bemcls = g_emitting_class_id;
+  if (g_yield_self_fallback) {
+    g_self = g_yield_self_fallback;
+    g_self_deref = g_yield_self_deref_fallback;
+    g_emitting_class_id = g_yield_emitting_class_fallback;
+  }
   /* A `next` in a yielded block leaves the BLOCK with its value -- but this
      body is spliced inline (no _proc_ function, no loop), so a bare
      `continue` is invalid C. Only when the body owns a `next`, wrap the
@@ -605,6 +632,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     g_ie_next_var = sv_nx2; g_ie_res_poly = sv_poly2;
   }
   g_self = sv_bself; g_self_deref = sv_bderef;
+  g_emitting_class_id = sv_bemcls;
   g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt;
   g_method_pr_exc_depth = sv_bexc;
   g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc;
