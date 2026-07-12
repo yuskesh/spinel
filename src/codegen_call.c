@@ -3203,7 +3203,17 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           if (at == TY_POLY_ARRAY) {
             buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
             TyKind fvt = comp_ntype(c, argv[1]);
-            if (fvt != TY_POLY) emit_boxed_text(c, fvt, vb.p ? vb.p : "sp_box_nil()", g_pre);
+            const char *fvty = nt_type(nt, argv[1]);
+            int fv_en = 0;
+            if (fvty && (sp_streq(fvty, "ArrayNode") || sp_streq(fvty, "HashNode")))
+              nt_arr(nt, argv[1], "elements", &fv_en);
+            /* an empty container literal types UNKNOWN: box the container
+               itself (ONE object, aliased into every slot like CRuby) */
+            if (fvt == TY_UNKNOWN && fvty && sp_streq(fvty, "ArrayNode") && fv_en == 0)
+              buf_puts(g_pre, "sp_box_poly_array(sp_PolyArray_new())");
+            else if (fvt == TY_UNKNOWN && fvty && sp_streq(fvty, "HashNode") && fv_en == 0)
+              buf_puts(g_pre, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
+            else if (fvt != TY_POLY) emit_boxed_text(c, fvt, vb.p ? vb.p : "sp_box_nil()", g_pre);
             else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
           }
           else {
