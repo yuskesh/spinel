@@ -4571,6 +4571,24 @@ TyKind infer_type(Compiler *c, int id) {
   return t;
 }
 
+/* See analyze.h. Children first, so a parent whose inference reads child
+   caches (comp_ntype) sees the refreshed values. */
+void infer_subtree(Compiler *c, int id) {
+  if (id < 0 || id >= c->nt->count) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return;
+  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) infer_subtree(c, nt_ref_at(nt, id, i));
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) infer_subtree(c, ids[k]);
+  }
+  infer_type(c, id);
+}
+
 /* ---- scope assignment ---- */
 
 void scope_add_param(Scope *s, const char *name, int defnode) {

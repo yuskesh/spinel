@@ -889,7 +889,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   int din = g_indent;
   if (use_shadow) {
     tlv0->type = et;
-    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n");
     din = g_indent + 1;
     emit_indent(g_pre, din); emit_ctype(c, et, g_pre);
@@ -1279,7 +1279,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         TyKind vsaved = vlv ? vlv->type : TY_UNKNOWN;
         if (klv) klv->type = hkt;
         if (vlv) vlv->type = hvt;
-        for (int j = 0; j < bn2; j++) infer_type(c, bb2[j]);
+        for (int j = 0; j < bn2; j++) infer_subtree(c, bb2[j]);
         int tr2 = ++g_tmp, ti2 = ++g_tmp;
         Buf rb2; memset(&rb2, 0, sizeof rb2); emit_expr(c, recv, &rb2);
         emit_indent(b, indent); emit_ctype(c, rt, b);

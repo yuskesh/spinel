@@ -1128,7 +1128,7 @@ int emit_filter_map_expr(Compiler *c, int id, Buf *b) {
   int use_shadow = !splat && clv0 && clv0->type != et && et != TY_UNKNOWN;
   if (use_shadow) {
     clv0->type = et;
-    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
     emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
     emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, ta, ti);
   }
@@ -1408,7 +1408,7 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
     int din = g_indent + 1;
     if (use_shadow) {
       clv0->type = et;
-      for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+      for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
       emit_indent(g_pre, din); buf_puts(g_pre, "{\n"); din++;
       emit_indent(g_pre, din); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, rk, trecv, ti);
     }
@@ -2596,7 +2596,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   TyKind rpt1 = rlv1 ? rlv1->type : TY_UNKNOWN;
   if (rlv0) rlv0->type = acc_ty;
   if (rlv1) rlv1->type = et;
-  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);  /* refresh ntype cache */
+  for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);  /* refresh ntype cache */
   buf_printf(b, "for (mrb_int _t%d = %d; _t%d < sp_%sArray_length(_t%d); _t%d++) { ",
              ti, start, ti, k, ta, ti);
   buf_puts(b, "{ ");
@@ -2754,7 +2754,7 @@ int emit_each_with_index_chain(Compiler *c, int id, Buf *b) {
     lp = rsc ? scope_local(rsc, pairo) : NULL; sp = lp ? lp->type : TY_UNKNOWN;
     if (lp) lp->type = pair_ty;
   }
-  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+  for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
 
   buf_printf(b, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++) { ",
              ti, ti, k, ta, ti, tidx);
@@ -2889,7 +2889,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     li = scope_local(bsc, io); si = li ? li->type : TY_UNKNOWN; if (li) li->type = TY_INT;
     int body = nt_ref(nt, block, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
   }
 
   emit_indent(g_pre, g_indent);
@@ -3150,7 +3150,7 @@ else {
   TyKind spt1 = slv1 ? slv1->type : TY_UNKNOWN;
   if (slv0) slv0->type = et;
   if (slv1) slv1->type = et;
-  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);  /* refresh ntype cache */
+  for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);  /* refresh ntype cache */
   int save = g_indent; g_indent += 2;
   /* Shadow the outer (possibly poly) block params with et-typed locals */
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "{\n"); g_indent++;
@@ -3276,7 +3276,7 @@ int emit_minmax_cmp_expr(Compiler *c, int id, Buf *b) {
   TyKind saved_p1 = lv_p1 ? lv_p1->type : TY_UNKNOWN;
   if (lv_p0) lv_p0->type = et;
   if (lv_p1) lv_p1->type = et;
-  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);  /* refresh cache */
+  for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);  /* refresh cache */
   int save = g_indent; g_indent++;
   if (is_min || is_mm) {
     /* Open C shadow scope with et-typed block param vars */
@@ -3341,7 +3341,7 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
   int use_shadow = !splat_pt && plv0 && plv0->type != et && et != TY_UNKNOWN;
   if (use_shadow) {
     plv0->type = et;
-    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
   }
 
   int trecv = ++g_tmp, ttrue = ++g_tmp, tfalse = ++g_tmp, ti = ++g_tmp;
@@ -3961,7 +3961,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   int use_shadow = clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
   if (use_shadow) {
     clv0->type = et_elem;
-    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
   }
 
   int bodyIndent = g_indent + 1;
@@ -6274,7 +6274,7 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     TyKind saved_p1_type = outer_p1 ? outer_p1->type : TY_UNKNOWN;
     if (p0_mismatch) outer_p0->type = et;
     if (p1_mismatch) outer_p1->type = accT;
-    for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+    for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
     /* Bind accumulator to p1 before loop (type now matches) */
     if (p1 && !p1_mismatch) {
       emit_indent(g_pre, g_indent);
@@ -6312,8 +6312,8 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     }
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
     /* Restore types */
-    if (p0_mismatch) { outer_p0->type = saved_p0_type; for (int j = 0; j < bn; j++) infer_type(c, bb[j]); }
-    if (p1_mismatch) { outer_p1->type = saved_p1_type; for (int j = 0; j < bn; j++) infer_type(c, bb[j]); }
+    if (p0_mismatch) { outer_p0->type = saved_p0_type; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
+    if (p1_mismatch) { outer_p1->type = saved_p1_type; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
     g_indent--;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   }

@@ -1871,7 +1871,7 @@ else {
           Scope *ms = comp_scope_of(c, block);
           LocalVar *mlv = (ms && bp0) ? scope_local(ms, bp0) : NULL;
           TyKind msaved = mlv ? mlv->type : TY_UNKNOWN;
-          if (mlv) { mlv->type = et; for (int j = 0; j < bn; j++) infer_type(c, bb[j]); }
+          if (mlv) { mlv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
           int trecv = ++g_tmp, ti = ++g_tmp;
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
@@ -1909,7 +1909,7 @@ else {
           Scope *fs = comp_scope_of(c, block);
           LocalVar *flv = (fs && bp0) ? scope_local(fs, bp0) : NULL;
           TyKind fsaved = flv ? flv->type : TY_UNKNOWN;
-          if (flv) { flv->type = et; for (int j = 0; j < bn; j++) infer_type(c, bb[j]); }
+          if (flv) { flv->type = et; for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]); }
           int trecv = ++g_tmp, ti = ++g_tmp, twp = ++g_tmp, torig = ++g_tmp;
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
@@ -3093,7 +3093,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           TyKind vsaved = vlv ? vlv->type : TY_UNKNOWN;
           if (klv) klv->type = hkt;
           if (vlv) vlv->type = hvt;
-          for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+          for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
           int tr = ++g_tmp, ti = ++g_tmp, torig = ++g_tmp, twp = ++g_tmp;
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
