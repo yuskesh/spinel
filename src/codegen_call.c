@@ -10591,7 +10591,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      hashing the Hash container uses to bucket keys, so `h[k]` and `k.hash`
      agree. A boxed user object routes through sp_obj_hash_hook, which dispatches
      to a user-defined #hash (or pointer identity as Object#hash's default). */
-  if (sp_streq(name, "hash") && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
+  if (sp_streq(name, "hash") && recv >= 0 && argc == 0 &&
+      (!ty_is_object(rt) ||
+       (comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&
+        /* structs keep their dedicated value-based hash arm below */
+        !c->classes[ty_object_class(rt)].is_struct))) {
     buf_puts(b, "sp_rbval_hash_key("); emit_boxed(c, recv, b); buf_puts(b, ")");
     return;
   }

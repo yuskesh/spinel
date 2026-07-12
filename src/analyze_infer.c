@@ -2085,6 +2085,10 @@ else {
     if (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?") ||
         sp_streq(name, "respond_to?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
         sp_streq(name, "nil?") || sp_streq(name, "equal?") || sp_streq(name, "frozen?")) return TY_BOOL;
+    /* Object#hash default (no user hash in the chain): value/pointer int.
+       Structs keep their dedicated value-based hash arm. */
+    if (sp_streq(name, "hash") && argc == 0 && !cls->is_struct &&
+        comp_method_in_chain(c, cid, "hash", NULL) < 0) return TY_INT;
     /* native class (C-backed): a declared instance method returns its spec type */
     if (cls->is_native_class) {
       TyKind natys[8];
