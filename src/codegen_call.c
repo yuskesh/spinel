@@ -4125,7 +4125,9 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     }
     if (eff_res == TY_FLOAT && sp_streq(name, "**") && rt != TY_TIME) {
       TyKind at0 = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-      buf_puts(b, "pow(");
+      /* sp_float_pow raises loudly where CRuby would promote to a Complex
+         (negative base, fractional exponent) instead of returning NaN */
+      buf_puts(b, "sp_float_pow(");
       if (rt == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);
       buf_puts(b, ", ");

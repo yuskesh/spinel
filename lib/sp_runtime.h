@@ -2383,6 +2383,16 @@ static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_in
 static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp <= 0) : FALSE; }
 static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp > 0) : FALSE; }
 static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp >= 0) : FALSE; }
+/* Float ** Float: CRuby promotes a negative base with a fractional exponent
+   to a Complex. Spinel's float type cannot carry that, so the case raises
+   loudly (Math::DomainError, the same class Math.sqrt(-1) uses) instead of
+   returning C's silent NaN. See docs/limitations.md. */
+static inline mrb_float sp_float_pow(mrb_float a, mrb_float b) {
+  if (a < 0 && b != (mrb_float)(long long)b)
+    sp_raise_cls("Math::DomainError",
+                 "negative Float raised to a fractional power is a Complex (unsupported; use Complex(x) if needed)");
+  return pow(a, b);
+}
 /* rb_cmperr operand description: special constants and Floats read as their
    inspect (3, 1.5, nil, true, :sym), everything else as its class name --
    "comparison of VerN with 3 failed", not "... with Integer failed". */

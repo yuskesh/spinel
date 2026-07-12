@@ -191,6 +191,14 @@ Complex(Rational(1, 2), Rational(1, 3)) # => (0.5+0.3333333333333333i)
 `Rational` and `Complex` values box into heterogeneous (poly) arrays and hashes
 normally.
 
+#### Negative Float `**` fractional exponent
+
+CRuby promotes `(-2.0) ** 0.5` to a `Complex`. Spinel's Float stays a C
+double, so that case raises `Math::DomainError` loudly (the class
+`Math.sqrt(-1)` uses) rather than returning C's silent `NaN` or widening
+every float power to a boxed union. Compute via `Complex(x) ** y` where the
+complex result is really wanted.
+
 #### `Hash#compare_by_identity`
 
 `compare_by_identity` is rejected at compile time (never silently ignored).
