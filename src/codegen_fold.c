@@ -4845,7 +4845,7 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, Buf *o
    `k: default`). Only keyword params consume a key from a forwarded `**hash`;
    positional params with the same name do not. Read from the callee's AST
    `keywords` array rather than pnames[], which mixes positional and keyword. */
-static int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
+int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
   if (!m || !name || m->def_node < 0) return 0;
   int pn = nt_ref(c->nt, m->def_node, "parameters");
   if (pn < 0) return 0;
@@ -4870,7 +4870,7 @@ static int callee_has_kwarg(Compiler *c, Scope *m, const char *name) {
    Returns the temp id, or -1 when kwh carries no double-splat (or its source
    is not a known hash). Sets *out_type to the materialized hash's type.
    Shared by emit_args_filled and emit_dispatch. */
-static int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
+int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
   const NodeTable *nt = c->nt;
   int ds_hash_tmp = -1;
   *out_type = TY_UNKNOWN;
@@ -4915,7 +4915,7 @@ static int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type) {
 /* Emit the value for KEYWORD param `i` extracted by name from a materialized
    `**hash` temp, falling back to the param's default when the key is absent.
    Shared by emit_args_filled and emit_dispatch. */
-static void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
+void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
                                   TyKind ds_hash_type, Buf *out) {
   const char *hn = ty_hash_cname(ds_hash_type);
   LocalVar *plv = scope_local(m, m->pnames[i]);
@@ -4946,7 +4946,10 @@ static void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
     free(vb.p);
   }
   else {
-    buf_printf(out, "%s", default_value(pt));
+    /* Hash type unknown (no C-name), so the key can't be extracted; bind the
+       param's declared default rather than the bare type-default, matching the
+       key-absent fallback in the typed branch above. */
+    emit_arg_or_default(c, m, i, -1, out);
   }
 }
 

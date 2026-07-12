@@ -234,6 +234,12 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) {
     kwh = argv[argc - 1]; pos_argc = argc - 1;
   }
+  /* A `**hash` inside the keyword-hash arg (`m(**h)`) carries no literal keys,
+     so keyword params bind from a runtime lookup on the materialized hash, the
+     same way emit_dispatch/emit_args_filled do -- without this each keyword
+     param fell through to a fabricated default. */
+  TyKind ds_type = TY_UNKNOWN;
+  int ds_tmp = emit_ds_hash_materialize(c, kwh, &ds_type);
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     buf_printf(b, "lv__y%d_%s = ", tag, m->pnames[i]);
@@ -255,7 +261,13 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     else if (i < pos_argc) emit_arg_or_default(c, m, i, argv[i], b);
     else {
       int kv = kwh >= 0 ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
-      emit_arg_or_default(c, m, i, kv, b);
+      /* No literal key for this keyword param, but a `**hash` was splatted:
+         extract it by name from the materialized hash (falls back to the
+         param default when the key is absent). */
+      if (kv < 0 && ds_tmp >= 0 && callee_has_kwarg(c, m, m->pnames[i]))
+        emit_ds_param_extract(c, m, i, ds_tmp, ds_type, b);
+      else
+        emit_arg_or_default(c, m, i, kv, b);
     }
     g_nren = sv;
     buf_puts(b, ";\n");

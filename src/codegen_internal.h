@@ -499,6 +499,10 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 int emit_grep_expr(Compiler *c, int id, Buf *b);
 void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out);
 int kwh_lookup(const NodeTable *nt, int kwh, const char *kname);
+int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
+int emit_ds_hash_materialize(Compiler *c, int kwh, TyKind *out_type);
+void emit_ds_param_extract(Compiler *c, Scope *m, int i, int ds_hash_tmp,
+                           TyKind ds_hash_type, Buf *out);
 /* analyze-side helpers also called from codegen (defined in analyze_util.c /
    analyze_scope.c; canonical declarations live in analyze_internal.h) */
 int is_arith_op(const char *op);
