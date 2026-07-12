@@ -3442,6 +3442,26 @@ int desugar_enum_method_recv(Compiler *c) {
       changed = 1;
       continue;
     }
+    /* flat_map whose block value is statically SCALAR is exactly map: CRuby
+       appends a non-array value as-is, so with no arrays to splice the whole
+       call is a map (an array/poly block value keeps the flat_map emitters) */
+    if ((sp_streq(nm, "flat_map") || sp_streq(nm, "collect_concat")) &&
+        nt_ref(nt, id, "block") >= 0 &&
+        (ty_is_array(comp_ntype(c, recv)) || ty_is_array(infer_type(c, recv)))) {
+      int fmblk = nt_ref(nt, id, "block");
+      int fmbody = nt_ref(nt, fmblk, "body");
+      int fmn = 0;
+      const int *fmb = fmbody >= 0 ? nt_arr(nt, fmbody, "body", &fmn) : NULL;
+      if (fmn >= 1) {
+        TyKind fbt = infer_type(c, fmb[fmn - 1]);
+        if (fbt != TY_UNKNOWN && fbt != TY_POLY && !ty_is_array(fbt) &&
+            !ty_is_hash(fbt)) {
+          nt_node_set_str(nt, id, "name", "map");
+          changed = 1;
+          continue;
+        }
+      }
+    }
     /* already redirected through __enum_to_a -> leave it (idempotent) */
     if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "CallNode")) {
       const char *rn = nt_str(nt, recv, "name");
