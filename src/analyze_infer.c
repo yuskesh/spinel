@@ -2067,6 +2067,10 @@ else {
     }
   }
 
+  /* nil? on a pointer-backed Enumerator: bool (NULL-as-nil test) */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") && rt == TY_ENUMERATOR)
+    return TY_BOOL;
+
   /* frozen? on an immutable value type: constantly-true bool */
   if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?") &&
       (rt == TY_INT || rt == TY_FLOAT || rt == TY_SYMBOL || rt == TY_BOOL ||

@@ -7615,6 +7615,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
+  /* nil? on a pointer-backed Enumerator: NULL encodes nil, as elsewhere */
+  if (recv >= 0 && argc == 0 && sp_streq(name, "nil?") &&
+      comp_ntype(c, recv) == TY_ENUMERATOR) {
+    buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, " == NULL)");
+    return;
+  }
+
   /* frozen? on an immutable value type is constantly true (CRuby freezes
      Integer/Float/Symbol/booleans/nil/Range/Complex/Rational values) */
   if (recv >= 0 && argc == 0 && sp_streq(name, "frozen?")) {
@@ -7647,6 +7654,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        identity shortcut */
     int freeze_stateful = sp_streq(name, "freeze") &&
                           (ty_is_object(recv_t) || recv_t == TY_POLY);
+    /* itself is pure identity for every receiver, hashes included; the
+       hash exclusion below is for freeze/dup/clone, which need real
+       handling on the reference types */
+    if (argc0 == 0 && sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
     if (argc0 == 0 && !freeze_stateful && !ty_is_hash(recv_t) &&
         !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_native))) {
       emit_expr(c, recv, b); return;
