@@ -2517,8 +2517,9 @@ else {
         }
       }
       else if (sp_streq(inner, "each") || sp_streq(inner, "select") ||
-               sp_streq(inner, "filter") || sp_streq(inner, "reject"))
-        return arr_t;
+               sp_streq(inner, "filter") || sp_streq(inner, "reject") ||
+               sp_streq(inner, "map!") || sp_streq(inner, "collect!"))
+        return arr_t;   /* map! mutates in place and returns the receiver */
     }
   }
 

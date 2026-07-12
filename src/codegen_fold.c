@@ -4051,8 +4051,12 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   const char *inner = nt_str(nt, recv, "name");
   if (!inner) return 0;
   int is_each = sp_streq(inner, "each");
+  /* map!.with_index: collect like map, then write the result back into the
+     receiver in place; the chain evaluates to the receiver */
+  int is_mapbang = sp_streq(inner, "map!") || sp_streq(inner, "collect!");
   TyIterShape shp = ty_iter_shape(inner);  /* map/select/reject; NONE for each */
-  if (!is_each && shp == TY_ITER_NONE) return 0;
+  if (is_mapbang) shp = TY_ITER_MAP;
+  if (!is_each && !is_mapbang && shp == TY_ITER_NONE) return 0;
   int arr_recv = nt_ref(nt, recv, "receiver");
   if (arr_recv < 0) return 0;
   TyKind rt = comp_ntype(c, arr_recv);
@@ -4074,7 +4078,7 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1 && collecting) return 0;  /* map/select need a value */
 
-  TyKind restype = comp_ntype(c, id);
+  TyKind restype = is_mapbang ? rt : comp_ntype(c, id);
   int res_poly = (restype == TY_POLY_ARRAY);
   const char *rk = collecting ? (res_poly ? "Poly" : array_kind(restype)) : NULL;
   if (collecting && !rk) rk = "Int";
@@ -4144,7 +4148,12 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
 
-  if (collecting) buf_printf(b, "_t%d", tres);
+  if (is_mapbang) {
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_%sArray_replace(_t%d, _t%d);\n", rk, trecv, tres);
+    buf_printf(b, "_t%d", trecv);   /* map! returns the mutated receiver */
+  }
+  else if (collecting) buf_printf(b, "_t%d", tres);
   else buf_printf(b, "_t%d", trecv);  /* each.with_index yields the receiver */
   return 1;
 }

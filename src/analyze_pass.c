@@ -5143,7 +5143,8 @@ int infer_block_params(Compiler *c) {
       const char *inner = nt_str(nt, recv, "name");
       if (inner && (sp_streq(inner, "map") || sp_streq(inner, "collect") ||
                     sp_streq(inner, "each") || sp_streq(inner, "select") ||
-                    sp_streq(inner, "filter") || sp_streq(inner, "reject"))) {
+                    sp_streq(inner, "filter") || sp_streq(inner, "reject") ||
+                    sp_streq(inner, "map!") || sp_streq(inner, "collect!"))) {
         int arr_recv = nt_ref(nt, recv, "receiver");
         TyKind arr_t = arr_recv >= 0 ? infer_type(c, arr_recv) : TY_UNKNOWN;
         if (ty_is_array(arr_t)) {
