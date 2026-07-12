@@ -4314,7 +4314,12 @@ TyKind infer_uncached(Compiler *c, int id) {
     {
       int fpar = nt_ref(nt, id, "parent");
       const char *fpty = fpar >= 0 ? nt_type(nt, fpar) : NULL;
-      const char *fpnm = (fpty && sp_streq(fpty, "ConstantReadNode")) ? nt_str(nt, fpar, "name") : NULL;
+      /* the qualifying module is the parent's LEAF name, so a nested path
+         (Outer::CSql::TEXT) qualifies by CSql -- the same unqualified name
+         the ffi decl registered under */
+      const char *fpnm = (fpty && (sp_streq(fpty, "ConstantReadNode") ||
+                                   sp_streq(fpty, "ConstantPathNode")))
+                         ? nt_str(nt, fpar, "name") : NULL;
       if (fpnm && nm)
         for (int fci = 0; fci < c->n_ffi_consts; fci++)
           if (sp_streq(c->ffi_consts[fci].mod, fpnm) &&
@@ -4328,7 +4333,12 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* well-known module constants */
     int par_id = nt_ref(nt, id, "parent");
     const char *par_ty = par_id >= 0 ? nt_type(nt, par_id) : NULL;
-    const char *par_nm = (par_ty && sp_streq(par_ty, "ConstantReadNode")) ? nt_str(nt, par_id, "name") : NULL;
+    /* the qualifying module is the parent's leaf name, so a nested / root
+       path (`::Float::MAX`) qualifies by `Float` too -- match codegen's
+       par_nmc, which already accepts a ConstantPathNode parent here */
+    const char *par_nm = (par_ty && (sp_streq(par_ty, "ConstantReadNode") ||
+                                     sp_streq(par_ty, "ConstantPathNode")))
+                         ? nt_str(nt, par_id, "name") : NULL;
     if (par_nm && sp_streq(par_nm, "Float")) {
       if (nm && (sp_streq(nm, "MAX") || sp_streq(nm, "MIN") || sp_streq(nm, "EPSILON") ||
                  sp_streq(nm, "INFINITY") || sp_streq(nm, "NAN") || sp_streq(nm, "DIG") ||
