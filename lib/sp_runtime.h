@@ -4691,6 +4691,27 @@ static mrb_bool sp_poly_has_key(sp_RbVal recv, sp_RbVal key) {
 /* frozen? on a poly value: scalars (int/float/sym/bool/nil/bigint) are always
    frozen in Ruby; a string checks its frozen flag; a heap object checks its GC
    header bit. Used when a receiver widened to poly under promote. */
+/* Object#dup / #clone on a boxed value. A plain user object (cls_id >= 0)
+   or a bare Object (SP_BUILTIN_OBJECT) shallow-copies through its GC header
+   (fresh allocation, payload memcpy: ivars copy as references, matching the
+   typed dup arm). Containers and value tags return as-is -- their memcpy
+   would alias the backing store (and double-free through the finalizer);
+   they keep their dedicated copy paths. clone preserves the frozen bit. */
+static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT)) {
+    sp_gc_hdr *h = (sp_gc_hdr *)((char *)v.v.p - sizeof(sp_gc_hdr));
+    size_t payload = h->size - sizeof(sp_gc_hdr);
+    void *src = v.v.p;
+    SP_GC_ROOT(src);
+    void *n = sp_gc_alloc(payload, h->finalize, h->scan);
+    memcpy(n, src, payload);
+    if (keep_frozen && h->frozen)
+      ((sp_gc_hdr *)((char *)n - sizeof(sp_gc_hdr)))->frozen = 1;
+    v.v.p = n;
+  }
+  return v;
+}
 /* Object#freeze on a boxed value: heap objects flip the GC-header bit
    (sp_gc_is_frozen reports it back), heap strings flip the string marker,
    every immutable tag (int/float/sym/nil/bool/...) is already frozen. */

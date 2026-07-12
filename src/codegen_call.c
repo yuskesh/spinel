@@ -7658,6 +7658,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        hash exclusion below is for freeze/dup/clone, which need real
        handling on the reference types */
     if (argc0 == 0 && sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
+    /* dup/clone of a boxed plain object copies (Object.new included); the
+       identity shortcut would alias the original and o.dup == o would
+       misreport true */
+    if (argc0 == 0 && is_dup_clone && recv_t == TY_POLY) {
+      buf_printf(b, "sp_poly_dup(");
+      emit_expr(c, recv, b);
+      buf_printf(b, ", %d)", sp_streq(name, "clone") ? 1 : 0);
+      return;
+    }
     if (argc0 == 0 && !freeze_stateful && !ty_is_hash(recv_t) &&
         !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_native))) {
       emit_expr(c, recv, b); return;
