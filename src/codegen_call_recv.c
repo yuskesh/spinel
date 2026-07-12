@@ -1137,7 +1137,10 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; _t%d.v.i; })", t);
         }
 else {
-          emit_expr(c, argv[0], b);
+          /* emit_int_expr, not raw: an unresolved-constant index lowers to a
+             NameError raise whose C value is an sp_Class, which the int slot
+             rejects at C compile time. */
+          emit_int_expr(c, argv[0], b);
         }
         buf_puts(b, ")");
         return 1;

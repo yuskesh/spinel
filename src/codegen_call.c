@@ -4230,7 +4230,7 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "%s(", int_arith_fn(name));
       emit_expr(c, recv, b); buf_puts(b, ", ");
       if (isdivmod) emit_int_divisor(c, argv[0], b);
-      else emit_expr(c, argv[0], b);
+      else emit_scalar_operand(c, argv[0], "0", b);
       buf_puts(b, ")");
       return 1;
     }
@@ -4261,9 +4261,9 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     }
     if (eff_res == TY_FLOAT && rt != TY_TIME && !sp_streq(name, "%") && !sp_streq(name, "**")) {
       buf_puts(b, "(");
-      emit_expr(c, recv, b);
+      emit_scalar_operand(c, recv, "0.0", b);
       buf_printf(b, " %s ", name);
-      emit_expr(c, argv[0], b);
+      emit_scalar_operand(c, argv[0], "0.0", b);
       buf_puts(b, ")");
       return 1;
     }
