@@ -5595,6 +5595,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
                   "sp_box_str(_t%d), \"%s\"); })", itemfn, tsrc, tsrc, name);
     return;
   }
+  /* str.each_line(sep) with no block -> an Enumerator over the sep-kept
+     segments. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 1 &&
+      nt_ref(nt, id, "block") < 0 && sp_streq(name, "each_line") &&
+      comp_ntype(c, argv[0]) == TY_STRING) {
+    int tsrc3 = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tsrc3);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); "
+                  "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(sp_str_lines_sep(_t%d, ",
+               tsrc3, tsrc3);
+    emit_expr(c, argv[0], b);
+    buf_printf(b, "))), sp_box_str(_t%d), \"each_line\"); })", tsrc3);
+    return;
+  }
   /* str.each_line(chomp: ...) with no block -> an Enumerator over the
      (possibly chomped) lines. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 1 &&
@@ -9029,6 +9044,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "fixed_encoding?")) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)"); return;
     }
+  }
+  /* str.gsub(/re/) with no block/replacement -> an Enumerator over the
+     matches (the same items scan yields). */
+  if (recv >= 0 && rt == TY_STRING && argc == 1 && sp_streq(name, "gsub") &&
+      nt_ref(nt, id, "block") < 0 && re_lit_index(c, argv[0]) >= 0) {
+    int gre = re_lit_index(c, argv[0]);
+    int tsg = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", tsg);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); "
+                  "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(sp_re_scan(sp_re_pat_%d, _t%d))), "
+                  "sp_box_str(_t%d), \"gsub\"); })", tsg, gre, tsg, tsg);
+    return;
   }
   /* Object receivers (incl. native-bound classes like StringScanner) dispatch
      their own match?/match methods; only string-ish receivers belong here. */

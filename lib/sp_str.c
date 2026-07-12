@@ -244,6 +244,10 @@ sp_StrArray *sp_str_rpartition(const char *s, const char *sep) {
    if absent, it just stops there. Empty string returns an empty array.
    `end` is computed once at entry so a string with no newlines avoids
    a redundant strlen call on the trailing piece. */
+/* String#lines(sep) / #each_line(sep): segments each keeping the separator
+   (the trailing fragment keeps whatever remains). An empty sep is CRuby's
+   "paragraph mode" -- not supported here; callers gate on a non-empty sep. */
+sp_StrArray*sp_str_lines_sep(const char*s,const char*sep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(sep);sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);if(!s||*s==0)return a;size_t sl=sep?strlen(sep):0;if(sl==0){sp_StrArray_push(a,sp_str_dup(s));return a;}const char*end=s+strlen(s);const char*p=s;while(p<end){const char*hit=strstr(p,sep);size_t n=hit?(size_t)(hit-p)+sl:(size_t)(end-p);char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);if(!hit)break;p=hit+sl;}return a;}
 sp_StrArray*sp_str_lines(const char*s){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;SP_GC_ROOT(a);SP_GC_ROOT_STR(s);const char*end=s+strlen(s);const char*p=s;while(p<end){const char*nl=strchr(p,'\n');size_t n=nl?(size_t)(nl-p+1):(size_t)(end-p);char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);if(!nl)break;p=nl+1;}return a;}
 sp_StrArray*sp_str_lines_chomp(const char*s){sp_StrArray*a=sp_StrArray_new();if(*s==0)return a;SP_GC_ROOT(a);SP_GC_ROOT_STR(s);const char*end=s+strlen(s);const char*p=s;while(p<end){const char*nl=strchr(p,'\n');size_t n=nl?(size_t)(nl-p):(size_t)(end-p);if(nl&&nl>s&&nl[-1]=='\r')n--;char*r=sp_str_alloc_raw(n+1);memcpy(r,p,n);r[n]=0;sp_StrArray_push(a,r);if(!nl)break;p=nl+1;}return a;}
 /* String#byteslice(start,len): byte-indexed (unlike the char-indexed

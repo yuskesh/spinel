@@ -4364,6 +4364,9 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "}, %d)", argc);
       }
       else if (sp_streq(name, "lines") && argc == 0) buf_printf(b, "sp_str_lines(%s)", r);
+      else if (sp_streq(name, "lines") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
+        buf_printf(b, "sp_str_lines_sep(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "lines") && argc == 1 && nt_type(nt, argv[0]) &&
                sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) {
         int chomp_v = struct_kwarg_value(c, argv[0], "chomp");

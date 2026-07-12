@@ -3653,6 +3653,11 @@ else {
     if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
         nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))
       return TY_ENUMERATOR;  /* each_line(chomp: ...) blockless */
+    if (sp_streq(name, "each_line") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        infer_type(c, argv[0]) == TY_STRING)
+      return TY_ENUMERATOR;  /* each_line(sep) blockless */
+    if (sp_streq(name, "lines") && argc == 1 && infer_type(c, argv[0]) == TY_STRING)
+      return TY_STR_ARRAY;   /* lines(sep) */
     if (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte")) return TY_STRING;
     { int blk = nt_ref(nt, id, "block");
       if (blk >= 0 && (sp_streq(name, "chars") || sp_streq(name, "lines"))) return TY_STRING;
@@ -3675,6 +3680,9 @@ else {
     if (sp_streq(name, "chars")) return TY_STR_ARRAY;
     if (sp_streq(name, "intern") && argc == 0) return TY_SYMBOL;
     if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
+    if (sp_streq(name, "gsub") && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+        nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RegularExpressionNode"))
+      return TY_ENUMERATOR;  /* blockless gsub(/re/): an Enumerator of matches */
     if (sp_streq(name, "gsub") || sp_streq(name, "sub") || sp_streq(name, "tr") ||
         sp_streq(name, "center") || sp_streq(name, "ljust") || sp_streq(name, "rjust"))
       return TY_STRING;
