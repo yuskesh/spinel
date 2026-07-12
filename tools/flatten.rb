@@ -30,6 +30,10 @@ end
 # a require cycle that compounds into runaway re-inlining (the path keeps
 # growing) and a flattened file many times larger than the program.
 def canonicalize(path)
+  # An absolute path's leading "/" splits off as an empty segment; remember it
+  # and put it back, or an absolute entry resolves to a relative path that
+  # File.exist? rejects. "/.." stays the root, so ".." never stacks when abs.
+  abs = path.start_with?("/")
   stack = []
   path.split("/").each { |p|
     if p == "" || p == "."
@@ -37,14 +41,14 @@ def canonicalize(path)
     elsif p == ".."
       if stack.length > 0 && stack[stack.length - 1] != ".."
         stack.pop
-      else
+      elsif !abs
         stack.push(p)
       end
     else
       stack.push(p)
     end
   }
-  stack.join("/")
+  abs ? "/" + stack.join("/") : stack.join("/")
 end
 
 # Resolve a require_relative target against the requiring file's directory,
