@@ -633,8 +633,11 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     else if (ac != 0) return 0;
   }
 
-  enum { OP_MAP, OP_FILTER, OP_TAKEWHILE, OP_FILTERMAP, OP_FLATMAP };
-  struct { int kind; int block; int negate; } ops[16];
+  enum { OP_MAP, OP_FILTER, OP_TAKEWHILE, OP_FILTERMAP, OP_FLATMAP, OP_TAKE, OP_DROP };
+  /* arg/cnt/lim are used only by the blockless counter stages (take/drop):
+     arg is the count AST node, lim a prelude temp holding its value, cnt a
+     prelude counter initialised to 0. */
+  struct { int kind; int block; int negate; int arg; int cnt; int lim; } ops[16];
   int nops = 0, cur = recv, lazy_src = -1;
   while (cur >= 0 && nt_type(nt, cur) && sp_streq(nt_type(nt, cur), "CallNode")) {
     const char *nm = nt_str(nt, cur, "name");
@@ -642,6 +645,20 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) {
       lazy_src = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
       break;
+    }
+    /* Blockless counter stages: `take(n)` limits the stream to n elements
+       (break once reached), `drop(n)` skips the first n. Both stay lazy in
+       CRuby, fusing straight into the loop. */
+    if ((sp_streq(nm, "take") || sp_streq(nm, "drop")) && nt_ref(nt, cur, "block") < 0) {
+      int ar = nt_ref(nt, cur, "arguments");
+      int ac = 0; const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &ac) : NULL;
+      if (ac != 1 || !av || nops >= 16) return 0;
+      ops[nops].kind = sp_streq(nm, "take") ? OP_TAKE : OP_DROP;
+      ops[nops].block = -1; ops[nops].negate = 0; ops[nops].arg = av[0];
+      ops[nops].cnt = -1; ops[nops].lim = -1;
+      nops++;
+      cur = nt_ref(nt, cur, "receiver");
+      continue;
     }
     int blk = nt_ref(nt, cur, "block");
     if (blk < 0 || nops >= 16) return 0;
@@ -694,6 +711,16 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   int tres = ++g_tmp;
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tres, tres);
+  /* Per-stage state for the blockless counter stages: evaluate the count once
+     into a limit temp and start a zeroed counter, both before the loop. */
+  for (int oi = 0; oi < nops; oi++) {
+    if (ops[oi].kind != OP_TAKE && ops[oi].kind != OP_DROP) continue;
+    Buf ab = expr_buf(c, ops[oi].arg);
+    ops[oi].lim = ++g_tmp; emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_int _t%d = %s;\n", ops[oi].lim, ab.p ? ab.p : "0"); free(ab.p);
+    ops[oi].cnt = ++g_tmp; emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "mrb_int _t%d = 0;\n", ops[oi].cnt);
+  }
   int tn = -1;
   if (has_count) {
     Buf nb = expr_buf(c, count_node);
@@ -787,6 +814,21 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   char vbuf[24]; snprintf(vbuf, sizeof vbuf, "_t%d", tv);
   /* ops are collected terminal-first; apply them source-first. */
   for (int oi = nops - 1; oi >= 0; oi--) {
+    /* Blockless counter stages have no block to bind -- apply and skip the
+       block machinery. take breaks the source loop once the limit is reached;
+       drop consumes (skips) the first n elements. */
+    if (ops[oi].kind == OP_TAKE) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (_t%d >= _t%d) break;\n", ops[oi].cnt, ops[oi].lim);
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "_t%d++;\n", ops[oi].cnt);
+      continue;
+    }
+    if (ops[oi].kind == OP_DROP) {
+      emit_indent(g_pre, g_indent + 1);
+      buf_printf(g_pre, "if (_t%d < _t%d) { _t%d++; continue; }\n", ops[oi].cnt, ops[oi].lim, ops[oi].cnt);
+      continue;
+    }
     int blk = ops[oi].block;
     const char *bp0 = block_param_name(c, blk, 0);
     const char *bp = (bp0 && bp0[0]) ? rename_local(bp0) : "_lx";
