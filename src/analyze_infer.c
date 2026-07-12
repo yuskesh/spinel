@@ -905,6 +905,17 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_NIL) {
     if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
         sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?")) return TY_BOOL;
+    if (sp_streq(name, "tap")) return TY_POLY;  /* the (boxed) nil receiver */
+    if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
+        nt_ref(nt, id, "block") >= 0) {
+      int blk9 = nt_ref(nt, id, "block");
+      int bd9 = nt_ref(nt, blk9, "body");
+      int bn9 = 0; const int *bb9 = bd9 >= 0 ? nt_arr(nt, bd9, "body", &bn9) : NULL;
+      if (bn9 >= 1) {
+        TyKind bt9 = infer_type(c, bb9[bn9 - 1]);
+        return bt9 == TY_NIL ? TY_POLY : bt9;
+      }
+    }
     if (sp_streq(name, "to_c")) return TY_COMPLEX;
     if (sp_streq(name, "to_s") || sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "nil?") || sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||

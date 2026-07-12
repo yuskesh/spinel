@@ -857,6 +857,9 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   if (recv < 0) return 0;
   TyKind et = comp_ntype(c, recv);
   if (et == TY_UNKNOWN) return 0;
+  /* a nil receiver (`nil.tap { }`) has no scalar C type: carry it boxed */
+  int et_nil = (et == TY_NIL);
+  if (et_nil) et = TY_POLY;
   int body = nt_ref(nt, block, "body");
   int bn = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -865,7 +868,8 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   if (p0) p0 = rename_local(p0);
 
   int tr = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
   if (needs_root(et)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr); }

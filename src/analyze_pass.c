@@ -4785,7 +4785,7 @@ int infer_block_params(Compiler *c) {
     if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) && p0) {
       Scope *bs = comp_scope_of(c, block);
       LocalVar *lv = scope_local_intern(bs, p0); lv->is_block_param = 1;
-      TyKind m = ty_unify(lv->type, rt);
+      TyKind m = ty_unify(lv->type, rt == TY_NIL ? TY_POLY : rt);
       if (m != lv->type) { lv->type = m; changed = 1; }
       continue;
     }
