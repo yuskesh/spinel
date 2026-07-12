@@ -417,6 +417,17 @@ void emit_yield_proc_call(Compiler *c, int args_node, TyKind result_ty, Buf *b, 
 
 /* Expand the active block's body, binding its params to the given call
    args. Shared by YieldNode and `block.call`. `as_expr` wraps in ({...}). */
+/* Emit a block-arg source node coerced to the block param's slot type,
+   mirroring the box/unbox handling of the requireds binding arm. */
+static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
+  TyKind at = comp_ntype(c, node);
+  if (ot == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed(c, node, b);
+  else if (at == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) {
+    Buf t; memset(&t, 0, sizeof t); emit_expr(c, node, &t);
+    emit_unbox_text(c, ot, t.p ? t.p : "", b); free(t.p);
+  } else emit_expr(c, node, b);
+}
+
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr) {
   const NodeTable *nt = c->nt;
   int blk = g_block_id;
@@ -499,6 +510,60 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       TyKind bt = bl ? bl->type : TY_INT;
       buf_puts(b, bt == TY_RANGE ? "(sp_Range){0}" : default_value(bt));
     }
+    buf_puts(b, as_expr ? "; " : ";\n");
+  }
+  /* Optional block params (`|a, b=10|`): bind from the yielded arg at the
+     optional's position, else evaluate the declared default expression. */
+  int nopt_base = 0; while (block_param_name(c, blk, nopt_base)) nopt_base++;
+  for (int oi = 0; ; oi++) {
+    const char *op = block_opt_name(c, blk, oi);
+    if (!op) break;
+    const char *opr = rename_local(op);
+    LocalVar *ol = bsc ? scope_local(bsc, op) : NULL;
+    TyKind ot = ol ? ol->type : TY_UNKNOWN;
+    int dv = block_opt_default(c, blk, oi);
+    int yi = nopt_base + oi;
+    const char *odflt = ot == TY_RANGE ? "(sp_Range){0}" : default_value(ot);
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "lv_%s = ", opr);
+    if (splat_tmp >= 0) {
+      TyKind et = ty_array_elem(splat_at);
+      Buf eb; memset(&eb, 0, sizeof eb);
+      emit_array_elem_at(splat_at, splat_tmp, yi, &eb);
+      buf_printf(b, "(%d < (_t%d ? _t%d->len : 0) ? ", yi, splat_tmp, splat_tmp);
+      if (ot == TY_POLY && et != TY_POLY && et != TY_UNKNOWN) emit_boxed_text(c, et, eb.p ? eb.p : "0", b);
+      else if (et == TY_POLY && ot != TY_POLY && ot != TY_UNKNOWN) emit_unbox_text(c, ot, eb.p ? eb.p : "", b);
+      else buf_puts(b, eb.p ? eb.p : "");
+      buf_puts(b, " : ");
+      if (dv >= 0) emit_block_arg_coerced(c, dv, ot, b); else buf_puts(b, odflt);
+      buf_puts(b, ")");
+      free(eb.p);
+    } else if (yi < yc) {
+      emit_block_arg_coerced(c, yargs[yi], ot, b);
+    } else if (dv >= 0) {
+      emit_block_arg_coerced(c, dv, ot, b);
+    } else {
+      buf_puts(b, odflt);
+    }
+    buf_puts(b, as_expr ? "; " : ";\n");
+  }
+  /* Keyword block params (`|a:, b: 5|`): match the trailing yielded kwargs hash
+     by name; an omitted optional keyword takes its declared default. */
+  int ykw = (yc > 0 && yargs && nt_type(nt, yargs[yc - 1]) &&
+             sp_streq(nt_type(nt, yargs[yc - 1]), "KeywordHashNode")) ? yargs[yc - 1] : -1;
+  for (int ki = 0; ; ki++) {
+    const char *kp = block_keyword_name(c, blk, ki);
+    if (!kp) break;
+    const char *kpr = rename_local(kp);
+    LocalVar *kl = bsc ? scope_local(bsc, kp) : NULL;
+    TyKind kt = kl ? kl->type : TY_UNKNOWN;
+    int vn = ykw >= 0 ? ie_kwhash_value(c, ykw, kp) : -1;
+    int dv = block_keyword_default(c, blk, ki);
+    if (!as_expr) emit_indent(b, indent);
+    buf_printf(b, "lv_%s = ", kpr);
+    if (vn >= 0) emit_block_arg_coerced(c, vn, kt, b);
+    else if (dv >= 0) emit_block_arg_coerced(c, dv, kt, b);
+    else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value(kt));
     buf_puts(b, as_expr ? "; " : ";\n");
   }
   /* A trailing rest parameter (`|*a|`) collects the yielded arguments past the

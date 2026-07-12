@@ -2731,6 +2731,61 @@ const char *block_rest_name(Compiler *c, int block) {
   return nt_str(c->nt, rest, "name");
 }
 
+/* Name of a block's idx-th optional parameter (`|a, b=10|`), or NULL. */
+const char *block_opt_name(Compiler *c, int block, int idx) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  if (bp < 0) return NULL;
+  const char *bpty = nt_type(c->nt, bp);
+  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
+  int pn = nt_ref(c->nt, bp, "parameters");
+  if (pn < 0) return NULL;
+  int n = 0;
+  const int *opts = nt_arr(c->nt, pn, "optionals", &n);
+  if (idx < n) return nt_str(c->nt, opts[idx], "name");
+  return NULL;
+}
+
+/* The default-value node of a block's idx-th optional parameter, or -1. */
+int block_opt_default(Compiler *c, int block, int idx) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  if (bp < 0) return -1;
+  int pn = nt_ref(c->nt, bp, "parameters");
+  if (pn < 0) return -1;
+  int n = 0;
+  const int *opts = nt_arr(c->nt, pn, "optionals", &n);
+  if (idx < n) return nt_ref(c->nt, opts[idx], "value");
+  return -1;
+}
+
+/* Name of a block's idx-th keyword parameter (`|a:, b: 5|`), or NULL. */
+const char *block_keyword_name(Compiler *c, int block, int idx) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  if (bp < 0) return NULL;
+  const char *bpty = nt_type(c->nt, bp);
+  if (bpty && sp_streq(bpty, "NumberedParametersNode")) return NULL;
+  int pn = nt_ref(c->nt, bp, "parameters");
+  if (pn < 0) return NULL;
+  int n = 0;
+  const int *kws = nt_arr(c->nt, pn, "keywords", &n);
+  if (idx < n) return nt_str(c->nt, kws[idx], "name");
+  return NULL;
+}
+
+/* Default-value node of a block's idx-th keyword parameter (only present for an
+   OptionalKeywordParameterNode `k: 5`), or -1. */
+int block_keyword_default(Compiler *c, int block, int idx) {
+  int bp = nt_ref(c->nt, block, "parameters");
+  if (bp < 0) return -1;
+  int pn = nt_ref(c->nt, bp, "parameters");
+  if (pn < 0) return -1;
+  int n = 0;
+  const int *kws = nt_arr(c->nt, pn, "keywords", &n);
+  if (idx >= n) return -1;
+  const char *kty = nt_type(c->nt, kws[idx]);
+  if (kty && sp_streq(kty, "OptionalKeywordParameterNode")) return nt_ref(c->nt, kws[idx], "value");
+  return -1;
+}
+
 int block_param_is_multi(Compiler *c, int block, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");
   if (bp < 0) return 0;
@@ -4613,6 +4668,34 @@ int infer_block_params(Compiler *c) {
         if (brest) {
           LocalVar *lv = scope_local_intern(bs, brest); lv->is_block_param = 1;
           if (lv->type != TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
+        }
+        /* Optional block params (`|a, b=10|`): a yielded arg at the optional's
+           position types it; an omitted optional takes its default's type. */
+        int nreq_b = 0; while (block_param_name(c, block, nreq_b)) nreq_b++;
+        for (int oi = 0; ; oi++) {
+          const char *op = block_opt_name(c, block, oi);
+          if (!op) break;
+          int yi = nreq_b + oi;
+          TyKind ot;
+          if (yi < yc) ot = infer_type(c, yargs[yi]);
+          else { int dv = block_opt_default(c, block, oi); ot = dv >= 0 ? infer_type(c, dv) : TY_NIL; }
+          LocalVar *lv = scope_local_intern(bs, op); lv->is_block_param = 1;
+          TyKind m = ty_unify(lv->type, ot);
+          if (m != lv->type) { lv->type = m; changed = 1; }
+        }
+        /* Keyword block params (`|a:, b: 5|`): type from the trailing yielded
+           kwargs hash by name; an omitted optional keyword takes its default. */
+        int ykw = (yc > 0 && nt_type(nt, yargs[yc - 1]) &&
+                   sp_streq(nt_type(nt, yargs[yc - 1]), "KeywordHashNode")) ? yargs[yc - 1] : -1;
+        for (int ki = 0; ; ki++) {
+          const char *kp = block_keyword_name(c, block, ki);
+          if (!kp) break;
+          int vn = ykw >= 0 ? ie_kwhash_value(c, ykw, kp) : -1;
+          TyKind kt = TY_UNKNOWN;
+          if (vn >= 0) kt = infer_type(c, vn);
+          else { int dv = block_keyword_default(c, block, ki); if (dv >= 0) kt = infer_type(c, dv); }
+          LocalVar *lv = scope_local_intern(bs, kp); lv->is_block_param = 1;
+          if (kt != TY_UNKNOWN) { TyKind m = ty_unify(lv->type, kt); if (m != lv->type) { lv->type = m; changed = 1; } }
         }
         continue;
       }
