@@ -4694,6 +4694,16 @@ static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
       if (!sp_poly_eql(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i))) return FALSE;
     return TRUE;
   }
+  /* Two user objects of the same class: eql? (used by uniq / Set / Hash keys,
+     unlike ==) honors a user-defined eql? via the cls_id hook. Identity is the
+     default when the class defines none (the hook returns FALSE for such a
+     cls_id, matching BasicObject#eql?). User class ids are non-negative; builtin
+     value objects (Rational/Complex/Time/...) keep sp_poly_eq's own handling. */
+  if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ && a.cls_id == b.cls_id &&
+      a.cls_id >= 0) {
+    if (a.v.p == b.v.p) return TRUE;
+    if (sp_obj_eql_hook) return sp_obj_eql_hook(a.cls_id, a.v.p, b.v.p);
+  }
   return sp_poly_eq(a, b);
 }
 /* equal? for a poly value: object identity. Immediates (int, symbol, nil,
