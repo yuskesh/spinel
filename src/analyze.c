@@ -1999,7 +1999,8 @@ static void synth_enum_to_a(Compiler *c) {
 static int to_enum_builtin_method(const char *m) {
   static const char *const ok[] = {
     "each", "reverse_each", "each_with_index", "each_index",
-    "each_char", "each_line", "each_slice", "each_cons", "each_pair", NULL };
+    "each_char", "each_line", "each_slice", "each_cons", "each_pair",
+    "times", "each_byte", NULL };
   for (int k = 0; ok[k]; k++) if (sp_streq(m, ok[k])) return 1;
   return 0;
 }
