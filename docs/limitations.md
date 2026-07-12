@@ -130,6 +130,16 @@ through every int-arithmetic consumer, so a negative value there still
 raises `RangeError` rather than silently truncating. `Integer#pow(negative,
 mod)` raises `RangeError` with CRuby's message.
 
+#### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
+
+CRuby's blockless `(1..10).step(2)` and `(1..10) % 2` return an
+`Enumerator::ArithmeticSequence` (lazy, with its own `inspect` like
+`((1..10).%(2))`). Spinel has no ArithmeticSequence class and materializes
+the stepped values eagerly as an Array, so enumeration, `to_a`, indexing,
+and further iteration all produce CRuby's values, but `p` on the unforced
+sequence prints the array and `.class` answers `Array`. An infinite stepped
+range therefore cannot be left unforced.
+
 #### Embedded NUL bytes: byte-exact core, C-string transforms
 
 Strings store embedded NUL bytes, and the byte-exact core matches CRuby:
