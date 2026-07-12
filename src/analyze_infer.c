@@ -835,6 +835,14 @@ TyKind infer_call(Compiler *c, int id) {
   if (rt == TY_INT && sp_streq(name, "quo")) return TY_RATIONAL;
   /* Float#quo is float division (Numeric#quo via /; no Rational) */
   if (rt == TY_FLOAT && sp_streq(name, "quo")) return TY_FLOAT;
+  /* Float <op> Rational (either side) coerces to Float; comparisons bool */
+  if (argc == 1 &&
+      ((rt == TY_FLOAT && comp_ntype(c, argv[0]) == TY_RATIONAL) ||
+       (rt == TY_RATIONAL && comp_ntype(c, argv[0]) == TY_FLOAT))) {
+    if (is_arith_op(name) || sp_streq(name, "quo") || sp_streq(name, "fdiv"))
+      return TY_FLOAT;
+    if (is_cmp_op(name) || sp_streq(name, "==")) return TY_BOOL;
+  }
   /* Integer <op> Rational coerces the Integer to Rational (result Rational for
      arithmetic, Bool/Int for comparisons). */
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {

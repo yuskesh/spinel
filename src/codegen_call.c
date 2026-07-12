@@ -1518,6 +1518,45 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
+    /* Float <op> Rational (either side): CRuby coerces to Float. Arithmetic
+       stays float; comparisons are bool. */
+    if (argc == 1 &&
+        ((crt == TY_FLOAT && comp_ntype(c, argv[0]) == TY_RATIONAL) ||
+         (crt == TY_RATIONAL && comp_ntype(c, argv[0]) == TY_FLOAT)) &&
+        (is_arith_op(name) || is_cmp_op(name) || sp_streq(name, "==") ||
+         sp_streq(name, "quo") || sp_streq(name, "fdiv"))) {
+      const char *cop = (sp_streq(name, "quo") || sp_streq(name, "fdiv")) ? "/" : name;
+      int lft_rat = (crt == TY_RATIONAL);
+      if (sp_streq(name, "%")) {
+        /* C's % is integer-only: modulo via fmod, floor-adjusted like Ruby */
+        buf_puts(b, "sp_fmod(");
+        if (lft_rat) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+        else emit_float_expr(c, recv, b);
+        buf_puts(b, ", ");
+        if (lft_rat) emit_float_expr(c, argv[0], b);
+        else { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "**")) {
+        buf_puts(b, "pow(");
+        if (lft_rat) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+        else emit_float_expr(c, recv, b);
+        buf_puts(b, ", ");
+        if (lft_rat) emit_float_expr(c, argv[0], b);
+        else { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        buf_puts(b, ")");
+        return 1;
+      }
+      buf_puts(b, "((");
+      if (lft_rat) { buf_puts(b, "sp_rational_to_f("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_float_expr(c, recv, b);
+      buf_printf(b, ") %s (", cop);
+      if (lft_rat) emit_float_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_puts(b, "))");
+      return 1;
+    }
     if (crt == TY_FLOAT && sp_streq(name, "quo") && argc == 1) {
       /* Float#quo == / (float division) */
       buf_puts(b, "((");
