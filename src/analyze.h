@@ -17,6 +17,10 @@
    the default gates and optcarrot (which pins wrap) see no behavior change. */
 extern int g_promote_mode;
 
+/* One post-convergence bind pass fills UNKNOWN params from empty
+   array-literal args (fst([]) with def fst(a) = a.first). */
+extern int g_final_bind_pass;
+
 /* Run inference over the whole program: register locals, reach a fixpoint
    on their types, and fill the node type cache. */
 void analyze_program(Compiler *c);

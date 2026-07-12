@@ -132,6 +132,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   TyKind rt = comp_recv_type(c, recv);
   TyKind a0 = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   TyKind res = comp_ntype(c, id);
+  /* [].first / [].last on an empty literal: there is no element type to read;
+     the value is nil (boxed -- the call types poly). */
+  if (recv >= 0 && argc == 0 && (sp_streq(name, "first") || sp_streq(name, "last")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+    int fe_n = 0; nt_arr(nt, recv, "elements", &fe_n);
+    if (fe_n == 0) { buf_puts(b, "sp_box_nil()"); return 1; }
+  }
   /* Homogeneous object array (sp_PtrArray of unboxed sp_X*), produced by the
      post-fixpoint narrow_object_arrays pass. Indexing yields a typed `sp_X *`
      directly -- no sp_RbVal box, no cls-id dispatch. Only the op set the pass
@@ -1063,9 +1070,14 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       if (sp_streq(name, "[]") && argc == 2) {
-        /* arr[start, len] -> subarray */
-        buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_expr(c, argv[0], b); buf_puts(b, ", "); emit_expr(c, argv[1], b); buf_puts(b, ")");
+        /* arr[start, len] -> subarray; a negative length is nil in CRuby
+           (slice() itself would return the empty array) */
+        int ta = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = ", ts); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = ", tl); emit_int_expr(c, argv[1], b);
+        buf_printf(b, "; _t%d < 0 ? (sp_%sArray *)0 : sp_%sArray_slice(_t%d, _t%d, _t%d); })",
+                   tl, k, k, ta, ts, tl);
         return 1;
       }
       if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
@@ -1179,8 +1191,11 @@ else {
           buf_puts(b, "; }); })");
         }
         else {
-          buf_printf(b, " (sp_raise_cls(\"IndexError\", \"index out of bounds\"), %s); })",
-                     boxed ? "sp_box_nil()" : default_value(et));
+          /* CRuby's message names the index and the valid bounds */
+          buf_printf(b, " (sp_raise_cls(\"IndexError\","
+                        " sp_sprintf(\"index %%lld outside of array bounds: -%%lld...%%lld\","
+                        " (long long)_t%d, (long long)_t%d, (long long)_t%d)), %s); })",
+                     ti, tn, tn, boxed ? "sp_box_nil()" : default_value(et));
         }
         return 1;
       }
@@ -2198,10 +2213,11 @@ else {
         return 1;
       }
       if (sp_streq(name, "sample") && argc == 1) {
-        int t = ++g_tmp;
+        int t = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = sp_%sArray_shuffle(", k, t, k); emit_expr(c, recv, b);
-        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%sArray_slice(_t%d, 0, ", t, k, t); emit_int_expr(c, argv[0], b);
-        buf_puts(b, "); })");
+        buf_printf(b, "); SP_GC_ROOT(_t%d); mrb_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative sample number\");"
+                      " sp_%sArray_slice(_t%d, 0, _t%d); })", tn, k, t, tn);
         return 1;
       }
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && block < 0) {
@@ -2301,15 +2317,21 @@ else {
         return 1;
       }
       if ((sp_streq(name, "slice") || sp_streq(name, "[]")) && argc == 2) {
-        buf_puts(b, "sp_PolyArray_slice("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+        /* a negative length is nil in CRuby (slice() would return []) */
+        int ta = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = ", ts); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = ", tl); emit_int_expr(c, argv[1], b);
+        buf_printf(b, "; _t%d < 0 ? (sp_PolyArray *)0 : sp_PolyArray_slice(_t%d, _t%d, _t%d); })",
+                   tl, ta, ts, tl);
         return 1;
       }
       if (sp_streq(name, "sample") && argc == 1) {
-        int t = ++g_tmp;
+        int t = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_shuffle(", t); emit_expr(c, recv, b);
-        buf_printf(b, "); SP_GC_ROOT(_t%d); sp_PolyArray_slice(_t%d, 0, ", t, t); emit_int_expr(c, argv[0], b);
-        buf_puts(b, "); })");
+        buf_printf(b, "); SP_GC_ROOT(_t%d); mrb_int _t%d = ", t, tn); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative sample number\");"
+                      " sp_PolyArray_slice(_t%d, 0, _t%d); })", tn, t, tn);
         return 1;
       }
       if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -5901,6 +5923,11 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     /* min(n)/max(n) return arrays of the smallest/largest n: Enumerable forms,
        served by the int-array redispatch below (the native arm is argless). */
     if ((sp_streq(name, "min") || sp_streq(name, "max")) && argc >= 1) known = 0;
+    /* min/max/minmax with a comparator block: the comparator emitter serves
+       the lowerable shapes; anything else must reject rather than silently
+       ignore the block. */
+    if ((sp_streq(name, "min") || sp_streq(name, "max") ||
+         sp_streq(name, "minmax")) && block >= 0) known = 0;
     if (known) {
       /* size/count on a string-literal range: no integer size -> nil, skip creating sp_Range */
       if ((sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) {
@@ -6098,18 +6125,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      unbox the helper's boxed result to match it -- the receiver provably held
      nil there, so the payload really is the concrete kind. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "to_a") || sp_streq(name, "to_h") ||
+      (sp_streq(name, "to_h") ||
        sp_streq(name, "to_r") || sp_streq(name, "to_c"))) {
     int has_user = 0;
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
     if (!has_user) {
-      if (sp_streq(name, "to_a")) {
-        buf_puts(b, "((sp_PolyArray *)sp_poly_to_a_m(");
-        emit_expr(c, recv, b);
-        buf_puts(b, ").v.p)");
-      }
-      else if (sp_streq(name, "to_r")) {
+      if (sp_streq(name, "to_r")) {
         buf_puts(b, "(*(sp_Rational *)sp_poly_to_r_m(");
         emit_expr(c, recv, b);
         buf_puts(b, ").v.p)");
@@ -6232,6 +6254,18 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* poly receiver: nil? / conversions / a few type-agnostic queries */
   if (recv >= 0 && rt == TY_POLY && argc == 0) {
     if (sp_streq(name, "nil?")) { buf_puts(b, "sp_poly_nil_p("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
+    /* to_a on a runtime-tagged value: nil -> [], array -> itself, hash -> its
+       pairs, anything else CRuby's NoMethodError. Skip when a user class
+       defines to_a so its method wins the dispatch. */
+    if (sp_streq(name, "to_a") && nt_ref(nt, id, "block") < 0) {
+      int has_user_ta = 0;
+      for (int kk = 0; kk < c->nclasses && !has_user_ta; kk++)
+        if (comp_method_in_chain(c, kk, "to_a", NULL) >= 0) has_user_ta = 1;
+      if (!has_user_ta) {
+        buf_puts(b, "sp_poly_to_a_arr("); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+    }
     /* Hash#keys / #values on a poly value (e.g. an evidence-free empty `{}` that
        stayed poly). Skip when a user class defines keys/values so its method wins. */
     if (sp_streq(name, "keys") || sp_streq(name, "values")) {

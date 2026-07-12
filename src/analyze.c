@@ -3,6 +3,11 @@
 /* --int-overflow=promote flag; see analyze.h. Default off. */
 int g_promote_mode = 0;
 
+/* Post-convergence bind pass: lets an empty array-literal argument fill a
+   parameter that stayed UNKNOWN through the fixpoint (see bind_call_params);
+   applied only after convergence so any concrete kind wins first. */
+int g_final_bind_pass = 0;
+
 /* Defined in codegen.c (linked into the same binary). Used to specialize a
    `rescue <UserExc> => e` binding to the exception subclass's object type. */
 int class_is_exc_subclass(Compiler *c, int ci);
@@ -2407,6 +2412,15 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         if (an == 1 && nt_type(nt, av0[0]) &&
             sp_streq(nt_type(nt, av0[0]), "ArrayNode")) {
           /* Hash[[[k, v], ...]] == pairs.to_h */
+          nt_node_set_str(nt, id, "name", "to_h");
+          nt_node_set_ref(nt, id, "receiver", av0[0]);
+          nt_node_set_ref(nt, id, "arguments", -1);
+          continue;
+        }
+        /* Hash[arg] with any single non-literal argument: the same pairs.to_h
+           rewrite (this desugar runs pre-type, so no array check is possible;
+           to_h itself raises on a non-convertible receiver, as Hash[] does). */
+        if (an == 1) {
           nt_node_set_str(nt, id, "name", "to_h");
           nt_node_set_ref(nt, id, "receiver", av0[0]);
           nt_node_set_ref(nt, id, "arguments", -1);
@@ -5003,7 +5017,19 @@ void analyze_program(Compiler *c) {
     ch |= infer_inherited_ivars(c);
     ch |= infer_return_types(c);
     ch |= backprop_hash_return_types(c);
-    if (!ch) break;
+    if (!ch) {
+      /* Converged: one backstop bind pass lets an empty array-literal arg
+         fill a still-UNKNOWN parameter as an (empty) poly array. If it fills
+         anything, keep iterating so dependent return types resolve. */
+      static int backstop_ran;
+      if (!backstop_ran) {
+        backstop_ran = 1;
+        g_final_bind_pass = 1;
+        ch = infer_param_types(c);
+        g_final_bind_pass = 0;
+      }
+      if (!ch) break;
+    }
   }
 
   /* Optimistic re-narrow: the monotonic fixpoint locks a slot to poly the

@@ -2992,6 +2992,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "mrb_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : "0"); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
+        emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new();\n", tr);
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
         emit_indent(g_pre, g_indent);
@@ -3016,6 +3018,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
         emit_indent(g_pre, g_indent);
         if (argc >= 1) { buf_printf(g_pre, "mrb_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : "0"); buf_puts(g_pre, ";\n"); }
         else { buf_printf(g_pre, "mrb_int _t%d = 0;\n", tn); }
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
         free(nb.p);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tr, k);
@@ -3071,6 +3075,8 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
           Buf vb = expr_buf(c, argv[1]);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
           emit_indent(g_pre, g_indent);
           if (at == TY_POLY_ARRAY) {
             buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
@@ -3198,9 +3204,16 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
                       (ty_is_object(rt) && ty_object_class(rt) >= 0 &&
                        ty_object_class(rt) < c->nclasses &&
                        c->classes[ty_object_class(rt)].is_struct))))) {
-    /* Array#eql? is structural, the same element-wise comparison as ==;
-       only != negates. Scalar eql? is handled by the per-type emitters. */
+    /* Array#eql? is structural like == but class-strict per element
+       (1 is not eql? to 1.0): box both sides through the strict poly
+       comparator. Scalar eql? is handled by the per-type emitters. */
     int eq = !sp_streq(name, "!=");
+    if (sp_streq(name, "eql?") && (ty_is_array(rt) || ty_is_array(a0))) {
+      buf_puts(b, "sp_poly_eql(");
+      emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b);
+      buf_puts(b, ")");
+      return 1;
+    }
     /* `x == nil` / `x != nil` for any receiver */
     int a_nil = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode");
     int r_nil = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "NilNode");
@@ -5327,7 +5340,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
        (comp_ntype(c, recv) == TY_UNKNOWN && nt_type(nt, recv) &&
         sp_streq(nt_type(nt, recv), "ArrayNode"))) &&
       (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
-       sp_streq(name, "map") || sp_streq(name, "collect"))) {
+       sp_streq(name, "map") || sp_streq(name, "collect") ||
+       sp_streq(name, "each_entry"))) {
     /* a blockless map is the same element snapshot; only its #inspect method
        name differs (the deferred mapping is supplied by a later block form,
        which the chain emitters match before this arm) */
@@ -5412,6 +5426,34 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "sp_Enumerator_new_%s(", sp_streq(name, "each_slice") ? "slices" : "cons");
     emit_boxed(c, recv, b); buf_puts(b, ", ");
     emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+    return;
+  }
+  /* arr.cycle(n) with no block -> a materialized Enumerator of the elements
+     repeated n times (the unbounded blockless form stays a loud reject). */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_array(comp_ntype(c, recv)) && sp_streq(name, "cycle")) {
+    buf_puts(b, "sp_Enumerator_new_cycle(");
+    emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+    return;
+  }
+  /* arr.slice_before(pat) / slice_after(pat) with no block -> a materialized
+     Enumerator over the groups. */
+  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      ty_is_array(comp_ntype(c, recv)) &&
+      (sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) {
+    /* CRuby's pattern form matches with `pattern === element`. Spinel has no
+       runtime type-dispatched #=== (like `when *arr`, a poly `===` lowers to
+       `==`), so a Range/Class/Regexp/Proc pattern would silently use `==` and
+       group wrongly. Reject those loudly; a plain value pattern (where
+       `===` is `==`) and the block form are unaffected. */
+    TyKind spat = comp_ntype(c, argv[0]);
+    if (spat == TY_RANGE || spat == TY_CLASS || spat == TY_REGEX || spat == TY_PROC)
+      unsupported(c, id, "slice_before/slice_after with a Range, Class, or Regexp pattern (needs #=== dispatch); use a block or a value pattern");
+    buf_printf(b, "sp_Enumerator_new_from_items(sp_poly_slice_groups(");
+    emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, ", %d))", sp_streq(name, "slice_after") ? 1 : 0);
     return;
   }
   /* hash.each / hash.each_pair with no block -> an external Enumerator over the
@@ -8975,8 +9017,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (en == 0) {
         if ((sp_streq(name, "length") || sp_streq(name, "size") || sp_streq(name, "count")) && argc == 0) { buf_puts(b, "0"); return; }
         if (sp_streq(name, "empty?") && argc == 0) { buf_puts(b, "1"); return; }
-        if ((sp_streq(name, "first") || sp_streq(name, "last") ||
-             sp_streq(name, "min") || sp_streq(name, "max") ||
+        /* first/last type poly (boxed nil, printable as nil); the rest keep
+           the historical int-nil sentinel pending their own nil arms */
+        if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) { buf_puts(b, "sp_box_nil()"); return; }
+        if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) { buf_puts(b, "SP_INT_NIL"); return; }
         if (sp_streq(name, "sample") && argc == 0) { buf_puts(b, "0"); return; }
         if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) { buf_puts(b, "\"[]\""); return; }

@@ -569,7 +569,8 @@ int range_enum_redispatch(Compiler *c, int id) {
   if (block >= 0 &&
       (sp_streq(name, "partition") || sp_streq(name, "each_with_index") ||
        sp_streq(name, "sort_by") || sp_streq(name, "chunk_while") ||
-       sp_streq(name, "sum") || sp_streq(name, "each_with_object")))
+       sp_streq(name, "sum") || sp_streq(name, "each_with_object") ||
+       sp_streq(name, "take_while") || sp_streq(name, "drop_while")))
     return 1;
   if ((sp_streq(name, "inject") || sp_streq(name, "reduce")) && block >= 0)
     return 1;
@@ -930,6 +931,13 @@ TyKind infer_call(Compiler *c, int id) {
       if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY ||
           (prt == TY_RANGE && range_enum_redispatch(c, recv)))
         return TY_POLY_ARRAY;
+      /* hash.chunk { |k, v| key }.to_a materializes the same way (the chunk
+         first-class emitter iterates the hash directly); gated to the named
+         two-param block shape the emitter serves. */
+      if (ty_is_hash(prt) && sp_streq(nt_str(nt, recv, "name"), "chunk") &&
+          block_param_name(c, nt_ref(nt, recv, "block"), 0) &&
+          block_param_name(c, nt_ref(nt, recv, "block"), 1))
+        return TY_POLY_ARRAY;
     }
   }
 
@@ -959,10 +967,11 @@ TyKind infer_call(Compiler *c, int id) {
     if (rty && sp_streq(rty, "ArrayNode")) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
       if (en == 0) {
-        /* first/last/min/max/pop/shift/sample of an empty array returns 0
-           (the typed slot's zero value); carry it as an int */
-        if ((sp_streq(name, "first") || sp_streq(name, "last") ||
-             sp_streq(name, "min") || sp_streq(name, "max") ||
+        /* first/last of an empty array is nil, boxed to poly (codegen emits
+           sp_box_nil). min/max/pop/shift/sample keep the historical int-0
+           shortcut pending their own nil arms. */
+        if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 0) return TY_POLY;
+        if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "sample") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) return TY_INT;
         rt = TY_POLY_ARRAY;
@@ -2579,6 +2588,7 @@ else {
        call above and never reach this. */
     if (block < 0 && argc == 0 &&
         (sp_streq(name, "each") || sp_streq(name, "reverse_each") ||
+         sp_streq(name, "each_entry") ||
          sp_streq(name, "each_with_index") || sp_streq(name, "each_index"))) return TY_ENUMERATOR;
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
        chained block forms (map.with_index { }) are typed by their own arms
@@ -2589,9 +2599,12 @@ else {
     /* arr.each_slice(n) / arr.each_cons(n) with no block -> a materialized
        Enumerator of slices / windows. The direct-block form has block >= 0 and
        is excluded; a .map/.collect chain consumer is typed by its own arm above
-       (which accepts this TY_ENUMERATOR receiver and keeps the array result). */
+       (which accepts this TY_ENUMERATOR receiver and keeps the array result).
+       cycle(n) and slice_before/slice_after(pattern) materialize the same way. */
     if (block < 0 && argc == 1 &&
-        (sp_streq(name, "each_slice") || sp_streq(name, "each_cons"))) return TY_ENUMERATOR;
+        (sp_streq(name, "each_slice") || sp_streq(name, "each_cons") ||
+         sp_streq(name, "cycle") ||
+         sp_streq(name, "slice_before") || sp_streq(name, "slice_after"))) return TY_ENUMERATOR;
     /* chunk { } with no chained consumer is an enumerator of [key, run]
        pairs; the desugar interposes to_a so .map/.count chains compose. */
     if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) return TY_ENUMERATOR;
@@ -2735,13 +2748,21 @@ else {
         int is_sym_op = a0ty && sp_streq(a0ty, "SymbolNode") && argc == 1;
         if (!is_sym_op) {
           TyKind it = infer_type(c, argv[0]);
+          /* An empty array-literal seed accumulates an array: poly, since the
+             block decides the element mix (`reduce([]) { |a, x| a << x }`). */
+          if (it == TY_UNKNOWN && a0ty && sp_streq(a0ty, "ArrayNode")) {
+            int sen = 0; nt_arr(nt, argv[0], "elements", &sen);
+            if (sen == 0) it = TY_POLY_ARRAY;
+          }
           if (it != TY_UNKNOWN) {
             /* The accumulator is reassigned to the block body each iteration,
-               so an int seed folded over floats accumulates float. */
+               so an int seed folded over floats accumulates float. An array
+               seed never numeric-promotes (`a << x` pre-types as an int shift
+               before the accumulator's type shadows the block param). */
             int rblk = nt_ref(nt, id, "block");
             int rbody = rblk >= 0 ? nt_ref(nt, rblk, "body") : -1;
             int rbn = 0; const int *rbb = rbody >= 0 ? nt_arr(nt, rbody, "body", &rbn) : NULL;
-            if (rbn > 0) { TyKind bt = infer_type(c, rbb[rbn - 1]); if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt); }
+            if (rbn > 0 && !ty_is_array(it)) { TyKind bt = infer_type(c, rbb[rbn - 1]); if (ty_is_numeric(bt)) it = ty_promote_numeric(it, bt); }
             return it;
           }
         }
@@ -2987,8 +3008,11 @@ else {
       if (sp_streq(name, "to_i") || sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
       if (sp_streq(name, "to_f")) return TY_FLOAT;
       /* Hash#keys / #values on a poly hash -> a poly array (boxed elements),
-         unless a user class defines that method (then its return type wins). */
-      if ((sp_streq(name, "keys") || sp_streq(name, "values")) && argc == 0) {
+         unless a user class defines that method (then its return type wins).
+         to_a on a poly value follows the same rule: nil -> [], arrays and
+         hashes materialize, anything else raises (sp_poly_to_a_arr). */
+      if ((sp_streq(name, "keys") || sp_streq(name, "values") ||
+           sp_streq(name, "to_a")) && argc == 0) {
         int has_user = 0;
         for (int k = 0; k < c->nclasses && !has_user; k++)
           if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
@@ -3327,6 +3351,9 @@ else {
       return TY_BOOL;
     if (sp_streq(name, "deconstruct_keys") && argc == 1) return rt;
     if (sp_streq(name, "compact!") && argc == 0) return TY_POLY;  /* self or nil */
+    /* chunk { |k, v| key } is an enumerator of [key, [[k, v], ...]] pairs;
+       the .to_a consumer arm types the materialized chain as a poly array. */
+    if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) return TY_ENUMERATOR;
     if (sp_streq(name, "to_proc")) return TY_PROC;
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
     if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */

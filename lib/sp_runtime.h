@@ -1293,7 +1293,6 @@ static sp_PtrArray*sp_IntArray_combination(sp_IntArray*a,mrb_int k){sp_PtrArray*
    recursion restarts at `i` rather than `i+1`. */
 static void sp_int_repeated_combination_recur(sp_IntArray*src,mrb_int start,mrb_int k,sp_IntArray*acc,sp_PtrArray*out){if(k==0){sp_IntArray*cp=sp_IntArray_new();for(mrb_int i=0;i<acc->len;i++)sp_IntArray_push(cp,acc->data[acc->start+i]);sp_PtrArray_push(out,cp);return;}for(mrb_int i=start;i<src->len;i++){sp_IntArray_push(acc,src->data[src->start+i]);sp_int_repeated_combination_recur(src,i,k-1,acc,out);acc->len--;}}
 static sp_PtrArray*sp_IntArray_repeated_combination(sp_IntArray*a,mrb_int k){sp_PtrArray*out=sp_PtrArray_new();if(!a||k<0)return out;sp_IntArray*acc=sp_IntArray_new();sp_int_repeated_combination_recur(a,0,k,acc,out);return out;}
-
 /* Cartesian product of two int arrays. Returns a PtrArray of
    2-element IntArrays. */
 /* Array#permutation(k) -- ordered k-permutations. */
@@ -2884,6 +2883,8 @@ typedef struct sp_BoundMethod { void *self; mrb_int fn; const char *name; } sp_B
 static sp_RbVal sp_poly_slice(sp_RbVal a, mrb_int start, mrb_int len) {
   if (a.tag == SP_TAG_STR) return sp_box_nullable_str(sp_str_sub_range(a.v.s ? a.v.s : "", start, len));
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
+  /* arr[start, negative] is nil in CRuby (the slice helpers would return []) */
+  if (len < 0 && sp_poly_is_array_kind(a.cls_id)) return sp_box_nil();
   /* bm[a, b]: a boxed bound Method called with two int arguments (optcarrot's
      store dispatch table: `@store[addr][addr, value]`). */
   if (a.cls_id == SP_BUILTIN_METHOD) {
@@ -3975,7 +3976,9 @@ static sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {
   sp_StrArray_uniq_bang(a);
   return a->len != n ? sp_box_str_array(a) : sp_box_nil();
 }
-static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eq(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
+/* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
+static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
+static void sp_PolyArray_uniq_bang(sp_PolyArray*a){if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array();return;}for(mrb_int i=0;i<a->len;){int dup=0;for(mrb_int j=0;j<i;j++){if(sp_poly_eql(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(mrb_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}else i++;}}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[(mrb_int)(rand()%a->len)]; }
 
 /* Forward decl: sp_poly_inspect dispatches into sp_PolyArray_inspect
@@ -4648,6 +4651,17 @@ static mrb_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
   int a_int = (a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT);
   int b_int = (b.tag == SP_TAG_INT || b.tag == SP_TAG_BIGINT);
   if ((a_int && b.tag == SP_TAG_FLT) || (a.tag == SP_TAG_FLT && b_int)) return FALSE;
+  /* Array#eql? recurses per element with eql? (not ==), so [1, 2] is not
+     eql? to [1, 2.0] even though they are ==. */
+  if (a.tag == SP_TAG_OBJ && b.tag == SP_TAG_OBJ &&
+      sp_poly_is_array_kind(a.cls_id) && sp_poly_is_array_kind(b.cls_id)) {
+    if (a.v.p == b.v.p) return TRUE;  /* same object: eql? to itself (O(1)) */
+    mrb_int n = sp_poly_length(a);
+    if (n != sp_poly_length(b)) return FALSE;
+    for (mrb_int i = 0; i < n; i++)
+      if (!sp_poly_eql(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i))) return FALSE;
+    return TRUE;
+  }
   return sp_poly_eq(a, b);
 }
 /* equal? for a poly value: object identity. Immediates (int, symbol, nil,
@@ -6585,6 +6599,22 @@ static sp_PolyArray *sp_enum_items_from(sp_RbVal v) {
   }
   return sp_PolyArray_new();
 }
+/* Poly-receiver #to_a: nil is the empty array, arrays and hashes materialize
+   through sp_enum_items_from (a hash yields its [key, value] pairs), and any
+   other value raises CRuby's NoMethodError. */
+static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return sp_PolyArray_new();
+  /* Array#to_a returns self (identity), so a poly array is returned as-is
+     rather than copied; typed arrays and hashes must materialize a new
+     PolyArray to reach the poly representation. */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY)
+    return (sp_PolyArray *)v.v.p;
+  if (v.tag == SP_TAG_OBJ &&
+      (sp_poly_is_array_kind(v.cls_id) || sp_poly_is_hash_kind(v.cls_id)))
+    return sp_enum_items_from(v);
+  sp_raise_nomethod(sp_nomethod_msg("to_a", v));
+  return NULL;
+}
 static void sp_Enumerator_scan(void *p) {
   sp_Enumerator *e = (sp_Enumerator *)p;
   if (e->items) sp_gc_mark(e->items);
@@ -6704,6 +6734,37 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
    the consecutive non-overlapping slices of length n (the last may be short).
    `slice` is block-scoped, so its GC root pops each iteration; `out` keeps the
    pushed slices alive. */
+/* arr.cycle(n) with no block: the elements repeated n whole times. */
+static sp_Enumerator *sp_Enumerator_new_cycle(sp_RbVal arr, mrb_int n) {
+  sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  mrb_int len = items ? items->len : 0;
+  for (mrb_int r = 0; r < n; r++)
+    for (mrb_int i = 0; i < len; i++) sp_PolyArray_push(out, items->data[i]);
+  { sp_Enumerator *e = sp_Enumerator_new_from_items(out); e->source = arr; return e; }
+}
+/* slice_before/slice_after with a pattern VALUE: start a new group before
+   (after) each element == pattern. Groups are poly arrays. */
+static sp_PolyArray *sp_poly_slice_groups(sp_RbVal arr, sp_RbVal pat, int after) {
+  sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  sp_PolyArray *cur = sp_PolyArray_new(); SP_GC_ROOT(cur);
+  mrb_int len = items ? items->len : 0;
+  for (mrb_int i = 0; i < len; i++) {
+    sp_RbVal e = items->data[i];
+    if (!after && cur->len > 0 && sp_poly_eq(e, pat)) {
+      sp_PolyArray_push(out, sp_box_poly_array(cur));
+      cur = sp_PolyArray_new();
+    }
+    sp_PolyArray_push(cur, e);
+    if (after && sp_poly_eq(e, pat)) {
+      sp_PolyArray_push(out, sp_box_poly_array(cur));
+      cur = sp_PolyArray_new();
+    }
+  }
+  if (cur->len > 0) sp_PolyArray_push(out, sp_box_poly_array(cur));
+  return out;
+}
 static sp_Enumerator *sp_Enumerator_new_slices(sp_RbVal arr, mrb_int n) {
   if (n < 1) sp_raise_cls("ArgumentError", "invalid slice size");
   sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
