@@ -2672,6 +2672,28 @@ int infer_for_index(Compiler *c) {
   return changed;
 }
 
+/* `catch { |tag| ... }` binds its block param to the auto-generated tag,
+   which codegen mints as a content-unique heap string. */
+int infer_catch_block_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "catch") || nt_ref(nt, id, "receiver") >= 0) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &an);
+    if (an > 0) continue;                       /* explicit tag: no block param */
+    int blk = nt_ref(nt, id, "block");
+    const char *bp0 = blk >= 0 ? block_param_name(c, blk, 0) : NULL;
+    if (!bp0) continue;
+    LocalVar *lv = scope_local_intern(comp_scope_of(c, id), bp0);
+    lv->is_block_param = 1;   /* survives the write-types reset */
+    if (lv->type != TY_STRING) { lv->type = TY_STRING; changed = 1; }
+  }
+  return changed;
+}
+
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx) {
   int bp = nt_ref(c->nt, block, "parameters");      /* BlockParametersNode */
@@ -3322,6 +3344,27 @@ static int fwd_callable_def(Compiler *c, int ref, int *out_body, int *out_pn) {
       if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
       int val = nt_ref(nt, w, "value");
       if (val >= 0 && is_proc_create(c, val)) { create = val; break; }
+    }
+    /* a method param holding the callable: resolve through a call site's
+       argument expression (the first site passing a proc literal wins) */
+    if (create < 0 && vn && sc && sc->name) {
+      int pidx = -1;
+      for (int pi = 0; pi < sc->nparams; pi++)
+        if (sc->pnames[pi] && sp_streq(sc->pnames[pi], vn)) { pidx = pi; break; }
+      if (pidx >= 0) {
+        NT_FOREACH_KIND(nt, NK_CallNode, cs2) {
+          if (comp_scope_of(c, cs2) == sc) continue;   /* not our own body */
+          const char *cn2 = nt_str(nt, cs2, "name");
+          if (!cn2 || !sp_streq(cn2, sc->name) || nt_ref(nt, cs2, "receiver") >= 0) continue;
+          int a3 = nt_ref(nt, cs2, "arguments");
+          int ac3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &ac3) : NULL;
+          if (pidx < ac3 && av3 && nt_type(nt, av3[pidx]) &&
+              (sp_streq(nt_type(nt, av3[pidx]), "LambdaNode") || is_proc_create(c, av3[pidx]))) {
+            create = av3[pidx];
+            break;
+          }
+        }
+      }
     }
   }
   if (create < 0) return 0;

@@ -26,6 +26,70 @@ static int rescue_arm_spec_cid(Compiler *c, int rescue_id) {
   return -1;
 }
 
+/* Collect the single user-exception class raised in a subtree (not crossing
+   DefNode). *cid accumulates; *bad is set when a raise doesn't name one
+   ivar-carrying user exception class, or two raises disagree. */
+static void scan_raise_classes(Compiler *c, int id, int *cid, int *bad) {
+  if (id < 0 || *bad) return;
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return;
+  if (sp_streq(ty, "DefNode")) return;
+  if (sp_streq(ty, "CallNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && sp_streq(nm, "raise") && nt_ref(nt, id, "receiver") < 0) {
+      int a = nt_ref(nt, id, "arguments");
+      int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      const char *cn = NULL;
+      if (an >= 1) {
+        const char *aty = nt_type(nt, av[0]);
+        if (aty && sp_streq(aty, "ConstantReadNode")) cn = nt_str(nt, av[0], "name");
+        else if (aty && sp_streq(aty, "CallNode") && nt_str(nt, av[0], "name") &&
+                 sp_streq(nt_str(nt, av[0], "name"), "new")) {
+          int rr = nt_ref(nt, av[0], "receiver");
+          if (rr >= 0 && nt_type(nt, rr) && sp_streq(nt_type(nt, rr), "ConstantReadNode"))
+            cn = nt_str(nt, rr, "name");
+        }
+      }
+      int rcid = cn ? comp_class_index(c, cn) : -1;
+      if (rcid < 0 || !class_is_exc_subclass(c, rcid) || c->classes[rcid].nivars <= 0) { *bad = 1; return; }
+      if (*cid >= 0 && *cid != rcid) { *bad = 1; return; }
+      *cid = rcid;
+      return;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) scan_raise_classes(c, nt_ref_at(nt, id, i), cid, bad);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) scan_raise_classes(c, ids[k], cid, bad);
+  }
+}
+
+/* Bare `rescue => e`: when every raise in the guarded begin body constructs
+   the same ivar-carrying user exception class, specialize the binding to that
+   class like a typed arm would. The emitted binder guards the carried-object
+   cast with a class match, so a foreign StandardError arriving at the bare
+   arm still binds a safe zero-ivar struct. */
+static int bare_rescue_spec_cid(Compiler *c, int rescue_id) {
+  const NodeTable *nt = c->nt;
+  int nexc = 0;
+  nt_arr(nt, rescue_id, "exceptions", &nexc);
+  if (nexc != 0) return -1;
+  NT_FOREACH_KIND(nt, NK_BeginNode, bid) {
+    int arm = nt_ref(nt, bid, "rescue_clause");
+    int hit = 0;
+    for (int r = arm; r >= 0; r = nt_ref(nt, r, "subsequent"))
+      if (r == rescue_id) { hit = 1; break; }
+    if (!hit) continue;
+    int cid = -1, bad = 0;
+    scan_raise_classes(c, nt_ref(nt, bid, "statements"), &cid, &bad);
+    return (!bad && cid >= 0) ? cid : -1;
+  }
+  return -1;
+}
+
 void compute_reachable(Compiler *c) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
@@ -4724,6 +4788,7 @@ void analyze_program(Compiler *c) {
       if (rn >= cap) { cap = cap ? cap * 2 : 16; arms = realloc(arms, sizeof(*arms) * (size_t)cap); }
       arms[rn].id = id; arms[rn].nm = nm; arms[rn].vsc = vsc;
       arms[rn].spec = rescue_arm_spec_cid(c, id);
+      if (arms[rn].spec < 0) arms[rn].spec = bare_rescue_spec_cid(c, id);
       rn++;
     }
     for (int i = 0; i < rn; i++) {
@@ -5005,6 +5070,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
     ch |= infer_block_params(c);
     ch |= infer_for_index(c);
+    ch |= infer_catch_block_params(c);
     /* Resolve constant types before ivar inference: a destructured constant
        (`CLK_1,.. = (1..8).map{...}`) is transiently poly in infer_write_types
        before its array element type settles, and a monotonic ivar that reads
@@ -5108,6 +5174,7 @@ void analyze_program(Compiler *c) {
         ch |= infer_default_param_types(c);
         ch |= infer_block_params(c);
         ch |= infer_for_index(c);
+        ch |= infer_catch_block_params(c);
         ch |= infer_global_const_types(c);
         ch |= infer_multiwrite_const_types(c);
         ch |= infer_ivar_types(c);

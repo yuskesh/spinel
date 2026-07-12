@@ -801,8 +801,8 @@ TyKind infer_call(Compiler *c, int id) {
   if (rt == TY_PROC && sp_streq(name, "curry")) return TY_CURRY;
   if (rt == TY_CURRY && (sp_streq(name, "[]") || sp_streq(name, "call") || sp_streq(name, "()"))) {
     int complete = 0; TyKind cret = TY_UNKNOWN;
-    if (curry_apply_info(c, id, &complete, &cret) && complete && cret == TY_INT)
-      return TY_INT;
+    if (curry_apply_info(c, id, &complete, &cret) && complete)
+      return cret == TY_INT ? TY_INT : TY_POLY;   /* boxed realization otherwise */
     return TY_CURRY;
   }
 
@@ -1035,8 +1035,9 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_NIL;
   }
 
-  /* catch(:tag) { ... [throw :tag, val] ... } -> unify the block's last
-     value with every throw value targeting the tag */
+  /* catch(:tag) { ... } -> unify the block's last value with every throw
+     value that can target the tag, across method boundaries (the throw need
+     not be syntactically inside the body). */
   if (recv < 0 && sp_streq(name, "catch")) {
     int blk = nt_ref(nt, id, "block");
     TyKind result = TY_UNKNOWN;
@@ -1045,9 +1046,16 @@ TyKind infer_call(Compiler *c, int id) {
       if (body >= 0) {
         int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
         if (bn > 0) result = infer_type(c, bb[bn - 1]);
-        TyKind tt = scan_throw_type(c, body, 0);
-        if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
       }
+      const char *tag = NULL;
+      int targ = nt_ref(nt, id, "arguments");
+      int tac = 0; const int *tav = targ >= 0 ? nt_arr(nt, targ, "arguments", &tac) : NULL;
+      if (tac >= 1 && nt_type(nt, tav[0])) {
+        if (sp_streq(nt_type(nt, tav[0]), "SymbolNode")) tag = nt_str(nt, tav[0], "value");
+        else if (sp_streq(nt_type(nt, tav[0]), "StringNode")) tag = nt_str(nt, tav[0], "unescaped");
+      }
+      TyKind tt = scan_throw_type(c, tag);
+      if (tt != TY_UNKNOWN) result = ty_unify(result, tt);
     }
     return result == TY_UNKNOWN ? TY_NIL : result;
   }
@@ -1129,6 +1137,7 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_METHOD && argc == 0) {
     if (sp_streq(name, "name")) return TY_SYMBOL;
     if (sp_streq(name, "arity")) return TY_INT;
+    if (sp_streq(name, "to_proc")) return TY_PROC;
   }
   /* <poly>.call(args): a boxed Proc/Method called through the runtime ABI,
      which returns mrb_int. (Skip when a user class defines `call`: that goes
@@ -1205,8 +1214,12 @@ TyKind infer_call(Compiler *c, int id) {
     return (s && s->name && s->name[0]) ? TY_SYMBOL : TY_NIL;
   }
 
-  /* identity methods: return the receiver unchanged */
-  if (recv >= 0 && argc == 0 &&
+  /* identity methods: return the receiver unchanged (clone also with its
+     freeze: keyword argument) */
+  if (recv >= 0 &&
+      (argc == 0 ||
+       (argc == 1 && sp_streq(name, "clone") && argv && nt_type(nt, argv[0]) &&
+        sp_streq(nt_type(nt, argv[0]), "KeywordHashNode"))) &&
       (sp_streq(name, "freeze") || sp_streq(name, "itself") ||
        sp_streq(name, "dup") || sp_streq(name, "clone")))
     return rt;
@@ -2969,6 +2982,7 @@ else {
     if (sp_streq(name, "backtrace")) return TY_STR_ARRAY;  /* empty: no frames captured */
     if (sp_streq(name, "cause")) return TY_EXCEPTION;      /* the threaded cause, nil if none */
     if (sp_streq(name, "result")) return TY_POLY;          /* StopIteration#result, nil otherwise */
+    if (sp_streq(name, "name")) return TY_POLY;            /* NameError#name, nil otherwise */
   }
 
   /* poly receiver / poly operand: result type of operations on sp_RbVal */

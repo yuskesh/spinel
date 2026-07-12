@@ -124,7 +124,7 @@ int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode);
 int scope_body_last(Compiler *c, int mi);
 int is_blk_param_call(Compiler *c, int node, int mi);
 TyKind scan_break_type(Compiler *c, int id, int depth);
-TyKind scan_throw_type(Compiler *c, int id, int depth);
+TyKind scan_throw_type(Compiler *c, const char *tag);
 TyKind yield_value_type(Compiler *c, int mi);
 TyKind method_call_ret(Compiler *c, int mi, int call_id);
 /* is_proc_constant / is_proc_literal are declared in analyze.h (codegen needs them). */
@@ -200,6 +200,7 @@ int infer_array_params(Compiler *c);
 int infer_string_params(Compiler *c);
 int infer_param_types(Compiler *c);
 int infer_for_index(Compiler *c);
+int infer_catch_block_params(Compiler *c);
 void infer_bigint_loop_locals(Compiler *c);
 int first_yield(Compiler *c, int si);
 int first_block_call_args(Compiler *c, int si);

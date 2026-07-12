@@ -4039,8 +4039,14 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
                            sp_streq(nt_type(nt, par), "ConstantReadNode"))
                           ? nt_str(nt, par, "name") : NULL;
         if (pnm && ename) {
-          snprintf(enbuf, sizeof enbuf, "%s_%s", pnm, ename);
+          /* qualified form first (Math::DomainError), then the legacy
+             flattened form some package raisers still use */
+          snprintf(enbuf, sizeof enbuf, "%s::%s", pnm, ename);
           if (is_exc_name(enbuf)) ename = enbuf;
+          else {
+            snprintf(enbuf, sizeof enbuf, "%s_%s", pnm, ename);
+            if (is_exc_name(enbuf)) ename = enbuf;
+          }
         }
       }
       /* A user exception class is raised under its QUALIFIED Ruby name
@@ -4102,8 +4108,27 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
       else if (qbuf[0])
         buf_printf(b, "(sp_str_eq(_rcls_%d, \"%s\") || sp_str_eq(_rcls_%d, \"%s\"))",
                    rc, ename, rc, qbuf);
-      else
-        buf_printf(b, "sp_str_eq(_rcls_%d, \"%s\")", rc, ename);
+      else {
+        /* `rescue M` where M is an included module: an exception matches when
+           its class (or an ancestor) includes M, so expand to the exception
+           classes carrying the module. A module nobody includes keeps the
+           plain name compare (which, like CRuby, never matches a class). */
+        buf_printf(b, "(sp_str_eq(_rcls_%d, \"%s\")", rc, ename);
+        if (uci >= 0) {
+          for (int k = 0; k < c->nclasses; k++) {
+            if (!class_is_exc_subclass(c, k)) continue;
+            int inc = 0;
+            for (int a = k; a >= 0 && !inc; a = c->classes[a].parent)
+              for (int m = 0; m < c->classes[a].nincluded_mods; m++)
+                if (c->classes[a].included_mods[m] == uci) { inc = 1; break; }
+            if (!inc) continue;
+            const char *kq = class_ruby_name(c, k);
+            buf_printf(b, " || sp_exc_cls_matches(_rcls_%d, \"%s\")",
+                       rc, kq ? kq : c->classes[k].name);
+          }
+        }
+        buf_puts(b, ")");
+      }
     }
     if (first) buf_puts(b, "1");  /* no usable type -> always */
     }
@@ -4136,9 +4161,20 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   emit_indent(b, indent);
   if (spec_cid >= 0) {
     const char *xn = c->classes[spec_cid].name;
-    buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
-                  " : (sp_Exception *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
-               rc, xn, rc, rc);
+    if (bare) {
+      /* A bare arm matches any StandardError, so the carried-object cast to
+         the specialized class must be guarded by a class match: a foreign
+         exception arriving here binds a fresh zero-ivar struct instead. */
+      const char *qn = class_ruby_name(c, spec_cid);
+      buf_printf(b, "sp_Exception *_ce_%d = (sp_exc_obj[sp_exc_top] && sp_exc_cls_matches(_rcls_%d, \"%s\"))"
+                    " ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : (sp_Exception *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
+                 rc, rc, qn ? qn : xn, xn, rc, rc);
+    }
+    else
+      buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : (sp_Exception *)sp_exc_new_sub_sized(sizeof(sp_%s), _rcls_%d, _rmsg_%d);\n",
+                 rc, xn, rc, rc);
   }
   else
     buf_printf(b, "sp_Exception *_ce_%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
@@ -4242,7 +4278,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       g_retry_label = ens_retry_label;
     }
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
-    emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+    emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     g_exc_frame_depth++;
     if (resultvar && else_stmts < 0) {
@@ -4372,7 +4408,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   if (has_retry) g_retry_label = retry_label;
 
   emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
-  emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+  emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
   emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
   g_exc_frame_depth++;
   /* body value is the begin value only when there is no else clause */
@@ -4641,7 +4677,39 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                              sp_streq(nm, "private") || sp_streq(nm, "protected") ||
                              sp_streq(nm, "public") || sp_streq(nm, "attr_reader") ||
                              sp_streq(nm, "attr_writer") || sp_streq(nm, "attr_accessor"))) {
-        /* These are class-body declarations handled at analysis time; skip. */
+        /* These are class-body declarations handled at analysis time; skip.
+           Exception: a visibility call naming a method the class does not
+           define raises NameError when the body executes, per CRuby. */
+        if (sp_streq(nm, "private") || sp_streq(nm, "protected") || sp_streq(nm, "public")) {
+          int vcid = g_class_body_id >= 0 ? g_class_body_id
+                   : (comp_scope_of(c, id) ? comp_scope_of(c, id)->class_id : -1);
+          if (vcid >= 0) {
+            int vargs = nt_ref(nt, id, "arguments");
+            int van = 0;
+            const int *vav = vargs >= 0 ? nt_arr(nt, vargs, "arguments", &van) : NULL;
+            for (int vi = 0; vi < van; vi++) {
+              const char *vaty = nt_type(nt, vav[vi]);
+              const char *mn = NULL;
+              if (vaty && sp_streq(vaty, "SymbolNode")) mn = nt_str(nt, vav[vi], "value");
+              else if (vaty && sp_streq(vaty, "StringNode")) mn = nt_str(nt, vav[vi], "unescaped");
+              if (!mn) continue;
+              size_t ml = strlen(mn);
+              char wb[256]; wb[0] = '\0';
+              if (ml > 0 && mn[ml - 1] == '=' && ml - 1 < sizeof wb) {
+                memcpy(wb, mn, ml - 1); wb[ml - 1] = '\0';
+              }
+              int found = comp_method_in_chain(c, vcid, mn, NULL) >= 0 ||
+                          comp_reader_in_chain(c, vcid, mn, NULL) ||
+                          (wb[0] && comp_writer_in_chain(c, vcid, wb, NULL));
+              if (!found) {
+                emit_indent(b, indent);
+                buf_printf(b, "sp_raise_cls(\"NameError\", \"undefined method '%s' for class '%s'\");\n",
+                           mn, class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name);
+                return;
+              }
+            }
+          }
+        }
         return;
       }
     }
@@ -5162,12 +5230,22 @@ else {
     const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
     int sc = comp_scope_of(c, id)->class_id;
+    /* same scope ladder as the plain-write form: class body civ_, then the
+       Toplevel pseudo-class global (a bare `self` here is undeclared C) */
+    if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
+    if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
     TyKind vt = TY_UNKNOWN;
     if (sc >= 0) { int iv = comp_ivar_index(&c->classes[sc], nm); if (iv >= 0) vt = c->classes[sc].ivar_types[iv]; }
     char ref[300];
     Scope *cs = comp_scope_of(c, id);
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, nm + 1);
+    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
+             g_class_body_id >= 0)
+      snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, nm + 1);
+    else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
+             comp_class_index(c, "Toplevel") >= 0)
+      snprintf(ref, sizeof ref, "civ_Toplevel_%s", nm + 1);
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, nm + 1);
     emit_indent(b, indent);
@@ -6946,7 +7024,7 @@ else {
     int e = nt_ref(nt, id, "expression");
     int r = nt_ref(nt, id, "rescue_expression");
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
-    emit_indent(b, indent); buf_puts(b, "sp_exc_top++;\n");
+    emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     if (e >= 0) emit_stmt(c, e, b, indent + 1);
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");

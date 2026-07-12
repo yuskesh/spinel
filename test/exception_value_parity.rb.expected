@@ -1,0 +1,18 @@
+true
+false
+false
+true
+false
+key not found: :missing_key
+key not found: :b
+5
+Math::DomainError
+Numerical argument is out of domain - sqrt
+NameError
+undefined method 'absent' for class 'Vis'
+false
+:foo
+NoMethodError
+#<ArgumentError: root>
+top
+#<ArgumentError: inner>

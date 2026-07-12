@@ -1397,6 +1397,13 @@ void register_globals_consts(Compiler *c) {
         if (sp_streq(ty, "ConstantPathWriteNode")) cv->const_def_write = 1;
       }
     }
+    else if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode") ||
+             sp_streq(ty, "ConstantOperatorWriteNode")) {
+      /* `CONST ||= v` (and friends) may be the constant's only definition */
+      const char *nm = nt_str(nt, id, "name");
+      if (nm && is_c_ident(nm) && comp_class_index(c, nm) < 0)
+        comp_const_intern(c, nm);
+    }
     else if (sp_streq(ty, "ConstantWriteNode")) {
       const char *nm = nt_str(nt, id, "name");
       /* a constant bound to a regex literal is resolved at compile time to a
@@ -2129,6 +2136,18 @@ int infer_global_const_types(Compiler *c) {
       if (nm) lv = comp_const(c, nm);
       vt = infer_type(c, nt_ref(nt, id, "value"));
     }
+    else if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode") ||
+             sp_streq(ty, "ConstantOperatorWriteNode")) {
+      const char *nm = nt_str(nt, id, "name");
+      if (nm) lv = comp_const(c, nm);
+      int is_orand = !sp_streq(ty, "ConstantOperatorWriteNode");
+      /* An or/and-write-only constant has no definite value before its first
+         use, so it must default to nil (poly) for the truthiness check. */
+      if (is_orand && lv && !lv->const_def_write)
+        vt = TY_POLY;
+      else
+        vt = infer_type(c, nt_ref(nt, id, "value"));
+    }
     else if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
              sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
       int tgt = nt_ref(nt, id, "target");
@@ -2361,6 +2380,22 @@ void process_include_body(Compiler *c, int ci, int body_node) {
       else if (aty && sp_streq(aty, "ConstantPathNode")) mname = nt_str(nt, args[j], "name");
       int mod_id = mname ? comp_class_index(c, mname) : -1;
       if (mod_id < 0) continue;
+      /* record membership for `rescue M` matching (dedup across reopenings) */
+      {
+        ClassInfo *cif = &c->classes[ci];
+        int seen = 0;
+        for (int m = 0; m < cif->nincluded_mods; m++)
+          if (cif->included_mods[m] == mod_id) { seen = 1; break; }
+        if (!seen) {
+          if (cif->nincluded_mods >= cif->cincluded_mods) {
+            cif->cincluded_mods = cif->cincluded_mods ? cif->cincluded_mods * 2 : 4;
+            int *nm2 = realloc(cif->included_mods, sizeof(int) * (size_t)cif->cincluded_mods);
+            if (!nm2) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+            cif->included_mods = nm2;
+          }
+          cif->included_mods[cif->nincluded_mods++] = mod_id;
+        }
+      }
       /* snapshot count before adding new scopes to avoid re-scanning them */
       int snap = c->nscopes;
       for (int ms = 0; ms < snap; ms++) {

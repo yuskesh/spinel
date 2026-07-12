@@ -1497,6 +1497,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       else if (sp_streq(vt, "CallNode") && nt_ref(nt, v, "receiver") < 0) {
         const char *cn = nt_str(nt, v, "name");
         if (cn && comp_method_index(c, cn) >= 0) res = "method";
+        /* an implicit-self call inside a class resolves through the
+           enclosing class's method chain (readers included) */
+        else if (cn && comp_scope_of(c, id) && comp_scope_of(c, id)->class_id >= 0 &&
+                 (comp_method_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL) >= 0 ||
+                  comp_reader_in_chain(c, comp_scope_of(c, id)->class_id, cn, NULL)))
+          res = "method";
         /* builtin kernel functions the compiler always resolves */
         else if (cn) {
           static const char *const kfns[] = {
@@ -2076,7 +2082,7 @@ else {
     int t = ++g_tmp;
     buf_puts(b, "({ ");
     emit_ctype(c, rt, b);
-    buf_printf(b, " _t%d = %s; sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_exc_top++;\n", t, default_value(rt));
+    buf_printf(b, " _t%d = %s; sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n", t, default_value(rt));
     buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     /* expression arm — assign result to temp (skip diverging exprs like raise) */
     TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;

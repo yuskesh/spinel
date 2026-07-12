@@ -238,34 +238,26 @@ TyKind scan_break_type(Compiler *c, int id, int depth) {
   }
   return result;
 }
-TyKind scan_throw_type(Compiler *c, int id, int depth) {
-  if (id < 0 || depth > 32) return TY_UNKNOWN;
+TyKind scan_throw_type(Compiler *c, const char *tag) {
+  /* Program-wide: a throw can reach its catch through any number of method
+     frames, so the catch's value type must unify with every throw that can
+     target it. A literal tag on both sides that differs is provably
+     unreachable; a non-literal tag on either side always participates. */
   const NodeTable *nt = c->nt;
-  const char *ty = nt_type(nt, id);
-  if (!ty) return TY_UNKNOWN;
-  if (sp_streq(ty, "DefNode")) return TY_UNKNOWN;
-  if (sp_streq(ty, "CallNode")) {
-    const char *nm = nt_str(nt, id, "name");
-    if (nm && sp_streq(nm, "throw") && nt_ref(nt, id, "receiver") < 0) {
-      int v = nt_ref(nt, id, "arguments");
-      int vargc = 0; const int *vargs = v >= 0 ? nt_arr(nt, v, "arguments", &vargc) : NULL;
-      if (vargc >= 2) return infer_type(c, vargs[1]);
-      return TY_NIL;
-    }
-  }
   TyKind result = TY_UNKNOWN;
-  int nr = nt_num_refs(nt, id);
-  for (int i = 0; i < nr; i++) {
-    TyKind t = scan_throw_type(c, nt_ref_at(nt, id, i), depth + 1);
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "throw") || nt_ref(nt, id, "receiver") >= 0) continue;
+    int v = nt_ref(nt, id, "arguments");
+    int vargc = 0; const int *vargs = v >= 0 ? nt_arr(nt, v, "arguments", &vargc) : NULL;
+    if (vargc < 1) continue;
+    const char *tty = nt_type(nt, vargs[0]);
+    const char *tnm = NULL;
+    if (tty && sp_streq(tty, "SymbolNode")) tnm = nt_str(nt, vargs[0], "value");
+    else if (tty && sp_streq(tty, "StringNode")) tnm = nt_str(nt, vargs[0], "unescaped");
+    if (tag && tnm && !sp_streq(tnm, tag)) continue;
+    TyKind t = vargc >= 2 ? infer_type(c, vargs[1]) : TY_NIL;
     if (t != TY_UNKNOWN) result = ty_unify(result, t);
-  }
-  int na = nt_num_arrs(nt, id);
-  for (int i = 0; i < na; i++) {
-    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
-    for (int k = 0; k < n; k++) {
-      TyKind t = scan_throw_type(c, ids[k], depth + 1);
-      if (t != TY_UNKNOWN) result = ty_unify(result, t);
-    }
   }
   return result;
 }
@@ -487,7 +479,16 @@ TyKind proc_node_ret(Compiler *c, int create) {
   const char *ty = nt_type(nt, create);
   int body;
   if (ty && sp_streq(ty, "LambdaNode")) body = nt_ref(nt, create, "body");
-  else { int blk = nt_ref(nt, create, "block"); body = blk >= 0 ? nt_ref(nt, blk, "body") : -1; }
+  else {
+    int blk = nt_ref(nt, create, "block");
+    /* `Proc.new(&b)` / `proc(&b)`: no body of its own -- the value is the
+       forwarded proc, whose return is unknowable here (a block param's
+       actual block lives at the caller). TY_UNKNOWN maps to the boxed poly
+       return at the .call site instead of a silent nil. */
+    if (blk >= 0 && nt_type(nt, blk) && sp_streq(nt_type(nt, blk), "BlockArgumentNode"))
+      return TY_UNKNOWN;
+    body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+  }
   if (body < 0) return TY_NIL;
   int bn = 0;
   const int *bb = nt_arr(nt, body, "body", &bn);

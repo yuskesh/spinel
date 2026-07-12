@@ -324,10 +324,10 @@ mrb_int sp_int_clamp(mrb_int v,mrb_int lo,mrb_int hi){return v<lo?lo:v>hi?hi:v;}
 mrb_float sp_float_clamp(mrb_float v,mrb_float lo,mrb_float hi){return v<lo?lo:v>hi?hi:v;}
 /* Integer square root via Newton's method -- exact for the full
    mrb_int range. CRuby raises Math::DomainError on negative input
-   (flattened runtime name "Math_DomainError"). The seed is n/2, not
+   (flattened runtime name "Math::DomainError"). The seed is n/2, not
    (n+1)/2: at n == MRB_INT_MAX the latter overflows (signed UB), and
    n/2 is a valid Newton seed for all n >= 2. */
-mrb_int sp_int_sqrt(mrb_int n){if(n<0)sp_raise_cls("Math_DomainError","Numerical argument is out of domain - \"isqrt\"");if(n<2)return n;mrb_int x=n,y=n/2;while(y<x){x=y;y=(x+n/x)/2;}return x;}
+mrb_int sp_int_sqrt(mrb_int n){if(n<0)sp_raise_cls("Math::DomainError","Numerical argument is out of domain - \"isqrt\"");if(n<2)return n;mrb_int x=n,y=n/2;while(y<x){x=y;y=(x+n/x)/2;}return x;}
 /* Integer#round/ceil/floor/truncate at 10^(-ndigits). Pure integer
    arithmetic (no double precision loss above 2^53). 10^p fits mrb_int
    only for p<=18; p>=19 collapses to 0. Round-up multiply is overflow-

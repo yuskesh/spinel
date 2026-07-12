@@ -2132,10 +2132,7 @@ else if (orecv >= 0 && onm) {
          read the boxed value back, unboxing a float with sp_poly_to_f. The
          side-channel array holds 16 slots (the proc-call ABI cap). */
       if (k < 16) {
-        if (!g_needs_proc_poly_argslot) {
-          g_needs_proc_poly_argslot = 1;
-          buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
-        }
+        g_needs_proc_poly_argslot = 1;  /* channel array now lives in sp_runtime.h */
         if (pt == TY_FLOAT)
           buf_printf(pb, "(argc > %d) ? sp_poly_to_f(_sp_proc_poly_args[%d]) : sp_float_nil();\n", k, k);
         else
@@ -2162,10 +2159,7 @@ else if (orecv >= 0 && onm) {
      from the front, posts from the back, the remainder (possibly empty) is
      the rest; missing posts bind nil. */
   if ((restn && restn[0]) || nposts > 0 || nopts > 0 || nnumbered > 0) {
-    if (!g_needs_proc_poly_argslot) {
-      g_needs_proc_poly_argslot = 1;
-      buf_puts(&g_proc_protos, "static SP_TLS sp_RbVal _sp_proc_poly_args[16];\n");
-    }
+    g_needs_proc_poly_argslot = 1;  /* channel array now lives in sp_runtime.h */
     for (int k = 0; k < nnumbered; k++) {
       buf_printf(pb, "    sp_RbVal lv__%d = (argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n",
                  k + 1, k, k);
@@ -2365,7 +2359,7 @@ int is_exc_name(const char *n) {
     "TypeError", "NameError", "NoMethodError", "IndexError",
     "KeyError", "RangeError", "IOError", "EOFError",
     "ZeroDivisionError", "NotImplementedError", "StopIteration",
-    "FloatDomainError", "Math_DomainError", "FrozenError", "EncodingError",
+    "FloatDomainError", "Math::DomainError", "FrozenError", "EncodingError",
     "LoadError", "RegexpError", "StringScanner_Error", "FiberError",
     "UncaughtThrowError", NULL
   };

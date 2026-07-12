@@ -1,0 +1,14 @@
+[1, 2]
+"carried"
+7
+:skipped_inner
+42
+5
+"fallthrough"
+nil
+UncaughtThrowError
+uncaught throw :elsewhere
+99
+2.5
+"int-tag"
+99
