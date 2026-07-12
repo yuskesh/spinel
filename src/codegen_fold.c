@@ -2493,10 +2493,13 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
     int pargs = nt_ref(nt, id, "arguments");
     int pac = 0; const int *pav = pargs >= 0 ? nt_arr(nt, pargs, "arguments", &pac) : NULL;
     int init_node = -1;
-    if (!pop && pac >= 1 && pav && nt_type(nt, pav[pac - 1]) &&
-        sp_streq(nt_type(nt, pav[pac - 1]), "SymbolNode")) {
-      pop = nt_str(nt, pav[pac - 1], "value");
-      if (pac == 2) init_node = pav[0];
+    if (!pop && pac >= 1 && pav) {
+      /* a symbol literal, or a local statically holding one (s = :+) */
+      const char *psv = sym_static_value(c, pav[pac - 1]);
+      if (psv) {
+        pop = psv;
+        if (pac == 2) init_node = pav[0];
+      }
     }
     else if (pop && pac == 1 && pav) init_node = pav[0];
     const char *pfn = pop ? (sp_streq(pop, "+") ? "sp_poly_add"
