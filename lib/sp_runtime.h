@@ -4691,6 +4691,14 @@ static mrb_bool sp_poly_has_key(sp_RbVal recv, sp_RbVal key) {
 /* frozen? on a poly value: scalars (int/float/sym/bool/nil/bigint) are always
    frozen in Ruby; a string checks its frozen flag; a heap object checks its GC
    header bit. Used when a receiver widened to poly under promote. */
+/* Object#freeze on a boxed value: heap objects flip the GC-header bit
+   (sp_gc_is_frozen reports it back), heap strings flip the string marker,
+   every immutable tag (int/float/sym/nil/bool/...) is already frozen. */
+static inline sp_RbVal sp_poly_freeze(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ) sp_gc_freeze(v.v.p);
+  else if (v.tag == SP_TAG_STR && v.v.s) sp_str_freeze_val(v.v.s);
+  return v;
+}
 static inline mrb_bool sp_poly_frozen(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s ? sp_str_is_frozen_val(v.v.s) : TRUE;
   if (v.tag == SP_TAG_OBJ) return sp_gc_is_frozen(v.v.p);

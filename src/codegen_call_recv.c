@@ -5039,14 +5039,21 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
-  /* Object#freeze / #frozen? on a user instance: freeze is a no-op returning
-     self (matching the poly-receiver arm -- spinel has no per-object freeze
-     state), so frozen? consistently reports false. */
+  /* Object#freeze / #frozen? on a user instance: the frozen state lives in
+     the object's GC header bit (shared with the container freeze paths).
+     freeze sets it and returns self; frozen? reads it. Mutation of a frozen
+     plain object's ivars is NOT trapped (raw C stores); the flag round-trip
+     is what reflection-driven code observes. */
   if (recv >= 0 && ty_is_object(rt) && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "freeze") || sp_streq(name, "frozen?")) &&
       comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
-    if (sp_streq(name, "freeze")) { emit_expr(c, recv, b); return 1; }
-    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+    if (sp_streq(name, "freeze")) {
+      buf_puts(b, "((");
+      emit_ctype(c, rt, b);
+      buf_puts(b, ")sp_gc_freeze("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return 1;
+    }
+    buf_puts(b, "sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")");
     return 1;
   }
 
@@ -6604,7 +6611,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_str_%s(sp_poly_to_s(", sp_streq(name, "bytes") ? "bytes" : "codepoints");
       emit_expr(c, recv, b); buf_puts(b, "))"); return 1;
     }
-    if (sp_streq(name, "freeze"))     { emit_expr(c, recv, b); return 1; }
+    if (sp_streq(name, "freeze"))     { buf_puts(b, "sp_poly_freeze("); emit_expr(c, recv, b); buf_puts(b, ")"); return 1; }
   }
   /* poly receiver: String#getbyte (a non-string tag raises NoMethodError).
      A user method or attr reader with the same name wins. */

@@ -7582,7 +7582,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     int is_dup_clone = sp_streq(name, "dup") || sp_streq(name, "clone");
     int recv_native = ty_is_object(recv_t) &&
                       c->classes[ty_object_class(recv_t)].is_native_class;
-    if (argc0 == 0 && !ty_is_hash(recv_t) &&
+    /* freeze on a user instance or a boxed value has real state (the GC
+       header bit / string marker) -- served by the receiver arms, not the
+       identity shortcut */
+    int freeze_stateful = sp_streq(name, "freeze") &&
+                          (ty_is_object(recv_t) || recv_t == TY_POLY);
+    if (argc0 == 0 && !freeze_stateful && !ty_is_hash(recv_t) &&
         !(is_dup_clone && (recv_t == TY_STRING || ty_is_array(recv_t) || recv_native))) {
       emit_expr(c, recv, b); return;
     }
