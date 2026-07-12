@@ -1527,6 +1527,8 @@ else {
     if (sp_streq(name, "match")) return TY_MATCHDATA;
     if (sp_streq(name, "=~")) return TY_POLY;
     if (sp_streq(name, "source") || sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
+    if (sp_streq(name, "names")) return TY_STR_ARRAY;
+    if (sp_streq(name, "named_captures")) return TY_STR_POLY_HASH;  /* {name => [group indices]} */
     if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone")) return TY_REGEX;
     if (sp_streq(name, "encoding")) return TY_POLY;  /* a boxed Encoding value */
     if (sp_streq(name, "fixed_encoding?")) return TY_BOOL;
@@ -1544,6 +1546,7 @@ else {
     if (sp_streq(name, "captures") || sp_streq(name, "to_a")) return TY_POLY_ARRAY;
     if (sp_streq(name, "named_captures")) return TY_STR_POLY_HASH;  /* {String => String|nil} */
     if (sp_streq(name, "names")) return TY_STR_ARRAY;
+    if (sp_streq(name, "string")) return TY_STRING;  /* the match subject */
     if (sp_streq(name, "nil?")) return TY_BOOL;
   }
 

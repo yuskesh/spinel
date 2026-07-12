@@ -8979,6 +8979,37 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, "sp_re_to_s_str((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
+    if (sp_streq(name, "names")) {
+      buf_puts(b, "sp_Regexp_names((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
+      return;
+    }
+    if (sp_streq(name, "named_captures")) {
+      /* {name => [group indices]}, built inline: sp_StrPolyHash is per-TU
+         static, so the hash must be constructed by the generated TU itself */
+      int tp = ++g_tmp, th = ++g_tmp, ti = ++g_tmp;
+      buf_printf(b, "({ const void *_t%d = (const void *)(", tp); emit_expr(c, recv, b);
+      buf_printf(b, "); sp_StrPolyHash *_t%d = sp_StrPolyHash_new(); SP_GC_ROOT(_t%d);"
+                    " int _n%d = re_num_named((const mrb_regexp_pattern *)_t%d);"
+                    " for (int _t%d = 0; _t%d < _n%d; _t%d++) {"
+                    " int _g%d = 0; const char *_nm%d = re_named_name((const mrb_regexp_pattern *)_t%d, _t%d, &_g%d);"
+                    " if (_nm%d) {"
+                    " sp_RbVal _cur%d = sp_StrPolyHash_get(_t%d, _nm%d); sp_IntArray *_ia%d;"
+                    " if (_cur%d.tag == SP_TAG_NIL) { _ia%d = sp_IntArray_new();"
+                    " sp_StrPolyHash_set(_t%d, sp_str_dup(_nm%d), sp_box_int_array(_ia%d)); }"
+                    " else _ia%d = (sp_IntArray *)_cur%d.v.p;"
+                    " sp_IntArray_push(_ia%d, _g%d); } } _t%d; })",
+                 th, th,
+                 ti, tp,
+                 ti, ti, ti, ti,
+                 ti, ti, tp, ti, ti,
+                 ti,
+                 ti, th, ti, ti,
+                 ti, ti,
+                 th, ti, ti,
+                 ti, ti,
+                 ti, ti, th);
+      return;
+    }
   }
   /* encoding/fixed_encoding? on a non-literal regexp value: the source is not
      visible at compile time, so default to US-ASCII (the answer for any 7-bit

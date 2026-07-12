@@ -85,6 +85,12 @@ sp_MatchData *sp_re_matchdata_at(mrb_regexp_pattern *pat, const char *str, mrb_i
 const char *sp_MatchData_aref(sp_MatchData *m, mrb_int i);
 const char *sp_MatchData_aref_name(sp_MatchData *m, const char *name);
 sp_StrArray *sp_MatchData_names(sp_MatchData *m);
+const char *sp_MatchData_string(sp_MatchData *m);
+sp_StrArray *sp_Regexp_names(const mrb_regexp_pattern *pat);
+/* named-group metadata (lib/regexp/re_compile.c), for the generated TU's
+   inline Regexp#named_captures construction */
+int re_num_named(const mrb_regexp_pattern *pat);
+const char *re_named_name(const mrb_regexp_pattern *pat, int i, int *group_out);
 mrb_int sp_MatchData_length(sp_MatchData *m);
 mrb_int sp_md_char_off(sp_MatchData *m, int byteoff);
 mrb_int sp_MatchData_begin(sp_MatchData *m, mrb_int i);

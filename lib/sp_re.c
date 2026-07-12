@@ -713,6 +713,24 @@ const char *sp_MatchData_aref_name(sp_MatchData *m, const char *name) {
   return sp_MatchData_aref(m, g);
 }
 /* `md.names`: the capture names in declaration order. */
+/* Regexp#names on the pattern itself: named groups in declaration order. */
+sp_StrArray *sp_Regexp_names(const mrb_regexp_pattern *pat) {
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  if (!pat) return a;
+  int n = re_num_named(pat);
+  for (int i = 0; i < n; i++) {
+    const char *nm = re_named_name(pat, i, NULL);
+    if (nm) sp_StrArray_push(a, sp_str_dup(nm));
+  }
+  return a;
+}
+
+/* MatchData#string: the frozen match subject. */
+const char *sp_MatchData_string(sp_MatchData *m) {
+  return m ? m->source : NULL;
+}
+
 sp_StrArray *sp_MatchData_names(sp_MatchData *m) {
   sp_StrArray *a = sp_StrArray_new();
   SP_GC_ROOT(a);
