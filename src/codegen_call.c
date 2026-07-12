@@ -7075,6 +7075,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, "((sp_Class){_t%d ? _t%d->cls_id : %d})", _tobj, _tobj, _cidx);
       return;
     }
+    if (cn && rt == TY_INT) {
+      /* an int slot can hold the nil sentinel (a nil-returning <=>, a
+         missing key): report NilClass then, matching how p prints it */
+      int tcv = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tcv); emit_expr(c, recv, b);
+      buf_printf(b, "; ((sp_Class){(mrb_int)-1, _t%d == SP_INT_NIL ? \"NilClass\" : \"Integer\"}); })", tcv);
+      return;
+    }
+    if (cn && rt == TY_FLOAT) {
+      /* same for the float nil sentinel (NaN-boxed nil) */
+      int tcv = ++g_tmp;
+      buf_printf(b, "({ mrb_float _t%d = ", tcv); emit_expr(c, recv, b);
+      buf_printf(b, "; ((sp_Class){(mrb_int)-1, sp_float_is_nil(_t%d) ? \"NilClass\" : \"Float\"}); })", tcv);
+      return;
+    }
     if (cn) {
       /* a first-class name-backed Class value; the receiver is side-effect-
          evaluated when it is not a plain read */
