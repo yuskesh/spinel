@@ -2567,7 +2567,176 @@ static char *rewrite_syntax_sugar(char *source) {
     }                                                                     \
   } while(0)
 
+  /* ---- Lexical state: the rewrites below must never fire inside string
+     literals, heredoc bodies, or comments (#2181: `&:word` inside a string
+     was rewritten, silently changing the string's value). A small state
+     machine tracks '...' / "..." / %-literals / heredocs / comments and
+     copies their contents verbatim; `#{...}` interpolation re-enters code
+     (rewrites stay active there, as in CRuby). Regex literals are not
+     modeled (slash/division disambiguation needs full parsing); a `&:word`
+     inside a regex literal remains a known residual. */
+  enum { LX_SQ, LX_DQ, LX_PV, LX_CODE };
+  struct { unsigned char st; char open; char close; int depth; } lstk[64];
+  int lsp = 0;   /* 0 = top-level code; frames 1.. are literals/interp */
+  struct { char tag[64]; int squig; int interp; } hds[8];
+  int nhd = 0, in_hd = 0;
+
   while (i < len) {
+    /* --- heredoc body: verbatim until the terminator line --- */
+    if (lsp == 0 && in_hd) {
+      if (i == 0 || source[i - 1] == '\n') {
+        size_t j = i;
+        if (hds[0].squig) while (j < len && (source[j] == ' ' || source[j] == '\t')) j++;
+        size_t tl = strlen(hds[0].tag);
+        if (j + tl <= len && strncmp(source + j, hds[0].tag, tl) == 0) {
+          size_t k2 = j + tl;
+          while (k2 < len && (source[k2] == ' ' || source[k2] == '\t' || source[k2] == '\r')) k2++;
+          if (k2 >= len || source[k2] == '\n') {
+            while (i < len && source[i] != '\n') { OUT_CHAR(source[i]); i++; }
+            if (i < len) { OUT_CHAR('\n'); i++; }
+            memmove(&hds[0], &hds[1], sizeof(hds[0]) * (size_t)(nhd - 1));
+            nhd--;
+            if (nhd == 0) in_hd = 0;
+            continue;
+          }
+        }
+      }
+      if (hds[0].interp && source[i] == '\\' && i + 1 < len) {
+        OUT_CHAR(source[i]); OUT_CHAR(source[i + 1]); i += 2; continue;
+      }
+      if (hds[0].interp && source[i] == '#' && i + 1 < len && source[i + 1] == '{' &&
+          lsp < 63) {
+        lsp++; lstk[lsp].st = LX_CODE; lstk[lsp].open = 0; lstk[lsp].close = 0; lstk[lsp].depth = 1;
+        OUT_CHAR('#'); OUT_CHAR('{'); i += 2; continue;
+      }
+      OUT_CHAR(source[i]); i++; continue;
+    }
+    /* --- inside a literal frame --- */
+    if (lsp > 0 && lstk[lsp].st != LX_CODE) {
+      char cch = source[i];
+      if (cch == '\\' && i + 1 < len) { OUT_CHAR(cch); OUT_CHAR(source[i + 1]); i += 2; continue; }
+      if (lstk[lsp].st == LX_DQ && cch == '#' && i + 1 < len && source[i + 1] == '{' &&
+          lsp < 63) {
+        lsp++; lstk[lsp].st = LX_CODE; lstk[lsp].open = 0; lstk[lsp].close = 0; lstk[lsp].depth = 1;
+        OUT_CHAR('#'); OUT_CHAR('{'); i += 2; continue;
+      }
+      if (lstk[lsp].open && cch == lstk[lsp].open) { lstk[lsp].depth++; OUT_CHAR(cch); i++; continue; }
+      if (cch == lstk[lsp].close) {
+        lstk[lsp].depth--;
+        if (lstk[lsp].depth == 0) lsp--;
+        OUT_CHAR(cch); i++; continue;
+      }
+      OUT_CHAR(cch); i++; continue;
+    }
+    /* --- code (top level or interpolation): interp braces close first --- */
+    if (lsp > 0 && lstk[lsp].st == LX_CODE) {
+      if (source[i] == '{') lstk[lsp].depth++;
+      else if (source[i] == '}') {
+        lstk[lsp].depth--;
+        if (lstk[lsp].depth == 0) { OUT_CHAR('}'); i++; lsp--; continue; }
+      }
+    }
+    /* line comment (also terminates inside interpolation, as in Ruby) */
+    if (source[i] == '#') {
+      while (i < len && source[i] != '\n') { OUT_CHAR(source[i]); i++; }
+      continue;
+    }
+    /* =begin/=end block comment at line start */
+    if ((i == 0 || source[i - 1] == '\n') && i + 6 <= len &&
+        strncmp(source + i, "=begin", 6) == 0) {
+      while (i < len) {
+        if ((i == 0 || source[i - 1] == '\n') && i + 4 <= len &&
+            strncmp(source + i, "=end", 4) == 0) {
+          while (i < len && source[i] != '\n') { OUT_CHAR(source[i]); i++; }
+          if (i < len) { OUT_CHAR('\n'); i++; }
+          break;
+        }
+        OUT_CHAR(source[i]); i++;
+      }
+      continue;
+    }
+    /* `?"` / `?'` / `?#` character literal: copy the pair so the quote or
+       hash is not misread as an opener */
+    if (source[i] == '?' && i + 1 < len &&
+        (source[i + 1] == '"' || source[i + 1] == '\'' ||
+         source[i + 1] == '`' || source[i + 1] == '#') &&
+        (i + 2 >= len || !sp_is_method_name_char(source[i + 2]))) {
+      OUT_CHAR('?'); OUT_CHAR(source[i + 1]); i += 2; continue;
+    }
+    /* string openers */
+    if (source[i] == '\'' && lsp < 63) {
+      lsp++; lstk[lsp].st = LX_SQ; lstk[lsp].open = 0; lstk[lsp].close = '\''; lstk[lsp].depth = 1;
+      OUT_CHAR(source[i]); i++; continue;
+    }
+    if ((source[i] == '"' || source[i] == '`') && lsp < 63) {
+      lsp++; lstk[lsp].st = LX_DQ; lstk[lsp].open = 0; lstk[lsp].close = source[i]; lstk[lsp].depth = 1;
+      OUT_CHAR(source[i]); i++; continue;
+    }
+    /* %-literals: %w %W %i %I %q %Q with any delimiter always; a bare
+       %<delim> only in operator position (else it is modulo) */
+    if (source[i] == '%' && i + 1 < len && lsp < 63) {
+      char pm = source[i + 1];
+      size_t di = i + 1;
+      int interp = 1, mode = 0;
+      if (pm == 'w' || pm == 'i' || pm == 'q') { interp = 0; mode = 1; di = i + 2; }
+      else if (pm == 'W' || pm == 'I' || pm == 'Q') { interp = 1; mode = 1; di = i + 2; }
+      char d = di < len ? source[di] : 0;
+      int is_delim = d && !((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z') ||
+                            (d >= '0' && d <= '9') || d == '_' || d == ' ' ||
+                            d == '\t' || d == '\n' || d == '\r' || d == '=');
+      int valid = 0;
+      if (mode) valid = is_delim;
+      else if (is_delim) {
+        size_t back2 = oi;
+        while (back2 > 0 && (out[back2 - 1] == ' ' || out[back2 - 1] == '\t')) back2--;
+        char pv = back2 > 0 ? out[back2 - 1] : '\n';
+        valid = strchr("=,([{+-*/%|&<>?:;!^\n", pv) != NULL;
+      }
+      if (valid) {
+        char close2 = d == '(' ? ')' : d == '[' ? ']' : d == '{' ? '}' : d == '<' ? '>' : d;
+        lsp++;
+        lstk[lsp].st = interp ? LX_DQ : LX_PV;
+        lstk[lsp].open = (close2 != d) ? d : 0;
+        lstk[lsp].close = close2;
+        lstk[lsp].depth = 1;
+        while (i <= di) { OUT_CHAR(source[i]); i++; }
+        continue;
+      }
+    }
+    /* heredoc opener: <<~TAG / <<-TAG / <<'TAG' / <<"TAG" / <<TAG. Tags are
+       required to start [A-Z_] in the unquoted forms (lowercase unquoted
+       tags stay unmodeled rather than risk misreading a shift). */
+    if (source[i] == '<' && i + 1 < len && source[i + 1] == '<' && nhd < 8) {
+      size_t j = i + 2;
+      int squig = 0;
+      if (j < len && (source[j] == '~' || source[j] == '-')) { squig = 1; j++; }
+      char q = 0;
+      if (j < len && (source[j] == '\'' || source[j] == '"')) { q = source[j]; j++; }
+      size_t ts = j;
+      while (j < len && ((source[j] >= 'A' && source[j] <= 'Z') ||
+                         (source[j] >= 'a' && source[j] <= 'z') ||
+                         (source[j] >= '0' && source[j] <= '9') || source[j] == '_')) j++;
+      size_t tl2 = j - ts;
+      int hd_ok = tl2 > 0 && tl2 < sizeof(hds[0].tag) &&
+                  (q || (source[ts] >= 'A' && source[ts] <= 'Z') || source[ts] == '_');
+      if (hd_ok && q) {
+        if (j < len && source[j] == q) j++;
+        else hd_ok = 0;
+      }
+      if (hd_ok) {
+        memcpy(hds[nhd].tag, source + ts, tl2);
+        hds[nhd].tag[tl2] = '\0';
+        hds[nhd].squig = squig;
+        hds[nhd].interp = (q != '\'');
+        nhd++;
+        while (i < j) { OUT_CHAR(source[i]); i++; }
+        continue;
+      }
+    }
+    /* body newline at top level starts any pending heredoc bodies */
+    if (source[i] == '\n' && lsp == 0 && nhd > 0) {
+      OUT_CHAR('\n'); i++; in_hd = 1; continue;
+    }
     /* .send(:foo, args) → .foo(args) */
     if (i + 7 < len && strncmp(source + i, ".send(:", 7) == 0) {
       REWRITE_SEND_CALL(".send(:", 7, 0);

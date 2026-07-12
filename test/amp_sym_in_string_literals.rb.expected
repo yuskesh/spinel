@@ -1,0 +1,11 @@
+count(&:alive)
+14
+true
+filter(&:active) and .send(:reload)
+36
+single &:quoted
+interp works: 1,2
+&:a &:b
+obj.send(:name)
+SELECT count(&:x) .send(:y)
+[1, 2, 3]
