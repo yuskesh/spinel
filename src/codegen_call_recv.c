@@ -4469,7 +4469,15 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          true; every other form is conservatively false, still evaluating the
          argument for its side effects. */
       else if (sp_streq(name, "equal?") && argc == 1) {
-        if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
+        TyKind eqa = comp_ntype(c, argv[0]);
+        if (eqa == TY_STRING) {
+          /* string identity IS pointer identity (s.freeze.equal?(s) must be
+             true: freeze marks in place and returns the same pointer) */
+          buf_printf(b, "((const void *)(%s) == (const void *)(", r);
+          emit_expr(c, argv[0], b);
+          buf_puts(b, "))");
+        }
+        else if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
         else { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)"); }
       }
       else handled = 0;

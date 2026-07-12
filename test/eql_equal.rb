@@ -26,12 +26,14 @@ puts s.eql?(t)      # true
 puts s.eql?(u)      # false
 puts "x".eql?("x")  # true
 
-# String#equal? : object identity -- true only for the same lvalue, since
-# distinct String objects (even equal-valued ones) are never identity-equal.
+# String#equal? : object identity is POINTER identity. Identical literals
+# share storage (the frozen-string-literal world: "x".equal?("x") is true
+# there in CRuby too), so equal-valued literals ARE identity-equal here --
+# and s.freeze.equal?(s) / aliasing (t = s) answer truthfully.
 puts s.equal?(s)    # true   (same variable)
-puts s.equal?(t)    # false  (distinct objects, equal value)
-puts s.equal?(u)    # false  (distinct objects, different value)
-puts "x".equal?("x") # false  (distinct literals)
+puts s.equal?(t)    # true   (identical literals share storage)
+puts s.equal?(u)    # false  (different value)
+puts "x".equal?("x") # true  (shared literal)
 
 # typed receiver, polymorphic arg (element drawn from a mixed array)
 mix = [1, "x", 1.0]

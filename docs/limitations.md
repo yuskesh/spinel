@@ -202,6 +202,16 @@ two distinct ones, so even a dedicated identity mode would diverge from CRuby
 on the exact programs that need it. Restructure identity-keyed lookups to use
 an explicit unique key (an Integer id, a Symbol) instead.
 
+#### `String#equal?` and shared literals
+
+`equal?` on strings is pointer identity, and identical string literals share
+storage. Two equal-valued literals therefore ARE identity-equal
+(`"x".equal?("x")` is `true`) -- the answer CRuby gives under
+`# frozen_string_literal: true`, though Spinel's literals stay mutable.
+Everything else about identity is truthful on this representation:
+`s.freeze.equal?(s)` is `true` (freeze marks in place), aliasing compares
+equal, and distinct-valued strings compare `false`.
+
 #### `defined?`
 
 `defined?` is resolved **statically at compile time** from the operand's
