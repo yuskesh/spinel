@@ -2771,7 +2771,9 @@ else {
          operator, NOT an init value, so skip the "return argv[0] type" path. */
       if (argc > 0 && argv) {
         const char *a0ty = nt_type(nt, argv[0]);
-        int is_sym_op = a0ty && sp_streq(a0ty, "SymbolNode") && argc == 1;
+        /* a symbol literal, or a local statically holding one (s = :+) */
+        int is_sym_op = argc == 1 && sym_static_value(c, argv[0]) != NULL;
+        (void)a0ty;
         if (!is_sym_op) {
           TyKind it = infer_type(c, argv[0]);
           /* An empty array-literal seed accumulates an array: poly, since the

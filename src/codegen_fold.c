@@ -2470,8 +2470,10 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (!op && argc >= 1) {
     int last = argv[argc - 1];
-    if (nt_type(nt, last) && sp_streq(nt_type(nt, last), "SymbolNode")) {
-      op = nt_str(nt, last, "value");
+    /* a symbol literal, or a local that statically holds one (s = :+) */
+    const char *sv = sym_static_value(c, last);
+    if (sv) {
+      op = sv;
       if (argc == 2) init = argv[0];
     }
   }

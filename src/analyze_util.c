@@ -130,6 +130,37 @@ int class_var_static_ci(Compiler *c, int node) {
   return found;
 }
 
+/* The literal symbol behind a symbol-typed expression: a SymbolNode itself,
+   or a local variable whose only write (in its scope, plain write) is one.
+   Lets inject(:op)-style operator selection see through `s = :+; a.inject(s)`.
+   Returns the symbol's name, or NULL. */
+const char *sym_static_value(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return NULL;
+  const char *ty = nt_type(nt, node);
+  if (ty && sp_streq(ty, "SymbolNode")) return nt_str(nt, node, "value");
+  if (!ty || !sp_streq(ty, "LocalVariableReadNode")) return NULL;
+  const char *vn = nt_str(nt, node, "name");
+  if (!vn) return NULL;
+  Scope *sc = comp_scope_of(c, node);
+  int val = -1;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind k = nt_kind(nt, w);
+    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode &&
+        k != NK_LocalVariableAndWriteNode && k != NK_LocalVariableOperatorWriteNode &&
+        k != NK_LocalVariableTargetNode)
+      continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    if (k != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc || val >= 0)
+      return NULL;
+    val = nt_ref(nt, w, "value");
+  }
+  if (val < 0) return NULL;
+  const char *vty = nt_type(nt, val);
+  return (vty && sp_streq(vty, "SymbolNode")) ? nt_str(nt, val, "value") : NULL;
+}
+
 /* The anonymous struct class synthesized for a `k = Struct.new(:a, :b)`
    VALUE node (the write is the class's def_node), or -1. Lets the value
    type as TY_CLASS and emit as the class object. */
