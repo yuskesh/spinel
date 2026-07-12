@@ -7289,16 +7289,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       /* an exception subclass shares sp_Exception's layout (no cls_id
          member); its runtime class is the carried cls_name */
       if (_cidx >= 0 && class_is_exc_subclass(c, _cidx)) {
+        /* evaluate the receiver BEFORE writing the temp's declaration head:
+           its emission may hoist declarations of its own into g_pre */
         int _texc = ++g_tmp;
-        emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _texc);
         Buf _eb = expr_buf(c, recv);
+        emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _texc);
         buf_puts(g_pre, _eb.p ? _eb.p : ""); buf_puts(g_pre, ";\n"); free(_eb.p);
         buf_printf(b, "((sp_Class){(mrb_int)-1, _t%d ? ((sp_Exception *)_t%d)->cls_name : \"NilClass\"})", _texc, _texc);
         return;
       }
       int _tobj = ++g_tmp;
-      emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _tobj);
       Buf _rb = expr_buf(c, recv);
+      emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", _tobj);
       buf_puts(g_pre, _rb.p ? _rb.p : ""); buf_puts(g_pre, ";\n"); free(_rb.p);
       buf_printf(b, "((sp_Class){_t%d ? _t%d->cls_id : %d})", _tobj, _tobj, _cidx);
       return;
