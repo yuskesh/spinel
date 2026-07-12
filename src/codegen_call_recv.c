@@ -316,21 +316,30 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       const char *rvt2 = nt_type(nt, recv);
       int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
                          sp_streq(rvt2, "InstanceVariableReadNode"));
-      int tn2 = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = ", tn2);
+      int tn2 = ++g_tmp, trc = ++g_tmp;
+      /* Evaluate the receiver once into a temp: it feeds both the frozen-mutability
+         check and the concatenation, and a chained `s << a << b` receiver has a
+         side effect that must not run twice. */
+      buf_printf(b, "({ const char *_t%d = ", trc); emit_expr(c, recv, b); buf_puts(b, "; ");
+      buf_printf(b, "const char *_t%d = ", tn2);
       if (sp_streq(name, "prepend")) {
         /* args first (in order), then the receiver */
         for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
         emit_str_expr(c, argv[0], b);
         for (int j = 1; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
-        buf_puts(b, ", "); emit_expr(c, recv, b); buf_puts(b, ")");
+        buf_printf(b, ", _t%d)", trc);
       }
       else {
         for (int j = 0; j < argc; j++) buf_puts(b, "sp_str_concat(");
-        emit_expr(c, recv, b);
+        buf_printf(b, "_t%d", trc);
         for (int j = 0; j < argc; j++) { buf_puts(b, ", "); emit_str_expr(c, argv[j], b); buf_puts(b, ")"); }
       }
       buf_puts(b, "; ");
+      /* Ruby evaluates the argument(s) before invoking the mutator, so the
+         frozen check must fire AFTER the concatenation builds (which is what
+         evaluates the args). sp_str_concat allocates a fresh string and never
+         mutates the receiver, so a frozen receiver is still untouched here. */
+      buf_printf(b, "sp_str_check_mutable(_t%d); ", trc);
       if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
       buf_printf(b, "_t%d; })", tn2);
       return 1;
@@ -1305,7 +1314,7 @@ else {
         /* empty the array in place, evaluate to it (Ruby returns self) */
         int t = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
+        buf_printf(b, "; if (_t%d && _t%d->frozen) sp_raise_cls(\"FrozenError\", sp_sprintf(\"can't modify frozen Array: %%s\", sp_%sArray_inspect(_t%d))); if (_t%d) _t%d->len = 0; _t%d; })", t, t, k, t, t, t, t);
         return 1;
       }
       if (sp_streq(name, "cycle") && argc == 1 && nt_ref(nt, id, "block") < 0) {
@@ -2310,7 +2319,7 @@ else {
       if (sp_streq(name, "clear") && argc == 0) {
         int t = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; if (_t%d) _t%d->len = 0; _t%d; })", t, t, t);
+        buf_printf(b, "; if (_t%d && _t%d->frozen) sp_raise_cls(\"FrozenError\", sp_sprintf(\"can't modify frozen Array: %%s\", sp_PolyArray_inspect(_t%d))); if (_t%d) _t%d->len = 0; _t%d; })", t, t, t, t, t, t);
         return 1;
       }
       if (sp_streq(name, "+") && argc == 1 && a0 == TY_POLY_ARRAY) {

@@ -1,0 +1,8 @@
+arg:!
+concat raised
+arg:>
+prepend raised
+arg:9
+hash raised
+arg:!
+go!

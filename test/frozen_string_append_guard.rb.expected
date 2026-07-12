@@ -1,0 +1,5 @@
+can't modify frozen String: "abc"
+can't modify frozen String: "hi"
+can't modify frozen String: "yo"
+can't modify frozen String: "abc"
+go!

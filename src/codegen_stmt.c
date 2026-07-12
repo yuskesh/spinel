@@ -8064,11 +8064,15 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
     buf_printf(b, "; %s _t%d = ", c_type_name(ty_hash_key(rt)), tb); emit_hash_key(c, argv[0], ty_hash_key(rt), b);
     buf_puts(b, "; ");
-    buf_printf(b, "sp_%sHash_set(_t%d, _t%d, ", hn, ta, tb);
+    /* Build the new value (which reads the slot and evaluates the RHS) BEFORE
+       the frozen check: Ruby desugars `h[k] += v` to `h[k] = h[k] + v`, so the
+       read and the RHS run before []= raises on a frozen hash. */
+    int tv = ++g_tmp;
     const char *pf = vt == TY_POLY ?
         (sp_streq(op, "+") ? "sp_poly_add" : sp_streq(op, "-") ? "sp_poly_sub" :
          sp_streq(op, "*") ? "sp_poly_mul" : sp_streq(op, "/") ? "sp_poly_div" :
          sp_streq(op, "%") ? "sp_poly_mod" : sp_streq(op, "**") ? "sp_poly_pow" : NULL) : NULL;
+    buf_printf(b, "%s _t%d = ", c_type_name(vt), tv);
     if (vt == TY_STRING && sp_streq(op, "+")) {
       buf_printf(b, "sp_str_concat(sp_%sHash_get(_t%d, _t%d), ", hn, ta, tb);
       emit_expr(c, v, b); buf_puts(b, ")");
@@ -8082,7 +8086,9 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "sp_%sHash_get(_t%d, _t%d) %s ", hn, ta, tb, op);
       buf_puts(b, "("); emit_expr(c, v, b); buf_puts(b, ")");
     }
-    buf_puts(b, "); }\n");
+    buf_puts(b, "; ");
+    buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash(); ", ta);
+    buf_printf(b, "sp_%sHash_set(_t%d, _t%d, _t%d); }\n", hn, ta, tb, tv);
     return;
   }
 
