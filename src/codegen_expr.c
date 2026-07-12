@@ -639,8 +639,20 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       unsupported(c, id, "one-line `in` pattern");
       return;
     }
-    buf_printf(b, "(%s)", cb.p ? cb.p : "0");
+    /* Bind the pattern's captures in the enclosing scope on a successful match
+       (CRuby introduces them like `value => pattern` does, but returns a boolean
+       instead of raising). Evaluate the condition once, bind under it, yield it. */
+    int tc = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "int _t%d = (%s);\n", tc, cb.p ? cb.p : "0");
     free(cb.p);
+    emit_indent(g_pre, g_indent); buf_printf(g_pre, "if (_t%d) {\n", tc);
+    char tvname[24]; snprintf(tvname, sizeof tvname, "_t%d", tv);
+    Buf boxb; memset(&boxb, 0, sizeof boxb); emit_boxed_text(c, vt, tvname, &boxb);
+    emit_pm_bind_pattern(c, pattern, boxb.p ? boxb.p : "sp_box_nil()", g_indent + 1, g_pre, comp_scope_of(c, id));
+    free(boxb.p);
+    emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    buf_printf(b, "_t%d", tc);
     return;
   }
 

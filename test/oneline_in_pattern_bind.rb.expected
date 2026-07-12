@@ -1,0 +1,6 @@
+matched 1 2
+head=10 rest=[20, 30]
+ruby 3
+q=5
+ints
+no-match
