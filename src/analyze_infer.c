@@ -4113,6 +4113,15 @@ TyKind infer_uncached(Compiler *c, int id) {
      is a separate gap); type it as poly so the slot holds a boxed nil. */
   if (nk == NK_WhileNode || nk == NK_UntilNode) return TY_POLY;
   if (nk == NK_RangeNode) {
+    /* (:a..:e): symbols enumerate by name succession -- the whole range
+       lowers to a poly array of boxed symbols (see codegen_expr) */
+    {
+      int slo = nt_ref(nt, id, "left"), shi = nt_ref(nt, id, "right");
+      const char *slt = slo >= 0 ? nt_type(nt, slo) : NULL;
+      const char *sht = shi >= 0 ? nt_type(nt, shi) : NULL;
+      if (slt && sht && sp_streq(slt, "SymbolNode") && sp_streq(sht, "SymbolNode"))
+        return TY_POLY_ARRAY;
+    }
     /* infer the bounds so codegen can tell an int range from a string range */
     int lo = nt_ref(nt, id, "left"), hi = nt_ref(nt, id, "right");
     if (lo >= 0) infer_type(c, lo);
