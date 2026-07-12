@@ -29,6 +29,15 @@ void analyze_program(Compiler *c);
    reads the cached results via comp_ntype. */
 TyKind infer_type(Compiler *c, int id);
 
+/* Re-infer every node of the subtree at `id` (children first), refreshing the
+   whole type cache under the CURRENT scope-local types. The shadow-typing
+   emitters (a block param pinned to the receiver's element type for the body's
+   emission) need this: infer_type alone does not descend into call ARGUMENTS
+   -- a call's type is its callee's return -- so an argument that reads the
+   re-typed param kept its stale widened type and was passed unboxed. Stops at
+   nested defs/classes (their locals are outside the shadow). */
+void infer_subtree(Compiler *c, int id);
+
 /* Unified type of every value-carrying `break`/`next` in a block body (not
    descending into nested blocks/loops), or TY_UNKNOWN if none. Lets a
    collecting emitter widen its element type past the tail expression so a
