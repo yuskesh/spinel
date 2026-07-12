@@ -1071,13 +1071,15 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
       if (sp_streq(name, "[]") && argc == 2) {
         /* arr[start, len] -> subarray; a negative length is nil in CRuby
-           (slice() itself would return the empty array) */
-        int ta = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp;
+           (slice() itself would return the empty array), and so is a start
+           outside [-len, len] (start == len is the empty slice) */
+        int ta = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
         buf_printf(b, "; mrb_int _t%d = ", ts); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; mrb_int _t%d = ", tl); emit_int_expr(c, argv[1], b);
-        buf_printf(b, "; _t%d < 0 ? (sp_%sArray *)0 : sp_%sArray_slice(_t%d, _t%d, _t%d); })",
-                   tl, k, k, ta, ts, tl);
+        buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d)", tn, k, ta);
+        buf_printf(b, "; (_t%d < 0 || _t%d > _t%d || _t%d < -_t%d) ? (sp_%sArray *)0 : sp_%sArray_slice(_t%d, _t%d, _t%d); })",
+                   tl, ts, tn, ts, tn, k, k, ta, ts, tl);
         return 1;
       }
       if (sp_streq(name, "[]") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
@@ -2208,8 +2210,15 @@ else {
         return 1;
       }
       if ((sp_streq(name, "slice") || sp_streq(name, "[]")) && argc == 2) {
-        buf_printf(b, "sp_%sArray_slice(", k); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+        /* a negative length or a start outside [-len, len] is nil in CRuby
+           (start == len is the empty slice) */
+        int ta2 = ++g_tmp, ts2 = ++g_tmp, tl2 = ++g_tmp, tn2 = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta2); emit_expr(c, recv, b);
+        buf_printf(b, "; mrb_int _t%d = ", ts2); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = ", tl2); emit_int_expr(c, argv[1], b);
+        buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d)", tn2, k, ta2);
+        buf_printf(b, "; (_t%d < 0 || _t%d > _t%d || _t%d < -_t%d) ? (sp_%sArray *)0 : sp_%sArray_slice(_t%d, _t%d, _t%d); })",
+                   tl2, ts2, tn2, ts2, tn2, k, k, ta2, ts2, tl2);
         return 1;
       }
       if (sp_streq(name, "sample") && argc == 1) {
@@ -2317,13 +2326,15 @@ else {
         return 1;
       }
       if ((sp_streq(name, "slice") || sp_streq(name, "[]")) && argc == 2) {
-        /* a negative length is nil in CRuby (slice() would return []) */
-        int ta = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp;
+        /* a negative length is nil in CRuby (slice() would return []), and
+           so is a start outside [-len, len] (start == len: empty slice) */
+        int ta = ++g_tmp, ts = ++g_tmp, tl = ++g_tmp, tn = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
         buf_printf(b, "; mrb_int _t%d = ", ts); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; mrb_int _t%d = ", tl); emit_int_expr(c, argv[1], b);
-        buf_printf(b, "; _t%d < 0 ? (sp_PolyArray *)0 : sp_PolyArray_slice(_t%d, _t%d, _t%d); })",
-                   tl, ta, ts, tl);
+        buf_printf(b, "; mrb_int _t%d = sp_PolyArray_length(_t%d)", tn, ta);
+        buf_printf(b, "; (_t%d < 0 || _t%d > _t%d || _t%d < -_t%d) ? (sp_PolyArray *)0 : sp_PolyArray_slice(_t%d, _t%d, _t%d); })",
+                   tl, ts, tn, ts, tn, ta, ts, tl);
         return 1;
       }
       if (sp_streq(name, "sample") && argc == 1) {
