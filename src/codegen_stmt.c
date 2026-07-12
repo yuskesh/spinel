@@ -7357,7 +7357,16 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   int is_tail_loop = sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
                      nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "loop") &&
                      nt_ref(nt, id, "block") >= 0;
-  if (!is_tail_loop && sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
+  /* tap / then / yield_self at tail position carry a value (the receiver /
+     the block's value) that IS the method's return -- the statement form
+     would drop it and return nil. Route them to the value path below. */
+  const char *tv_name = nt_str(nt, id, "name");
+  int is_tail_valued = sp_streq(ty, "CallNode") && tv_name &&
+                       nt_ref(nt, id, "block") >= 0 &&
+                       (sp_streq(tv_name, "tap") ||
+                        sp_streq(tv_name, "then") ||
+                        sp_streq(tv_name, "yield_self"));
+  if (!is_tail_loop && !is_tail_valued && sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
       !call_breaks(c, id) &&
       emit_iteration_stmt(c, id, b, indent))
     return;
