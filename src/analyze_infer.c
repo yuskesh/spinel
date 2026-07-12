@@ -833,6 +833,8 @@ TyKind infer_call(Compiler *c, int id) {
       nt_type(nt, argv[argc - 1]) &&
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) return TY_INT;
   if (rt == TY_INT && sp_streq(name, "quo")) return TY_RATIONAL;
+  /* Float#quo is float division (Numeric#quo via /; no Rational) */
+  if (rt == TY_FLOAT && sp_streq(name, "quo")) return TY_FLOAT;
   /* Integer <op> Rational coerces the Integer to Rational (result Rational for
      arithmetic, Bool/Int for comparisons). */
   if (rt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {

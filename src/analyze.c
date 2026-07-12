@@ -3417,6 +3417,36 @@ int desugar_enum_method_recv(Compiler *c) {
       }
       continue;
     }
+    if (nm && sp_streq(nm, "step")) {
+      /* Numeric#step keyword forms lower to the positional (limit, step):
+         step(to: T, by: B) / step(by: B, to: T) / step(T, by: B). An
+         endless step (by: only, no to:) stays a loud reject. */
+      int sargs = nt_ref(nt, id, "arguments");
+      int sac = 0;
+      const int *sav = sargs >= 0 ? nt_arr(nt, sargs, "arguments", &sac) : NULL;
+      if (sac >= 1 && sac <= 2 && nt_type(nt, sav[sac - 1]) &&
+          sp_streq(nt_type(nt, sav[sac - 1]), "KeywordHashNode")) {
+        int kwh = sav[sac - 1];
+        int en = 0;
+        const int *els = nt_arr(nt, kwh, "elements", &en);
+        int to_v = -1, by_v = -1, other = 0;
+        for (int e = 0; e < en; e++) {
+          int kk = nt_ref(nt, els[e], "key");
+          const char *kn = (kk >= 0 && nt_type(nt, kk) && sp_streq(nt_type(nt, kk), "SymbolNode"))
+                           ? nt_str(nt, kk, "value") : NULL;
+          if (kn && sp_streq(kn, "to")) to_v = nt_ref(nt, els[e], "value");
+          else if (kn && sp_streq(kn, "by")) by_v = nt_ref(nt, els[e], "value");
+          else other = 1;
+        }
+        if (sac == 2 && to_v < 0) to_v = sav[0];   /* step(limit, by: B) */
+        if (!other && to_v >= 0 && by_v >= 0) {
+          int na[2]; na[0] = to_v; na[1] = by_v;
+          nt_node_set_arr(nt, sargs, "arguments", na, 2);
+          changed = 1;
+          continue;
+        }
+      }
+    }
     if (nm && sp_streq(nm, "%")) {
       /* (range) % n is Range#step(n) (the arithmetic-sequence operator) */
       int prc = nt_ref(nt, id, "receiver");

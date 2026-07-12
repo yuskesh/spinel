@@ -1518,6 +1518,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
+    if (crt == TY_FLOAT && sp_streq(name, "quo") && argc == 1) {
+      /* Float#quo == / (float division) */
+      buf_puts(b, "((");
+      emit_expr(c, recv, b); buf_puts(b, ") / (mrb_float)(");
+      emit_float_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
     /* Integer ** <negative literal>: a Rational in CRuby (2 ** -2 == (1/4)).
        The non-literal-exponent form types poly and resolves in sp_poly_pow. */
     if (crt == TY_INT && argc == 1 && sp_streq(name, "**") &&
