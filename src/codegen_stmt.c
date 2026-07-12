@@ -7248,7 +7248,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      the normal result if no break is taken) IS the method's return, so it must
      take the value path below (the break wrapper in emit_call), not the
      statement form here. */
-  if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
+  /* Kernel#loop {} at tail position: a valued `break` is the method's return,
+     so route it through the value handler (emit_call) rather than the statement
+     form, which would drop the break value and return nil. */
+  int is_tail_loop = sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
+                     nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "loop") &&
+                     nt_ref(nt, id, "block") >= 0;
+  if (!is_tail_loop && sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
       !call_breaks(c, id) &&
       emit_iteration_stmt(c, id, b, indent))
     return;
