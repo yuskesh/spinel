@@ -348,6 +348,43 @@ OUT=$("$SPIN" run 2>&1)
 expect "feature-enabled native run" "999" "$(echo "$OUT" | tail -1)"
 find "$XDG_CACHE_HOME/spin/native" -name 'libmx-cuda.a' | grep -q . || fail "enabled feature entry didn't build"
 
+# --- [[build]]: a symlinked workdir must not write through into the target ------
+# cp -R of a symlink source copies the LINK: every later step (patch, the
+# build command) then runs inside the live tree the link points at (#2180
+# destroyed a real checkout's outputs this way). The scratch copy now
+# dereferences the workdir operand; the pointed-to tree stays pristine.
+cd "$WORK"
+mkdir -p symreal spinel-symx/vendor spinel-symx/patches spinel-symx/bin
+printf 'int sx_add(int a, int b) { return a + b; }\n' > symreal/sx.c
+printf 'PRECIOUS\n' > symreal/prior-output.a
+ln -s "$WORK/symreal" spinel-symx/vendor/sx
+cat > spinel-symx/spin.toml <<'SYMEOF'
+[package]
+name = "symx"
+version = "0.1.0"
+
+[[build]]
+workdir   = "vendor/sx"
+patches   = ["patches/*.patch"]
+command   = "${CC:-cc} -O2 -c sx.c -o sx.o && ar rcs libsx.a sx.o"
+artifacts = ["libsx.a"]
+
+[native]
+libs = ["${build.out}/libsx.a"]
+SYMEOF
+printf -- '--- a/sx.c\n+++ b/sx.c\n@@ -1 +1 @@\n-int sx_add(int a, int b) { return a + b; }\n+int sx_add(int a, int b) { return a + b + 1; }\n' > spinel-symx/patches/01-bias.patch
+printf 'module Symx\n  ffi_func :sx_add, [:int, :int], :int\nend\n' > spinel-symx/symx.rb
+printf 'require "symx"\nputs Symx.sx_add(20, 21)\n' > spinel-symx/bin/sxdemo.rb
+cd spinel-symx
+OUT=$("$SPIN" run --allow-native-build 2>&1)
+expect "symlinked-workdir native run (patched)" "42" "$(echo "$OUT" | tail -1)"
+# the LIVE tree behind the link stays pristine: source unpatched, no build
+# droppings (.o/.a/.rej), the prior output intact
+grep -q 'a + b + 1' "$WORK/symreal/sx.c" && fail "patch wrote through the symlinked workdir"
+[ "$(cat "$WORK/symreal/prior-output.a")" = "PRECIOUS" ] || fail "prior output clobbered through the symlink"
+LEFT=$(ls "$WORK/symreal" | sort | tr '\n' ' ')
+expect "symlinked tree contents" "prior-output.a sx.c " "$LEFT"
+
 # --- [[build]] mechanics from the guinea-pig report (#1845) ---------------------
 # One package exercising: a top-level (non-vendor/) workdir excluded from
 # carried-C discovery (its source hard-errors under a bare cc sweep);

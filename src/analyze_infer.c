@@ -1611,7 +1611,7 @@ else {
           sp_streq(name, "size"))
         return TY_INT;
       if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
-          sp_streq(name, "zero?") || sp_streq(name, "empty?"))
+          sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?"))
         return TY_BOOL;
       if (sp_streq(name, "mtime"))
         return TY_TIME;

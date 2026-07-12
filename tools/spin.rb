@@ -503,7 +503,12 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     # hash -- VCS state is not a build input and a real clone's .git is heavy.
     scratch = out + ".scratch"
     system("rm -rf #{scratch}")
-    spin_die("native build: cannot copy #{name}'s workdir") unless system("cp -R #{File.join(dir, toml.get(t, 'workdir'))} #{scratch}")
+    # -H dereferences the WORKDIR OPERAND itself: a symlinked workdir must
+    # copy the pointed-to tree, or the "scratch" is a symlink and every
+    # later step (patch, the build command) writes through into the live
+    # checkout the link points at. Symlinks inside the tree stay links.
+    spin_die("native build: cannot copy #{name}'s workdir") unless system("cp -RH #{File.join(dir, toml.get(t, 'workdir'))} #{scratch}")
+    spin_die("native build: #{name}'s workdir copied as a symlink, not a tree") unless File.directory?(scratch) && !File.symlink?(scratch)
     system("find #{scratch} -mindepth 1 -name '.*' -prune -exec rm -rf {} + 2>/dev/null")
     toml.get_array(t, "exclude").split("\n").each do |g|
       next if g == ""
@@ -511,7 +516,10 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     end
     toml.get_array(t, "patches").split("\n").each do |pg|
       Dir.glob(File.join(dir, pg)).sort.each do |pf|
-        spin_die("native build: patch failed: #{File.basename(pf)} (#{name})") unless system("patch -s -p1 -d #{scratch} < #{pf}")
+        unless system("patch -s -p1 -d #{scratch} < #{pf}")
+          system("rm -rf #{scratch}")
+          spin_die("native build: patch failed: #{File.basename(pf)} (#{name})")
+        end
       end
     end
     puts "native #{name}: #{cmdline}"
@@ -521,7 +529,10 @@ def native_build_libs_for(name, dir, version, consumer_feats)
     end
     arts.split("\n").each do |a|
       built = File.join(scratch, a)
-      spin_die("native build of #{name} did not produce declared artifact: #{a}") unless File.exist?(built)
+      unless File.exist?(built)
+        system("rm -rf #{scratch}")
+        spin_die("native build of #{name} did not produce declared artifact: #{a}")
+      end
       dest = File.join(out, a)
       ddir = File.dirname(dest)
       system("mkdir -p #{ddir}") unless Dir.exist?(ddir)

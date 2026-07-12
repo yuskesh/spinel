@@ -46,6 +46,7 @@ sp_File *sp_io_stdin(void);
 mrb_bool sp_file_directory(const char *path);
 mrb_bool sp_file_file(const char *path);
 mrb_bool sp_file_exist(const char *path);
+mrb_bool sp_file_symlink(const char *path);
 void sp_file_delete(const char *path);
 
 #endif

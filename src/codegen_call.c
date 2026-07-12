@@ -8101,6 +8101,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if ((sp_streq(name, "directory?") || sp_streq(name, "zero?") || sp_streq(name, "empty?")) && argc == 1) {
       buf_puts(b, "sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
     }
+    if (sp_streq(name, "symlink?") && argc == 1) {
+      buf_puts(b, "sp_file_symlink("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;
+    }
     if (sp_streq(name, "file?") && argc == 1) {
       buf_puts(b, "(!sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ") && sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
     }

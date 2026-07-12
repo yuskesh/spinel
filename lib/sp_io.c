@@ -164,5 +164,10 @@ mrb_bool sp_file_file(const char *path) {
   return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
 }
 
+mrb_bool sp_file_symlink(const char *path) {
+  struct stat st;
+  return path && lstat(path, &st) == 0 && S_ISLNK(st.st_mode);
+}
+
 mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }
 void sp_file_delete(const char *path) { remove(path); }
