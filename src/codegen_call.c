@@ -4500,6 +4500,10 @@ static void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, 
     emit_proc_literal(c, blk_node, &pb);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+    /* Root the proc box: an allocating argument evaluated after this hoist
+       (or the callee prologue) may GC before the callee roots lv_blk. */
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
     free(pb.p);
   }
   buf_printf(b, "_t%d", blk_tmp);
@@ -9111,6 +9115,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
               emit_proc_literal(c, casc_blk, &pb);
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+              emit_indent(g_pre, g_indent);
+              buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
               free(pb.p);
             }
           }

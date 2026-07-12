@@ -49,6 +49,8 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
       emit_proc_literal(c, blk_node, &pb);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
       free(pb.p);
       buf_printf(b, "_t%d", blk_tmp);
     }
@@ -5871,6 +5873,8 @@ else {
     emit_proc_literal(c, blk_node, &pb);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_Proc *_t%d = %s;\n", blk_tmp, pb.p ? pb.p : "NULL");
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", blk_tmp);
     free(pb.p);
   }
 
