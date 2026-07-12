@@ -1924,6 +1924,27 @@ static int emit_pm_bind_container_poly(Compiler *c, int spat, const char *src,
   return 1;
 }
 
+/* Public entry to the case/in capture binders, for the expression-position
+   one-line `expr in pattern`: bind the pattern's locals from a boxed scrutinee
+   expression. A non-container pattern (a bare value/pin) binds nothing. */
+void emit_pm_bind_pattern(Compiler *c, int pat, const char *src_poly, int indent, Buf *b, Scope *sc) {
+  const NodeTable *nt = c->nt;
+  const char *pty = pat >= 0 ? nt_type(nt, pat) : NULL;
+  /* A top-level `<pattern> => name` binds the whole scrutinee to name, then
+     recurses into the inner pattern. */
+  if (pty && sp_streq(pty, "CapturePatternNode")) {
+    int tgt = nt_ref(nt, pat, "target");
+    const char *ttype = tgt >= 0 ? nt_type(nt, tgt) : NULL;
+    if (ttype && sp_streq(ttype, "LocalVariableTargetNode")) {
+      const char *lnm = nt_str(nt, tgt, "name");
+      if (lnm) emit_pm_typed_assign(sc, lnm, src_poly, b, indent);
+    }
+    emit_pm_bind_container_poly(c, nt_ref(nt, pat, "value"), src_poly, indent, b, sc);
+    return;
+  }
+  emit_pm_bind_container_poly(c, pat, src_poly, indent, b, sc);
+}
+
 static void emit_pm_bind_poly(Compiler *c, int pat, const char *arr, int indent, Buf *b, Scope *sc) {
   const NodeTable *nt = c->nt;
   int apn = 0;
