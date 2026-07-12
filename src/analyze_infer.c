@@ -2832,7 +2832,16 @@ else {
     if (sp_streq(name, "group_by") && block >= 0 && ty_is_array(rt))
       return TY_POLY_POLY_HASH;
     if ((sp_streq(name, "first") || sp_streq(name, "last")) && argc == 1) return rt;  /* first(n)/last(n) -> subarray */
-    if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1) return rt;  /* subarray */
+    /* `arr.take(n)`/`drop(n)` is a subarray, but `arr.lazy.take(n)` stays a lazy
+       stage -- let the lazy pipeline (below) type the forced chain, not this
+       eager subarray arm. */
+    {
+      int rcv_is_lazy = recv >= 0 && nt_type(nt, recv) &&
+                        sp_streq(nt_type(nt, recv), "CallNode") &&
+                        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "lazy");
+      if ((sp_streq(name, "drop") || sp_streq(name, "take")) && argc == 1 && !rcv_is_lazy)
+        return rt;  /* subarray */
+    }
     /* min(n)/max(n) (no comparator block) take the n extreme elements -> a
        subarray; sample(n) likewise. With a comparator block the n-arg form is
        not lowered, so don't type it as an array (that would mis-drive codegen
@@ -3303,8 +3312,13 @@ else {
         if (iname && sp_streq(iname, "lazy")) lazy_src = nt_ref(nt, inner, "receiver");
       }
     }
-    if (lazy_src >= 0 && infer_type(c, lazy_src) == TY_RANGE)
+    TyKind lst = lazy_src >= 0 ? infer_type(c, lazy_src) : TY_UNKNOWN;
+    if (lazy_src >= 0 && lst == TY_RANGE)
       return (argc == 1) ? TY_POLY_ARRAY : TY_INT;  /* emit_lazy_pipeline_expr -> PolyArray */
+    /* An array-source lazy first(n) (e.g. the `arr.lazy.take(n).to_a` that the
+       take->first desugar produces) materializes n boxed elements. */
+    if (lazy_src >= 0 && argc == 1 && ty_is_array(lst))
+      return TY_POLY_ARRAY;
   }
 
   /* General lazy pipeline: <int range | int array>.lazy.<map/select/reject/
@@ -3320,6 +3334,11 @@ else {
       const char *nm = nt_str(nt, cur, "name");
       if (!nm) { ok = 0; break; }
       if (sp_streq(nm, "lazy") && nt_ref(nt, cur, "block") < 0) { lazy_src = nt_ref(nt, cur, "receiver"); break; }
+      /* blockless counter stages fuse into the pipeline (codegen re-validates
+         the single integer argument). */
+      if ((sp_streq(nm, "take") || sp_streq(nm, "drop")) && nt_ref(nt, cur, "block") < 0) {
+        saw_op = 1; cur = nt_ref(nt, cur, "receiver"); continue;
+      }
       if (nt_ref(nt, cur, "block") < 0) { ok = 0; break; }
       if (!sp_streq(nm, "map") && !sp_streq(nm, "collect") && !sp_streq(nm, "select") &&
           !sp_streq(nm, "filter") && !sp_streq(nm, "reject") && !sp_streq(nm, "take_while") &&
