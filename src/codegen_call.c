@@ -5629,7 +5629,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
      (A `&block`-param `.call` is handled earlier by the inline path, whose
      receiver name matches g_block_param_name; this is the escaped-value case.) */
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]"))) {
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
+       (sp_streq(name, "===") && argc == 1))) {
     TyKind rty = comp_ntype(c, id);          /* the call's result = proc's body return */
     /* Universal boxed return: the proc publishes its result in _sp_proc_poly_ret
        (see emit_proc_literal); evaluate the call for effect, then unbox the slot

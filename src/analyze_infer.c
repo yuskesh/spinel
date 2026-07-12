@@ -1172,9 +1172,11 @@ TyKind infer_call(Compiler *c, int id) {
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
   if (is_proc_literal(c, id)) return TY_PROC;
 
-  /* <proc>.call(args) / .() / [] -> the proc's recorded body return type */
+  /* <proc>.call(args) / .() / [] -> the proc's recorded body return type;
+     Proc#=== (case/when dispatch) IS a call in CRuby */
   if (recv >= 0 && rt == TY_PROC &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]")))
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "[]") ||
+       (sp_streq(name, "===") && argc == 1)))
     return proc_call_ret(c, recv);
 
   /* Proc composition: proc << proc / proc >> proc -> a new Proc. */

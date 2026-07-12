@@ -3323,6 +3323,25 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (pt == TY_BIGINT && comp_ntype(c, conds[j]) == TY_BIGINT) {
           buf_printf(b, "(sp_bigint_cmp(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ") == 0)");
         }
+        else if (comp_ntype(c, conds[j]) == TY_PROC) {
+          /* `when <proc>`: Proc#=== calls the proc with the subject. The
+             subject is published both in the mrb_int slot (typed callee
+             param) and boxed on the side-channel (poly callee param), like
+             the force_poly proc-call path. */
+          g_needs_proc_poly_argslot = 1;
+          char subj[32]; snprintf(subj, sizeof subj, "_t%d", t);
+          buf_puts(b, "({ _sp_proc_poly_args[0] = ");
+          if (pt == TY_POLY) buf_puts(b, subj);
+          else emit_boxed_text(c, pt, subj, b);
+          buf_puts(b, "; sp_poly_truthy(((void)sp_proc_call(");
+          emit_expr(c, conds[j], b);
+          buf_puts(b, ", 1, (mrb_int[16]){");
+          if (pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj);
+          else if (proc_slot_is_ptr(pt)) buf_printf(b, "(mrb_int)(uintptr_t)%s", subj);
+          else if (pt == TY_FLOAT) buf_puts(b, "0");
+          else buf_puts(b, subj);
+          buf_puts(b, "}), _sp_proc_poly_ret)); })");
+        }
         else if (pt == TY_STRING) { buf_printf(b, "sp_str_eq(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
         else if (pt == TY_POLY) { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
         else { buf_printf(b, "(_t%d == ", t); emit_expr(c, conds[j], b); buf_puts(b, ")"); }
