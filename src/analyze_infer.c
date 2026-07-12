@@ -2737,6 +2737,8 @@ else {
         return rt;
       if ((sp_streq(name, "max_by") || sp_streq(name, "min_by")) && argc >= 1)
         return TY_POLY_ARRAY;  /* count form: n elements as a generic Array */
+      if ((sp_streq(name, "find") || sp_streq(name, "detect")) && argc >= 1)
+        return TY_POLY;  /* find(ifnone): the element or the proc's value */
       if (sp_streq(name, "max_by") || sp_streq(name, "min_by") ||
           sp_streq(name, "find") || sp_streq(name, "detect"))
         return ty_array_elem(rt);  /* returns an element */
@@ -2921,6 +2923,8 @@ else {
     if (sp_streq(name, "empty?") || sp_streq(name, "include?")) return TY_BOOL;
     if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
          sp_streq(name, "none?") || sp_streq(name, "one?")) && argc <= 1) return TY_BOOL;
+    if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 && argc >= 1)
+      return TY_POLY;  /* find(ifnone): the element or the proc's value */
     if ((sp_streq(name, "bsearch") || sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0)
       return ty_array_elem(rt);  /* element or nil */
     if (sp_streq(name, "bsearch_index") && block >= 0) return TY_INT;  /* index, or nil */
