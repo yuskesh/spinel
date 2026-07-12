@@ -2760,17 +2760,6 @@ static char *rewrite_syntax_sugar(char *source) {
       REWRITE_SEND_CALL(".__send__(\"", 11, 1);
       continue;
     }
-    /* .public_send(:foo, args) → .foo(args). Visibility isn't modeled
-       in Spinel's static dispatch -- public_send is semantically
-       identical to send. Issue #735. */
-    if (i + 14 < len && strncmp(source + i, ".public_send(:", 14) == 0) {
-      REWRITE_SEND_CALL(".public_send(:", 14, 0);
-      continue;
-    }
-    if (i + 14 < len && strncmp(source + i, ".public_send(\"", 14) == 0) {
-      REWRITE_SEND_CALL(".public_send(\"", 14, 1);
-      continue;
-    }
     /* `&:symbol` symbol-to-proc. Prism parses `&:sym` natively, but
        Spinel only lowers the native BlockArgumentNode+SymbolNode shape
        for a few methods (inject / reduce / sort_by); general block

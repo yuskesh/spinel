@@ -1,0 +1,12 @@
+100
+"acct: 100"
+100
+NoMethodError: private method 'secret' called for an instance of Acct
+NoMethodError: private method 'secret' called for an instance of Acct
+NoMethodError: protected method 'guarded' called for an instance of Acct
+42
+42
+"prot"
+NoMethodError: private method 'hidden' called for an instance of Inner
+100
+NoMethodError: private method 'secret' called for an instance of Acct

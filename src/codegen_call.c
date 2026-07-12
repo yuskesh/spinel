@@ -4626,6 +4626,36 @@ static void emit_math_arg(Compiler *c, int node, Buf *out) {
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
+  /* a public_send-lowered call (stamped by the desugars): a private or
+     protected target raises NoMethodError like CRuby, which enforces
+     visibility on public_send regardless of caller context. The receiver
+     still evaluates for its effects; the never-taken comma value keeps the
+     expression's static type. */
+  if (nt_str(nt, id, "vis_enforce")) {
+    const char *vnm = nt_str(nt, id, "name");
+    int vrecv = nt_ref(nt, id, "receiver");
+    int vcid = -1;
+    if (vrecv >= 0) {
+      TyKind vrt = comp_ntype(c, vrecv);
+      if (ty_is_object(vrt)) vcid = ty_object_class(vrt);
+    }
+    else {
+      Scope *vs = comp_scope_of(c, id);
+      if (vs && vs->class_id >= 0 && !vs->is_cmethod) vcid = vs->class_id;
+    }
+    if (vnm && vcid >= 0) {
+      int vis = comp_method_vis_in_chain(c, vcid, vnm);
+      if (vis != SP_VIS_PUBLIC) {
+        const char *vrn = class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name;
+        buf_puts(b, "(");
+        if (vrecv >= 0) { buf_puts(b, "(void)("); emit_expr(c, vrecv, b); buf_puts(b, "), "); }
+        buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
+                   vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, vrn,
+                   default_value(comp_ntype(c, id)));
+        return;
+      }
+    }
+  }
   /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
      first-class class value */
   {
