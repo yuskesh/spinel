@@ -10328,6 +10328,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             nt_str(nt, rr, "name") && sp_streq(nt_str(nt, rr, "name"), "Array")) eff_rt = TY_POLY_ARRAY;
       }
     }
+    /* a bool receiver's class depends on its VALUE: true is a TrueClass,
+       false a FalseClass (ty_matches_class carries only the type) */
+    {
+      const char *bcn = nt_str(nt, argv[0], "name");
+      if (rt == TY_BOOL && bcn &&
+          (sp_streq(bcn, "TrueClass") || sp_streq(bcn, "FalseClass"))) {
+        buf_puts(b, "(("); emit_expr(c, recv, b);
+        buf_printf(b, ") %s 0)", sp_streq(bcn, "TrueClass") ? "!=" : "==");
+        return;
+      }
+    }
     int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
     if (yes >= 0) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes); return; }
   }
