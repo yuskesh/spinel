@@ -4521,7 +4521,11 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                    trb, trb,
                    trb, trb, trb, trb);
       }
-      else if (sp_streq(name, "[]") && argc == 1) { buf_printf(b, "(((%s) >> (", r); emit_expr(c, argv[0], b); buf_puts(b, ")) & 1)"); }
+      else if (sp_streq(name, "[]") && argc == 1) {
+        /* clamped: a literal-folded out-of-range index was an undefined C
+           shift (right answer on x86's masked shifts, garbage elsewhere) */
+        buf_printf(b, "sp_int_bit((%s), ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      }
       else if (sp_streq(name, "bit_length") && argc == 0) buf_printf(b, "sp_int_bit_length(%s)", r);
       else if (sp_streq(name, "fdiv") && argc == 1) { buf_printf(b, "((mrb_float)(%s) / (", r); emit_float_expr(c, argv[0], b); buf_puts(b, "))"); }
       else if (sp_streq(name, "[]") && argc == 2) {

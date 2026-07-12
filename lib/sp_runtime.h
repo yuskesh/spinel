@@ -730,6 +730,14 @@ static mrb_int sp_int_bit_length(mrb_int n){unsigned long long x=(n<0)?(unsigned
    count shifts the other way), clamped to the 64-bit word so an out-of-range
    start/len can't trigger an undefined shift. The receiver shift is arithmetic
    so a negative `n`'s high bits read as 1. */
+/* n[i]: one bit, with the shift clamped so an out-of-range index never
+   emits an undefined C shift (i >= 64 reads the sign fill; negative is 0,
+   matching CRuby's infinite two's-complement view). */
+static inline mrb_int sp_int_bit(mrb_int n, mrb_int i) {
+  if (i < 0) return 0;
+  if (i >= 64) return n < 0 ? 1 : 0;
+  return (n >> i) & 1;
+}
 static mrb_int sp_int_bit_range(mrb_int n, mrb_int start, mrb_int len) {
   mrb_int shifted;
   if (start >= 0) shifted = (start >= 64) ? (n < 0 ? -1 : 0) : (n >> start);
