@@ -212,8 +212,10 @@ class Set
 
   # classify { |x| key } -> { key => Set of members }
   def classify
+    # The nil pre-write pins k to a boxed (poly) key; see divide.
     h = {}
     @data.each do |x|
+      k = nil
       k = yield(x)
       h[k] = Set.new unless h.key?(k)
       h[k].add(x)
@@ -222,17 +224,68 @@ class Set
   end
 
   # divide { |x| key } -> Set of member Sets grouped by the block value.
-  # (CRuby's 2-arity graph-partition form is not supported.)
-  def divide
-    h = {}
-    @data.each do |x|
-      k = yield(x)
-      h[k] = Set.new unless h.key?(k)
-      h[k].add(x)
+  # divide { |x, y| rel } -> Set of member Sets, each a strongly connected
+  # component of the relation graph (mutual reachability, matching CRuby's
+  # tsort-based form; a one-way relation does not merge its endpoints).
+  def divide(&func)
+    if func.arity == 2
+      # 2-arity: strongly connected components of the relation graph (mutual
+      # reachability, matching CRuby's tsort-based form; a one-way relation
+      # does not merge its endpoints). reach is a flat n*n boolean closure.
+      a = @data.dup
+      n = a.size
+      reach = []
+      n.times do |i|
+        n.times do |j|
+          rel = i == j
+          rel = true if func.call(a[i], a[j])
+          reach.push(rel)
+        end
+      end
+      n.times do |k|
+        n.times do |i|
+          n.times do |j|
+            reach[i * n + j] = true if reach[i * n + k] && reach[k * n + j]
+          end
+        end
+      end
+      rep = []
+      n.times do |i|
+        ri = i
+        j = 0
+        while j < i
+          if reach[i * n + j] && reach[j * n + i]
+            ri = rep[j]
+            break
+          end
+          j += 1
+        end
+        rep.push(ri)
+      end
+      groups = {}
+      n.times do |i|
+        k = rep[i]
+        groups[k] = Set.new unless groups.key?(k)
+        groups[k].add(a[i])
+      end
+      res = Set.new
+      groups.each_value { |s| res.add(s) }
+      res
+    else
+      # 1-arity: group by the block value. The nil pre-write pins k to a
+      # boxed (poly) key: call sites with different block value types share
+      # this body, and a concretely-typed k would collapse them to one type.
+      h = {}
+      @data.each do |x|
+        k = nil
+        k = func.call(x)
+        h[k] = Set.new unless h.key?(k)
+        h[k].add(x)
+      end
+      r = Set.new
+      h.each_value { |s| r.add(s) }
+      r
     end
-    r = Set.new
-    h.each_value { |s| r.add(s) }
-    r
   end
 
   # flatten recursively merges nested Set elements into a flat Set.

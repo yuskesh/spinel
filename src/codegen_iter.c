@@ -1459,7 +1459,14 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 
   /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array or hash */
-  if (sp_streq(name, "each") && rt == TY_POLY && block >= 0) {
+  if ((sp_streq(name, "each") || sp_streq(name, "each_pair") ||
+       sp_streq(name, "each_value") || sp_streq(name, "each_key")) &&
+      rt == TY_POLY && block >= 0) {
+    /* each/each_pair walk the elements (sp_poly_each_elem renders a hash
+       entry as a boxed [k, v] pair); each_value/each_key bind one half of
+       that pair (the receiver is a hash when these names dispatch). */
+    int pv_half = sp_streq(name, "each_value") ? 1 :
+                  sp_streq(name, "each_key") ? 0 : -1;
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     /* The gate read the cached node type (poly); a cloned-body local can have
@@ -1517,6 +1524,24 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
         }
       }
       emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    }
+    else if (p0 && pv_half >= 0) {
+      /* each_value / each_key: the element is a [k, v] pair; bind one half
+         (a non-pair element binds itself, mirroring the splat fallback) */
+      Scope *pvs = comp_scope_of(c, block);
+      LocalVar *pvl = pvs ? scope_local(pvs, block_param_name(c, block, 0)) : NULL;
+      TyKind pvt = (pvl && pvl->type != TY_UNKNOWN) ? pvl->type : TY_POLY;
+      int tel = ++g_tmp;
+      emit_indent(b, indent + 1);
+      buf_printf(b, "sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d);\n", tel, ta, ti);
+      emit_indent(b, indent + 1);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && SP_IS_BUILTIN_ARRAY(_t%d.cls_id)) _t%d = sp_poly_arr_get(_t%d, %d);\n",
+                 tel, tel, tel, tel, pv_half);
+      emit_indent(b, indent + 1);
+      {
+        char src[32]; snprintf(src, sizeof src, "_t%d", tel);
+        emit_block_param_from_boxed(c, p0, pvt, src, b);
+      }
     }
     else if (p0) {
       emit_indent(b, indent + 1);
