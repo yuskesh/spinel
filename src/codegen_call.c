@@ -10577,6 +10577,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? 20 : 0)"); }
     /* a boxed value: its identity is the boxed payload (heap pointer / int) */
     else if (rt == TY_POLY) { buf_puts(b, "((mrb_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ").v.p)"); }
+    /* unboxed value structs have no identity: derive a stable Integer from
+       the value hash (see the identity note in docs/limitations.md) */
+    else if (rt == TY_COMPLEX || rt == TY_RATIONAL || rt == TY_RANGE ||
+             rt == TY_TIME || rt == TY_FLOAT) {
+      buf_puts(b, "sp_rbval_hash_key("); emit_boxed(c, recv, b); buf_puts(b, ")");
+    }
     else { buf_puts(b, "((mrb_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     return;
   }
