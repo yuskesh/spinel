@@ -3561,6 +3561,39 @@ int desugar_enum_method_recv(Compiler *c) {
   return changed;
 }
 
+/* `for x in obj` over a user Enumerable (a class with an #each, hence a
+   synthesized __enum_to_a): materialize the receiver to a flat element array so
+   the for-loop iterates it via the existing array path. Without this the loop
+   collection is unrecognized and silently iterates nothing. Idempotent; struct
+   classes serve to_a natively and are left alone. */
+static int desugar_for_enumerable(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "ForNode")) continue;
+    int coll = nt_ref(nt, id, "collection");
+    if (coll < 0) continue;
+    const char *cty = nt_type(nt, coll);
+    if (cty && sp_streq(cty, "CallNode") && nt_str(nt, coll, "name") &&
+        sp_streq(nt_str(nt, coll, "name"), "__enum_to_a")) continue;  /* idempotent */
+    TyKind rt = infer_type(c, coll);
+    if (!ty_is_object(rt)) continue;
+    int cid = ty_object_class(rt);
+    if (cid < 0 || comp_method_in_chain(c, cid, "__enum_to_a", NULL) < 0) continue;
+    if (c->classes[cid].is_struct) continue;  /* struct to_a is native */
+    int wrap = nt_new_node(nt, "CallNode");
+    nt_node_set_str(nt, wrap, "name", "__enum_to_a");
+    nt_node_set_ref(nt, wrap, "receiver", coll);
+    nt_node_set_ref(nt, id, "collection", wrap);
+    comp_grow_node_arrays(c);
+    c->nscope[wrap] = c->nscope[id];
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Rewrite `recv.to_enum(:m, *a)` / `enum_for(:m, *a)` into a real Enumerator,
    dispatched on the receiver kind (needs the receiver type, so it runs in the
    fixpoint). A user-class receiver whose class defines a yielding `m` becomes
@@ -5052,6 +5085,7 @@ void analyze_program(Compiler *c) {
     ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
     ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
+    ch |= desugar_for_enumerable(c);           /* for x in obj -> for x in obj.__enum_to_a */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
@@ -5609,11 +5643,15 @@ void analyze_program(Compiler *c) {
     if (m->blk_param || !m->yields) continue;   /* already lowered, or no yielding each */
     m->is_lowered_yield = 1;
     m->yields = 0;
-    /* An Enumerable-style each ends in `self`; unlike the self-recursive
-       lowering below its value is the receiver, not the block's -- pin the
-       return to the defining class so `return self` type-checks (the
-       __enum_to_a driver discards it either way). */
-    m->ret = m->class_id >= 0 ? ty_object(m->class_id) : TY_INT;
+    /* A Struct's synthesized each returns self (Struct#each semantics), so keep
+       its object return. A hand-written each's value is whatever its body tail
+       evaluates to -- `self` for the `...; self` idiom, but a bare-yield each
+       (`yield 1; yield 2`) ends in the block's return value (poly), and
+       `def each(&b) = xs.each(&b)` ends in the inner array. Pinning those to the
+       class type truncated the poly tail to an object pointer; type the return
+       poly so any tail coerces (the __enum_to_a driver discards it either way). */
+    int is_struct = m->class_id >= 0 && c->classes[m->class_id].is_struct;
+    m->ret = is_struct ? ty_object(m->class_id) : TY_POLY;
     m->blk_param = strdup("__yblk__");
     LocalVar *yblk = scope_local_intern(m, "__yblk__");
     if (yblk) { yblk->type = TY_PROC; yblk->is_param = 1; yblk->is_cell = 1; }
