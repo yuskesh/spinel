@@ -5299,7 +5299,10 @@ void emit_call(Compiler *c, int id, Buf *b) {
          yields, keeping the ternary's two branches a single type. */
       int mabi_poly = g_promote_mode;
       const char *aty = mabi_poly ? "sp_RbVal" : "mrb_int";
-      buf_printf(b, "(_t%d.cls_id == SP_BUILTIN_METHOD ? %s((%s (*)(void *", t, mabi_poly ? "sp_poly_to_i(" : "", aty);
+      /* both arms yield a BOXED result now that the call types poly: the
+         Method arm's legacy int ABI result boxes, the Proc arm reads the
+         boxed return slot intact */
+      buf_printf(b, "(_t%d.cls_id == SP_BUILTIN_METHOD ? %s((%s (*)(void *", t, mabi_poly ? "" : "sp_box_int(", aty);
       for (int k = 0; k < argc; k++) buf_printf(b, ", %s", aty);
       buf_printf(b, "))(uintptr_t)((sp_BoundMethod *)_t%d.v.p)->fn)((void *)((sp_BoundMethod *)_t%d.v.p)->self", t, t);
       for (int k = 0; k < argc; k++) {
@@ -5309,16 +5312,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
         else emit_expr(c, argv[k], b);
       }
       /* the Proc publishes its result in _sp_proc_poly_ret (universal return
-         ABI); evaluate for effect and unbox to the mrb_int the Method branch
-         yields, keeping the ternary's two arms a single type. */
-      buf_printf(b, ")%s : ((void)sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", mabi_poly ? ")" : "", t, argc);
+         ABI); evaluate for effect and read the boxed sp_RbVal intact, matching
+         the Method branch's now-boxed result so the ternary's two arms are a
+         single type. */
+      buf_printf(b, ")%s : ((void)sp_proc_call((sp_Proc *)_t%d.v.p, %d, (mrb_int[16]){", mabi_poly ? "" : ")", t, argc);
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
         if (proc_slot_is_ptr(comp_ntype(c, argv[k]))) { buf_puts(b, "(mrb_int)(uintptr_t)("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
         else emit_expr(c, argv[k], b);
       }
       if (argc == 0) buf_puts(b, "0");  /* C99: no empty initializer list */
-      buf_puts(b, "}), sp_poly_to_i(_sp_proc_poly_ret)))");
+      buf_puts(b, "}), _sp_proc_poly_ret))");
       return;
     }
   }

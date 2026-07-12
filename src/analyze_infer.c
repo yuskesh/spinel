@@ -1169,15 +1169,17 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "arity")) return TY_INT;
     if (sp_streq(name, "to_proc")) return TY_PROC;
   }
-  /* <poly>.call(args): a boxed Proc/Method called through the runtime ABI,
-     which returns mrb_int. (Skip when a user class defines `call`: that goes
-     through normal dispatch and returns the method's own type.) */
+  /* <poly>.call(args): a boxed Proc publishes its result through the boxed
+     return slot, so the value is genuinely dynamic -- type it poly and let
+     the call site read the slot intact (unboxing to int truncated an array
+     or string result to garbage). (Skip when a user class defines `call`:
+     that goes through normal dispatch and returns the method's own type.) */
   if (recv >= 0 && rt == TY_POLY &&
       (sp_streq(name, "call") || sp_streq(name, "()"))) {
     int has_user_call = 0;
     for (int k = 0; k < c->nclasses && !has_user_call; k++)
       if (comp_method_in_class(c, k, "call") >= 0) has_user_call = 1;
-    if (!has_user_call) return TY_INT;
+    if (!has_user_call) return TY_POLY;
   }
 
   /* proc {} / lambda {} / Proc.new {} -> a first-class Proc value */
