@@ -142,8 +142,14 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
     int kwr = nt_ref(c->nt, pn, "keyword_rest");
     if (kwr >= 0 && nt_type(c->nt, kwr) &&
         sp_streq(nt_type(c->nt, kwr), "ForwardingParameterNode") && s->name) {
+      /* Concrete leading params (`def f(a, ...)`) consume the first call args;
+         only the remainder is forwarded, so synthesize one __fwd_ slot per
+         forwarded arg, not per total arg. The zero-leading case (`def f(...)`)
+         is unchanged (fwd_base == 0). */
+      int fwd_base = s->nparams;
       int arity = forwarding_call_arity(c, s->name);
-      for (int i = 0; i < arity; i++) {
+      int nfwd = arity - fwd_base; if (nfwd < 0) nfwd = 0;
+      for (int i = 0; i < nfwd; i++) {
         char nm[24]; snprintf(nm, sizeof nm, "__fwd_%d", i);
         scope_add_param(s, nm, -1);
       }

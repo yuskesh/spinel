@@ -6130,7 +6130,10 @@ else {
           int tr0 = ++g_tmp;
           emit_indent(b, indent);
           buf_printf(b, "sp_%sArray *_t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", rk0, tr0, rk0, tr0);
-          if (ln == 0) {
+          /* The scalar goes into the rest ONLY when there are no fixed targets on
+             either side (`*a = 5` -> [5]); with post-rest targets (`*a, b = 1`)
+             the value aligns to the end and the rest stays empty. */
+          if (ln == 0 && rn == 0) {
             emit_indent(b, indent);
             buf_printf(b, "sp_%sArray_push(_t%d, ", rk0, tr0);
             if (rat0 == TY_POLY_ARRAY) emit_boxed(c, value, b);
@@ -6139,7 +6142,7 @@ else {
           }
           emit_indent(b, indent);
           buf_printf(b, "lv_%s = _t%d;\n", rename_local(rest_var), tr0);
-          if (ln == 0) return;
+          if (ln == 0 && rn == 0) return;
         }
         for (int i = 0; i < ln; i++) {
           const char *lty = nt_type(nt, lefts[i]);
@@ -6161,6 +6164,25 @@ else {
             TyKind tt = llv ? llv->type : comp_ntype(c, lefts[i]);
             buf_puts(b, nil_sentinel(tt));
           }
+          buf_puts(b, ";\n");
+        }
+        /* Post-rest targets under a scalar RHS (`*a, b, c = 1`): the empty rest
+           leaves the single value to fill the rights left-to-right, so the first
+           right takes it when no leading target consumed it (ln == 0) and every
+           other right is nil (`*a, b, c = 1` -> a=[], b=1, c=nil). */
+        for (int j = 0; j < rn; j++) {
+          const char *rty2 = nt_type(nt, rights[j]);
+          if (!rty2 || !sp_streq(rty2, "LocalVariableTargetNode")) continue;
+          const char *rvn = nt_str(nt, rights[j], "name");
+          LocalVar *rlv = rvn ? scope_local(comp_scope_of(c, id), rvn) : NULL;
+          int rpoly = rlv && rlv->type == TY_POLY;
+          emit_indent(b, indent);
+          buf_printf(b, "lv_%s = ", rename_local(rvn));
+          if (j == 0 && ln == 0) {
+            if (rpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b);
+          }
+          else if (rpoly) buf_puts(b, "sp_box_nil()");
+          else { TyKind tt = rlv ? rlv->type : comp_ntype(c, rights[j]); buf_puts(b, nil_sentinel(tt)); }
           buf_puts(b, ";\n");
         }
         return;
