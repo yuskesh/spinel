@@ -5232,6 +5232,20 @@ int infer_block_params(Compiler *c) {
     }
 
     /* array.zip(other) { |a, b| } binds element of recv + element of other */
+    /* str.match(/re/) { |m| }: the block receives the MatchData */
+    if (sp_streq(name, "match") && p0) {
+      int margs = nt_ref(nt, id, "arguments");
+      int mac = 0; const int *mav = margs >= 0 ? nt_arr(nt, margs, "arguments", &mac) : NULL;
+      const char *mrt = nt_type(nt, recv), *mat = mac > 0 ? nt_type(nt, mav[0]) : NULL;
+      if ((mrt && sp_streq(mrt, "RegularExpressionNode")) ||
+          (mat && sp_streq(mat, "RegularExpressionNode"))) {
+        Scope *ms = comp_scope_of(c, block);
+        LocalVar *mp = scope_local_intern(ms, p0); mp->is_block_param = 1;
+        TyKind mm = ty_unify(mp->type, TY_MATCHDATA);
+        if (mm != mp->type) { mp->type = mm; changed = 1; }
+        continue;
+      }
+    }
     if (sp_streq(name, "zip") && ty_is_array(rt)) {
       Scope *zs = comp_scope_of(c, block);
       const char *zp1s = block_param_name(c, block, 1);

@@ -3845,7 +3845,9 @@ else {
   if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
     const char *rrt = nt_type(nt, recv), *art = argc > 0 ? nt_type(nt, argv[0]) : NULL;
     if ((rrt && sp_streq(rrt, "RegularExpressionNode")) ||
-        (art && sp_streq(art, "RegularExpressionNode"))) return TY_MATCHDATA;
+        (art && sp_streq(art, "RegularExpressionNode")))
+      /* the block form evaluates to the block's value (nil on a miss) */
+      return nt_ref(nt, id, "block") >= 0 ? TY_POLY : TY_MATCHDATA;
   }
   if (sp_streq(name, "=~") && recv >= 0 && argc == 1) {
     const char *rrt = nt_type(nt, recv), *art = nt_type(nt, argv[0]);
