@@ -6087,8 +6087,16 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_range_to_ia(_t%d)", t);
       else if (sp_streq(name, "include?") || sp_streq(name, "member?") ||
                sp_streq(name, "cover?") || sp_streq(name, "===")) {
+        /* ===(range) / include?(range): CRuby compares endpoints against the
+           value via <=>, and Integer <=> Range is nil, so these are always
+           false. Only cover?(range) does endpoint containment. */
+        if (argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE &&
+            (sp_streq(name, "===") || sp_streq(name, "include?") ||
+             sp_streq(name, "member?"))) {
+          buf_puts(b, "0");
+        }
         /* cover?(range) checks that both endpoints of the arg fit inside self */
-        if (sp_streq(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
+        else if (sp_streq(name, "cover?") && argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE) {
           int t2 = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", t2); emit_expr(c, argv[0], b);
           buf_printf(b, "; _t%d.first >= _t%d.first && (_t%d.last - _t%d.excl) <= (_t%d.last - _t%d.excl); })",
