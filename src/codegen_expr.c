@@ -1647,14 +1647,46 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       buf_puts(b, "("); emit_expr(c, bd[0], b); buf_puts(b, ")");
       return;
     }
-    /* Multi-stmt parens: `(s1; s2; expr)` — run leading stmts in prelude,
-       return value of last expression via GNU statement expression. */
-    buf_puts(b, "({ ");
-    for (int j = 0; j < n - 1; j++) {
-      emit_stmt(c, bd[j], b, 0);
+    /* Multi-stmt parens: `(s1; s2; expr)` — run leading stmts, then the
+       value. The tail's emission may hoist statements into g_pre (an
+       instance_exec splice, a constructed receiver): the shared prelude is
+       flushed BEFORE the statement containing this paren, which would run
+       the tail's hoisted code ahead of the leading statements. When the tail
+       hoists, hoist the leading statements ahead of it too, preserving
+       intra-paren order. */
+    {
+      Buf cap; memset(&cap, 0, sizeof cap);
+      Buf vb; memset(&vb, 0, sizeof vb);
+      Buf *sv_pre = g_pre; g_pre = &cap;
+      emit_expr(c, bd[n - 1], &vb);
+      g_pre = sv_pre;
+      if (!(cap.p && cap.p[0])) {
+        buf_puts(b, "({ ");
+        for (int j = 0; j < n - 1; j++) {
+          emit_stmt(c, bd[j], b, 0);
+        }
+        buf_puts(b, vb.p ? vb.p : "0");
+        buf_puts(b, "; })");
+      }
+      else {
+        for (int j = 0; j < n - 1; j++) emit_stmt(c, bd[j], g_pre, g_indent);
+        buf_puts(g_pre, cap.p);
+        TyKind pvt = comp_ntype(c, bd[n - 1]);
+        if (is_scalar_ret(pvt) && pvt != TY_VOID && pvt != TY_NIL && pvt != TY_UNKNOWN) {
+          int tpv = ++g_tmp;
+          emit_indent(g_pre, g_indent); emit_ctype(c, pvt, g_pre);
+          buf_printf(g_pre, " _t%d = %s;\n", tpv, vb.p ? vb.p : "0");
+          buf_printf(b, "_t%d", tpv);
+        }
+        else {
+          /* no usable scalar value: run the tail for effect, yield nil */
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "(void)(%s);\n", vb.p ? vb.p : "0");
+          buf_puts(b, "sp_box_nil()");
+        }
+      }
+      free(cap.p); free(vb.p);
     }
-    emit_expr(c, bd[n - 1], b);
-    buf_puts(b, "; })");
     return;
   }
   if (sp_streq(ty, "ArrayNode")) {

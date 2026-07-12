@@ -8104,6 +8104,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   if (!ie_direct && recv >= 0 && nt_ref(nt, id, "block") >= 0 && ty_is_object(comp_ntype(c, recv)))
     ie_tramp = comp_trampoline_kind(c, ty_object_class(comp_ntype(c, recv)), name, NULL);
+  /* a RECEIVERLESS call to a trampoline method inside an instance method:
+     self is the receiver (`go { ... }` where `def go(&b) = instance_exec(&b)`).
+     Without this the call lowers to the real method, whose body is the
+     unreachable stub, and the literal block is silently dropped. */
+  if (!ie_direct && !ie_tramp && recv < 0 && nt_ref(nt, id, "block") >= 0) {
+    Scope *trs = comp_scope_of(c, id);
+    if (trs && trs->class_id >= 0 && !trs->is_cmethod) {
+      ie_tramp = comp_trampoline_kind(c, trs->class_id, name, NULL);
+      if (ie_tramp) ie_self_cls = trs->class_id;
+    }
+  }
   if (ie_direct || ie_tramp) {
     int blk = nt_ref(nt, id, "block");
     /* `instance_exec(args, &b)` forwarding the enclosing (now-inlined) method's
