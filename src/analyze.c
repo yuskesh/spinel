@@ -3417,6 +3417,17 @@ int desugar_enum_method_recv(Compiler *c) {
       }
       continue;
     }
+    if (nm && (sp_streq(nm, "grapheme_clusters") || sp_streq(nm, "each_grapheme_cluster"))) {
+      /* grapheme clusters == characters over the supported text domain (no
+         combining sequences): alias to the chars/each_char machinery */
+      int grc = nt_ref(nt, id, "receiver");
+      if (grc >= 0 && infer_type(c, grc) == TY_STRING) {
+        nt_node_set_str(nt, id, "name",
+                        sp_streq(nm, "grapheme_clusters") ? "chars" : "each_char");
+        changed = 1;
+        continue;
+      }
+    }
     if (nm && sp_streq(nm, "step")) {
       /* Numeric#step keyword forms lower to the positional (limit, step):
          step(to: T, by: B) / step(by: B, to: T) / step(T, by: B). An
