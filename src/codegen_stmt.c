@@ -4352,6 +4352,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     int eid = ++g_tmp;
     int has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
     emit_indent(b, indent); buf_printf(b, "int _retf%d = 0;\n", eid);
+    emit_indent(b, indent); buf_printf(b, "int _nxtf%d = 0; (void)_nxtf%d;\n", eid, eid);
     /* _excf/_excmsg/_exccls track an unhandled exception (no rescue) so
        that ensure can re-raise it after running.  Saved immediately after
        sp_exc_top-- while the index is still valid. */
@@ -4452,6 +4453,18 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent);
     buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
 
+    /* a deferred `next`: chain to the enclosing ensure when that region is
+       still inside the loop, else run the C continue here */
+    if (g_ensure_depth > g_loop_ensure_base) {
+      EnsureCtx *outer2 = &g_ensure_stack[g_ensure_depth - 1];
+      emit_indent(b, indent);
+      buf_printf(b, "if (_nxtf%d) { _nxtf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
+                 eid, outer2->lid, outer2->lid);
+    }
+    else if (g_c_loop_depth > 0) {
+      emit_indent(b, indent);
+      buf_printf(b, "if (_nxtf%d) continue;\n", eid);
+    }
     emit_indent(b, indent);
     if (g_ensure_depth > 0) {
       EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
@@ -7112,6 +7125,21 @@ else {
         if (g_ie_res_poly) emit_boxed(c, nv[0], b); else emit_expr(c, nv[0], b);
         buf_puts(b, ";\n");
       }
+    }
+    /* `next` crossing begin..ensure regions opened INSIDE this loop must run
+       their ensure bodies (CRuby). Defer through the innermost ensure label
+       with the next flag; the ensure tail chains outward and finally emits
+       the continue. Regions opened OUTSIDE the loop are not left by a next. */
+    if (g_ensure_depth > g_loop_ensure_base) {
+      EnsureCtx *nctx = &g_ensure_stack[g_ensure_depth - 1];
+      int npops = g_exc_frame_depth - nctx->exc_base;
+      if (npops < 1) npops = 1;
+      emit_indent(b, indent);
+      buf_puts(b, "{ ");
+      emit_cur_exc_restore(b, nctx->exc_base);
+      buf_printf(b, "_nxtf%d = 1; sp_exc_top -= %d; goto _ensure%d; }\n",
+                 nctx->lid, npops, nctx->lid);
+      return;
     }
     emit_indent(b, indent);
     emit_frame_unwind(b, g_loop_exc_base, NULL);

@@ -140,6 +140,9 @@ extern const char *g_proc_return_home;
 extern int g_exc_frame_depth;      /* live begin/rescue setjmp frames (see codegen_util.c) */
 extern int g_method_pr_exc_depth;
 extern int g_loop_exc_base;
+extern int g_loop_ensure_base;  /* g_ensure_depth at the innermost C-loop entry:
+   a `next` crossing ensure regions opened INSIDE the loop defers through them
+   (runs their bodies) before the C continue */
 extern int g_brk_exc_base;
 extern int g_block_brk_exc_base;
 /* Return type of the method currently being emitted, so a tail/return value
