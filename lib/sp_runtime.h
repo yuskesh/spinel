@@ -4385,6 +4385,22 @@ static mrb_int sp_rbval_hash_key(sp_RbVal v) {
         sp_Time *t = (sp_Time *)v.v.p;
         return t ? (mrb_int)sp_time_hash(*t) : 0;
       }
+      if (v.cls_id == SP_BUILTIN_COMPLEX) {
+        /* value-based: a fresh box per .hash call would hash by pointer and
+           break a.hash == a.hash (unsigned mixing avoids signed overflow) */
+        sp_Complex *cx = (sp_Complex *)v.v.p;
+        if (!cx) return 0;
+        uint64_t br, bi;
+        memcpy(&br, &cx->re, sizeof br);
+        memcpy(&bi, &cx->im, sizeof bi);
+        return (mrb_int)((uintptr_t)(br * 31u) ^ (uintptr_t)bi);
+      }
+      if (v.cls_id == SP_BUILTIN_RANGE) {
+        /* value-based, mirroring the Complex/Rational cases */
+        sp_Range *rg = (sp_Range *)v.v.p;
+        return rg ? (mrb_int)((((uintptr_t)rg->first * 31u) ^ (uintptr_t)rg->last) * 2u
+                              + (uintptr_t)(rg->excl ? 1 : 0)) : 0;
+      }
       if (sp_obj_hash_hook) return sp_obj_hash_hook(v.cls_id, v.v.p);
       return (mrb_int)((uintptr_t)v.v.p);
   }
