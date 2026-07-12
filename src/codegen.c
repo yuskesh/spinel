@@ -546,6 +546,12 @@ static int name_in(char **names, int n, const char *nm) {
 void emit_scope_decls(Compiler *c, Scope *s, Buf *b) {
   int si = (int)(s - c->scopes);
   int has_begin = scope_has_begin(c, si);
+  /* A real (non-yield-inlined) &blk param is an sp_Proc * C parameter; root it
+     so the proc box survives a GC fired by an allocation in the block body (or
+     by the cell allocations just below). Without this the box's only reference
+     is an untracked C parameter -- use-after-free on the next blk.call. */
+  if (s->blk_param && s->blk_param[0] && !s->yields)
+    buf_printf(b, "    SP_GC_ROOT(lv_%s);\n", s->blk_param);
   char **volnames = NULL; int nvol = 0, all_vol = 0;
   if (has_begin) begin_volatile_names(c, si, &volnames, &nvol, &all_vol);
   for (int i = 0; i < s->nlocals; i++) {
