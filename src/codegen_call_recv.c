@@ -688,12 +688,30 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       }
     }
     if (sp_streq(name, "fill") && argc >= 1 && argc <= 3) {
-      const char *fk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
+      /* a fill VALUE incompatible with the element type rebuilds through a
+         poly array (inference typed the result poly to match); only literal
+         and temp receivers reach this -- a conflicting fill on a LOCAL
+         already widened the local itself at the write site */
+      int fill_conflict = 0;
+      {
+        TyKind fe = ty_array_elem(rt), fv = comp_ntype(c, argv[0]);
+        fill_conflict = rt != TY_POLY_ARRAY && fe != TY_POLY && fv != TY_UNKNOWN &&
+                        fv != fe && !(ty_is_numeric(fv) && ty_is_numeric(fe));
+      }
+      const char *fk = (rt == TY_POLY_ARRAY || fill_conflict) ? "Poly" : k;
+      TyKind fill_rt = fill_conflict ? TY_POLY_ARRAY : rt;
       if (fk) {
         int t = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp;
-        buf_printf(b, "({ sp_%sArray *_t%d = ", fk, t); emit_expr(c, recv, b); buf_puts(b, "; ");
-        emit_ctype(c, ty_array_elem(rt), b); buf_printf(b, " _t%d = ", tv);
-        if (rt == TY_POLY_ARRAY) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
+        buf_printf(b, "({ sp_%sArray *_t%d = ", fk, t);
+        if (fill_conflict) {
+          buf_puts(b, "sp_poly_to_poly_array(");
+          emit_boxed(c, recv, b);
+          buf_puts(b, ")");
+        }
+        else emit_expr(c, recv, b);
+        buf_puts(b, "; ");
+        emit_ctype(c, ty_array_elem(fill_rt), b); buf_printf(b, " _t%d = ", tv);
+        if (fill_rt == TY_POLY_ARRAY) emit_boxed(c, argv[0], b); else emit_expr(c, argv[0], b);
         buf_printf(b, "; mrb_int _t%d = sp_%sArray_length(_t%d);", tn, fk, t);
         if (argc >= 2 && comp_ntype(c, argv[1]) == TY_RANGE) {
           /* fill(val, range): use range as index span */

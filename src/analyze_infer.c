@@ -2925,10 +2925,18 @@ else {
         sp_streq(name, "reverse!") || sp_streq(name, "sort!") || sp_streq(name, "shuffle!") ||
 
         sp_streq(name, "rotate!") || sp_streq(name, "rotate") || sp_streq(name, "insert") || sp_streq(name, "unshift") || sp_streq(name, "prepend") || sp_streq(name, "concat") || sp_streq(name, "freeze") ||
-        (sp_streq(name, "fill") && ((block < 0 && argc >= 1 && argc <= 3) ||
+        (sp_streq(name, "fill") && ((block < 0 && argc >= 1 && argc <= 3 &&
+                                     /* a fill VALUE incompatible with the element type
+                                        makes the result a poly array (see below) */
+                                     ({ TyKind _fv = infer_type(c, argv[0]);
+                                        TyKind _fe = ty_array_elem(rt);
+                                        _fe == TY_POLY || _fv == TY_UNKNOWN || _fv == _fe ||
+                                        (ty_is_numeric(_fv) && ty_is_numeric(_fe)); })) ||
                                     (block >= 0 && argc <= 2))) ||
         sp_streq(name, "replace") ||
         sp_streq(name, "values_at")) return rt;
+    if (sp_streq(name, "fill") && block < 0 && argc >= 1 && argc <= 3)
+      return TY_POLY_ARRAY;   /* the incompatible-value fill fell through above */
     if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "zip") && block >= 0) return TY_NIL;  /* block form returns nil */
     if (sp_streq(name, "product") && argc >= 1)
