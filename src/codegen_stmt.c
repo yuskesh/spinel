@@ -2941,6 +2941,39 @@ static int subtree_has_loop_break(Compiler *c, int root) {
   return 0;
 }
 
+/* `when <string-range>` with a String scrutinee: Range#=== is cover?, i.e.
+   lexicographic <=> against both endpoints (byte order, like String#<=>).
+   Handles beginless/endless forms. Emits nothing and returns 0 when the
+   condition isn't a range with String endpoints. */
+static int emit_when_string_range(Compiler *c, int cond, int t, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *cty = nt_type(nt, cond);
+  if (!cty || !sp_streq(cty, "RangeNode")) return 0;
+  int left = nt_ref(nt, cond, "left");
+  int right = nt_ref(nt, cond, "right");
+  if (left < 0 && right < 0) return 0;
+  if (left >= 0 && comp_ntype(c, left) != TY_STRING) return 0;
+  if (right >= 0 && comp_ntype(c, right) != TY_STRING) return 0;
+  int excl = (int)(nt_int(nt, cond, "flags", 0) & 4) ? 1 : 0;
+  int tl = left >= 0 ? ++g_tmp : -1;
+  int tr = right >= 0 ? ++g_tmp : -1;
+  buf_puts(b, "({ ");
+  if (left >= 0) {
+    buf_printf(b, "const char *_t%d = ", tl); emit_expr(c, left, b); buf_puts(b, "; ");
+  }
+  if (right >= 0) {
+    buf_printf(b, "const char *_t%d = ", tr); emit_expr(c, right, b); buf_puts(b, "; ");
+  }
+  buf_printf(b, "_t%d", t);
+  /* A nil endpoint (NULL for a String-typed slot, e.g. an unset ivar) is an
+     open bound in CRuby -- `(nil.."m") === "c"` is true -- so a NULL endpoint
+     passes its side of the cover check rather than matching or dereferencing. */
+  if (left >= 0) buf_printf(b, " && (!_t%d || strcmp(_t%d, _t%d) <= 0)", tl, tl, t);
+  if (right >= 0) buf_printf(b, " && (!_t%d || strcmp(_t%d, _t%d) %s 0)", tr, t, tr, excl ? "<" : "<=");
+  buf_puts(b, "; })");
+  return 1;
+}
+
 void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -3107,6 +3140,9 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           int reidx = re_lit_index(c, conds[j]);
           if (reidx >= 0 && pt == TY_STRING) {
             buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t);
+          }
+          else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
+            /* emitted the lexicographic cover check */
           }
           else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
             /* `when lo..hi` is range membership, not equality */
@@ -3301,6 +3337,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else {
         int reidx = re_lit_index(c, conds[j]);
         if (reidx >= 0 && pt == TY_STRING) { buf_printf(b, "sp_re_match_p(sp_re_pat_%d, _t%d)", reidx, t); }
+        else if (pt == TY_STRING && emit_when_string_range(c, conds[j], t, b)) {
+          /* emitted the lexicographic cover check */
+        }
         else if (comp_ntype(c, conds[j]) == TY_RANGE && pt != TY_STRING) {
           int tr = ++g_tmp;
           buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, conds[j], b);
