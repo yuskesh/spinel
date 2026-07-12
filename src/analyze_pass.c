@@ -4049,6 +4049,32 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
   int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
   Scope *bs = comp_scope_of(c, create);
   int changed = 0;
+  /* CRuby proc auto-splat: a single Array passed to a non-lambda proc taking
+     more than one positional is destructured across the params, so each binds
+     the array's element type (not the whole array). Lambdas are strict-arity
+     and never auto-splat. */
+  const char *cty = nt_type(nt, create);
+  const char *cnm = nt_str(nt, create, "name");
+  int is_lambda = (cty && sp_streq(cty, "LambdaNode")) || (cnm && sp_streq(cnm, "lambda"));
+  if (!is_lambda && rn >= 2 && argc == 1) {
+    TyKind a0 = infer_type(c, argv[0]);
+    if (ty_is_array(a0)) {
+      /* An unknown element type falls back to poly so the params stay boxed
+         rather than defaulting to TY_INT (which would miscompile non-int
+         elements passed at runtime). */
+      TyKind et = ty_array_elem(a0);
+      if (et == TY_UNKNOWN) et = TY_POLY;
+      for (int k = 0; k < rn; k++) {
+        const char *p = nt_str(nt, reqs[k], "name");
+        if (!p) continue;
+        LocalVar *lv = scope_local(bs, p);
+        if (!lv) continue;
+        TyKind merged = (lv->type == TY_INT) ? et : ty_unify(lv->type, et);
+        if (merged != lv->type) { lv->type = merged; changed = 1; }
+      }
+      return changed;
+    }
+  }
   for (int k = 0; k < rn && k < argc; k++) {
     const char *p = nt_str(nt, reqs[k], "name");
     if (!p) continue;
@@ -4182,6 +4208,16 @@ int infer_block_params(Compiler *c) {
     int nop = 0; const int *opts = nt_arr(nt, pn, "optionals", &nop);
     for (int j = 0; j < nop; j++) {
       const char *pname = nt_str(nt, opts[j], "name");
+      if (!pname) continue;
+      LocalVar *lv = scope_local_intern(bs, pname);
+      lv->is_block_param = 1;
+      if (lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    }
+    /* Keyword params (`proc { |a:, b: 5| }`): the call-site kwargs arrive as a
+       boxed hash on the proc ABI, so the param binds a boxed value. */
+    int nkw = 0; const int *kws = nt_arr(nt, pn, "keywords", &nkw);
+    for (int j = 0; j < nkw; j++) {
+      const char *pname = nt_str(nt, kws[j], "name");
       if (!pname) continue;
       LocalVar *lv = scope_local_intern(bs, pname);
       lv->is_block_param = 1;

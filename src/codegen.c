@@ -1684,15 +1684,12 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
     const char *pp = proc_post_name(c, create, j);
     if (pp) nameset_add(&params, pp);
   }
-  /* optional params bind below (CRuby distribution); keyword params still
-     have no binding -- their NAMES join the param set so they are never
-     misdiagnosed as uncaptured outer variables, a proc carrying them only
-     for .arity metadata compiles, and a body that READS one gets the
-     precise diagnostic below. */
+  /* optional and keyword params bind below (CRuby distribution / extraction
+     from the call-site kwargs hash); their NAMES join the param set so they
+     are never misdiagnosed as uncaptured outer variables. */
   int nopts = proc_opt_count(c, create);
-  int opt_kw_used = 0;
+  int nkw = 0;
   { int pn0 = proc_params_node(c, create);
-    int nkw = 0;
     const int *kws  = pn0 >= 0 ? nt_arr(nt, pn0, "keywords", &nkw) : NULL;
     for (int j = 0; j < nopts; j++) {
       const char *on = proc_opt_name(c, create, j);
@@ -1702,7 +1699,6 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       const char *kn = nt_str(nt, kws[j], "name");
       if (kn) nameset_add(&params, kn);
     }
-    opt_kw_used = -nkw;   /* <0: pending keyword used-check */
   }
   proc_collect_used(c, body, &used);
   int nnumbered = 0;
@@ -1716,20 +1712,8 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
       nameset_add(&params, nlv->name);
     }
   }
-  if (opt_kw_used < 0) {
-    int pn0 = proc_params_node(c, create);
-    int nkw = 0;
-    const int *kws  = pn0 >= 0 ? nt_arr(nt, pn0, "keywords", &nkw) : NULL;
-    for (int j = 0; j < nkw && opt_kw_used < 0; j++) {
-      const char *kn = nt_str(nt, kws[j], "name");
-      if (kn && nameset_has(&used, kn)) opt_kw_used = 1;
-    }
-    if (opt_kw_used == 1) {
-      free(params.v); free(used.v); free(locals.v); free(caps.v);
-      unsupported(c, create, "proc reading a keyword parameter (later slice)");
-      return;
-    }
-  }
+  /* Keyword params bind in the prologue below (extracted by name from the
+     call-site kwargs hash delivered on the boxed proc ABI). */
   /* deep: include nested blocks' params/locals so a name used only inside a
      nested block in the proc is classified as body-local, not flagged as an
      uncaptured outer variable. */
@@ -2114,6 +2098,24 @@ else if (orecv >= 0 && onm) {
   if (is_lambda) buf_printf(pb, "    sp_proc_lambda_arity_check(argc, %d, %d, %s);\n",
                             arity + nposts + nnumbered, nopts,
                             proc_has_rest(c, create) ? "TRUE" : "FALSE");
+  /* CRuby proc auto-splat: a single Array passed to a non-lambda proc taking
+     more than one positional is destructured across the parameters. Rewrite
+     the argument view (both the mrb_int[] slots and the boxed side-channel)
+     from the array's elements before binding. */
+  if (!is_lambda && arity >= 2) {
+    g_needs_proc_poly_argslot = 1;
+    buf_puts(pb, "    mrb_int _sp_as_buf[16];\n");
+    buf_puts(pb, "    if (argc == 1 && _sp_proc_poly_args[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(_sp_proc_poly_args[0].cls_id)) {\n");
+    buf_puts(pb, "      sp_RbVal _sp_as_a = _sp_proc_poly_args[0];\n");
+    buf_puts(pb, "      mrb_int _sp_as_n = sp_poly_length(_sp_as_a); if (_sp_as_n > 16) _sp_as_n = 16;\n");
+    buf_puts(pb, "      for (mrb_int _i = 0; _i < _sp_as_n; _i++) {\n");
+    buf_puts(pb, "        sp_RbVal _e = sp_poly_arr_get(_sp_as_a, _i);\n");
+    buf_puts(pb, "        _sp_proc_poly_args[_i] = _e;\n");
+    buf_puts(pb, "        _sp_as_buf[_i] = (_e.tag == SP_TAG_OBJ || _e.tag == SP_TAG_STR) ? (mrb_int)(uintptr_t)_e.v.p : _e.v.i;\n");
+    buf_puts(pb, "      }\n");
+    buf_puts(pb, "      args = _sp_as_buf; argc = _sp_as_n;\n");
+    buf_puts(pb, "    }\n");
+  }
   for (int k = 0; k < arity; k++) {
     const char *p = proc_param_name(c, create, k);
     LocalVar *lv = scope_local(bs, p);
@@ -2209,6 +2211,31 @@ else if (orecv >= 0 && onm) {
       buf_printf(pb, "      (__i >= %d && __i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n",
                  arity);
       buf_printf(pb, "    (void)lv_%s;\n", pp);
+    }
+  }
+  /* Keyword params (`proc { |a:, b: 5| }`): the caller's kwargs arrive as a
+     boxed hash in the trailing arg slot. Extract each keyword by symbol name;
+     an optional keyword absent from the hash falls back to its default. */
+  if (nkw > 0) {
+    g_needs_proc_poly_argslot = 1;
+    int pnk = proc_params_node(c, create);
+    int nkw2 = 0;
+    const int *kwn = pnk >= 0 ? nt_arr(nt, pnk, "keywords", &nkw2) : NULL;
+    for (int j = 0; j < nkw2; j++) {
+      const char *kn = nt_str(nt, kwn[j], "name");
+      if (!kn) continue;
+      const char *kpty = nt_type(nt, kwn[j]);
+      int dv = (kpty && sp_streq(kpty, "OptionalKeywordParameterNode"))
+                 ? nt_ref(nt, kwn[j], "value") : -1;
+      int sym_id = comp_sym_intern(c, kn);
+      buf_printf(pb, "    sp_RbVal lv_%s = (argc > 0 && sp_poly_has_key(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d)))\n", kn, sym_id);
+      buf_printf(pb, "      ? sp_poly_index_poly(_sp_proc_poly_args[argc-1], sp_box_sym((sp_sym)%d)) : ", sym_id);
+      /* A required keyword absent from the call raises ArgumentError (mirrors the
+         method-keyword arm); an optional one falls back to its default. */
+      if (dv >= 0) emit_boxed(c, dv, pb);
+      else buf_printf(pb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", kn);
+      buf_puts(pb, ";\n");
+      buf_printf(pb, "    (void)lv_%s;\n", kn);
     }
   }
   for (int i = 0; i < locals.n; i++) {
