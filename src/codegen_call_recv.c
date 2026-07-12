@@ -2621,6 +2621,27 @@ else {
         buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
+      if (sp_streq(name, "product") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+        /* poly product with one list: all [x, y] pairs (an empty receiver or
+           argument yields []) */
+        int pta = ++g_tmp, ptb = ++g_tmp, ptr = ++g_tmp, pti = ++g_tmp, ptj = ++g_tmp, pte = ++g_tmp;
+        Buf pra = expr_buf(c, recv);
+        buf_printf(b, "({ sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);", pta, pra.p ? pra.p : "NULL", pta);
+        free(pra.p);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_enum_items_from(", ptb);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "); SP_GC_ROOT(_t%d);", ptb);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ptr, ptr);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", pti, pti, pta, pti);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ptj, ptj, ptb, ptj);
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));"
+                      " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));"
+                      " sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d)); }",
+                   pte, pte, pte, pta, pti, pte, ptb, ptj, ptr, pte);
+        buf_printf(b, " _t%d; })", ptr);
+        return 1;
+      }
       if (sp_streq(name, "product") && argc == 0 && nt_ref(nt, id, "block") < 0) {
         /* product with no arguments: each element wrapped in its own array */
         int ta = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, te = ++g_tmp;

@@ -4623,7 +4623,8 @@ static int empty_arr_iter_ok(const char *nm) {
   static const char *const ok[] = {
     "each", "map", "collect", "select", "filter", "reject", "filter_map",
     "find", "detect", "each_with_object",
-    "group_by", "sort_by", "min_by", "max_by", "flat_map", NULL };
+    "group_by", "sort_by", "min_by", "max_by", "flat_map",
+    "reduce", "inject", NULL };
   for (int i = 0; ok[i]; i++) if (sp_streq(nm, ok[i])) return 1;
   return 0;
 }
@@ -4633,9 +4634,12 @@ static void mark_empty_array_receivers(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    if (nt_ref(nt, id, "block") < 0) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !empty_arr_iter_ok(nm)) continue;
+    /* product takes no block; everything else on the list is block-gated so
+       the non-block empty-literal folds (sum, inject(:sym), first) keep
+       their dedicated arms */
+    if (nt_ref(nt, id, "block") < 0 && !(nm && sp_streq(nm, "product"))) continue;
+    if (!nm || (!empty_arr_iter_ok(nm) && !sp_streq(nm, "product"))) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || recv >= c->node_cap) continue;
     const char *rty = nt_type(nt, recv);

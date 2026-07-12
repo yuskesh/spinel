@@ -2521,6 +2521,27 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   if (!name || (!sp_streq(name, "inject") && !sp_streq(name, "reduce"))) return 0;
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
+  /* a literally-empty receiver never runs the block: the whole call IS the
+     init argument, or nil without one -- rendered in the call's own type
+     (SP_INT_NIL for an int-typed slot, boxed nil for poly) */
+  if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+    int ren = 0; nt_arr(nt, recv, "elements", &ren);
+    if (ren == 0) {
+      int rargs = nt_ref(nt, id, "arguments");
+      int rac = 0; const int *rav = rargs >= 0 ? nt_arr(nt, rargs, "arguments", &rac) : NULL;
+      TyKind selfty = comp_ntype(c, id);
+      int has_init = rac >= 1 && rav &&
+                     !(nt_type(nt, rav[0]) && sp_streq(nt_type(nt, rav[0]), "SymbolNode"));
+      if (has_init) {
+        if (selfty == TY_POLY) emit_boxed(c, rav[0], b);
+        else emit_expr(c, rav[0], b);
+      }
+      else if (selfty == TY_INT) buf_puts(b, "SP_INT_NIL");
+      else if (selfty == TY_FLOAT) buf_puts(b, "sp_float_nil()");
+      else buf_puts(b, "sp_box_nil()");
+      return 1;
+    }
+  }
   TyKind rt = comp_ntype(c, recv);
   if (!ty_is_array(rt)) return 0;
   /* `[[ints],...].inject { |a, b| a & b }`: the inner int arrays are boxed in a
