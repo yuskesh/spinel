@@ -1028,7 +1028,14 @@ TyKind infer_call(Compiler *c, int id) {
        with sp_StrPolyHash_new and produce garbage). */
     else if (rty && (sp_streq(rty, "HashNode") || sp_streq(rty, "KeywordHashNode"))) {
       int en = 0; nt_arr(nt, recv, "elements", &en);
-      if (en == 0) rt = TY_STR_POLY_HASH;
+      if (en == 0) {
+        /* object query methods on a bare {} fold to a bool (see codegen) */
+        if (argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "frozen?") ||
+                          sp_streq(name, "empty?") || sp_streq(name, "any?"))) return TY_BOOL;
+        if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
+                          sp_streq(name, "instance_of?"))) return TY_BOOL;
+        rt = TY_STR_POLY_HASH;
+      }
     }
   }
 
@@ -1159,6 +1166,11 @@ TyKind infer_call(Compiler *c, int id) {
   }
   /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
   if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) return infer_type(c, recv);
+  /* Hash[] with no arguments: an empty hash (same C type as a bare {}) */
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash"))
+    return TY_STR_POLY_HASH;
   /* Array.try_convert(x) -> the array or nil (poly) (#2325) */
   if (recv >= 0 && name && sp_streq(name, "try_convert") && argc == 1 &&
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&

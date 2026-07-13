@@ -221,7 +221,9 @@ static char *emit_hash_block_eval(Compiler *c, int block, TyKind rt, const char 
      `next <v>` assigns the temp and falls through to the caller's collection
      rather than dropping the entry as a bare continue would. */
   int tvv = ++g_tmp; char tvvb[24]; snprintf(tvvb, sizeof tvvb, "_t%d", tvv);
-  int want_poly = (bret == TY_POLY);
+  /* a block that always yields nil has TY_NIL/TY_VOID element type, which has
+     no C storage (emit_ctype -> void); collect it as a boxed poly nil (#2343). */
+  int want_poly = (bret == TY_POLY || bret == TY_NIL || bret == TY_VOID);
   emit_indent(g_pre, g_indent + 1);
   if (want_poly) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tvv);
   else { emit_ctype(c, bret, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tvv, default_value(bret)); }

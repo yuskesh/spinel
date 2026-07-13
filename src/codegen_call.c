@@ -2873,6 +2873,13 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, recv, b);
     return 1;
   }
+  /* Hash[] with no arguments constructs an empty hash. */
+  if (recv >= 0 && sp_streq(name, "[]") && argc == 0 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash")) {
+    buf_puts(b, "sp_StrPolyHash_new()");
+    return 1;
+  }
   /* <StructClass>.members at the class level: the member symbol list */
   if (recv >= 0 && sp_streq(name, "members") && argc == 0) {
     const char *mrty = nt_type(nt, recv);
@@ -10919,6 +10926,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     buf_puts(b, sp_streq(name, "empty?") ? "1" : "0");
     return;
+  }
+  /* nil?/frozen?/empty?/is_a?(Hash) on an empty hash literal fold to constants
+     (a Hash is never nil; a bare {} is unfrozen and empty). */
+  if (recv >= 0 && nt_type(nt, recv) &&
+      (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")) &&
+      ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
+    if (argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "frozen?") || sp_streq(name, "any?"))) { buf_puts(b, "0"); return; }
+    if (argc == 0 && sp_streq(name, "empty?")) { buf_puts(b, "1"); return; }
+    if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
+      const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
+                       ? nt_str(nt, argv[0], "name") : NULL;
+      buf_puts(b, cn && sp_streq(cn, "Hash") ? "1" : "0");
+      return;
+    }
   }
 
   /* Class.===(obj): equivalent to obj.is_a?(Class). Receiver is a class constant. */
