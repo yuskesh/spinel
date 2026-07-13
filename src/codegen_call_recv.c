@@ -5050,6 +5050,17 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && ty_is_object(rt) && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "freeze") || sp_streq(name, "frozen?")) &&
       comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0) {
+    if (comp_ty_value_obj(c, rt)) {
+      /* A value-type object (sp_X by value, no heap GC header to carry the
+         frozen bit): freeze is a self-returning no-op and frozen? is false,
+         matching the pre-stateful-freeze behavior for these unboxed classes. */
+      if (sp_streq(name, "freeze")) { emit_expr(c, recv, b); return 1; }
+      /* frozen? folds to constant-false, but the receiver may carry side
+         effects (e.g. get_point().frozen?), so evaluate and discard it via a
+         comma expression, mirroring the is_a?/instance_of? value-fold below. */
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)");
+      return 1;
+    }
     if (sp_streq(name, "freeze")) {
       buf_puts(b, "((");
       emit_ctype(c, rt, b);
