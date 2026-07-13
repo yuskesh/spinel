@@ -7717,6 +7717,8 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     if (base) {
       const char *rty = nt_type(nt, recv);
       if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode"))) {
+        /* a frozen receiver raises FrozenError before the transform (#2314) */
+        emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
         emit_indent(b, indent);
         emit_expr(c, recv, b); buf_printf(b, " = sp_str_%s(", base); emit_expr(c, recv, b); buf_puts(b, ");\n");
         return 1;
@@ -7739,6 +7741,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
     else if (sp_streq(name, "tr!"))     { abase = "tr";     abang = "tr!"; }
     else if (sp_streq(name, "delete!")) { abase = "delete"; abang = "delete!"; }
     if (abase && assignable2) {
+      emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       nt_node_set_str((NodeTable *)nt, id, "name", abase);
       emit_indent(b, indent);
       emit_expr(c, recv, b); buf_puts(b, " = ");

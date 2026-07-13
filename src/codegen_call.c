@@ -4197,6 +4197,32 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
           TY_BIGINT branch below (sp_bigint_shl / sp_bigint_shr). */
        (res == TY_BIGINT && (sp_streq(name, "<<") || sp_streq(name, ">>"))))) {
     if (rt == TY_STRING && sp_streq(name, "+")) {
+      /* `str + <non-string>` is a TypeError in CRuby (no implicit conversion);
+         a statically non-string, non-poly argument raises rather than emitting
+         an invalid sp_str_plus(str, int) C call (#2306) */
+      {
+        TyKind at9 = comp_ntype(c, argv[0]);
+        const char *acn9 =
+          at9 == TY_INT || at9 == TY_BIGINT ? "Integer" :
+          at9 == TY_FLOAT ? "Float" : at9 == TY_SYMBOL ? "Symbol" :
+          at9 == TY_NIL ? "nil" :   /* CRuby names the value, not NilClass */
+          ty_is_array(at9) ? "Array" : ty_is_hash(at9) ? "Hash" :
+          at9 == TY_RANGE ? "Range" : NULL;
+        if (at9 == TY_BOOL) {
+          /* true/false name the value at run time */
+          buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+          buf_puts(b, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %s into String\", (");
+          emit_expr(c, argv[0], b);
+          buf_puts(b, ") ? \"true\" : \"false\")); (&(\"\\xff\")[1]); })");
+          return 1;
+        }
+        if (acn9) {
+          buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); (void)(");
+          emit_expr(c, argv[0], b);
+          buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into String\"); (&(\"\\xff\")[1]); })", acn9);
+          return 1;
+        }
+      }
       /* Root both operands when either may allocate: `a + b` evaluates both,
          and a fresh heap string from one can be swept while the other
          allocates or forces a GC (chained `a + b + c` with side-effecting
@@ -7308,6 +7334,15 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (!sp_streq(ecn, "TrueClass") && !sp_streq(ecn, "FalseClass"))
         rt = TY_POLY;
     }
+    /* MatchData is nullable (nil on no-match): .class checks at run time so a
+       non-match reports NilClass, not MatchData (#2311) */
+    if (rt == TY_MATCHDATA) {
+      int tm = ++g_tmp;
+      buf_printf(b, "({ sp_MatchData *_t%d = ", tm); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d ? ((sp_Class){(mrb_int)-1, \"MatchData\"})"
+                    " : ((sp_Class){(mrb_int)-1, \"NilClass\"}); })", tm);
+      return;
+    }
     const char *cn = NULL;
     if (rt == TY_INT) cn = "Integer";
     else if (rt == TY_FLOAT) cn = "Float";
@@ -9994,6 +10029,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
+  /* String#concat with no arguments returns the receiver unchanged (#2309) */
+  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "concat") && argc == 0) {
+    emit_expr(c, recv, b); return;
+  }
   /* String#clear consumed as a value: empty the assignable receiver in place
      and yield the now-empty string (#2332) */
   if (recv >= 0 && rt == TY_STRING && sp_streq(name, "clear") && argc == 0) {

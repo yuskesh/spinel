@@ -1,0 +1,10 @@
+"ab"
+no implicit conversion of Integer into String
+no implicit conversion of nil into String
+no implicit conversion of true into String
+"ab"
+NilClass
+MatchData
+upcase!:FrozenError
+sub!:FrozenError
+"hi"
