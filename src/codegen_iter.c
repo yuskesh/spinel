@@ -1616,13 +1616,16 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
 
   /* poly_val.each { |v| ... }: runtime-dispatch over a boxed array or hash */
   if ((sp_streq(name, "each") || sp_streq(name, "each_pair") ||
-       sp_streq(name, "each_value") || sp_streq(name, "each_key")) &&
+       sp_streq(name, "each_value") || sp_streq(name, "each_key") ||
+       sp_streq(name, "each_with_index")) &&
       rt == TY_POLY && block >= 0) {
     /* each/each_pair walk the elements (sp_poly_each_elem renders a hash
        entry as a boxed [k, v] pair); each_value/each_key bind one half of
-       that pair (the receiver is a hash when these names dispatch). */
+       that pair (the receiver is a hash when these names dispatch);
+       each_with_index binds the whole element plus the loop index (no splat). */
     int pv_half = sp_streq(name, "each_value") ? 1 :
                   sp_streq(name, "each_key") ? 0 : -1;
+    int is_ewi = sp_streq(name, "each_with_index");
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     /* The gate read the cached node type (poly); a cloned-body local can have
@@ -1647,7 +1650,44 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
        hash pair as a 2-element array, so |k, v| over a hash still splats); a
        non-array element binds param 0 with the rest nil. */
     int npp_poly = 0; while (block_param_name(c, block, npp_poly)) npp_poly++;
-    if (npp_poly >= 2) {
+    if (is_ewi) {
+      /* each_with_index { |v, i| }: bind param 0 to the WHOLE element (never
+         splatting a nested array, unlike `each`) and param 1 to the loop index;
+         any further params bind to nil each iteration. Every binding is gated on
+         the param actually being a declared local -- an UNUSED block param is
+         pruned by liveness (scope_local returns NULL and no `lv_<name>` is
+         declared), so emitting an assignment to it would reference an undeclared
+         C identifier. This mirrors the `each` sibling, which binds only live
+         params. */
+      Scope *ews = comp_scope_of(c, block);
+      const char *e0_orig = block_param_name(c, block, 0);
+      LocalVar *e0lv = (e0_orig && ews) ? scope_local(ews, e0_orig) : NULL;
+      if (e0lv) {
+        TyKind e0t = e0lv->type != TY_UNKNOWN ? e0lv->type : TY_POLY;
+        char esrc[64]; snprintf(esrc, sizeof esrc, "sp_poly_each_elem(_t%d, _t%d)", ta, ti);
+        emit_indent(b, indent + 1);
+        emit_block_param_from_boxed(c, rename_local(e0_orig), e0t, esrc, b);
+      }
+      const char *i1_orig = block_param_name(c, block, 1);
+      LocalVar *i1lv = (i1_orig && ews) ? scope_local(ews, i1_orig) : NULL;
+      if (i1lv) {
+        TyKind i1t = i1lv->type != TY_UNKNOWN ? i1lv->type : TY_POLY;
+        emit_indent(b, indent + 1);
+        if (i1t == TY_POLY) buf_printf(b, "lv_%s = sp_box_int(_t%d);\n", rename_local(i1_orig), ti);
+        else buf_printf(b, "lv_%s = _t%d;\n", rename_local(i1_orig), ti);
+      }
+      for (int pj = 2; pj < npp_poly; pj++) {
+        const char *pnj = block_param_name(c, block, pj);
+        LocalVar *pjlv = (pnj && ews) ? scope_local(ews, pnj) : NULL;
+        if (!pjlv) continue;
+        TyKind pjt = pjlv->type != TY_UNKNOWN ? pjlv->type : TY_POLY;
+        emit_indent(b, indent + 1);
+        buf_printf(b, "lv_%s = ", rename_local(pnj));
+        emit_block_param_nil(c, pjt, b);
+        buf_puts(b, ";\n");
+      }
+    }
+    else if (npp_poly >= 2) {
       Scope *blk_pv = comp_scope_of(c, block);
       int telem = ++g_tmp;
       emit_indent(b, indent + 1);
