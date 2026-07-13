@@ -308,6 +308,21 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     }
     free(hb.p);
   }
+  /* `p Array.new` (no args, no block): a bare Array.new infers TY_UNKNOWN like
+     an empty `[]` literal (deferred for push-narrowing), so as a direct p
+     argument it never narrows -- print the empty array explicitly. */
+  if (t == TY_UNKNOWN && nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "CallNode") &&
+      nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "new") &&
+      nt_ref(c->nt, arg, "block") < 0 &&
+      ({ int _r = nt_ref(c->nt, arg, "receiver");
+         _r >= 0 && nt_type(c->nt, _r) && sp_streq(nt_type(c->nt, _r), "ConstantReadNode") &&
+         nt_str(c->nt, _r, "name") && sp_streq(nt_str(c->nt, _r, "name"), "Array"); }) &&
+      ({ int _a = nt_ref(c->nt, arg, "arguments"); int _n = 0;
+         if (_a >= 0) nt_arr(c->nt, _a, "arguments", &_n); _n == 0; })) {
+    emit_indent(b, indent);
+    buf_puts(b, "fputs(\"[]\\n\", stdout);\n");
+    return;
+  }
   /* `p x.class` prints the class name bare (it is a Class, not a String). */
   if (t == TY_STRING && nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "CallNode") &&
       nt_str(c->nt, arg, "name") && sp_streq(nt_str(c->nt, arg, "name"), "class") &&

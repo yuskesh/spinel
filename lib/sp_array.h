@@ -126,6 +126,7 @@ sp_FloatArray *sp_FloatArray_intersect(sp_FloatArray *a, sp_FloatArray *b);
 mrb_bool sp_FloatArray_intersect_p(sp_FloatArray *a, sp_FloatArray *b);
 sp_FloatArray *sp_FloatArray_union(sp_FloatArray *a, sp_FloatArray *b);
 sp_FloatArray *sp_FloatArray_difference(sp_FloatArray *a, sp_FloatArray *b);
+sp_FloatArray *sp_FloatArray_uniq(sp_FloatArray *a);
 
 /* ============================= sp_PtrArray ============================ */
 /* Array of void* pointers (user-class arrays, FFI pointer arrays). */

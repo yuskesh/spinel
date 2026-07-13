@@ -3754,6 +3754,9 @@ else if (kind == SP_BUILTIN_STR_ARRAY) {
    (e.g. the result of `arr.map { _1[:int_key] }`). Non-int tags
    contribute zero. */
 static mrb_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; mrb_int s = 0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += a->data[i].v.i; } return s; }
+/* Array#sum with a Float initial value: numeric fold over Integer and Float
+   elements, accumulating as double (the result is a Float). */
+static mrb_float sp_PolyArray_sum_float(sp_PolyArray *a) { if (!a) return 0.0; mrb_float s = 0.0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += (mrb_float)a->data[i].v.i; else if (a->data[i].tag == SP_TAG_FLT) s += a->data[i].v.f; } return s; }
 /* Array#sum with a String initial value: concatenation fold ("abc" from
    ["a","b","c"].sum("")), CRuby's + on each element. */
 static const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {

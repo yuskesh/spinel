@@ -301,6 +301,7 @@ sp_FloatArray*sp_FloatArray_intersect(sp_FloatArray*a,sp_FloatArray*b){sp_FloatA
 mrb_bool sp_FloatArray_intersect_p(sp_FloatArray*a,sp_FloatArray*b){if(!a||!b)return 0;for(mrb_int i=0;i<a->len;i++)if(sp_FloatArray_include(b,a->data[i]))return 1;return 0;}
 sp_FloatArray*sp_FloatArray_union(sp_FloatArray*a,sp_FloatArray*b){sp_FloatArray*r=sp_FloatArray_new();if(a)for(mrb_int i=0;i<a->len;i++){mrb_float v=a->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}if(b){for(mrb_int i=0;i<b->len;i++){mrb_float v=b->data[i];if(!sp_FloatArray_include(r,v))sp_FloatArray_push(r,v);}}return r;}
 sp_FloatArray*sp_FloatArray_difference(sp_FloatArray*a,sp_FloatArray*b){sp_FloatArray*r=sp_FloatArray_new();for(mrb_int i=0;i<a->len;i++){mrb_float v=a->data[i];if(!sp_FloatArray_include(b,v))sp_FloatArray_push(r,v);}return r;}
+sp_FloatArray*sp_FloatArray_uniq(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_new();if(!a)return b;for(mrb_int i=0;i<a->len;i++){mrb_float v=sp_FloatArray_get(a,i);if(!sp_FloatArray_include(b,v))sp_FloatArray_push(b,v);}return b;}
 
 /* ============================= sp_PtrArray ============================ */
 /* `Array#delete_at(i)` -- remove and return the element at index i.

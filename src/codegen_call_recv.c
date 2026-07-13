@@ -791,6 +791,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
+      /* a Float initial value folds to a Float (bare mrb_float, not boxed) */
+      if (init_t == TY_FLOAT) {
+        buf_puts(b, "("); emit_float_expr(c, argv[0], b);
+        buf_puts(b, " + sp_PolyArray_sum_float("); emit_expr(c, recv, b); buf_puts(b, "))");
+        return 1;
+      }
       buf_puts(b, "sp_box_int(");
       if (init_t == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { emit_expr(c, argv[0], b); }
@@ -2100,9 +2106,47 @@ else {
         buf_printf(b, "(sp_%sArray_length(", k); emit_expr(c, recv, b); buf_printf(b, ") %s)", op);
         return 1;
       }
-      if ((sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "count")) &&
+      /* array.none?(a..b) / any?/all?/one? with a Range pattern -- membership
+         test (===) over an integer array. */
+      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
+           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+          argc == 1 && nt_ref(nt, id, "block") < 0 &&
+          rt == TY_INT_ARRAY && comp_ntype(c, argv[0]) == TY_RANGE) {
+        int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+        Buf ra = expr_buf(c, recv);
+        buf_printf(b, "({ sp_IntArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
+        buf_printf(b, " sp_Range _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";");
+        buf_printf(b, " mrb_int _t%d = 0;", tc);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
+        buf_printf(b, " if (sp_range_include(&_t%d, sp_IntArray_get(_t%d, _t%d))) _t%d++;", tv, ta, ti, tc);
+        if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == sp_IntArray_length(_t%d); })", tc, ta);
+        else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
+        else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
+        else                              buf_printf(b, " _t%d == 1; })", tc);
+        return 1;
+      }
+      /* array.none?(/re/) / any?/all?/one? with a Regexp pattern over strings. */
+      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
+           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+          argc == 1 && nt_ref(nt, id, "block") < 0 &&
+          rt == TY_STR_ARRAY && re_lit_index(c, argv[0]) >= 0) {
+        int rei = re_lit_index(c, argv[0]);
+        int ta = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+        Buf ra = expr_buf(c, recv);
+        buf_printf(b, "({ sp_StrArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
+        buf_printf(b, " mrb_int _t%d = 0;", tc);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
+        buf_printf(b, " if (sp_re_match(sp_re_pat_%d, sp_StrArray_get(_t%d, _t%d)) >= 0) _t%d++;", rei, ta, ti, tc);
+        if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == sp_StrArray_length(_t%d); })", tc, ta);
+        else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
+        else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
+        else                              buf_printf(b, " _t%d == 1; })", tc);
+        return 1;
+      }
+      if ((sp_streq(name, "all?") || sp_streq(name, "any?") || sp_streq(name, "none?") ||
+           sp_streq(name, "one?") || sp_streq(name, "count")) &&
           argc == 1 && nt_ref(nt, id, "block") < 0) {
-        /* array.any?(v) / none?(v) / one?(v) / count(v) -- compare by == */
+        /* array.all?(v)/any?(v)/none?(v)/one?(v)/count(v) -- compare by == */
         int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
         Buf ra = expr_buf(c, recv);
         buf_printf(b, "({ sp_%sArray *_t%d = %s;", k, ta, ra.p ? ra.p : "NULL"); free(ra.p);
@@ -2115,7 +2159,8 @@ else {
           buf_printf(b, " if (strcmp(sp_%sArray_get(_t%d, _t%d), _t%d) == 0) _t%d++;", k, ta, ti, tv, tc);
         else
           buf_printf(b, " if (sp_%sArray_get(_t%d, _t%d) == _t%d) _t%d++;", k, ta, ti, tv, tc);
-        if (sp_streq(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
+        if (sp_streq(name, "all?"))        buf_printf(b, " _t%d == sp_%sArray_length(_t%d); })", tc, k, ta);
+        else if (sp_streq(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
         else if (sp_streq(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
         else if (sp_streq(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
         else                              buf_printf(b, " _t%d; })", tc);
@@ -2286,7 +2331,7 @@ else {
         buf_printf(b, "sp_%sArray_sort(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
-      if (sp_streq(name, "uniq") && argc == 0 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY)) {
+      if (sp_streq(name, "uniq") && argc == 0 && (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) {
         buf_printf(b, "sp_%sArray_uniq(", k); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
@@ -5078,7 +5123,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "rationalize") && argc == 1) {
         buf_printf(b, "sp_float_rationalize(%s, ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       }
-      else if (sp_streq(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "abs"))   buf_printf(b, "fabs(%s)", r);
       /* Float arg/angle/phase: Integer 0 for >= 0, Float PI for < 0 -> poly (#2316) */
       else if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase"))
         buf_printf(b, "((%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))", r);
@@ -5095,7 +5140,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          (0.5.numerator == 1), via the frexp conversion behind Float#to_r. */
       else if (sp_streq(name, "numerator") && argc == 0) buf_printf(b, "sp_float_to_rational(%s).num", r);
       else if (sp_streq(name, "denominator") && argc == 0) buf_printf(b, "sp_float_to_rational(%s).den", r);
-      else if (sp_streq(name, "magnitude")) buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "magnitude")) buf_printf(b, "fabs(%s)", r);
       else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_fmod(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       /* Float#clamp with float bounds always yields a float (the returned bound
          is itself a float), so emit only when both bounds are float-typed; the

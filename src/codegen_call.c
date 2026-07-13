@@ -5343,15 +5343,27 @@ void emit_call(Compiler *c, int id, Buf *b) {
       return;
     }
     if (sp_streq(name, "upto") && argc == 1) {
+      /* a Float limit is not truncated: n.upto(2.5) stops at 2, i.e. floor. */
+      int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
       buf_puts(b, "(sp_Range){ .first = "); emit_expr(c, recv, b);
-      buf_puts(b, ", .last = "); emit_expr(c, argv[0], b); buf_puts(b, ", .excl = 0 }");
+      buf_puts(b, ", .last = ");
+      if (lf) buf_puts(b, "(mrb_int)floor(");
+      emit_expr(c, argv[0], b);
+      if (lf) buf_puts(b, ")");
+      buf_puts(b, ", .excl = 0 }");
       return;
     }
     if (sp_streq(name, "downto") && argc == 1) {
       /* descending: first=hi(recv), last=lo(arg), step=-1 -- an ascending range
-         cannot carry the direction, which its .to_a would lose. */
+         cannot carry the direction, which its .to_a would lose. A Float limit
+         is not truncated: n.downto(1.5) stops at 2, i.e. ceil. */
+      int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
       buf_puts(b, "sp_range_new_step("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ", 0, -1LL)");
+      buf_puts(b, ", ");
+      if (lf) buf_puts(b, "(mrb_int)ceil(");
+      emit_expr(c, argv[0], b);
+      if (lf) buf_puts(b, ")");
+      buf_puts(b, ", 0, -1LL)");
       return;
     }
   }
@@ -11006,11 +11018,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
 
   /* array value methods */
-  /* empty array literal [] has TY_UNKNOWN; sum returns init or 0 */
-  if (recv >= 0 && rt == TY_UNKNOWN && sp_streq(name, "sum") &&
-      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
-    int en = 0; nt_arr(nt, recv, "elements", &en);
-    if (en == 0) {
+  /* empty array literal [] has TY_UNKNOWN; sum returns init or 0. A local bound
+     to [] that no push narrowed also stays TY_UNKNOWN, so `a = []; a.sum(0.0)`
+     reaches here with a non-literal receiver -- still an empty array. */
+  if (recv >= 0 && rt == TY_UNKNOWN && sp_streq(name, "sum")) {
+    int is_lit = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode");
+    int en = 0; if (is_lit) nt_arr(nt, recv, "elements", &en);
+    if (!is_lit || en == 0) {
       TyKind call_t = comp_ntype(c, id);
       if (argc == 1) {
         if (call_t == TY_POLY) emit_boxed(c, argv[0], b);
