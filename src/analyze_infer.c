@@ -3853,6 +3853,8 @@ else {
   }
   /* float receiver methods */
   if (recv >= 0 && rt == TY_FLOAT) {
+    if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0)
+      return TY_POLY;  /* Integer 0 or Float PI (#2316) */
     if (sp_streq(name, "to_c") && argc == 0) return TY_COMPLEX;
     if (sp_streq(name, "coerce") && argc == 1) return TY_FLOAT_ARRAY;  /* [Float(other), self] */
     if (sp_streq(name, "divmod") && argc == 1) return TY_POLY_ARRAY;  /* [Integer, Float] */
@@ -4047,6 +4049,8 @@ else {
     if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "succ") ||
          sp_streq(name, "next") || sp_streq(name, "pred")) && argc == 0) return TY_BIGINT;
     if (sp_streq(name, "class") && argc == 0) return TY_CLASS;
+    if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) &&
+        (argc == 0 || argc == 1)) return TY_BIGINT;  /* #2303 */
   }
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&

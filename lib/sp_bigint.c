@@ -5415,6 +5415,25 @@ int sp_bigint_cmp(sp_Bigint *a, sp_Bigint *b) {
   return mpz_cmp(sp_mpz_ctx, &a->mpz, &b->mpz);
 }
 
+/* Integer#round/#floor/#ceil with a negative precision on a Bignum: round to
+   the nearest 10^(-ndigits). mode 0=round(half up, away from zero via floored
+   division), 1=floor, 2=ceil. ndigits >= 0 returns self (already integral).
+   (#2303) */
+sp_Bigint *sp_bigint_round_prec(sp_Bigint *b, int64_t ndigits, int mode) {
+  if (ndigits >= 0) return b;
+  sp_Bigint *base = sp_bigint_pow(sp_bigint_new_int(10), -ndigits);
+  sp_Bigint *q = sp_bigint_div(b, base);          /* floored quotient */
+  sp_Bigint *qb = sp_bigint_mul(q, base);
+  sp_Bigint *rem = sp_bigint_sub(b, qb);           /* in [0, base) */
+  if (mode == 1) return qb;                        /* floor */
+  int rem_zero = (sp_bigint_sign(rem) == 0);
+  sp_Bigint *q1b = sp_bigint_mul(sp_bigint_add(q, sp_bigint_new_int(1)), base);
+  if (mode == 2) return rem_zero ? qb : q1b;       /* ceil */
+  sp_Bigint *rem2 = sp_bigint_add(rem, rem);       /* round: 2*rem >= base? */
+  return (sp_bigint_cmp(rem2, base) >= 0) ? q1b : qb;
+}
+
+
 int64_t sp_bigint_to_int(sp_Bigint *b) {
   /* Extract int64 from mpz - for small values.
      Treat NULL as 0 -- a promote-mode method body whose tail is a

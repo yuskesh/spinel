@@ -10017,6 +10017,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (name[0] == '+') { buf_puts(b, "sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else { buf_puts(b, "sp_str_freeze_val(sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     }
+    else if (rt == TY_BIGINT) {
+      /* -@ negates via 0 - b (no unary neg on a bigint pointer); +@ is self (#2304) */
+      if (name[0] == '-') { buf_puts(b, "sp_bigint_sub(sp_bigint_new_int(0), "); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+    }
     else { buf_puts(b, name[0] == '-' ? "(-" : "(+"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;
   }
@@ -10224,7 +10229,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int ta = ++g_tmp, tb = ++g_tmp;
       buf_puts(b, "({ "); emit_ctype(c, lrt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b);
       buf_puts(b, "; "); emit_ctype(c, lat, b); buf_printf(b, " _t%d = ", tb); emit_expr(c, argv[0], b);
-      buf_printf(b, "; (_t%d > _t%d) - (_t%d < _t%d); })", ta, tb, ta, tb);
+      /* a NaN operand makes <=> nil, not 0 (#2315); only floats can be NaN */
+      if (lrt == TY_FLOAT || lat == TY_FLOAT)
+        buf_printf(b, "; (isnan((double)_t%d) || isnan((double)_t%d)) ? SP_INT_NIL"
+                      " : (mrb_int)((_t%d > _t%d) - (_t%d < _t%d)); })", ta, tb, ta, tb, ta, tb);
+      else
+        buf_printf(b, "; (_t%d > _t%d) - (_t%d < _t%d); })", ta, tb, ta, tb);
       return;
     }
     if (lrt == TY_STRING && lat == TY_STRING) {
@@ -11229,6 +11239,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     if (sp_streq(name, "abs") && argc == 0) {
       buf_printf(b, "sp_bigint_abs_v(%s)", r); free(rs.p); return;
+    }
+    /* round/ceil/floor: no precision -> self; a precision arg rounds to
+       10^(-ndigits) (a positive precision is a no-op on an integer) (#2303) */
+    if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) && argc == 0) {
+      buf_printf(b, "(%s)", r); free(rs.p); return;
+    }
+    if ((sp_streq(name, "round") || sp_streq(name, "ceil") || sp_streq(name, "floor")) && argc == 1) {
+      int mode = sp_streq(name, "floor") ? 1 : sp_streq(name, "ceil") ? 2 : 0;
+      buf_printf(b, "sp_bigint_round_prec(%s, ", r); emit_int_expr(c, argv[0], b);
+      buf_printf(b, ", %d)", mode); free(rs.p); return;
     }
     if (sp_streq(name, "to_s") && argc == 1) {
       buf_printf(b, "sp_str_dup_external(sp_bigint_to_s_base(%s, ", r);

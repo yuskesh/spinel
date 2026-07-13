@@ -5079,6 +5079,9 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_float_rationalize(%s, ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      /* Float arg/angle/phase: Integer 0 for >= 0, Float PI for < 0 -> poly (#2316) */
+      else if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase"))
+        buf_printf(b, "((%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))", r);
       else if (sp_streq(name, "to_int")) buf_printf(b, "((mrb_int)(%s))", r);  /* alias of to_i (#2317) */
       else if (sp_streq(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
       else if (sp_streq(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
