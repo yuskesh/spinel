@@ -3712,6 +3712,20 @@ else {
         buf_puts(b, ")");
         return 1;
       }
+      /* Hash#key(value) for any variant: the first key whose value == the arg,
+         or nil. Scans the boxed [key, value] pair list. */
+      if (sp_streq(name, "key") && argc == 1) {
+        int tp = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_RbVal _t%d = sp_box_nil();", tr);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, tp, ti);
+        buf_printf(b, " sp_PolyArray *_pr = (sp_PolyArray *)_t%d->data[_t%d].v.p;", tp, ti);
+        buf_printf(b, " if (sp_poly_eq(_pr->data[1], _t%d)) { _t%d = _pr->data[0]; break; } }", tv, tr);
+        buf_printf(b, " _t%d; })", tr);
+        return 1;
+      }
       if (sp_streq(name, "replace") && argc == 1 && comp_ntype(c, argv[0]) == rt) {
         buf_printf(b, "sp_%sHash_replace(", hn);
         emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -4037,6 +4051,33 @@ else {
         buf_puts(b, "sp_PolyArray_sort_pairs(");
         emit_hash_pairs_expr(c, recv, rt, hn, b);
         buf_puts(b, ")");
+        return 1;
+      }
+      /* Enumerable first/take/drop over the [key, value] pair list. `first`
+         with no argument yields the first pair (nil when empty); the arg forms
+         and take/drop return a poly array slice. */
+      if (sp_streq(name, "first") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        int tp = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        buf_printf(b, "; _t%d->len > 0 ? _t%d->data[0] : sp_box_nil(); })", tp, tp);
+        return 1;
+      }
+      if ((sp_streq(name, "first") || sp_streq(name, "take")) && argc == 1 &&
+          nt_ref(nt, id, "block") < 0) {
+        int tn = ++g_tmp;
+        buf_printf(b, "({ mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to take negative size\"); sp_PolyArray_slice(", tn);
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        buf_printf(b, ", 0, _t%d); })", tn);
+        return 1;
+      }
+      if (sp_streq(name, "drop") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+        int tp = ++g_tmp, tn = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        buf_printf(b, "; mrb_int _t%d = ", tn); emit_int_expr(c, argv[0], b);
+        buf_printf(b, "; if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"attempt to drop negative size\"); sp_PolyArray_slice(_t%d, _t%d, _t%d->len - _t%d); })", tn, tp, tn, tp, tn);
         return 1;
       }
       if ((sp_streq(name, "assoc") || sp_streq(name, "rassoc")) && argc == 1) {

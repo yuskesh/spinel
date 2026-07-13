@@ -3208,10 +3208,15 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   TyKind rt = comp_ntype(c, recv);
-  if (!ty_is_array(rt)) return 0;
-  const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  /* Hash#sort { |x, y| ... }: sort the [key, value] pair list (a poly array).
+     sort! is not valid on a Hash, so only the non-bang form applies. */
+  int hash_sort = ty_is_hash(rt) && !is_bang;
+  if (!ty_is_array(rt) && !hash_sort) return 0;
+  const char *k = hash_sort ? "Poly" : (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
-  TyKind et = ty_array_elem(rt);
+  TyKind et = hash_sort ? TY_POLY : ty_array_elem(rt);
+  const char *hn = hash_sort ? ty_hash_cname(rt) : NULL;
+  TyKind eff_rt = hash_sort ? TY_POLY_ARRAY : rt;
   const char *p0 = block_param_name(c, block, 0);
   const char *p1 = block_param_name(c, block, 1);
   if (!p0 || !p1) return 0;
@@ -3220,7 +3225,9 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1 || infer_type(c, bb[bn - 1]) != TY_INT) return 0;
   int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (hash_sort) emit_hash_pairs_expr(c, recv, rt, hn, &rb); else emit_expr(c, recv, &rb);
+  rt = eff_rt;
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
   if (!is_bang) {
     emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);

@@ -614,6 +614,8 @@ int hash_enum_redispatch(Compiler *c, int id) {
   if (sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "find_all")) return 1;
   if (sp_streq(name, "each_with_index")) return 1;
   if (sp_streq(name, "reduce") || sp_streq(name, "inject")) return 1;
+  /* comparator-block sort over the [k, v] pairs -> a poly array of pairs */
+  if (sp_streq(name, "sort")) return 1;
   /* each_with_object / flat_map keep their dedicated hash emitters */
   /* min_by/max_by keep their dedicated hash emitters; only minmax_by rides
      the pair redispatch */
@@ -3524,6 +3526,11 @@ else {
     if (nt_ref(nt, id, "block") >= 0 && sp_streq(name, "chunk")) return TY_ENUMERATOR;
     if (sp_streq(name, "to_proc")) return TY_PROC;
     if (sp_streq(name, "key") && argc == 1 && rt == TY_SYM_POLY_HASH) return TY_SYMBOL;
+    if (sp_streq(name, "key") && argc == 1) return TY_POLY;  /* the key (boxed) or nil */
+    /* Enumerable first/take/drop over the [key, value] pair list */
+    if (sp_streq(name, "first") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_POLY;
+    if ((sp_streq(name, "first") || sp_streq(name, "take") || sp_streq(name, "drop")) &&
+        argc == 1 && nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_h") && argc == 0 && nt_ref(nt, id, "block") < 0) return rt;  /* identity */
     if (sp_streq(name, "slice") && argc >= 1) return rt;  /* key-subset hash */
     if (sp_streq(name, "[]"))     return ty_hash_val(rt);

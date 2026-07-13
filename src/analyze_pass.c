@@ -1379,13 +1379,14 @@ int infer_write_types(Compiler *c) {
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (name && (sp_streq(name, "push") || sp_streq(name, "<<")) && an == 1) {
+      if (name && (sp_streq(name, "push") || sp_streq(name, "<<") ||
+                   sp_streq(name, "append")) && an == 1) {
         /* `<<` is ambiguous (Array#push vs Integer#<< shift): a numeric-assigned
            receiver is a shift, so don't promote its slot to an array. */
         if (sp_streq(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;
         is_push = 1; vt = infer_type(c, argv[0]);
       }
-      else if (name && sp_streq(name, "unshift") && an >= 1) {
+      else if (name && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && an >= 1) {
         /* unshift(v, ...): every argument is element evidence, like push
            (a foreign value used to store its raw bits into the typed slots) */
         is_push = 1; vt = infer_type(c, argv[0]);
@@ -5663,7 +5664,12 @@ int infer_block_params(Compiler *c) {
                          sp_streq(name, "map") || sp_streq(name, "collect") ||
                          sp_streq(name, "find") ||
                          sp_streq(name, "detect") || sp_streq(name, "sort_by") ||
-                         sp_streq(name, "group_by") || sp_streq(name, "sum"));
+                         sp_streq(name, "group_by") || sp_streq(name, "sum") ||
+                         /* Enumerable predicates/counters: a solo param is the
+                            [k, v] pair, not the key (#2339) */
+                         sp_streq(name, "any?") || sp_streq(name, "all?") ||
+                         sp_streq(name, "none?") || sp_streq(name, "one?") ||
+                         sp_streq(name, "count"));
         if (p0) {
           LocalVar *kp = scope_local_intern(hs, p0); kp->is_block_param = 1;
           TyKind km = ty_unify(kp->type, pair_solo ? TY_POLY : ty_hash_key(rt));
