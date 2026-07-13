@@ -1373,7 +1373,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     const char *nm = nt_str(nt, id, "name");
     int par_idc = nt_ref(nt, id, "parent");
     const char *par_tyc = par_idc >= 0 ? nt_type(nt, par_idc) : NULL;
-    const char *par_nmc = (par_tyc && sp_streq(par_tyc, "ConstantReadNode")) ? nt_str(nt, par_idc, "name") : NULL;
+    /* the parent's LEAF name also qualifies through a nested path
+       (Outer::CSql::TEXT) -- the ffi decl registers under its module's
+       unqualified name */
+    const char *par_nmc = (par_tyc && (sp_streq(par_tyc, "ConstantReadNode") ||
+                                       sp_streq(par_tyc, "ConstantPathNode")))
+                          ? nt_str(nt, par_idc, "name") : NULL;
     /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
        plain-constant table, or a same-leaf plain constant in another module
        silently claims the reference (and its type). */
