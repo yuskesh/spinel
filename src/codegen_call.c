@@ -9557,6 +9557,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       return;
     }
+    /* String#match?/#match with a String pattern argument: CRuby treats the
+       string as a regexp source (Regexp.new(str)). Compile it at run time.
+       (=~ / !~ with a String argument raise TypeError, so are excluded.) */
+    if (are < 0 && (rt == TY_STRING || rt == TY_STRBUF) && argc == 1 &&
+        comp_ntype(c, argv[0]) == TY_STRING &&
+        (sp_streq(name, "match?") || sp_streq(name, "match"))) {
+      int ts = ++g_tmp;
+      const char *fn = sp_streq(name, "match?") ? "sp_re_match_p" : "sp_re_matchdata";
+      buf_printf(b, "({ const char *_t%d = ", ts); emit_expr(c, argv[0], b);
+      buf_printf(b, "; mrb_regexp_pattern *_t%dp = re_compile(_t%d, (int64_t)strlen(_t%d ? _t%d : \"\"), 0); ",
+                 ts, ts, ts, ts);
+      buf_printf(b, "%s(_t%dp, ", fn, ts); emit_expr(c, recv, b); buf_puts(b, "); })");
+      return;
+    }
   }
   /* /re/.match(str) and /re/.match(str, pos) */
   {

@@ -3970,6 +3970,9 @@ else {
   if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
     TyKind a0t = argc > 0 ? infer_type(c, argv[0]) : TY_UNKNOWN;
     if (rt == TY_REGEX || a0t == TY_REGEX) return TY_MATCHDATA;
+    /* String#match with a String pattern (regexp source) -> MatchData */
+    if ((rt == TY_STRING || rt == TY_STRBUF) && a0t == TY_STRING)
+      return nt_ref(nt, id, "block") >= 0 ? TY_POLY : TY_MATCHDATA;
   }
   /* /re/.source -> String, /re/.options -> Integer (compile-time constants) */
   if (recv >= 0 && argc == 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "RegularExpressionNode")) {

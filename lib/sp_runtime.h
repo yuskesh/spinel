@@ -492,8 +492,10 @@ static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an
    that codepoint, not the decimal digits. UTF-8 encode (1..4 bytes)
    and return a NUL-terminated string. */
 static const char *sp_int_codepoint_to_str(mrb_int n) {
+  /* String#<< / #concat with an out-of-range codepoint raises RangeError,
+     matching CRuby ("N out of char range"). */
+  if (n < 0 || n > 0x10FFFF) sp_raise_cls("RangeError", sp_sprintf("%lld out of char range", (long long)n));
   char *s = sp_str_alloc_raw(5);
-  if (n < 0 || n > 0x10FFFF) { s[0] = 0; sp_str_set_len(s, 0); return s; }
   int len = sp_utf8_encode((uint32_t)n, s);
   s[len] = 0;
   sp_str_set_len(s, (size_t)len);  /* byte_len must be the encoded length, not the alloc */

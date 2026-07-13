@@ -21,6 +21,9 @@ static int sp_char_cache_init = 0;
 /* Hex-digit value, used by sp_str_undump's \xNN / \uNNNN unescape. */
 static int _sp_hexval(unsigned char d){return (d<='9')?(d-'0'):(tolower(d)-'a'+10);}
 
+/* gsub/sub replacement backslash expansion (defined near sp_str_gsub). */
+static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen);
+
 /* Byte-oriented substring search (NUL-transparent). spinel Strings can carry
    embedded NULs (pack, socket reads), so the search family must use the header
    byte length rather than strstr's C-string scan, which stops at the first NUL
@@ -88,7 +91,7 @@ const char*sp_str_plus(const char*a,const char*b){
 void sp_raise_frozen_str(const char*s){const char*ins=sp_str_inspect(s);SP_GC_ROOT_STR(ins);const char*msg=sp_str_concat(&("\xff" "can't modify frozen String: ")[1],ins);SP_GC_ROOT_STR(msg);sp_raise_cls("FrozenError",msg);}
 /* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
    plus any non-printable byte as \xNN. Output is always ASCII-safe. */
-const char*sp_str_inspect(const char*s){SP_GC_ROOT_STR(s);if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=(sl*4)+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c<0x20||c==0x7f){snprintf(r+o,5,"\\x%02X",c);o+=4;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
+const char*sp_str_inspect(const char*s){SP_GC_ROOT_STR(s);if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=(sl*6)+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}else if(c=='\a'){r[o++]='\\';r[o++]='a';}else if(c=='\b'){r[o++]='\\';r[o++]='b';}else if(c=='\t'){r[o++]='\\';r[o++]='t';}else if(c=='\n'){r[o++]='\\';r[o++]='n';}else if(c=='\v'){r[o++]='\\';r[o++]='v';}else if(c=='\f'){r[o++]='\\';r[o++]='f';}else if(c=='\r'){r[o++]='\\';r[o++]='r';}else if(c==0x1b){r[o++]='\\';r[o++]='e';}else if(c<0x20||c==0x7f){/* other control bytes render as \uNNNN (UTF-8 default, matching CRuby source-literal strings) */snprintf(r+o,7,"\\u%04X",c);o+=6;}else{r[o++]=(char)c;}}r[o++]='"';r[o]=0;sp_str_set_len(r,o);return r;}
 /* A symbol prints without quotes when its name is a plain identifier (an
    @ivar / @@cvar / $gvar, or a bare name optionally ending in ? ! =) or a
    known operator method name; otherwise it is quoted like a string: :"a b". */
@@ -271,7 +274,7 @@ const char*sp_str_bytesplice(const char*s,mrb_int start,mrb_int len,const char*v
 /* String#ascii_only?: 1 iff every byte is in the 7-bit ASCII range. */
 int sp_str_ascii_only(const char*s){mrb_int bl=(mrb_int)sp_str_byte_len(s);for(mrb_int i=0;i<bl;i++){if((unsigned char)s[i]>=0x80)return 0;}return 1;}
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a){SP_GC_ROOT_STR(fmt);size_t cap=strlen(fmt)+64;char*buf=(char*)malloc(cap);if(!buf){perror("malloc");exit(1);}size_t out=0;mrb_int idx=0;const char*p=fmt;while(*p){if(*p=='%'){if(p[1]=='s'){const char*s=(idx<a->len)?a->data[idx]:"";size_t sl=strlen(s);if(out+sl>=cap){size_t nc=((out+sl)*2)+1;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}memcpy(buf+out,s,sl);out+=sl;idx++;p+=2;}else if(p[1]=='%'){if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]='%';p+=2;}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}else{if(out+1>=cap){size_t nc=cap*2;char*nb=(char*)realloc(buf,nc);if(!nb){free(buf);perror("realloc");exit(1);}buf=nb;cap=nc;}buf[out++]=*p++;}}buf[out]=0;char*r=sp_str_alloc(out);memcpy(r,buf,out);free(buf);return r;}
-const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;const char*f=strstr(s,pat);if(!f)return s;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl+1);return r;}
+const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;const char*f=strstr(s,pat);if(!f)return s;char*rep_exp=sp_str_rep_expand(rep,pat,strlen(pat));if(rep_exp)rep=rep_exp;size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl+1);if(rep_exp)free(rep_exp);return r;}
 const char*sp_str_capitalize(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<=l;i++)r[i]=tolower((unsigned char)s[i]);if(l>0)r[0]=toupper((unsigned char)r[0]);return r;}
 const char*sp_str_repeat(const char*s,mrb_int n){SP_GC_ROOT_STR(s);
   if(n<0) sp_raise_cls("ArgumentError","negative argument");
@@ -621,9 +624,36 @@ sp_StrArray*sp_str_split_ws(const char*s){if(!s)sp_nil_recv("split");
    GC's sp_mark_string writes the marker byte at offset -1 and would corrupt
    malloc metadata otherwise. Issue #850: an empty pattern inserts the
    replacement between every character (and at both ends). */
+/* Expand backslash sequences in a gsub/sub replacement against a fixed matched
+   text `match` (mlen bytes). For a String pattern there are no capture groups,
+   so \1-\9 expand to nothing; \\ -> \, \& and \0 -> the whole match; any other
+   \c keeps both characters. Returns a malloc'd C string the caller frees.
+   Returns NULL when the replacement has no backslash (caller uses rep as-is). */
+static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen) {
+  if (!rep || !strchr(rep, '\\')) return NULL;
+  size_t rl = strlen(rep);
+  size_t cap = rl + mlen + 1, ol = 0;
+  char *out = (char *)malloc(cap);
+  for (size_t i = 0; i < rl; i++) {
+    if (rep[i] == '\\' && i + 1 < rl) {
+      char d = rep[i + 1]; i++;
+      if (d == '\\') { if (ol + 1 >= cap) { cap = cap * 2 + 1; out = (char *)realloc(out, cap); } out[ol++] = '\\'; }
+      else if (d == '&' || d == '0') { if (ol + mlen >= cap) { cap = (ol + mlen) * 2 + 1; out = (char *)realloc(out, cap); } memcpy(out + ol, match, mlen); ol += mlen; }
+      else if (d >= '1' && d <= '9') { /* no capture groups: empty */ }
+      else { if (ol + 2 >= cap) { cap = cap * 2 + 1; out = (char *)realloc(out, cap); } out[ol++] = '\\'; out[ol++] = d; }
+    } else {
+      if (ol + 1 >= cap) { cap = cap * 2 + 1; out = (char *)realloc(out, cap); }
+      out[ol++] = rep[i];
+    }
+  }
+  out[ol] = 0;
+  return out;
+}
 const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);
   if(!s)sp_nil_recv("gsub");
   if(!pat||!rep)return s;
+  char*rep_exp=sp_str_rep_expand(rep,pat,strlen(pat));
+  if(rep_exp)rep=rep_exp;
   size_t pl=strlen(pat),rl=strlen(rep),sl=strlen(s);
   if(pl==0){
     /* Empty pattern: insert rep between every codepoint + at start/end.
@@ -640,7 +670,7 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
       p+=n;
     }
     out[ol]=0;
-    char*r=sp_str_alloc(ol); memcpy(r,out,ol+1); free(out); return r;
+    char*r=sp_str_alloc(ol); memcpy(r,out,ol+1); free(out); if(rep_exp)free(rep_exp); return r;
   }
   size_t cap=(sl*2)+1;
   char*out=(char*)malloc(cap);
@@ -655,7 +685,7 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
     memcpy(out+ol,rep,rl);ol+=rl;
     p=f+pl;
   }
-  out[ol]=0;char*r=sp_str_alloc(ol);memcpy(r,out,ol+1);free(out);return r;
+  out[ol]=0;char*r=sp_str_alloc(ol);memcpy(r,out,ol+1);free(out);if(rep_exp)free(rep_exp);return r;
 }
 /* `s.index(sub)` — leftmost occurrence; returns a codepoint offset (not a
    byte offset), or -1 if not found. */

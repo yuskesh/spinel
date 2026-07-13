@@ -1,0 +1,12 @@
+true
+false
+MatchData
+NilClass
+[92]
+"[a]b"
+"a\\b"
+"\"\\u0002\""
+"\"\\e\""
+"\"\\a\\b\\t\\n\\v\\f\\r\""
+"\"\\u0000\\u001C\\u007F\""
+RangeError
