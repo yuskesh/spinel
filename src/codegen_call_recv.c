@@ -4695,6 +4695,32 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "ord") || sp_streq(name, "to_int")) buf_printf(b, "(%s)", r);
       else if (sp_streq(name, "integer?")) { buf_printf(b, "((void)(%s), TRUE)", r); }
+      /* Integer is always finite and real; #infinite? is nil (#2329) */
+      else if (sp_streq(name, "finite?")) buf_printf(b, "((void)(%s), TRUE)", r);
+      else if (sp_streq(name, "real?"))   buf_printf(b, "((void)(%s), TRUE)", r);
+      else if (sp_streq(name, "infinite?")) buf_printf(b, "((void)(%s), SP_INT_NIL)", r);
+      /* Numeric / Complex-projection methods on a real Integer (#2328) */
+      else if (sp_streq(name, "abs2"))    buf_printf(b, "((%s) * (%s))", r, r);
+      else if (sp_streq(name, "real"))    buf_printf(b, "(%s)", r);
+      else if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) buf_printf(b, "((void)(%s), 0)", r);
+      else if (sp_streq(name, "conj") || sp_streq(name, "conjugate")) buf_printf(b, "(%s)", r);
+      else if (sp_streq(name, "i") && argc == 0) buf_printf(b, "((sp_Complex){0.0, (mrb_float)(%s), 0})", r);
+      /* arg/angle/phase: 0 (Integer) for >= 0, PI (Float) for < 0 -> poly */
+      else if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase"))
+        buf_printf(b, "((%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))", r);
+      else if ((sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) {
+        int o = ++g_tmp;
+        buf_printf(b, "({ sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_IntArray_push(_t%d, (%s)); sp_IntArray_push(_t%d, 0); _t%d; })",
+                   o, o, o, r, o, o);
+      }
+      else if (sp_streq(name, "polar") && argc == 0) {
+        int o = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " sp_PolyArray_push(_t%d, sp_box_int((%s) < 0 ? -(%s) : (%s)));"
+                      " sp_PolyArray_push(_t%d, (%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0)); _t%d; })",
+                   o, o, o, r, r, r, o, r, o);
+      }
       else if (sp_streq(name, "even?"))  buf_printf(b, "((%s) %% 2 == 0)", r);
       else if (sp_streq(name, "odd?"))   buf_printf(b, "((%s) %% 2 != 0)", r);
       else if (sp_streq(name, "zero?"))  buf_printf(b, "((%s) == 0)", r);
@@ -5001,6 +5027,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_float_rationalize(%s, ", r); emit_float_expr(c, argv[0], b); buf_puts(b, ")");
       }
       else if (sp_streq(name, "abs"))   buf_printf(b, "((%s) < 0 ? -(%s) : (%s))", r, r, r);
+      else if (sp_streq(name, "to_int")) buf_printf(b, "((mrb_int)(%s))", r);  /* alias of to_i (#2317) */
       else if (sp_streq(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
       else if (sp_streq(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
       else if (sp_streq(name, "finite?")) buf_printf(b, "(isfinite(%s) != 0)", r);

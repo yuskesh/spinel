@@ -1621,6 +1621,14 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (crt == TY_INT && sp_streq(name, "quo") && argc == 1) {
+      /* a Float argument makes quo a Float division (#2334); an int arg
+         yields the exact Rational */
+      if (comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_puts(b, "((mrb_float)(");
+        emit_expr(c, recv, b); buf_puts(b, ") / (");
+        emit_float_expr(c, argv[0], b); buf_puts(b, "))");
+        return 1;
+      }
       buf_puts(b, "sp_rational_new((mrb_int)(");
       emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)(");
       emit_expr(c, argv[0], b); buf_puts(b, "))");
@@ -11159,8 +11167,32 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if ((sp_streq(name, "to_s") || sp_streq(name, "inspect")) && argc == 0) {
       buf_printf(b, "sp_bigint_to_s(%s)", r); free(rs.p); return;
     }
-    if (sp_streq(name, "to_i") && argc == 0) {
-      buf_printf(b, "sp_bigint_to_int(%s)", r); free(rs.p); return;
+    /* to_i / to_int on a Bignum is self -- returning the full value, not the
+       64-bit-truncated sp_bigint_to_int (#2319) */
+    if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
+      buf_printf(b, "(%s)", r); free(rs.p); return;
+    }
+    /* Integer query / reflection on a Bignum receiver (#2318) */
+    if (sp_streq(name, "zero?") && argc == 0) {
+      buf_printf(b, "(sp_bigint_sign(%s) == 0)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "positive?") && argc == 0) {
+      buf_printf(b, "(sp_bigint_sign(%s) > 0)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "negative?") && argc == 0) {
+      buf_printf(b, "(sp_bigint_sign(%s) < 0)", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "integer?") && argc == 0) {
+      buf_printf(b, "((void)(%s), TRUE)", r); free(rs.p); return;
+    }
+    if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) {
+      buf_printf(b, "sp_bigint_add(%s, sp_bigint_new_int(1))", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "pred") && argc == 0) {
+      buf_printf(b, "sp_bigint_sub(%s, sp_bigint_new_int(1))", r); free(rs.p); return;
+    }
+    if (sp_streq(name, "class") && argc == 0) {
+      buf_printf(b, "((void)(%s), ((sp_Class){-100}))", r); free(rs.p); return;  /* Integer */
     }
     if (sp_streq(name, "bit_length") && argc == 0) {
       buf_printf(b, "sp_bigint_bit_length(%s)", r); free(rs.p); return;

@@ -832,6 +832,7 @@ TyKind infer_call(Compiler *c, int id) {
   if (rt == TY_INT && sp_streq(name, "round") && argc >= 1 &&
       nt_type(nt, argv[argc - 1]) &&
       sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) return TY_INT;
+  if (rt == TY_INT && sp_streq(name, "quo") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) return TY_FLOAT;
   if (rt == TY_INT && sp_streq(name, "quo")) return TY_RATIONAL;
   /* Float#quo is float division (Numeric#quo via /; no Rational) */
   if (rt == TY_FLOAT && sp_streq(name, "quo")) return TY_FLOAT;
@@ -3779,7 +3780,18 @@ else {
     if ((sp_streq(name, "allbits?") || sp_streq(name, "anybits?") || sp_streq(name, "nobits?")) && argc == 1) return TY_BOOL;
     if (sp_streq(name, "even?") || sp_streq(name, "odd?") || sp_streq(name, "zero?") ||
         sp_streq(name, "positive?") || sp_streq(name, "negative?") ||
-        sp_streq(name, "integer?")) return TY_BOOL;
+        sp_streq(name, "integer?") || sp_streq(name, "finite?") ||
+        sp_streq(name, "real?")) return TY_BOOL;
+    if (sp_streq(name, "infinite?") && argc == 0) return TY_INT;  /* always nil (nullable int) */
+    /* Numeric / Complex-projection on a real Integer (#2328) */
+    if ((sp_streq(name, "abs2") || sp_streq(name, "real") || sp_streq(name, "imaginary") ||
+         sp_streq(name, "imag") || sp_streq(name, "conj") || sp_streq(name, "conjugate")) && argc == 0)
+      return TY_INT;
+    if (sp_streq(name, "i") && argc == 0) return TY_COMPLEX;
+    if ((sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase")) && argc == 0)
+      return TY_POLY;  /* Integer 0 or Float PI */
+    if ((sp_streq(name, "rect") || sp_streq(name, "rectangular")) && argc == 0) return TY_INT_ARRAY;
+    if (sp_streq(name, "polar") && argc == 0) return TY_POLY_ARRAY;
     if ((sp_streq(name, "ord") || sp_streq(name, "to_int")) && argc == 0) return TY_INT;
     if ((sp_streq(name, "ceildiv") || sp_streq(name, "pow")) && argc >= 1) return TY_INT;
     if ((sp_streq(name, "pred") || sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) return TY_INT;
@@ -4009,6 +4021,14 @@ else {
     if (sp_streq(name, "abs") && argc == 0) return TY_BIGINT;
     if (sp_streq(name, "to_s") && argc == 1) return TY_STRING;
     if (sp_streq(name, "digits") && argc <= 1) return TY_INT_ARRAY;
+    /* #2318 / #2319: query + reflection on a Bignum */
+    if ((sp_streq(name, "zero?") || sp_streq(name, "positive?") ||
+         sp_streq(name, "negative?") || sp_streq(name, "integer?")) && argc == 0) return TY_BOOL;
+    /* to_i / to_int is self (the full Bignum, not a truncated int); succ/pred
+       stay Bignum */
+    if ((sp_streq(name, "to_i") || sp_streq(name, "to_int") || sp_streq(name, "succ") ||
+         sp_streq(name, "next") || sp_streq(name, "pred")) && argc == 0) return TY_BIGINT;
+    if (sp_streq(name, "class") && argc == 0) return TY_CLASS;
   }
   /* poly recv bitwise op: result is int (sp_poly_to_i applied). */
   if (recv >= 0 && argc == 1 && rt == TY_POLY &&
