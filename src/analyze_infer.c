@@ -3600,6 +3600,17 @@ else {
     }
     if (sp_streq(name, "dup") || sp_streq(name, "clone") || sp_streq(name, "replace") ||
         sp_streq(name, "merge")) return rt;
+    /* #2340/#2349/#2351: no-arg merge / slice / clear / to_hash / rehash keep
+       the receiver's variant (an emptied or copied hash of the same shape) */
+    if ((sp_streq(name, "merge") || sp_streq(name, "slice")) && argc == 0) return rt;
+    if ((sp_streq(name, "clear") || sp_streq(name, "to_hash") || sp_streq(name, "rehash")) && argc == 0)
+      return rt;
+    /* Hash#shift -> [key, value] pair, or nil (poly array) (#2349) */
+    if (sp_streq(name, "shift") && argc == 0) return TY_POLY_ARRAY;
+    /* Hash#key(value) -> a key, or nil: poly (the key type, nullable) (#2352) */
+    if (sp_streq(name, "key") && argc == 1) return TY_POLY;
+    /* blockless one? -> bool (exactly one pair) (#2354) */
+    if (sp_streq(name, "one?") && argc == 0 && nt_ref(nt, id, "block") < 0) return TY_BOOL;
     /* in-place merge mutates and returns the receiver (its variant is fixed) */
     if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 1) return rt;
     if (sp_streq(name, "has_key?") || sp_streq(name, "key?") ||

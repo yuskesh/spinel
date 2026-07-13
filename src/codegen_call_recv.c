@@ -3582,6 +3582,25 @@ else {
         buf_printf(b, "; sp_%sHash_clear(_t%d); _t%d; })", hn, t, t);
         return 1;
       }
+      /* no-arg merge -> a copy; no-arg slice -> an empty hash of the same
+         variant; to_hash / rehash -> self (#2340/#2349) */
+      if ((sp_streq(name, "merge") || sp_streq(name, "to_hash") ||
+           sp_streq(name, "rehash")) && argc == 0) {
+        buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+      if (sp_streq(name, "slice") && argc == 0) {
+        buf_printf(b, "({ (void)("); emit_expr(c, recv, b);
+        buf_printf(b, "); sp_%sHash_new(); })", hn);
+        return 1;
+      }
+      /* blockless one? -> exactly one pair (#2354) */
+      if (sp_streq(name, "one?") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_%sHash_length(_t%d) == 1; })", hn, t);
+        return 1;
+      }
       if ((sp_streq(name, "has_key?") || sp_streq(name, "key?") ||
            sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1) {
         TyKind arg_kt = comp_ntype(c, argv[0]);
