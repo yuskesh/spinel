@@ -5183,6 +5183,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= desugar_for_enumerable(c);           /* for x in obj -> for x in obj.__enum_to_a */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
+    ch |= type_block_rest_params(c);           /* |*rest| locals are poly arrays */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
     ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
@@ -5956,6 +5957,10 @@ void analyze_program(Compiler *c) {
             "raise NoMethodError (method_missing can still be called "
             "explicitly)\n", file, ln);
   }
+
+  /* Block splat params reach only the lowerings that bind them; the rest
+     reject loudly here rather than emitting nil-bound or misdeclared bodies. */
+  check_block_rest_support(c);
 
   /* Backstop step 2: a reachable method whose parameter STILL has TY_UNKNOWN was
      never bound by a typed call site -- every call reached it with a poly/untyped

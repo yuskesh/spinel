@@ -3938,9 +3938,28 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     for (int j2 = 0; j2 < bn2; j2++) infer_type(c, bb2[j2]);
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "{\n");
-    emit_indent(g_pre, g_indent + 2);
-    buf_printf(g_pre, "sp_RbVal lv_%s = sp_poly_arr_get_hash(_t%d, _t%d);\n",
-               p0p ? p0p : "_dummy", trecv2, ti2);
+    const char *restn2 = block_rest_name(c, block);
+    int has_rest2 = restn2 && *restn2;
+    if (p0p) {
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_RbVal lv_%s = sp_poly_arr_get_hash(_t%d, _t%d);\n",
+                 p0p, trecv2, ti2);
+    } else if (!has_rest2) {
+      emit_indent(g_pre, g_indent + 2);
+      buf_printf(g_pre, "sp_RbVal lv__dummy = sp_poly_arr_get_hash(_t%d, _t%d); (void)lv__dummy;\n",
+                 trecv2, ti2);
+    }
+    if (has_rest2) {
+      /* |*x|: wrap the whole yielded element into the rest array. A leading
+         required param over a poly element (|a, *r|) would need runtime array
+         distribution (emit_iter_bind_rest returns <0) -- reject loudly rather
+         than binding an empty rest. */
+      int np2 = 0; while (block_param_name(c, block, np2)) np2++;
+      char es2[256];
+      snprintf(es2, sizeof es2, "sp_poly_arr_get_hash(_t%d, _t%d)", trecv2, ti2);
+      if (emit_iter_bind_rest(c, block, np2, TY_POLY, es2, g_pre, g_indent + 2) < 0)
+        unsupported(c, id, "block splat parameter alongside required params over a poly element");
+    }
     for (int j2 = 0; j2 < bn2 - 1; j2++) emit_stmt(c, bb2[j2], g_pre, g_indent + 2);
     int saveIndent2 = g_indent; g_indent = g_indent + 2;
     Buf vb2; memset(&vb2, 0, sizeof vb2);
@@ -4073,6 +4092,17 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
   }
+  /* a `*rest` param: splat-only wraps the whole element; alongside required
+     params it binds empty (scalar elements never distribute) */
+  if (!autosplat && block_rest_name(c, block)) {
+    char es_r[256];
+    snprintf(es_r, sizeof es_r, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+    if (emit_iter_bind_rest(c, block, np_cl, et_elem, es_r, g_pre,
+                            use_shadow ? innerIndent : bodyIndent) < 0) {
+      unsupported(c, id, "block splat parameter alongside required params over a poly element");
+      return 1;
+    }
+  }
   if (is_map) {
     /* map: collect the block's value (next-aware) into a result temp, then
        push it -- so `next <v>` inside the block contributes <v> rather than
@@ -4111,8 +4141,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     else                   buf_printf(g_pre, "if (%s(_t%d)) ", is_rej ? "!" : "", tv);
     if (autosplat)
       buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk, tres, te_split);
+    else if (p0)
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0);
     else
-      buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0 ? p0 : "");
+      /* splat-only block: push the element straight from the receiver */
+      buf_printf(g_pre, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n", rk, tres, k, trecv, ti);
   }
   if (use_shadow) { emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "}\n"); }
   if (use_shadow && clv0) clv0->type = csaved0;
