@@ -1379,12 +1379,14 @@ int infer_write_types(Compiler *c) {
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (name && (sp_streq(name, "push") || sp_streq(name, "<<") ||
-                   sp_streq(name, "append")) && an == 1) {
+      if (name && (((sp_streq(name, "push") || sp_streq(name, "append")) && an >= 1) ||
+                   (sp_streq(name, "<<") && an == 1))) {
         /* `<<` is ambiguous (Array#push vs Integer#<< shift): a numeric-assigned
-           receiver is a shift, so don't promote its slot to an array. */
+           receiver is a shift, so don't promote its slot to an array. push/append
+           take any number of arguments; every one of them is element evidence. */
         if (sp_streq(name, "<<") && recv_has_scalar_numeric_write(c, recv)) continue;
         is_push = 1; vt = infer_type(c, argv[0]);
+        for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, infer_type(c, argv[ai]));
       }
       else if (name && (sp_streq(name, "unshift") || sp_streq(name, "prepend")) && an >= 1) {
         /* unshift(v, ...): every argument is element evidence, like push
