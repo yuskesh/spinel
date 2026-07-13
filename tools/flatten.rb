@@ -1,6 +1,8 @@
 # spinel-flatten: inline a require_relative graph into one self-contained file,
 # so spinel-reduce and bug reports operate on a single input. Resolves the same
 # require_relative paths spinel does; cycle-safe; records each region's origin.
+# An unresolvable require_relative aborts with exit 2 (every miss listed on
+# stderr first) -- the output would not be the self-contained program.
 #
 # Usage: spinel-flatten [-o OUT] app.rb
 
@@ -59,11 +61,18 @@ def resolve(from_file, target)
   canonicalize(base)
 end
 
-def inline(real, out, seen)
+# Count of require_relative targets that did not resolve to a file. Reported
+# per miss on stderr as they are found (so every miss is listed, not just the
+# first); main aborts without writing when any occurred -- a flattened file
+# with a require replaced by a comment silently does not run.
+$missing = 0
+
+def inline(real, from, out, seen)
   seen.each { |p| return if p == real }
   seen.push(real)
   if !File.exist?(real)
-    out.push("# spinel-flatten: missing file: " + real)
+    $stderr.puts "spinel-flatten: missing file: " + real + " (required from " + from + ")"
+    $missing += 1
     return
   end
   out.push("# >>> " + real)
@@ -71,7 +80,7 @@ def inline(real, out, seen)
   text.split("\n").each { |line|
     t = require_target(line)
     if t.length > 0
-      inline(resolve(real, t), out, seen)
+      inline(resolve(real, t), real, out, seen)
     else
       out.push(line)
     end
@@ -102,7 +111,10 @@ def main
 
   out = []
   seen = []
-  inline(src, out, seen)
+  inline(src, src, out, seen)
+  if $missing > 0
+    die("spinel-flatten: aborted: " + $missing.to_s + " unresolved require_relative target(s), nothing written", 2)
+  end
   text = out.join("\n") + "\n"
   if outfile.length > 0
     File.write(outfile, text)
