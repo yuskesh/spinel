@@ -5184,6 +5184,7 @@ void analyze_program(Compiler *c) {
     ch |= desugar_for_enumerable(c);           /* for x in obj -> for x in obj.__enum_to_a */
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
+    ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */

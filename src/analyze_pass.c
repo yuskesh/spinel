@@ -3028,12 +3028,62 @@ int desugar_implicit_send(Compiler *c) {
     for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];  /* copy before realloc */
     char namebuf[256];
     snprintf(namebuf, sizeof namebuf, "%s", mname);        /* copy before realloc */
+    /* public_send dispatches only public methods: stamp the retargeted call
+       so codegen raises NoMethodError for a private/protected target */
+    int vis_enf = sp_streq(nm, "public_send");
     int base = nt->count;
     int newargs = nt_new_node(nt, "ArgumentsNode");
     if (newargs < 0) continue;
     nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
     nt_node_set_str(nt, id, "name", namebuf);              /* retarget the call */
     nt_node_set_ref(nt, id, "arguments", newargs);         /* drop the name arg */
+    if (vis_enf) nt_node_set_str(nt, id, "vis_enforce", "1");
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+    changed = 1;
+  }
+  return changed;
+}
+
+/* `recv.public_send(:m, args)` with a literal name -> a direct `recv.m(args)`
+   call stamped `vis_enforce`, so codegen raises NoMethodError for a
+   private/protected target. send/__send__ keep the visibility-blind textual
+   rewrite in spinel_parse.c (CRuby's send ignores visibility). Mirrors
+   desugar_implicit_send's node-retarget model. */
+int desugar_public_send_recv(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+    if (nt_ref(nt, id, "receiver") < 0) continue;          /* explicit receiver only */
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "public_send")) continue;
+    int args = nt_ref(nt, id, "arguments");
+    if (args < 0) continue;
+    int argc = 0; const int *argv = nt_arr(nt, args, "arguments", &argc);
+    if (argc < 1 || !argv) continue;
+    const char *a0ty = nt_type(nt, argv[0]);
+    const char *mname = NULL;
+    if (a0ty && sp_streq(a0ty, "SymbolNode")) mname = nt_str(nt, argv[0], "value");
+    else if (a0ty && sp_streq(a0ty, "StringNode")) mname = nt_str(nt, argv[0], "content");
+    if (!mname || !*mname) continue;                       /* runtime name: dyn_send_arms */
+    if (sp_streq(mname, "send") || sp_streq(mname, "__send__") ||
+        sp_streq(mname, "public_send")) continue;
+    int nrest = argc - 1;
+    if (nrest > 64) continue;
+    int rest[64];
+    for (int k = 0; k < nrest; k++) rest[k] = argv[k + 1];
+    char namebuf[256];
+    snprintf(namebuf, sizeof namebuf, "%s", mname);
+    int base = nt->count;
+    int newargs = nt_new_node(nt, "ArgumentsNode");
+    if (newargs < 0) continue;
+    nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
+    nt_node_set_str(nt, id, "name", namebuf);
+    nt_node_set_ref(nt, id, "arguments", newargs);
+    nt_node_set_str(nt, id, "vis_enforce", "1");
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
@@ -3249,6 +3299,8 @@ int desugar_dynamic_send(Compiler *c) {
       nt_node_set_ref(nt, call, "receiver", recv);
       nt_node_set_str(nt, call, "name", cand[k]);
       nt_node_set_ref(nt, call, "arguments", na);
+      /* public_send arms enforce visibility at the dispatch site */
+      if (sp_streq(nm, "public_send")) nt_node_set_str(nt, call, "vis_enforce", "1");
       arms[narm++] = call;
     }
     nt_node_set_arr(nt, id, "dyn_send_arms", arms, narm);
