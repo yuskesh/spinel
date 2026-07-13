@@ -421,6 +421,14 @@ sp_PolyArray *sp_StrArray_to_poly_fmt(sp_StrArray *a) {
   for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_str(a->data[i]));
   return r;
 }
+sp_PolyArray *sp_FloatArray_to_poly(sp_FloatArray *a) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *r = sp_PolyArray_new();
+  SP_GC_ROOT(r);
+  if (!a) return r;
+  for (mrb_int i = 0; i < a->len; i++) sp_PolyArray_push(r, sp_box_float(a->data[i]));
+  return r;
+}
 sp_IntArray *sp_IntArray_slice_bang(sp_IntArray *a, mrb_int from, mrb_int n) {
   if (!a) return sp_IntArray_new();
   if (a->frozen) { sp_raise_frozen_array(); return sp_IntArray_new(); }

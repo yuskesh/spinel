@@ -1003,6 +1003,16 @@ TyKind infer_call(Compiler *c, int id) {
            shortcut pending their own nil arms. */
         if ((sp_streq(name, "first") || sp_streq(name, "last") ||
              sp_streq(name, "sample")) && argc == 0) return TY_POLY;  /* nil, boxed (#2322) */
+        if ((sp_streq(name, "nil?") || sp_streq(name, "empty?")) && argc == 0) return TY_BOOL;
+        /* [] + X / [] - X / set-ops keep the OTHER operand's array kind (the
+           codegen emits sp_<kind>Array_<op>(NULL, X)); the result type must
+           agree with that kind, not the default poly array. */
+        if ((sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "&") ||
+             sp_streq(name, "|") || sp_streq(name, "union") || sp_streq(name, "difference") ||
+             sp_streq(name, "intersection")) && argc == 1) {
+          TyKind at = infer_type(c, argv[0]);
+          if (ty_is_array(at) || at == TY_POLY_ARRAY) return at;
+        }
         if ((sp_streq(name, "min") || sp_streq(name, "max") ||
              sp_streq(name, "pop") || sp_streq(name, "shift")) && argc == 0) return TY_INT;
         rt = TY_POLY_ARRAY;
@@ -2965,9 +2975,10 @@ else {
       return rt;  /* always self */
     if (sp_streq(name, "find_index") || sp_streq(name, "index") || sp_streq(name, "rindex")) return TY_INT;  /* int or nil */
     if (sp_streq(name, "each_index")) return rt;
-    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append")) &&
+    if ((sp_streq(name, "push") || sp_streq(name, "<<") || sp_streq(name, "append") ||
+         sp_streq(name, "unshift") || sp_streq(name, "prepend")) &&
         argc >= 1 && argv && rt != TY_POLY_ARRAY && ty_array_elem(rt) != TY_UNKNOWN) {
-      /* Heterogeneous push on a typed-array literal: lift to poly. */
+      /* Heterogeneous push/unshift on a typed-array literal: lift to poly. */
       TyKind elem_t = ty_array_elem(rt);
       const char *rty = nt_type(nt, recv);
       if (rty && sp_streq(rty, "ArrayNode")) {
@@ -3973,10 +3984,12 @@ else {
        sp_streq(name, "|") || sp_streq(name, "union") ||
        sp_streq(name, "-") || sp_streq(name, "difference"))) {
     if (ty_is_array(rt) && a0 == rt) return rt;
-    if (ty_is_array(rt) && a0 == TY_POLY_ARRAY) return rt;
-    if (ty_is_array(a0) && rt == TY_POLY_ARRAY) return a0;
     /* empty array [] arg (TY_UNKNOWN): result is same kind as receiver */
     if (ty_is_array(rt) && a0 == TY_UNKNOWN) return rt;
+    /* any array receiver with a different-kind (or poly) array argument: the
+       codegen boxes both operands to poly and runs the poly set op, so the
+       result is a poly array. */
+    if (ty_is_array(rt) && ty_is_array(a0) && a0 != rt) return TY_POLY_ARRAY;
   }
   /* Array#intersect?(other) -> bool */
   if (recv >= 0 && argc == 1 && sp_streq(name, "intersect?") && ty_is_array(rt))
@@ -3994,6 +4007,10 @@ else {
     /* array + same-kind -> same kind; different-kind -> poly_array */
     if (sp_streq(name, "+") && ty_is_array(rt) && a0 == rt) return rt;
     if (sp_streq(name, "+") && ty_is_array(rt) && ty_is_array(a0) && a0 != rt) return TY_POLY_ARRAY;
+    /* typed array +/- an empty literal [] (a0 UNKNOWN) keeps the receiver kind */
+    if ((sp_streq(name, "+") || sp_streq(name, "-") || sp_streq(name, "&") ||
+         sp_streq(name, "|") || sp_streq(name, "union") || sp_streq(name, "difference") ||
+         sp_streq(name, "intersection")) && ty_is_array(rt) && a0 == TY_UNKNOWN) return rt;
     /* array * int -> same array type (repeat); array * string -> join string */
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_INT) return rt;
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) return TY_STRING;

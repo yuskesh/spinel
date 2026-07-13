@@ -450,6 +450,15 @@ static int name_is_enumerable_module_method(const char *m) {
   return 0;
 }
 
+/* Comparable's instance methods, for respond_to? on a user class that mixes it
+   in (spinel keys the mixin off the presence of a user `<=>`). */
+static int name_is_comparable_module_method(const char *m) {
+  static const char *const cm[] = {
+    "<", ">", "<=", ">=", "==", "between?", "clamp", NULL };
+  for (int i = 0; cm[i]; i++) if (sp_streq(m, cm[i])) return 1;
+  return 0;
+}
+
 /* eval(string) / Kernel.eval(string) compiling an arbitrary runtime string is a
    hard AOT boundary, not a missing feature. If node `id` is such a call, emit
    the intentional diagnostic and return 1; otherwise return 0. Shared by
@@ -4191,6 +4200,17 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     }
   }
 
+  /* `[] + x` / `x - []`: an empty array literal operand leaves the expression
+     UNKNOWN-typed, so `+`/`-` would land in the scalar-arith path though it is
+     really an Array concat/difference. Defer to the array-call path. */
+  if ((sp_streq(name, "+") || sp_streq(name, "-")) && argc == 1) {
+    int re = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
+             ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; });
+    int ae = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode") &&
+             ({ int _n = 0; nt_arr(nt, argv[0], "elements", &_n); _n == 0; });
+    if (re || ae) return 0;
+  }
+
   if (recv >= 0 && argc == 1 && !ty_is_object(rt) && !ty_is_array(rt) &&
       (int_arith_fn(name) ||
        /* bigint shifts aren't "int arith" ops but lower through the same
@@ -4706,6 +4726,62 @@ void emit_call(Compiler *c, int id, Buf *b) {
   {
     int aci = anon_struct_ci_for_value(c, id);
     if (aci >= 0) { buf_printf(b, "((sp_Class){%d})", aci); return; }
+  }
+  /* push/append/<< on an empty array literal in value position: the literal
+     has no storage to mutate and returns self, so `[].push(1, 2)` is just the
+     array `[1, 2]`. Materialize a fresh poly array from the args (the empty
+     literal receiver infers TY_POLY_ARRAY). */
+  {
+    const char *pnm = nt_str(nt, id, "name");
+    int precv = nt_ref(nt, id, "receiver");
+    if (pnm && precv >= 0 &&
+        (sp_streq(pnm, "push") || sp_streq(pnm, "append") || sp_streq(pnm, "<<")) &&
+        nt_type(nt, precv) && sp_streq(nt_type(nt, precv), "ArrayNode") &&
+        ({ int _n = 0; nt_arr(nt, precv, "elements", &_n); _n == 0; })) {
+      int pargc = 0; const int *pargv = call_args(nt, id, &pargc);
+      if (pargc >= 1) {
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tr, tr);
+        for (int a = 0; a < pargc; a++) {
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", tr); emit_boxed(c, pargv[a], b); buf_puts(b, "); ");
+        }
+        buf_printf(b, "_t%d; })", tr);
+        return;
+      }
+    }
+  }
+  /* unshift/prepend a nil onto a typed numeric array literal: nil cannot live
+     in an Int/Float array (it would store 0), so widen the whole thing to a
+     poly array. `[1, 2].unshift(nil)` == the poly array `[nil, 1, 2]`. Only the
+     direct-literal receiver needs this -- a variable receiver is already
+     widened by the analyze pass. */
+  {
+    const char *unm = nt_str(nt, id, "name");
+    int urecv = nt_ref(nt, id, "receiver");
+    if (unm && urecv >= 0 && (sp_streq(unm, "unshift") || sp_streq(unm, "prepend")) &&
+        nt_type(nt, urecv) && sp_streq(nt_type(nt, urecv), "ArrayNode")) {
+      TyKind urt = comp_ntype(c, urecv);
+      int uargc = 0; const int *uargv = call_args(nt, id, &uargc);
+      int has_nil = 0;
+      for (int a = 0; a < uargc; a++) {
+        TyKind at = infer_type(c, uargv[a]);
+        const char *anty = nt_type(nt, uargv[a]);
+        if (at == TY_NIL || (anty && sp_streq(anty, "NilNode"))) { has_nil = 1; break; }
+      }
+      if (has_nil && (urt == TY_INT_ARRAY || urt == TY_FLOAT_ARRAY) && uargc >= 1) {
+        int en = 0; const int *elems = nt_arr(nt, urecv, "elements", &en);
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tr, tr);
+        for (int a = 0; a < uargc; a++) {
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", tr); emit_boxed(c, uargv[a], b); buf_puts(b, "); ");
+        }
+        for (int e = 0; e < en; e++) {
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", tr); emit_boxed(c, elems[e], b); buf_puts(b, "); ");
+        }
+        buf_printf(b, "_t%d; })", tr);
+        return;
+      }
+    }
   }
   /* `require` / `require_relative` is a compile-time directive: top-level ones
      are textually spliced away before codegen, and native libs are provided by
@@ -9808,6 +9884,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
              entry in the class's own method table (the redirect serves them) */
           if (!found && comp_method_in_chain(c, cid, "__enum_to_a", NULL) >= 0 &&
               name_is_enumerable_module_method(qm)) { resolved = 1; yes = 1; }
+          else if (!found && comp_method_in_chain(c, cid, "<=>", NULL) >= 0 &&
+                   name_is_comparable_module_method(qm)) { resolved = 1; yes = 1; }
           else if (!found) { resolved = 1; yes = 0; }
           else {
             int v = comp_method_vis_in_chain(c, cid, qm);
@@ -10818,6 +10896,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     if (sp_streq(name, "count")) { buf_puts(b, "0"); return; }
     buf_puts(b, (sp_streq(name, "all?") || sp_streq(name, "none?")) ? "1" : "0");
+    return;
+  }
+  /* nil?/empty? on an empty array literal fold to constants (an Array is never
+     nil; an empty one is empty). The `[]` literal has no side effects. */
+  if (recv >= 0 && argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "empty?")) &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode") &&
+      ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
+    buf_puts(b, sp_streq(name, "empty?") ? "1" : "0");
     return;
   }
 

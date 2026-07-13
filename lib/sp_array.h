@@ -227,6 +227,7 @@ sp_StrArray *sp_StrArray_concat(sp_StrArray *a, sp_StrArray *b);
 sp_FloatArray *sp_FloatArray_concat(sp_FloatArray *a, sp_FloatArray *b);
 sp_PolyArray *sp_IntArray_to_poly(sp_IntArray *a);
 sp_PolyArray *sp_StrArray_to_poly_fmt(sp_StrArray *a);
+sp_PolyArray *sp_FloatArray_to_poly(sp_FloatArray *a);
 sp_IntArray *sp_IntArray_slice_bang(sp_IntArray *a, mrb_int from, mrb_int n);
 sp_FloatArray *sp_FloatArray_slice_bang(sp_FloatArray *a, mrb_int from, mrb_int n);
 sp_StrArray *sp_StrArray_slice_bang(sp_StrArray *a, mrb_int from, mrb_int n);

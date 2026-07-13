@@ -1312,10 +1312,13 @@ else {
         }
         return 1;
       }
-      if (sp_streq(name, "+") && argc == 1 && a0 == rt) {
-        /* array + array of the same kind -> a fresh concatenation */
+      if (sp_streq(name, "+") && argc == 1 && (a0 == rt || a0 == TY_UNKNOWN)) {
+        /* array + array of the same kind -> a fresh concatenation. An empty
+           literal `[]` arg (TY_UNKNOWN) concatenates a null (copies recv). */
         buf_printf(b, "sp_%sArray_concat(", k);
-        emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        emit_expr(c, recv, b); buf_puts(b, ", ");
+        if (a0 == TY_UNKNOWN) buf_puts(b, "NULL"); else emit_expr(c, argv[0], b);
+        buf_puts(b, ")");
         return 1;
       }
       if (sp_streq(name, "+") && argc == 1 && ty_is_array(a0) && a0 != rt) {
@@ -2318,6 +2321,11 @@ else {
           return 1;
         }
       }
+      if ((sp_streq(name, "include?") || sp_streq(name, "member?")) && argc == 1 && rt == TY_FLOAT_ARRAY) {
+        buf_puts(b, "sp_FloatArray_include("); emit_expr(c, recv, b); buf_puts(b, ", ");
+        emit_float_expr(c, argv[0], b); buf_puts(b, ")");
+        return 1;
+      }
       if ((sp_streq(name, "include?") || sp_streq(name, "member?") || sp_streq(name, "index") || sp_streq(name, "find_index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
         const char *fn = (sp_streq(name, "include?") || sp_streq(name, "member?")) ? "include" : "index";
         buf_printf(b, "sp_%sArray_%s(", k, fn);
@@ -2352,6 +2360,23 @@ else {
         if (a0 == TY_UNKNOWN) { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", NULL)"); }
         else { buf_printf(b, "sp_%sArray_%s(", k, fn); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
         return 1;
+      }
+      /* typed-array receiver, different-kind typed-array or poly-array argument:
+         box both operands to poly and run the poly set op (result poly). */
+      if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
+           sp_streq(name, "|") || sp_streq(name, "union") ||
+           sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 &&
+          (a0 == TY_INT_ARRAY || a0 == TY_STR_ARRAY || a0 == TY_FLOAT_ARRAY || a0 == TY_POLY_ARRAY) && a0 != rt) {
+        const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
+        const char *conv_l = rt == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
+                             rt == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly";
+        const char *conv_r = a0 == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
+                             a0 == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" :
+                             a0 == TY_FLOAT_ARRAY ? "sp_FloatArray_to_poly" : NULL;
+        buf_printf(b, "sp_PolyArray_%s(%s(", fn, conv_l); emit_expr(c, recv, b); buf_puts(b, "), ");
+        if (conv_r) { buf_printf(b, "%s(", conv_r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+        else emit_expr(c, argv[0], b);  /* already poly */
+        buf_puts(b, ")"); return 1;
       }
       /* variadic named set ops: union/intersection/difference(*others) fold the
          binary operator over each argument, accumulating in a rooted temp. */
@@ -2469,6 +2494,19 @@ else {
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (a0 == TY_UNKNOWN) buf_puts(b, "NULL"); else emit_expr(c, argv[0], b);
         buf_puts(b, ")"); return 1;
+      }
+      /* poly-array set-op with a typed-array argument (different element type):
+         box the argument to a poly array, then run the poly op. */
+      if ((sp_streq(name, "&") || sp_streq(name, "intersection") ||
+           sp_streq(name, "|") || sp_streq(name, "union") ||
+           sp_streq(name, "-") || sp_streq(name, "difference")) && argc == 1 &&
+          (a0 == TY_INT_ARRAY || a0 == TY_STR_ARRAY || a0 == TY_FLOAT_ARRAY)) {
+        const char *fn = (sp_streq(name, "&") || sp_streq(name, "intersection")) ? "intersect" : (sp_streq(name, "|") || sp_streq(name, "union") ? "union" : "difference");
+        const char *conv = a0 == TY_INT_ARRAY ? "sp_IntArray_to_poly" :
+                           a0 == TY_STR_ARRAY ? "sp_StrArray_to_poly_fmt" : "sp_FloatArray_to_poly";
+        buf_printf(b, "sp_PolyArray_%s(", fn);
+        emit_expr(c, recv, b); buf_printf(b, ", %s(", conv); emit_expr(c, argv[0], b);
+        buf_puts(b, "))"); return 1;
       }
       /* variadic named set ops on a poly array: fold over each argument */
       if ((sp_streq(name, "intersection") || sp_streq(name, "union") ||
