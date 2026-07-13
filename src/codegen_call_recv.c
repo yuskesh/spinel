@@ -985,15 +985,26 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
        NULL for a poly array, so handle it here with the boxed element type. */
     if (rt == TY_POLY_ARRAY && (sp_streq(name, "find") || sp_streq(name, "detect"))) {
       int fblock = nt_ref(nt, id, "block");
-      if (fblock >= 0) {
+      /* find(ifnone) { }: the proc is called on no-match, so its value (any
+         type) rides the boxed result. A non-proc ifnone stays a loud reject. */
+      int f_ifnone = argc == 1 && comp_ntype(c, argv[0]) == TY_PROC;
+      if (fblock >= 0 && (argc == 0 || f_ifnone)) {
         const char *bp = block_param_name(c, fblock, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, fblock, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
         if (bn >= 1) {
-          int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
+          int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tfn = f_ifnone ? ++g_tmp : -1;
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s; SP_GC_ROOT(_t%d);\n", trecv, rb.p ? rb.p : "", trecv); free(rb.p);
+          if (f_ifnone) {
+            /* bind the ifnone proc up front (CRuby evaluates args first) plus
+               a found flag: a matched nil element must NOT call the proc */
+            Buf nb = expr_buf(c, argv[0]);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); int _tf%d = 0;\n",
+                       tfn, nb.p ? nb.p : "NULL", tfn, tfn); free(nb.p);
+          }
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tres, default_value(TY_POLY), tres);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, trecv, ti);
@@ -1007,10 +1018,19 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           int sv = g_indent; g_indent++;
           Buf cb; memset(&cb, 0, sizeof cb); emit_cond(c, bb[bn - 1], &cb); g_indent = sv;
           emit_indent(g_pre, g_indent + 1);
-          if (!splat_fd && bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s; break; }\n", cb.p ? cb.p : "0", tres, bp);
-          else buf_printf(g_pre, "if (%s) { _t%d = sp_PolyArray_get(_t%d, _t%d); break; }\n", cb.p ? cb.p : "0", tres, trecv, ti);
+          {
+            char fset[24] = "";
+            if (f_ifnone) snprintf(fset, sizeof fset, " _tf%d = 1;", tfn);
+            if (!splat_fd && bp) buf_printf(g_pre, "if (%s) { _t%d = lv_%s;%s break; }\n", cb.p ? cb.p : "0", tres, bp, fset);
+            else buf_printf(g_pre, "if (%s) { _t%d = sp_PolyArray_get(_t%d, _t%d);%s break; }\n", cb.p ? cb.p : "0", tres, trecv, ti, fset);
+          }
           free(cb.p);
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          if (f_ifnone) {
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "if (!_tf%d) _t%d = ((void)sp_proc_call(_t%d, 0, (mrb_int[16]){0}), _sp_proc_poly_ret);\n",
+                       tfn, tres, tfn);
+          }
           buf_printf(b, "_t%d", tres); return 1;
         }
       }
@@ -1875,8 +1895,54 @@ else {
           return 1;
         }
       }
+      /* find(ifnone) { |x| cond } on a typed array: the element (boxed) or
+         the ifnone proc's value on no-match; the result rides poly since the
+         proc can return anything. A non-proc ifnone stays a loud reject. */
+      if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 &&
+          argc == 1 && comp_ntype(c, argv[0]) == TY_PROC) {
+        const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
+        int body = nt_ref(nt, block, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        if (bn >= 1) {
+          TyKind et = ty_array_elem(rt);
+          int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tfn = ++g_tmp;
+          Buf rb = expr_buf(c, recv);
+          emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
+          /* root the receiver: the block body and the ifnone proc run arbitrary
+             Ruby that can trigger GC while this array is live (as the poly-array
+             find(ifnone) path already does) */
+          buf_printf(g_pre, " _t%d = %s; SP_GC_ROOT(_t%d);\n", trecv, rb.p ? rb.p : "", trecv); free(rb.p);
+          { Buf nb = expr_buf(c, argv[0]);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); int _tf%d = 0;\n",
+                       tfn, nb.p ? nb.p : "NULL", tfn, tfn); free(nb.p); }
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tres, tres);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
+                     ti, ti, k, trecv, ti);
+          if (bp) { emit_indent(g_pre, g_indent + 1); emit_ctype(c, et, g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+          for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent + 1);
+          int sv = g_indent; g_indent++;
+          Buf cb = expr_buf(c, bb[bn - 1]); g_indent = sv;
+          emit_indent(g_pre, g_indent + 1);
+          buf_printf(g_pre, "if (%s) { _t%d = ", cb.p ? cb.p : "0", tres);
+          { char eltxt[128];
+            if (bp) snprintf(eltxt, sizeof eltxt, "lv_%s", bp);
+            else snprintf(eltxt, sizeof eltxt, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+            emit_boxed_text(c, et, eltxt, g_pre); }
+          buf_printf(g_pre, "; _tf%d = 1; break; }\n", tfn);
+          free(cb.p);
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (!_tf%d) _t%d = ((void)sp_proc_call(_t%d, 0, (mrb_int[16]){0}), _sp_proc_poly_ret);\n",
+                     tfn, tres, tfn);
+          buf_printf(b, "_t%d", tres);
+          return 1;
+        }
+      }
       /* find / detect { |x| cond } - returns element or nil */
-      if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0) {
+      if ((sp_streq(name, "find") || sp_streq(name, "detect")) && block >= 0 && argc == 0) {
         const char *bp = block_param_name(c, block, 0); if (bp) bp = rename_local(bp);
         int body = nt_ref(nt, block, "body");
         int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
