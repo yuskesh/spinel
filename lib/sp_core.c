@@ -63,6 +63,34 @@ else {
   return neg ? -v : v;
 }
 
+/* `String#to_f`: parse a leading float, tolerating `_` between digits as a
+   separator (CRuby's `"1_000.5".to_f == 1000.5`), returning 0.0 when no
+   number leads. Underscores are stripped into a small scratch buffer before
+   strtod so the C parser (which stops at `_`) sees clean digits. */
+double sp_str_to_f_cruby(const char *s) {
+  if (!s) return 0.0;
+  const char *p = s;
+  while (isspace((unsigned char)*p)) p++;
+  /* copy the leading numeric run, dropping `_` that sit between two digits */
+  char buf[512];
+  size_t n = 0;
+  if (*p == '+' || *p == '-') { if (n < sizeof buf - 1) buf[n++] = *p; p++; }
+  for (; *p && n < sizeof buf - 1; p++) {
+    if ((*p >= '0' && *p <= '9') || *p == '.' || *p == 'e' || *p == 'E' ||
+        *p == '+' || *p == '-') {
+      buf[n++] = *p;
+    } else if (*p == '_' && n > 0 &&
+               ((buf[n-1] >= '0' && buf[n-1] <= '9')) &&
+               (p[1] >= '0' && p[1] <= '9')) {
+      /* separator between digits: skip it */
+    } else {
+      break;
+    }
+  }
+  buf[n] = 0;
+  return strtod(buf, NULL);
+}
+
 /* `String#to_i(base)` with a non-decimal base. Accepts bases 2..36
    like MRI; `_` is allowed between digits the same way as base 10.
    Stops at the first invalid digit and returns what's parsed so

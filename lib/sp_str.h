@@ -71,6 +71,8 @@ sp_StrArray*sp_str_lines(const char*s);
 sp_StrArray*sp_str_lines_sep(const char*s,const char*sep);
 sp_StrArray*sp_str_lines_chomp(const char*s);
 const char*sp_str_byteslice(const char*s,mrb_int start,mrb_int len);
+const char*sp_str_byteslice1(const char*s,mrb_int i);
+const char*sp_str_byteslice_range(const char*s,mrb_int lo,mrb_int hi,int excl,int lo_none,int hi_none);
 const char*sp_str_bytesplice(const char*s,mrb_int start,mrb_int len,const char*val);
 int sp_str_ascii_only(const char*s);
 const char*sp_str_format_strarr(const char*fmt,sp_StrArray*a);

@@ -3478,6 +3478,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   }
 
   if (argc == 1 && (sp_streq(name, "==") || sp_streq(name, "!=") ||
+                    (sp_streq(name, "===") && rt == TY_STRING) ||  /* String#=== is == (#2347) */
                     (sp_streq(name, "eql?") &&
                      (ty_is_array(rt) ||
                       (ty_is_object(rt) && ty_object_class(rt) >= 0 &&
@@ -9993,6 +9994,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
   }
 
+  /* String#clear consumed as a value: empty the assignable receiver in place
+     and yield the now-empty string (#2332) */
+  if (recv >= 0 && rt == TY_STRING && sp_streq(name, "clear") && argc == 0) {
+    const char *rty = nt_type(nt, recv);
+    if (rty && (sp_streq(rty, "LocalVariableReadNode") ||
+                sp_streq(rty, "InstanceVariableReadNode"))) {
+      buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, recv, b);
+      buf_puts(b, "); "); emit_expr(c, recv, b); buf_puts(b, " = (&(\"\\xff\")[1]); ");
+      emit_expr(c, recv, b); buf_puts(b, "; })");
+      return;
+    }
+  }
   if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
     if (rt == TY_POLY) {
       if (name[0] == '-') { buf_puts(b, "sp_poly_neg("); emit_expr(c, recv, b); buf_puts(b, ")"); }
@@ -10000,9 +10013,9 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else if (rt == TY_STRING) {
       /* +str returns a mutable copy (so subsequent <</concat/upcase! mutate a
-         fresh string); -str returns the (already-immutable) string itself. */
+         fresh string); -str returns a FROZEN string (#2331). */
       if (name[0] == '+') { buf_puts(b, "sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else emit_expr(c, recv, b);
+      else { buf_puts(b, "sp_str_freeze_val(sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     }
     else { buf_puts(b, name[0] == '-' ? "(-" : "(+"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;

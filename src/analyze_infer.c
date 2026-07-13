@@ -3652,6 +3652,7 @@ else {
 
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
+    if (sp_streq(name, "clear") && argc == 0) return TY_STRING;  /* empties + returns self (#2332) */
     if (sp_streq(name, "clone") && argc == 1) return TY_STRING;  /* clone(freeze: ...) */
     if (sp_streq(name, "encoding") && argc == 0) return TY_POLY;  /* an Encoding value */
     if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||

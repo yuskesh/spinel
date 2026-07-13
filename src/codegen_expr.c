@@ -205,7 +205,10 @@ void emit_interp(Compiler *c, int id, Buf *b) {
       }
       else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
         const char *cn = obj_str_cname(c, ty_object_class(t), 0);
-        buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
+        /* a value-type object (single-ivar) has a by-VALUE to_s signature;
+           casting its receiver to a pointer is a C type error (#2357) */
+        if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_to_s(", cn);
+        else buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (ty_is_hash(t) && ty_hash_cname(t)) {

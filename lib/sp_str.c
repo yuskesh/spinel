@@ -253,7 +253,14 @@ sp_StrArray*sp_str_lines_chomp(const char*s){sp_StrArray*a=sp_StrArray_new();if(
 /* String#byteslice(start,len): byte-indexed (unlike the char-indexed
    sp_str_sub_range). Negative start counts back from the byte length.
    Out-of-range yields the empty string rather than CRuby nil. */
-const char*sp_str_byteslice(const char*s,mrb_int start,mrb_int len){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("byteslice");mrb_int bl=(mrb_int)sp_str_byte_len(s);if(start<0)start+=bl;if(start<0||start>bl||len<0){return &("\xff" "")[1];}if(start+len>bl)len=bl-start;if(len<=0){return &("\xff" "")[1];}char*r=sp_str_alloc_raw(len+1);memcpy(r,s+start,len);r[len]=0;sp_str_set_len(r,(size_t)len);return r;}
+const char*sp_str_byteslice(const char*s,mrb_int start,mrb_int len){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("byteslice");mrb_int bl=(mrb_int)sp_str_byte_len(s);if(start<0)start+=bl;if(start<0||start>bl||len<0){return NULL;/* out of range -> nil (#2333) */}if(start+len>bl)len=bl-start;if(len<=0){return &("\xff" "")[1];}char*r=sp_str_alloc_raw(len+1);memcpy(r,s+start,len);r[len]=0;sp_str_set_len(r,(size_t)len);return r;}
+/* Single-argument String#byteslice(i): the 1-byte substring at byte index i,
+   or nil when i is outside [0, bytesize) (the boundary i == bytesize has no
+   byte, unlike the two-argument form's empty slice) (#2333). */
+const char*sp_str_byteslice1(const char*s,mrb_int i){if(!s)sp_nil_recv("byteslice");mrb_int bl=(mrb_int)sp_str_byte_len(s);if(i<0)i+=bl;if(i<0||i>=bl)return NULL;return sp_str_byteslice(s,i,1);}
+/* String#byteslice(range): resolve beginless/endless/negative endpoints
+   against the bytesize, then slice; a begin past the bytesize is nil (#2348). */
+const char*sp_str_byteslice_range(const char*s,mrb_int lo,mrb_int hi,int excl,int lo_none,int hi_none){if(!s)sp_nil_recv("byteslice");mrb_int bl=(mrb_int)sp_str_byte_len(s);if(lo_none)lo=0;else if(lo<0)lo+=bl;if(lo<0||lo>bl)return NULL;mrb_int end;if(hi_none)end=bl;else{end=hi;if(end<0)end+=bl;if(!excl)end+=1;}if(end>bl)end=bl;mrb_int len=end-lo;if(len<0)len=0;return sp_str_byteslice(s,lo,len);}
 /* String#bytesplice(start,len,str): replace the byte span with str and
    return the new value (the codegen arm rebinds the receiver, so the
    result stands in for CRuby's mutated self). CRuby's IndexError contracts:
