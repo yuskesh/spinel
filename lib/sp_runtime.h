@@ -4361,6 +4361,15 @@ static const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h){return h?sp_inspect_c
    bound receiver + fn_ptr) when the program needs them — null hooks
    leave the runtime at identity, which is the right default for typed
    pointers like IntArray. */
+/* FNV-1a over a fixed byte range -- gives value-type user objects (by-value
+   structs with no pointer identity) a stable Integer #hash / #object_id from
+   their content, so `v.hash == v.hash` holds (#2284, #2283). */
+static mrb_int sp_bytes_hash(const void *p, size_t n) {
+  const unsigned char *b = (const unsigned char *)p;
+  uint64_t h = 1469598103934665603ULL;
+  for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+  return (mrb_int)(h & 0x7fffffffffffffffULL);
+}
 typedef mrb_int  (*sp_obj_hash_fn)(int cls_id, void *p);
 typedef mrb_bool (*sp_obj_eql_fn)(int cls_id, void *a, void *b);
 static sp_obj_hash_fn sp_obj_hash_hook = NULL;

@@ -1232,7 +1232,15 @@ TyKind infer_call(Compiler *c, int id) {
     if (sp_streq(name, "lambda?")) return TY_BOOL;
     if (sp_streq(name, "parameters")) return TY_POLY_ARRAY;
     if (sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
+    if (sp_streq(name, "frozen?")) return TY_BOOL;
+    if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
+        sp_streq(name, "itself")) return TY_PROC;
   }
+  /* Proc identity: equal?/eql?/== against another Proc -> bool */
+  if (recv >= 0 && rt == TY_PROC && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
+      infer_type(c, argv[0]) == TY_PROC)
+    return TY_BOOL;
   /* Hash#default_proc: the stored Hash.new{} block as a first-class Proc
      (NULL-encoded nil when the hash has none) */
   if (recv >= 0 && ty_is_hash(rt) && argc == 0 && sp_streq(name, "default_proc"))
@@ -1597,7 +1605,10 @@ else {
     if (sp_streq(name, "source") || sp_streq(name, "inspect") || sp_streq(name, "to_s")) return TY_STRING;
     if (sp_streq(name, "names")) return TY_STR_ARRAY;
     if (sp_streq(name, "named_captures")) return TY_STR_POLY_HASH;  /* {name => [group indices]} */
-    if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone")) return TY_REGEX;
+    if (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
+        sp_streq(name, "itself")) return TY_REGEX;
+    if (sp_streq(name, "frozen?")) return TY_BOOL;
+    if ((sp_streq(name, "equal?") || sp_streq(name, "eql?")) && argc == 1) return TY_BOOL;
     if (sp_streq(name, "encoding")) return TY_POLY;  /* a boxed Encoding value */
     if (sp_streq(name, "fixed_encoding?")) return TY_BOOL;
     if (sp_streq(name, "options")) return TY_INT;
@@ -1801,6 +1812,9 @@ else {
   if (recv >= 0 && rt == TY_ENUMERATOR) {
     if (sp_streq(name, "next") || sp_streq(name, "peek")) return TY_POLY;
     if (sp_streq(name, "rewind")) return TY_ENUMERATOR;
+    if (sp_streq(name, "frozen?")) return TY_BOOL;
+    if ((sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) && argc == 1) return TY_BOOL;
+    if (sp_streq(name, "freeze") || sp_streq(name, "itself")) return TY_ENUMERATOR;
     if (sp_streq(name, "feed") && argc == 1) return TY_NIL;   /* #feed returns nil */
     /* blockless enum.with_index(off) is another materialized Enumerator (over
        [element, index] pairs); the block/terminal-chain forms are typed below */

@@ -4662,7 +4662,17 @@ char *codegen_program(const NodeTable *nt) {
             const char *mname2 = (aty2 && sp_streq(aty2, "ConstantReadNode")) ? nt_str(c->nt, aargs[j2], "name") : NULL;
             if (!mname2 && aty2 && sp_streq(aty2, "ConstantPathNode")) mname2 = nt_str(c->nt, aargs[j2], "name");
             int mid2 = mname2 ? comp_class_index(c, mname2) : -1;
-            if (mid2 < 0) continue;
+            int is_builtin_mod = 0;
+            /* a builtin module (Enumerable/Comparable/Kernel/Math) has no user
+               class index; record its (negative) builtin id so ancestors
+               reflects it -- the generic `mid2 < 0` skip must not drop it. */
+            if (mid2 < 0 && mname2) {
+              if (sp_streq(mname2, "Enumerable")) { mid2 = -115; is_builtin_mod = 1; }
+              else if (sp_streq(mname2, "Comparable")) { mid2 = -114; is_builtin_mod = 1; }
+              else if (sp_streq(mname2, "Kernel")) { mid2 = -119; is_builtin_mod = 1; }
+              else if (sp_streq(mname2, "Math")) { mid2 = -130; is_builtin_mod = 1; }
+            }
+            if (mid2 < 0 && !is_builtin_mod) continue;
             /* deduplicate */
             int found2 = 0;
             for (int q = 0; q < cls_nincs[ci]; q++) if (cls_incs[ci][q] == mid2) { found2 = 1; break; }
@@ -4684,6 +4694,10 @@ char *codegen_program(const NodeTable *nt) {
        includes so e.g. Dog.ancestors == [Dog, Animal, Object, Kernel,
        BasicObject], matching CRuby. */
     buf_puts(&b, "    if(cur.cls_id<0){\n");
+    /* a builtin Module (Comparable/Enumerable/Kernel/Math) has no superclass
+       chain: its ancestors are just itself (#2285). */
+    buf_puts(&b, "      if(cur.cls_id==-114||cur.cls_id==-115||cur.cls_id==-119||cur.cls_id==-130){\n");
+    buf_puts(&b, "        sp_PolyArray_push(a,sp_box_class(cur)); break;\n      }\n");
     buf_puts(&b, "      while(1){\n");
     buf_puts(&b, "        sp_PolyArray_push(a,sp_box_class(cur));\n");
     /* Numeric includes Comparable; Array/Hash include Enumerable; String includes Comparable */

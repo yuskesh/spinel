@@ -5903,6 +5903,22 @@ void emit_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "inspect") || sp_streq(name, "to_s"))) {
     buf_puts(b, "sp_proc_inspect("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
   }
+  /* Proc identity/state predicates: equal?/eql?/== compare by pointer, frozen?
+     is false, freeze/dup/clone/itself evaluate to the proc itself. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
+      comp_ntype(c, argv[0]) == TY_PROC) {
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+    emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
+  }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "frozen?")) {
+    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); return;
+  }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
+      (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
+       sp_streq(name, "itself"))) {
+    emit_expr(c, recv, b); return;
+  }
 
   if (emit_concurrency_call(c, id, b)) return;
 
@@ -6108,6 +6124,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) {
       buf_puts(b, "sp_Enumerator_to_a("); emit_expr(c, recv, b); buf_puts(b, ")"); return;
     }
+    if (argc == 1 && (sp_streq(name, "equal?") || sp_streq(name, "eql?") || sp_streq(name, "==")) &&
+        comp_ntype(c, argv[0]) == TY_ENUMERATOR) {
+      buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
+      emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
+    }
+    if (argc == 0 && sp_streq(name, "frozen?")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); return; }
+    if (argc == 0 && (sp_streq(name, "freeze") || sp_streq(name, "itself"))) { emit_expr(c, recv, b); return; }
   }
 
   /* Random class methods: Random.rand(n) / Random.rand / Random.bytes(n)
@@ -7573,9 +7596,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "superclass") && argc == 0) {
       /* sp_class_superclass only knows the user chain; a builtin class needs
          sp_builtin_superclass (Integer -> Numeric), as sp_class_is_ancestor
-         already dispatches. */
+         already dispatches. A Module has no #superclass -> NoMethodError. */
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
-      buf_printf(b, "; _cl%d.cls_id>=0?sp_class_superclass(_cl%d):sp_builtin_superclass(_cl%d); })", _clt, _clt, _clt);
+      buf_printf(b, "; sp_class_is_module_val(_cl%d) ? "
+                    "(sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method 'superclass' for module %%s\", sp_class_to_s(_cl%d))), (sp_Class){0}) : "
+                    "(_cl%d.cls_id>=0?sp_class_superclass(_cl%d):sp_builtin_superclass(_cl%d)); })",
+                 _clt, _clt, _clt, _clt, _clt);
       return;
     }
     if (sp_streq(name, "ancestors") && argc == 0) {
@@ -9430,7 +9456,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* Regexp VALUE receiver (a variable, or a literal in value position):
      rendering reads the pattern's retained source text at runtime. */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 1 &&
+      (sp_streq(name, "equal?") || sp_streq(name, "eql?")) &&
+      comp_ntype(c, argv[0]) == TY_REGEX) {
+    buf_puts(b, "((void *)("); emit_expr(c, recv, b); buf_puts(b, ") == (void *)(");
+    emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
+  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_REGEX && argc == 0) {
+    /* a Regexp is frozen; freeze/itself/dup evaluate to the pattern itself. */
+    if (sp_streq(name, "frozen?")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
+    if (sp_streq(name, "freeze") || sp_streq(name, "itself") || sp_streq(name, "dup") || sp_streq(name, "clone")) {
+      emit_expr(c, recv, b); return;
+    }
     if (sp_streq(name, "source")) {
       buf_puts(b, "sp_re_source((void *)("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
@@ -10637,7 +10674,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
           if (first) buf_puts(b, "0");
           buf_puts(b, "))");
         }
-        else buf_puts(b, "0");
+        /* a builtin ancestor not covered above (Object/BasicObject/Kernel are
+           universal; Numeric/Comparable/Enumerable are module mixins): defer to
+           the runtime ancestry helper instead of a blanket false. */
+        else if (!exact) buf_printf(b, "sp_poly_kind_of_builtin(%s, \"%s\")", v, cn);
+        else buf_printf(b, "(strcmp(sp_poly_class_name(%s), \"%s\") == 0)", v, cn);
       }
       buf_puts(b, "; })");
       return;
@@ -10853,6 +10894,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
              rt == TY_TIME || rt == TY_FLOAT) {
       buf_puts(b, "sp_rbval_hash_key("); emit_boxed(c, recv, b); buf_puts(b, ")");
     }
+    /* a value-type user object is a by-value struct with no pointer identity;
+       hash its bytes for a stable id (`o.object_id == o.object_id`) (#2283) */
+    else if (ty_is_object(rt) && comp_ty_value_obj(c, rt)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_%s _t%d = ", c->classes[ty_object_class(rt)].c_name, t);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; sp_bytes_hash(&_t%d, sizeof _t%d); })", t, t);
+    }
     else { buf_puts(b, "((mrb_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, "))"); }
     return;
   }
@@ -10861,6 +10910,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      hashing the Hash container uses to bucket keys, so `h[k]` and `k.hash`
      agree. A boxed user object routes through sp_obj_hash_hook, which dispatches
      to a user-defined #hash (or pointer identity as Object#hash's default). */
+  /* #hash on a value-type user object with no user #hash: a by-value struct has
+     no pointer identity, so hash its bytes for a stable, content-based id that
+     agrees across calls (#2284). */
+  if (sp_streq(name, "hash") && recv >= 0 && argc == 0 && ty_is_object(rt) &&
+      comp_ty_value_obj(c, rt) && comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&
+      !c->classes[ty_object_class(rt)].is_struct) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_%s _t%d = ", c->classes[ty_object_class(rt)].c_name, t);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; sp_bytes_hash(&_t%d, sizeof _t%d); })", t, t);
+    return;
+  }
   if (sp_streq(name, "hash") && recv >= 0 && argc == 0 &&
       (!ty_is_object(rt) ||
        (comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&

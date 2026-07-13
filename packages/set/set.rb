@@ -8,6 +8,8 @@
 # element comparison.
 
 class Set
+  include Enumerable
+
   # Set[1, 2, 3] builds a Set from the given elements (CRuby's Set.[]).
   def self.[](*args)
     new(args)
