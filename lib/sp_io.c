@@ -171,3 +171,4 @@ mrb_bool sp_file_symlink(const char *path) {
 
 mrb_bool sp_file_exist(const char *path) { FILE *f = fopen(path, "r"); if (f) { fclose(f); return TRUE; } return FALSE; }
 void sp_file_delete(const char *path) { remove(path); }
+void sp_file_rename(const char *from, const char *to) { rename(from, to); }
