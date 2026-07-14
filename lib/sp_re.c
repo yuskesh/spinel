@@ -485,6 +485,35 @@ sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str) { mrb_int n 
 /* String#index(regexp, start): first match at or after char position `start`,
    as a char index -- SP_INT_NIL on miss / out-of-range (a nullable int, matching
    sp_str_index_from_opt's ABI). */
+/* String#byteindex(regexp[, start]): first match at or after BYTE offset
+   `start`, answered as a byte offset (SP_INT_NIL on miss). */
+mrb_int sp_re_byteindex_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start) {
+  if (!str) return SP_INT_NIL;
+  mrb_int bl = (mrb_int)sp_str_byte_len(str);
+  if (start < 0) start += bl;
+  if (start < 0 || start > bl) return SP_INT_NIL;
+  int caps[64];
+  int n = re_exec(pat, str, (int64_t)bl, start, caps, 64, 0);
+  if (n <= 0 || caps[0] < 0) return SP_INT_NIL;
+  return (mrb_int)caps[0];
+}
+/* String#byterindex(regexp[, start]): last match starting at or before BYTE
+   offset `start`, answered as a byte offset (SP_INT_NIL on miss). */
+mrb_int sp_re_byterindex_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start) {
+  if (!str) return SP_INT_NIL;
+  mrb_int bl = (mrb_int)sp_str_byte_len(str);
+  if (start < 0) start += bl;
+  if (start < 0) return SP_INT_NIL;
+  if (start > bl) start = bl;
+  /* the match STARTING latest wins (a match at 3 beats a longer one at 2),
+     so probe each start position from `start` downward */
+  int caps[2];
+  for (mrb_int p = start; p >= 0; p--) {
+    int n = re_exec(pat, str, (int64_t)bl, p, caps, 2, 0);
+    if (n > 0 && caps[0] == (int)p) return p;
+  }
+  return SP_INT_NIL;
+}
 mrb_int sp_re_index_from_opt(mrb_regexp_pattern *pat, const char *str, mrb_int start) {
   if (!str) return SP_INT_NIL;
   mrb_int cl = sp_str_length(str);

@@ -4556,6 +4556,25 @@ int emit_grep_pred(Compiler *c, int pat, const char *ev, TyKind et, Buf *b) {
     else return 0;
     return 1;
   }
+  /* a variable pattern: dispatch on its analyzed type. A Class value tests
+     membership at runtime, a Range tests inclusion (#2391). */
+  TyKind patt = comp_ntype(c, pat);
+  if (patt == TY_CLASS) {
+    buf_puts(b, "sp_poly_is_a_dyn(");
+    if (et == TY_POLY) buf_puts(b, ev);
+    else emit_boxed_text(c, et, ev, b);
+    buf_puts(b, ", sp_box_class(");
+    emit_expr(c, pat, b);
+    buf_puts(b, "), 0)");
+    return 1;
+  }
+  if (patt == TY_RANGE) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_Range _t%d = ", tr); emit_expr(c, pat, b);
+    if (et == TY_POLY) buf_printf(b, "; sp_range_include(&_t%d, sp_poly_to_i(%s)); })", tr, ev);
+    else buf_printf(b, "; sp_range_include(&_t%d, %s); })", tr, ev);
+    return 1;
+  }
   return 0;
 }
 
@@ -4565,7 +4584,7 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || (!sp_streq(name, "grep") && !sp_streq(name, "grep_v"))) return 0;
-  if (nt_ref(nt, id, "block") >= 0) return 0;   /* block form unsupported */
+  int block = nt_ref(nt, id, "block");
   int recv = nt_ref(nt, id, "receiver");
   if (recv < 0) return 0;
   int args = nt_ref(nt, id, "arguments");
@@ -4578,6 +4597,22 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
   if (!k) return 0;
   int pat = argv[0];
   TyKind et = ty_array_elem(rt);
+
+  /* block form: collect block(elem) for each matching element */
+  const char *p0 = NULL;
+  int bn = 0; const int *bb = NULL;
+  TyKind bt = TY_UNKNOWN;
+  const char *ok = k;   /* output array kind */
+  if (block >= 0) {
+    const char *p0n = block_param_name(c, block, 0);
+    int body = nt_ref(nt, block, "body");
+    bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (!p0n || bn < 1) return 0;
+    p0 = rename_local(p0n);
+    bt = infer_type(c, bb[bn - 1]);
+    ok = bt == TY_INT ? "Int" : bt == TY_FLOAT ? "Float"
+       : bt == TY_STRING ? "Str" : "Poly";
+  }
 
   /* probe predicate support before emitting anything */
   Buf probe; memset(&probe, 0, sizeof probe);
@@ -4592,7 +4627,7 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
   emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, tres, k);
+  buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", ok, tres, ok);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres);
   emit_indent(g_pre, g_indent);
@@ -4601,9 +4636,29 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "%s _t%d = sp_%sArray_get(_t%d, _t%d);\n", c_type_name(et), te, k, trecv, ti);
   emit_indent(g_pre, g_indent + 1);
   char ev[16]; snprintf(ev, sizeof ev, "_t%d", te);
-  buf_printf(g_pre, "if (%s(", neg ? "!" : "");
-  emit_grep_pred(c, pat, ev, et, g_pre);
-  buf_printf(g_pre, ")) sp_%sArray_push(_t%d, _t%d);\n", k, tres, te);
+  if (block < 0) {
+    buf_printf(g_pre, "if (%s(", neg ? "!" : "");
+    emit_grep_pred(c, pat, ev, et, g_pre);
+    buf_printf(g_pre, ")) sp_%sArray_push(_t%d, _t%d);\n", k, tres, te);
+  }
+  else {
+    buf_printf(g_pre, "if (%s(", neg ? "!" : "");
+    emit_grep_pred(c, pat, ev, et, g_pre);
+    buf_puts(g_pre, ")) {\n");
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "lv_%s = _t%d;\n", p0, te);
+    int save = g_indent; g_indent += 2;
+    for (int j = 0; j < bn - 1; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    Buf lastb; memset(&lastb, 0, sizeof lastb);
+    if (ok[0] == 'P' && bt != TY_POLY) emit_boxed(c, bb[bn - 1], &lastb);
+    else emit_expr(c, bb[bn - 1], &lastb);
+    g_indent = save;
+    emit_indent(g_pre, g_indent + 2);
+    buf_printf(g_pre, "sp_%sArray_push(_t%d, %s);\n", ok, tres, lastb.p ? lastb.p : "");
+    free(lastb.p);
+    emit_indent(g_pre, g_indent + 1);
+    buf_puts(g_pre, "}\n");
+  }
   emit_indent(g_pre, g_indent);
   buf_puts(g_pre, "}\n");
 

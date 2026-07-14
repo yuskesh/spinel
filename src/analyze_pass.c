@@ -5127,6 +5127,7 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "partition") || sp_streq(name, "each_slice") ||
               sp_streq(name, "minmax_by") || sp_streq(name, "bsearch_index") ||
               sp_streq(name, "each_cons") || sp_streq(name, "cycle") ||
+              sp_streq(name, "grep") || sp_streq(name, "grep_v") ||
               sp_streq(name, "to_h")) &&
              ty_is_array(rt))
       pt = ty_array_elem(rt);

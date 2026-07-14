@@ -3492,6 +3492,88 @@ int desugar_enum_method_recv(Compiler *c) {
         continue;
       }
     }
+    /* member? on a builtin container is Array/Hash/Range#include? (#2388);
+       entries on an array is to_a (#2390). User classes keep their own. */
+    if (nm && ((sp_streq(nm, "member?") || sp_streq(nm, "entries")) &&
+               nt_ref(nt, id, "block") < 0)) {
+      int mrc = nt_ref(nt, id, "receiver");
+      int man = 0; { int _a = nt_ref(nt, id, "arguments");
+                     if (_a >= 0) nt_arr(nt, _a, "arguments", &man); }
+      TyKind mrt = mrc >= 0 ? infer_type(c, mrc) : TY_UNKNOWN;
+      /* a not-yet-narrowed local holding an empty [] literal is still an
+         array; restrict the UNKNOWN case to plain variable/literal receivers
+         so a not-yet-typed method-call chain keeps its own entries path */
+      int mrt_open = 0;
+      if (mrt == TY_UNKNOWN && mrc >= 0 && nt_type(nt, mrc) &&
+          sp_streq(nt_type(nt, mrc), "ArrayNode")) {
+        int user_defines = 0;
+        for (int uk = 0; uk < c->nclasses; uk++)
+          if (comp_method_in_chain(c, uk, nm, NULL) >= 0) { user_defines = 1; break; }
+        mrt_open = !user_defines;
+      }
+      if (sp_streq(nm, "member?") && man == 1 &&
+          (ty_is_array(mrt) || ty_is_hash(mrt) || mrt == TY_RANGE || mrt_open)) {
+        nt_node_set_str(nt, id, "name", "include?");
+        changed = 1;
+        continue;
+      }
+      if (sp_streq(nm, "entries") && man == 0 && (ty_is_array(mrt) || mrt_open)) {
+        nt_node_set_str(nt, id, "name", "to_a");
+        changed = 1;
+        continue;
+      }
+
+    }
+    /* eager chain: a.chain(b, c).to_a is a + b + c (#2392). Rewrite this
+       node (`to_a`) into the nested `+` chain in place. */
+    if (nm && sp_streq(nm, "to_a") && nt_ref(nt, id, "block") < 0) {
+      int crc = nt_ref(nt, id, "receiver");
+      if (crc >= 0 && nt_type(nt, crc) && sp_streq(nt_type(nt, crc), "CallNode") &&
+          nt_str(nt, crc, "name") && sp_streq(nt_str(nt, crc, "name"), "chain") &&
+          nt_ref(nt, crc, "block") < 0) {
+        int cargs = nt_ref(nt, crc, "arguments");
+        int can = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &can) : NULL;
+        int cbase = nt_ref(nt, crc, "receiver");
+        if (cbase >= 0 && can >= 1) {
+          int acc = cbase;
+          for (int ci2 = 0; ci2 < can; ci2++) {
+            int cargs2 = te_args1(nt, cav[ci2]);
+            int plus = te_call(nt, acc, "+", cargs2, -1);
+            /* synthesized nodes need compiler-side per-node slots and a
+               scope assignment, or later passes write out of bounds */
+            comp_grow_node_arrays(c);
+            c->nscope[cargs2] = c->nscope[id];
+            c->nscope[plus] = c->nscope[id];
+            acc = plus;
+          }
+          /* turn `to_a` into a transparent alias of the last `+` result:
+             re-point this node at the chain via itself */
+          nt_node_set_str(nt, id, "name", "itself");
+          nt_node_set_ref(nt, id, "receiver", acc);
+          changed = 1;
+          continue;
+        }
+      }
+    }
+    /* find_all is a full alias of select on the builtin containers; rename
+       so the select/with_index machinery serves both (#2389) */
+    if (nm && sp_streq(nm, "find_all")) {
+      int frc = nt_ref(nt, id, "receiver");
+      TyKind frt = frc >= 0 ? infer_type(c, frc) : TY_UNKNOWN;
+      int fa_user = 0;
+      for (int uk = 0; uk < c->nclasses; uk++)
+        if (comp_method_in_chain(c, uk, "find_all", NULL) >= 0) { fa_user = 1; break; }
+      /* NOT hashes: Hash#find_all answers an array of pairs (the Enumerable
+         contract), while Hash#select answers a hash -- the existing hash
+         find_all machinery keeps that shape */
+      int frt_open = frt == TY_UNKNOWN && !fa_user && frc >= 0 && nt_type(nt, frc) &&
+                     sp_streq(nt_type(nt, frc), "ArrayNode");
+      if (ty_is_array(frt) || frt == TY_RANGE || frt_open) {
+        nt_node_set_str(nt, id, "name", "select");
+        changed = 1;
+        continue;
+      }
+    }
     /* String-endpoint ranges materialize to a StrArray, which has no
        begin/end of its own: alias them to first/last (#2411). */
     if (nm && (sp_streq(nm, "begin") || sp_streq(nm, "end")) &&

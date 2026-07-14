@@ -220,6 +220,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       {"swapcase!", "swapcase", 1}, {"strip!", "strip", 1}, {"lstrip!", "lstrip", 1},
       {"rstrip!", "rstrip", 1}, {"chomp!", "chomp", 1}, {"chop!", "chop", 1},
       {"squeeze!", "squeeze", 1}, {"tr!", "tr", 1}, {"delete!", "delete", 1},
+      {"tr_s!", "tr_s", 1}, {"delete_prefix!", "delete_prefix", 1},
+      {"delete_suffix!", "delete_suffix", 1},
       {"reverse!", "reverse", 0}, {"succ!", "succ", 0}, {"next!", "next", 0},
       {NULL, NULL, 0}
     };
@@ -2775,7 +2777,7 @@ else {
         buf_puts(b, "sp_PolyArray_get("); emit_expr(c, recv, b); buf_puts(b, ", 0)");
         return 1;
       }
-      if (sp_streq(name, "to_a") && argc == 0) { emit_expr(c, recv, b); return 1; }
+      if ((sp_streq(name, "to_a") || sp_streq(name, "entries")) && argc == 0) { emit_expr(c, recv, b); return 1; }
       if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
         int blk = nt_ref(nt, id, "block");
         int ta = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tnorm = ++g_tmp;
@@ -2855,6 +2857,17 @@ else {
         return 1;
       }
       if (sp_streq(name, "include?") && argc == 1) {
+        /* an empty [] literal receiver contains nothing; folding avoids the
+           kind mismatch when the literal narrowed to a typed array elsewhere */
+        int iel = 0;
+        if (nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
+          int ien = 0; nt_arr(nt, recv, "elements", &ien);
+          iel = ien == 0;
+        }
+        if (iel) {
+          buf_puts(b, "((void)("); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
+          return 1;
+        }
         buf_puts(b, "sp_PolyArray_include("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
@@ -4497,6 +4510,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "downcase"))   buf_printf(b, "sp_str_downcase(%s)", r);
       else if (sp_streq(name, "capitalize")) buf_printf(b, "sp_str_capitalize(%s)", r);
       else if (sp_streq(name, "swapcase"))   buf_printf(b, "sp_str_swapcase(%s)", r);
+      else if (sp_streq(name, "dedup") && argc == 0) buf_printf(b, "sp_str_uminus_val(%s)", r);
       else if (sp_streq(name, "delete_prefix") && argc == 1) { buf_printf(b, "sp_str_delete_prefix(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "delete_suffix") && argc == 1) { buf_printf(b, "sp_str_delete_suffix(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "reverse"))    buf_printf(b, "sp_str_reverse(%s)", r);
@@ -4604,6 +4618,21 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          start are byte offsets). The runtime helpers already carry nil as
          SP_INT_NIL. A Regexp needle is a separate feature -- not handled here,
          so it falls through to the unsupported-call reject. */
+      else if (sp_streq(name, "byteindex") && (argc == 1 || argc == 2) &&
+               re_lit_index(c, argv[0]) >= 0) {
+        buf_printf(b, "sp_re_byteindex_opt(sp_re_pat_%d, %s, ", re_lit_index(c, argv[0]), r);
+        if (argc == 2) emit_int_expr(c, argv[1], b); else buf_puts(b, "0");
+        buf_puts(b, ")");
+      }
+      else if (sp_streq(name, "byterindex") && (argc == 1 || argc == 2) &&
+               re_lit_index(c, argv[0]) >= 0) {
+        int tsr = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = %s; sp_re_byterindex_opt(sp_re_pat_%d, _t%d, ",
+                   tsr, r, re_lit_index(c, argv[0]), tsr);
+        if (argc == 2) emit_int_expr(c, argv[1], b);
+        else buf_printf(b, "(mrb_int)sp_str_byte_len(_t%d)", tsr);
+        buf_puts(b, "); })");
+      }
       else if (sp_streq(name, "byteindex") && argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
         buf_printf(b, "sp_str_byteindex(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
       }

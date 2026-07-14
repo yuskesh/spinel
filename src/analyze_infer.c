@@ -1208,6 +1208,13 @@ TyKind infer_call(Compiler *c, int id) {
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array"))
     return TY_POLY;
+  if (recv >= 0 && name && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash")) {
+    if (sp_streq(name, "ruby2_keywords_hash?")) return TY_BOOL;
+    if (sp_streq(name, "try_convert") || sp_streq(name, "ruby2_keywords_hash"))
+      return TY_POLY;
+  }
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object */
   if (name && sp_streq(name, "method") && method_sym_arg(c, id) != NULL) return TY_METHOD;
 
@@ -2835,9 +2842,16 @@ else {
     }
     /* grep/grep_v without a block filter by `pattern === e`, preserving the
        receiver's array type. */
-    if ((sp_streq(name, "grep") || sp_streq(name, "grep_v")) &&
-        nt_ref(nt, id, "block") < 0 && argc == 1)
-      return rt;
+    if ((sp_streq(name, "grep") || sp_streq(name, "grep_v")) && argc == 1) {
+      int gblk = nt_ref(nt, id, "block");
+      if (gblk < 0) return rt;
+      /* block form: an array of the block's results */
+      int gbd = nt_ref(nt, gblk, "body");
+      int gbn = 0; const int *gbb = gbd >= 0 ? nt_arr(nt, gbd, "body", &gbn) : NULL;
+      TyKind gbt = gbn > 0 ? infer_type(c, gbb[gbn - 1]) : TY_UNKNOWN;
+      return gbt == TY_INT ? TY_INT_ARRAY : gbt == TY_FLOAT ? TY_FLOAT_ARRAY
+           : gbt == TY_STRING ? TY_STR_ARRAY : TY_POLY_ARRAY;
+    }
     if (sp_streq(name, "[]")) {
       /* arr[range] / arr[start, len] -> a subarray; arr[i] -> an element. The
          range index may be a literal RangeNode or a variable/param typed
@@ -3827,12 +3841,12 @@ else {
     if (sp_streq(name, "sum") && argc <= 1) return TY_INT;
     if (sp_streq(name, "unpack1") && (argc == 1 || argc == 2)) return an_unpack1_lit_type(nt, argv[0]);
     if (sp_streq(name, "rindex")) return TY_INT;
-    /* byteindex/byterindex over a String needle -> byte offset or nil. The
-       Regexp form is a separate (unimplemented) feature, so leave it untyped
-       here and let codegen reject it loudly rather than treat a pattern as a
-       string needle. */
+    /* byteindex/byterindex over a String or Regexp needle -> byte offset or
+       nil (SP_INT_NIL). */
     if ((sp_streq(name, "byteindex") || sp_streq(name, "byterindex")) &&
-        (argc == 1 || argc == 2) && comp_ntype(c, argv[0]) == TY_STRING) return TY_INT;
+        (argc == 1 || argc == 2) &&
+        (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_REGEX))
+      return TY_INT;
     if (sp_streq(name, "partition") || sp_streq(name, "rpartition")) return TY_STR_ARRAY;
     /* value-form mutators: the post-mutation string; the no-change bang
        contract carries nil as NULL through the nullable string. */
@@ -3841,6 +3855,8 @@ else {
         sp_streq(name, "strip!") || sp_streq(name, "lstrip!") || sp_streq(name, "rstrip!") ||
         sp_streq(name, "chomp!") || sp_streq(name, "chop!") || sp_streq(name, "squeeze!") ||
         sp_streq(name, "tr!") || sp_streq(name, "delete!") || sp_streq(name, "reverse!") ||
+        sp_streq(name, "tr_s!") || sp_streq(name, "delete_prefix!") ||
+        sp_streq(name, "delete_suffix!") || sp_streq(name, "dedup") ||
         sp_streq(name, "succ!") || sp_streq(name, "next!") ||
         sp_streq(name, "concat") || sp_streq(name, "<<") || sp_streq(name, "prepend") ||
         sp_streq(name, "insert") || sp_streq(name, "replace"))

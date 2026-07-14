@@ -2911,9 +2911,27 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
     TyKind at = comp_ntype(c, argv[0]);
-    if (ty_is_array(at)) { emit_boxed(c, argv[0], b); return; }
+    if (ty_is_array(at)) { emit_boxed(c, argv[0], b); return 1; }
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
-    return;
+    return 1;
+  }
+  /* Hash.try_convert(x): the hash itself, nil for a non-hash.
+     Hash.ruby2_keywords_hash(h) marks kwarg-splat provenance CRuby-side;
+     Spinel's hashes carry no such flag, so it answers the hash unchanged
+     (and the predicate form answers false). */
+  if (recv >= 0 && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Hash") &&
+      (sp_streq(name, "try_convert") || sp_streq(name, "ruby2_keywords_hash") ||
+       sp_streq(name, "ruby2_keywords_hash?"))) {
+    TyKind at = comp_ntype(c, argv[0]);
+    if (sp_streq(name, "ruby2_keywords_hash?")) {
+      buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+      return 1;
+    }
+    if (ty_is_hash(at)) { emit_boxed(c, argv[0], b); return 1; }
+    buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
+    return 1;
   }
   if (recv >= 0 && (sp_streq(name, "new") || sp_streq(name, "__hash_new_default"))) {
     const char *rty = nt_type(nt, recv);
