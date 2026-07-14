@@ -8781,8 +8781,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (sp_streq(name, "file?") && argc == 1) {
       buf_puts(b, "(!sp_file_directory("); emit_expr(c, argv[0], b); buf_puts(b, ") && sp_file_exist("); emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
     }
-    if (sp_streq(name, "delete") && argc == 1) {
+    if ((sp_streq(name, "delete") || sp_streq(name, "unlink")) && argc == 1) {
       buf_puts(b, "({ sp_file_delete("); emit_expr(c, argv[0], b); buf_puts(b, "); (mrb_int)1; })"); return;
+    }
+    if (sp_streq(name, "rename") && argc == 2) {
+      buf_puts(b, "({ sp_file_rename("); emit_expr(c, argv[0], b); buf_puts(b, ", ");
+      emit_expr(c, argv[1], b); buf_puts(b, "); (mrb_int)0; })"); return;
     }
     if (sp_streq(name, "mtime") && argc == 1) {
       buf_puts(b, "sp_file_mtime("); emit_expr(c, argv[0], b); buf_puts(b, ")"); return;

@@ -48,5 +48,6 @@ mrb_bool sp_file_file(const char *path);
 mrb_bool sp_file_exist(const char *path);
 mrb_bool sp_file_symlink(const char *path);
 void sp_file_delete(const char *path);
+void sp_file_rename(const char *from, const char *to);
 
 #endif
