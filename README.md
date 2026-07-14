@@ -155,8 +155,8 @@ branch for historical reference; it is no longer carried in `master`.
 
 ## Benchmarks
 
-886 tests pass. 57 benchmarks pass.
-Geometric mean: **~7.8x faster** than Ruby 4.0.4 with `--yjit` across
+1,744 tests pass. 58 benchmarks pass.
+Geometric mean: **~5.8x faster** than Ruby 4.0.4 with `--yjit` across
 the 28 benchmarks below. Baseline is CRuby 4.0.4 (stable), run with
 `--disable-gems` and with `--yjit` for the JIT column. Each timing is
 the best of three wall-clock runs; sub-10 ms cells are dominated by
@@ -166,54 +166,55 @@ interpreter / runtime startup and should be read as "noise floor."
 
 | Benchmark | Spinel | Ruby 4.0.4 | + YJIT | Speedup vs YJIT |
 |---|---|---|---|---|
-| mandelbrot | 24 ms | 1_339 ms | 1_340 ms | 55.8x |
-| nqueens | 9 ms | 312 ms | 311 ms | 34.6x |
-| matmul | 9 ms | 302 ms | 303 ms | 33.7x |
-| life (Conway's GoL) | 23 ms | 861 ms | 497 ms | 21.6x |
-| partial_sums | 80 ms | 1_324 ms | 1_310 ms | 16.4x |
-| sieve | 25 ms | 406 ms | 409 ms | 16.4x |
-| sudoku | 6 ms | 103 ms | 54 ms | 9.0x |
-| fannkuch | 2 ms | 15 ms | 15 ms | 7.5x |
-| fasta (DNA seq gen) | 2 ms | 14 ms | 14 ms | 7.0x |
-| ackermann | 9 ms | 343 ms | 60 ms | 6.7x |
-| fib (recursive) | 15 ms | 538 ms | 95 ms | 6.3x |
-| tarai | 28 ms | 400 ms | 70 ms | 2.5x |
-| tak | 34 ms | 502 ms | 82 ms | 2.4x |
+| mandelbrot | 16 ms | 897 ms | 900 ms | 56.2x |
+| matmul | 6 ms | 192 ms | 197 ms | 32.8x |
+| nqueens | 6 ms | 143 ms | 137 ms | 22.8x |
+| partial_sums | 54 ms | 757 ms | 741 ms | 13.7x |
+| sieve | 19 ms | 257 ms | 253 ms | 13.3x |
+| life (Conway's GoL) | 17 ms | 487 ms | 222 ms | 13.1x |
+| sudoku | 3 ms | 63 ms | 32 ms | 10.7x |
+| fannkuch | 1 ms | 10 ms | 10 ms | 10.0x |
+| fasta (DNA seq gen) | 2 ms | 9 ms | 9 ms | 4.5x |
+| fib (recursive) | 19 ms | 377 ms | 47 ms | 2.5x |
+| tak | 26 ms | 310 ms | 45 ms | 1.7x |
+| tarai | 21 ms | 249 ms | 36 ms | 1.7x |
+| ackermann | 26 ms | 272 ms | 36 ms | 1.4x |
 
 ### Data Structures & GC
 
 | Benchmark | Spinel | Ruby 4.0.4 | + YJIT | Speedup vs YJIT |
 |---|---|---|---|---|
-| huffman (encoding) | 7 ms | 63 ms | 64 ms | 9.1x |
-| so_lists | 35 ms | 485 ms | 299 ms | 8.5x |
-| rbtree (red-black tree) | 20 ms | 521 ms | 113 ms | 5.6x |
-| splay tree | 14 ms | 179 ms | 65 ms | 4.6x |
-| binary_trees | 5 ms | 36 ms | 19 ms | 3.8x |
-| linked_list | 71 ms | 306 ms | 236 ms | 3.3x |
-| gcbench | 553 ms | 3_455 ms | 1_783 ms | 3.2x |
+| so_lists | 19 ms | 248 ms | 153 ms | 8.1x |
+| huffman (encoding) | 6 ms | 37 ms | 38 ms | 6.3x |
+| splay tree | 9 ms | 107 ms | 37 ms | 4.1x |
+| rbtree (red-black tree) | 17 ms | 330 ms | 63 ms | 3.7x |
+| linked_list | 40 ms | 182 ms | 138 ms | 3.5x |
+| binary_trees | 4 ms | 24 ms | 12 ms | 3.0x |
+| gcbench | 362 ms | 2_180 ms | 937 ms | 2.6x |
 
 ### Real-World Programs
 
 | Benchmark | Spinel | Ruby 4.0.4 | + YJIT | Speedup vs YJIT |
 |---|---|---|---|---|
-| ao_render (ray tracer) | 103 ms | 3_033 ms | 1_122 ms | 10.9x |
-| str_concat | 1 ms | 10 ms | 10 ms | 10.0x |
-| bigint_fib (1000 digits) | 1 ms | 10 ms | 10 ms | 10.0x |
-| json_parse | 41 ms | 413 ms | 275 ms | 6.7x |
-| pidigits (bigint) | 2 ms | 10 ms | 10 ms | 5.0x |
-| template engine | 170 ms | 1_020 ms | 723 ms | 4.3x |
-| io_wordcount | 27 ms | 107 ms | 100 ms | 3.7x |
-| csv_process | 255 ms | 1_050 ms | 924 ms | 3.6x |
+| ao_render (ray tracer) | 82 ms | 1_665 ms | 591 ms | 7.2x |
+| str_concat | 1 ms | 6 ms | 6 ms | 6.0x |
+| pidigits (bigint) | 1 ms | 6 ms | 6 ms | 6.0x |
+| bigint_fib (1000 digits) | 1 ms | 5 ms | 6 ms | 6.0x |
+| template engine | 71 ms | 446 ms | 317 ms | 4.5x |
+| json_parse | 29 ms | 189 ms | 128 ms | 4.4x |
+| io_wordcount | 16 ms | 47 ms | 42 ms | 2.6x |
+| csv_process | 144 ms | 430 ms | 378 ms | 2.6x |
 
 A few notes on what YJIT does and doesn't change. On some integer-loop
 workloads (mandelbrot, nqueens, matmul, partial_sums, sieve) YJIT's
 numbers are essentially identical to interpreted Ruby; the benchmark
 is bound by integer / float operations that the interpreter already
 runs at native speed. On call-heavy code (ackermann, fib, tarai, tak,
-rbtree) YJIT gives a real 4-6x lift, but Spinel still wins by ahead-
-of-time specialization. The two YJIT-only weak spots remaining are
-`tarai` and `tak`, where YJIT inlines the recursive call site so well
-that Spinel's compiled C only beats it by ~2.4x.
+rbtree) YJIT gives a real 5-8x lift, but Spinel still wins by ahead-
+of-time specialization. The narrowest margins are the tiny recursive
+kernels (`ackermann`, `tarai`, `tak`, `fib`), where YJIT inlines the
+recursive call site so well that Spinel's compiled C wins by only
+1.4-2.5x.
 
 ## Supported Ruby Features
 
@@ -233,24 +234,20 @@ lambda `-> x { }`, `method(:name)`. Block methods: `each`,
 **Exceptions**: `begin`/`rescue`/`ensure`/`retry`, `raise`,
 custom exception classes.
 
-**Types**: Integer, Float, String (immutable + mutable), Array, Hash,
-Range, Time, StringIO, File, Regexp, Bigint (auto-promoted), Fiber.
-Polymorphic values via tagged unions. Nullable object types (`T?`)
-for self-referential data structures (linked lists, trees).
+**Types**: Integer, Float, String (immutable + mutable), Symbol, Array,
+Hash, Range, Time, StringIO, File, Regexp, MatchData, Complex, Rational,
+Bigint (auto-promoted), Enumerator, Set, Fiber, Thread, Mutex, Queue,
+SizedQueue, ConditionVariable, Marshal (dump/load). Polymorphic values
+via tagged unions. Nullable object types (`T?`) for self-referential
+data structures (linked lists, trees).
 
-**Inspect / `p`**: `Object#inspect` is implemented for all primitive
-types (Integer, Float, String, Symbol, Boolean, nil), for typed
-arrays (`int_array`, `float_array`, `str_array`, `sym_array`), and
-for heterogeneous arrays (`poly_array`, e.g. `[1, "x", :y]`).
-Scalar polymorphic values (the tagged-union values from the `Types`
-section above) also inspect correctly.
-`Array#to_s` is aliased to `Array#inspect`, matching CRuby.
-`Kernel#p` dispatches through `compile_inspect_for` so `p obj`,
-`obj.inspect`, `obj.to_s`, and `"#{obj.inspect}"` interpolation
-all produce CRuby-byte-identical output. User-class instances
-inside a polymorphic value currently render as the placeholder
-`"#<Object>"` (the runtime has no class-name table yet); Hash,
-Range, and Struct inspect are not yet implemented.
+**Inspect / `p`**: `Object#inspect` produces CRuby-byte-identical
+output across the whole type surface -- primitives, typed and
+heterogeneous arrays, every Hash variant, Range, Struct, and
+user-class instances (`#<Name:0x... @ivar=...>`, or a user-defined
+`inspect` if present), including values reached through a polymorphic
+(tagged-union) binding. `p obj`, `obj.inspect`, `obj.to_s`, and
+`"#{obj}"` interpolation all agree.
 
 **Global Variables**: `$name` compiled to static C variables with
 type-mismatch detection at compile time.
@@ -273,12 +270,28 @@ from loop multiplication patterns (e.g. `q = q * k`), or from every integer
 operation under `--int-overflow=promote` (see [Integer overflow](#integer-overflow)).
 Linked as static library -- only included when used.
 
-**Fiber**: Cooperative concurrency via `ucontext_t`. `Fiber.new`,
-`Fiber#resume`, `Fiber.yield` with value passing. Captures free
-variables via heap-promoted cells. Per-fiber storage via `Fiber[:k]`
-/ `Fiber[:k] = v` (and the `Fiber.current[:k]` aliases) — symbol-keyed
-poly-valued, lazily allocated, shallow-snapshot inherited from the
-parent at `Fiber.new` time.
+**Fiber**: Cooperative concurrency via a small portable assembly
+context switch (x86-64 / arm64; no `ucontext` dependency). `Fiber.new`,
+`Fiber#resume`, `Fiber.yield` with value passing, `Fiber#raise`/`#kill`,
+external `Enumerator`s and `Enumerator::Lazy` ride the same machinery.
+Captures free variables via heap-promoted cells. Per-fiber storage via
+`Fiber[:k]` / `Fiber[:k] = v` (and the `Fiber.current[:k]` aliases) —
+symbol-keyed poly-valued, lazily allocated, shallow-snapshot inherited
+from the parent at `Fiber.new` time.
+
+**Threads**: `Thread` runs with **true parallelism and no GVL** — an
+M:N scheduler multiplexes green threads onto OS workers (one per core,
+cap with `SPINEL_WORKERS`), with work stealing and a ~10 ms preemption
+quantum, over a stop-the-world GC. `Thread.new/#join/#value/#alive?`,
+`Thread.current/main/list/pass`, thread-locals, and the synchronization
+primitives `Mutex` (`#synchronize/#lock/#unlock/#try_lock`), `Queue` /
+`SizedQueue` (blocking `#pop`/`#push`), and `ConditionVariable`
+(`#wait/#signal/#broadcast`) are supported. Unsynchronized shared
+mutation is a data race, as in JRuby/TruffleRuby — see
+[docs/thread.md](docs/thread.md) for the model and the full API list.
+The threaded runtime is a separate archive linked only when a program
+actually uses `Thread`; single-threaded programs keep the byte-identical
+fast path.
 
 **Memory**: Mark-and-sweep GC with size-segregated free lists, non-recursive
 marking, and sticky mark bits. Small classes (≤8 scalar fields, no
@@ -359,8 +372,8 @@ src/main.c            CLI driver: pipeline + cc invocation
 lib/sp_runtime.h      Runtime library header (GC, arrays, hashes, strings)
 lib/sp_*.c            Out-of-line runtime (bigint, GC, fiber, I/O, time, ...)
 lib/regexp/           Built-in regexp engine; all linked into libspinel_rt.a
-test/                 886 feature tests
-benchmark/            57 benchmarks
+test/                 1,744 feature tests
+benchmark/            58 benchmarks
 docs/                 User docs (require, FFI, RBS, limitations); internals/ for compiler structure
 Makefile              Build automation
 ```
@@ -489,18 +502,20 @@ The runtime is POSIX-flavoured and targets POSIX platforms:
 Every PR runs `ubuntu-latest / gcc`, `ubuntu-latest / clang`, and
 `macos-latest / clang` jobs end-to-end (parser build, codegen build,
 full test + benchmark suites). Native Windows (MinGW / MSVC) is not
-supported: the runtime relies on POSIX assumptions (`<ucontext.h>` for
-`Fiber`, `<sys/mman.h>` for the regexp engine's executable buffers,
-GCC's `__attribute__((cleanup))` for the GC root stack). Windows users
+supported: the runtime relies on POSIX assumptions (`pthread` for the
+threaded runtime, `<sys/mman.h>` for the regexp engine's executable
+buffers, GCC's `__attribute__((cleanup))` for the GC root stack, and
+GCC/Clang inline assembly for the Fiber context switch). Windows users
 run Spinel under WSL, where it builds and runs as a native Linux
 toolchain.
 
 ## Limitations
 
-- **No eval**: `eval`, `instance_eval`, `class_eval`
-- **No dynamic metaprogramming**: `send`, `method_missing`, dynamic
-  `define_method`
-- **No threads**: `Thread`, `Mutex` (Fiber is supported)
+- **No eval**: `eval`, `instance_eval("str")`, `class_eval("str")`
+  (the block forms *are* compiled)
+- **No dynamic metaprogramming**: `method_missing`, `define_method` /
+  `send` with a runtime-computed name (a literal `send(:name)` and
+  literal `define_method` do work)
 - **No encoding**: assumes UTF-8/ASCII
 - **No general lambda calculus**: deeply nested `-> x { }` with `[]` calls
 
