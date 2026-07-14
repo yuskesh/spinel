@@ -4819,7 +4819,28 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
          argument for its side effects. */
       else if (sp_streq(name, "equal?") && argc == 1) {
         TyKind eqa = comp_ntype(c, argv[0]);
-        if (eqa == TY_STRING) {
+        /* a mutable StringBuffer local as the argument: compare the buffer's
+           OWN cstr pointer -- the plain read emits a defensive snapshot copy
+           (sp_str_concat(cstr, "")), which would break `(s << "x").equal?(s)`
+           (#2307). Hoist the receiver first so its in-place append lands
+           before the argument's cstr is read. */
+        int eq_sblv = 0;
+        {
+          const char *aty0 = nt_type(nt, argv[0]);
+          if (aty0 && sp_streq(aty0, "LocalVariableReadNode")) {
+            const char *an0 = nt_str(nt, argv[0], "name");
+            LocalVar *alv0 = an0 ? scope_local(comp_scope_of(c, argv[0]), an0) : NULL;
+            if (alv0 && alv0->type == TY_STRBUF) {
+              int teq = ++g_tmp;
+              buf_printf(b, "({ const char *_t%d = %s; "
+                            "(const void *)_t%d == (const void *)sp_String_cstr(lv_%s); })",
+                         teq, r, teq, rename_local(an0));
+              eq_sblv = 1;
+            }
+          }
+        }
+        if (eq_sblv) { /* emitted above */ }
+        else if (eqa == TY_STRING) {
           /* string identity IS pointer identity (s.freeze.equal?(s) must be
              true: freeze marks in place and returns the same pointer) */
           buf_printf(b, "((const void *)(%s) == (const void *)(", r);
