@@ -4756,7 +4756,7 @@ char *codegen_program(const NodeTable *nt) {
       "  case SP_TAG_SYM: return ((sp_Class){-103});\n"
       "  case SP_TAG_OBJ: if(v.cls_id>=0)return ((sp_Class){v.cls_id});\n"
       "    if(v.cls_id>=-12)return ((sp_Class){-104});\n"  /* arrays */
-      "    if(v.cls_id>=-20)return ((sp_Class){-105});\n"  /* hashes */
+      "    if(v.cls_id>=-20||v.cls_id==-34)return ((sp_Class){-105});\n"  /* hashes */
       "    return ((sp_Class){-116});\n"
       "  default: return ((sp_Class){-116});\n"
       "  }\n}\n"

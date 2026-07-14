@@ -1390,7 +1390,7 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   else if (sp_streq(cn, "Array"))
     buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -1 && %s.cls_id >= -12)", tmp, tmp, tmp);
   else if (sp_streq(cn, "Hash"))
-    buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id <= -13 && %s.cls_id >= -20)", tmp, tmp, tmp);
+    buf_printf(b, "(%s.tag == SP_TAG_OBJ && ((%s.cls_id <= -13 && %s.cls_id >= -20) || %s.cls_id == -34))", tmp, tmp, tmp, tmp);
   else {
     int cid = comp_class_index(c, cn);
     if (cid >= 0) {
@@ -7593,6 +7593,7 @@ const char *hash_box_cls(TyKind t) {
     case TY_STR_INT_HASH:   return "SP_BUILTIN_STR_INT_HASH";
     case TY_STR_STR_HASH:   return "SP_BUILTIN_STR_STR_HASH";
     case TY_INT_STR_HASH:   return "SP_BUILTIN_INT_STR_HASH";
+    case TY_INT_INT_HASH:   return "SP_BUILTIN_INT_INT_HASH";
     case TY_STR_POLY_HASH:  return "SP_BUILTIN_STR_POLY_HASH";
     case TY_SYM_POLY_HASH:  return "SP_BUILTIN_SYM_POLY_HASH";
     case TY_POLY_POLY_HASH: return "SP_BUILTIN_POLY_POLY_HASH";

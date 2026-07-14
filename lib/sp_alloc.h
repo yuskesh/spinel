@@ -287,6 +287,10 @@ static inline const char*sp_float_to_s(mrb_float f){
 #define SP_BUILTIN_QUEUE         (-30)
 #define SP_BUILTIN_MUTEX         (-31)
 #define SP_BUILTIN_CONDVAR       (-32)
+/* Integer-keyed Integer-valued hash. It sits BELOW the contiguous hash block
+   [-20,-13] (which was full), so the "is this a hash" range checks that test
+   that block must also test for this id explicitly. */
+#define SP_BUILTIN_INT_INT_HASH  (-34)
 
 static inline sp_RbVal sp_box_int(mrb_int v)    { sp_RbVal r; r.tag = SP_TAG_INT;  r.cls_id = 0; r.v.i = v; return r; }
 /* A NULL char* IS Ruby nil throughout the string paths (the nullable-string
