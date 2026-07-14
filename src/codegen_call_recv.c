@@ -3901,6 +3901,30 @@ else {
         buf_printf(b, "sp_%sHash_inspect(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
         return 1;
       }
+      /* PolyPoly receiver: any hash-variant argument folds in through the
+         boxed [k, v] pair walk (a heterogeneous hash routinely absorbs a
+         typed one). Blockless. */
+      if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 1 &&
+          nt_ref(nt, id, "block") < 0 && rt == TY_POLY_POLY_HASH) {
+        for (int ai = 0; ai < argc; ai++)
+          if (!ty_is_hash(comp_ntype(c, argv[ai]))) return 0;
+        int tr = ++g_tmp;
+        buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        for (int ai = 0; ai < argc; ai++) {
+          int to = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
+          buf_printf(b, " sp_RbVal _t%d = ", to); emit_boxed(c, argv[ai], b);
+          buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);"
+                        " mrb_int _t%d = sp_poly_arr_len_ex(_t%d);"
+                        " for (mrb_int _i9 = 0; _i9 < _t%d; _i9++) {"
+                        " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _i9);"
+                        " sp_PolyPolyHash_set(_t%d,"
+                        " sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 0),"
+                        " sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 1)); }",
+                     to, ti, to, ti, tp, to, tr, tp, tp);
+        }
+        buf_printf(b, " _t%d; })", tr);
+        return 1;
+      }
       /* merge!/update with several hash arguments: fold each one in, in
          order (#2431). Blockless, same-variant arguments only. */
       if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 2 &&

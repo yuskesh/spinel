@@ -176,13 +176,13 @@ mrb_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {
     int n = re_exec(pat, str, slen, pos, caps, 2, 0);
     if (n <= 0) break;
     last = caps[0];
-    /* Advance past the match; for zero-width matches step by 1
-       to avoid an infinite loop. */
-    int64_t next = caps[1];
-    if (next <= pos) next = pos + 1;
-    pos = next;
+    /* rindex keys on the rightmost match START (MRI reverse search): step
+       one past this start so a later-starting shorter match wins ("aaa"
+       rindex /a+/ is 2, not 0). Advancing past the whole match skipped it. */
+    pos = caps[0] + 1;
   }
-  return last;
+  /* the result is a character index; caps[] holds byte offsets */
+  return last < 0 ? -1 : sp_str_count_chars(str, (size_t)last);
 }
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   SP_GC_ROOT_STR(str);
