@@ -2524,8 +2524,19 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
       else { buf_printf(b, "_t%d > 0 ? sp_PolyArray_get(_t%d, 0) : sp_box_nil()", tn, ta); start = 1; }
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);"
                     " for (mrb_int _t%d = %d; _t%d < _t%d; _t%d++)"
-                    " _t%d = %s(_t%d, sp_PolyArray_get(_t%d, _t%d)); _t%d; })",
-                 tacc, ti, start, ti, tn, ti, tacc, pfn, tacc, ta, ti, tacc);
+                    " _t%d = %s(_t%d, sp_PolyArray_get(_t%d, _t%d)); ",
+                 tacc, ti, start, ti, tn, ti, tacc, pfn, tacc, ta, ti);
+      /* the fold accumulates boxed; unbox to the call's inferred scalar type
+         so `c = [].reduce(5, :+)` lands in an mrb_int slot (#2365) */
+      {
+        TyKind want = comp_ntype(c, id);
+        char accs[24]; snprintf(accs, sizeof accs, "_t%d", tacc);
+        if (want != TY_POLY && want != TY_UNKNOWN && is_scalar_ret(want))
+          emit_unbox_text(c, want, accs, b);
+        else
+          buf_puts(b, accs);
+      }
+      buf_puts(b, "; })");
       return 1;
     }
   }

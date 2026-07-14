@@ -3037,7 +3037,10 @@ else {
                                         (ty_is_numeric(_fv) && ty_is_numeric(_fe)); })) ||
                                     (block >= 0 && argc <= 2))) ||
         sp_streq(name, "replace") ||
-        sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) return rt;
+        sp_streq(name, "values_at") ||
+        (sp_streq(name, "fetch_values") && block < 0)) return rt;
+    /* the block form mixes fallback values in -> poly array (#2368) */
+    if (sp_streq(name, "fetch_values") && block >= 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "fill") && block < 0 && argc >= 1 && argc <= 3)
       return TY_POLY_ARRAY;   /* the incompatible-value fill fell through above */
     if (sp_streq(name, "zip") && block < 0) return TY_POLY_ARRAY;

@@ -4742,7 +4742,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
     const char *pnm = nt_str(nt, id, "name");
     int precv = nt_ref(nt, id, "receiver");
     if (pnm && precv >= 0 &&
-        (sp_streq(pnm, "push") || sp_streq(pnm, "append") || sp_streq(pnm, "<<")) &&
+        (sp_streq(pnm, "push") || sp_streq(pnm, "append") || sp_streq(pnm, "<<") ||
+         /* on an EMPTY literal, unshift/prepend build the same array (#2364) */
+         sp_streq(pnm, "unshift") || sp_streq(pnm, "prepend")) &&
         nt_type(nt, precv) && sp_streq(nt_type(nt, precv), "ArrayNode") &&
         ({ int _n = 0; nt_arr(nt, precv, "elements", &_n); _n == 0; })) {
       int pargc = 0; const int *pargv = call_args(nt, id, &pargc);

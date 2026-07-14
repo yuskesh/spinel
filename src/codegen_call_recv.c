@@ -568,6 +568,43 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     /* fetch_values(i, ...): like values_at but raises IndexError on an
        out-of-range index (#2321) */
+    /* fetch_values(i, ...) { |i| fallback }: an out-of-range index takes the
+       block's value instead of raising; the mixed result is a poly array. */
+    if (sp_streq(name, "fetch_values") && argc >= 1 && nt_ref(nt, id, "block") >= 0 &&
+        nt_type(nt, nt_ref(nt, id, "block")) &&
+        sp_streq(nt_type(nt, nt_ref(nt, id, "block")), "BlockNode")) {
+      const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+      if (an) {
+        int fblk = nt_ref(nt, id, "block");
+        const char *fp0 = block_param_name(c, fblk, 0);
+        const char *fp0r = fp0 ? rename_local(fp0) : NULL;
+        int fbody = nt_ref(nt, fblk, "body");
+        int fbn = 0; const int *fbb = fbody >= 0 ? nt_arr(nt, fbody, "body", &fbn) : NULL;
+        int tr = ++g_tmp, to = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", an, tr); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", to, to);
+        for (int a = 0; a < argc; a++) {
+          int ti = ++g_tmp;
+          buf_printf(b, "{ mrb_int _t%d = ", ti); emit_int_expr(c, argv[a], b);
+          buf_printf(b, "; mrb_int _len = sp_%sArray_length(_t%d);"
+                        " mrb_int _ix = _t%d < 0 ? _t%d + _len : _t%d;"
+                        " if (_ix < 0 || _ix >= _len) { ",
+                     an, tr, ti, ti, ti);
+          if (fp0r) buf_printf(b, "lv_%s = _t%d; ", fp0r, ti);
+          for (int j = 0; j + 1 < fbn; j++) emit_stmt(c, fbb[j], b, 0);
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
+          if (fbn > 0) emit_boxed(c, fbb[fbn - 1], b); else buf_puts(b, "sp_box_nil()");
+          buf_puts(b, "); } else { ");
+          { char getx[96]; snprintf(getx, sizeof getx, "sp_%sArray_get(_t%d, _ix)", an, tr);
+            buf_printf(b, "sp_PolyArray_push(_t%d, ", to);
+            if (rt == TY_POLY_ARRAY) buf_puts(b, getx);
+            else emit_boxed_text(c, ty_array_elem(rt), getx, b);
+            buf_puts(b, "); } } "); }
+        }
+        buf_printf(b, "_t%d; })", to);
+        return 1;
+      }
+    }
     if (sp_streq(name, "fetch_values") && argc >= 1) {
       const char *an = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
       if (an) {
@@ -2601,9 +2638,11 @@ else {
         buf_puts(b, "); })");
         return 1;
       }
-      if ((sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "one?") || sp_streq(name, "count")) &&
+      if ((sp_streq(name, "all?") || sp_streq(name, "any?") || sp_streq(name, "none?") ||
+           sp_streq(name, "one?") || sp_streq(name, "count")) &&
           argc == 1 && nt_ref(nt, id, "block") < 0) {
-        /* poly_array.one?(v) / any?(v) / none?(v) / count(v) */
+        /* poly_array.all?(v)/one?(v)/any?(v)/none?(v)/count(v) -- also serves a
+           nil pattern (`[nil, nil].all?(nil)`, sp_poly_eq handles NIL) (#2366) */
         int ta = ++g_tmp, tv = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
         Buf ra = expr_buf(c, recv);
         buf_printf(b, "({ sp_PolyArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
@@ -2611,7 +2650,8 @@ else {
         buf_printf(b, " mrb_int _t%d = 0;", tc);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)", ti, ti, ta, ti);
         buf_printf(b, " if (sp_poly_eq(sp_PolyArray_get(_t%d, _t%d), _t%d)) _t%d++;", ta, ti, tv, tc);
-        if (sp_streq(name, "any?"))        buf_printf(b, " _t%d > 0; })", tc);
+        if (sp_streq(name, "all?"))        buf_printf(b, " _t%d == sp_PolyArray_length(_t%d); })", tc, ta);
+        else if (sp_streq(name, "any?"))   buf_printf(b, " _t%d > 0; })", tc);
         else if (sp_streq(name, "none?"))  buf_printf(b, " _t%d == 0; })", tc);
         else if (sp_streq(name, "one?"))   buf_printf(b, " _t%d == 1; })", tc);
         else                              buf_printf(b, " _t%d; })", tc);

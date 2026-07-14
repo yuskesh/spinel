@@ -3474,7 +3474,12 @@ int desugar_enum_method_recv(Compiler *c) {
       /* Array#rfind { block } == reverse.find { block }: interpose a reverse
          call so the existing find machinery serves it (#2320) */
       int rrc = nt_ref(nt, id, "receiver");
-      if (rrc >= 0 && ty_is_array(infer_type(c, rrc))) {
+      /* an empty `[]` literal receiver infers TY_UNKNOWN but is an array all
+         the same -- rfind on it must still desugar (to yield nil) (#2367) */
+      int rrc_empty_lit = rrc >= 0 && nt_type(nt, rrc) &&
+                          sp_streq(nt_type(nt, rrc), "ArrayNode") &&
+                          ({ int _n = 0; nt_arr(nt, rrc, "elements", &_n); _n == 0; });
+      if (rrc >= 0 && (ty_is_array(infer_type(c, rrc)) || rrc_empty_lit)) {
         int rev = nt_new_node(nt, "CallNode");
         if (rev >= 0) {
           nt_node_set_str(nt, rev, "name", "reverse");
