@@ -4695,6 +4695,42 @@ static void emit_math_arg(Compiler *c, int node, Buf *out) {
   buf_puts(out, "sp_num_to_f("); emit_boxed(c, node, out); buf_puts(out, ")");
 }
 
+/* Does class `cid` (or any ancestor) have a literal `include <mod_name>` in a
+   class/module body? Compile-time mirror of the ancestors-table include scan,
+   for folding is_a?(Comparable) / is_a?(Enumerable) on a statically-typed
+   user instance (#2363). */
+static int class_includes_module_named(Compiler *c, int cid, const char *mod_name) {
+  const NodeTable *nt = c->nt;
+  for (int cur = cid; cur >= 0; cur = c->classes[cur].parent) {
+    for (int id = 0; id < nt->count; id++) {
+      const char *ty = nt_type(nt, id);
+      if (!ty || (!sp_streq(ty, "ClassNode") && !sp_streq(ty, "ModuleNode"))) continue;
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (!cn || comp_class_index(c, cn) != cur) continue;
+      int body = nt_ref(nt, id, "body");
+      int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int k = 0; k < bn; k++) {
+        const char *sty = nt_type(nt, stmts[k]);
+        if (!sty || !sp_streq(sty, "CallNode")) continue;
+        const char *nm = nt_str(nt, stmts[k], "name");
+        if (!nm || !sp_streq(nm, "include") || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
+        int an = 0; const int *aa;
+        int anode = nt_ref(nt, stmts[k], "arguments");
+        aa = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+        for (int j = 0; j < an; j++) {
+          const char *anm = nt_type(nt, aa[j]) && (sp_streq(nt_type(nt, aa[j]), "ConstantReadNode") ||
+                                                   sp_streq(nt_type(nt, aa[j]), "ConstantPathNode"))
+                            ? nt_str(nt, aa[j], "name") : NULL;
+          if (anm && sp_streq(anm, mod_name)) return 1;
+        }
+      }
+    }
+    if (c->classes[cur].parent == cur) break;
+  }
+  return 0;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_dynamic_send(c, id, b)) return;   /* recv.send(runtime_name, args) static dispatch */
@@ -5914,11 +5950,15 @@ void emit_call(Compiler *c, int id, Buf *b) {
     emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "frozen?")) {
-    buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); return;
+    buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen)"); return;
+  }
+  if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 && sp_streq(name, "freeze")) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_Proc *_t%d = ", t); emit_expr(c, recv, b);
+    buf_printf(b, "; _t%d->frozen = TRUE; _t%d; })", t, t); return;
   }
   if (recv >= 0 && comp_ntype(c, recv) == TY_PROC && argc == 0 &&
-      (sp_streq(name, "freeze") || sp_streq(name, "dup") || sp_streq(name, "clone") ||
-       sp_streq(name, "itself"))) {
+      (sp_streq(name, "dup") || sp_streq(name, "clone") || sp_streq(name, "itself"))) {
     emit_expr(c, recv, b); return;
   }
 
@@ -6141,8 +6181,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == (");
       emit_expr(c, argv[0], b); buf_puts(b, "))"); return;
     }
-    if (argc == 0 && sp_streq(name, "frozen?")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0)"); return; }
-    if (argc == 0 && (sp_streq(name, "freeze") || sp_streq(name, "itself"))) { emit_expr(c, recv, b); return; }
+    if (argc == 0 && sp_streq(name, "frozen?")) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ")->frozen)"); return; }
+    if (argc == 0 && sp_streq(name, "freeze")) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_Enumerator *_t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; _t%d->frozen = TRUE; _t%d; })", t, t); return;
+    }
+    if (argc == 0 && sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
   }
 
   /* Random class methods: Random.rand(n) / Random.rand / Random.bytes(n)
@@ -10792,6 +10837,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (acn && (sp_streq(acn, "Object") || sp_streq(acn, "BasicObject") ||
                 sp_streq(acn, "Kernel"))) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)");
+      return;
+    }
+    /* a builtin mixin: fold from the class's own `include` declarations (#2363) */
+    if (acn && (sp_streq(acn, "Comparable") || sp_streq(acn, "Enumerable") ||
+                sp_streq(acn, "Math")) && comp_class_index(c, acn) < 0) {
+      int yes = class_includes_module_named(c, ty_object_class(rt), acn);
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
       return;
     }
   }
