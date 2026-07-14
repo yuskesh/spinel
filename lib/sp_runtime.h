@@ -3763,6 +3763,18 @@ static mrb_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; mrb_int
 /* Array#sum with a Float initial value: numeric fold over Integer and Float
    elements, accumulating as double (the result is a Float). */
 static mrb_float sp_PolyArray_sum_float(sp_PolyArray *a) { if (!a) return 0.0; mrb_float s = 0.0; for (mrb_int i = 0; i < a->len; i++) { if (a->data[i].tag == SP_TAG_INT) s += (mrb_float)a->data[i].v.i; else if (a->data[i].tag == SP_TAG_FLT) s += a->data[i].v.f; } return s; }
+/* Bignum#downto(hi)/#upto(hi) materialized: a poly array of Bignums from `lo`
+   to `hi` inclusive (descending for downto, ascending for upto) (#2305). */
+static sp_PolyArray *sp_bigint_range_array(sp_Bigint *lo, sp_Bigint *hi, int up) {
+  sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);
+  sp_Bigint *one = sp_bigint_new_int(1);
+  sp_Bigint *cur = lo;
+  while (up ? sp_bigint_cmp(cur, hi) <= 0 : sp_bigint_cmp(cur, hi) >= 0) {
+    sp_PolyArray_push(a, sp_box_bigint(cur));
+    cur = up ? sp_bigint_add(cur, one) : sp_bigint_sub(cur, one);
+  }
+  return a;
+}
 /* Array#sum with a String initial value: concatenation fold ("abc" from
    ["a","b","c"].sum("")), CRuby's + on each element. */
 static const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {

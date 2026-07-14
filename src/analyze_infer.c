@@ -4103,6 +4103,9 @@ else {
   if (recv >= 0 && rt == TY_BIGINT) {
     if ((sp_streq(name, "even?") || sp_streq(name, "odd?")) && argc == 0) return TY_BOOL;
     if (sp_streq(name, "abs") && argc == 0) return TY_BIGINT;
+    /* Bignum#downto/#upto with no block: materialized poly array of Bignums (#2305) */
+    if ((sp_streq(name, "downto") || sp_streq(name, "upto")) && argc == 1 &&
+        nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;
     if (sp_streq(name, "to_s") && argc == 1) return TY_STRING;
     if (sp_streq(name, "digits") && argc <= 1) return TY_INT_ARRAY;
     /* #2318 / #2319: query + reflection on a Bignum */

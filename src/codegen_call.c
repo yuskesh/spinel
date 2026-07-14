@@ -11451,6 +11451,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
       buf_printf(b, "(%s)", r); free(rs.p); return;
     }
+    /* Bignum#downto(hi)/#upto(hi) with no block: materialize the Bignum sequence
+       as a poly array (a Bignum range has no lazy Enumerator type) (#2305). */
+    if ((sp_streq(name, "downto") || sp_streq(name, "upto")) && argc == 1 &&
+        nt_ref(nt, id, "block") < 0) {
+      int up = sp_streq(name, "upto");
+      buf_printf(b, "sp_bigint_range_array(%s, ", r);
+      TyKind at = comp_ntype(c, argv[0]);
+      if (at == TY_BIGINT) emit_expr(c, argv[0], b);
+      else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+      buf_printf(b, ", %d)", up);
+      free(rs.p); return;
+    }
     /* Integer query / reflection on a Bignum receiver (#2318) */
     if (sp_streq(name, "zero?") && argc == 0) {
       buf_printf(b, "(sp_bigint_sign(%s) == 0)", r); free(rs.p); return;
