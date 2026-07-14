@@ -4878,6 +4878,26 @@ int infer_block_params(Compiler *c) {
           int cid = cname ? comp_class_index(c, cname) : -1;
           if (cid >= 0) mi = comp_cmethod_in_chain(c, cid, name, NULL);
         }
+        /* A poly / not-yet-resolved receiver (`arr[i].m { }`, a hash value
+           read whose element class hasn't settled): the concrete class is
+           unknown here, but codegen still inlines the method by runtime type,
+           so the block's params must be declared. If exactly one user class
+           defines a method by this name that yields or forwards a block, adopt
+           it -- its param registration below then runs (types stay poly, which
+           the boxed inline uses). (#2448) */
+        if (mi < 0 && (rt0 == TY_POLY || rt0 == TY_UNKNOWN)) {
+          int found = -1, ndef = 0;
+          for (int k = 0; k < c->nclasses; k++) {
+            int km = comp_method_in_chain(c, k, name, NULL);
+            if (km < 0) continue;
+            Scope *ks = &c->scopes[km];
+            int forwards = ks->yields || (ks->blk_param && ks->blk_param[0]) ||
+                           forwarding_yield_target(c, km, 0) >= 0;
+            if (!forwards) continue;
+            ndef++; found = km;
+          }
+          if (ndef == 1) mi = found;
+        }
       }
       /* A block passed to a pure `...` forwarder is really consumed by the
          method the forward eventually reaches; type its params from there. */

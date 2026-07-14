@@ -114,6 +114,11 @@ const char *g_self = "self";
 /* Member-access operator for `self`: "->" when self is a pointer (the usual
    heap object), "." when emitting a value-type method body (self is a value). */
 const char *g_self_deref = "->";
+/* When set, emit_inline_call_x binds self from this pre-hoisted expression
+   instead of re-emitting the receiver node -- used by the poly-receiver block
+   dispatch to bind self to a per-arm cast of the boxed receiver (#2448). */
+const char *g_inline_recv_expr = NULL;
+int g_inline_recv_class = -1;
 int g_class_body_id = -1;
 int g_emitting_class_id = -1;
 const char *g_dm_subst_name = NULL;

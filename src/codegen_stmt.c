@@ -4984,6 +4984,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       }
     }
     if (emit_inline_call(c, id, b, indent)) return;
+    if (emit_poly_recv_block_dispatch(c, id, b, indent)) return;
     if (emit_iteration_stmt(c, id, b, indent)) return;
     /* attr writer: obj.x = v */
     {

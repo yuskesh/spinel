@@ -82,6 +82,8 @@ extern int g_ie_res_poly;
    instance method at a call site (where there is no real `self` param). */
 extern const char *g_self;
 extern const char *g_self_deref;
+extern const char *g_inline_recv_expr;
+extern int g_inline_recv_class;
 /* When emitting class/module body statements, the class index (-1 outside). */
 extern int g_class_body_id;
 /* Class id of the scope currently being emitted (-1 if none). Used to resolve
@@ -561,6 +563,7 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
 int scope_has_return(Compiler *c, int scope_idx);
 int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr);
 int emit_inline_call(Compiler *c, int id, Buf *b, int indent);
+int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent);
 int is_block_call(Compiler *c, int id);
 int is_blockless_block_param_call(Compiler *c, int id);
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr);

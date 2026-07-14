@@ -73,6 +73,12 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
       recv_class = ty_object_class(rt);
       mi = comp_method_in_chain(c, recv_class, name, NULL);
     }
+    else if (g_inline_recv_expr && g_inline_recv_class >= 0) {
+      /* poly-receiver dispatch arm (#2448): self is pre-bound to a cast of the
+         boxed receiver, and the concrete class is supplied out of band */
+      recv_class = g_inline_recv_class;
+      mi = comp_method_in_chain(c, recv_class, name, NULL);
+    }
     else return 0;
   }
   (void)implicit_self;
@@ -196,7 +202,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int st = ++g_tmp;
     emit_indent(b, indent + 1);
     buf_printf(b, "sp_%s %s_t%d = ", c->classes[recv_class].c_name, self_is_val ? "" : "*", st);
-    emit_expr(c, recv, b);
+    if (g_inline_recv_expr) buf_puts(b, g_inline_recv_expr);  /* pre-hoisted cast (#2448) */
+    else emit_expr(c, recv, b);
     buf_puts(b, ";\n");
     snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
     recv_self_deref = self_is_val ? "." : "->";
@@ -886,6 +893,112 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
 
 /* Inline a yielding method call in expression position: ({ ...; value; }).
    The method must return a usable value (its body's last statement). */
+/* poly-receiver block dispatch (#2448): `x.m { block }` where x is a poly
+   value (a heterogeneous-array element, an un-narrowed hash value) and m is a
+   block-forwarding/yielding user method. The per-arm inline needs a concrete
+   self, so hoist the boxed receiver once, then emit a cls_id switch inlining m
+   per instantiated user class that defines it -- self bound to the cast
+   pointer via g_inline_recv_expr. Returns 1 if handled. */
+int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int block = nt_ref(nt, id, "block");
+  if (!name || recv < 0 || block < 0) return 0;
+  if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
+  if (comp_ntype(c, recv) != TY_POLY) return 0;
+  /* Only receivers whose poly value comes out of a BUILTIN container -- an
+     index read (`arr[i]`) or an element accessor (first/last/fetch/...) -- or
+     a plain local/ivar holding such. A constant (its own const-inline path),
+     or a USER method-call receiver (an accessor returning a class/object, with
+     its own direct / Stage-2 dispatch), must not be preempted by this runtime
+     cls_id switch (#2448). */
+  {
+    const char *rvty = nt_type(nt, recv);
+    if (!rvty) return 0;
+    if (sp_streq(rvty, "LocalVariableReadNode") || sp_streq(rvty, "InstanceVariableReadNode")) {
+      /* ok: a plain variable holding a poly value */
+    }
+    else if (sp_streq(rvty, "CallNode")) {
+      const char *rmn = nt_str(nt, recv, "name");
+      static const char *const CONT[] = {"[]", "first", "last", "fetch", "sample",
+        "dig", "shift", "pop", "min", "max", "at", NULL};
+      int ok = 0;
+      for (int i = 0; rmn && CONT[i]; i++) if (sp_streq(rmn, CONT[i])) { ok = 1; break; }
+      /* the receiver of that accessor must itself be a container, not a class */
+      if (ok) {
+        int rr = nt_ref(nt, recv, "receiver");
+        TyKind rrt = rr >= 0 ? comp_ntype(c, rr) : TY_UNKNOWN;
+        if (!ty_is_array(rrt) && !ty_is_hash(rrt) && rrt != TY_POLY_ARRAY) ok = 0;
+      }
+      if (!ok) return 0;
+    }
+    else return 0;
+  }
+  /* single-param block only: a multi-param block forwarded to a builtin
+     hash `each` (a [k,v] pair) needs its params registered on the poly path,
+     which they are not yet -- gate to |x| so the un-handled multi-param case
+     falls through to the loud unsupported error, not a silent empty body. */
+  {
+    int np = 0; while (block_param_name(c, block, np)) np++;
+    if (np != 1 || block_rest_marker(c, block) || block_opt_name(c, block, 0) ||
+        block_post_name(c, block, 0)) return 0;
+  }
+  /* candidate user classes: instantiated, define m, and m yields or forwards a
+     block (a plain method wouldn't consume the block anyway) */
+  int cand[64], nc = 0;
+  for (int k = 0; k < c->nclasses && nc < 64; k++) {
+    if (!c->classes[k].instantiated || is_builtin_reopen(c->classes[k].name)) continue;
+    int km = comp_method_in_chain(c, k, name, NULL);
+    if (km < 0) continue;
+    Scope *ks = &c->scopes[km];
+    int consumes = ks->yields || (ks->blk_param && ks->blk_param[0]) ||
+                   pure_forwarding_target(c, km, 0) >= 0;
+    if (!consumes) return 0;  /* a non-block method in the mix: not our shape */
+    cand[nc++] = k;
+  }
+  if (nc == 0) return 0;
+  /* names that a BUILTIN container also answers (each/map/...) are unsafe: a
+     poly value here can be an Array/Hash at run time, not one of our user
+     classes, and the cls_id switch would miss it silently. Only dispatch names
+     that are exclusively user methods. */
+  if (sp_streq(name, "each") || sp_streq(name, "each_pair") ||
+      sp_streq(name, "each_with_index") || sp_streq(name, "map") ||
+      sp_streq(name, "select") || sp_streq(name, "reject") ||
+      sp_streq(name, "each_value") || sp_streq(name, "each_key") ||
+      sp_streq(name, "reduce") || sp_streq(name, "inject") ||
+      sp_streq(name, "find") || sp_streq(name, "detect"))
+    return 0;
+  int trecv = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_RbVal _t%d = ", trecv); emit_boxed(c, recv, b); buf_puts(b, ";\n");
+  emit_indent(b, indent);
+  buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", trecv);
+  emit_indent(b, indent);
+  buf_printf(b, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {\n", trecv, trecv);
+  const char *sv_expr = g_inline_recv_expr;
+  int sv_class = g_inline_recv_class;
+  TyKind sv_cache = c->ntype[recv];
+  for (int i = 0; i < nc; i++) {
+    int k = cand[i];
+    emit_indent(b, indent);
+    buf_printf(b, "case %d: {\n", k);
+    char castbuf[96];
+    snprintf(castbuf, sizeof castbuf, "(sp_%s *)_t%d.v.p", c->classes[k].c_name, trecv);
+    g_inline_recv_expr = castbuf;
+    g_inline_recv_class = k;
+    c->ntype[recv] = ty_object(k);  /* so the inline entry classifies the receiver */
+    emit_inline_call(c, id, b, indent + 1);
+    g_inline_recv_expr = sv_expr;
+    g_inline_recv_class = sv_class;
+    c->ntype[recv] = sv_cache;
+    emit_indent(b, indent + 1); buf_puts(b, "break;\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+  }
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  return 1;
+}
+
 int emit_inline_expr(Compiler *c, int id, Buf *b) {
   /* only when a value is actually produced (scalar return) */
   TyKind rt = comp_ntype(c, id);
