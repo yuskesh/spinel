@@ -839,13 +839,15 @@ gate:
 	+@$(MAKE) --no-print-directory gate-legs
 	@echo "gate: ALL GREEN"
 
-gate-legs: gate-test gate-bench gate-optcarrot
+gate-legs: gate-test gate-bench gate-optcarrot gate-rubyspec
 gate-test:
 	+@$(MAKE) --no-print-directory test OPT=-O1
 gate-bench:
 	+@$(MAKE) --no-print-directory bench
 gate-optcarrot:
 	+@$(MAKE) --no-print-directory optcarrot
+gate-rubyspec:
+	+@$(MAKE) --no-print-directory rubyspec-gate
 
 # ---- Install ----
 
