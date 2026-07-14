@@ -297,6 +297,21 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       const char *bty = nt_type(nt, cur);
       LocalVar *blv = (bty && sp_streq(bty, "LocalVariableReadNode"))
                       ? scope_local(comp_scope_of(c, cur), nt_str(nt, cur, "name")) : NULL;
+      /* STRBUF base: the buffer appends in place (its cstr read is not an
+         lvalue, so the concat-and-write-back form below can't serve it) */
+      if (nchain > 0 && blv && blv->type == TY_STRBUF &&
+          bty && sp_streq(bty, "LocalVariableReadNode")) {
+        int tb9 = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = lv_%s;", tb9, rename_local(nt_str(nt, cur, "name")));
+        for (int j = nchain; j >= 0; j--) {  /* innermost link first */
+          int arg = j > 0 ? chain[j - 1] : argv[0];
+          buf_printf(b, " sp_String_append(_t%d, ", tb9);
+          emit_str_expr(c, arg, b);
+          buf_puts(b, ");");
+        }
+        buf_printf(b, " sp_String_cstr(_t%d); })", tb9);
+        return 1;
+      }
       if (nchain > 0 && bty && !(blv && blv->type == TY_STRBUF) &&
           (sp_streq(bty, "LocalVariableReadNode") || sp_streq(bty, "InstanceVariableReadNode"))) {
         buf_puts(b, "({ ");
