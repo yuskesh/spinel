@@ -4055,6 +4055,25 @@ else {
         buf_puts(b, ")");
         return 1;
       }
+      /* Hash#all?/any?/none?/one? with a pattern argument (no block): test each
+         [key, value] pair with `pattern === pair`. An Array pattern (the common
+         destructured-pair form) compares by ==, served by sp_poly_eq. */
+      if ((sp_streq(name, "all?") || sp_streq(name, "any?") ||
+           sp_streq(name, "none?") || sp_streq(name, "one?")) &&
+          argc == 1 && nt_ref(nt, id, "block") < 0) {
+        int tp = ++g_tmp, tpat = ++g_tmp, tc = ++g_tmp, ti = ++g_tmp;
+        buf_printf(b, "({ sp_PolyArray *_t%d = ", tp);
+        emit_hash_pairs_expr(c, recv, rt, hn, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", tpat); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; mrb_int _t%d = 0;", tc);
+        buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++)", ti, ti, tp, ti);
+        buf_printf(b, " if (sp_poly_eq(_t%d->data[_t%d], _t%d)) _t%d++;", tp, ti, tpat, tc);
+        if (sp_streq(name, "all?"))       buf_printf(b, " _t%d == _t%d->len; })", tc, tp);
+        else if (sp_streq(name, "any?"))  buf_printf(b, " _t%d > 0; })", tc);
+        else if (sp_streq(name, "none?")) buf_printf(b, " _t%d == 0; })", tc);
+        else                              buf_printf(b, " _t%d == 1; })", tc);
+        return 1;
+      }
       /* Hash#shift: remove and return the first-inserted [key, value] pair, or
          nil when empty. */
       if (sp_streq(name, "shift") && argc == 0 && nt_ref(nt, id, "block") < 0) {

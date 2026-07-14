@@ -1,0 +1,8 @@
+# Hash#all?/any?/none?/one? with a pattern argument (KieranP #2338)
+p({ a: 1 }.all?([:a, 1]))
+p({ a: 1, b: 2 }.all?([:a, 1]))
+p({ a: 1, b: 2 }.any?([:b, 2]))
+p({ a: 1, b: 2 }.none?([:c, 3]))
+p({ a: 1, b: 2 }.one?([:a, 1]))
+p({ "a" => 1 }.all?(["a", 1]))
+p({ 1 => 10, 2 => 20 }.all?([1, 10]))

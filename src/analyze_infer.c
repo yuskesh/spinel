@@ -3525,8 +3525,9 @@ else {
          sp_streq(name, "max_by") || sp_streq(name, "group_by") ||
          sp_streq(name, "partition")))
       return TY_ENUMERATOR;
-    if (argc == 0 && nt_ref(nt, id, "block") < 0 &&
-        (sp_streq(name, "any?") || sp_streq(name, "none?") || sp_streq(name, "all?")))
+    if (argc <= 1 && nt_ref(nt, id, "block") < 0 &&
+        (sp_streq(name, "any?") || sp_streq(name, "none?") ||
+         sp_streq(name, "all?") || sp_streq(name, "one?")))
       return TY_BOOL;
     if (sp_streq(name, "deconstruct_keys") && argc == 1) return rt;
     if (sp_streq(name, "compact!") && argc == 0) return TY_POLY;  /* self or nil */
