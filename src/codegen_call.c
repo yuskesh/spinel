@@ -2155,6 +2155,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
           else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "_t%d.v.s", tv);
           else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
+          /* a by-value (value-type) class method takes self by value:
+             dereference the boxed pointer instead of passing it (#2441) */
+          else if (c->classes[defcls].is_value_type)
+            snprintf(_dself, sizeof _dself, "*(sp_%s *)_t%d.v.p", _dcn, tv);
           else snprintf(_dself, sizeof _dself, "(sp_%s *)_t%d.v.p", _dcn, tv);
           buf_printf(&cb, "sp_%s_%s(%s", _dcn, mc(c->scopes[mi].name), _dself);
           if (c->scopes[mi].nparams > 0) {
