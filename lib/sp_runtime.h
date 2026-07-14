@@ -1066,6 +1066,10 @@ static inline mrb_bool sp_str_is_frozen_val(const char *s) {
   if (!s) return TRUE;
   return ((const unsigned char *)s)[-1] == 0xf1;
 }
+/* String#-@: an already-frozen receiver (or an immutable rodata literal)
+   returns ITSELF -- CRuby's uminus is an interning hint, and `(-a).equal?(a)`
+   is true for a frozen `a`. Only a mutable string takes the freeze-copy. */
+static inline const char *sp_str_uminus_val(const char *s);
 static inline const char *sp_str_freeze_val(const char *s) {
   if (!s) return s;
   unsigned char m = ((const unsigned char *)s)[-1];
@@ -1083,6 +1087,14 @@ static inline const char *sp_str_freeze_val(const char *s) {
     return r;
   }
   return s;
+}
+static inline const char *sp_str_uminus_val(const char *s) {
+  if (!s) return s;
+  /* only an explicitly-frozen heap string (0xf1) is identity; a rodata
+     literal (0xff) still takes the freeze-copy so `-"x"` reports frozen?
+     (0xff literals are deliberately NOT reported frozen -- see above). */
+  if (((const unsigned char *)s)[-1] == 0xf1) return s;
+  return sp_str_freeze_val(sp_str_dup_external(s));
 }
 /* String#clone: a copy that preserves the frozen state, unlike #dup which always
    returns an unfrozen copy (CRuby semantics). Carries the 0xf1 heap-frozen marker

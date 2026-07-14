@@ -10204,6 +10204,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_expr(c, recv, b); buf_puts(b, "; })");
       return;
     }
+    /* a direct literal receiver has no binding to empty; the value is "" (#2370) */
+    if (rty && sp_streq(rty, "StringNode")) {
+      buf_puts(b, "(&(\"\\xff\")[1])");
+      return;
+    }
   }
   if ((sp_streq(name, "-@") || sp_streq(name, "+@")) && recv >= 0 && argc == 0 && !ty_is_object(rt)) {
     if (rt == TY_POLY) {
@@ -10214,7 +10219,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       /* +str returns a mutable copy (so subsequent <</concat/upcase! mutate a
          fresh string); -str returns a FROZEN string (#2331). */
       if (name[0] == '+') { buf_puts(b, "sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, ")"); }
-      else { buf_puts(b, "sp_str_freeze_val(sp_str_dup_external("); emit_expr(c, recv, b); buf_puts(b, "))"); }
+      else { buf_puts(b, "sp_str_uminus_val("); emit_expr(c, recv, b); buf_puts(b, ")"); }  /* frozen recv: identity (#2369) */
     }
     else if (rt == TY_BIGINT) {
       /* -@ negates via 0 - b (no unary neg on a bigint pointer); +@ is self (#2304) */
@@ -10223,6 +10228,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     }
     else { buf_puts(b, name[0] == '-' ? "(-" : "(+"); emit_expr(c, recv, b); buf_puts(b, ")"); }
     return;
+  }
+  /* value-position String#[]= (s[i] = v / s[i, n] = v / s[range] = v / s["sub"]
+     = v on an assignable receiver): run the mutate statement, the expression's
+     value is the assigned string (#2370). */
+  if (recv >= 0 && sp_streq(name, "[]=") && (argc == 2 || argc == 3) &&
+      comp_ntype(c, recv) == TY_STRING &&
+      nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
+                            sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) {
+    Buf mb; memset(&mb, 0, sizeof mb);
+    if (emit_array_mutate_stmt(c, id, &mb, 0)) {
+      buf_puts(b, "({ ");
+      buf_puts(b, mb.p ? mb.p : "");
+      emit_expr(c, argv[argc - 1], b);
+      buf_puts(b, "; })");
+      free(mb.p);
+      return;
+    }
+    free(mb.p);
   }
   /* poly `<<` in expression position: sp_poly_shl dispatches on the runtime tag
      (Integer#<< shift -> boxed int, Array#push append -> the array) and returns

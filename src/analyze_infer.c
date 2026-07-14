@@ -3721,6 +3721,9 @@ else {
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
     if (sp_streq(name, "clear") && argc == 0) return TY_STRING;  /* empties + returns self (#2332) */
+    /* s[i] = v / s[i, n] = v / s[range] = v / s["sub"] = v as a VALUE: the
+       assigned string (#2370) */
+    if (sp_streq(name, "[]=") && (argc == 2 || argc == 3)) return TY_STRING;
     if (sp_streq(name, "concat") && argc == 0) return TY_STRING;  /* self (#2309) */
     if (sp_streq(name, "clone") && argc == 1) return TY_STRING;  /* clone(freeze: ...) */
     if (sp_streq(name, "encoding") && argc == 0) return TY_POLY;  /* an Encoding value */
