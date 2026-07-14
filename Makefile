@@ -35,7 +35,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all regexp rbs_extract rbs-test rbs-seed-test spin-check \
+.PHONY: all regexp rbs_extract rbs-test rbs-seed-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench \
         gate-optcarrot clean install uninstall deps tools
@@ -753,12 +753,42 @@ bench: $(SPINEL) $(SP_RT_LIB)
 # ranks the reject diagnostics -- the "what to implement next" list. Not part
 # of the gate (it measures the frontier, it does not defend it).
 RUBYSPEC_DIR := build/rubyspec
-rubyspec: $(SPINEL)
+# Pinned ruby/spec revision: the expectations manifest is only meaningful
+# against this exact tree. Bumping it is a deliberate act: re-run the full
+# measurement, review the manifest diff, and commit both together.
+RUBYSPEC_REV := 79e2dee
+
+$(RUBYSPEC_DIR)/.pinned:
 	@if [ ! -d $(RUBYSPEC_DIR) ]; then \
-	  git clone --depth=1 https://github.com/ruby/spec $(RUBYSPEC_DIR); \
+	  git clone https://github.com/ruby/spec $(RUBYSPEC_DIR); \
 	fi
+	@git -C $(RUBYSPEC_DIR) rev-parse -q --verify $(RUBYSPEC_REV) >/dev/null 2>&1 || \
+	  git -C $(RUBYSPEC_DIR) fetch -q origin
+	@git -C $(RUBYSPEC_DIR) checkout -q $(RUBYSPEC_REV)
+	@touch $@
+
+rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	@rm -rf build/rubyspec-ex && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/language build/rubyspec-ex
 	@bash tools/rubyspec/run.sh build/rubyspec-ex build/rubyspec-results.tsv
+	@ruby tools/rubyspec/manifest_diff.rb tools/rubyspec/expectations/language.tsv build/rubyspec-results.tsv || true
+
+# Retention gate: re-run only the examples the manifest expects to PASS and
+# fail on any regression. Improvements (non-PASS -> PASS) never fail this
+# target -- they surface in `make rubyspec`'s manifest diff instead, and are
+# promoted by updating the manifest deliberately.
+rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
+	@rm -rf build/rubyspec-ex && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/language build/rubyspec-ex
+	@awk -F'\t' '$$2=="PASS"{print $$1}' tools/rubyspec/expectations/language.tsv > build/rubyspec-gate.list
+	@RUBYSPEC_ONLY=build/rubyspec-gate.list RUBYSPEC_GATE=1 \
+	  bash tools/rubyspec/run.sh build/rubyspec-ex build/rubyspec-gate.tsv
+	@bad=$$(awk -F'\t' '$$2!="PASS"' build/rubyspec-gate.tsv | wc -l); \
+	if [ $$bad -ne 0 ]; then \
+	  echo "rubyspec-gate: $$bad regression(s):"; \
+	  awk -F'\t' '$$2!="PASS"' build/rubyspec-gate.tsv; \
+	  exit 1; \
+	else \
+	  echo "rubyspec-gate: all $$(wc -l < build/rubyspec-gate.list) expected-PASS examples still pass"; \
+	fi
 
 # ---- Optcarrot integration test ----
 OPTCARROT_DIR  := build/optcarrot

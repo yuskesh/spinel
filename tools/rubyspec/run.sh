@@ -13,39 +13,87 @@
 #
 # Output: one TSV row per example + a summary + the reject-reason ranking,
 # which is the "what to implement next" list this harness exists to produce.
+#
+# Environment knobs:
+#   RUBYSPEC_ONLY=<file>  only run the examples named in <file> (one basename
+#                         per line, no .rb suffix) -- the retention gate's input
+#   RUBYSPEC_GATE=1       skip the CRuby oracle (gate runs re-check examples
+#                         already known oracle-clean; CRuby need not be present)
+#   RUBYSPEC_JOBS=<n>     parallelism (default: nproc-2, min 1)
 set -u
 DIR="${1:?usage: run.sh EXTRACTED_DIR [out.tsv]}"
 OUT="${2:-$DIR/results.tsv}"
 SPINEL="${SPINEL:-bin/spinel}"
+ONLY="${RUBYSPEC_ONLY:-}"
+GATE="${RUBYSPEC_GATE:-}"
+JOBS="${RUBYSPEC_JOBS:-}"
+if [ -z "$JOBS" ]; then
+  JOBS=$(( $(nproc 2>/dev/null || echo 4) - 2 )); [ "$JOBS" -lt 1 ] && JOBS=1
+fi
 TDIR=$(mktemp -d /tmp/rubyspec-run.XXXXXX)
 trap 'rm -rf "$TDIR"' EXIT
-: > "$OUT"
 
-pass=0; fail=0; reject=0; error=0; skew=0
-for f in "$DIR"/*.rb; do
-  bn=$(basename "$f" .rb)
-  # CRuby oracle first: a skewed extraction must not count against spinel.
-  cr=$(timeout 10 ruby "$f" 2>/dev/null | tail -1)
-  if ! grep -q "fail=0" <<<"$cr"; then
-    echo -e "$bn\tHARNESS-SKEW\t${cr:-crash}" >> "$OUT"; skew=$((skew+1)); continue
+# classify_one FILE: write the example's TSV row to $TDIR/rows/<bn>.
+# Runs in a parallel worker, so it writes its own file (no shared append).
+classify_one() {
+  local f="$1"
+  local bn; bn=$(basename "$f" .rb)
+  local row="$TDIR/rows/$bn"
+  local bin="$TDIR/bin-$bn"
+  if [ -z "$GATE" ]; then
+    # CRuby oracle first: a skewed extraction must not count against spinel.
+    local cr; cr=$(timeout 10 ruby "$f" 2>/dev/null | tail -1)
+    if ! grep -q "fail=0" <<<"$cr"; then
+      echo -e "$bn\tHARNESS-SKEW\t${cr:-crash}" > "$row"; return
+    fi
   fi
-  diag=$("$SPINEL" "$f" -o "$TDIR/x" 2>&1 >/dev/null)
-  if [ ! -x "$TDIR/x" ]; then
-    reason=$(grep -oE "unsupported [^:]*|Parse errors|cannot [a-z ]*|error: [^(]*" <<<"$diag" | head -1)
-    echo -e "$bn\tREJECT\t${reason:-unknown}" >> "$OUT"; reject=$((reject+1)); continue
+  local diag; diag=$("$SPINEL" "$f" -o "$bin" 2>&1 >/dev/null)
+  if [ ! -x "$bin" ]; then
+    local reason; reason=$(grep -oE "unsupported [^:]*|Parse errors|cannot [a-z ]*|error: [^(]*" <<<"$diag" | head -1)
+    echo -e "$bn\tREJECT\t${reason:-unknown}" > "$row"; return
   fi
-  run=$(timeout 10 "$TDIR/x" 2>&1); rc=$?
+  local run rc last
+  run=$(timeout 10 "$bin" 2>&1); rc=$?
   last=$(tail -1 <<<"$run")
-  rm -f "$TDIR/x"
+  rm -f "$bin"
   if [ $rc -ne 0 ] || ! grep -q "MSPEC-DONE" <<<"$last"; then
-    echo -e "$bn\tERROR\trc=$rc" >> "$OUT"; error=$((error+1))
+    echo -e "$bn\tERROR\trc=$rc" > "$row"
   elif grep -q "fail=0" <<<"$last"; then
-    echo -e "$bn\tPASS\t$last" >> "$OUT"; pass=$((pass+1))
+    echo -e "$bn\tPASS\t$last" > "$row"
   else
-    echo -e "$bn\tFAIL\t$last" >> "$OUT"; fail=$((fail+1))
+    echo -e "$bn\tFAIL\t$last" > "$row"
   fi
-done
+}
+export -f classify_one
+export TDIR SPINEL GATE
 
+mkdir -p "$TDIR/rows"
+if [ -n "$ONLY" ]; then
+  # one path per listed basename; a listed example missing from the
+  # extraction is an immediate error (manifest and extraction diverged)
+  : > "$TDIR/files"
+  missing=0
+  while IFS= read -r bn; do
+    [ -z "$bn" ] && continue
+    if [ -f "$DIR/$bn.rb" ]; then echo "$DIR/$bn.rb" >> "$TDIR/files"
+    else echo "rubyspec: listed example missing from extraction: $bn" >&2; missing=1; fi
+  done < "$ONLY"
+  [ "$missing" -ne 0 ] && exit 2
+else
+  ls "$DIR"/*.rb > "$TDIR/files"
+fi
+
+xargs -a "$TDIR/files" -P "$JOBS" -I{} bash -c 'classify_one "$@"' _ {}
+
+# stitch rows in stable (example-name) order
+: > "$OUT"
+for row in $(ls "$TDIR/rows" | sort); do cat "$TDIR/rows/$row" >> "$OUT"; done
+
+pass=$(awk -F'\t'   '$2=="PASS"' "$OUT" | wc -l)
+fail=$(awk -F'\t'   '$2=="FAIL"' "$OUT" | wc -l)
+reject=$(awk -F'\t' '$2=="REJECT"' "$OUT" | wc -l)
+error=$(awk -F'\t'  '$2=="ERROR"' "$OUT" | wc -l)
+skew=$(awk -F'\t'   '$2=="HARNESS-SKEW"' "$OUT" | wc -l)
 total=$((pass+fail+reject+error))
 echo "rubyspec: $pass PASS / $fail FAIL / $reject REJECT / $error ERROR  (of $total; +$skew harness-skew excluded)"
 echo "--- top reject reasons ---"
