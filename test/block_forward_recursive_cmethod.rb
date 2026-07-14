@@ -18,3 +18,16 @@ puts M.go([["a"], "b"])
 out2 = []
 M.walk([["x", ["y"]], "z"]) { |n| out2 << n }
 p out2
+
+# a &block forward CHAIN between class methods carries the block's value
+# type through (g's literal block reaches f's blk_ret via the forward)
+class N
+  def self.f(&block)
+    block.call(1)
+  end
+
+  def self.g(&block)
+    f(&block)
+  end
+end
+p(N.g { |n| n * 3 })

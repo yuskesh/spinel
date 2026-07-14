@@ -364,7 +364,15 @@ TyKind yield_value_type(Compiler *c, int mi) {
     int rmi = -1;
     if (crecv < 0) {
       rmi = comp_method_index(c, cn);
-      if (rmi < 0) { Scope *cs = comp_scope_of(c, cid); if (cs->class_id >= 0) rmi = comp_method_in_chain(c, cs->class_id, cn, NULL); }
+      if (rmi < 0) {
+        Scope *cs = comp_scope_of(c, cid);
+        if (cs->class_id >= 0) {
+          rmi = comp_method_in_chain(c, cs->class_id, cn, NULL);
+          /* an implicit-self call inside a class method resolves to a CLASS
+             method; its block/forward feeds that method's blk_ret too */
+          if (rmi < 0) rmi = comp_cmethod_in_chain(c, cs->class_id, cn, NULL);
+        }
+      }
     }
 else {
       TyKind crt = infer_type(c, crecv);
