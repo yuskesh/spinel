@@ -8,8 +8,8 @@ The compiler is a **single self-contained C binary**: it parses Ruby (via
 libprism), infers types across the whole program, emits C, and invokes the
 system `cc` to produce a native executable -- no Ruby runtime and no chained
 helper binaries at compile time. (Spinel was previously written in a
-self-hosting Ruby subset; that backend is preserved in-tree as a regression
-oracle -- see [History](#history).)
+self-hosting Ruby subset; that backend is preserved on the `self-host`
+branch -- see [History](#history).)
 
 ## How It Works
 
@@ -143,15 +143,6 @@ resulting seed into the analyzer. Seeds are advisory — inference still runs on
 widens on observed contradiction, so a wrong or unrepresentable seed
 is at worst a no-op. See [docs/rbs-extract.md](docs/rbs-extract.md)
 for the supported subset.
-
-## Self-Hosting (history)
-
-Spinel began as a compiler written in a Ruby subset that compiled
-itself. The C compiler has since fully replaced that backend, and the C
-build is what `master` ships and what the gate (`make test` / `make
-bench` / `make optcarrot`) checks. The original self-hosting Ruby
-implementation is preserved on the [`self-host`](../../tree/self-host)
-branch for historical reference; it is no longer carried in `master`.
 
 ## Benchmarks
 
@@ -574,11 +565,14 @@ Adjacent ecosystem (community-built, not part of this repo):
 
 Spinel was originally implemented in C (branch `c-version`), then
 rewritten in Ruby (branch `ruby-v1`), then rewritten again in a
-self-hosting Ruby subset (preserved on the `self-host` branch). The
-current `master` is a fresh C implementation of the analyze and codegen
-stages, which builds far faster than the self-hosted backend while
-producing equivalent output; the self-hosting Ruby version is preserved
-on the `self-host` branch (see [Self-Hosting](#self-hosting-history)).
+self-hosting Ruby subset that compiled itself. The current `master` is a
+fresh C implementation of the analyze and codegen stages, which builds
+far faster than the self-hosted backend while producing equivalent
+output; it is what `master` ships and what the gate (`make test` /
+`make bench` / `make optcarrot`) checks. The self-hosting Ruby
+implementation is preserved on the
+[`self-host`](../../tree/self-host) branch for historical reference; it
+is no longer carried in `master`.
 
 ## License
 
