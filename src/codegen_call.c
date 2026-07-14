@@ -10720,8 +10720,27 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
-    /* Hash subset/superset: < <= > >= over any hash-variant pairing */
-    if (ty_is_hash(rt) && argc == 1 && ty_is_hash(comp_ntype(c, argv[0]))) {
+    /* Hash subset/superset: < <= > >= over any hash-variant pairing. An empty
+       `{}` literal operand (TY_UNKNOWN) is an empty hash all the same (#2399). */
+    {
+      TyKind h_rt = rt, h_a0 = comp_ntype(c, argv[0]);
+      if (h_rt == TY_UNKNOWN && nt_type(nt, recv) &&
+          (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode")) &&
+          ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) h_rt = TY_STR_POLY_HASH;
+      if (h_a0 == TY_UNKNOWN && nt_type(nt, argv[0]) &&
+          (sp_streq(nt_type(nt, argv[0]), "HashNode") || sp_streq(nt_type(nt, argv[0]), "KeywordHashNode")) &&
+          ({ int _n = 0; nt_arr(nt, argv[0], "elements", &_n); _n == 0; })) h_a0 = TY_STR_POLY_HASH;
+      if (ty_is_hash(h_rt) && argc == 1 && ty_is_hash(h_a0)) {
+        int strict = sp_streq(name, "<") || sp_streq(name, ">");
+        int flip = sp_streq(name, ">") || sp_streq(name, ">=");
+        buf_puts(b, "sp_poly_hash_subset(");
+        if (flip) { emit_boxed(c, argv[0], b); buf_puts(b, ", "); emit_boxed(c, recv, b); }
+        else { emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); }
+        buf_printf(b, ", %d)", strict);
+        return;
+      }
+    }
+    if (0 && ty_is_hash(rt) && argc == 1 && ty_is_hash(comp_ntype(c, argv[0]))) {
       int strict = sp_streq(name, "<") || sp_streq(name, ">");
       int flip = sp_streq(name, ">") || sp_streq(name, ">=");
       buf_puts(b, "sp_poly_hash_subset(");
@@ -11143,6 +11162,24 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       ({ int _n = 0; nt_arr(nt, recv, "elements", &_n); _n == 0; })) {
     if (argc == 0 && (sp_streq(name, "nil?") || sp_streq(name, "frozen?") || sp_streq(name, "any?"))) { buf_puts(b, "0"); return; }
     if (argc == 0 && sp_streq(name, "empty?")) { buf_puts(b, "1"); return; }
+    if (argc == 0 && sp_streq(name, "to_h") && nt_ref(nt, id, "block") < 0) {
+      buf_puts(b, "sp_StrPolyHash_new()"); return;   /* {}.to_h == {} (#2410) */
+    }
+    if (argc <= 1 && sp_streq(name, "sum") && nt_ref(nt, id, "block") < 0) {
+      /* {}.sum == the init (or 0) (#2416) */
+      if (argc == 1) emit_expr(c, argv[0], b); else buf_puts(b, "0");
+      return;
+    }
+    if (argc == 0 && (sp_streq(name, "min") || sp_streq(name, "max"))) {
+      buf_puts(b, "sp_box_nil()"); return;   /* empty: nil (#2406) */
+    }
+    if (argc == 0 && sp_streq(name, "minmax")) {
+      int t2 = ++g_tmp;
+      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_nil()); sp_PolyArray_push(_t%d, sp_box_nil()); _t%d; })",
+                 t2, t2, t2, t2, t2);
+      return;
+    }
     if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?"))) {
       const char *cn = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode")
                        ? nt_str(nt, argv[0], "name") : NULL;
@@ -11273,7 +11310,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      both fold to the default value (no write can have reached the hash);
      the key/receiver still evaluate for their side effects. */
   if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_POLY) &&
-      ((sp_streq(name, "default") && argc == 0) ||
+      ((sp_streq(name, "default") && argc <= 1) ||   /* default(key) too (#2409) */
+       (sp_streq(name, "values_at") && argc >= 1) || /* all keys miss -> defaults (#2408) */
        (sp_streq(name, "[]") && argc == 1))) {
     int dn = hash_new_default_arg(c, recv);
     if (dn >= 0) {
@@ -11284,6 +11322,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_printf(b, " _t%d = ", t);
       emit_expr(c, dn, b);
       buf_puts(b, "; ");
+      if (sp_streq(name, "values_at")) {
+        int ta = ++g_tmp;
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
+        for (int a = 0; a < argc; a++) {
+          buf_puts(b, "(void)("); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
+          char dv[24]; snprintf(dv, sizeof dv, "_t%d", t);
+          buf_printf(b, "sp_PolyArray_push(_t%d, ", ta);
+          if (dt == TY_POLY) buf_puts(b, dv); else emit_boxed_text(c, dt, dv, b);
+          buf_puts(b, "); ");
+        }
+        buf_printf(b, "_t%d; })", ta);
+        return;
+      }
       if (argc == 1) { buf_puts(b, "(void)("); emit_boxed(c, argv[0], b); buf_puts(b, "); "); }
       buf_printf(b, "_t%d; })", t);
       return;

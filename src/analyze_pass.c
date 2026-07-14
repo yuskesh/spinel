@@ -5717,12 +5717,7 @@ int infer_block_params(Compiler *c) {
         }
         else if (pt == TY_POLY && recv >= 0) {
           const char *rty2 = nt_type(nt, recv);
-          /* a hash receiver reached through the pair-array redispatch: the
-             elements are [k, v] pairs; destructure params as poly (#2372) */
-          if (ty_is_hash(infer_type(c, recv))) {
-            inner_elem = TY_POLY;
-          }
-          else if (rty2 && sp_streq(rty2, "ArrayNode")) {
+          if (rty2 && sp_streq(rty2, "ArrayNode")) {
             int re_n2 = 0;
             const int *re_els2 = nt_arr(nt, recv, "elements", &re_n2);
             TyKind common_at = TY_UNKNOWN;

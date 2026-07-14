@@ -687,6 +687,9 @@ TyKind infer_call(Compiler *c, int id) {
   /* A Range Enumerable method spinel serves by materializing to an int array:
      infer it as the array version (the array arms below key on `rt`). */
   if (rt == TY_RANGE && range_enum_redispatch(c, id)) rt = TY_INT_ARRAY;
+  /* the block form of each_with_index returns the receiver hash (#2417) */
+  if (ty_is_hash(rt) && sp_streq(name, "each_with_index") &&
+      nt_ref(nt, id, "block") >= 0) return rt;
   if (ty_is_hash(rt) && hash_enum_redispatch(c, id)) rt = TY_POLY_ARRAY;
   /* A block each-family call returns its receiver (each, each_value/each_key/
      each_pair, each_with_index, reverse_each), so the value form composes:
@@ -1042,6 +1045,13 @@ TyKind infer_call(Compiler *c, int id) {
                           sp_streq(name, "empty?") || sp_streq(name, "any?"))) return TY_BOOL;
         if (argc == 1 && (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") ||
                           sp_streq(name, "instance_of?"))) return TY_BOOL;
+        if (argc == 0 && sp_streq(name, "to_h")) return TY_STR_POLY_HASH;   /* (#2410) */
+        if (argc <= 1 && sp_streq(name, "sum"))
+          return argc == 1 ? infer_type(c, argv[0]) : TY_INT;               /* (#2416) */
+        if (argc == 0 && (sp_streq(name, "min") || sp_streq(name, "max"))) return TY_POLY;
+        if (argc == 0 && sp_streq(name, "minmax")) return TY_POLY_ARRAY;    /* (#2406) */
+        if (argc == 1 && (sp_streq(name, "<") || sp_streq(name, "<=") ||
+                          sp_streq(name, ">") || sp_streq(name, ">="))) return TY_BOOL;  /* (#2399) */
         rt = TY_STR_POLY_HASH;
       }
     }
@@ -3494,7 +3504,7 @@ else {
   }
 
   /* hash receiver methods */
-  if (recv >= 0 && sp_streq(name, "default") && argc == 0 &&
+  if (recv >= 0 && sp_streq(name, "default") && argc <= 1 &&
       nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "HashNode") ||
                              sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
     return TY_POLY; /* {}.default -> nil (poly nil) */
@@ -3503,11 +3513,14 @@ else {
      never narrowed: .default and [] both yield the default (no write can
      have reached it). The variable form widens to poly, hence both gates. */
   if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_POLY) &&
-      ((sp_streq(name, "default") && argc == 0) ||
+      ((sp_streq(name, "default") && argc <= 1) ||
        (sp_streq(name, "[]") && argc == 1))) {
     int dn = hash_new_default_arg(c, recv);
     if (dn >= 0) return infer_type(c, dn);
   }
+  if (recv >= 0 && (rt == TY_UNKNOWN || rt == TY_POLY) &&
+      sp_streq(name, "values_at") && argc >= 1 &&
+      hash_new_default_arg(c, recv) >= 0) return TY_POLY_ARRAY;  /* (#2408) */
   /* h.default = v as a value: the assigned value (works for the untyped {}
      literal receiver too) */
   if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && ty_is_hash(rt))
@@ -3586,7 +3599,7 @@ else {
       if (argc == 1) return ty_hash_val(rt);
       return TY_POLY;
     }
-    if (sp_streq(name, "default") && argc == 0) return TY_POLY;
+    if (sp_streq(name, "default") && argc <= 1) return TY_POLY;  /* default(key) too (#2409) */
     if (sp_streq(name, "length") || sp_streq(name, "size") ||
         sp_streq(name, "count")) return TY_INT;
     if ((sp_streq(name, "<") || sp_streq(name, "<=") ||

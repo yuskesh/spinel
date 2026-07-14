@@ -3560,6 +3560,11 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
         }
         return 1;
       }
+      if (sp_streq(name, "values_at") && argc == 0) {
+        /* zero keys: an empty array; evaluate the receiver for effects (#2408) */
+        buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())");
+        return 1;
+      }
       if ((sp_streq(name, "values_at") || sp_streq(name, "fetch_values")) && argc >= 1) {
         /* collect looked-up values into a poly array; values_at yields nil for
            a missing key, fetch_values raises KeyError */
@@ -3789,7 +3794,7 @@ else {
                    ti, ti, tn, ti, to, ti, th, th);
         return 1;
       }
-      if (sp_streq(name, "default") && argc == 0) {
+      if (sp_streq(name, "default") && argc <= 1) {  /* default(key) ignores key (#2409) */
         int t = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
         if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
@@ -4052,8 +4057,11 @@ else {
             buf_printf(b, " sp_RbVal _k%d = sp_box_int(_t%d->order[_t%d]);", ti, th, ti);
           else
             buf_printf(b, " sp_RbVal _k%d = _t%d->keys[_t%d->order[_t%d]];", ti, th, th, ti);
-          /* emit value as sp_RbVal */
-          if (vt == TY_POLY)
+          /* emit value as sp_RbVal (a PolyPoly receiver reads vals[] directly:
+             its _get takes an sp_RbVal key, not the raw order index) (#2407) */
+          if (rt == TY_POLY_POLY_HASH)
+            buf_printf(b, " sp_RbVal _v%d = _t%d->vals[_t%d->order[_t%d]];", ti, th, th, ti);
+          else if (vt == TY_POLY)
             buf_printf(b, " sp_RbVal _v%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);", ti, hn, th, th, ti);
           else if (vt == TY_INT) {
             buf_printf(b, " sp_RbVal _v%d = sp_box_int(sp_%sHash_get(_t%d, _t%d->order[_t%d]));", ti, hn, th, th, ti);
@@ -6739,8 +6747,23 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
        emitter is out of the picture) */
     const char *svn = nt_str(c->nt, id, "name");
     int fa = svn && sp_streq(svn, "find_all");
+    /* the block form of each_with_index returns the RECEIVER hash in CRuby,
+       not the pair array the redispatch iterates (#2417) */
+    int ewi = svn && sp_streq(svn, "each_with_index") && nt_ref(c->nt, id, "block") >= 0;
     if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "select");
-    emit_call(c, id, b);
+    if (ewi) {
+      Buf db; memset(&db, 0, sizeof db);
+      emit_call(c, id, &db);
+      buf_printf(b, "({ (void)(%s); ", db.p ? db.p : "0");
+      free(db.p);
+      c->ntype[recv] = sv;
+      g_n_argov--;              /* re-emit the REAL receiver, not the override */
+      emit_expr(c, recv, b);
+      g_n_argov++;
+      c->ntype[recv] = TY_POLY_ARRAY;
+      buf_puts(b, "; })");
+    }
+    else emit_call(c, id, b);
     if (fa) nt_node_set_str((NodeTable *)c->nt, id, "name", "find_all");
     c->ntype[recv] = sv;
     g_n_argov--;
