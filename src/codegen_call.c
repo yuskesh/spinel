@@ -7968,6 +7968,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        hash exclusion below is for freeze/dup/clone, which need real
        handling on the reference types */
     if (argc0 == 0 && sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
+    /* clone(freeze: _) on an immutable value is the value itself; the
+       keyword can't unfreeze what has no mutable state (#2379) */
+    if (argc0 == 1 && sp_streq(name, "clone") &&
+        (recv_t == TY_INT || recv_t == TY_FLOAT || recv_t == TY_BOOL ||
+         recv_t == TY_NIL || recv_t == TY_SYMBOL || recv_t == TY_RANGE ||
+         recv_t == TY_RATIONAL || recv_t == TY_COMPLEX || recv_t == TY_BIGINT)) {
+      int dargs2 = nt_ref(nt, id, "arguments");
+      int dn2 = 0; const int *dv2 = dargs2 >= 0 ? nt_arr(nt, dargs2, "arguments", &dn2) : NULL;
+      if (dn2 == 1 && nt_type(nt, dv2[0]) && sp_streq(nt_type(nt, dv2[0]), "KeywordHashNode")) {
+        emit_expr(c, recv, b); return;
+      }
+    }
     /* dup/clone of a boxed plain object copies (Object.new included); the
        identity shortcut would alias the original and o.dup == o would
        misreport true */
@@ -9637,7 +9649,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   }
   /* Object receivers (incl. native-bound classes like StringScanner) dispatch
      their own match?/match methods; only string-ish receivers belong here. */
-  if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL && !ty_is_object(rt) &&
+  if (recv >= 0 && argc >= 1 && rt != TY_SYMBOL && rt != TY_NIL && !ty_is_object(rt) &&
       (sp_streq(name, "match?") || sp_streq(name, "!~") || sp_streq(name, "=~") || sp_streq(name, "match"))) {
     int are = re_lit_index(c, argv[0]);
     if (are >= 0 && sp_streq(name, "=~") && rt == TY_STRING) {
@@ -10609,6 +10621,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? infer_type(c, recv) : rt;
     TyKind at = comp_ntype(c, argv[0]);
     TyKind lat = (at == TY_POLY || at == TY_UNKNOWN) ? infer_type(c, argv[0]) : at;
+    /* nil <=> nil is 0; nil <=> anything-else is nil (#2383) */
+    if (lrt == TY_NIL) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), (void)("); emit_boxed(c, argv[0], b);
+      buf_printf(b, "), %s)", lat == TY_NIL ? "(mrb_int)0" : "SP_INT_NIL");
+      return;
+    }
     if (ty_is_numeric(lrt) && ty_is_numeric(lat)) {
       int ta = ++g_tmp, tb = ++g_tmp;
       buf_puts(b, "({ "); emit_ctype(c, lrt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b);
@@ -10692,6 +10711,19 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
     if (ty_is_numeric(rt)) {
+      /* a statically non-numeric operand (nil, a string, ...) raises the
+         Comparable ArgumentError instead of comparing against a coerced 0 */
+      TyKind cat = comp_ntype(c, argv[0]);
+      if (cat == TY_NIL || cat == TY_STRING || cat == TY_BOOL || cat == TY_SYMBOL) {
+        const char *cn9 = rt == TY_FLOAT ? "Float" : rt == TY_RATIONAL ? "Rational" : "Integer";
+        const char *an9 = cat == TY_NIL ? "nil" : cat == TY_STRING ? "String"
+                        : cat == TY_SYMBOL ? "Symbol" : "boolean";
+        buf_puts(b, "((void)("); emit_expr(c, recv, b);
+        buf_puts(b, "), (void)("); emit_expr(c, argv[0], b);
+        buf_printf(b, "), sp_raise_cls(\"ArgumentError\", \"comparison of %s with %s failed\"), 0)",
+                   cn9, an9);
+        return;
+      }
       buf_puts(b, "(");
       emit_expr(c, recv, b);
       buf_printf(b, " %s ", name);
@@ -10921,7 +10953,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     if (argc == 0 && sp_streq(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }
     if (argc == 0 && sp_streq(name, "to_i"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)0)"); return; }
     if (argc == 0 && sp_streq(name, "to_f"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 0.0)"); return; }
-    if (argc == 0 && sp_streq(name, "to_r"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_rational_new(0, 1))"); return; }
+    if (argc == 0 && (sp_streq(name, "to_r") || sp_streq(name, "rationalize"))) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_rational_new(0, 1))"); return; }
+    /* nil =~ anything is nil; nil !~ anything is true (#2385) */
+    if (argc == 1 && sp_streq(name, "=~")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), (void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+      return;
+    }
+    if (argc == 1 && sp_streq(name, "!~")) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), (void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)");
+      return;
+    }
     if (argc == 0 && sp_streq(name, "to_c"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (sp_Complex){0, 0})"); return; }
     if (argc == 0 && sp_streq(name, "to_a"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), sp_PolyArray_new())"); return; }
     if (argc == 0 && sp_streq(name, "to_h"))    {
@@ -10950,12 +10993,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       return;
     }
   }
-  /* boolean receiver & | ^ with a non-boolean/non-int operand: logical ops
-     on the operand's truthiness */
+  /* boolean receiver & | ^ with a non-boolean operand: logical ops on the
+     operand's truthiness (an Integer operand included -- 0 is truthy) */
   if (recv >= 0 && rt == TY_BOOL && argc == 1 &&
       (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
     TyKind bat = comp_ntype(c, argv[0]);
-    if (bat != TY_BOOL && bat != TY_INT) {
+    if (bat != TY_BOOL) {
       int tb3 = ++g_tmp;
       buf_printf(b, "({ mrb_bool _t%d = ", tb3); emit_expr(c, recv, b);
       buf_printf(b, "; mrb_bool _a%d = sp_poly_truthy(", tb3);
@@ -11532,15 +11575,20 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) {
-    if (sp_streq(name, "to_s") || sp_streq(name, "id2name") || sp_streq(name, "name")) {
+    if (sp_streq(name, "to_s") || sp_streq(name, "id2name")) {
       buf_puts(b, "sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, ")");
+      return;
+    }
+    /* #name answers the frozen name string (to_s answers a mutable copy) */
+    if (sp_streq(name, "name")) {
+      buf_puts(b, "sp_str_uminus_val(sp_sym_to_s("); emit_expr(c, recv, b); buf_puts(b, "))");
       return;
     }
     if (sp_streq(name, "inspect")) {
       buf_puts(b, "sp_sym_inspect("); emit_expr(c, recv, b); buf_puts(b, ")");
       return;
     }
-    if (sp_streq(name, "to_sym") || sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
+    if (sp_streq(name, "to_sym") || sp_streq(name, "intern") || sp_streq(name, "itself")) { emit_expr(c, recv, b); return; }
     /* case-folding methods return a (re-interned) symbol */
     if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
         sp_streq(name, "capitalize") || sp_streq(name, "swapcase")) {
@@ -11562,8 +11610,14 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       buf_puts(b, name[0] == '=' ? ")" : "))");
       return;
     }
-    /* case-insensitive compare over the symbols' names; a symbol argument only
-       (a non-symbol arg yields nil in Ruby and is left to the unsupported path) */
+    /* case-insensitive compare over the symbols' names; a non-symbol
+       argument answers nil (evaluate both operands for side effects) */
+    if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
+        comp_ntype(c, argv[0]) != TY_SYMBOL) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b);
+      buf_puts(b, "), (void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
+      return;
+    }
     if ((sp_streq(name, "casecmp") || sp_streq(name, "casecmp?")) && argc == 1 &&
         comp_ntype(c, argv[0]) == TY_SYMBOL) {
       int q = sp_streq(name, "casecmp?");

@@ -1,0 +1,32 @@
+:hello
+:hello
+true
+"hello"
+nil
+nil
+-1
+true
+true
+true
+true
+false
+true
+true
+TrueClass
+TrueClass
+FalseClass
+NilClass
+Integer
+ArgumentError
+ArgumentError
+FloatDomainError
+FloatDomainError
+3
+[0.5, 1.0]
+[1.0, 2.0]
+[2.0, 1.0]
+0
+nil
+(0/1)
+nil
+true

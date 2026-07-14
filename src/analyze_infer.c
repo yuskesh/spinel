@@ -917,7 +917,13 @@ TyKind infer_call(Compiler *c, int id) {
   if (recv >= 0 && rt == TY_FLOAT && argc == 1 && sp_streq(name, "===")) return TY_BOOL;  /* (#2400) */
   if (recv >= 0 && rt == TY_NIL) {
     if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-        sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?")) return TY_BOOL;
+        sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?") ||
+        sp_streq(name, "!~")) return TY_BOOL;
+    if (sp_streq(name, "=~")) return TY_NIL;
+    if (sp_streq(name, "rationalize")) return TY_RATIONAL;
+    /* nil <=> nil is 0 (int); any other operand answers nil */
+    if (sp_streq(name, "<=>") && argc == 1)
+      return infer_type(c, argv[0]) == TY_NIL ? TY_INT : TY_NIL;
     if (sp_streq(name, "tap")) return TY_POLY;  /* the (boxed) nil receiver */
     if ((sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
         nt_ref(nt, id, "block") >= 0) {
@@ -3372,15 +3378,19 @@ else {
     if (sp_streq(name, "inspect")) return TY_STRING;
     if (sp_streq(name, "upcase") || sp_streq(name, "downcase") ||
         sp_streq(name, "capitalize") || sp_streq(name, "swapcase") ||
-        sp_streq(name, "to_sym") || sp_streq(name, "itself")) return TY_SYMBOL;
+        sp_streq(name, "to_sym") || sp_streq(name, "intern") ||
+        sp_streq(name, "itself")) return TY_SYMBOL;
     if (sp_streq(name, "length") || sp_streq(name, "size")) return TY_INT;
     if (sp_streq(name, "empty?") || sp_streq(name, "==") || sp_streq(name, "!=")) return TY_BOOL;
     if (sp_streq(name, "succ") || sp_streq(name, "next")) return TY_SYMBOL;
     if ((sp_streq(name, "[]") || sp_streq(name, "slice")) && (argc == 1 || argc == 2)) return TY_STRING;
     if ((sp_streq(name, "start_with?") || sp_streq(name, "end_with?") || sp_streq(name, "match?")) && argc == 1)
       return TY_BOOL;
-    if (sp_streq(name, "casecmp") && argc == 1) return TY_INT;
-    if (sp_streq(name, "casecmp?") && argc == 1) return TY_BOOL;
+    /* casecmp/casecmp? against a non-symbol operand answer nil */
+    if (sp_streq(name, "casecmp") && argc == 1)
+      return infer_type(c, argv[0]) == TY_SYMBOL ? TY_INT : TY_NIL;
+    if (sp_streq(name, "casecmp?") && argc == 1)
+      return infer_type(c, argv[0]) == TY_SYMBOL ? TY_BOOL : TY_NIL;
   }
 
   /* range receiver methods */

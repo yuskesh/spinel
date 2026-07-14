@@ -5395,7 +5395,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       /* Float arg/angle/phase: Integer 0 for >= 0, Float PI for < 0 -> poly (#2316) */
       else if (sp_streq(name, "arg") || sp_streq(name, "angle") || sp_streq(name, "phase"))
         buf_printf(b, "((%s) < 0 ? sp_box_float(3.141592653589793) : sp_box_int(0))", r);
-      else if (sp_streq(name, "to_int")) buf_printf(b, "((mrb_int)(%s))", r);  /* alias of to_i (#2317) */
+      else if (sp_streq(name, "to_int")) buf_printf(b, "sp_float_to_i_checked(%s)", r);  /* alias of to_i (#2317); raises on Inf/NaN */
       else if (sp_streq(name, "zero?")) buf_printf(b, "((%s) == 0.0)", r);
       else if (sp_streq(name, "nan?"))  buf_printf(b, "(isnan(%s) != 0)", r);
       else if (sp_streq(name, "finite?")) buf_printf(b, "(isfinite(%s) != 0)", r);
@@ -5443,7 +5443,23 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "coerce") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
         int ta = ++g_tmp, o = ++g_tmp;
-        if (a0 == TY_INT) {
+        if (a0 == TY_RATIONAL) {
+          buf_printf(b, "({ mrb_float _t%d = sp_rational_to_f(", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "); sp_FloatArray *_t%d = sp_FloatArray_new();"
+                        " sp_FloatArray_push(_t%d, _t%d);"
+                        " sp_FloatArray_push(_t%d, (%s)); _t%d; })", o, o, ta, o, r, o);
+        }
+        else if (a0 == TY_COMPLEX) {
+          /* a real-valued Complex coerces to its real part; an imaginary
+             component can't become a Float (CRuby raises RangeError) */
+          int tc9 = ++g_tmp;
+          buf_printf(b, "({ sp_Complex _t%d = ", tc9); emit_expr(c, argv[0], b);
+          buf_printf(b, "; if (_t%d.im != 0) sp_raise_cls(\"RangeError\", \"can't convert complex into Float\");"
+                        " sp_FloatArray *_t%d = sp_FloatArray_new();"
+                        " sp_FloatArray_push(_t%d, _t%d.re);"
+                        " sp_FloatArray_push(_t%d, (%s)); _t%d; })", tc9, o, o, tc9, o, r, o);
+        }
+        else if (a0 == TY_INT) {
           buf_printf(b, "({ mrb_int _t%d = ", ta); emit_int_expr(c, argv[0], b);
           buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"
                         " sp_FloatArray_push(_t%d, (mrb_float)_t%d);"

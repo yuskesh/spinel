@@ -2419,10 +2419,18 @@ static mrb_int sp_poly_cmp_int_arrays(sp_RbVal a, sp_RbVal b, mrb_bool *comparab
   *comparable = TRUE;
   return (x->len > y->len) - (x->len < y->len);
 }
-static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp < 0) : FALSE; }
-static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp <= 0) : FALSE; }
-static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp > 0) : FALSE; }
-static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); return comparable ? (cmp >= 0) : FALSE; }
+/* CRuby's Comparable operators raise on incomparable operands ("comparison
+   of Float with nil failed"), they do not answer false. */
+static const char *sp_cmperr_desc(sp_RbVal v);
+static const char *sp_poly_class_name(sp_RbVal v);
+static void sp_poly_cmp_fail(sp_RbVal a, sp_RbVal b) {
+  sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed",
+                                           sp_poly_class_name(a), sp_cmperr_desc(b)));
+}
+static mrb_bool sp_poly_lt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp < 0; }
+static mrb_bool sp_poly_le(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp <= 0; }
+static mrb_bool sp_poly_gt(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp > 0; }
+static mrb_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { mrb_bool comparable; mrb_int cmp = sp_poly_cmp(a, b, &comparable); if (!comparable) sp_poly_cmp_fail(a, b); return cmp >= 0; }
 /* Float ** Float: CRuby promotes a negative base with a fractional exponent
    to a Complex. Spinel's float type cannot carry that, so the case raises
    loudly (Math::DomainError, the same class Math.sqrt(-1) uses) instead of
