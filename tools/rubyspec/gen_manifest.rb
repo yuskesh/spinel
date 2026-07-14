@@ -14,8 +14,13 @@
 # will NEVER pass, so when in doubt leave it on the frontier.
 
 BYDESIGN = [
-  /eval of a runtime string/,           # needs a runtime parser (AOT-fundamental)
-  /singleton class on arbitrary object/ # per-object method tables vs direct C calls
+  /eval of a runtime string/,            # needs a runtime parser (AOT-fundamental)
+  /singleton class on arbitrary object/, # per-object method tables vs direct C calls
+  # general reflection: Method/UnboundMethod objects and method-table queries
+  # (limitations.md: ivars are struct offsets, DCE strips method names)
+  /`(instance_method|instance_methods|private_instance_methods|public_instance_methods|protected_instance_methods|owner|unbind)`/,
+  # Encoding machinery: one internal representation, no transcoding tables
+  /`(default_external|default_internal|force_encoding)`/
 ].freeze
 
 results = ARGV[0] or abort "usage: gen_manifest.rb RESULTS_TSV"

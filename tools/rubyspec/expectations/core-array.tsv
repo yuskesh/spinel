@@ -19,7 +19,7 @@ append_spec__001	PASS
 append_spec__002	PASS
 append_spec__003	ERROR
 append_spec__004	HARNESS-SKEW
-append_spec__005	REJECT
+append_spec__005	REJECT-BYDESIGN
 array_spec__001	REJECT
 assoc_spec__001	FAIL
 assoc_spec__002	HARNESS-SKEW
@@ -69,8 +69,8 @@ clear_spec__004	REJECT
 clear_spec__005	PASS
 clone_spec__001	FAIL
 clone_spec__002	FAIL
-collect_spec__001	REJECT
-collect_spec__002	REJECT
+collect_spec__001	REJECT-BYDESIGN
+collect_spec__002	REJECT-BYDESIGN
 combination_spec__001	FAIL
 combination_spec__002	PASS
 combination_spec__003	FAIL
@@ -399,8 +399,8 @@ fill_spec__044	HARNESS-SKEW
 fill_spec__045	HARNESS-SKEW
 fill_spec__046	REJECT-BYDESIGN
 fill_spec__047	PASS
-filter_spec__001	REJECT
-filter_spec__002	REJECT
+filter_spec__001	REJECT-BYDESIGN
+filter_spec__002	REJECT-BYDESIGN
 find_index_spec__001	HARNESS-SKEW
 find_index_spec__002	PASS
 find_index_spec__003	PASS
@@ -471,8 +471,8 @@ hash_spec__009	PASS
 include_spec__001	PASS
 include_spec__002	HARNESS-SKEW
 include_spec__003	HARNESS-SKEW
-index_spec__001	REJECT
-initialize_spec__001	REJECT
+index_spec__001	REJECT-BYDESIGN
+initialize_spec__001	REJECT-BYDESIGN
 initialize_spec__002	HARNESS-SKEW
 initialize_spec__003	REJECT
 initialize_spec__004	REJECT
@@ -517,9 +517,9 @@ inspect_spec__006	HARNESS-SKEW
 inspect_spec__007	HARNESS-SKEW
 inspect_spec__008	HARNESS-SKEW
 inspect_spec__009	HARNESS-SKEW
-inspect_spec__010	REJECT
-inspect_spec__011	REJECT
-inspect_spec__012	REJECT
+inspect_spec__010	REJECT-BYDESIGN
+inspect_spec__011	REJECT-BYDESIGN
+inspect_spec__012	REJECT-BYDESIGN
 inspect_spec__013	HARNESS-SKEW
 intersect_spec__001	PASS
 intersect_spec__002	ERROR
@@ -563,7 +563,7 @@ last_spec__011	HARNESS-SKEW
 last_spec__012	HARNESS-SKEW
 last_spec__013	HARNESS-SKEW
 last_spec__014	PASS
-length_spec__001	REJECT
+length_spec__001	REJECT-BYDESIGN
 map_spec__001	PASS
 map_spec__002	HARNESS-SKEW
 map_spec__003	PASS
@@ -580,7 +580,7 @@ map_spec__013	HARNESS-SKEW
 map_spec__014	HARNESS-SKEW
 map_spec__015	REJECT
 map_spec__016	REJECT
-max_spec__001	REJECT
+max_spec__001	REJECT-BYDESIGN
 max_spec__002	FAIL
 max_spec__003	PASS
 max_spec__004	PASS
@@ -593,7 +593,7 @@ max_spec__010	FAIL
 max_spec__011	PASS
 max_spec__012	PASS
 max_spec__013	PASS
-min_spec__001	REJECT
+min_spec__001	REJECT-BYDESIGN
 min_spec__002	FAIL
 min_spec__003	PASS
 min_spec__004	PASS
@@ -685,7 +685,7 @@ pop_spec__013	FAIL
 pop_spec__014	REJECT
 pop_spec__015	HARNESS-SKEW
 pop_spec__016	HARNESS-SKEW
-prepend_spec__001	REJECT
+prepend_spec__001	REJECT-BYDESIGN
 product_spec__001	HARNESS-SKEW
 product_spec__002	HARNESS-SKEW
 product_spec__003	PASS
@@ -868,7 +868,7 @@ slice_spec__017	HARNESS-SKEW
 slice_spec__018	HARNESS-SKEW
 slice_spec__019	HARNESS-SKEW
 slice_spec__020	HARNESS-SKEW
-slice_spec__021	REJECT
+slice_spec__021	REJECT-BYDESIGN
 sort_by_spec__001	PASS
 sort_by_spec__002	REJECT
 sort_by_spec__003	PASS
@@ -956,7 +956,7 @@ to_h_spec__011	HARNESS-SKEW
 to_h_spec__012	HARNESS-SKEW
 to_h_spec__013	HARNESS-SKEW
 to_h_spec__014	HARNESS-SKEW
-to_s_spec__001	REJECT
+to_s_spec__001	REJECT-BYDESIGN
 transpose_spec__001	FAIL
 transpose_spec__002	HARNESS-SKEW
 transpose_spec__003	HARNESS-SKEW

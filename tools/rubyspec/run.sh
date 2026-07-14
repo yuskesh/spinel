@@ -50,12 +50,21 @@ classify_one() {
   local diag; diag=$("$SPINEL" "$f" -o "$bin" 2>&1 >/dev/null)
   if [ ! -x "$bin" ]; then
     local reason; reason=$(grep -oE "unsupported [^:]*|Parse errors|cannot [a-z ]*|error: [^(]*" <<<"$diag" | head -1)
+    # a rejected call names its method: append it so the reject ranking (and
+    # the by-design ledger's rules) can see WHICH call, not just "a call"
+    case "$reason" in unsupported*call*|unsupported*argument*)
+      local mn; mn=$(grep -oE 'CallNode `[A-Za-z_0-9?!=<>]+`' <<<"$diag" | head -1 | sed 's/CallNode //')
+      [ -n "$mn" ] && reason="$reason $mn";;
+    esac
     echo -e "$bn\tREJECT\t${reason:-unknown}" > "$row"; return
   fi
-  local run rc last
-  run=$(timeout 10 "$bin" 2>&1); rc=$?
-  last=$(tail -1 <<<"$run")
-  rm -f "$bin"
+  local rc last
+  # run output goes to a file, NOT a shell variable: an example that prints
+  # unboundedly (1.upto(Infinity)) would otherwise balloon the worker
+  local run_out="$TDIR/out-$bn"
+  timeout 10 "$bin" > "$run_out" 2>&1; rc=$?
+  last=$(tail -c 4096 "$run_out" | tail -1)
+  rm -f "$bin" "$run_out"
   if [ $rc -ne 0 ] || ! grep -q "MSPEC-DONE" <<<"$last"; then
     echo -e "$bn\tERROR\trc=$rc" > "$row"
   elif grep -q "fail=0" <<<"$last"; then

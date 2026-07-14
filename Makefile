@@ -769,7 +769,10 @@ $(RUBYSPEC_DIR)/.pinned:
 
 # Opted-in spec suites: each <dir> maps to expectations/<dir with / -> ->.tsv.
 # Add a directory here + generate its manifest (gen_manifest.rb) to enroll it.
-RUBYSPEC_SUITES := language core/array
+# (core/comparable is not enrolled: its specs build fixture classes through
+# Module.new/def_method patterns the extractor can't project -- 53 of 54
+# extract as HARNESS-SKEW, leaving nothing to defend.)
+RUBYSPEC_SUITES := language core/array core/string core/hash core/integer core/range
 
 rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	@for d in $(RUBYSPEC_SUITES); do \
