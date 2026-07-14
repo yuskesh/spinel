@@ -1746,7 +1746,7 @@ else {
       if (sp_streq(name, "exist?") || sp_streq(name, "exists?"))
         return TY_BOOL;
       if (sp_streq(name, "write") || sp_streq(name, "binwrite") || sp_streq(name, "delete") ||
-          sp_streq(name, "size"))
+          sp_streq(name, "unlink") || sp_streq(name, "size"))
         return TY_INT;
       if (sp_streq(name, "readable?") || sp_streq(name, "directory?") || sp_streq(name, "file?") ||
           sp_streq(name, "zero?") || sp_streq(name, "empty?") || sp_streq(name, "symlink?"))
