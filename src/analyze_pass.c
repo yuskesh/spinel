@@ -1365,6 +1365,35 @@ int infer_write_types(Compiler *c) {
 
   changed |= infer_case_pattern_locals(c);
 
+  /* case/when with a lambda predicate: Ruby dispatches `pattern === x` and
+     Proc#=== calls the lambda with the scrutinee, so the lambda's parameter
+     takes the predicate's type (#2439). */
+  for (int id = 0; id < nt->count; id++) {
+    const char *cty9 = nt_type(nt, id);
+    if (!cty9 || !sp_streq(cty9, "CaseNode")) continue;
+    int cpred = nt_ref(nt, id, "predicate");
+    if (cpred < 0) continue;
+    TyKind cpt = infer_type(c, cpred);
+    if (cpt == TY_UNKNOWN || cpt == TY_VOID || cpt == TY_NIL) continue;
+    int cnw = 0; const int *cwhens = nt_arr(nt, id, "conditions", &cnw);
+    for (int w = 0; w < cnw; w++) {
+      int wc = 0; const int *conds = nt_arr(nt, cwhens[w], "conditions", &wc);
+      for (int j = 0; j < wc; j++) {
+        if (!nt_type(nt, conds[j]) || !sp_streq(nt_type(nt, conds[j]), "LambdaNode")) continue;
+        int bp = nt_ref(nt, conds[j], "parameters");
+        int binner = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+        int pn = binner >= 0 ? binner : bp;
+        if (pn < 0) continue;
+        int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+        if (rn < 1) continue;
+        const char *pnm = nt_str(nt, reqs[0], "name");
+        Scope *lsc = pnm ? comp_scope_of(c, conds[j]) : NULL;
+        LocalVar *plv = lsc ? scope_local(lsc, pnm) : NULL;
+        if (plv && plv->type != cpt) { plv->type = cpt; changed = 1; }
+      }
+    }
+  }
+
   /* Fold container usage into the local type so an empty `[]` / `{}` gets
      its element / key+value type from how it is filled. `a << x` /
      `a.push(x)` / `a[i] = x` (int key) -> array; `h[k] = v` / `h[k] op= v`

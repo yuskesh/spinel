@@ -3013,6 +3013,7 @@ static int emit_when_string_range(Compiler *c, int cond, int t, Buf *b) {
   return 1;
 }
 
+static int emit_when_lambda_inline(Compiler *c, int cond, int t, Buf *b);
 void emit_case(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
@@ -3115,10 +3116,28 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
         }
         else {
           const char *cnty = nt_type(nt, conds[j]);
+          if (emit_when_lambda_inline(c, conds[j], t, b)) { /* literal lambda predicate */ }
+          /* `when <proc>` (a variable): Proc#=== calls the proc with the
+             subject, via the proc-call ABI (mirrors the case-as-value arm) */
+          else if (comp_ntype(c, conds[j]) == TY_PROC) {
+            g_needs_proc_poly_argslot = 1;
+            char subj9[32]; snprintf(subj9, sizeof subj9, "_t%d", t);
+            buf_puts(b, "({ _sp_proc_poly_args[0] = ");
+            if (pt == TY_POLY) buf_puts(b, subj9);
+            else emit_boxed_text(c, pt, subj9, b);
+            buf_puts(b, "; sp_poly_truthy(((void)sp_proc_call(");
+            emit_expr(c, conds[j], b);
+            buf_puts(b, ", 1, (mrb_int[16]){");
+            if (pt == TY_POLY) buf_printf(b, "sp_poly_to_i(%s)", subj9);
+            else if (proc_slot_is_ptr(pt)) buf_printf(b, "(mrb_int)(uintptr_t)%s", subj9);
+            else if (pt == TY_FLOAT) buf_puts(b, "0");
+            else buf_puts(b, subj9);
+            buf_puts(b, "}), _sp_proc_poly_ret)); })");
+          }
           /* `when *arr`: membership -- any element of the splatted array
              matching the scrutinee selects this branch (value equality;
              a Class/Regexp element inside a splat is not #===-dispatched). */
-          if (cnty && sp_streq(cnty, "SplatNode")) {
+          else if (cnty && sp_streq(cnty, "SplatNode")) {
             int sp_in = nt_ref(nt, conds[j], "expression");
             char stmp[32]; snprintf(stmp, sizeof stmp, "_t%d", t);
             buf_puts(b, "sp_case_splat_match(");
@@ -3239,6 +3258,31 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_puts(b, "}\n");
   }
+}
+
+/* `when ->(v) { ... }` with a literal lambda: Proc#=== calls the lambda
+   with the scrutinee. Inline the body -- bind the param to the scrutinee
+   temp `_tN` and evaluate the last expression as the condition -- so a
+   struct-valued scrutinee (sp_Class, sp_Range) never has to ride the
+   mrb_int proc-call ABI (#2439). Returns 1 when emitted. */
+static int emit_when_lambda_inline(Compiler *c, int cond, int t, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!nt_type(nt, cond) || !sp_streq(nt_type(nt, cond), "LambdaNode")) return 0;
+  int lbody = nt_ref(nt, cond, "body");
+  if (lbody < 0) return 0;
+  int lbn = 0; const int *lbb = nt_arr(nt, lbody, "body", &lbn);
+  if (lbn < 1) return 0;
+  int lbp = nt_ref(nt, cond, "parameters");
+  int lbi = lbp >= 0 ? nt_ref(nt, lbp, "parameters") : -1;
+  int lpn = lbi >= 0 ? lbi : lbp;
+  int lrn = 0; const int *lreqs = lpn >= 0 ? nt_arr(nt, lpn, "requireds", &lrn) : NULL;
+  const char *lpnm = lrn > 0 ? nt_str(nt, lreqs[0], "name") : NULL;
+  buf_puts(b, "({ ");
+  if (lpnm) buf_printf(b, "lv_%s = _t%d; ", rename_local(lpnm), t);
+  for (int k9 = 0; k9 < lbn - 1; k9++) emit_stmt(c, lbb[k9], b, 0);
+  emit_cond(c, lbb[lbn - 1], b);
+  buf_puts(b, "; })");
+  return 1;
 }
 
 /* Emit `_crN = <branch's last value>` (boxed to the case's result type when
@@ -3401,6 +3445,8 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
         else if (pt == TY_BIGINT && comp_ntype(c, conds[j]) == TY_BIGINT) {
           buf_printf(b, "(sp_bigint_cmp(_t%d, ", t); emit_expr(c, conds[j], b); buf_puts(b, ") == 0)");
         }
+        else if (comp_ntype(c, conds[j]) == TY_PROC &&
+                 emit_when_lambda_inline(c, conds[j], t, b)) { /* literal lambda inlined */ }
         else if (comp_ntype(c, conds[j]) == TY_PROC) {
           /* `when <proc>`: Proc#=== calls the proc with the subject. The
              subject is published both in the mrb_int slot (typed callee
