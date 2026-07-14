@@ -1474,6 +1474,16 @@ int infer_write_types(Compiler *c) {
         is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
         /* a range key is a splice: the RHS contributes element evidence */
         if (kt == TY_RANGE) { is_splice = 1; vt = splice_incoming_elem(c, argv[1]); }
+        /* an empty [] / {} literal value carries no element type but is
+           definite container evidence: treat it as poly so an int-keyed
+           write can still settle the hash variant (`h = {}; h[k] = []`
+           stayed Str-keyed and stored the int key as a pointer, #2442) */
+        else if (vt == TY_UNKNOWN && nt_type(nt, argv[1]) &&
+                 (sp_streq(nt_type(nt, argv[1]), "ArrayNode") ||
+                  sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
+          int ven9 = 0; nt_arr(nt, argv[1], "elements", &ven9);
+          if (ven9 == 0) vt = TY_POLY;
+        }
       }
       else if (name && sp_streq(name, "store") && an == 2) {
         /* Hash#store is []= (#2433) */
