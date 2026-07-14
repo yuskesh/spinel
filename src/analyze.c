@@ -4708,6 +4708,24 @@ static void mark_empty_array_receivers(Compiler *c) {
     if (en == 0) c->empty_arr_recv[recv] = 1;
   }
 }
+/* A direct empty `{}` literal receiver of a block method (`{}.select { }`)
+   infers TY_UNKNOWN and can't dispatch; mark it so infer types it as the
+   bare-{} hash (STR_POLY), the same fallback a never-narrowed `{}` local uses. */
+static void mark_empty_hash_receivers(Compiler *c) {
+  if (!c->empty_hash_recv) return;
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    if (nt_ref(nt, id, "block") < 0) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || recv >= c->node_cap) continue;
+    const char *rty = nt_type(nt, recv);
+    if (!rty || (!sp_streq(rty, "HashNode") && !sp_streq(rty, "KeywordHashNode"))) continue;
+    int en = 0; nt_arr(nt, recv, "elements", &en);
+    if (en == 0) c->empty_hash_recv[recv] = 1;
+  }
+}
 
 /* --- byref string out-params (see LocalVar.byref_out) ---------------------
    CRuby strings are shared heap objects: a callee's `s << "x"` mutates the
@@ -5023,6 +5041,9 @@ void analyze_program(Compiler *c) {
   synth_struct_each(c);
   synth_enum_to_a(c);
   synth_to_enum_generators(c);
+  /* pre-fixpoint: an empty `{}` block-method receiver types as the STR_POLY
+     hash so infer_block_params declares its |k, v| params (#2336). */
+  mark_empty_hash_receivers(c);
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
@@ -5440,6 +5461,25 @@ void analyze_program(Compiler *c) {
        promotion: a variable whose only write is an empty array literal
        is definitively an array, not a hash. */
     if (lv && !lv->rbs_seeded && (lv->type == TY_UNKNOWN || ty_is_hash(lv->type))) lv->type = TY_POLY_ARRAY;
+  }
+  /* Backstop: a local assigned only empty hash literals `{}` that no key-write
+     ever narrowed stays TY_UNKNOWN, so its hash block methods (select/reject/
+     each/...) can't dispatch. Default it to the bare-{} hash type. Runs
+     post-fixpoint, so a key-write that narrowed it to a concrete variant
+     (SYM_POLY / STR_INT / ...) already set lv->type and is kept (#2336). */
+  for (int id = 0; id < c->nt->count; id++) {
+    const char *ty = nt_type(c->nt, id);
+    if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
+    int v = nt_ref(c->nt, id, "value");
+    const char *vty = v >= 0 ? nt_type(c->nt, v) : NULL;
+    if (!vty || !sp_streq(vty, "HashNode")) continue;
+    int en = 0; nt_arr(c->nt, v, "elements", &en);
+    if (en != 0) continue;
+    const char *nm = nt_str(c->nt, id, "name");
+    Scope *s = comp_scope_of(c, id);
+    LocalVar *lv = nm ? scope_local(s, nm) : NULL;
+    if (lv && !lv->rbs_seeded && lv->type == TY_UNKNOWN &&
+        local_all_writes_empty_hash(c, s, nm)) lv->type = TY_STR_POLY_HASH;
   }
   /* Re-narrow a POLY_ARRAY ivar to IntArray when every element source is now
      (post-fixpoint) int. The monotonic usage pass locks the slot to POLY_ARRAY

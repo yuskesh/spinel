@@ -4655,7 +4655,13 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_HashNode || nk == NK_KeywordHashNode) {
     int n = 0;
     const int *els = nt_arr(nt, id, "elements", &n);
-    if (n == 0) return TY_UNKNOWN;
+    if (n == 0) {
+      /* a bare `{}` used directly as a hash block-method receiver dispatches as
+         the STR_POLY hash (mirrors the empty-array-receiver mark) (#2336). */
+      if (c->empty_hash_recv && id < c->node_cap && c->empty_hash_recv[id])
+        return TY_STR_POLY_HASH;
+      return TY_UNKNOWN;
+    }
     TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
     for (int k = 0; k < n; k++) {
       const char *aty = nt_type(nt, els[k]);
