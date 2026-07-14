@@ -7851,6 +7851,74 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         return;
       }
     }
+    /* a user class method called on a Class-typed value carried in a plain
+       variable / parameter (`model.table_name` where model is a Class object):
+       switch on the boxed class id and call the matching class's static
+       method. A constant / accessor receiver (`Foo.bar`, `Reg.handler.run`)
+       keeps its existing direct or Stage-2 dispatch. Only user classes that
+       define (or inherit) the name get an arm; the result unifies their return
+       types (poly when they disagree). (#2445) */
+    {
+      const char *rvty9 = nt_type(nt, recv);
+      int recv_is_var9 = rvty9 && (sp_streq(rvty9, "LocalVariableReadNode") ||
+                                   sp_streq(rvty9, "InstanceVariableReadNode"));
+      int ncand9 = 0, defmi9 = -1;
+      if (!recv_is_var9) goto skip_cls_cmethod9;
+      TyKind uret9 = TY_UNKNOWN; int uret_set9 = 0;
+      for (int k = 0; k < c->nclasses; k++) {
+        if (is_builtin_reopen(c->classes[k].name)) continue;
+        int kmi = comp_cmethod_in_chain(c, k, name, NULL);
+        if (kmi < 0) continue;
+        ncand9++; defmi9 = kmi;
+        TyKind kr = (TyKind)c->scopes[kmi].ret;
+        if (!uret_set9) { uret9 = kr; uret_set9 = 1; }
+        else if (kr != uret9) uret9 = TY_POLY;
+      }
+      if (ncand9 > 0) {
+        /* every candidate method must take no required args beyond the ones
+           this call supplies -- keep it to the zero-arg case for now, which
+           is the reported shape and the common reflection-on-model use */
+        int simple9 = (argc == 0 && nt_ref(nt, id, "block") < 0);
+        for (int k = 0; simple9 && k < c->nclasses; k++) {
+          if (is_builtin_reopen(c->classes[k].name)) continue;
+          int kmi = comp_cmethod_in_chain(c, k, name, NULL);
+          if (kmi < 0) continue;
+          /* a method taking required args, a &block, or that yields can't be
+             called through this zero-arg no-block switch */
+          if (c->scopes[kmi].nrequired != 0 || c->scopes[kmi].yields ||
+              (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) simple9 = 0;
+        }
+        if (simple9) {
+          TyKind slot9 = is_scalar_ret(uret9) && uret9 != TY_VOID && uret9 != TY_UNKNOWN
+                         ? uret9 : (ty_is_object(uret9) ? uret9 : TY_POLY);
+          int tk9 = ++g_tmp, tr9 = ++g_tmp;
+          buf_printf(b, "({ sp_Class _t%d = ", tk9); emit_expr(c, recv, b); buf_puts(b, "; ");
+          emit_ctype(c, slot9, b);
+          buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr9,
+                     slot9 == TY_POLY ? "sp_box_nil()" : default_value(slot9), tk9);
+          for (int k = 0; k < c->nclasses; k++) {
+            if (is_builtin_reopen(c->classes[k].name)) continue;
+            int defcls9 = -1;
+            int kmi = comp_cmethod_in_chain(c, k, name, &defcls9);
+            if (kmi < 0) continue;
+            TyKind kr = (TyKind)c->scopes[kmi].ret;
+            buf_printf(b, " case %d: _t%d = ", k, tr9);
+            char call9[256]; Buf cb9; memset(&cb9, 0, sizeof cb9);
+            emit_method_cname(c, &c->scopes[kmi], &cb9);
+            snprintf(call9, sizeof call9, "%s()", cb9.p ? cb9.p : "");
+            free(cb9.p);
+            if (slot9 == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, call9, b);
+            else if (slot9 != TY_POLY && kr == TY_POLY) emit_unbox_text(c, slot9, call9, b);
+            else buf_puts(b, call9);
+            buf_puts(b, "; break;");
+          }
+          buf_printf(b, " } _t%d; })", tr9);
+          (void)defmi9;
+          return;
+        }
+      }
+      skip_cls_cmethod9:;
+    }
   }
 
   /* freeze / frozen? on an array set/read the struct's frozen flag */

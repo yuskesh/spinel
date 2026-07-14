@@ -1326,6 +1326,29 @@ TyKind infer_call(Compiler *c, int id) {
                       sp_streq(name, "public_instance_methods") ||
                       sp_streq(name, "private_instance_methods") ||
                       sp_streq(name, "protected_instance_methods"))) return TY_POLY;
+    /* a user class method on a Class-typed value carried in a plain variable
+       (`model.table_name`): unify the return types of every user class
+       defining it (poly on disagreement). A constant/accessor receiver keeps
+       its existing dispatch, so only fire for a variable receiver (#2445). */
+    {
+      const char *rvty = nt_type(nt, recv);
+      int recv_is_var = rvty && (sp_streq(rvty, "LocalVariableReadNode") ||
+                                 sp_streq(rvty, "InstanceVariableReadNode"));
+      TyKind uret = TY_UNKNOWN; int nc = recv_is_var ? 0 : -1000, set = 0;
+      for (int k = 0; recv_is_var && k < c->nclasses; k++) {
+        if (is_builtin_reopen(c->classes[k].name)) continue;
+        int kmi = comp_cmethod_in_chain(c, k, name, NULL);
+        if (kmi < 0) continue;
+        if (c->scopes[kmi].nrequired != 0 || c->scopes[kmi].yields ||
+            (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; break; }
+        nc++;
+        TyKind kr = (TyKind)c->scopes[kmi].ret;
+        if (!set) { uret = kr; set = 1; }
+        else if (kr != uret) uret = TY_POLY;
+      }
+      if (nc > 0 && argc == 0)
+        return (uret == TY_UNKNOWN || uret == TY_VOID) ? TY_POLY : uret;
+    }
   }
 
   /* __method__ / __callee__ -> the enclosing method's name (a symbol), or
