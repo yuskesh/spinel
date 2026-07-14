@@ -130,14 +130,25 @@ through every int-arithmetic consumer, so a negative value there still
 raises `RangeError` rather than silently truncating. `Integer#pow(negative,
 mod)` raises `RangeError` with CRuby's message.
 
-#### Unboxed value types have no object identity
+#### Unboxed value types: identity IS the value
 
-`Complex`, `Rational`, and `Range` values are unboxed C structs, so there is
-no per-object identity to observe: `equal?` (and `object_id` comparisons)
-degrade to component equality. `x.equal?(x)` is `true` as in CRuby, but two
-separately-constructed equal values also compare `equal?` (CRuby: `false`).
+`Complex`, `Rational`, and `Range` values are unboxed C structs with no
+internal pointers, so there is no per-object address to observe: `equal?`
+(and `object_id` comparisons) are component equality. `x.equal?(x)` is `true`
+as in CRuby, but two separately-constructed equal values also compare
+`equal?` (CRuby: `false`). This extends the treatment CRuby itself applies to
+its immediate values -- `1.equal?(1)`, `:s.equal?(:s)`, and (on 64-bit)
+`1.0.equal?(1.0)` are all `true` there because the value is the identity.
 The same applies to `freeze` on these values: they are value-frozen already
 (`frozen?` is `true`), and `freeze` is an identity no-op.
+
+**Strings DO have identity.** Every string is a real pointer (heap or
+static), and every literal *occurrence* is its own static object, so
+`"abc".equal?("abc")` is `false` across two occurrences and aliasing
+(`b = a`) answers `true`, matching plain CRuby. The one residue: re-evaluating
+the SAME occurrence (a literal inside a loop) yields one object where plain
+CRuby allocates per evaluation -- the `frozen_string_literal: true` semantics,
+consistent with Spinel's strings being immutable.
 
 #### `Range#step` / `Range#%` return a materialized Array, not an ArithmeticSequence
 

@@ -916,6 +916,26 @@ void emit_str_literal(Buf *b, const char *content) {
   if (!content) { buf_puts(b, "(&(\"\\xff\")[1])"); return; }
   emit_str_literal_n(b, content, strlen(content), 0);
 }
+/* Ruby-source string literal (a StringNode): unlike the internal-constant
+   emitter above, each OCCURRENCE gets its own static array, so two textually
+   equal literals are two distinct objects and `equal?` (pointer identity)
+   answers like CRuby. The plain `("\xff" "abc")` form let the C compiler merge
+   equal literals into one address, making `"abc".equal?("abc")` true. A
+   re-evaluated occurrence (a literal in a loop) still yields one address --
+   the frozen-string-literal semantics spinel's immutable strings already have.
+   Frozen and NUL-containing literals keep their existing per-site forms
+   (_fzl_N / sp_str_from_bytes), which are already identity-correct. */
+void emit_str_literal_src(Buf *b, const char *content, size_t len, int frozen) {
+  static int g_slit_ctr = 0;
+  if (frozen || (content && len > strlen(content))) {
+    emit_str_literal_n(b, content, len, frozen);
+    return;
+  }
+  int lid = g_slit_ctr++;
+  buf_printf(b, "({ static const char _slit_%d[] = \"\\xff\" \"", lid);
+  if (content && len) emit_c_escaped_n(b, content, len);
+  buf_printf(b, "\"; &_slit_%d[1]; })", lid);
+}
 /* Emit a catch/throw tag expression; returns the tag KIND (0 = name tag
    matched by content, 1 = object tag matched by pointer identity). */
 int emit_catch_tag(Compiler *c, int id, Buf *b) {

@@ -558,8 +558,8 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   if (sp_streq(ty, "StringNode")) {
     const char *sc = nt_str(nt, id, "content");
-    emit_str_literal_n(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0,
-                       (int)nt_int(nt, id, "fzl", 0));
+    emit_str_literal_src(b, sc ? sc : "", sc ? nt_str_len(nt, id, "content") : 0,
+                         (int)nt_int(nt, id, "fzl", 0));
     return;
   }
   if (sp_streq(ty, "SourceFileNode")) {

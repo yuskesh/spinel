@@ -26,14 +26,16 @@ puts s.eql?(t)      # true
 puts s.eql?(u)      # false
 puts "x".eql?("x")  # true
 
-# String#equal? : object identity is POINTER identity. Identical literals
-# share storage (the frozen-string-literal world: "x".equal?("x") is true
-# there in CRuby too), so equal-valued literals ARE identity-equal here --
-# and s.freeze.equal?(s) / aliasing (t = s) answer truthfully.
+# String#equal? : object identity is POINTER identity. Each literal
+# OCCURRENCE is its own static object (no cross-occurrence merging), so two
+# textually equal literals are distinct objects, matching plain CRuby.
+# Aliasing (t = s) still answers truthfully. The one residue: re-evaluating
+# the SAME occurrence (a literal in a loop) yields one object -- the
+# frozen-string-literal semantics spinel's immutable strings always had.
 puts s.equal?(s)    # true   (same variable)
-puts s.equal?(t)    # true   (identical literals share storage)
+puts s.equal?(t)    # false  (two occurrences: distinct objects)
 puts s.equal?(u)    # false  (different value)
-puts "x".equal?("x") # true  (shared literal)
+puts "x".equal?("x") # false (two occurrences: distinct objects)
 
 # typed receiver, polymorphic arg (element drawn from a mixed array)
 mix = [1, "x", 1.0]

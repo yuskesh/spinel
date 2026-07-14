@@ -5333,6 +5333,17 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; _t%d.tag == SP_TAG_FLT && _t%d.v.f == (%s); })", te, te, r);
         }
       }
+      /* Float#equal?: an unboxed double is an immediate value -- identity IS
+         the value, exactly CRuby's flonum behavior (1.0.equal?(1.0) is true). */
+      else if (sp_streq(name, "equal?") && argc == 1) {
+        TyKind a0 = comp_ntype(c, argv[0]);
+        if (a0 == TY_FLOAT) { buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))"); }
+        else {
+          int te = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; _t%d.tag == SP_TAG_FLT && _t%d.v.f == (%s); })", te, te, r);
+        }
+      }
       else handled = 0;
     }
     free(rs.p);

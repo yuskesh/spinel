@@ -444,6 +444,7 @@ void emit_c_escaped_n(Buf *b, const char *s, size_t len);
 void emit_c_escaped(Buf *b, const char *s);
 void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen);
 void emit_str_literal(Buf *b, const char *content);
+void emit_str_literal_src(Buf *b, const char *content, size_t len, int frozen);
 int emit_catch_tag(Compiler *c, int id, Buf *b);
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b);
 int unwrap_parens(Compiler *c, int id);

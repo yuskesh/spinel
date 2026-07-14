@@ -903,7 +903,7 @@ TyKind infer_call(Compiler *c, int id) {
       ty_is_object(rt)) return TY_BOOL;
   if (recv >= 0 && rt == TY_SYMBOL && argc == 0 && sp_streq(name, "encoding"))
     return TY_POLY;  /* a boxed Encoding value */
-  if (recv >= 0 && (rt == TY_BOOL || rt == TY_SYMBOL) && argc == 1 &&
+  if (recv >= 0 && (rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_FLOAT) && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?"))) return TY_BOOL;
   if (recv >= 0 && rt == TY_NIL) {
     if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
