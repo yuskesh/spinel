@@ -468,7 +468,8 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   int is_sum = sp_streq(name, "sum"), is_count = sp_streq(name, "count");
   int is_all = sp_streq(name, "all?"), is_any = sp_streq(name, "any?");
-  if (!is_sum && !is_count && !is_all && !is_any) return 0;
+  int is_none = sp_streq(name, "none?"), is_one = sp_streq(name, "one?");
+  if (!is_sum && !is_count && !is_all && !is_any && !is_none && !is_one) return 0;
   int argc = 0; { int ar = nt_ref(nt, id, "arguments"); if (ar >= 0) nt_arr(nt, ar, "arguments", &argc); }
   if (is_sum ? argc > 1 : argc != 0) return 0;
   int recv = nt_ref(nt, id, "receiver");
@@ -499,10 +500,10 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
     buf_puts(g_pre, ";\n");
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tacc);
   }
-  else if (is_count)
-    buf_printf(g_pre, "mrb_int _t%d = 0;\n", tacc);
+  else if (is_count || is_one)
+    buf_printf(g_pre, "mrb_int _t%d = 0;\n", tacc);   /* one? tallies, checks == 1 */
   else
-    buf_printf(g_pre, "mrb_bool _t%d = %s;\n", tacc, is_all ? "TRUE" : "FALSE");
+    buf_printf(g_pre, "mrb_bool _t%d = %s;\n", tacc, (is_all || is_none) ? "TRUE" : "FALSE");
 
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
@@ -526,14 +527,17 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
            buf_printf(&cond, "sp_poly_truthy(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
     const char *cs = cond.p ? cond.p : "0";
     emit_indent(g_pre, g_indent + 1);
-    if (is_count) buf_printf(g_pre, "if (%s) _t%d++;\n", cs, tacc);
+    if (is_count || is_one) buf_printf(g_pre, "if (%s) _t%d++;\n", cs, tacc);  /* one?: tally, break >1 below */
     else if (is_all) buf_printf(g_pre, "if (!(%s)) { _t%d = FALSE; break; }\n", cs, tacc);
+    else if (is_none) buf_printf(g_pre, "if (%s) { _t%d = FALSE; break; }\n", cs, tacc);
     else buf_printf(g_pre, "if (%s) { _t%d = TRUE; break; }\n", cs, tacc);
+    if (is_one) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "if (_t%d > 1) break;\n", tacc); }
     free(cond.p);
   }
   free(vb);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "_t%d", tacc);
+  if (is_one) buf_printf(b, "(_t%d == 1)", tacc);
+  else buf_printf(b, "_t%d", tacc);
   return 1;
 }
 
