@@ -35,6 +35,11 @@ endif
 # _FORTIFY_SOURCE, so -Wno-all does not cover it). clang lacks the flag and
 # ignores it via -Wno-unknown-warning-option above.
 OPT     ?= -O2
+# String#crypt is libc crypt(3): glibc keeps it in libcrypt (macOS has it in
+# libSystem). --as-needed drops the DSO when a program never calls it.
+ifeq ($(shell uname -s),Linux)
+LDFLAGS += -lcrypt
+endif
 CFLAGS   = $(OPT) -Wno-all -Wno-unknown-warning-option -Wno-alloc-size-larger-than -Wno-format-truncation
 
 # The product build -- bin/spinel, libspinel_rt.a, and the generated

@@ -914,6 +914,7 @@ TyKind infer_call(Compiler *c, int id) {
     return TY_POLY;  /* a boxed Encoding value */
   if (recv >= 0 && (rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_FLOAT) && argc == 1 &&
       (sp_streq(name, "equal?") || sp_streq(name, "eql?"))) return TY_BOOL;
+  if (recv >= 0 && rt == TY_FLOAT && argc == 1 && sp_streq(name, "===")) return TY_BOOL;  /* (#2400) */
   if (recv >= 0 && rt == TY_NIL) {
     if (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
         sp_streq(name, "===") || sp_streq(name, "equal?") || sp_streq(name, "eql?")) return TY_BOOL;
@@ -3227,13 +3228,11 @@ else {
           if (comp_method_in_chain(c, k, name, NULL) >= 0) has_user = 1;
         if (!has_user) return TY_BOOL;
       }
-      /* & | ^ against a boolean operand is the NilClass/Boolean logical
-         operator (an int receiver with a bool operand would be a TypeError),
-         so the result is a boolean; int operands keep the bitwise int type. */
-      if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
-        TyKind bat = infer_type(c, argv[0]);
-        if (bat == TY_BOOL || bat == TY_NIL) return TY_BOOL;
-      }
+      /* & | ^ on a poly receiver dispatch on the runtime tag (nil/bool take
+         the boolean ops, ints the bitwise ones) via sp_poly_bitop, whose
+         result is a boxed value -- so the static type stays poly (#2401). */
+      if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^")))
+        return TY_POLY;
       /* String transforms on a boxed value: emit_poly_call routes these
          through sp_poly_to_s and re-boxes the result, so the value stays
          poly (mirrors the codegen list in codegen_call_recv.c). */
@@ -3790,7 +3789,7 @@ else {
         sp_streq(name, "delete")) return TY_STRING;
     if (sp_streq(name, "slice!")) return TY_STRING;  /* removed part, or nil */
     if (sp_streq(name, "[]") || sp_streq(name, "slice") || sp_streq(name, "byteslice") ||
-        sp_streq(name, "bytesplice") ||
+        sp_streq(name, "bytesplice") || sp_streq(name, "append_as_bytes") ||
         sp_streq(name, "force_encoding") || sp_streq(name, "b") || sp_streq(name, "encode")) return TY_STRING;
     if ((sp_streq(name, "dump") || sp_streq(name, "undump")) && argc == 0) return TY_STRING;
     if (sp_streq(name, "index") && argc == 1) {

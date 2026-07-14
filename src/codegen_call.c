@@ -6446,9 +6446,16 @@ void emit_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "); })");
     return;
   }
-  /* poly_val >> int / poly_val & int / | / ^ : unbox recv to int, apply op */
+  /* poly_val >> int: unbox recv to int, apply op. & | ^ dispatch on the
+     runtime tag instead (nil/bool are boolean ops, ints bitwise; #2401). */
   if (recv >= 0 && argc == 1 && comp_ntype(c, recv) == TY_POLY &&
-      (sp_streq(name, ">>") || sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+      (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+    int bop = sp_streq(name, "&") ? 0 : sp_streq(name, "|") ? 1 : 2;
+    buf_puts(b, "sp_poly_bitop("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+    emit_boxed(c, argv[0], b); buf_printf(b, ", %d)", bop);
+    return;
+  }
+  if (recv >= 0 && argc == 1 && comp_ntype(c, recv) == TY_POLY && sp_streq(name, ">>")) {
     TyKind at = comp_ntype(c, argv[0]);
     buf_puts(b, "(sp_poly_to_i("); emit_expr(c, recv, b); buf_printf(b, ") %s ", name);
     if (at == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -10498,8 +10505,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && argc == 1 &&
       ((rt == TY_INT && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
                          sp_streq(name, "<<") || sp_streq(name, ">>"))) ||
-       (rt == TY_POLY && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^") ||
-                          sp_streq(name, ">>"))))) {
+       (rt == TY_POLY && sp_streq(name, ">>")))) {
     TyKind at0 = comp_ntype(c, argv[0]);
     /* A `<<`/`>>` by a NEGATIVE (or >= word width) count is UB as a bare C shift
        -- Ruby shifts the other way for a negative count. Only a constant literal
@@ -10892,6 +10898,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* nil receiver: nil.inspect -> "nil", nil.to_s -> "", nil.nil? -> true.
      Evaluate the receiver for side effects, then yield the constant. */
   if (recv >= 0 && rt == TY_NIL) {
+    /* nil & / | / ^ are BOOLEAN ops (nil is false): & is always false, | and ^
+       are the argument's truthiness -- not integer bitwise (#2401) */
+    if (argc == 1 && (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
+      if (sp_streq(name, "&")) {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b);
+        buf_puts(b, "), (void)("); emit_boxed(c, argv[0], b); buf_puts(b, "), 0)");
+      } else {
+        buf_puts(b, "((void)("); emit_expr(c, recv, b);
+        buf_puts(b, "), sp_poly_truthy("); emit_boxed(c, argv[0], b); buf_puts(b, "))");
+      }
+      return;
+    }
     if (argc == 0 && sp_streq(name, "inspect")) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"nil\"))"); return; }
     if (argc == 0 && sp_streq(name, "to_s"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SPL(\"\"))"); return; }
     if (argc == 0 && sp_streq(name, "nil?"))    { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 1)"); return; }

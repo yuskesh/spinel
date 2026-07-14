@@ -295,27 +295,17 @@ const char*sp_str_repeat(const char*s,mrb_int n){SP_GC_ROOT_STR(s);
    yielding an empty result exactly on GC-boundary iterations. */
 sp_IntArray*sp_str_bytes(const char*s){SP_GC_ROOT_STR(s);sp_IntArray*a=sp_IntArray_new();if(!s)sp_nil_recv("bytes");size_t n=sp_str_byte_len(s);for(size_t i=0;i<n;i++)sp_IntArray_push(a,(mrb_int)(unsigned char)s[i]);return a;}
 const char *sp_str_crypt(const char *s, const char *salt) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(salt);
-  if (!salt) salt = "";
-  char salt2[3];
-  salt2[0] = salt[0] ? salt[0] : '.';
-  salt2[1] = (salt[0] && salt[1]) ? salt[1] : '.';
-  salt2[2] = 0;
-  const char *digest = sp_crypto_hmac_sha256_b64url(salt2, s ? s : "");
-  char *r = sp_str_alloc(13);
-  r[0] = salt2[0];
-  r[1] = salt2[1];
-  for (int i = 0; i < 11; i++) {
-    char c = digest[i];
-    /* Map b64url's `-`/`_` to crypt-alphabet `.`/`/` so the
-       output stays in `[./0-9A-Za-z]` like the historical
-       crypt result. */
-    if (c == '-') c = '.';
-    else if (c == '_') c = '/';
-    r[2 + i] = c;
-  }
-  r[13] = 0;
-  sp_str_set_len(r, 13);
-  return r;
+  /* the real libc crypt(3) -- DES with a 2-char salt (or the platform's
+     extended schemes), byte-identical to CRuby's String#crypt (#2398).
+     Declared by hand: glibc hides it behind crypt.h/_XOPEN_SOURCE while
+     macOS ships it in unistd.h. */
+  extern char *crypt(const char *key, const char *slt);
+  if (!s) sp_nil_recv("crypt");
+  if (!salt || !salt[0] || !salt[1])
+    sp_raise_cls("ArgumentError", "salt too short (need >=2 bytes)");
+  char *d = crypt(s, salt);
+  if (!d) sp_raise_cls("ArgumentError", "invalid salt");
+  return sp_str_dup_external(d);
 }
 const char*sp_str_lstrip(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("lstrip");size_t len=sp_str_byte_len(s);size_t a=0;while(a<len&&(isspace((unsigned char)s[a])||s[a]=='\0'))a++;size_t n=len-a;char*r=sp_str_alloc(n);memcpy(r,s+a,n);r[n]=0;return r;}
 const char*sp_str_rstrip(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("rstrip");size_t len=sp_str_byte_len(s);size_t b=len;while(b>0&&(isspace((unsigned char)s[b-1])||s[b-1]=='\0'))b--;char*r=sp_str_alloc(b);memcpy(r,s,b);r[b]=0;return r;}

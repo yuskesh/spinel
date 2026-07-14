@@ -510,52 +510,52 @@ rbs-seed-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB)
 	$(CC) -fsyntax-only -Ilib "$$tmp/out.c" 2>/dev/null || { echo "rbs-seed-test: FAIL (nested_ivar C invalid)"; ok=0; }; \
 	$(SPINEL) test/rbs-seed/boundary.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/b.c" 2>/dev/null; \
-	if $(CC) -O0 -Ilib "$$tmp/b.c" $(SP_RT_LIB) -lm -o "$$tmp/b" 2>"$$tmp/b.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/b.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/b" 2>"$$tmp/b.err"; then \
 	  "$$tmp/b" > "$$tmp/b.out" 2>/dev/null; \
 	  cmp -s "$$tmp/b.out" test/rbs-seed/boundary.expected || { echo "rbs-seed-test: FAIL (#1417 boundary output mismatch)"; diff -u test/rbs-seed/boundary.expected "$$tmp/b.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#1417 boundary coercion C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/module_clone_divergent.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/mc.c" 2>/dev/null; \
-	if $(CC) -O0 -Ilib "$$tmp/mc.c" $(SP_RT_LIB) -lm -o "$$tmp/mc" 2>"$$tmp/mc.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/mc.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/mc" 2>"$$tmp/mc.err"; then \
 	  "$$tmp/mc" > "$$tmp/mc.out" 2>/dev/null; \
 	  cmp -s "$$tmp/mc.out" test/rbs-seed/module_clone_divergent.expected || { echo "rbs-seed-test: FAIL (#2008 module-clone divergent-hash output mismatch)"; diff -u test/rbs-seed/module_clone_divergent.expected "$$tmp/mc.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#2008 module-clone divergent-hash C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/void_block_tail.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/v.c" 2>/dev/null; \
-	if $(CC) -O0 -Ilib "$$tmp/v.c" $(SP_RT_LIB) -lm -o "$$tmp/v" 2>"$$tmp/v.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/v.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/v" 2>"$$tmp/v.err"; then \
 	  "$$tmp/v" > "$$tmp/v.out" 2>/dev/null; \
 	  cmp -s "$$tmp/v.out" test/rbs-seed/void_block_tail.expected || { echo "rbs-seed-test: FAIL (void block tail output mismatch)"; diff -u test/rbs-seed/void_block_tail.expected "$$tmp/v.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (void-returning call as proc tail: C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/map_untyped_poly.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/mu.c" 2>/dev/null; \
-	if $(CC) -O0 -Ilib "$$tmp/mu.c" $(SP_RT_LIB) -lm -o "$$tmp/mu" 2>"$$tmp/mu.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/mu.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/mu" 2>"$$tmp/mu.err"; then \
 	  "$$tmp/mu" > "$$tmp/mu.out" 2>/dev/null; \
 	  cmp -s "$$tmp/mu.out" test/rbs-seed/map_untyped_poly.expected || { echo "rbs-seed-test: FAIL (untyped map-into-poly output mismatch)"; diff -u test/rbs-seed/map_untyped_poly.expected "$$tmp/mu.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (untyped map result boxed as sp_box_int: C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/capture_civ_array.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/cca.c" 2>/dev/null; \
-	if $(CC) -O0 -Ilib "$$tmp/cca.c" $(SP_RT_LIB) -lm -o "$$tmp/cca" 2>"$$tmp/cca.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/cca.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/cca" 2>"$$tmp/cca.err"; then \
 	  "$$tmp/cca" > "$$tmp/cca.out" 2>/dev/null; \
 	  cmp -s "$$tmp/cca.out" test/rbs-seed/capture_civ_array.expected || { echo "rbs-seed-test: FAIL (#1827 typed-array return pin output mismatch)"; diff -u test/rbs-seed/capture_civ_array.expected "$$tmp/cca.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#1827 Array[String] return pin: C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/poly_array_ivar.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/pa.c" 2>/dev/null; \
 	grep -Eq 'sp_PolyArray[[:space:]]*\*[[:space:]]*iv_kids' "$$tmp/pa.c" || { echo "rbs-seed-test: FAIL (poly_array ivar seed dropped)"; ok=0; }; \
-	if $(CC) -O0 -Ilib "$$tmp/pa.c" $(SP_RT_LIB) -lm -o "$$tmp/pa" 2>"$$tmp/pa.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/pa.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/pa" 2>"$$tmp/pa.err"; then \
 	  "$$tmp/pa" > "$$tmp/pa.out" 2>/dev/null; \
 	  cmp -s "$$tmp/pa.out" test/rbs-seed/poly_array_ivar.expected || { echo "rbs-seed-test: FAIL (poly_array ivar output mismatch)"; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (poly_array ivar: C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/pinned_container.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/pc.c" 2>/dev/null; \
 	grep -Eq 'sp_PolyArray[[:space:]]*\*[[:space:]]*iv_kids' "$$tmp/pc.c" || { echo "rbs-seed-test: FAIL (ivar seed pin lost to fixpoint inference)"; ok=0; }; \
-	if $(CC) -O0 -Ilib "$$tmp/pc.c" $(SP_RT_LIB) -lm -o "$$tmp/pc" 2>"$$tmp/pc.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/pc.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/pc" 2>"$$tmp/pc.err"; then \
 	  "$$tmp/pc" > "$$tmp/pc.out" 2>/dev/null; \
 	  cmp -s "$$tmp/pc.out" test/rbs-seed/pinned_container.expected || { echo "rbs-seed-test: FAIL (pinned container output mismatch)"; diff -u test/rbs-seed/pinned_container.expected "$$tmp/pc.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (pinned container: C did not compile)"; ok=0; fi; \
 	$(SPINEL) test/rbs-seed/inherited_pin_conflict.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/ipc.c" 2>"$$tmp/ipc.warn"; \
 	grep -q "ivar pin @id dropped on Thing" "$$tmp/ipc.warn" || { echo "rbs-seed-test: FAIL (#1871 conflicting inherited pin didn't warn)"; ok=0; }; \
-	if $(CC) -O0 -Ilib "$$tmp/ipc.c" $(SP_RT_LIB) -lm -o "$$tmp/ipc" 2>"$$tmp/ipc.err"; then \
+	if $(CC) -O0 -Ilib "$$tmp/ipc.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/ipc" 2>"$$tmp/ipc.err"; then \
 	  "$$tmp/ipc" > "$$tmp/ipc.out" 2>/dev/null; \
 	  cmp -s "$$tmp/ipc.out" test/rbs-seed/inherited_pin_conflict.expected || { echo "rbs-seed-test: FAIL (#1871 inherited-pin output mismatch)"; diff -u test/rbs-seed/inherited_pin_conflict.expected "$$tmp/ipc.out" || true; ok=0; }; \
 	else echo "rbs-seed-test: FAIL (#1871 inherited pin conflict: C did not compile)"; ok=0; fi; \

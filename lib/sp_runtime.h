@@ -1989,6 +1989,18 @@ static inline void sp_poly_puts(sp_RbVal v) {
 }
 static mrb_bool sp_poly_nil_p(sp_RbVal v) { return v.tag == SP_TAG_NIL; }
 static mrb_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_BOOL && !v.v.b)); }
+/* poly & / | / ^ dispatch on the receiver's runtime tag: nil/false/true take
+   the BOOLEAN ops (nil & x == false, nil | x == truthy(x), ...), integers take
+   the bitwise ops (#2401). */
+static mrb_int sp_poly_to_i(sp_RbVal v);  /* defined below */
+static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ */
+  if (a.tag == SP_TAG_NIL || a.tag == SP_TAG_BOOL) {
+    mrb_bool av = sp_poly_truthy(a), bv = sp_poly_truthy(b);
+    return sp_box_bool(op == 0 ? (av && bv) : op == 1 ? (av || bv) : (av != bv));
+  }
+  mrb_int ai = sp_poly_to_i(a), bi = sp_poly_to_i(b);
+  return sp_box_int(op == 0 ? (ai & bi) : op == 1 ? (ai | bi) : (ai ^ bi));
+}
 /* forward-declare the program-emitted class
    name lookup so sp_poly_to_s's SP_TAG_CLASS arm resolves.
    The codegen emits a 1-line stub when no class const is used,

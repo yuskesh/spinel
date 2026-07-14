@@ -491,6 +491,39 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   /* String#bytesplice(start, len, str): byte-range replace returning self
      (value-semantics strings: the helper builds the new value and an lvalue
      receiver is rebound to it). */
+  /* bytesplice(range, str): lower the Range index to (start, len) (#2396) */
+  if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 2 && recv >= 0 &&
+      comp_ntype(c, argv[0]) == TY_RANGE) {
+    const char *rvt9 = nt_type(nt, recv);
+    int lvw9 = rvt9 && (sp_streq(rvt9, "LocalVariableReadNode") ||
+                        sp_streq(rvt9, "InstanceVariableReadNode"));
+    int tr9 = ++g_tmp, tn9 = ++g_tmp;
+    buf_printf(b, "({ sp_Range _t%d = ", tr9); emit_expr(c, argv[0], b);
+    buf_printf(b, "; const char *_t%d = sp_str_bytesplice(", tn9);
+    emit_expr(c, recv, b);
+    buf_printf(b, ", _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ", tr9, tr9, tr9, tr9);
+    emit_expr(c, argv[1], b); buf_puts(b, ")");
+    if (lvw9) { buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d", tn9); }
+    buf_printf(b, "; _t%d; })", tn9);
+    return 1;
+  }
+  /* append_as_bytes: raw byte append == << for spinel's byte strings (#2397) */
+  if (rt == TY_STRING && sp_streq(name, "append_as_bytes") && argc >= 1 && recv >= 0) {
+    const char *rvt9 = nt_type(nt, recv);
+    int lvw9 = rvt9 && (sp_streq(rvt9, "LocalVariableReadNode") ||
+                        sp_streq(rvt9, "InstanceVariableReadNode"));
+    int tn9 = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = sp_str_concat(", tn9);  /* reassigned per extra arg: keep non-const? const char* variable is reassignable (the POINTEE is const) */
+    emit_expr(c, recv, b); buf_puts(b, ", ");
+    emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    for (int a9 = 1; a9 < argc; a9++) {
+      buf_printf(b, "; _t%d = sp_str_concat(_t%d, ", tn9, tn9);
+      emit_str_expr(c, argv[a9], b); buf_puts(b, ")");
+    }
+    if (lvw9) { buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d", tn9); }
+    buf_printf(b, "; _t%d; })", tn9);
+    return 1;
+  }
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
     const char *rvt2 = nt_type(nt, recv);
     int lvw = rvt2 && (sp_streq(rvt2, "LocalVariableReadNode") ||
@@ -5434,6 +5467,32 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
           int te = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", te); emit_boxed(c, argv[0], b);
           buf_printf(b, "; _t%d.tag == SP_TAG_FLT && _t%d.v.f == (%s); })", te, te, r);
+        }
+      }
+      /* Float#===(x) is #== -- numeric compare for a numeric arg, false for
+         anything else (nil / Rational / Complex compare by value) (#2400) */
+      else if (sp_streq(name, "===") && argc == 1) {
+        TyKind a0q = comp_ntype(c, argv[0]);
+        if (a0q == TY_FLOAT || a0q == TY_INT) {
+          buf_printf(b, "((%s) == (", r); emit_expr(c, argv[0], b); buf_puts(b, "))");
+        }
+        else if (a0q == TY_RATIONAL) {
+          int tq = ++g_tmp;
+          buf_printf(b, "({ sp_Rational _t%d = ", tq); emit_expr(c, argv[0], b);
+          buf_printf(b, "; ((double)_t%d.num / (double)_t%d.den) == (%s); })", tq, tq, r);
+        }
+        else if (a0q == TY_COMPLEX) {
+          int tq = ++g_tmp;
+          buf_printf(b, "({ sp_Complex _t%d = ", tq); emit_expr(c, argv[0], b);
+          buf_printf(b, "; _t%d.im == 0.0 && _t%d.re == (%s); })", tq, tq, r);
+        }
+        else if (a0q == TY_POLY) {
+          int tq = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = ", tq); emit_boxed(c, argv[0], b);
+          buf_printf(b, "; sp_poly_eq(_t%d, sp_box_float(%s)); })", tq, r);
+        }
+        else {
+          buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), 0)");
         }
       }
       /* Float#equal?: an unboxed double is an immediate value -- identity IS

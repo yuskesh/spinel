@@ -500,6 +500,9 @@ int main(int argc, char **argv) {
      GNU default --as-needed) drops a DSO no preceding input references.
      sp_format.o pulls in sqrt/sin/cos, so libm must follow libspinel_rt.a. */
   s_add(&cmd, "-lm ");
+#if !defined(__APPLE__)
+  s_add(&cmd, "-lcrypt ");  /* String#crypt = libc crypt(3); --as-needed drops it when unused */
+#endif
   for (int li = 0; li < n_link_extra; li++)
     if (strncmp(link_extra[li], "-l", 2) == 0) { s_add(&cmd, link_extra[li]); s_add(&cmd, " "); }
   if (uses_threads) s_add(&cmd, "-lpthread ");
