@@ -4784,7 +4784,13 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
            coerce, else the generated C assigns sp_RbVal to a const char* /
            mrb_int / mrb_float / sp_<Class>* slot. */
         const char *ptn = c_type_name(pt);
-        if (at == TY_POLY && pt == TY_STRING) { buf_puts(out, "sp_poly_to_s("); emit_expr(c, provided, out); buf_puts(out, ")"); }
+        /* a literal/derived nil argument into a nullable scalar param carries
+           the type's nil sentinel, exactly like a nil DEFAULT does below --
+           a plain emit rendered nil as 0 and the callee saw an integer (#2438) */
+        if (at == TY_NIL && pt == TY_INT) { buf_puts(out, "((void)("); emit_expr(c, provided, out); buf_puts(out, "), SP_INT_NIL)"); }
+        else if (at == TY_NIL && pt == TY_FLOAT) { buf_puts(out, "((void)("); emit_expr(c, provided, out); buf_puts(out, "), sp_float_nil())"); }
+        else if (at == TY_NIL && pt == TY_STRING) { buf_puts(out, "((void)("); emit_expr(c, provided, out); buf_puts(out, "), NULL)"); }
+        else if (at == TY_POLY && pt == TY_STRING) { buf_puts(out, "sp_poly_to_s("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && pt == TY_FLOAT) { buf_puts(out, "sp_poly_to_f("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && pt == TY_SYMBOL) { buf_puts(out, "(sp_sym)sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }
         else if (at == TY_POLY && (pt == TY_INT || pt == TY_BOOL)) { buf_puts(out, "sp_poly_to_i("); emit_expr(c, provided, out); buf_puts(out, ")"); }
@@ -6187,7 +6193,18 @@ int emit_group_by_expr(Compiler *c, int id, Buf *b) {
   TyKind key_t = comp_ntype(c, bb[bn - 1]);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_RbVal _t%d = ", tkey);
-  if (key_t != TY_POLY) {
+  if (key_t == TY_INT) {
+    /* a nullable-int key carries nil as the SP_INT_NIL sentinel: those
+       elements must group under the nil key, not under the sentinel's
+       integer value (#2438) */
+    Buf kbuf; memset(&kbuf, 0, sizeof kbuf);
+    int save2 = g_indent; g_indent += 1;
+    emit_expr(c, bb[bn - 1], &kbuf);
+    g_indent = save2;
+    buf_printf(g_pre, "sp_box_int_or_nil(%s)", kbuf.p ? kbuf.p : "0");
+    free(kbuf.p);
+  }
+  else if (key_t != TY_POLY) {
     Buf kbuf; memset(&kbuf, 0, sizeof kbuf);
     int save2 = g_indent; g_indent += 1;
     emit_expr(c, bb[bn - 1], &kbuf);

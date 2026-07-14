@@ -1,0 +1,8 @@
+class P
+  attr_reader k: Integer?
+  def initialize: (Integer? k) -> void
+end
+
+class W
+  def self.go: (Array[P] rows) -> Integer
+end
