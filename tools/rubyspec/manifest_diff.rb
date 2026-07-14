@@ -41,6 +41,9 @@ missing = []       # listed but not measured
   if e.nil? then unlisted << name
   elsif r.nil? then missing << name
   elsif e == r then next
+  # a by-design row is a REJECT with a ledger annotation; the raw measurement
+  # reports it as plain REJECT and that is not drift
+  elsif e == "REJECT-BYDESIGN" && r == "REJECT" then next
   elsif e == "PASS" then regressions << [name, r]
   elsif r == "PASS" then improvements << [name, e]
   else drift << [name, e, r]

@@ -767,28 +767,38 @@ $(RUBYSPEC_DIR)/.pinned:
 	@git -C $(RUBYSPEC_DIR) checkout -q $(RUBYSPEC_REV)
 	@touch $@
 
-rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
-	@rm -rf build/rubyspec-ex && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/language build/rubyspec-ex
-	@bash tools/rubyspec/run.sh build/rubyspec-ex build/rubyspec-results.tsv
-	@ruby tools/rubyspec/manifest_diff.rb tools/rubyspec/expectations/language.tsv build/rubyspec-results.tsv || true
+# Opted-in spec suites: each <dir> maps to expectations/<dir with / -> ->.tsv.
+# Add a directory here + generate its manifest (gen_manifest.rb) to enroll it.
+RUBYSPEC_SUITES := language core/array
 
-# Retention gate: re-run only the examples the manifest expects to PASS and
+rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
+	@for d in $(RUBYSPEC_SUITES); do \
+	  nm=$$(echo $$d | tr / -); \
+	  echo "=== ruby/spec $$d ==="; \
+	  rm -rf build/rubyspec-ex-$$nm && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/$$d build/rubyspec-ex-$$nm; \
+	  bash tools/rubyspec/run.sh build/rubyspec-ex-$$nm build/rubyspec-results-$$nm.tsv; \
+	  ruby tools/rubyspec/manifest_diff.rb tools/rubyspec/expectations/$$nm.tsv build/rubyspec-results-$$nm.tsv || true; \
+	done
+
+# Retention gate: re-run only the examples the manifests expect to PASS and
 # fail on any regression. Improvements (non-PASS -> PASS) never fail this
 # target -- they surface in `make rubyspec`'s manifest diff instead, and are
-# promoted by updating the manifest deliberately.
+# promoted by regenerating the manifest deliberately.
 rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
-	@rm -rf build/rubyspec-ex && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/language build/rubyspec-ex
-	@awk -F'\t' '$$2=="PASS"{print $$1}' tools/rubyspec/expectations/language.tsv > build/rubyspec-gate.list
-	@RUBYSPEC_ONLY=build/rubyspec-gate.list RUBYSPEC_GATE=1 \
-	  bash tools/rubyspec/run.sh build/rubyspec-ex build/rubyspec-gate.tsv
-	@bad=$$(awk -F'\t' '$$2!="PASS"' build/rubyspec-gate.tsv | wc -l); \
-	if [ $$bad -ne 0 ]; then \
-	  echo "rubyspec-gate: $$bad regression(s):"; \
-	  awk -F'\t' '$$2!="PASS"' build/rubyspec-gate.tsv; \
-	  exit 1; \
-	else \
-	  echo "rubyspec-gate: all $$(wc -l < build/rubyspec-gate.list) expected-PASS examples still pass"; \
-	fi
+	@ok=1; for d in $(RUBYSPEC_SUITES); do \
+	  nm=$$(echo $$d | tr / -); \
+	  rm -rf build/rubyspec-ex-$$nm && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/$$d build/rubyspec-ex-$$nm; \
+	  awk -F'\t' '$$2=="PASS"{print $$1}' tools/rubyspec/expectations/$$nm.tsv > build/rubyspec-gate-$$nm.list; \
+	  RUBYSPEC_ONLY=build/rubyspec-gate-$$nm.list RUBYSPEC_GATE=1 \
+	    bash tools/rubyspec/run.sh build/rubyspec-ex-$$nm build/rubyspec-gate-$$nm.tsv >/dev/null; \
+	  bad=$$(awk -F'\t' '$$2!="PASS"' build/rubyspec-gate-$$nm.tsv | wc -l); \
+	  if [ $$bad -ne 0 ]; then \
+	    echo "rubyspec-gate[$$d]: $$bad regression(s):"; \
+	    awk -F'\t' '$$2!="PASS"' build/rubyspec-gate-$$nm.tsv; ok=0; \
+	  else \
+	    echo "rubyspec-gate[$$d]: all $$(wc -l < build/rubyspec-gate-$$nm.list) expected-PASS examples still pass"; \
+	  fi; \
+	done; [ $$ok -eq 1 ]
 
 # ---- Optcarrot integration test ----
 OPTCARROT_DIR  := build/optcarrot
