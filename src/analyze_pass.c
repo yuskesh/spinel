@@ -1446,6 +1446,24 @@ int infer_write_types(Compiler *c) {
         /* a range key is a splice: the RHS contributes element evidence */
         if (kt == TY_RANGE) { is_splice = 1; vt = splice_incoming_elem(c, argv[1]); }
       }
+      else if (name && sp_streq(name, "store") && an == 2) {
+        /* Hash#store is []= (#2433) */
+        is_idx_write = 1; kt = infer_type(c, argv[0]); vt = infer_type(c, argv[1]);
+      }
+      else if (name && (sp_streq(name, "merge!") || sp_streq(name, "update")) && an >= 1) {
+        /* merging hashes into an empty-{} local writes their keys/values:
+           key+value evidence exactly like []= (#2434) */
+        TyKind mat = infer_type(c, argv[0]);
+        if (!ty_is_hash(mat)) continue;
+        is_idx_write = 1; kt = ty_hash_key(mat); vt = ty_hash_val(mat);
+        for (int ai = 1; ai < an; ai++) {
+          TyKind mai = infer_type(c, argv[ai]);
+          if (!ty_is_hash(mai)) { is_idx_write = 0; break; }
+          kt = ty_unify(kt, ty_hash_key(mai));
+          vt = ty_unify(vt, ty_hash_val(mai));
+        }
+        if (!is_idx_write) continue;
+      }
       else if (name && sp_streq(name, "[]=") && an == 3) {
         /* a[start, len] = rhs: a splice over the (start, len) span */
         is_idx_write = 1; is_splice = 1; vt = splice_incoming_elem(c, argv[2]);

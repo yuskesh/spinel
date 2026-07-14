@@ -6395,6 +6395,12 @@ int emit_each_with_object_expr(Compiler *c, int id, Buf *b) {
     emit_loop_body(c, body, g_pre, g_indent);
     g_indent = save_indent;
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+    /* a string memo has value semantics: the block's appends re-assign the
+       memo param, so read the final value back out of it (#2432) */
+    if (mname && memo_decl == TY_STRING) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d = lv_%s;\n", tacc, mname);
+    }
     buf_printf(b, "_t%d", tacc);
     return 1;
   }

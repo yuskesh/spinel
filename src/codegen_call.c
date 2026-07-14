@@ -1638,9 +1638,13 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
         emit_float_expr(c, argv[0], b); buf_puts(b, "))");
         return 1;
       }
-      buf_puts(b, "sp_rational_new((mrb_int)(");
-      emit_expr(c, recv, b); buf_puts(b, "), (mrb_int)(");
-      emit_expr(c, argv[0], b); buf_puts(b, "))");
+      int tq9 = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = (mrb_int)(", tq9);
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "); if (_t%d == 0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
+                    " sp_rational_new((mrb_int)(", tq9);
+      emit_expr(c, recv, b);
+      buf_printf(b, "), _t%d); })", tq9);
       return 1;
     }
     /* Float <op> Rational (either side): CRuby coerces to Float. Arithmetic
@@ -11847,17 +11851,17 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       emit_int_expr(c, argv[0], b); buf_puts(b, "))"); free(rs.p); return;
     }
     if (sp_streq(name, "digits") && argc <= 1) {
-      /* least-significant first: peel base-10 (or base-N) digits off the
-         rendered magnitude (to_s_base is exact for any base in [2,36]) */
-      int td = ++g_tmp, ts2 = ++g_tmp, ti2 = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = sp_bigint_to_s_base(%s, ", ts2, r);
+      /* least-significant first via repeated divmod -- any radix >= 2
+         (the to_s(base) text path stops at 36) */
+      int td = ++g_tmp, tb2 = ++g_tmp, tn2 = ++g_tmp, ti2 = ++g_tmp;
+      buf_printf(b, "({ mrb_int _t%d = ", tb2);
       if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "10");
-      buf_printf(b, "); sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", td, td);
-      buf_printf(b, " mrb_int _t%d = (mrb_int)strlen(_t%d);", ti2, ts2);
-      buf_printf(b, " if (_t%d && _t%d[0] == '-') sp_raise_cls(\"Math::DomainError\", \"out of domain\");", ti2, ts2);
-      buf_printf(b, " while (_t%d > 0) { char _c = _t%d[--_t%d];", ti2, ts2, ti2);
-      buf_printf(b, " sp_IntArray_push(_t%d, _c <= '9' ? _c - '0' : (_c | 32) - 'a' + 10); }", td);
-      buf_printf(b, " free((void *)_t%d); _t%d; })", ts2, td);
+      buf_printf(b, "; if (_t%d < 2) sp_raise_cls(\"ArgumentError\", \"invalid radix\");", tb2);
+      buf_printf(b, " mrb_int *_t%d = NULL; mrb_int _t%d = sp_bigint_digits_buf(%s, _t%d, &_t%d);", ti2, tn2, r, tb2, ti2);
+      buf_printf(b, " if (_t%d < 0) sp_raise_cls(\"Math::DomainError\", \"out of domain\");", tn2);
+      buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", td, td);
+      buf_printf(b, " for (mrb_int _i = 0; _i < _t%d; _i++) sp_IntArray_push(_t%d, _t%d[_i]);", tn2, td, ti2);
+      buf_printf(b, " free(_t%d); _t%d; })", ti2, td);
       return;
     }
     if (sp_streq(name, "to_f") && argc == 0) {

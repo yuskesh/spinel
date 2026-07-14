@@ -333,6 +333,8 @@ static inline mrb_int sp_range_count(sp_Range r){
    real step only appears for downto / explicit step, so it pays the general
    path only then. */
 static inline sp_IntArray *sp_range_to_ia(sp_Range r){
+  /* an endless range cannot materialize (CRuby raises instead of hanging) */
+  if(r.last==INTPTR_MAX)sp_raise_cls("RangeError","cannot convert endless range to an array");
   mrb_int s=sp_range_step(r);
   if(s==1)return sp_IntArray_from_range(r.first,r.last-r.excl);
   return sp_IntArray_from_range_step(r.first,r.last,s,r.excl);
@@ -1700,6 +1702,7 @@ sp_Bigint *sp_bigint_shl(sp_Bigint *a, int64_t n);
 sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp);
 sp_Bigint *sp_bigint_round_prec(sp_Bigint *b, int64_t ndigits, int mode);
 sp_Bigint *sp_bigint_isqrt(sp_Bigint *a);
+mrb_int sp_bigint_digits_buf(sp_Bigint *a, mrb_int base, mrb_int **out);
 int sp_bigint_sign(sp_Bigint *b);
 size_t sp_bigint_byte_len(sp_Bigint *b);
 size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);

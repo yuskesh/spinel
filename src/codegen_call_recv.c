@@ -3273,19 +3273,26 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
     if (sp_streq(name, "compact!") && argc == 0 &&
         (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH)) {
       const char *hnc = ty_hash_cname(rt);
+      /* PolyPoly's order[] holds slot indexes, not keys; the other variants
+         store the key itself in order[] (#2430) */
+      int ppk = rt == TY_POLY_POLY_HASH;
       int th = ++g_tmp, tf = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp, tc2 = ++g_tmp;
       buf_printf(b, "({ sp_%sHash *_t%d = ", hnc, th); emit_expr(c, recv, b);
       buf_printf(b, "; sp_%sHash *_t%d = sp_%sHash_new(); SP_GC_ROOT(_t%d);"
-                    " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {"
-                    " sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);"
-                    " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _t%d->order[_t%d], _t%d); }"
-                    " int _t%d = _t%d->len != _t%d->len;"
+                    " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {",
+                 hnc, tf, hnc, tf, ti, ti, th, ti);
+      if (ppk)
+        buf_printf(b, " sp_RbVal _k9 = _t%d->keys[_t%d->order[_t%d]];"
+                      " sp_RbVal _t%d = sp_%sHash_get(_t%d, _k9);"
+                      " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _k9, _t%d); }",
+                   th, th, ti, tv, hnc, th, tv, hnc, tf, tv);
+      else
+        buf_printf(b, " sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d->order[_t%d]);"
+                      " if (!sp_poly_nil_p(_t%d)) sp_%sHash_set(_t%d, _t%d->order[_t%d], _t%d); }",
+                   tv, hnc, th, th, ti, tv, hnc, tf, th, ti, tv);
+      buf_printf(b, " int _t%d = _t%d->len != _t%d->len;"
                     " if (_t%d) sp_%sHash_replace(_t%d, _t%d);"
                     " _t%d ? sp_box_obj(_t%d, %s) : sp_box_nil(); })",
-                 hnc, tf, hnc, tf,
-                 ti, ti, th, ti,
-                 tv, hnc, th, th, ti,
-                 tv, hnc, tf, th, ti, tv,
                  tc2, tf, th,
                  tc2, hnc, th, tf,
                  tc2, th, hash_box_cls(rt));
@@ -3892,6 +3899,25 @@ else {
       }
       if ((sp_streq(name, "inspect") || sp_streq(name, "to_s")) && argc == 0) {
         buf_printf(b, "sp_%sHash_inspect(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
+        return 1;
+      }
+      /* merge!/update with several hash arguments: fold each one in, in
+         order (#2431). Blockless, same-variant arguments only. */
+      if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc >= 2 &&
+          nt_ref(nt, id, "block") < 0 && rt != TY_POLY_POLY_HASH) {
+        TyKind kt = ty_hash_key(rt);
+        for (int ai = 0; ai < argc; ai++)
+          if (comp_ntype(c, argv[ai]) != rt) return 0;
+        int tr = ++g_tmp;
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        for (int ai = 0; ai < argc; ai++) {
+          int to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
+          buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[ai], b); buf_puts(b, ";");
+          buf_printf(b, " for (mrb_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
+          buf_printf(b, " %s _t%d = _t%d->order[_t%d];", c_type_name(kt), tk, to, ti);
+          buf_printf(b, " sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }", hn, tr, tk, hn, to, tk);
+        }
+        buf_printf(b, " _t%d; })", tr);
         return 1;
       }
       if ((sp_streq(name, "merge!") || sp_streq(name, "update")) && argc == 1) {
@@ -5176,6 +5202,12 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
                    tq2, ta, tb2, ta, tq2, tb2, to2, to2, to2, tq2, to2, to2);
       }
       else if (sp_streq(name, "size") && argc == 0) buf_puts(b, "((mrb_int)sizeof(mrb_int))");
+      else if (sp_streq(name, "gcdlcm") && argc == 1 &&
+               comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
+        buf_printf(b, "); (void)(%s); sp_raise_cls(\"TypeError\", \"not an integer\");"
+                      " sp_IntArray_new(); })", r);
+      }
       else if (sp_streq(name, "gcdlcm") && argc == 1) {
         int ta = ++g_tmp, o = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = ", ta); emit_int_expr(c, argv[0], b);
@@ -5223,6 +5255,14 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
+      /* pow with a literal negative exponent is the exact Rational
+         1 / base**|exp| (matching **'s CRuby behavior) */
+      else if (sp_streq(name, "pow") && argc == 1 &&
+               nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
+               nt_int(nt, argv[0], "value", 0) < 0) {
+        long long pe9 = -(long long)nt_int(nt, argv[0], "value", 0);
+        buf_printf(b, "sp_rational_new(1, sp_int_pow(%s, %lldLL))", r, pe9);
+      }
       else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "pred") && argc == 0) buf_printf(b, "((%s) - 1)", r);
       else if ((sp_streq(name, "succ") || sp_streq(name, "next")) && argc == 0) buf_printf(b, "((%s) + 1)", r);

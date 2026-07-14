@@ -5623,3 +5623,26 @@ sp_Bigint *sp_bigint_isqrt(sp_Bigint *a) {
   mpz_sqrt(sp_mpz_ctx, &r->mpz, &a->mpz);
   return r;
 }
+
+/* Integer#digits(base) for a bignum receiver: least-significant first, into
+   a malloc'd mrb_int buffer (caller frees *out). Any base >= 2 -- radices
+   beyond 36 can't ride the to_s(base) text path. Returns the digit count,
+   or -1 for a negative receiver (the caller raises Math::DomainError). */
+mrb_int sp_bigint_digits_buf(sp_Bigint *a, mrb_int base, mrb_int **out) {
+  *out = NULL;
+  if (!a) return 0;
+  if (sp_bigint_sign(a) < 0) return -1;
+  sp_Bigint *q = a;
+  sp_Bigint *bb = sp_bigint_new_int((int64_t)base);
+  mrb_int cap = 16, n = 0;
+  mrb_int *buf = (mrb_int *)malloc(sizeof(mrb_int) * (size_t)cap);
+  if (sp_bigint_sign(q) == 0) { buf[n++] = 0; *out = buf; return n; }
+  while (sp_bigint_sign(q) != 0) {
+    sp_Bigint *r = sp_bigint_mod(q, bb);
+    if (n == cap) { cap *= 2; buf = (mrb_int *)realloc(buf, sizeof(mrb_int) * (size_t)cap); }
+    buf[n++] = (mrb_int)sp_bigint_to_int(r);
+    q = sp_bigint_div(q, bb);
+  }
+  *out = buf;
+  return n;
+}
