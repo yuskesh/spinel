@@ -5352,7 +5352,13 @@ __attribute__((constructor)) static void sp_json_install_hooks(void) {
   sp_json_len_fn = sp_poly_length;
   sp_json_aref_fn = sp_poly_arr_get;
   sp_json_hpair_fn = sp_poly_hash_pair;
+  /* sp_poly_inspect renders symbols and class names, so taking its address
+     forces the generated TU to define sp_sym_to_s / sp_class_to_s. A program
+     with no poly-renderable value defines SP_TU_NO_POLY_RENDER before the
+     include and skips the hook (the archive-side consumers null-check it). */
+#ifndef SP_TU_NO_POLY_RENDER
   sp_poly_inspect_fn = sp_poly_inspect;
+#endif
   /* JSON.parse builds objects as string-keyed hashes (CRuby returns String
      keys, and this matches a `{ "k" => v }` literal for equality). */
   sp_json_mk_hash_fn = sp_json_new_strhash;
@@ -7489,5 +7495,17 @@ static inline const char *sp_poly_pack(sp_RbVal recv, const char *fmt) {
 /* The sp_ext_* shim wrappers are gone: string/object allocation, sp_box_*, and
    sp_PolyArray now live in the shared headers (sp_alloc.h / sp_gc.h), so lib C
    files (sp_pack.c, sp_strscan.c, sp_marshal.c, ...) allocate directly. */
+
+/* A generated TU that contains no poly-renderable value defines
+   SP_TU_NO_POLY_RENDER and omits the symbol runtime and the class-name table.
+   The header's render helpers still reference sp_sym_to_s / sp_class_to_s
+   syntactically (they are unreachable in such a program), and GCC warns on a
+   referenced-but-undefined static even when the referring function is dead --
+   so supply inert fallbacks that the optimizer prunes with everything else. */
+#ifdef SP_TU_NO_POLY_RENDER
+static const char *sp_sym_to_s(sp_sym id) { (void)id; return ""; }
+static const char *sp_class_to_s(sp_Class c) { return c.name ? c.name : ""; }
+static sp_sym sp_sym_intern(const char *s) { (void)s; return (sp_sym)0; }
+#endif
 
 #endif /* SP_RUNTIME_H */
