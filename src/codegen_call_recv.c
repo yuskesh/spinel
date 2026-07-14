@@ -5016,7 +5016,7 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "real?"))   buf_printf(b, "((void)(%s), TRUE)", r);
       else if (sp_streq(name, "infinite?")) buf_printf(b, "((void)(%s), SP_INT_NIL)", r);
       /* Numeric / Complex-projection methods on a real Integer (#2328) */
-      else if (sp_streq(name, "abs2"))    buf_printf(b, "((%s) * (%s))", r, r);
+      else if (sp_streq(name, "abs2"))    buf_printf(b, "sp_int_mul(%s, %s)", r, r);  /* overflow-checked (#2424) */
       else if (sp_streq(name, "real"))    buf_printf(b, "(%s)", r);
       else if (sp_streq(name, "imaginary") || sp_streq(name, "imag")) buf_printf(b, "((void)(%s), 0)", r);
       else if (sp_streq(name, "conj") || sp_streq(name, "conjugate")) buf_printf(b, "(%s)", r);
@@ -5060,6 +5060,10 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "({ mrb_int _t%d = ", tb); emit_int_expr(c, argv[0], b);
         buf_printf(b, "; sp_IntArray *_t%d = sp_IntArray_new(); sp_IntArray_push(_t%d, sp_idiv(%s, _t%d));"
                       " sp_IntArray_push(_t%d, sp_imod(%s, _t%d)); _t%d; })", o, o, r, tb, o, r, tb, o);
+      }
+      else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        /* Integer#div(Float) floors the real quotient (7.div(2.5) == 2) (#2425) */
+        buf_printf(b, "((mrb_int)floor((double)(%s) / (", r); emit_expr(c, argv[0], b); buf_puts(b, ")))");
       }
       else if (sp_streq(name, "div") && argc == 1) { buf_printf(b, "sp_idiv(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
       else if ((sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1 &&
@@ -5152,6 +5156,9 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "allbits?") && argc == 1) { int t = ++g_tmp; buf_printf(b, "({ mrb_int _t%d = ", t); emit_int_expr(c, argv[0], b); buf_printf(b, "; (((%s) & _t%d) == _t%d); })", r, t, t); }
       else if (sp_streq(name, "anybits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) != 0)"); }
       else if (sp_streq(name, "nobits?") && argc == 1) { buf_printf(b, "(((%s) & (", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")) == 0)"); }
+      else if (sp_streq(name, "ceildiv") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
+        buf_printf(b, "((mrb_int)ceil((double)(%s) / (", r); emit_expr(c, argv[0], b); buf_puts(b, ")))");  /* (#2425) */
+      }
       else if (sp_streq(name, "ceildiv") && argc == 1) { buf_printf(b, "sp_ceildiv(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "pow") && argc == 1) { buf_printf(b, "sp_int_pow(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -5160,7 +5167,16 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "to_s") && argc == 1) { buf_printf(b, "sp_int_to_s_base(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       else if (sp_streq(name, "coerce") && argc == 1) {
         TyKind a0 = comp_ntype(c, argv[0]);
-        if (a0 == TY_FLOAT) {
+        if (a0 == TY_BIGINT) {
+          /* [big_arg, receiver promoted to Bignum] -- a poly pair (#2419) */
+          int ta = ++g_tmp, o = ++g_tmp;
+          buf_printf(b, "({ sp_Bigint *_t%d = ", ta); emit_expr(c, argv[0], b);
+          buf_printf(b, "; sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                        " sp_PolyArray_push(_t%d, sp_box_bigint(_t%d));"
+                        " sp_PolyArray_push(_t%d, sp_box_bigint(sp_bigint_new_int(%s))); _t%d; })",
+                     o, o, o, ta, o, r, o);
+        }
+        else if (a0 == TY_FLOAT) {
           int ta = ++g_tmp, o = ++g_tmp;
           buf_printf(b, "({ mrb_float _t%d = ", ta); emit_expr(c, argv[0], b);
           buf_printf(b, "; sp_FloatArray *_t%d = sp_FloatArray_new();"

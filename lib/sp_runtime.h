@@ -1699,6 +1699,7 @@ sp_Bigint *sp_bigint_mul(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_shl(sp_Bigint *a, int64_t n);
 sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp);
 sp_Bigint *sp_bigint_round_prec(sp_Bigint *b, int64_t ndigits, int mode);
+sp_Bigint *sp_bigint_isqrt(sp_Bigint *a);
 int sp_bigint_sign(sp_Bigint *b);
 size_t sp_bigint_byte_len(sp_Bigint *b);
 size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);
@@ -4399,6 +4400,20 @@ static const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h){return h?sp_inspect_c
 /* FNV-1a over a fixed byte range -- gives value-type user objects (by-value
    structs with no pointer identity) a stable Integer #hash / #object_id from
    their content, so `v.hash == v.hash` holds (#2284, #2283). */
+/* Integer#<< with a RUNTIME shift amount: a negative count shifts right
+   (floor semantics via arithmetic shift), a count past the word raises
+   instead of C undefined behavior (#2423). */
+static inline mrb_int sp_int_shl_ck(mrb_int a, mrb_int b) {
+  if ((uint64_t)b < 63u) return a << b;   /* the hot, predictable path */
+  if (b < 0) return (b <= -63) ? (a < 0 ? -1 : 0) : (a >> (-b));
+  sp_raise_cls("RangeError", "shift width too big for a 64-bit Integer (use --int-overflow=promote)");
+  return 0;
+}
+static inline mrb_int sp_int_shr_ck(mrb_int a, mrb_int b) {
+  if ((uint64_t)b < 63u) return a >> b;
+  if (b < 0) return sp_int_shl_ck(a, -b);
+  return a < 0 ? -1 : 0;                  /* >>63.. : sign fill */
+}
 static mrb_int sp_bytes_hash(const void *p, size_t n) {
   const unsigned char *b = (const unsigned char *)p;
   uint64_t h = 1469598103934665603ULL;

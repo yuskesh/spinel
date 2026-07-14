@@ -1182,6 +1182,11 @@ TyKind infer_call(Compiler *c, int id) {
     if (mci >= 0 && c->classes[mci].is_struct &&
         comp_cmethod_in_chain(c, mci, "members", NULL) < 0) return TY_POLY_ARRAY;
   }
+  /* Integer.sqrt(Bignum) -> Bignum (#2420) */
+  if (recv >= 0 && sp_streq(name, "sqrt") && argc == 1 &&
+      nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
+      infer_type(c, argv[0]) == TY_BIGINT) return TY_BIGINT;
   /* Hash[k: v] desugared to a bare hash literal: transparent passthrough */
   if (recv >= 0 && sp_streq(name, "__hash_brackets_kw")) return infer_type(c, recv);
   /* Hash[] with no arguments: an empty hash (same C type as a bare {}) */
@@ -3955,6 +3960,7 @@ else {
     if (sp_streq(name, "to_s") && argc == 1) return TY_STRING;
     if (sp_streq(name, "coerce") && argc == 1) {
       TyKind a0 = infer_type(c, argv[0]);
+      if (a0 == TY_BIGINT) return TY_POLY_ARRAY;   /* [big, big] boxed pair (#2419) */
       return (a0 == TY_FLOAT) ? TY_FLOAT_ARRAY : TY_INT_ARRAY;
     }
   }
@@ -4047,6 +4053,9 @@ else {
      return any type -- honored via the sp_obj_hash_hook for keys). */
   if (sp_streq(name, "hash") && recv >= 0 && argc == 0 && !ty_is_object(rt)) return TY_INT;
   if (sp_streq(name, "between?") && argc == 2 && (rt == TY_STRING || ty_is_numeric(rt))) return TY_BOOL;
+  /* int | / ^ a Bignum operand promotes (#2422) */
+  if (recv >= 0 && argc == 1 && (sp_streq(name, "|") || sp_streq(name, "^")) &&
+      infer_type(c, recv) == TY_INT && infer_type(c, argv[0]) == TY_BIGINT) return TY_BIGINT;
   if ((sp_streq(name, "match?") || sp_streq(name, "!~")) && recv >= 0) return TY_BOOL;
   if (sp_streq(name, "match") && recv >= 0 && (argc == 1 || argc == 2)) {
     const char *rrt = nt_type(nt, recv), *art = argc > 0 ? nt_type(nt, argv[0]) : NULL;
@@ -4155,6 +4164,7 @@ else {
   if (recv >= 0 && rt == TY_BIGINT) {
     if ((sp_streq(name, "even?") || sp_streq(name, "odd?")) && argc == 0) return TY_BOOL;
     if (sp_streq(name, "abs") && argc == 0) return TY_BIGINT;
+    if ((sp_streq(name, "magnitude") || sp_streq(name, "abs2")) && argc == 0) return TY_BIGINT;  /* (#2418/#2424) */
     /* Bignum#downto/#upto with no block: materialized poly array of Bignums (#2305) */
     if ((sp_streq(name, "downto") || sp_streq(name, "upto")) && argc == 1 &&
         nt_ref(nt, id, "block") < 0) return TY_POLY_ARRAY;

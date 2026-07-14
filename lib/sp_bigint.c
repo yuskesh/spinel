@@ -5616,3 +5616,10 @@ sp_Bigint *sp_bigint_abs_v(sp_Bigint *b) {
   if (sp_bigint_sign(b) >= 0) return b;
   return sp_bigint_sub(sp_bigint_new_int(0), b);
 }
+
+/* Integer.sqrt for a Bignum argument: exact integer square root via mpz (#2420) */
+sp_Bigint *sp_bigint_isqrt(sp_Bigint *a) {
+  sp_Bigint *r = sp_bigint_new_int(0);
+  mpz_sqrt(sp_mpz_ctx, &r->mpz, &a->mpz);
+  return r;
+}

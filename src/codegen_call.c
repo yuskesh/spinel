@@ -8568,6 +8568,10 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Integer") &&
       sp_streq(name, "sqrt") && argc == 1) {
+    if (comp_ntype(c, argv[0]) == TY_BIGINT) {
+      buf_puts(b, "sp_bigint_isqrt("); emit_expr(c, argv[0], b); buf_puts(b, ")");  /* (#2420) */
+      return;
+    }
     buf_puts(b, "sp_int_sqrt("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return;
   }
@@ -10504,6 +10508,25 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        counts are always small and non-negative -- routing it through a branchy
        helper cost ~4% fps). */
     int is_shift = sp_streq(name, "<<") || sp_streq(name, ">>");
+    /* a non-integer operand raises TypeError, as CRuby (#2421) */
+    if (at0 == TY_FLOAT || at0 == TY_STRING || at0 == TY_NIL || at0 == TY_SYMBOL ||
+        at0 == TY_BOOL || ty_is_array(at0) || ty_is_hash(at0)) {
+      const char *tn9 = at0 == TY_FLOAT ? "Float" : at0 == TY_STRING ? "String"
+                      : at0 == TY_NIL ? "nil" : at0 == TY_SYMBOL ? "Symbol"
+                      : at0 == TY_BOOL ? "boolean" : ty_is_array(at0) ? "Array" : "Hash";
+      buf_puts(b, "({ (void)("); emit_expr(c, recv, b);
+      buf_printf(b, "); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Integer\"); (mrb_int)0; })", tn9);
+      return;
+    }
+    /* |/^ with a Bignum operand promote (the & mask idiom keeps its low-64
+       truncation: the result fits an int either way) (#2422) */
+    if ((sp_streq(name, "|") || sp_streq(name, "^")) && at0 == TY_BIGINT) {
+      buf_printf(b, "sp_bigint_%s(sp_bigint_new_int(", sp_streq(name, "|") ? "or" : "xor");
+      if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+      buf_puts(b, "), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      return;
+    }
     const char *aty0 = nt_type(nt, argv[0]);
     int lit_shift = aty0 && sp_streq(aty0, "IntegerNode");
     long long litc = lit_shift ? nt_int(nt, argv[0], "value", 0) : 0;
@@ -10516,6 +10539,18 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);
       buf_printf(b, ", %lldLL)", litc);
+      return;
+    }
+    if (is_shift && !lit_shift) {
+      /* a runtime shift count: range-checked (negative shifts the other way,
+         past-the-word raises) via a single-compare fast path (#2423) */
+      buf_printf(b, "sp_int_%s_ck(", sp_streq(name, "<<") ? "shl" : "shr");
+      if (rt == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, recv, b); buf_puts(b, ")"); }
+      else emit_expr(c, recv, b);
+      buf_puts(b, ", ");
+      if (at0 == TY_POLY) { buf_puts(b, "sp_poly_to_i("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else emit_expr(c, argv[0], b);
+      buf_puts(b, ")");
       return;
     }
     buf_puts(b, "(");
@@ -11648,6 +11683,12 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
        64-bit-truncated sp_bigint_to_int (#2319) */
     if ((sp_streq(name, "to_i") || sp_streq(name, "to_int")) && argc == 0) {
       buf_printf(b, "(%s)", r); free(rs.p); return;
+    }
+    if ((sp_streq(name, "magnitude") || sp_streq(name, "abs")) && argc == 0) {
+      buf_printf(b, "sp_bigint_abs_v(%s)", r); free(rs.p); return;   /* (#2418) */
+    }
+    if (sp_streq(name, "abs2") && argc == 0) {
+      buf_printf(b, "sp_bigint_mul(%s, %s)", r, r); free(rs.p); return;   /* (#2424) */
     }
     /* Bignum#downto(hi)/#upto(hi) with no block: materialize the Bignum sequence
        as a poly array (a Bignum range has no lazy Enumerator type) (#2305). */
