@@ -2478,6 +2478,18 @@ static void desugar_enum_chain_shapes(Compiler *c) {
     }
     /* transform_values! / transform_keys! { }: build the transformed hash,
        then splice it back into the receiver (aliases observe the mutation). */
+    /* transform_keys!/transform_values! on a direct hash literal has no alias to
+       observe the in-place mutation, so it is just the non-bang transform. This
+       also serves the key-type-changing case (sym -> str), where splicing a
+       different hash variant back via #replace cannot work (#2355). */
+    if ((sp_streq(nm, "transform_values!") || sp_streq(nm, "transform_keys!")) &&
+        recv >= 0 && nt_ref(nt, id, "block") >= 0 &&
+        nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "HashNode") ||
+                              sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
+      nt_node_set_str(nt, id, "name",
+                      sp_streq(nm, "transform_keys!") ? "transform_keys" : "transform_values");
+      continue;
+    }
     if ((sp_streq(nm, "transform_values!") || sp_streq(nm, "transform_keys!")) &&
         recv >= 0 && nt_ref(nt, id, "block") >= 0) {
       int blk = nt_ref(nt, id, "block");
