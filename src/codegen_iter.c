@@ -1701,6 +1701,7 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     /* Root the boxed receiver so a GC fired by the loop body doesn't free a
        freshly-built collection held only by this temp. */
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
+    emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
     emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tn, ta);
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++) {\n", ti, ti, tn, ti);

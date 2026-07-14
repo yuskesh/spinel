@@ -970,6 +970,8 @@ TyKind infer_call(Compiler *c, int id) {
     if (pr >= 0) {
       TyKind prt = infer_type(c, pr);
       if (prt == TY_INT_ARRAY || prt == TY_POLY_ARRAY || prt == TY_STR_ARRAY ||
+          prt == TY_FLOAT_ARRAY ||
+          (prt == TY_UNKNOWN && nt_type(nt, pr) && sp_streq(nt_type(nt, pr), "ArrayNode")) ||
           (prt == TY_RANGE && range_enum_redispatch(c, recv)))
         return TY_POLY_ARRAY;
       /* hash.chunk { |k, v| key }.to_a materializes the same way (the chunk

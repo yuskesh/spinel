@@ -656,6 +656,36 @@ void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
     buf_printf(b, "sp_%s", mc(s->name));
 }
 
+/* A poly each-receiver can be a user object at runtime (e.g. a Set operand
+   whose parameter also sees Array arguments at another call site, so it
+   widened to poly). The arr_len/each_elem lowering only understands builtin
+   containers -- normalize such an object through its 0-arg #to_a (when the
+   class defines one returning a concrete array) so the loop iterates its
+   elements. `tv` names an already-rooted sp_RbVal temp; emits nothing when
+   no instantiated class qualifies. */
+void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
+  Buf arms; memset(&arms, 0, sizeof arms);
+  for (int k = 0; k < c->nclasses; k++) {
+    /* a never-instantiated class can't be the runtime class (#1608) */
+    if (!c->classes[k].instantiated) continue;
+    int mi = comp_method_in_chain(c, k, "to_a", NULL);
+    if (mi < 0 || c->scopes[mi].nrequired != 0 || c->scopes[mi].is_cmethod) continue;
+    TyKind ret = (TyKind)c->scopes[mi].ret;
+    const char *box = ret == TY_POLY_ARRAY  ? "sp_box_poly_array"
+                    : ret == TY_INT_ARRAY   ? "sp_box_int_array"
+                    : ret == TY_STR_ARRAY   ? "sp_box_str_array"
+                    : ret == TY_FLOAT_ARRAY ? "sp_box_float_array" : NULL;
+    if (!box) continue;
+    buf_printf(&arms, " case %d: _t%d = %s(", k, tv, box);
+    emit_method_cname(c, &c->scopes[mi], &arms);
+    buf_printf(&arms, "((sp_%s *)_t%d.v.p)); break;", c->classes[k].c_name, tv);
+  }
+  if (arms.p && arms.p[0])
+    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0) switch (_t%d.cls_id) {%s }\n",
+               tv, tv, tv, arms.p);
+  free(arms.p);
+}
+
 void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   /* In a debug build, give instance/class methods external linkage so
      -rdynamic exposes sp_<Class>_<method> to backtrace_symbols and the

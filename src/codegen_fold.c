@@ -2183,7 +2183,15 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
   if (block < 0) return -1;
   int pr = nt_ref(nt, ck, "receiver");
   TyKind prt = pr >= 0 ? comp_ntype(c, pr) : TY_UNKNOWN;
-  if (pr < 0 || (prt != TY_POLY_ARRAY && prt != TY_INT_ARRAY && prt != TY_STR_ARRAY))
+  /* an empty [] literal never narrowed; serve it as an (empty) poly array */
+  int pr_empty_lit = pr >= 0 && prt == TY_UNKNOWN && nt_type(nt, pr) &&
+                     sp_streq(nt_type(nt, pr), "ArrayNode");
+  if (pr_empty_lit) {
+    int pen = 0; nt_arr(nt, pr, "elements", &pen);
+    if (pen != 0) pr_empty_lit = 0;
+  }
+  if (pr < 0 || (prt != TY_POLY_ARRAY && prt != TY_INT_ARRAY &&
+                 prt != TY_STR_ARRAY && prt != TY_FLOAT_ARRAY && !pr_empty_lit))
     return -1;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
@@ -2209,13 +2217,17 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
   TyKind at1 = (!pin_poly && lvb && lvb->type != TY_UNKNOWN) ? lvb->type : TY_POLY;
 
   int ta = ++g_tmp, tout = ++g_tmp, tcur = ++g_tmp, ti = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (!pr_empty_lit) emit_expr(c, pr, &rb);
   emit_indent(g_pre, g_indent);
-  if (prt == TY_POLY_ARRAY)
+  if (pr_empty_lit)
+    buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", ta, ta);
+  else if (prt == TY_POLY_ARRAY)
     buf_printf(g_pre, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", ta, rb.p ? rb.p : "", ta);
   else
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_enum_items_from(sp_box_%s_array(%s)); SP_GC_ROOT(_t%d);\n",
-               ta, prt == TY_INT_ARRAY ? "int" : "str", rb.p ? rb.p : "", ta);
+               ta, prt == TY_INT_ARRAY ? "int" : prt == TY_STR_ARRAY ? "str" : "float",
+               rb.p ? rb.p : "", ta);
   free(rb.p);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
@@ -4416,6 +4428,8 @@ int emit_predicate_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", trecv, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", trecv);
+    emit_indent(g_pre, g_indent);
+    emit_poly_iter_obj_normalize(c, trecv, g_pre);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "mrb_int _t%d = sp_poly_arr_len_ex(_t%d);\n", tlen, trecv);
     emit_indent(g_pre, g_indent);

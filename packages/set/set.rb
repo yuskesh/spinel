@@ -137,6 +137,18 @@ class Set
     self
   end
 
+  def replace(enum)
+    @data = []
+    enum.each { |x| add(x) }
+    self
+  end
+
+  # CRuby rebuilds the hash index here; the array-backed set has no index,
+  # so reset only has to return self.
+  def reset
+    self
+  end
+
   def subtract(enum)
     enum.each { |x| @data.delete(x) }
     self
@@ -301,6 +313,21 @@ class Set
       end
     end
     r
+  end
+
+  # flatten!: in-place flatten; returns self when any nested Set was merged,
+  # nil when the set was already flat (CRuby's contract). Rebuilds @data
+  # through add rather than assigning flatten.to_a into it -- that write
+  # would make @data's inferred type depend on itself (to_a dups @data)
+  # and widen the ivar to poly.
+  def flatten!
+    nested = false
+    @data.each { |x| nested = true if x.is_a?(Set) }
+    return nil unless nested
+    f = flatten
+    @data = []
+    f.each { |y| add(y) }
+    self
   end
 
   def inspect

@@ -2537,8 +2537,13 @@ else {
           /* promote: the include? arg widened to poly. A Range receiver
              (`case x when Range; x.include?(n)`) tests numeric membership, so
              unbox the arg; the PolyArray/PolyPolyHash arms below cover the
-             container cases. */
+             container cases. Typed arrays match only when the boxed arg's tag
+             fits the element type (a Set difference against an Array literal
+             reaches these; a mismatched tag is simply not a member). */
           buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = sp_range_include((sp_Range *)_t%d.v.p, sp_poly_to_i(_t%d)); break;", tr, tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = _t%d.tag == SP_TAG_INT && sp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d.v.i); break;", tr, atmp[0], tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = _t%d.tag == SP_TAG_FLT && sp_FloatArray_include((sp_FloatArray *)_t%d.v.p, _t%d.v.f); break;", tr, atmp[0], tv, atmp[0]);
+          buf_printf(b, " case SP_BUILTIN_STR_ARRAY: _t%d = _t%d.tag == SP_TAG_STR && sp_StrArray_include((sp_StrArray *)_t%d.v.p, _t%d.v.s); break;", tr, atmp[0], tv, atmp[0]);
         }
         /* PolyArray: box the arg for runtime comparison */
         {
@@ -10587,7 +10592,8 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     int ta = ++g_tmp, tc2 = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
     buf_printf(b, "; sp_Class _t%d = ", tc2); emit_expr(c, argv[0], b);
-    buf_printf(b, "; mrb_int _t%d = sp_poly_arr_len_ex(_t%d); mrb_int _t%d = 0;"
+    buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
+    buf_printf(b, "mrb_int _t%d = sp_poly_arr_len_ex(_t%d); mrb_int _t%d = 0;"
                   " for (mrb_int _t%d = 0; _t%d < _t%d; _t%d++)"
                   " if (sp_poly_is_a(sp_poly_each_elem(_t%d, _t%d), _t%d)) _t%d++; ",
                tn, ta, tcnt, ti, ti, tn, ti, ta, ti, tc2, tcnt);
