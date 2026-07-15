@@ -207,6 +207,10 @@ static int sp_name_collides_runtime(const char *n) {
     "IntIntHash", "IntStrHash", "StrIntHash", "StrStrHash", "SymPolyHash",
     "StrPolyHash", "PolyPolyHash", "BoundMethod", "Curry", "ProcCompose",
     "StrBuf", "Argf", "Argv", "condvar", "mutex", "queue", "thread",
+    /* Random is a builtin handled specially (TY_RANDOM), never a user
+       ClassInfo; a USER class/module named Random (`OpenSSL::Random`) would
+       emit sp_Random_s and clash with the runtime sp_Random typedef. */
+    "Random",
     NULL };
   for (int i = 0; reserved[i]; i++) if (sp_streq(n, reserved[i])) return 1;
   return 0;
