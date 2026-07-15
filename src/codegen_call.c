@@ -8595,14 +8595,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       int initm = comp_method_in_chain(c, ci, "initialize", NULL);
       if (initm >= 0 && c->scopes[initm].nrequired != 0) continue;
       if (c->classes[ci].is_struct || c->classes[ci].is_native_class) continue;
+      /* fill any optional constructor params with their defaults (an
+         optional-arg initialize is zero-arg-compatible but its C function
+         still declares the slots, #2452); the call site supplies no args, so
+         emit_args_filled emits each param's default. */
+      Buf ab9; memset(&ab9, 0, sizeof ab9);
+      if (initm >= 0 && c->scopes[initm].nparams > 0)
+        emit_args_filled(c, initm, -1, "", &ab9);
+      const char *args9 = ab9.p ? ab9.p : "";
       /* a value-type object returns by value: box via its vobj boxer, not
          sp_box_obj which expects a heap pointer (#2450) */
       if (c->classes[ci].is_value_type)
-        buf_printf(b, "case %d: _t%d=sp_box_vobj_%s(sp_%s_new());break;",
-                   ci, rt2, c->classes[ci].c_name, c->classes[ci].c_name);
+        buf_printf(b, "case %d: _t%d=sp_box_vobj_%s(sp_%s_new(%s));break;",
+                   ci, rt2, c->classes[ci].c_name, c->classes[ci].c_name, args9);
       else
-        buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(),%d);break;",
-                   ci, rt2, c->classes[ci].c_name, ci);
+        buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(%s),%d);break;",
+                   ci, rt2, c->classes[ci].c_name, args9, ci);
+      free(ab9.p);
     }
     buf_printf(b, "} _t%d; })", rt2);
     return;

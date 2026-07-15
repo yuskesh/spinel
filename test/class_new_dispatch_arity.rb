@@ -16,3 +16,20 @@ class Rel
 end
 puts Rel.new(A).build.v
 puts Other.new("keep").x
+
+# an optional-arg constructor is zero-arg-compatible: its arm fills the
+# default rather than calling the C function with too few arguments (#2452)
+class WithOpt
+  def initialize(attrs = {}); @attrs = attrs; end
+  def size; @attrs.length; end
+end
+class WithOpt2
+  def initialize(attrs = {}); @attrs = attrs; end
+  def size; @attrs.length + 1; end
+end
+class Maker
+  def initialize(model); @model = model; end
+  def build; @model.new; end
+end
+puts Maker.new(WithOpt).build.size
+puts Maker.new(WithOpt2).build.size
