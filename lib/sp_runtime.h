@@ -483,6 +483,7 @@ static inline double sp_process_clock_gettime(void) {
    (ASAN-caught) and could spuriously hit the heap-header cache path (#282). */
 static inline sp_Encoding sp_encoding_utf8(void){return(sp_Encoding){&("\xff" "UTF-8")[1]};}
 static inline sp_Encoding sp_encoding_us_ascii(void){return(sp_Encoding){&("\xff" "US-ASCII")[1]};}
+static inline sp_Encoding sp_encoding_binary(void){return(sp_Encoding){&("\xff" "ASCII-8BIT")[1]};}
 static inline const char*sp_encoding_name(sp_Encoding e){return e.name?e.name:sp_str_empty;}
 static inline const char*sp_encoding_inspect(sp_Encoding e){return sp_sprintf("#<Encoding:%s>",sp_encoding_name(e));}
 static inline mrb_bool sp_encoding_eq(sp_Encoding a,sp_Encoding b){const char*an=sp_encoding_name(a);const char*bn=sp_encoding_name(b);return strcmp(an,bn)==0;}

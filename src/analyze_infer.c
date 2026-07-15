@@ -4586,6 +4586,11 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (par_nm && sp_streq(par_nm, "Math")) {
       if (nm && (sp_streq(nm, "PI") || sp_streq(nm, "E"))) return TY_FLOAT;
     }
+    if (par_nm && sp_streq(par_nm, "Encoding") && nm &&
+        (sp_streq(nm, "UTF_8") || sp_streq(nm, "UTF8") || sp_streq(nm, "US_ASCII") ||
+         sp_streq(nm, "ASCII") || sp_streq(nm, "ANSI_X3_4_1968") ||
+         sp_streq(nm, "BINARY") || sp_streq(nm, "ASCII_8BIT")))
+      return TY_POLY;  /* a boxed Encoding value */
     if (par_nm && sp_streq(par_nm, "File")) {
       if (nm && (sp_streq(nm, "SEPARATOR") || sp_streq(nm, "PATH_SEPARATOR") ||
                  sp_streq(nm, "ALT_SEPARATOR"))) return TY_STRING;

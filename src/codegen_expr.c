@@ -1424,6 +1424,21 @@ void emit_expr(Compiler *c, int id, Buf *b) {
       if (sp_streq(nm, "PI")) { buf_puts(b, "M_PI"); return; }
       if (sp_streq(nm, "E"))  { buf_puts(b, "M_E"); return; }
     }
+    /* well-known Encoding constants -> the matching boxed encoding value.
+       Spinel has one internal representation (UTF-8 / ASCII-8BIT), so the
+       many aliases map onto those two; enough for the pervasive
+       `str.encoding == Encoding::UTF_8` comparison. */
+    if (par_nmc && sp_streq(par_nmc, "Encoding") && nm) {
+      if (sp_streq(nm, "UTF_8") || sp_streq(nm, "UTF8")) {
+        buf_puts(b, "sp_box_encoding(sp_encoding_utf8())"); return;
+      }
+      if (sp_streq(nm, "US_ASCII") || sp_streq(nm, "ASCII") || sp_streq(nm, "ANSI_X3_4_1968")) {
+        buf_puts(b, "sp_box_encoding(sp_encoding_us_ascii())"); return;
+      }
+      if (sp_streq(nm, "BINARY") || sp_streq(nm, "ASCII_8BIT")) {
+        buf_puts(b, "sp_box_encoding(sp_encoding_binary())"); return;
+      }
+    }
     if (par_nmc && sp_streq(par_nmc, "File") && nm) {
       /* Emit marker-framed literals (\xff prefix at [-1]) like every other
          spinel string, so sp_str_byte_len/sp_str_concat can read the length
