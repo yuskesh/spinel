@@ -8588,8 +8588,21 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     buf_printf(b, "switch(_t%d.cls_id){", kt);
     for (int ci = 0; ci < c->nclasses; ci++) {
       if (is_builtin_reopen(c->classes[ci].name)) continue;
-      buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(),%d);break;",
-                 ci, rt2, c->classes[ci].c_name, ci);
+      /* a zero-arg .new can only construct a class whose initialize takes no
+         required args; an arg-requiring ctor would be an ArgumentError in MRI,
+         and its C function has parameters -- omit its arm (a runtime cls_id for
+         it lands in the sp_box_nil default), matching MRI's raise. (#2450) */
+      int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+      if (initm >= 0 && c->scopes[initm].nrequired != 0) continue;
+      if (c->classes[ci].is_struct || c->classes[ci].is_native_class) continue;
+      /* a value-type object returns by value: box via its vobj boxer, not
+         sp_box_obj which expects a heap pointer (#2450) */
+      if (c->classes[ci].is_value_type)
+        buf_printf(b, "case %d: _t%d=sp_box_vobj_%s(sp_%s_new());break;",
+                   ci, rt2, c->classes[ci].c_name, c->classes[ci].c_name);
+      else
+        buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(),%d);break;",
+                   ci, rt2, c->classes[ci].c_name, ci);
     }
     buf_printf(b, "} _t%d; })", rt2);
     return;
@@ -12614,14 +12627,22 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else if (grt == TY_FLOAT) snprintf(rdesc, sizeof rdesc, "an instance of Float");
         else snprintf(rdesc, sizeof rdesc, "%s", ty_name(grt));
         if (grt == TY_POLY || grt == TY_BOOL) {
-          if (sp_streq(dflt, "sp_box_nil()")) {
+          /* The RESULT slot is sized by the call's own type (ret), not the
+             receiver's: a poly receiver whose unresolved call is typed to a
+             concrete scalar (`poly.strftime` -> String) must yield that scalar,
+             not the sp_RbVal token, or the token lands unconverted in a typed
+             slot (#2451). Only a genuinely poly/unknown result keeps the bare
+             token so the recognized-token coercion sites can still see it. */
+          int ret_scalar = is_scalar_ret(ret) && ret != TY_UNKNOWN &&
+                           ret != TY_POLY && ret != TY_VOID && ret != TY_NIL;
+          if (sp_streq(dflt, "sp_box_nil()") && !ret_scalar) {
             buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", ", nm ? nm : "?");
             emit_boxed(c, recv, b); buf_puts(b, "))");
           }
           else {
             buf_printf(b, "(sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"%s\", ", nm ? nm : "?");
             emit_boxed(c, recv, b);
-            buf_printf(b, ")), %s)", dflt);
+            buf_printf(b, ")), %s)", ret_scalar ? default_value(ret) : dflt);
           }
           return;
         }
