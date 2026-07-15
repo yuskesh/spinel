@@ -5854,7 +5854,8 @@ else {
       int hec = 0; nt_arr(nt, v, "elements", &hec); v_empty_hash = (hec == 0);
     }
     if (vty && sp_streq(vty, "NilNode"))
-      buf_puts(b, lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
+      buf_puts(b, lv->type == TY_POLY ? "sp_box_nil()" :
+                  lv->type == TY_RANGE ? "(sp_Range){0}" : default_value(lv->type));
     else if (v_empty_arr && lv->type == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
     else if (v_empty_arr && array_kind(lv->type)) buf_printf(b, "sp_%sArray_new()", array_kind(lv->type));
     else if (v_empty_hash && ty_is_hash(lv->type)) {
@@ -5862,6 +5863,8 @@ else {
       if (hcn) buf_printf(b, "sp_%sHash_new()", hcn);
       else emit_expr(c, v, b);
     }
+    /* a poly-typed global/const slot boxes a scalar value (`$VERBOSE = true`) */
+    else if (lv->type == TY_POLY && comp_ntype(c, v) != TY_POLY) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
     if (!isg && lv->init_guarded) {

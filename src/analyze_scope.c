@@ -2132,6 +2132,13 @@ int infer_global_const_types(Compiler *c) {
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
       vt = infer_type(c, nt_ref(nt, id, "value"));
+      /* $VERBOSE/$DEBUG stay poly (default false, assigned nil/true across a
+         spec's save/restore) so the slot is declared even when only nil is
+         written -- a nil-only write would otherwise leave it untyped. */
+      if (nm && (sp_streq(nm, "$VERBOSE") || sp_streq(nm, "$DEBUG"))) {
+        if (lv && lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+        continue;
+      }
       if (vt == TY_NIL) continue;
     }
     else if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {
