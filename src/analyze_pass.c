@@ -5168,8 +5168,25 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "any?") || sp_streq(name, "all?") || sp_streq(name, "none?") ||
               sp_streq(name, "one?") || sp_streq(name, "sum") || sp_streq(name, "min_by") ||
               sp_streq(name, "max_by") || sp_streq(name, "bsearch") ||
-              sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) && rt == TY_RANGE)
-      pt = TY_INT;
+              sp_streq(name, "flat_map") || sp_streq(name, "collect_concat")) && rt == TY_RANGE) {
+      /* a float-bounded range binds a FLOAT element (bsearch bisects the reals) */
+      int frn = recv;
+      while (frn >= 0 && nt_type(nt, frn) && sp_streq(nt_type(nt, frn), "ParenthesesNode")) {
+        int pb = nt_ref(nt, frn, "body"); int pbn = 0;
+        const int *pbd = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
+        frn = pbn == 1 ? pbd[0] : -1;
+      }
+      int fl9 = frn >= 0 && nt_type(nt, frn) && sp_streq(nt_type(nt, frn), "RangeNode");
+      int fb = fl9 ? nt_ref(nt, frn, "left") : -1, fe = fl9 ? nt_ref(nt, frn, "right") : -1;
+      TyKind fbt = fb >= 0 ? infer_type(c, fb) : TY_NIL;
+      TyKind fet = fe >= 0 ? infer_type(c, fe) : TY_NIL;
+      if (sp_streq(name, "bsearch") && fl9 &&
+          (fbt == TY_INT || fbt == TY_FLOAT) && (fet == TY_INT || fet == TY_FLOAT) &&
+          (fbt == TY_FLOAT || fet == TY_FLOAT))
+        pt = TY_FLOAT;
+      else
+        pt = TY_INT;
+    }
     /* (range).lazy.select/reject/filter { |x| } : x is an integer range element */
     else if ((sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter")) &&
              rt == TY_UNKNOWN && recv >= 0 &&

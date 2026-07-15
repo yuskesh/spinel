@@ -3494,7 +3494,27 @@ else {
         sp_streq(name, "first") || sp_streq(name, "last") ||
         sp_streq(name, "size") || sp_streq(name, "count") ||
         sp_streq(name, "begin") || sp_streq(name, "end"))  return TY_INT;
-    if (sp_streq(name, "bsearch")) return TY_INT;  /* a member, or nil (nullable int) */
+    if (sp_streq(name, "bsearch")) {
+      /* a float-bounded range yields a float member (or nil); an int range an
+         int member. The bound types are on the receiver's RangeNode. */
+      int brn = recv;
+      while (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "ParenthesesNode")) {
+        int pb = nt_ref(nt, brn, "body"); int pbn = 0;
+        const int *pbd = pb >= 0 ? nt_arr(nt, pb, "body", &pbn) : NULL;
+        brn = pbn == 1 ? pbd[0] : -1;
+      }
+      if (brn >= 0 && nt_type(nt, brn) && sp_streq(nt_type(nt, brn), "RangeNode")) {
+        int bl = nt_ref(nt, brn, "left"), br = nt_ref(nt, brn, "right");
+        /* both bounds must be real NUMERIC nodes (the float-bisection branch
+           needs a finite interval; a beginless/endless bound is nil) and at
+           least one float -> a float member */
+        TyKind blt = bl >= 0 ? infer_type(c, bl) : TY_NIL;
+        TyKind brt = br >= 0 ? infer_type(c, br) : TY_NIL;
+        if ((blt == TY_INT || blt == TY_FLOAT) && (brt == TY_INT || brt == TY_FLOAT) &&
+            (blt == TY_FLOAT || brt == TY_FLOAT)) return TY_FLOAT;
+      }
+      return TY_INT;  /* a member, or nil (nullable int) */
+    }
     int block = nt_ref(nt, id, "block");
     /* finite-range Enumerable methods that materialize to an int array in
        codegen: select/reject/filter (fused loop) and min_by/max_by. */

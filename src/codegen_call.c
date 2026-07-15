@@ -4930,9 +4930,27 @@ void emit_call(Compiler *c, int id, Buf *b) {
   {
     int rcv = nt_ref(nt, id, "receiver");
     const char *cn = nt_str(nt, id, "name");
+    /* Range#bsearch over a BOUNDED float range with a truthy (non-find-any)
+       block is handled by emit_bsearch_expr's float-bisection branch, so it is
+       exempt from the float-iteration reject; a beginless/endless or find-any
+       (int-block) bsearch still reaches the reject like other iterations. */
+    int bsearch_float_ok = 0;
+    if (rcv >= 0 && cn && sp_streq(cn, "step") == 0 && sp_streq(cn, "bsearch")) {
+      int brn = unwrap_parens(c, rcv);
+      if (brn >= 0 && nt_type(nt, brn) && !sp_streq(nt_type(nt, brn), "RangeNode"))
+        brn = local_sole_range_node(c, brn);
+      int bl = brn >= 0 ? nt_ref(nt, brn, "left") : -1;
+      int br = brn >= 0 ? nt_ref(nt, brn, "right") : -1;
+      int bblk = nt_ref(nt, id, "block");
+      int bbd = bblk >= 0 ? nt_ref(nt, bblk, "body") : -1;
+      int bbn = 0; const int *bbb = bbd >= 0 ? nt_arr(nt, bbd, "body", &bbn) : NULL;
+      if (bl >= 0 && br >= 0 && bbn >= 1 && infer_type(c, bbb[bbn - 1]) != TY_INT)
+        bsearch_float_ok = 1;
+    }
     if (rcv >= 0 && cn && nt_ref(nt, id, "block") >= 0 &&
         !sp_streq(cn, "step") && !sp_streq(cn, "tap") &&
         !sp_streq(cn, "then") && !sp_streq(cn, "yield_self") &&
+        !bsearch_float_ok &&
         comp_ntype(c, rcv) == TY_RANGE && range_float_begin(c, rcv)) {
       const char *dv = default_value(comp_ntype(c, id));
       buf_printf(b, "({ sp_raise_cls(\"TypeError\", \"can't iterate from Float\"); %s; })",
