@@ -4520,9 +4520,6 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (nm && sp_streq(nm, "$~")) return TY_MATCHDATA;
     if (nm && (sp_streq(nm, "$&") || sp_streq(nm, "$`") ||
                sp_streq(nm, "$'") || sp_streq(nm, "$+"))) return TY_STRING;
-    /* warning/debug flags: default false; assignable (a spec saves/restores
-       them), so type poly so nil/false/true all round-trip through the slot */
-    if (nm && (sp_streq(nm, "$VERBOSE") || sp_streq(nm, "$DEBUG"))) return TY_POLY;
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
     LocalVar *lv = rn ? comp_gvar(c, rn) : NULL;
     return lv ? lv->type : TY_UNKNOWN;

@@ -5085,13 +5085,9 @@ char *codegen_program(const NodeTable *nt) {
     if (!is_scalar_ret(lv->type)) continue;
     buf_puts(&b, "static ");
     emit_ctype(c, lv->type, &b);
-    /* $VERBOSE / $DEBUG default to false, not nil (CRuby) */
-    const char *ginit = (lv->type == TY_POLY &&
-                         (sp_streq(lv->name, "VERBOSE") || sp_streq(lv->name, "DEBUG")))
-                        ? "{SP_TAG_BOOL, 0, {0}}"
-                        : lv->type == TY_RANGE ? "{0}"
-                        : lv->type == TY_POLY  ? "{SP_TAG_NIL, 0, {0}}" : default_value(lv->type);
-    buf_printf(&b, " gv_%s = %s;\n", lv->name, ginit);
+    buf_printf(&b, " gv_%s = %s;\n", lv->name,
+               lv->type == TY_RANGE ? "{0}" :
+               lv->type == TY_POLY  ? "{SP_TAG_NIL, 0, {0}}" : default_value(lv->type));
   }
   for (int i = 0; i < c->nconsts; i++) {
     LocalVar *lv = &c->consts[i];

@@ -1306,14 +1306,6 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return; }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
-    if (nm && (sp_streq(nm, "$VERBOSE") || sp_streq(nm, "$DEBUG"))) {
-      const char *rn = comp_resolve_gvar(c, nm + 1);
-      LocalVar *glv = comp_gvar(c, rn);
-      /* only the poly-typed (assigned) slot is declared; a read-only flag is
-         never written, so read its default false directly */
-      if (glv && glv->type == TY_POLY) { buf_printf(b, "gv_%s", rn); return; }
-      buf_puts(b, "sp_box_bool(0)"); return;
-    }
     if (nm && sp_streq(nm, "$~")) { buf_puts(b, "sp_re_last_matchdata()"); return; }
     if (nm && sp_streq(nm, "$&"))  { buf_puts(b, "sp_re_match_str");  return; }
     if (nm && sp_streq(nm, "$`"))                          { buf_puts(b, "sp_re_match_pre");  return; }
