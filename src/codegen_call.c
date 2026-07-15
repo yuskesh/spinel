@@ -4399,6 +4399,17 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "; sp_Time _t%d = ", tu); emit_expr(c, argv[0], b);
         buf_printf(b, "; sp_time_sub_t(_t%d, _t%d); })", tt, tu);
       }
+      else if (sp_streq(name, "-") && at == TY_POLY) {
+        /* Time - poly: the poly holds a Time at run time (a mixed collection
+           whose element method returns Time). Unbox to sp_Time and subtract;
+           a non-Time value raises TypeError (#2456). */
+        buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
+        buf_printf(b, "; sp_RbVal _t%d = ", tu); emit_boxed(c, argv[0], b);
+        buf_printf(b, "; if (_t%d.tag != SP_TAG_OBJ || _t%d.cls_id != SP_BUILTIN_TIME)"
+                      " sp_raise_cls(\"TypeError\", \"can't convert to Time\");"
+                      " sp_time_sub_t(_t%d, *(sp_Time *)_t%d.v.p); })",
+                   tu, tu, tt, tu);
+      }
       else if (at == TY_FLOAT) {
         buf_printf(b, "({ sp_Time _t%d = ", tt); emit_expr(c, recv, b);
         buf_printf(b, "; double _t%d = ", tu); emit_expr(c, argv[0], b);
@@ -8858,12 +8869,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       }
       else {
         int t0 = ++g_tmp, t1 = ++g_tmp;
+        /* the argument value is captured into a scratch buffer so a
+           sub-expression that hoists (an array-literal builder for `[..].max`)
+           writes to g_pre AHEAD of this declaration rather than inline into
+           the middle of it (#2453). */
+        Buf a0; memset(&a0, 0, sizeof a0); emit_math_arg(c, argv[0], &a0);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "double _t%d = ", t0);
-        emit_math_arg(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
+        buf_printf(g_pre, "double _t%d = %s;\n", t0, a0.p ? a0.p : "0"); free(a0.p);
+        Buf a1; memset(&a1, 0, sizeof a1); emit_math_arg(c, argv[1], &a1);
         emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "double _t%d = ", t1);
-        emit_math_arg(c, argv[1], g_pre); buf_puts(g_pre, ";\n");
+        buf_printf(g_pre, "double _t%d = %s;\n", t1, a1.p ? a1.p : "0"); free(a1.p);
         buf_printf(b, "(sp_math_log(_t%d) / sp_math_log(_t%d))", t0, t1);
       }
       return;
@@ -10625,6 +10640,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
      sp_str_concat/sp_str_repeat with the poly operand coerced), not poly
      arithmetic, so let them fall through. */
   if (recv >= 0 && argc == 1 && (rt == TY_POLY || a0 == TY_POLY) &&
+      rt != TY_TIME &&  /* Time +/- a poly is Time arithmetic (emit_array_arith_call, #2456) */
       !(rt == TY_STRING && (sp_streq(name, "+") || sp_streq(name, "*"))) &&
       !((ty_is_array(rt) || rt == TY_POLY_ARRAY) && sp_streq(name, "*"))) {
     const char *pfn = NULL;
