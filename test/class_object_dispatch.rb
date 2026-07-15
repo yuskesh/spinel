@@ -12,3 +12,23 @@ class Rel
 end
 puts Rel.new(A).table
 puts Rel.new(B).table
+
+# a class method WITH an argument, dispatched through an ivar-held Class value
+# (the row-hydration half of the Relation pattern) -- the argument is
+# evaluated once even across the per-class switch.
+class Row
+  attr_reader :v
+  def initialize(v); @v = v; end
+  def self.build(row); new("Row:#{row}"); end
+end
+class Col
+  attr_reader :v
+  def initialize(v); @v = v; end
+  def self.build(row); new("Col:#{row}"); end
+end
+class Hydrator
+  def initialize(model); @model = model; end
+  def hydrate(rows); rows.map { |r| @model.build(r) }; end
+end
+puts Hydrator.new(Row).hydrate(["x"]).first.v
+puts Hydrator.new(Col).hydrate(["y"]).first.v

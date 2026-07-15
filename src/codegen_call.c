@@ -7875,24 +7875,33 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
         else if (kr != uret9) uret9 = TY_POLY;
       }
       if (ncand9 > 0) {
-        /* every candidate method must take no required args beyond the ones
-           this call supplies -- keep it to the zero-arg case for now, which
-           is the reported shape and the common reflection-on-model use */
-        int simple9 = (argc == 0 && nt_ref(nt, id, "block") < 0);
+        /* Every candidate must accept exactly this call's positional args (no
+           block/yield). Different candidates may declare different param
+           types, so emit_args_filled runs per arm against that method's
+           signature -- the args are hoisted into poly temps first so a
+           side-effecting argument is evaluated once, not once per arm. */
+        int simple9 = (nt_ref(nt, id, "block") < 0);
         for (int k = 0; simple9 && k < c->nclasses; k++) {
           if (is_builtin_reopen(c->classes[k].name)) continue;
           int kmi = comp_cmethod_in_chain(c, k, name, NULL);
           if (kmi < 0) continue;
-          /* a method taking required args, a &block, or that yields can't be
-             called through this zero-arg no-block switch */
-          if (c->scopes[kmi].nrequired != 0 || c->scopes[kmi].yields ||
-              (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) simple9 = 0;
+          if (c->scopes[kmi].yields ||
+              (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0]) ||
+              c->scopes[kmi].nrequired != argc || c->scopes[kmi].rest_idx >= 0) simple9 = 0;
         }
         if (simple9) {
           TyKind slot9 = is_scalar_ret(uret9) && uret9 != TY_VOID && uret9 != TY_UNKNOWN
                          ? uret9 : (ty_is_object(uret9) ? uret9 : TY_POLY);
           int tk9 = ++g_tmp, tr9 = ++g_tmp;
-          buf_printf(b, "({ sp_Class _t%d = ", tk9); emit_expr(c, recv, b); buf_puts(b, "; ");
+          buf_puts(b, "({ ");
+          /* hoist each argument into a rooted poly temp (evaluate once) */
+          int atmp9[16]; int na9 = argc < 16 ? argc : 16;
+          for (int a = 0; a < na9; a++) {
+            atmp9[a] = ++g_tmp;
+            buf_printf(b, "sp_RbVal _t%d = ", atmp9[a]); emit_boxed(c, argv[a], b);
+            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", atmp9[a]);
+          }
+          buf_printf(b, "sp_Class _t%d = ", tk9); emit_expr(c, recv, b); buf_puts(b, "; ");
           emit_ctype(c, slot9, b);
           buf_printf(b, " _t%d = %s; switch (_t%d.cls_id) {", tr9,
                      slot9 == TY_POLY ? "sp_box_nil()" : default_value(slot9), tk9);
@@ -7903,13 +7912,23 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             if (kmi < 0) continue;
             TyKind kr = (TyKind)c->scopes[kmi].ret;
             buf_printf(b, " case %d: _t%d = ", k, tr9);
-            char call9[256]; Buf cb9; memset(&cb9, 0, sizeof cb9);
+            Buf cb9; memset(&cb9, 0, sizeof cb9);
             emit_method_cname(c, &c->scopes[kmi], &cb9);
-            snprintf(call9, sizeof call9, "%s()", cb9.p ? cb9.p : "");
+            buf_printf(&cb9, "(");
+            Scope *ks9 = &c->scopes[kmi];
+            for (int a = 0; a < na9; a++) {
+              if (a) buf_puts(&cb9, ", ");
+              LocalVar *pp = a < ks9->nparams ? scope_local(ks9, ks9->pnames[a]) : NULL;
+              TyKind pt = pp ? pp->type : TY_POLY;
+              char at[32]; snprintf(at, sizeof at, "_t%d", atmp9[a]);
+              if (pt == TY_POLY) buf_puts(&cb9, at);
+              else emit_unbox_text(c, pt, at, &cb9);
+            }
+            buf_puts(&cb9, ")");
+            if (slot9 == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, cb9.p ? cb9.p : "", b);
+            else if (slot9 != TY_POLY && kr == TY_POLY) emit_unbox_text(c, slot9, cb9.p ? cb9.p : "", b);
+            else buf_puts(b, cb9.p ? cb9.p : "");
             free(cb9.p);
-            if (slot9 == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, call9, b);
-            else if (slot9 != TY_POLY && kr == TY_POLY) emit_unbox_text(c, slot9, call9, b);
-            else buf_puts(b, call9);
             buf_puts(b, "; break;");
           }
           buf_printf(b, " } _t%d; })", tr9);

@@ -1339,14 +1339,15 @@ TyKind infer_call(Compiler *c, int id) {
         if (is_builtin_reopen(c->classes[k].name)) continue;
         int kmi = comp_cmethod_in_chain(c, k, name, NULL);
         if (kmi < 0) continue;
-        if (c->scopes[kmi].nrequired != 0 || c->scopes[kmi].yields ||
+        if (c->scopes[kmi].nrequired != argc || c->scopes[kmi].rest_idx >= 0 ||
+            c->scopes[kmi].yields ||
             (c->scopes[kmi].blk_param && c->scopes[kmi].blk_param[0])) { nc = 0; break; }
         nc++;
         TyKind kr = (TyKind)c->scopes[kmi].ret;
         if (!set) { uret = kr; set = 1; }
         else if (kr != uret) uret = TY_POLY;
       }
-      if (nc > 0 && argc == 0)
+      if (nc > 0 && nt_ref(nt, id, "block") < 0)
         return (uret == TY_UNKNOWN || uret == TY_VOID) ? TY_POLY : uret;
     }
   }
