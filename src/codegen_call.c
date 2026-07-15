@@ -2878,7 +2878,7 @@ static int emit_class_new_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_sym_intern(%s(sp_sym_to_s(", symfn);
       emit_expr(c, recv, b);
       buf_puts(b, ")))");
-      return;
+      return 1;
     }
   }
   /* Hash[k: v] desugared to a bare hash literal: emit the receiver */
