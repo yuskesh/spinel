@@ -1986,7 +1986,10 @@ else {
   if (recv >= 0 && rt == TY_TIME) {
     if (sp_streq(name, "-") && argc > 0) {
       TyKind at = infer_type(c, argv[0]);
-      if (at == TY_TIME) return TY_FLOAT;
+      /* Time - Time is a Float duration; Time - poly likewise (the poly holds
+         a Time at run time, the common mixed-collection shape, #2456). An
+         int/float offset keeps the Time type via the general `-` arm below. */
+      if (at == TY_TIME || at == TY_POLY) return TY_FLOAT;
     }
     if (sp_streq(name, "utc") || sp_streq(name, "gmtime") || sp_streq(name, "getutc") ||
         sp_streq(name, "localtime") || sp_streq(name, "getlocal") || sp_streq(name, "+") ||
