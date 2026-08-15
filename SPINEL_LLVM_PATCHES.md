@@ -29,9 +29,14 @@
 | # | 名前 | ファイル | 追加行 | ゲート | 状態 |
 |---|---|---|---|---|---|
 | 1 | `SP_UNMASKED_SETJMP` — mask-free 非局所脱出 | `lib/spinel_rt.h` | **+20 / −0** | `-DSP_UNMASKED_SETJMP` (既定 OFF) | コミット済み (aa84459c) |
-| 2 | `SP_STRLEN_DEDUP` — `s[i]` の `sp_str_length` 二重計算除去 | `lib/sp_str.c` | **+17 / −0** | `-DSP_STRLEN_DEDUP` (既定 OFF) | 本コミット |
+| 2 | `SP_STRLEN_DEDUP` — `s[i]` の `sp_str_length` 二重計算除去 | `lib/sp_str.c` | **+17 / −0** | `-DSP_STRLEN_DEDUP` (既定 OFF) | コミット済み (b01289c3) |
+| 4 | `SP_INT64` — `mrb_int` をポインタ幅から切り離す | `lib/sp_types.h`, `lib/sp_core.h` | **+53 / −0** | `-DSP_INT64` (既定 OFF) | 本コミット |
 
-**現 footprint = 恒久 footprint = `lib/spinel_rt.h` (Patch 1) + `lib/sp_str.c` (Patch 2) の 2 ファイル・計 +37 行。**
+**現 footprint = 恒久 footprint = `lib/spinel_rt.h` (Patch 1) + `lib/sp_str.c` (Patch 2) +
+`lib/sp_types.h` / `lib/sp_core.h` (Patch 4) の 4 ファイル・計 +90 行。**
+
+> **Patch 3 (bigint GC 会計) は意図的な欠番** — E008 の安全性分析が未ルート中間値の
+> サイレント破壊を実証したため実装中止。番号は再利用しない。
 一時ビルド修正は無い (pristine `8f65a5b5` が Apple clang 21 / macOS 26.6.1 でクリーンにビルドできる)。
 
 ---
@@ -334,3 +339,238 @@
     (フルスイートの方は本番経路 = `make COPT=...` で走らせている)。
 
 - **適用日**: 2026-08-15 (E007)。fork へ Patch 2 としてコミット済み。
+
+---
+
+### Patch 4: `SP_INT64` — `mrb_int` をポインタ幅から切り離して `int64_t` に固定する
+
+- **目的**: `lib/sp_types.h:90` の `typedef intptr_t mrb_int;` は「`mrb_int` は
+  ポインタ幅に従う」と決めている。64bit ホストでは何も起きないが、**wasm32 (Cloudflare
+  Workers 向けターゲット) では Ruby の `Integer` が 32bit になる**。
+  問題はそれ自体ではなく、**Spinel の型推論が 64bit ホスト上で走ること**である:
+  - 字句解析はリテラルが bigint になる閾値を **`LLONG_MAX`** で判定する
+    (`src/spinel_parse.c:355,398`)。
+  - `**` / `<<` のオーバーフロー判定はホストの **`long long` + `__builtin_mul_overflow`**
+    で行う (`src/analyze_infer.c:515-522, 526-532`)。
+  - 定数畳み込みも `long long`、シフト幅の上限は **`>= 64` 決め打ち**
+    (`src/codegen_expr.c:376,406,410`)。
+  - **`src/` にターゲット幅のパラメータが 1 つも無い** (`-m32` も triple も
+    `sizeof(intptr_t)` の参照も 0 件)。
+
+  結果として `2**40` は `TY_INT` と型付けされ `sp_int_pow(2LL, 40LL)` として吐かれ、
+  ターゲットの `mrb_int` = `int32_t` で **`RangeError: integer overflow in **`** になる
+  (発生源は `lib/sp_cold.c:2445`)。CRuby は `1099511627776` を返す。
+  リテラル `1234567890123` は生成 C にそのまま焼かれ、**静かに `1912276171` に化ける**。
+
+  本パッチはターゲット側の幅をホストに合わせることで、**このズレという問題カテゴリごと消す。**
+
+- **対応 Edoc**: E010 (**未執筆** — 生データは spinel-llvm 側の
+  `docs/experiments/results/E010/` にある。台帳へ反映する際に Edoc のパスを埋めること)
+  (前段: [E009](../docs/experiments/E009_wasm_workers_inventory.md) §11 —
+  「本当の壁は整数幅だった」「意味を変えるのはこの 1 項目だけ」)
+
+- **なぜ wasm32 で i64 が「安い」のか (E009 の判定を覆した 2 点)**:
+
+  1. **`sp_RbVal` のレイアウトは動かない。** E009 §11 は緩和策②を
+     「additive では済まない — `sp_RbVal` のレイアウトに影響する」と判定していたが、
+     ```c
+     /* lib/sp_gc.h:55 */
+     typedef struct { int tag; int cls_id;
+                      union { mrb_int i; const char *s; mrb_float f; mrb_bool b; void *p; } v; } sp_RbVal;
+     ```
+     `union` の最大メンバーは **`mrb_float` = `double` = 8 バイト**であり `mrb_int` ではない。
+     **native / wasm32-i32 / wasm32-i64 の 3 構成すべてで `sizeof(sp_RbVal) == 16`。**
+  2. **性能も落ちない。** wasm32 は本物の 32bit CPU と違い **i64 ALU をネイティブに持ち**、
+     V8 はそれを 64bit レジスタで実行する。実測 (node v24.12.0):
+     `fib(35)` w32 50.0 ms / **w64 49.9 ms**、30M 回ループ w32 80.2 ms / **w64 80.3 ms** —
+     **差は測定限界以下 (±0.5%)**。E009 §11 の「i64 演算がエミュレーションになり性能は落ちる」は
+     **実測で棄却された**。
+
+- **改変箇所 (2 ファイル・+53 行・追加のみ)**:
+
+  **(a) `lib/sp_types.h`** — 85-92 行の幅ガードと typedef を `#if defined(SP_INT64)` /
+  `#else` / `#endif` で挟む。**元の 8 行は `#else` 側に無改造で残る**。+39 行:
+
+  ```c
+  #if defined(SP_INT64)
+  #undef  INTPTR_MAX
+  #define INTPTR_MAX INT64_MAX
+  #undef  INTPTR_MIN
+  #define INTPTR_MIN INT64_MIN
+  typedef int64_t  mrb_int;
+  typedef uint64_t mrb_uint;
+  typedef double   mrb_float;
+  typedef bool     mrb_bool;
+  #else
+  (upstream 85-92 行そのまま)
+  #endif
+  ```
+  (残り 26 行は動機と境界を書いたコメント)
+
+  **(b) `lib/sp_core.h`** — `#include <stddef.h>` の直後に追加。+14 行:
+
+  ```c
+  #if defined(SP_INT64)
+  #include "sp_types.h"
+  #define intptr_t mrb_int
+  #endif
+  ```
+  (残り 10 行はコメント)
+
+- **なぜ typedef 1 行では足りないのか (= なぜ `INTPTR_MAX` を再定義するのか)**:
+  - `INTPTR_MAX` / `INTPTR_MIN` は **ツリー内 約 45 箇所** で使われているが、
+    **1 件もポインタ限界として使われていない**。すべて `mrb_int` の限界である:
+    beginless/endless Range のセンチネル (`sp_range.h:37-61`, `sp_re.c:958-959`,
+    `spinel_rt.h:740-747, 2457-2465, 3263-3297, 7920`)、`SP_INT_NIL` (`sp_types.h:115`)、
+    オーバーフロー保護 (`sp_core.c:433-435`, `sp_array.c:40-47`, `sp_format.c:280-345`)、
+    幅セレクタ (`spinel_rt.h:290` の `sp_i64_to_int`, `sp_core.c:25` の
+    `SP_INT_POW10_LIMIT`, `sp_format.c:274`)。
+  - **codegen (`src/`) を 1 行も触らずに済むのはこの形のおかげ**である。
+    `src/codegen_expr.c:882,884` ほか約 20 箇所の `INTPTR_MIN`/`INTPTR_MAX` は
+    **生成 C へ吐く文字列リテラル**なのでターゲット側の定義に追随する。
+    Patch 1 と同じ「codegen に触れば additive でなくなる」制約をここでも守っている。
+  - `lib/sp_core.h` の 21 プロトタイプは `intptr_t` を **`mrb_int` の綴りとして**使っている
+    (ヘッダ冒頭のコメントが自らそう書いている: "Signatures use intptr_t / double directly
+    (== mrb_int / mrb_float)")。ここを追随させないと、生成 TU が i64 を渡すのに
+    `libspinel_rt.a` 側が i32 で受ける **静かな ABI 割れ**になる (リンクは通ってしまう)。
+    `#define intptr_t mrb_int` は `lib/sp_core.h` を含む **3 TU
+    (`sp_core.c` / `sp_time.c` / 生成 TU) にしか届かない**。`lib/sp_sched.c` の
+    `(void*)(intptr_t)wid` (本物のポインタ用途) は `sp_core.h` を含まないので無影響。
+  - `lib/sp_core.c:21` の独自 `typedef intptr_t mrb_int;` は
+    `typedef mrb_int mrb_int;` に展開され、C11 の冗長再宣言として合法。
+
+- **境界 (安全性解析の結論、`docs/experiments/results/E010/couplings_audit.md`)**:
+
+  > **ポインタを `mrb_int` に詰める既存の 6 群はすべて安全。** wasm32 のポインタは 32bit で、
+  > i64 の `mrb_int` はこれをゼロ拡張で保持し `(uintptr_t)` へ戻すとき下位 32bit を取る。
+  > リトルエンディアンなので GC の closure cell (`sp_gc.h:373-383` の
+  > `*(void**)p` による下位半分読み) も正しい。`sp_BoundMethod.fn` (`sp_proc.h:64`) に
+  > 関数ポインタを入れる形、`#hash` の `(uintptr_t)` 混ぜ込み、`sp_sym`、
+  > 配列長フィールドも同様。
+  >
+  > **Patch 4 が「ついでに直す」もの 5 件**: `sp_IntArray_ffi_data` (`sp_array.c:575`) の
+  > `mrb_int*` → `const int64_t*` **無変換 reinterpret** (32bit では型 punning バグ)、
+  > `SP_INT_NIL` の 32bit 既知限界 (`sp_types.h:100-114`)、
+  > `spinel_rt.h:3772` の `depth = INT64_MAX` が `-1` に化ける件 (`Array#flatten` 深さ無制限)、
+  > `spinel_rt.h:4412` の `(mrb_int)1<<40` のシフト幅超過 UB、
+  > そして canonical value ABI が `i32(i32)` から **`i64(i64)` = native / eBPF と同じ**に戻ること。
+  >
+  > **残る意味論のズレは 1 件だけ — `Marshal`。** `lib/sp_marshal.c` は
+  > `long` 幅で符号化する (`:45,110,175,226,232`)。wasm32 では `long` = 4 バイトなので
+  > `mrb_int` が 64bit でも dump/load が i32 で切れる。実測:
+  > `Marshal.load(Marshal.dump(1099511627776))` が native `1` / w32 `0` / **w64 `0`**。
+  > **Option A (フラグ無し) でも同じ値を返す**ので Patch 4 が新たに壊しているわけではないが、
+  > 「native と意味論が一致する」という主張の唯一の例外である。修正は `long` → `mrb_int` の
+  > 置換 5 箇所で、**既存行の書き換えになるので本パッチの additive 性からは外れる** — Patch 5 案件。
+  >
+  > **未踏の理論上の穴 1 件**: `spinel_rt.h:1356,1366,2882` は `uintptr_t` を
+  > 「符号なし `mrb_int`」の意味で使っている。wasm32 では `uintptr_t` が 32bit のままなので
+  > `n >= 32` のシフトが UB になる。ただし本実験の 3 プローブはどれもここに到達しなかった
+  > (codegen は定数シフトを `uint64_t` 明示、変数シフトを `sp_int_shl_ck`、
+  > `x <<= const` を生の C シフトに落とす)。恒久化するなら `mrb_uint` への置換が要る。
+
+- **有効化 (make の knob)**:
+
+  ```bash
+  # wasm32 (本来の用途)。ランタイム 28 TU と生成 TU の *両方* に渡す。
+  # 片方だけだと sp_RbVal が同じ 16 バイトなのでリンクは通り、値だけ静かに壊れる。
+  clang --target=wasm32-wasip1 --sysroot=$SYS -O2 -DSP_INT64 -c lib/*.c ...
+  bin/spinel app.rb -c && clang --target=wasm32-wasip1 -DSP_INT64 -c app.c
+
+  # ツリー全体 (native。回帰確認用)
+  make -k test-run COPT="-O2 -DSP_INT64" PCH_ROOT=build/pch/clangO2-int64
+  ```
+
+  > **Patch 1 / 2 との違い**: Patch 1 (`spinel_rt.h`) は生成 TU にだけ届くので `--cc` で渡せた。
+  > Patch 2 (`sp_str.c`) はアーカイブメンバーなのでアーカイブの再ビルドが要った。
+  > **Patch 4 は両方**に届かないと ABI が割れる — 最も渡し漏れが危険なフラグである。
+  > 恒久化するなら `bin/spinel` の driver フラグ (`--int-width=64` 等) にして
+  > アーカイブ選択と `-D` を同時に決める形が正しい (**未実装**)。
+  > `PCH_ROOT` を明示上書きする理由は Patch 1 / 2 と同じ (E002 の PCH の罠)。
+
+- **挙動差分**: 未設定で完全に既存挙動 (バイト一致、下記)。設定時のみ `mrb_int` /
+  `mrb_uint` / `INTPTR_MAX` / `INTPTR_MIN` / `sp_core.h` の ABI が 64bit 固定になる。
+  **64bit ホストでは意味論の差分ゼロ** (差分ラン 531 テストで 0 行差)。
+
+- **検証 (2026-08-15, Apple M1 Max / macOS 26.6.1 / clang 22.1.8 + wasi-libc 33 / node v24.12.0)**:
+
+  | ゲート | 結果 |
+  |---|---|
+  | **`cc -E -P` (トークン列) — `sp_types.h` / `sp_core.h` / `spinel_rt.h` の 3 TU、フラグ未設定** | **3/3 バイト一致** (161 / 155 / **9583** 行。行数も動かない = `#if` で丸ごと消えている) |
+  | **`.o` ハッシュ (make と同一 cmdline) — `sp_core.o` / `sp_cold.o` / `sp_array.o` / `sp_format.o` / `sp_alloc.o`** | **5/5 バイト一致**。主ゲートは `sp_core.o` (Patch 4 が触った `sp_core.h` を含む唯一のアーカイブメンバー) |
+  | `git diff --numstat` | **2 files changed, 53 insertions(+), 0 deletions(-)** = additive 厳守 |
+  | 生成 C (`bin/spinel -c`) | 不変 (`src/` 無改造) |
+  | **native 差分ラン: `test/*.rb` 名前順 500 本、専用アーカイブ、フラグ ON/OFF** | **両側 498 PASS / 2 FAIL、`diff` 0 行**。2 FAIL は `.args`/ARGV を渡さないハーネスの人工物でフラグ非依存 |
+  | **native 差分ラン: 幅に敏感な 31 本** (`integer_literal_no_int32_overflow` / `int_overflow_op_assign` / `pack_endian_modifiers` / `bignum_*` / `marshal_roundtrip` ほか) | **両側 31/31 PASS、`diff` 0 行** |
+  | **wasm32 (a) `2**40`** | フラグ OFF: `RangeError`, exit 1 / **フラグ ON: `1099511627776`** |
+  | **wasm32 (b) E009 の `rich.rb`** | **native とバイト一致** (フラグ OFF でも一致) |
+  | **wasm32 (c) `int_width_probe.rb`** | フラグ OFF: 1 行目で raise / **フラグ ON: 5 行すべて native と一致** |
+  | **wasm32 (d) `bm_unwind` (48bit checksum)** | フラグ OFF: `RangeError: integer overflow in *`, stdout 0 B / **フラグ ON: ARGV 20000・250000 の両方で native とバイト一致** (`checksum 58736352199621`) |
+  | **wasm32: 凍結ベンチ 10 本 (E001 の 8 本 + `bm_unwind`/`bm_dispatch`)** | フラグ OFF **7/10** (`bm_huffman`/`bm_unwind`/`bm_dispatch` が RangeError) / **フラグ ON 10/10 が native とバイト一致** |
+  | wasm32: 静かな narrowing プローブ 6 行 | フラグ OFF は 4 行が静かに誤答 + 1 行 raise / **フラグ ON は 6/6 一致** |
+  | positive control: `Integer#size` | native 8 / wasm32 フラグ OFF **4** / **フラグ ON 8** |
+  | negative control: native で `-DSP_INT64` を付けた `.o` | 32 個中 **31 個バイト一致、`sp_cold.o` のみ差分**。原因は Darwin arm64 で `intptr_t`=`long`、`int64_t`=`long long` が**幅は同じでも別型** = **TBAA ディスクリプタが変わる**こと。プリプロセス後の差は `…L` → `…LL` のサフィックスのみ (値は同一) |
+
+- **性能・サイズ (node v24.12.0、単発 3 回。**load average 25-34 の汚染下**)**:
+
+  | 指標 | フラグ OFF (i32) | フラグ ON (i64) | Δ |
+  |---|---|---|---|
+  | `fib(35)` | 49.7 / 50.1 / 50.1 ms | 50.2 / 49.7 / 49.8 ms | **±0.2% (差なし)** |
+  | 30M 回ループ | 79.9 / 80.9 / 79.9 ms | 80.0 / 80.4 / 80.6 ms | **±0.5% (差なし)** |
+  | `rich.wasm` raw / gzip | 291,763 B / **105,174 B** | 292,588 B / **106,325 B** | **+0.28% / +1.09%** |
+  | モジュールサイズ (12 プログラム) | — | — | raw **+0.17〜1.27%** / gzip **+0.55〜1.81%** |
+  | 起動 (`rich.wasm` compile / instantiate) | 0.5 ms / 1.2 ms | 0.5-0.6 ms / 1.2 ms | 不変 |
+  | 線形メモリ: `fib` / `rich` / `bm_fasta` | 0.88 / 0.88 / 1.44 MB | 0.88 / 0.88 / 1.44 MB | **±0** |
+  | 線形メモリ: 200 万要素の `Array<Integer>` | **17.81 MB** | **34.81 MB** | **+17 MB (1.95x)** |
+
+  E009 の差別化点「105 KB gzip = Workers の 1 MB 制限の約 10%」は **106 KB になるだけ**。
+  **唯一の実コストは整数配列を大量に持つプログラムのヒープが約 2 倍になること。**
+
+- **upstream PR 可能性**: **中〜高。ただしこの形のままでは出せない。**
+  - 汎用性は高い — 「`mrb_int` をポインタ幅から切り離す」は wasm32 に限らず
+    **任意の 32bit ターゲットで Ruby の意味論を保ちたい場合の唯一の答え**であり、
+    eBPF/LLVM 固有のロジックを含まない。upstream 自身が `sp_types.h:78-114` で
+    32bit プロファイルの限界 (`SP_INT_NIL` の衝突、64bit 値の narrowing) を
+    自覚しているので、議論の土台は既にある。
+  - しかし `#undef INTPTR_MAX` と `#define intptr_t mrb_int` は
+    **「未設定時バイト一致」を守るための計測用の形**であって恒久形ではない。PR にするなら:
+    1. `SP_INT_MAX` / `SP_INT_MIN` を導入し `INTPTR_MAX`/`INTPTR_MIN` の約 45 用途を置換
+    2. `sp_core.h` の 21 プロトタイプを `intptr_t` → `mrb_int` に
+    3. `lib/sp_marshal.c` の `long` → `mrb_int` (5 箇所)
+    4. `spinel_rt.h:1356,1366,2882` の `uintptr_t` → `mrb_uint`
+    5. `spinel_rt.h:3772` の `INT64_MAX` と `:4412` の `1<<40`、
+       `sp_int_shl_ck` (`:4592`) の `63` 決め打ちを幅追随に
+       — **これは Option A を採る場合でも必要なバグ修正である**
+  - **より本質的な upstream 提案は別にある**: コンパイラにターゲット幅パラメータを入れること。
+    `src/spinel_parse.c` の `pm_int_overflows`、`src/analyze_infer.c` の
+    `infer_int_pow_overflows` / `infer_int_shl_overflows`、`src/codegen_expr.c` の
+    `fold_int_node` の **4 箇所**にターゲット幅を通せば、32bit プロファイルを選んだときに
+    `2**40` が正しく `TY_BIGINT` に昇格する。Patch 4 と排他ではなく、
+    **「32bit を選ぶ自由」を残したいなら必須**の作業である。
+
+- **未検証事項 (honest boundary)**:
+  - **wasm 上でスイートを 1 本も走らせていない。** wasm 側の検証は
+    プログラム 20 本 (`fib` / `fib35` / `loopy` / `rich` / `int_width_probe` /
+    `silent_probe` / `coupling_probe` / `shl_probe` / `shl2_probe` / `memhog` +
+    凍結ベンチ 10 本) の stdout 比較のみ。WASI ファイルシステムが要るスイート実走は次の実験の仕事
+    (E009 の同じ boundary を引き継いでいる)。
+  - **native 差分ランは 2856 本中 531 本 (500 + 31)。** 全数ではない。
+    しかも `make test-run` の本番経路ではなく**専用アーカイブ + 手組みリンク**である
+    (`vendor/spinel/build` と `lib/*.a` を汚さないため)。`.args` サイドカー・
+    `.err.expected`・`SP_THREADS` アーカイブ選択・PCH は再現していない。
+  - **`SP_THREADS` ビルドを 1 度もコンパイルしていない。** 静的には安全と判定した
+    (`#define intptr_t` が届く TU は 3 つで、`sp_sched.c` は含まれない) が未実測。
+  - **`workerd` 上で 1 度も走らせていない。** node の `node:wasi` のみ。
+    E009 は workerd まで到達しているので、そこは回帰していることになる。
+  - **Linux / x86_64、および wasm 以外の実 32bit ターゲット (ARM Cortex-M 等) で未検証。**
+    Patch 4 の効果は「32bit ターゲットで `mrb_int` を 64bit にする」ことなので、
+    **i64 ALU を持たない本物の 32bit CPU では性能ペナルティが出るはず** — wasm32 の
+    「タダ」という結論をそのまま持ち出してはならない。
+  - **計測は hyperfine 無し・σ 無し・並行負荷あり (load 25-34)。**
+    サイズは決定的なので信頼できるが、時間は「差が測定限界以下」という定性判定まで。
+  - **メモリは線形メモリの終了時サイズを 4 形状で読んだだけ** (ピークでも RSS でもない)。
+  - **`Marshal` の残ズレは修正していない** (上記境界)。
+  - **`-DSP_INT64` の渡し漏れを検出する仕組みが無い。** 片側だけに渡すと
+    リンクは通り実行時に値だけ壊れる。driver フラグ化が要る。
+
+- **適用日**: 2026-08-15 (E010)。**コミットしていない — working tree のみ、既定 OFF。**

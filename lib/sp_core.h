@@ -13,6 +13,20 @@
 #include <stdint.h>
 #include <stddef.h>   /* size_t (sp_snprintf_c_float) */
 
+/* spinel-llvm Patch 4 (E010): SP_INT64 companion -- see lib/sp_types.h.
+   The prototypes below spell mrb_int as `intptr_t` (file comment above:
+   "== mrb_int"). Under SP_INT64 mrb_int is int64_t regardless of pointer
+   width, so the spelling has to follow: otherwise the generated TU passes
+   int64 arguments to int32 prototypes and every libspinel_rt.a helper
+   (sp_gcd / sp_str_to_i_* / sp_int_round / ...) truncates at the call.
+   sp_core.c's own `typedef intptr_t mrb_int;` and its
+   `#if INTPTR_MAX == INT32_MAX` (SP_INT_POW10_LIMIT) follow from the same
+   two definitions. Default OFF: with the flag unset nothing below changes. */
+#if defined(SP_INT64)
+#include "sp_types.h"
+#define intptr_t mrb_int
+#endif
+
 /* String -> number parsers (cold, I/O-boundary). */
 intptr_t sp_str_to_i_cruby(const char *s);
 double sp_str_to_f_cruby(const char *s);
