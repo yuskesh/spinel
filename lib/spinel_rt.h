@@ -39,6 +39,26 @@ const char *sp_str_setbyte_cow(const char *s, mrb_int i, mrb_int v);
 #include <stdarg.h>
 #include <time.h>
 #include <setjmp.h>
+
+/* Opt-in (-DSP_UNMASKED_SETJMP): use the mask-free jump pair for the four
+   non-local-exit mechanisms (raise/rescue, throw/catch, valued break,
+   Proc#return). POSIX setjmp/longjmp may save and restore the signal mask;
+   on BSD/Darwin they do, which costs a sigprocmask(2) syscall per setjmp and
+   per longjmp. _setjmp/_longjmp are the same jump with the mask left alone.
+   The define reaches both the longjmps below and the setjmps codegen emits
+   into the generated TU (which includes this header first), so every buffer
+   is written and read by the matching pair.
+   BOUNDARY: the mask is then NOT restored when an unwind leaves a signal
+   handler, so a Signal.trap block that raises/throws leaves that signal
+   blocked. Programs that do that must leave this off. Unset = upstream,
+   byte-identical. */
+#if defined(SP_UNMASKED_SETJMP)
+#undef setjmp
+#undef longjmp
+#define setjmp  _setjmp
+#define longjmp _longjmp
+#endif
+
 #include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
