@@ -82,6 +82,43 @@ extern int sp_active_workers;        /* live worker count; sp_sched.c */
    sp_RbVal union. The two paths differ only in that the 32-bit build
    overflows / narrows foreign 64-bit values (e.g. Time#to_i) at
    INT32 limits; see the overflow-mode handling. */
+/* spinel-llvm Patch 4 (E010): SP_INT64 -- decouple sp_int from pointer width.
+   Opt-in, default OFF; with the flag unset every line below is the upstream
+   text and the build is byte-identical.
+
+   Motivation (wasm32/WASI, Cloudflare Workers). On a 32-bit target the
+   pointer-width rule above makes Ruby's Integer 32-bit, but Spinel's *type
+   inference runs on the 64-bit host*: the parser saturates literals at
+   LLONG_MAX and the `**`/`<<` overflow oracles accumulate in host `long long`
+   (src/spinel_parse.c, src/analyze_infer.c), so `2**40` is typed TY_INT and
+   lowered into an int32_t slot -- RangeError at run time where CRuby gives
+   1099511627776. Unlike a real 32-bit CPU, wasm32 has a native i64 ALU, and
+   sp_RbVal is already 16 bytes there (the mrb_float member forces an 8-byte
+   union), so widening sp_int costs no layout change and no soft-int
+   emulation. Setting SP_INT64 restores host==target integer semantics.
+
+   Two things have to move together:
+     (a) the typedef, and
+     (b) INTPTR_MAX / INTPTR_MIN, which the tree uses throughout as the
+         *sp_int* limits, not as pointer limits: the beginless/endless Range
+         sentinels (sp_range.h, sp_re.c, spinel_rt.h), SP_INT_NIL, the
+         overflow guards in sp_core.c / sp_array.c / sp_format.c, and the
+         `#if INTPTR_MAX == INT64_MAX` width selectors (spinel_rt.h's
+         sp_i64_to_int, sp_core.c's SP_INT_POW10_LIMIT, sp_format.c). Every
+         one of the ~45 uses is an integer limit; none is about a pointer.
+         Re-pointing the two spellings keeps them in step with the typedef
+         instead of silently disagreeing with it.
+   The companion block in sp_core.h does the same for the helper ABI that
+   spells mrb_int as `intptr_t`. */
+#if defined(SP_INT64)
+#undef  INTPTR_MAX
+#define INTPTR_MAX INT64_MAX
+#undef  INTPTR_MIN
+#define INTPTR_MIN INT64_MIN
+typedef int64_t  sp_int;
+typedef double   sp_float;
+typedef bool     sp_bool;
+#else
 #if INTPTR_MAX == INT64_MAX
 #elif INTPTR_MAX == INT32_MAX
 #else
@@ -90,6 +127,7 @@ extern int sp_active_workers;        /* live worker count; sp_sched.c */
 typedef intptr_t sp_int;
 typedef double sp_float;
 typedef bool sp_bool;
+#endif
 
 /* Sentinel value reserved by the int? (scalar-nullable int) type. An
    int? slot is bit-compatible with sp_int; SP_INT_NIL marks the
