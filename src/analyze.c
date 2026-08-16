@@ -116,6 +116,71 @@ static int bare_rescue_spec_cid(Compiler *c, int rescue_id) {
   return -1;
 }
 
+/* ---- rescue bindings that shadow each other (`rescue A => e` ... `rescue B => e`)
+   ------------------------------------------------------------------------
+   Two arms in one scope share one LocalVar, so the binding can only specialize
+   when every arm agrees on the class; otherwise it falls back to TY_EXCEPTION
+   and a call to a subclass-specific method inside the FIRST arm stops
+   compiling ("unsupported call ... recv=LocalVariableReadNode"). Renaming the
+   disagreeing arms apart is exactly the workaround a user applies by hand, and
+   it is sound whenever the name is not read anywhere else in the scope -- Ruby
+   leaks a rescue binding past `end`, so a reader outside the arms is the one
+   shape that must keep sharing the slot. */
+
+/* Is `id` a node that names a local variable (reads, writes, targets and the
+   parameter forms that would bind the same name)? */
+static int rescue_names_local(const NodeTable *nt, int id, const char *nm) {
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  size_t tl = strlen(ty);
+  int is_lv = strncmp(ty, "LocalVariable", 13) == 0;
+  int is_pm = tl >= 13 && sp_streq(ty + (tl - 13), "ParameterNode");
+  if (!is_lv && !is_pm) return 0;
+  const char *n = nt_str(nt, id, "name");
+  return n && sp_streq(n, nm);
+}
+
+/* Mark the subtree rooted at `id`. The walk stops at a nested DefNode (a def
+   opens its own locals, so an `e` in there is another variable) but enters
+   blocks, which capture the enclosing slot rather than making a new one. */
+static void rescue_mark_subtree(const NodeTable *nt, int id, unsigned char *mark) {
+  if (id < 0 || mark[id]) return;
+  const char *ty = nt_type(nt, id);
+  if (!ty) return;
+  mark[id] = 1;
+  if (sp_streq(ty, "DefNode")) return;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) rescue_mark_subtree(nt, nt_ref_at(nt, id, i), mark);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) rescue_mark_subtree(nt, ids[k], mark);
+  }
+}
+
+/* A name no local in `sc` holds and no node in the tree spells. */
+static void rescue_fresh_name(Compiler *c, Scope *sc, const char *base, char *out, size_t outn) {
+  for (int k = 1; k < 1000; k++) {
+    snprintf(out, outn, "%s__r%d", base, k);
+    if (scope_local(sc, out)) continue;
+    int clash = 0;
+    for (int id = 0; id < c->nt->count && !clash; id++) {
+      const char *n = nt_str(c->nt, id, "name");
+      if (n && sp_streq(n, out)) clash = 1;
+    }
+    if (!clash) return;
+  }
+  out[0] = '\0';
+}
+
+/* Rewrite every mention of `nm` inside the marked region to `to`. */
+static void rescue_rename_marked(const NodeTable *nt, const unsigned char *mark,
+                                 const char *nm, const char *to) {
+  for (int id = 0; id < nt->count; id++)
+    if (mark[id] && rescue_names_local(nt, id, nm))
+      nt_node_set_str((NodeTable *)nt, id, "name", to);
+}
+
 /* Names the emitted program can reach with no CallNode of its own: the runtime
    protocols. `5 + money` calls Money#coerce, `puts obj` calls to_s, a `for`
    loop calls each. Reachability keeps such a method alive; a pass reasoning
@@ -10776,7 +10841,7 @@ void analyze_program(Compiler *c) {
      rescanning the whole node table per arm (was O(rescues * nodes)). */
   {
     int cap = 0, rn = 0;
-    struct { int id; const char *nm; Scope *vsc; int spec; } *arms = NULL;
+    struct { int id; int ref; const char *nm; Scope *vsc; int spec; } *arms = NULL;
     for (int id = 0; id < c->nt->count; id++) {
       const char *ty = nt_type(c->nt, id);
       if (!ty || !sp_streq(ty, "RescueNode")) continue;
@@ -10785,13 +10850,74 @@ void analyze_program(Compiler *c) {
       const char *nm = nt_str(c->nt, ref, "name");
       if (!nm) continue;
       Scope *vsc = comp_scope_of(c, ref);
-      scope_local_intern(vsc, nm);   /* ensure the LocalVar exists for every arm first */
       if (rn >= cap) { cap = cap ? cap * 2 : 16; arms = realloc(arms, sizeof(*arms) * (size_t)cap); }
-      arms[rn].id = id; arms[rn].nm = nm; arms[rn].vsc = vsc;
+      arms[rn].id = id; arms[rn].ref = ref; arms[rn].nm = nm; arms[rn].vsc = vsc;
       arms[rn].spec = rescue_arm_spec_cid(c, id);
       if (arms[rn].spec < 0) arms[rn].spec = bare_rescue_spec_cid(c, id);
       rn++;
     }
+    /* Split apart same-name arms that disagree on the class, so each keeps its
+       own specialization instead of the group collapsing to TY_EXCEPTION. Only
+       when the name is confined to those arms: a mention anywhere else in the
+       scope (including after `end`, where Ruby leaks the binding) has to keep
+       reading the one shared slot, so that group is left alone. */
+    for (int i = 0; i < rn; i++) {
+      int grp[64], gn = 0, disagree = 0, all_named = 1;
+      for (int j = 0; j < rn; j++) {
+        if (arms[j].vsc != arms[i].vsc || !sp_streq(arms[j].nm, arms[i].nm)) continue;
+        if (j < i) { gn = 0; break; }             /* a later arm; arm `i` is not the head */
+        if (gn < 64) grp[gn++] = j;
+        if (arms[j].spec != arms[i].spec) disagree = 1;
+        int nexc = 0; nt_arr(c->nt, arms[j].id, "exceptions", &nexc);
+        if (nexc == 0) all_named = 0;
+      }
+      /* Only split when every arm NAMES its class. A bare `rescue => e` is
+         specialized by inference over the raises in the guarded body, and
+         splitting the slot on that guess re-types whatever the arms hand on
+         (a shared `show(e)` helper turns poly) for no user-visible gain --
+         the shape that fails to compile is the written-out `rescue X => e`. */
+      if (gn < 2 || !disagree || !all_named) continue;
+      const char *nm = arms[i].nm;
+      Scope *vsc = arms[i].vsc;
+      if (vsc->body < 0) continue;
+      unsigned char *scope_mark = calloc((size_t)c->nt->count, 1);
+      unsigned char *arm_mark   = calloc((size_t)c->nt->count, 1);
+      unsigned char **per       = calloc((size_t)gn, sizeof(*per));
+      if (!scope_mark || !arm_mark || !per) { free(scope_mark); free(arm_mark); free(per); continue; }
+      rescue_mark_subtree(c->nt, vsc->body, scope_mark);
+      int ok = 1;
+      for (int g = 0; g < gn; g++) {
+        per[g] = calloc((size_t)c->nt->count, 1);
+        if (!per[g]) { ok = 0; break; }
+        per[g][arms[grp[g]].ref] = 1;
+        rescue_mark_subtree(c->nt, nt_ref(c->nt, arms[grp[g]].id, "statements"), per[g]);
+      }
+      /* nested arms would rename each other's bindings: require them disjoint */
+      for (int g = 0; ok && g < gn; g++)
+        for (int h = 0; ok && h < gn; h++)
+          if (g != h && per[g][arms[grp[h]].ref]) ok = 0;
+      for (int g = 0; ok && g < gn; g++)
+        for (int id = 0; id < c->nt->count; id++) if (per[g][id]) arm_mark[id] = 1;
+      /* every mention of the name in this scope must sit inside some arm */
+      for (int id = 0; ok && id < c->nt->count; id++)
+        if (scope_mark[id] && !arm_mark[id] && rescue_names_local(c->nt, id, nm)) ok = 0;
+      if (ok) {
+        for (int g = 1; g < gn; g++) {
+          int j = grp[g];
+          if (arms[j].spec == arms[i].spec) continue;   /* already unanimous with the head */
+          char nn[256];
+          rescue_fresh_name(c, vsc, nm, nn, sizeof nn);
+          if (!nn[0]) continue;
+          rescue_rename_marked(c->nt, per[g], nm, nn);
+          /* the rewrite frees the old strings, so every arm's cached name (a
+             nested arm inside the region may have been swept along) is stale */
+          for (int k = 0; k < rn; k++) arms[k].nm = nt_str(c->nt, arms[k].ref, "name");
+        }
+      }
+      for (int g = 0; g < gn; g++) free(per[g]);
+      free(per); free(arm_mark); free(scope_mark);
+    }
+    for (int i = 0; i < rn; i++) scope_local_intern(arms[i].vsc, arms[i].nm);
     for (int i = 0; i < rn; i++) {
       /* unanimity across every same-name rescue arm in the same scope */
       int unanimous = arms[i].spec;

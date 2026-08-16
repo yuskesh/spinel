@@ -1504,12 +1504,57 @@ int static_isa_cond(Compiler *c, int pred) {
   return 0;
 }
 
+/* An ivar whose class declares `attr_writer`/`attr_accessor` for it (or that is
+   a Struct member, or a module attribute mixed in) is written by a SYNTHESIZED
+   writer body: `obj.x = v` emits `->iv_x = v` straight from codegen and there
+   is no InstanceVariableWriteNode anywhere in the tree to find. Scanning writes
+   syntactically therefore concludes "only nil is ever stored" for the very
+   common `@x = nil` in initialize + `attr_accessor :x` shape, and the caller
+   folds `if @x` to false -- silently deleting a live branch. The ivar-name scan
+   below is already program-wide (one `@x` anywhere pins every `@x`), so this
+   guard is program-wide too. */
+static int ivar_has_synth_writer(Compiler *c, const char *nm) {
+  if (!nm || nm[0] != '@') return 0;
+  const char *base = nm + 1;
+  if (base[0] == '@') return 0;  /* @@cvar: not an ivar */
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (comp_is_writer(ci, base) || comp_is_sg_writer(ci, base)) return 1;
+  }
+  return 0;
+}
+
+/* `instance_variable_set(:@x, v)` is a write with no InstanceVariableWriteNode
+   either. A literal symbol names the slot; a computed name could name any slot,
+   so it disqualifies every ivar. Returns 1 when some call may write `nm`. */
+static int ivar_written_by_ivset(Compiler *c, const char *nm) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, "CallNode")) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || !sp_streq(cn, "instance_variable_set")) continue;
+    int a = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an < 1 || !av) return 1;  /* forwarded args: unknown slot */
+    const char *aty = nt_type(nt, av[0]);
+    if (!aty || !sp_streq(aty, "SymbolNode")) return 1;  /* computed name */
+    const char *sv = nt_str(nt, av[0], "value");
+    if (!sv) return 1;
+    if (sv[0] == '@' ? sp_streq(sv, nm) : sp_streq(sv, nm + 1)) return 1;
+  }
+  return 0;
+}
+
 /* Scan every program-wide write to ivar `nm` ("@foo"): returns 0 when at least
    one write exists and all of them assign nil (statically falsy), -1 otherwise
    (no writes seen, a non-nil write, or an opaque write form). */
 static int ivar_all_writes_nil(Compiler *c, const char *nm) {
   const NodeTable *nt = c->nt;
   if (!nm) return -1;
+  if (ivar_has_synth_writer(c, nm)) return -1;   /* generated writer: opaque */
+  if (ivar_written_by_ivset(c, nm)) return -1;   /* reflective write: opaque */
   int saw_write = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
