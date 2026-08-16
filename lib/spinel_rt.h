@@ -1341,6 +1341,16 @@ static void sp_re_mark_globals(void) {
   SP_GLB_PHASE("globals:argv");
   for (sp_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
   if (sp_argv_array_cache) sp_gc_mark(sp_argv_array_cache);
+  /* $0 / $PROGRAM_NAME has exactly the sp_argv problem described above: main()
+     sets sp_program_name = sp_str_dup_external(argv[0]), which allocates from
+     the str-heap with mark byte 0xfe, and nothing marks it. The first
+     sp_str_sweep reaps it, so every later `$0` read is a use-after-free. It
+     survives today only because the freed block usually is not reused; under
+     SPINEL_GC_STRESS=1, or under any codegen perturbation that shifts the
+     allocation order (-fno-unroll-loops alone is enough), it does not. The
+     initial value is the rodata SPL("") literal, which sp_mark_string ignores
+     because its marker byte is not 0xfe. */
+  sp_mark_string(sp_program_name);
   SP_GLB_PHASE("globals:exceptions");
   sp_mark_in_flight_exceptions();
   SP_GLB_PHASE("globals:proc-homes");

@@ -3641,12 +3641,23 @@ const char *sp_addrinfo_inspect(sp_Addrinfo *a) {SP_GC_ROOT(a);
     return sp_sprintf("#<Addrinfo: [%s]:%lld%s>", a->ip, (long long)a->port, st);
   return sp_sprintf("#<Addrinfo: %s:%lld%s>", a->ip, (long long)a->port, st);
 }
+/* Every sp_bigint_to_s / sp_str_concat here allocates from the string heap and
+   so can collect. The intermediate results live only in C locals, which the
+   collector does not scan, so each one must be rooted across the NEXT
+   allocation. Without the roots the numerator string is reaped while the
+   denominator is being formatted and the value prints as "(/3)" -- an empty
+   numerator with an intact denominator, which is exactly the observed
+   bigint_to_s_is_a_heap_string failure under SPINEL_GC_STRESS=1. */
 const char *sp_brat_to_s(sp_BigRational *r) {SP_GC_ROOT(r);
-  const char *ns = sp_bigint_to_s(r->num), *ds = sp_bigint_to_s(r->den);
-  return sp_str_concat(sp_str_concat(ns, SPL("/")), ds);
+  const char *ns = sp_bigint_to_s(r->num); SP_GC_ROOT_STR(ns);
+  const char *ds = sp_bigint_to_s(r->den); SP_GC_ROOT_STR(ds);
+  const char *nd = sp_str_concat(ns, SPL("/")); SP_GC_ROOT_STR(nd);
+  return sp_str_concat(nd, ds);
 }
 const char *sp_brat_inspect(sp_BigRational *r) {SP_GC_ROOT(r);
-  return sp_str_concat(sp_str_concat(SPL("("), sp_brat_to_s(r)), SPL(")"));
+  const char *s = sp_brat_to_s(r); SP_GC_ROOT_STR(s);
+  const char *o = sp_str_concat(SPL("("), s); SP_GC_ROOT_STR(o);
+  return sp_str_concat(o, SPL(")"));
 }
 sp_float sp_brat_to_f(sp_BigRational *r) {SP_GC_ROOT(r);
   return sp_bigint_to_double(r->num) / sp_bigint_to_double(r->den);
