@@ -1288,6 +1288,11 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     if (box) buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tbv, default_value(TY_POLY));
     else { emit_ctype(c, bret, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret)); }
+    /* E023: root the per-iteration block value. When it is a heap value the
+       pushes that consume it below allocate (a typed array grows, a poly push
+       boxes), so an unrooted row is swept between the call that produced it
+       and the call that reads it. */
+    if (needs_root(bret)) { emit_indent(g_pre, g_indent + 1); emit_gc_root_tmp(c, bret, tbv, g_pre); buf_puts(g_pre, "\n"); }
     emit_block_value_into(c, block, tbvb, box, g_indent + 1);
     emit_indent(g_pre, g_indent + 1);
     if (res_boxed) {
@@ -1304,6 +1309,11 @@ int emit_flat_map_expr(Compiler *c, int id, Buf *b) {
        then splat its elements -- so `next [..]` flattens its array like the tail. */
     emit_indent(g_pre, g_indent + 1); emit_ctype(c, bret, g_pre);
     buf_printf(g_pre, " _t%d = %s;\n", tbv, default_value(bret));
+    /* E023: root the per-iteration ROW. The splat loop below calls
+       sp_..Array_push() on the result once per element, and push allocates
+       when it grows -- an unrooted row is swept halfway through being copied
+       out. This is the row half of the "nested-array rows collapse" family. */
+    if (needs_root(bret)) { emit_indent(g_pre, g_indent + 1); emit_gc_root_tmp(c, bret, tbv, g_pre); buf_puts(g_pre, "\n"); }
     emit_block_value_into(c, block, tbvb, bret == TY_POLY, g_indent + 1);
     emit_indent(g_pre, g_indent + 1);
     if (res_boxed) {
@@ -2109,6 +2119,10 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_IntArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+    /* Root the walked array: a Range receiver is materialised here by
+       sp_range_to_ia() and this temp is its only reference, while the loop
+       below allocates a fresh run array per group (E023). */
+    if (!expr_is_marked_const(c, pr, TY_INT_ARRAY)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta); }
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);\n", tout, tout);
     emit_indent(g_pre, g_indent);
@@ -2158,6 +2172,8 @@ int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b) {
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, pr, &rb);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_IntArray *_t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+  /* Root the walked array -- same reason as slice_when above (E023). */
+  if (!expr_is_marked_const(c, pr, TY_INT_ARRAY)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta); }
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);\n", tkeys, tkeys);
   emit_indent(g_pre, g_indent);
@@ -4140,6 +4156,13 @@ int emit_partition_expr(Compiler *c, int id, Buf *b) {
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+  /* E023: root the walked array. The receiver/operand expression often
+     materialises a fresh array (a Range via sp_range_to_ia(), a chained
+     map/select handing over its own result) that this temp alone holds,
+     while the loop below allocates on every iteration -- a collection
+     there sweeps the source and the bound/element reads come back out of
+     the recycled block. Same discipline as hoist_loop_recv(). */
+  if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
 
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, ttrue, k);
@@ -4348,6 +4371,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             Buf rb_es; memset(&rb_es, 0, sizeof rb_es); emit_expr(c, es_recv, &rb_es);
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_rt, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_es, rb_es.p ? rb_es.p : ""); free(rb_es.p);
+            /* Root the walked array: the each_slice/each_cons chain
+               materialises a Range receiver here and this temp is its only
+               reference, while the map loop allocates per row (E023). */
+            if (needs_root(arr_rt) && !expr_is_marked_const(c, es_recv, arr_rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, arr_rt, ta_es, g_pre); buf_puts(g_pre, "\n"); }
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "mrb_int _t%d = ", ts_es); emit_int_expr(c, es_argv[0], g_pre); buf_puts(g_pre, ";\n");
             emit_indent(g_pre, g_indent);
@@ -4424,6 +4451,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
             Buf rb_ec; memset(&rb_ec, 0, sizeof rb_ec); emit_expr(c, ec_recv, &rb_ec);
             emit_indent(g_pre, g_indent); emit_ctype(c, arr_ec, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", ta_ec, rb_ec.p ? rb_ec.p : ""); free(rb_ec.p);
+            /* Root the walked array: the each_slice/each_cons chain
+               materialises a Range receiver here and this temp is its only
+               reference, while the map loop allocates per row (E023). */
+            if (needs_root(arr_ec) && !expr_is_marked_const(c, ec_recv, arr_ec)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, arr_ec, ta_ec, g_pre); buf_puts(g_pre, "\n"); }
             emit_indent(g_pre, g_indent);
             buf_printf(g_pre, "mrb_int _t%d = ", tn_ec); emit_int_expr(c, ec_argv[0], g_pre); buf_puts(g_pre, ";\n");
             emit_indent(g_pre, g_indent);
@@ -4524,6 +4555,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               Buf rb_wi; memset(&rb_wi, 0, sizeof rb_wi); emit_expr(c, ec_recv2, &rb_wi);
               emit_indent(g_pre, g_indent); emit_ctype(c, arr_wi, g_pre);
               buf_printf(g_pre, " _t%d = %s;\n", ta_wi, rb_wi.p ? rb_wi.p : ""); free(rb_wi.p);
+            /* Root the walked array: the each_slice/each_cons chain
+               materialises a Range receiver here and this temp is its only
+               reference, while the map loop allocates per row (E023). */
+            if (needs_root(arr_wi) && !expr_is_marked_const(c, ec_recv2, arr_wi)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, arr_wi, ta_wi, g_pre); buf_puts(g_pre, "\n"); }
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "mrb_int _t%d = ", tn_wi); emit_int_expr(c, ec_argv2[0], g_pre); buf_puts(g_pre, ";\n");
               emit_indent(g_pre, g_indent);
@@ -5681,6 +5716,13 @@ int emit_grep_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent);
   emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+  /* E023: root the walked array. The receiver/operand expression often
+     materialises a fresh array (a Range via sp_range_to_ia(), a chained
+     map/select handing over its own result) that this temp alone holds,
+     while the loop below allocates on every iteration -- a collection
+     there sweeps the source and the bound/element reads come back out of
+     the recycled block. Same discipline as hoist_loop_recv(). */
+  if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", ok, tres, ok);
   emit_indent(g_pre, g_indent);
@@ -7668,6 +7710,13 @@ int emit_group_by_expr(Compiler *c, int id, Buf *b) {
   Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+  /* E023: root the walked array. The receiver/operand expression often
+     materialises a fresh array (a Range via sp_range_to_ia(), a chained
+     map/select handing over its own result) that this temp alone holds,
+     while the loop below allocates on every iteration -- a collection
+     there sweeps the source and the bound/element reads come back out of
+     the recycled block. Same discipline as hoist_loop_recv(). */
+  if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
   /* result hash */
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);\n", thash, thash);

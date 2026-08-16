@@ -1775,3 +1775,145 @@ void emit_gc_root_tmp(Compiler *c, TyKind t, int tmp, Buf *b) {
   if (comp_ty_value_obj(c, t)) return;
   buf_printf(b, t == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d);" : "SP_GC_ROOT(_t%d);", tmp);
 }
+
+/* --- a temp that holds only a top-level constant is already rooted ---------
+
+   The loop-source roots above cover a temp whose value NOTHING else holds. A
+   bare read of a top-level constant is the one shape where that is provably
+   false: the generated TU gives every heap-typed constant a file-scope
+   `cst_<name>` slot and emits sp_mark_user_globals(), which marks EVERY one of
+   them on EVERY collection -- unconditionally, in all three storage shapes
+   (sp_mark_string for a String, sp_mark_rbval for a boxed poly, and
+   `if (cst_X) sp_gc_mark((void *)cst_X)` -- a null check, not a filter -- for
+   every other kind needs_root() covers). main() installs that marker on its
+   first line (sp_re_init), the collector calls it through
+   sp_gc_mark_globals_hook in every mark phase, and the scheduler chains rather
+   than replaces it. So the value is reachable from a root the emitter did not
+   have to write, and SP_GC_ROOT on a temp that holds only that value adds
+   nothing to reachability -- it only costs. The cost is real: the cleanup
+   attribute forces the temp to memory and puts a pop at scope exit, which
+   measured +4.6% on bm_life for ONE such root in a leaf called 8e7 times
+   (E029 §2c) -- the whole of that benchmark's regression.
+
+   The single way "the slot still names it" can stop being true while the temp
+   is live is a REBINDING: `X = other` makes the marker name the new object and
+   stop naming ours. Ruby rejects a constant assignment inside a `def`, so the
+   only shape that could run while one of these loops is live is an assignment
+   inside a block. cst_rebindable() rules that out: a write counts as harmless
+   only in straight-line, once-at-startup position -- a statement of the
+   program body, or of a class/module body itself in that position -- since
+   such a write cannot execute between the load of the temp and its last use.
+   Any other write (in a block, a conditional, a loop body, an expression), and
+   any write the walk below cannot place at all, marks the constant rebindable
+   and the root stays. --no-root-elision turns the whole thing off. */
+
+/* the constant a write node binds, or NULL when `id` is not a constant write */
+static const char *cst_write_name(const NodeTable *nt, int id) {
+  const char *ty = nt_type(nt, id);
+  if (!ty) return NULL;
+  if (sp_streq(ty, "ConstantWriteNode") || sp_streq(ty, "ConstantOrWriteNode") ||
+      sp_streq(ty, "ConstantAndWriteNode") || sp_streq(ty, "ConstantOperatorWriteNode") ||
+      sp_streq(ty, "ConstantTargetNode") || sp_streq(ty, "ConstantPathTargetNode"))
+    return nt_str(nt, id, "name");
+  if (sp_streq(ty, "ConstantPathWriteNode") || sp_streq(ty, "ConstantPathOrWriteNode") ||
+      sp_streq(ty, "ConstantPathAndWriteNode") || sp_streq(ty, "ConstantPathOperatorWriteNode")) {
+    int tgt = nt_ref(nt, id, "target");
+    return tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
+  }
+  return NULL;
+}
+
+/* Walk from the program root marking every write that sits in straight-line,
+   once-at-startup position. `seen` is two bits per node (visited-unsafe /
+   visited-safe) so a node reachable twice is still classified under both. */
+static void cst_scan_node(Compiler *c, int id, int safe, unsigned char *seen, unsigned char *safew) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || id >= nt->count) return;
+  unsigned char bit = safe ? 2 : 1;
+  if (seen[id] & bit) return;
+  seen[id] |= bit;
+  const char *ty = nt_type(nt, id);
+  const char *wn = cst_write_name(nt, id);
+  if (wn && safe) safew[id] = 1;
+  /* Which children inherit the straight-line position: a statements list keeps
+     all of them, a class/module body keeps its `body`, a constant write keeps
+     its `target` (`M::X = v` writes through a ConstantPathTargetNode child). */
+  int all = ty && (sp_streq(ty, "ProgramNode") || sp_streq(ty, "StatementsNode"));
+  int body_only = ty && (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
+                         sp_streq(ty, "SingletonClassNode"));
+  const SpNode *n = &nt->nodes[id];
+  for (int i = 0; i < n->nr; i++) {
+    int keep = all || (body_only && n->r[i].key && sp_streq(n->r[i].key, "body")) ||
+               (wn && n->r[i].key && sp_streq(n->r[i].key, "target"));
+    cst_scan_node(c, n->r[i].ref, safe && keep, seen, safew);
+  }
+  for (int i = 0; i < n->na; i++)
+    for (int j = 0; j < n->a[i].n; j++)
+      cst_scan_node(c, n->a[i].ids[j], safe && all, seen, safew);
+}
+
+static const Compiler *g_cst_scan_c;
+static int g_cst_scan_n;      /* c->nconsts the classification was taken at */
+static int g_cst_scan_upto;   /* nt->count it covered */
+static unsigned char *g_cst_rebindable;
+
+static void cst_scan(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_cst_scan_c == c && g_cst_scan_n == c->nconsts) {
+    /* Codegen only ever APPENDS nodes (nt_new_int / nt_new_str / nt_new_node;
+       the rewriting entry points are analysis-only), so the classification
+       stays valid and only the tail needs looking at -- conservatively, since
+       an appended node has no position the walk could vouch for. */
+    for (int id = g_cst_scan_upto; id < nt->count; id++) {
+      const char *wn = cst_write_name(nt, id);
+      LocalVar *cv = wn ? comp_const(c, wn) : NULL;
+      if (cv && g_cst_rebindable) g_cst_rebindable[cv - c->consts] = 1;
+    }
+    g_cst_scan_upto = nt->count;
+    return;
+  }
+  free(g_cst_rebindable);
+  g_cst_rebindable = (unsigned char *)calloc((size_t)(c->nconsts > 0 ? c->nconsts : 1), 1);
+  g_cst_scan_c = c; g_cst_scan_n = c->nconsts; g_cst_scan_upto = nt->count;
+  if (!g_cst_rebindable || nt->count <= 0) return;
+  unsigned char *seen = (unsigned char *)calloc((size_t)nt->count, 1);
+  unsigned char *safew = (unsigned char *)calloc((size_t)nt->count, 1);
+  if (!seen || !safew) {                 /* out of memory: assume the worst */
+    for (int i = 0; i < c->nconsts; i++) g_cst_rebindable[i] = 1;
+    free(seen); free(safew); return;
+  }
+  cst_scan_node(c, nt->root_id, 1, seen, safew);
+  /* Anything the walk did not positively place in startup position -- including
+     a write in a node the walk never reached -- disqualifies its constant. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *wn = safew[id] ? NULL : cst_write_name(nt, id);
+    if (!wn) continue;
+    LocalVar *cv = comp_const(c, wn);
+    if (cv) g_cst_rebindable[cv - c->consts] = 1;
+  }
+  free(seen); free(safew);
+}
+
+/* True when a temp of C type `t` initialised from expression `id` is a bare
+   load of a `cst_<name>` slot the generated global marker walks -- i.e. when
+   rooting it would be redundant. See the block comment above. */
+int expr_is_marked_const(Compiler *c, int id, TyKind t) {
+  if (g_no_root_elision || !c || !c->nt || id < 0 || id >= c->nt->count) return 0;
+  const char *ty = nt_type(c->nt, id);
+  /* ConstantReadNode only: a ConstantPathNode leaf can resolve to an ffi
+     constant or a builtin class value instead of the flat cst_ slot. */
+  if (!ty || !sp_streq(ty, "ConstantReadNode")) return 0;
+  const char *nm = nt_str(c->nt, id, "name");
+  LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+  if (!cv || cv->type == TY_UNKNOWN) return 0;
+  /* the temp must be a plain load of the slot: same kind, no coercion */
+  if (cv->type != t) return 0;
+  /* exactly the two gates the slot's declaration and its mark line share */
+  if (!is_scalar_ret(cv->type) || !needs_root(cv->type)) return 0;
+  /* an init-guarded read emits a NameError check around the slot, not a bare
+     load, and the constant is (re)written during a Class.new */
+  if (cv->init_guarded) return 0;
+  cst_scan(c);
+  if (!g_cst_rebindable || g_cst_rebindable[cv - c->consts]) return 0;
+  return 1;
+}

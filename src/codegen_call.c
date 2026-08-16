@@ -16821,6 +16821,13 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
             Buf ab = expr_buf(c, arg0);
             emit_indent(g_pre, g_indent); emit_ctype(c, a0, g_pre);
             buf_printf(g_pre, " _t%d = %s;\n", as_arr, ab.p ? ab.p : "NULL"); free(ab.p);
+            /* E023: root the walked array. The receiver/operand expression often
+               materialises a fresh array (a Range via sp_range_to_ia(), a chained
+               map/select handing over its own result) that this temp alone holds,
+               while the loop below allocates on every iteration -- a collection
+               there sweeps the source and the bound/element reads come back out of
+               the recycled block. Same discipline as hoist_loop_recv(). */
+            if (needs_root(a0) && !expr_is_marked_const(c, arg0, a0)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, a0, as_arr, g_pre); buf_puts(g_pre, "\n"); }
           }
         }
         for (int p = 0; p < npar; p++) {

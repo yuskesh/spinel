@@ -3087,6 +3087,13 @@ static sp_RbVal sp_poly_arr_get(sp_RbVal a, mrb_int i) {
    a poly receiver whose array-ness is only known at runtime. */
 static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY) return (sp_PolyArray *)v.v.p;
+  /* Root the SOURCE for the copy below. `v` is frequently a row that only the
+     caller's unrooted temporary holds -- `[[1,2],[3,4]].transpose[1].reduce`
+     hands over a column of a transpose result that never landed anywhere --
+     and both sp_PolyArray_new() and the growing pushes collect. Losing `v`
+     mid-copy yields a short or empty array (E023). sp_poly_add() already roots
+     its operands for exactly this call. */
+  SP_GC_ROOT_RBVAL(v);
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   mrb_int n = sp_poly_arr_len(v);
   for (mrb_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(v, i));
@@ -8276,6 +8283,14 @@ static mrb_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   return sp_poly_eq(pat, e);
 }
 static sp_PolyArray *sp_poly_slice_groups(sp_RbVal arr, sp_RbVal pat, int after) {
+  /* Both operands are read after several allocations. `pat` in particular is
+     usually a heap value built at the call site and handed straight in
+     (`slice_after(2..3)` emits sp_box_range(sp_range_new(...))), so the
+     sp_enum_items_from / sp_PolyArray_new below can sweep it and every
+     sp_poly_case_eq() then compares against a freed Range -- no element ever
+     matches and the whole receiver comes back as one group (E023).
+     sp_Enumerator_new_slices() below roots its receiver for the same reason. */
+  SP_GC_ROOT_RBVAL(arr); SP_GC_ROOT_RBVAL(pat);
   sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);
   sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
   sp_PolyArray *cur = sp_PolyArray_new(); SP_GC_ROOT(cur);

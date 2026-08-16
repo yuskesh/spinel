@@ -1376,6 +1376,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         Buf rb = expr_buf(c, recv);
         emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
         buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+        /* E023: root the walked array. The receiver/operand expression often
+           materialises a fresh array (a Range via sp_range_to_ia(), a chained
+           map/select handing over its own result) that this temp alone holds,
+           while the loop below allocates on every iteration -- a collection
+           there sweeps the source and the bound/element reads come back out of
+           the recycled block. Same discipline as hoist_loop_recv(). */
+        if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", tn, fk, trecv);
         /* resolve the [start, end) span from the arguments */
@@ -1718,6 +1725,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", ek, tout, ek);
           if (is_drop) {
@@ -1946,6 +1960,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           Buf rbs = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rbs.p ? rbs.p : "NULL"); free(rbs.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1;\n", tlo, thi, k, trecv);
           emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
@@ -2022,6 +2043,13 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
           Buf rbs = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rbs.p ? rbs.p : "NULL"); free(rbs.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = 0, _t%d = sp_%sArray_length(_t%d) - 1, _t%d = SP_INT_NIL;\n", tlo, thi, bk, trecv, tres);
           emit_indent(g_pre, g_indent);
@@ -2478,14 +2506,21 @@ else {
           }
         }
         const char *ka = (rt == TY_POLY_ARRAY) ? "Poly" : k;
-        buf_printf(b, "({ sp_%sArray *_t%d = ", ka, ta); emit_expr(c, recv, b); buf_puts(b, ";");
+        buf_printf(b, "({ sp_%sArray *_t%d = ", ka, ta); emit_expr(c, recv, b);
+        /* Root the receiver AND every operand below: `(1..3).zip([4,5,6])`
+           materialises both sides here (sp_range_to_ia / a fresh literal) and
+           these temps are their only reference, while the loop allocates a
+           fresh pair array on every row. A collect there frees an operand and
+           its reads turn into nil, or frees the row half-built (E023). */
+        buf_puts(b, ";");
+        if (!expr_is_marked_const(c, recv, rt)) buf_printf(b, " SP_GC_ROOT(_t%d);", ta);
         for (int j = 0; j < nargs; j++) {
           /* a Range argument materializes to its int array */
           if (at[j] == TY_RANGE) {
             int trj = ++g_tmp;
             buf_printf(b, " sp_IntArray *_t%d = ({ sp_Range _t%d = ", tb[j], trj);
             emit_expr(c, argv[j], b);
-            buf_printf(b, "; sp_range_to_ia(_t%d); });", trj);
+            buf_printf(b, "; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);", trj, tb[j]);
             at[j] = TY_INT_ARRAY;
             continue;
           }
@@ -2495,17 +2530,23 @@ else {
           if (at[j] == TY_POLY) {
             buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tb[j]);
             emit_expr(c, argv[j], b);
-            buf_puts(b, ");");
+            buf_printf(b, "); SP_GC_ROOT(_t%d);", tb[j]);
             at[j] = TY_POLY_ARRAY;
             continue;
           }
           const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");
-          buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b); buf_puts(b, ";");
+          buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b);
+          buf_puts(b, ";");
+          if (!expr_is_marked_const(c, argv[j], at[j])) buf_printf(b, " SP_GC_ROOT(_t%d);", tb[j]);
         }
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {",
                    ti, ti, ka, ta, ti);
-        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
+        /* The row itself: every push below can grow the pair array and every
+           sp_box_* of a heap element allocates, so an unrooted row is swept
+           between its own pushes -- the "nested-array rows collapse" shape
+           (E023). */
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tpair, tpair);
         if (rt == TY_INT_ARRAY)
           buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_IntArray_get(_t%d, _t%d)));", tpair, ta, ti);
         else if (rt == TY_STR_ARRAY)
@@ -2806,6 +2847,13 @@ else {
           Buf rfi = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rfi.p ? rfi.p : "NULL"); free(rfi.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = SP_INT_NIL;\n", tres);
           emit_indent(g_pre, g_indent);
           if (sp_streq(name, "rindex"))
@@ -2883,6 +2931,13 @@ else {
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
           if (et == TY_STRING) buf_printf(g_pre, " _t%d = NULL;\n", tres);
           else if (et == TY_INT) buf_printf(g_pre, " _t%d = SP_INT_NIL;\n", tres);
@@ -2924,6 +2979,13 @@ else {
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                      ti, ti, k, trecv, ti);
@@ -2962,6 +3024,13 @@ else {
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "mrb_int _t%d = sp_%sArray_length(_t%d);\n", torig, kk, trecv);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = 0;\n", twp);
@@ -3114,6 +3183,13 @@ else {
           Buf rb2 = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
           buf_printf(g_pre, " _t%d = %s;\n", trecv, rb2.p ? rb2.p : ""); free(rb2.p);
+          /* E023: root the walked array. The receiver/operand expression often
+             materialises a fresh array (a Range via sp_range_to_ia(), a chained
+             map/select handing over its own result) that this temp alone holds,
+             while the loop below allocates on every iteration -- a collection
+             there sweeps the source and the bound/element reads come back out of
+             the recycled block. Same discipline as hoist_loop_recv(). */
+          if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, trecv, g_pre); buf_puts(g_pre, "\n"); }
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = 0;\n", tcnt);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
@@ -3683,6 +3759,10 @@ else {
           Buf rb2 = expr_buf(c, recv);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", trecv, rb2.p ? rb2.p : ""); free(rb2.p);
+          /* E023: root the walked array -- the receiver expression can materialise a
+             fresh array this temp alone holds, and the block body allocates on
+             every iteration. Same discipline as hoist_loop_recv(). */
+          if (!expr_is_marked_const(c, recv, TY_POLY_ARRAY)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv); }
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = 0;\n", tcnt);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n",
@@ -3807,13 +3887,14 @@ else {
         }
         Buf ra = expr_buf(c, recv);
         buf_printf(b, "({ sp_PolyArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
+        if (!expr_is_marked_const(c, recv, TY_POLY_ARRAY)) buf_printf(b, " SP_GC_ROOT(_t%d);", ta);
         for (int j = 0; j < nargs; j++) {
           /* a Range argument materializes to its int array */
           if (at[j] == TY_RANGE) {
             int trj = ++g_tmp;
             buf_printf(b, " sp_IntArray *_t%d = ({ sp_Range _t%d = ", tb[j], trj);
             emit_expr(c, argv[j], b);
-            buf_printf(b, "; sp_range_to_ia(_t%d); });", trj);
+            buf_printf(b, "; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);", trj, tb[j]);
             at[j] = TY_INT_ARRAY;
             continue;
           }
@@ -3823,16 +3904,22 @@ else {
           if (at[j] == TY_POLY) {
             buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tb[j]);
             emit_expr(c, argv[j], b);
-            buf_puts(b, ");");
+            buf_printf(b, "); SP_GC_ROOT(_t%d);", tb[j]);
             at[j] = TY_POLY_ARRAY;
             continue;
           }
           const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");
-          buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b); buf_puts(b, ";");
+          buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b);
+          buf_puts(b, ";");
+          if (!expr_is_marked_const(c, argv[j], at[j])) buf_printf(b, " SP_GC_ROOT(_t%d);", tb[j]);
         }
         buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
         buf_printf(b, " for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
-        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
+        /* The row itself: every push below can grow the pair array and every
+           sp_box_* of a heap element allocates, so an unrooted row is swept
+           between its own pushes -- the "nested-array rows collapse" shape
+           (E023). */
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tpair, tpair);
         buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));", tpair, ta, ti);
         for (int j = 0; j < nargs; j++) {
           if (at[j] == TY_INT_ARRAY)
@@ -4093,6 +4180,10 @@ else {
           int trecv = ++g_tmp, ti = ++g_tmp;
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+          /* E023: root the walked array -- the receiver expression can materialise a
+             fresh array this temp alone holds, and the block body allocates on
+             every iteration. Same discipline as hoist_loop_recv(). */
+          if (!expr_is_marked_const(c, recv, TY_POLY_ARRAY)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (mrb_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {\n", ti, ti, trecv, ti);
           if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", bp, trecv, ti); }
@@ -4117,6 +4208,10 @@ else {
           int trecv = ++g_tmp, ti = ++g_tmp, twp = ++g_tmp, torig = ++g_tmp;
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", trecv, rb.p ? rb.p : ""); free(rb.p);
+          /* E023: root the walked array -- the receiver expression can materialise a
+             fresh array this temp alone holds, and the block body allocates on
+             every iteration. Same discipline as hoist_loop_recv(). */
+          if (!expr_is_marked_const(c, recv, TY_POLY_ARRAY)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", trecv); }
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = sp_PolyArray_length(_t%d);\n", torig, trecv);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "mrb_int _t%d = 0;\n", twp);
           emit_indent(g_pre, g_indent);

@@ -879,3 +879,100 @@ B1 は生成 C に 247 行の `SP_GC_ROOT` を足す。**出荷判定にベン�
 
 **プラグイン (`SpinelGCRoots`) / ThinLTO は 1 度も通していない。**
 検証はすべて系統 cc (Apple clang) である。
+
+# B7 台帳エントリ草案 (`vendor/spinel/SPINEL_LLVM_PATCHES.md` の §バグ修正へ追記)
+
+> **これは草案である。** 監督者が fork へコミットするときに、
+> B1〜B6 と同じ節に **B7** として貼る。E032 は commit / push をしていない。
+
+---
+
+## 一覧表への追加行
+
+| **B7** | ループが歩いているソース配列 / レシーバが未 root (**S9 族、30 site + ランタイム 2 関数**) | codegen + runtime | `src/codegen_call.c` / `src/codegen_call_recv.c` / `src/codegen_fold.c` / `src/codegen_iter.c` / `src/codegen_util.c` / `src/codegen_internal.h` / `lib/spinel_rt.h` | **+392 / −9** | [E023](../docs/experiments/E023_nested_array_rows_collapse.md) / [E028](../docs/experiments/E028_s9_rebase.md) / [E029](../docs/experiments/E029_batch2_bench_session.md) / [E032](../docs/experiments/E032_batch2_finalize.md) | **S9** (+ S8-A2 を 1 件おまけで拾う) |
+
+回帰テストを 1 本追加する (`test/loop_source_rooted.rb` + `.expected`)。
+**合計は B1〜B6 の +81/−12 に対して batch-2 単独で +392/−9、7 ファイル。**
+
+---
+
+### B7: ループが歩いているソース配列 / レシーバが未 root
+
+- **根因 (1 行)**: `each_slice` / `each_cons` / `cycle` / `zip` / `grep` / `group_by` /
+  `partition` / `count` / `map!` / `select!` / `find` / `bsearch` / `fill` /
+  `flat_map` / `slice_when` / `chunk` / インライン展開したインスタンスメソッドの
+  レシーバ — **30 の emit site が「ループが歩いている配列」を C の一時に落としたまま
+  `SP_GC_ROOT` を張らない**。ループ本体は毎反復割り当てるので、
+  収集が入るとソース配列自身が回収され、**行 (row) がその跡地に割り当てられて**
+  `sp_..Array_length()` / `_get()` が行のヘッダを読む。
+  ランタイム側の同型が 2 つ (`sp_poly_to_poly_array` のコピー元、
+  `sp_poly_slice_groups` の `arr` / `pat`)。
+- **Edoc**: [E023](../docs/experiments/E023_nested_array_rows_collapse.md) (根因・provenance・
+  最小再現体)、[E028](../docs/experiments/E028_s9_rebase.md) (同期後ベースへのリベースと
+  正しさゲート)、[E029](../docs/experiments/E029_batch2_bench_session.md) (性能実測と帰属)、
+  [E032](../docs/experiments/E032_batch2_finalize.md) (**本エントリの最終形**。`cst_*` 条件)
+- **改変**: **+392 / −9**、7 ファイル。内訳は
+  - `lib/spinel_rt.h` **+15 / −0** — ランタイム 2 関数
+  - codegen の emit site 30 箇所 — `codegen_call.c` **+7/−0** / `codegen_call_recv.c` **+104/−9** /
+    `codegen_fold.c` **+49/−0** / `codegen_iter.c` **+25/−0**
+  - **`src/codegen_util.c` +142 / −0 + `src/codegen_internal.h` +4 / −0 —
+    `expr_is_marked_const()` (下記の `cst_*` 条件)**
+  - `test/loop_source_rooted.rb` (+`.expected`) +46 / −0
+- **`cst_*` 条件をなぜ含めるか (E032 の追加分)**:
+  素の 30 site は「レシーバ式が何であれ root する」という粗い近似で、
+  **既に大域から到達可能な値まで root してしまう**。
+  生成 TU は heap 型のトップレベル定数を file-scope の `cst_<name>` に置き、
+  `sp_mark_user_globals()` が**毎回の収集でそれを無条件に mark する**
+  (`sp_mark_string` / `sp_mark_rbval` / `if (cst_X) sp_gc_mark(...)` の 3 形。
+  3 番目の `if` は NULL 検査であって選別ではない)。
+  マーカーは `main()` の 1 行目の `sp_re_init()` が
+  `sp_gc_mark_globals_hook` に載せ、collector は mark のたびに呼ぶ
+  (scheduler は差し替えではなく chain する)。
+  ⇒ **裸の定数参照しか持たない一時への root は到達可能性に何も足さない。**
+  一方コストは実在する: `SP_GC_ROOT` は `cleanup` 属性の局所変数を作るので
+  一時がレジスタに上がれなくなり、**8×10⁷ 回呼ばれる葉 (`bm_life` の `sp_neighbors`)
+  では 1 本で +4.6%** だった (E029 §2c)。
+  `expr_is_marked_const()` はその 1 本を消す。
+  **健全性の唯一の穴は「一時が生きている間に定数が rebind される」形**だが、
+  Ruby は `def` 内の定数代入を構文エラーにするので走りうるのはブロック内の代入だけで、
+  `cst_rebindable()` がそれを弾く (書き込みが**起動時 1 回の直線位置** =
+  プログラム本体か、同じ位置にあるクラス / モジュール本体の文 — にあるものだけを
+  安全と認め、それ以外・および走査で位置を確定できなかったものは全部失格にする)。
+  `--no-root-elision` で条件ごと切れる。
+- **なぜゲートしないか**: **既定閾値 (256 KB、`SPINEL_GC_STRESS` 無し) で沈黙誤答**が出る。
+  `(1..2000).each_slice(2) { pad = "x"*400; sum += … }` が `1008795` (正解 `2401000`)、
+  `each_cons` が `628723` (正解 `4799599`)、
+  400 KB の live 文字列の下で `(1..4000).grep(2..4)` が `[]` (正解 `[2, 3, 4]`)。
+  5 走行とも決定的で、例外も crash も出ず**終了コードは 0** = 間違った答えだけが出る。
+  ゲート OFF は「Enumerable の主要な形を既定でサイレント誤答させておく」ことを意味する。
+- **検証**:
+  - **族 11/11 が赤 → 緑** (ストレス下)。E023 が名指しした 11 件のうち base で赤の 9 件が 9/9。
+  - **全数ストレス census で赤 26 → 16・新しい赤 0** (E028 §3g)。
+    消えた 10 件は S9 族 9 + **S8-A2 の `to_enum_enum_for`** (A2 は残り `bundle_array_c` 1 件)。
+    E032 は census を焼き直していないが、**E028 の census がそのまま carry over する** —
+    E032 の生成 C が E028 と違うのは 2983 本中 **2 本だけ**で、
+    差分は**削除された root 9 行のみ・追加 0 行**だからである。
+    その 2 本 (`default_arg_find_block` / `iter_block_autosplat`) と
+    10 件の cleared red は E032 で個別にストレス実行して 12/12 緑を確認した。
+  - **plain 全数 3015 / 0 / 0** (E032 のコンパイラで実測)。
+  - **影響半径**: `test/*.rb` 2983 本を base / fix の両コンパイラで C に落として全数 cmp —
+    **211 本 (7.1%) が変化・追加 593 行 (うち 560 が純粋な `SP_GC_ROOT(_tN);`)・削除 33 行**
+    (削除 33 行は `zip` の 1 行スタンザの書き換えで同じ 33 行が追加側にも居る)。
+    **両側から root を除去して空白を正規化すると 211/211 がバイト一致** = 厳密に加算的。
+  - **性能**: `benchmark/` 61 本のうち生成 C が変わるのは `bm_life` 1 本だけ。
+    E029 が測った **+4.6%** は **`cst_OFFSETS` を root する 1 本**に 100% 帰属していた。
+    B7 は `cst_*` 条件を含むのでその 1 本を emit しない。
+    E029 と同じ装置 (同一 `cc` コマンドライン・同一 `lib/` で直リンク、hyperfine
+    `--warmup 3 --runs 10`) で測り直すと:
+    **条件なし +4.32% / +4.62% (4.2σ / 5.6σ)、条件あり −0.29% / +0.08% (0.16σ / 0.20σ)**。
+    end-to-end (各ツリーの `bin/spinel`) でも **+0.11% (0.31σ)**。
+    ⇒ **出荷しても遅くなる実プログラムは 1 本も無い。**
+  - **`cst_*` 条件の positive / negative control** (`results/E032/control.tsv`):
+    ループソースを全部トップレベル定数にした合成プログラムで
+    **追加 root 15 → 1** (残る 1 本は `zip` の行 = 新規割り当てなので正しく残る)。
+    定数をブロック内で rebind した版では **root は 1 本も減らない**。
+- **upstream**: `docs/upstream_candidates.md` **S9**。PR 適性 **高**、ゲート不要。
+  パッチは **fork HEAD `5e66c671` にも pristine upstream `4241e88a` にも clean に当たる**
+  (後者は `lib/spinel_rt.h` −30 行 / `src/codegen_call.c` −10 行のオフセットのみ = 我々の 5 コミットのぶん)。
+  報告するときは **S2 + S5 + S9 を「部分式をルート付き一時に落とす規律が体系的に欠けている」
+  という 1 本の systemic report** にまとめるのが正しい (S9 が射程・材料とも最大)。

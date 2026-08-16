@@ -291,6 +291,19 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     if (g_inline_recv_expr) buf_puts(b, g_inline_recv_expr);  /* pre-hoisted cast (#2448) */
     else emit_expr(c, recv, b);
     buf_puts(b, ";\n");
+    /* E023: root the receiver. A chained call (`s.divide { .. }.map { .. }`)
+       hands the inlined body a freshly built object that only this temp holds,
+       and the body allocates on every iteration while it re-reads
+       `_tN->iv_data` -- the object is swept mid-walk and the ivar read comes
+       back out of the recycled block, so the loop yields whatever now lives
+       there. The method locals just below are rooted for the same reason; the
+       receiver was the one slot left out. A value-type receiver is a by-value
+       struct, not a GC pointer, so it takes no root. Nor does a bare top-level
+       constant, which the generated global marker already walks -- but only
+       when the temp really came from that expression and not from the
+       pre-hoisted cast above. */
+    int recv_marked = !g_inline_recv_expr && expr_is_marked_const(c, recv, comp_ntype(c, recv));
+    if (!self_is_val && !recv_marked) { emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", st); }
     snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
     recv_self_deref = self_is_val ? "." : "->";
   }
@@ -2999,6 +3012,10 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     int ta = ++g_tmp, tnn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); emit_ctype(c, rt, b); buf_printf(b, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+    /* Root the walked array: `(1..5).each_cons(2)` materialises it here through
+       sp_range_to_ia() and this temp is its only reference, while the block
+       body allocates every iteration. See hoist_loop_recv() above (E023). */
+    if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(b, indent); emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, "\n"); }
     emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = ", tnn); emit_int_expr(c, eav[0], b); buf_puts(b, ";\n");
     emit_indent(b, indent);
     buf_printf(b, "for (mrb_int _t%d = 0; _t%d + _t%d - 1 < sp_%sArray_length(_t%d); _t%d++) {\n", ti, ti, tnn, k, ta, ti);
@@ -3272,6 +3289,8 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); emit_ctype(c, rt, b);
     buf_printf(b, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+    /* Root the cycled array -- same reason as each_cons above (E023). */
+    if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(b, indent); emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, "\n"); }
     emit_indent(b, indent);
     if (cyc_argc == 1) {
       buf_printf(b, "mrb_int _t%d = ", tn);
@@ -3324,6 +3343,12 @@ int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); emit_ctype(c, rt, b);
     buf_printf(b, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
+    /* Root the sliced array -- same reason as each_cons above. Each iteration
+       calls sp_..Array_slice(), which allocates, so a Range receiver
+       materialised into this temp is swept mid-loop and the bound check reads
+       the recycled block: `(1..6).each_slice(2) { |s| p s }` loses its last
+       row (E023). */
+    if (needs_root(rt) && !expr_is_marked_const(c, recv, rt)) { emit_indent(b, indent); emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, "\n"); }
     emit_indent(b, indent); buf_printf(b, "mrb_int _t%d = ", ts);
     emit_expr(c, es_argv[0], b); buf_puts(b, ";\n");
     emit_indent(b, indent);

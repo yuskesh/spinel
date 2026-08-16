@@ -732,6 +732,10 @@ void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent);
 int needs_root(TyKind t);
 /* Root a temp of an inferred type, picking the rbval macro for boxed poly. */
 void emit_gc_root_tmp(Compiler *c, TyKind t, int tmp, Buf *b);
+/* True when a temp of type `t` loaded from expression `id` needs no root: the
+   expression is a bare read of a top-level constant, whose file-scope slot the
+   generated sp_mark_user_globals() marks on every collection. */
+int expr_is_marked_const(Compiler *c, int id, TyKind t);
 const char *hash_box_cls(TyKind t);
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 TyKind yield_site_type(Compiler *c, int node);
