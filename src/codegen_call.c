@@ -4539,6 +4539,40 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         buf_puts(b, "; break;");
         obj_default_done = 1;
       }
+      /* Exception attributes that EVERY exception value answers (`e.message`,
+         `#backtrace`, `#cause`, `#full_message`) only reached this dispatch
+         because some class in the program owns the name -- the guard at the
+         `sp_poly_exc_acc` emit site turns that path off as soon as any user
+         class defines it.  A builtin exception receiver still has to get its
+         own answer, so claim the fallthrough with the same runtime helper the
+         no-user-class path uses.  Same shape as the to_s / inspect arm above.
+         Without this the switch left every builtin tag on the raise default and
+         `e.message` answered NoMethodError purely because an unrelated class
+         happened to define `message` (E045/E046, upstream candidate S18).
+
+         The slot check is per name, not blanket: the helper answers a boxed
+         String for message / full_message, a boxed Exception-or-nil for cause
+         and nil for backtrace, so each may only claim the default when the
+         dispatch's result slot can actually hold that.  A slot pinned to some
+         user method's unrelated return type (a user `cause` returning an Integer)
+         keeps today's raise rather than getting a mis-unboxed value. */
+      if (!obj_default_done && argc == 0) {
+        int exc_ok = 0;
+        if (sp_streq(name, "message") || sp_streq(name, "full_message"))
+          exc_ok = (ret == TY_POLY || ret == TY_STRING);
+        else if (sp_streq(name, "backtrace"))
+          exc_ok = (ret == TY_POLY || ret == TY_STR_ARRAY);
+        else if (sp_streq(name, "cause"))
+          exc_ok = (ret == TY_POLY || ret == TY_EXCEPTION);
+        if (exc_ok) {
+          char ev[96];
+          snprintf(ev, sizeof ev, "sp_poly_exc_acc(_t%d, \"%s\")", tv, name);
+          buf_printf(b, " default: _t%d = ", tr);
+          emit_unbox_text(c, ret, ev, b);
+          buf_puts(b, "; break;");
+          obj_default_done = 1;
+        }
+      }
       if (!obj_default_done)
         buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       buf_printf(b, " } _t%d; })", tr);
