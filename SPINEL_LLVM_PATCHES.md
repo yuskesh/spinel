@@ -976,3 +976,149 @@ B1 は生成 C に 247 行の `SP_GC_ROOT` を足す。**出荷判定にベン�
   (後者は `lib/spinel_rt.h` −30 行 / `src/codegen_call.c` −10 行のオフセットのみ = 我々の 5 コミットのぶん)。
   報告するときは **S2 + S5 + S9 を「部分式をルート付き一時に落とす規律が体系的に欠けている」
   という 1 本の systemic report** にまとめるのが正しい (S9 が射程・材料とも最大)。
+
+---
+
+# バグ修正 batch 3 (B8 / B9) — 折り畳みとスコープ合流 (spinel-llvm E043)
+
+**GC の未ルート族 (B1〜B7) とは別族である。** どちらも **GC を一切踏まない** —
+ストレスも大きなヒープも要らず、**既定の閾値・既定の最適化で 100% 決定的に**発現する。
+共通するのは「**プログラム全体を走査して結論を出す解析が、AST に現れない書き込み /
+合流を数え落とす**」という形で、B8 は**恒偽への折り畳み** (サイレント誤答)、
+B9 は**局所変数スロットの合流** (コンパイル失敗) として出る。
+
+## 一覧表への追加行
+
+| # | 名前 | 層 | ファイル | ± 行 | Edoc | upstream 台帳 |
+|---|---|---|---|---|---|---|
+| **B8** | 生成された writer / `instance_variable_set` の書き込みを数え落として `if @x` を恒偽に畳む | codegen | `src/codegen_stmt.c` | **+45 / −0** | [E043](../docs/experiments/E043_bugfix_batch3.md) | **S15** |
+| **B9** | 同一スコープの同名 rescue 束縛が 1 スロットに合流して特殊化を失う | analyze | `src/analyze.c` | **+129 / −3** | [E043](../docs/experiments/E043_bugfix_batch3.md) | **S16** |
+
+**合計 +174 / −3、2 ファイル。ゲート無し = 常時有効。**
+回帰テストを 2 本追加する (`test/nil_ivar_attr_writer_guard.rb` +
+`test/rescue_var_shadow_specialized.rb`、いずれも `.rb.expected` 付き)。
+恒久 footprint の勘定は Patch 群 (+90 行) とも B1〜B7 (+473/−21) とも**別に**数える。
+
+---
+
+### B8: `nil` 初期化 ivar の裸の真偽判定が恒偽に畳まれ、ガードされた分岐が消える
+
+- **根因 (1 行)**: `src/codegen_stmt.c` の `ivar_all_writes_nil()` が
+  **`InstanceVariableWriteNode` だけ**を数えるため、**本体が AST に存在しない書き込み** —
+  `attr_writer` / `attr_accessor` / `Struct` メンバ / include したモジュールの属性が
+  生む writer (`obj.x = v` は codegen が直接 `->iv_x = v` を出す) と
+  `instance_variable_set(:@x, v)` — が 1 つも見えない。
+  `initialize` の `@x = nil` しか見えなければ「全書き込みが nil」と結論し、
+  `emit_if()` の `static_nil_ivar_cond()` / `static_nil_reader_cond()` が
+  `if @x` を**恒偽**と判定して**分岐を丸ごと生成 C から落とす**。
+  型推論は無関係である — `--emit-types` / `spinel-typedump` で見ると
+  `@x` の読みは正しく `obj_N` であり、構造体の欄も `sp_N *iv_x` で GC の
+  `scan` にも載っている。**折り畳みだけが間違っている。**
+- **Edoc**: [E043](../docs/experiments/E043_bugfix_batch3.md)
+  (`docs/experiments/results/E043/` に再現・影響半径・バイト一致の記録)
+- **改変**: `src/codegen_stmt.c` **+45 / −0** (実質 2 行 = `ivar_all_writes_nil()` の
+  先頭に 2 つの早期 return。残りは 2 つの述語関数とその理由コメント)。
+  - `ivar_has_synth_writer()` — プログラム中のどれかのクラスが `@x` の
+    base 名について writer を宣言していれば opaque と見なす
+    (`comp_is_writer` / `comp_is_sg_writer`)。既存の走査が**名前でプログラム全体を
+    見ている**ので、この判定も同じ粒度にしてある。
+    `analyze.c` の value-type 判定が既に `if (ci->nwriters > 0) continue;` と
+    同じ保守化をしている前例に揃えた。
+  - `ivar_written_by_ivset()` — `instance_variable_set(:@x, v)` を数える。
+    シンボルリテラルでない名前 (計算された名前・引数転送) は
+    **どのスロットも指しうる**ので全 ivar を失格にする。
+- **なぜゲートしないか**: **既定の閾値・既定の最適化で、エラーも警告も無く誤答する**。
+  `@x = nil` で初期化して `attr_accessor` 越しに埋める形は Ruby の最も普通の書き方で、
+  `if (line->backsector)` 型のガードはアプリ規模で高頻度に現れる (R007 §1.9)。
+  ゲート OFF は「その形を既定でサイレント誤答させておく」ことを意味する。
+- **最適化は殺していない**: 「本当にどこからも非 nil を書かれない ivar」
+  (`attr_reader` だけ、writer 無し) は**修正後も畳まれる** — 回帰テストの
+  第 5 ケースがそれを固定している。
+- **検証**:
+  - **影響半径ゼロ**。`test/*.rb` **2984 本**を修正前後のコンパイラで C に落として
+    全数 `cmp`: **変化 0 本**。既存スイートはこの折り畳みの誤りを 1 本も踏んでいない
+    (= upstream にとって**完全に無検査の経路**だった)。
+  - `benchmark/` 61 本 + `examples/mvc-blog/app.rb` + R007 プローブ 67 本 (計 129 本) のうち
+    生成 C が変わるのは **R007 の 3 本だけ** — 既知の `B1_nil_ivar_truthiness.rb` と、
+    **R007 が「通った」と数えていた `hunt/h_32_self_recursive.rb`**
+    (BSP 風の自己参照ノード。base は `1` を、CRuby と修正後は `10` を出す =
+    **R007 の穴の census は 1 件取りこぼしていた**)。
+  - 新設の番人 `test/nil_ivar_attr_writer_guard.rb` は
+    **修正前 FAIL (誤答、rc=0)** → **修正後 PASS**。
+- **upstream**: `docs/upstream_candidates.md` **S15**。PR 適性 **高**、ゲート不要。
+  報告は hold 継続。
+
+---
+
+### B9: 同一スコープの同名 rescue 束縛が 1 スロットに合流して特殊化を失う
+
+- **根因 (1 行)**: rescue 束縛の型付け (`src/analyze.c`, `analyze_program()` 内) は
+  **1 つの (スコープ, 名前) につき 1 つの `LocalVar`** しか持てないので、
+  同じ名前を使う arm が**全員同じクラスに同意したときだけ**特殊化し、
+  そうでなければ `TY_EXCEPTION` に落とす (コード中のコメントが明示している)。
+  ⇒ `rescue MyErr => e` … `rescue WadError => e` を同じスコープに 2 つ書くと、
+  **先に書いた arm の中の `e.lump`** (下位クラス固有の attr) が
+  `unsupported call: … recv=LocalVariableReadNode/ty18` で**コンパイルを止める**。
+  別メソッドに分ければ再現しない = 合流はスコープ単位である。
+- **改変**: `src/analyze.c` **+129 / −3**。arm を集める段と型を決める段の**間**に
+  「同名で不一致な arm を alpha-rename で切り離す」1 パスを挟む
+  (`rescue_names_local` / `rescue_mark_subtree` / `rescue_fresh_name` /
+  `rescue_rename_marked` + 呼び出し側 60 行)。**これはユーザが手で書く回避策
+  (変数名を変える) を機械化したものである。**
+  `−3` は「収集ループ中の `scope_local_intern` を rename の後ろへ動かした」ぶんで、
+  intern の回数と対象は変わらない。
+- **安全条件 (3 つとも満たしたときだけ rename する)**:
+  1. **その名前がスコープ内で arm の外に現れない。** Ruby は rescue 束縛を
+     `end` の外へ漏らすので、外の読み手が居るなら 1 スロットを共有し続けるしかない。
+     判定はスコープ本体の部分木を歩いて (nested `DefNode` には入らない)
+     `LocalVariable*Node` / `*ParameterNode` の名前を数え、
+     **arm の部分木の外に 1 つでもあれば見送る**。
+  2. **arm どうしが入れ子になっていない** (入れ子だと外側の rename が
+     内側の束縛まで書き換える)。
+  3. **全 arm が例外クラスを明示している** (`rescue X => e`)。
+     裸の `rescue => e` の特殊化は「囲まれた本体の `raise` を見て推測する」
+     ヒューリスティックであり、その推測でスロットを割ると
+     **arm が共通のヘルパに渡す値の型まで動く** (`show(e)` が poly 化して
+     poly ディスパッチの別の穴を踏む)。実測でスイートの
+     `exception_message_override` が赤くなったので、**明示された arm に限定した**。
+     コンパイルできない形は元々「書き下した `rescue X => e`」の側である。
+- **なぜゲートしないか**: バグ修正であって新挙動ではない。ゲート OFF は
+  「同じ名前を 2 度使ったらコンパイルできない状態を既定で残す」ことを意味する。
+  ただし B8 と違い**大きな声で落ちる**ので危険度は低い (誤答はしない)。
+- **検証**:
+  - **影響半径ゼロ**。`test/*.rb` **2984 本**で生成 C の変化 **0 本**
+    (安全条件 3 を入れる前は 2 本変化し、うち 1 本が赤くなった。
+    §E043 §3 にその過程を記録してある)。
+  - 新設の番人 `test/rescue_var_shadow_specialized.rb` は
+    **修正前 ERR (コンパイル失敗)** → **修正後 PASS**。
+    同じテストが「`end` の外で読む」形も持っており、そちらは
+    **rename されないこと**を出力で固定している。
+  - B8 とは **2×2 で対角に割れる** (B8 だけ / B9 だけ / 両方 / 無しの 4 ビルドで
+    番人 2 本の PASS/FAIL が期待どおり)。
+- **upstream**: `docs/upstream_candidates.md` **S16**。PR 適性 **中**
+  (rename は保守的な近似であり、本筋は「rescue 束縛を arm ローカルにする」)。
+  報告は hold 継続。
+
+---
+
+### 検証 (統合、E043)
+
+作業ツリー: `vendor/spinel` 本体 (branch `c-emit-ir` @ `61ffe24e` + 2 パッチ)。
+対照は同一 commit の worktree。
+Apple M1 Max / macOS 26.6.1 / **系統 cc (Apple clang 21.0.0) のみ、
+LLVM プラグイン無し、ThinLTO 無し**。
+
+| ゲート | 結果 |
+|---|---|
+| **plain 全件** | **3017 pass / 0 fail / 0 error** (3015 + 新設の回帰テスト 2 本) |
+| **非ゲート条件 (生成 C のバイト一致)** | `test/*.rb` **2984/2984 が完全一致**。加えて `benchmark/` 61 本・`examples/mvc-blog/app.rb`・R007 プローブ 67 本 (計 129 本) のうち**変化は壊れていた 3 本だけ** |
+| **回帰テストの噛み合い** | 2 本とも修正前に落ち (FAIL / ERR)、修正後に通る。**2×2 が対角** |
+| **R007 プローブ** | `B1_nil_ivar_truthiness.rb` / `B1_workarounds.rb` / `A1_rescue_var_shadow.rb` / `hunt/h_32_self_recursive.rb` が**回避策なしで CRuby と一致** |
+| **spinel-llvm 側の全ゲート** | E018 (310 差動 + 14 拒否、**バイト一致**) / E033 **30** / E034 **20** / E037 **44** / E038 **210** / E039 **199** / E042 **403** = **906 / 906 PASS、FAIL 0**。残差は時間列と E037 以降のツール進化だけ (帰属済み) |
+
+**GC には触っていない** (`SPINEL_GC_STRESS` の census は引き直していない) —
+2 つの修正はどちらも収集点にもルート集合にも関与せず、
+生成 C の差は「消えていた分岐が戻る」と「局所変数の名前が変わる」だけである。
+
+**S17 (巨大配列リテラルのコンパイル時間) は本バッチでは着手していない。**
+判断と根拠は E043 §6。
