@@ -9260,6 +9260,22 @@ static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!strcmp(which, "key"))     return sp_exc_key_acc(e);
   if (!strcmp(which, "receiver")) return sp_exc_receiver_acc(e);
   if (!strcmp(which, "name"))    return sp_exc_name_acc(e);
+  /* The three attributes below exist on EVERY exception, so the poly dispatch
+     has to be able to answer them for a builtin receiver that reached it only
+     because some user class owns the name.  The answers are the ones spinel's
+     own non-poly path gives (src/codegen_call.c, the TY_EXCEPTION arm) -- the
+     invariant being restored is "a user class owning a name must not change
+     what a builtin receiver does", so agreeing with the non-poly path is the
+     specification here, not CRuby (spinel records no frames, so #backtrace and
+     #full_message differ from CRuby with and without a user class alike). */
+  if (!strcmp(which, "cause"))
+    return sp_box_nullable_obj((void *)e->cause, SP_BUILTIN_EXCEPTION);
+  /* #backtrace: the non-poly path answers a NULL sp_StrArray.  A nil box is the
+     one value that lands correctly in both slots the dispatch can ask for -- it
+     unboxes to NULL in a pointer slot and stays nil in a poly slot. */
+  if (!strcmp(which, "backtrace")) return sp_box_nil();
+  if (!strcmp(which, "full_message"))
+    return sp_box_str(sp_sprintf("%s: %s", sp_exc_class_name(e), sp_exc_message(e)));
   return sp_box_nil();
 }
 static sp_RbVal sp_exc_reason_acc(sp_Exception *e) {

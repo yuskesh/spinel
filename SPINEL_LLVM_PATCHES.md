@@ -1122,3 +1122,103 @@ LLVM プラグイン無し、ThinLTO 無し**。
 
 **S17 (巨大配列リテラルのコンパイル時間) は本バッチでは着手していない。**
 判断と根拠は E043 §6。
+
+---
+
+# バグ修正 batch 4 (B10) — poly ディスパッチが builtin 例外を代弁できるようにする (spinel-llvm E045/E046)
+
+**B8/B9 (バッチ 3) とも B1〜B7 (GC 未ルート族) とも別族である。**
+族の名前は **「ユーザークラスが builtin と同じメソッド名を持っただけで、
+builtin レシーバがその答えを失う」**。codegen 自身が `emit_poly_method_dispatch()` の
+コメントで不変条件を書いている:
+
+> a user class owning a name must not change what a builtin receiver does
+
+その執行が**手で維持された名前一覧**に委ねられているため、一覧から漏れた名前で破れる。
+本エントリはその族のうち **Exception の 4 属性**を閉じる。
+
+## 一覧表への追加行
+
+| # | 名前 | 層 | ファイル | ± 行 | Edoc | upstream 台帳 |
+|---|---|---|---|---|---|---|
+| **B10** | poly ディスパッチの default アームが builtin 例外の `message`/`backtrace`/`cause`/`full_message` を代弁できず `NoMethodError` になる | codegen + runtime | `src/codegen_call.c`, `lib/spinel_rt.h` | **+50 / −0** | [E045](../docs/experiments/E045_poly_dispatch_builtin_fallback.md) / [E046](../docs/experiments/E046_poly_exc_attr_full_fix.md) | **S18** (S12 と同族) |
+
+**ゲート無し = 常時有効。** 回帰テストを 1 本追加する
+(`test/poly_exc_attr_builtin_fallback.rb` + `.rb.expected`)。
+恒久 footprint は Patch 群 (+90) / B1〜B7 (+473/−21) / B8〜B9 (+174/−3) とは**別に**数える。
+
+---
+
+### B10: builtin 例外が poly ディスパッチで自分の属性を答えられない
+
+- **根因 (1 行)**: `src/codegen_call.c` の `emit_poly_method_dispatch()` が出す
+  `switch (cls_id)` は**その名前を定義したユーザークラスの case しか持たず**、
+  default の持ち主は **① `Object` 再オープン ② `to_s`/`inspect` ③ 述語 ④ `to_i`/`to_f`**
+  という手書きの一覧で決まる。外れると `sp_raise_nomethod` に落ちるので、
+  **箱に入った builtin 例外 (`SP_BUILTIN_EXCEPTION`) が `e.message` に答えられない** —
+  プログラムのどこかの無関係なクラスが `message` を定義しているだけで。
+- **再現 (8 行、純 Ruby、無改造 `8154ec0c`)**:
+
+  ```ruby
+  class MsgOnly < StandardError
+    def message = "msg-only"
+  end
+  def show(e)
+    puts e.message
+  end
+  show(MsgOnly.new)
+  show(RuntimeError.new("boom"))   # NoMethodError, rc=1  (CRuby: "boom")
+  ```
+
+  `MsgOnly` を消せば通る。**60 プローブの census では RAISE 34 / サイレント誤答 7 /
+  コンパイル不能 8、8 つの builtin クラスにまたがる** (E045)。
+- **バッチ 3 (B9) がこの穴を新しく踏ませていた**: 明示 rescue arm 2 本を B9 が分け、
+  片方だけがユーザークラスに特殊化され、共有ヘルパが `message` を呼ぶ形は
+  **`61ffe24e` で rc=0、`8154ec0c` で rc=1** になっていた。本エントリで rc=0 に戻る。
+- **改変**:
+  - `lib/spinel_rt.h` **+16 / −0** — `sp_poly_exc_acc()` に `cause` / `backtrace` /
+    `full_message` を追加。**この関数は先頭でタグと `cls_id` を検査し、
+    非 Exception には CRuby と同じ文言で `NoMethodError` を投げる**ので、
+    default アームに String や Integer が来ても安全である
+    (盲目的な cast をしているのは非 poly 経路であって、この関数ではない)。
+    返す値は**非 poly 経路と同じもの** — `cause` は `->cause` の nullable box、
+    `backtrace` は nil 箱 (ポインタスロットで NULL、poly スロットで nil に落ちる)、
+    `full_message` は `sp_sprintf("%s: %s", class, message)`。
+  - `src/codegen_call.c` **+34 / −0** — default アームのハシゴに 5 段目
+    (`to_s`/`inspect` の段と同じ形)。**受け口は `emit_unbox_text(c, ret, ...)`** で、
+    スロット型をそのまま渡す (`is_scalar_ret(ret) ? ret : TY_INT` と潰すと
+    `sp_StrArray *` が `.v.i` になって壊れる)。
+    **名前ごとにスロットを検査**し、ヘルパが返せる形をスロットが受けられるときだけ
+    default を主張する — ユーザーメソッドが無関係な戻り型でスロットを固定している
+    場合は今日どおり raise のままにする (壊れた値を渡すより安全)。
+- **なぜゲートしないか**: バグ修正であって新挙動ではない。ゲート OFF は
+  「普通の Ruby プログラムを既定で `NoMethodError` にしておく」ことを意味する。
+- **GC 窓は開いていない**: `full_message` は `sp_sprintf` で割り当てるが、
+  生成 C は switch の手前で必ず `SP_GC_ROOT_RBVAL(_tN)` を張っており
+  (実測で確認)、レシーバはその間ルート集合に居る。
+- **検証**:
+  - **影響半径ゼロ**: `test/*.rb` **2986 / 2986 が生成 C バイト一致**。
+    ランタイムヘッダを触るのでバイナリは全プログラムで変わる (batch 1 と同じ性質)。
+  - **plain 全件 3018 pass / 0 fail / 0 error** (3017 + 新設の番人 1 本)。新設の番人は `8154ec0c` で **2 行出したところで rc=1**。
+  - **B9 が新たにコンパイル可能にした形の意味論を直接測った** (バッチ 3 の検証の穴):
+    4 名 × 3 形 × builtin 2 種 = **20 本**を、同じプログラムから override を外した
+    参照版と突き合わせ、**`8154ec0c` で 20/20 raise → 修正後 20/20 が答える**。
+    参照と一致 15/20、CRuby と一致 14/20。
+    残り 5 本 (`backtrace`) は**値は同じ NULL** で、poly 側が `nil`・参照側が `[]` と
+    描画が違うだけであり、**CRuby は未 raise で `nil` と答えるので修正側が正しい**。
+  - **census 前後**: RAISE 34 → **32**、OK 11 → **12**。動いたのは
+    `Exception#message` (RAISE→OK) と `Exception#full_message` (RAISE→答えるように) の
+    **2 行だけ**で、他クラスは 1 行も動いていない。
+  - **spinel-llvm 側の全ゲート**: E018 (310 差動 + 14 拒否、**バイト一致**) /
+    E033 **30** / E034 **20** / E037 **44** / E038 **210** / E039 **199** / E042 **403**
+    = **906 / 906 PASS、FAIL 0**。`gates.tsv` は 6 本とも無変化。
+    **ランタイムヘッダを触るバッチなので省略していない** (E043 は省略した)。
+    残差は時間列と E037 以降のツール進化だけで、E043 の再実行と同じ集合である
+- **直っていないもの (族の残渣)**: census の **RAISE 30 / WRONG 7 / CERR 8**
+  (Range / Array / Integer / Hash / Float / String / Symbol) は**そのまま**。
+  族の一般修正 (「default は builtin サーフェスに再入する」) は未設計。
+  スロットが無関係なユーザー戻り型に固定されている場合も今日どおり raise する。
+- **upstream**: `docs/upstream_candidates.md` **S18**。PR 適性 **高**、ゲート不要。
+  **S12 と同族**なので、報告するなら
+  「ディスパッチの case 一覧が手で維持されていて builtin が漏れる」という
+  1 本の systemic report にまとめるのが正しい。報告は hold 継続。
