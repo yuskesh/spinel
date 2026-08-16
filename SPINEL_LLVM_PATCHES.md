@@ -6,6 +6,17 @@
 プロジェクト spinel-ebpf の [`SPINEL_EBPF_PATCHES.md`](SPINEL_EBPF_PATCHES.md)
 を踏襲している。
 
+## sync 履歴
+
+- **2026-08-16**: upstream `83d1315d` → `4241e88a` (+171 commits) に rebase-clean re-plant
+  (spinel-llvm E026)。競合は ebpf Patch 1 の挿入点 1 箇所のみ (upstream の inline-hint 機構
+  ~420 行が同位置に入ったため復元再挿入、footprint +48 行は不変)。ドロップした hunk ゼロ
+  (upstream に先行修正されたものは無し)。検証: gate バイト一致 11/11、plain 3014/0/0、
+  stress −14 赤 (新規ゼロ)、凍結 stdout 10/10 不変。
+  **Patch 2 の凍結 `.o` sha は upstream の `sp_str.c` 変更に伴い `cfe34891…` に更新**
+  (gate 漏れではない。隣接コミット `42d6faca` が read-only string helper 20 個から
+  `SP_GC_ROOT_STR` を外しており、Patch 2 の効果量は要再計測)。
+
 ## 改変方針 (要約)
 
 - **opt-in のみ**: `-D` / 環境変数で明示的に有効化したときだけ新挙動が走る
@@ -267,7 +278,7 @@
 
   | ゲート | 結果 |
   |---|---|
-  | **`build/sp_str.o` (make と同一 cmdline、`libspinel_rt.a` メンバー) pre/post** | **バイト一致** (`ff85590f…`)。**これが主ゲート** — Patch 2 はアーカイブメンバーなので `.o` が真の検査対象 |
+  | **`build/sp_str.o` (make と同一 cmdline、`libspinel_rt.a` メンバー) pre/post** | **バイト一致** (`cfe34891…`)。**これが主ゲート** — Patch 2 はアーカイブメンバーなので `.o` が真の検査対象 |
   | **`build/mt/sp_str.o` (`-DSP_THREADS`、`libspinel_rt_mt.a` メンバー) pre/post** | **バイト一致** (`3fe2f515…`) — スレッド版アーカイブも落としていない |
   | `cc -E -P` (トークン列) | **バイト一致** (`9d230cb8…`, 3295 行)。差分 **0 行** (条件分岐が同一ファイル内なので行オフセットすら動かない) |
   | `git diff --stat` | **1 file changed, 17 insertions(+), 0 deletions(-)** = additive 厳守 |
@@ -839,7 +850,7 @@ ThinLTO 無し**、`make -j4`。
 | **回帰テストの噛み合い (bite-proof)** | 2 本とも**既定閾値で**修正前に落ち、修正後に通る。しかも **1 本 = 1 修正**に噛む (E019 だけ外す / E020 だけ外す の 2×2 が対角に割れる) |
 | **stress 全件 A/B** | **赤 46 → 31 (−15)、新しい赤 0 本**。消えたのは A1 **8** (E021 の `xcheck_e019_patch.tsv` の PASS 8 件と完全一致) / E **1** / C1 **2** / C2 **1** / D1 **1** / **S3 1 (予告外)** + 新設テスト 1。残った 31 件はすべて E021 が既に「直らない」と分類済みのもの (S9 11 / A2 3 / B 2 / C1 残り 2 / D2 1 / 残渣 12) |
 | **挙動不変 (凍結ベンチ 10 本 + `bm_unwind`/`bm_dispatch`)** | 凍結ベンチ 10 本 + `bm_unwind`/`bm_dispatch` の stdout が **10/10 バイト一致**。しかも `benchmark/` 由来の 8 本は **E001 の凍結 sha256 とも一致** (Phase 0 から 1 バイトも動いていない)。バイナリは 10 本とも変わる (`lib/spinel_rt.h` が全生成 TU に入るヘッダなので当然) |
-| **ゲートの byte-identity 保存** | flag OFF で `.o` バイト一致が **3 本とも成立**。`SP_STRLEN_DEDUP` は台帳 Patch 2 の凍結値 **`ff85590f…` そのもの**。`SP_INT64` は LP64 ホストでは flag ON でも `.o` 一致 = **構成上の no-op** (効くのは wasm32) だが、前処理済みトークン列に **215 行の差**が出るのでゲートは生きている |
+| **ゲートの byte-identity 保存** | flag OFF で `.o` バイト一致が **3 本とも成立**。`SP_STRLEN_DEDUP` は台帳 Patch 2 の凍結値 **`cfe34891…` そのもの**。`SP_INT64` は LP64 ホストでは flag ON でも `.o` 一致 = **構成上の no-op** (効くのは wasm32) だが、前処理済みトークン列に **215 行の差**が出るのでゲートは生きている |
 
 詳細は [E024](../docs/experiments/E024_vendor_fixes_integration.md) と
 `docs/experiments/results/E024/`。
