@@ -574,3 +574,297 @@
     リンクは通り実行時に値だけ壊れる。driver フラグ化が要る。
 
 - **適用日**: 2026-08-15 (E010)。**コミットしていない — working tree のみ、既定 OFF。**
+
+---
+
+## バグ修正コミット (非ゲート)
+
+このセクションは **Patch 1/2/4 とは種類の違う改変**を記録する。
+Patch 群が**性能・移植性のための opt-in 実験**であるのに対し、
+ここに載るのは **upstream の健全性バグに対する修正**である。
+
+### 方針 — なぜ soundness 修正はゲートしないのか
+
+冒頭の「改変方針」(opt-in のみ / additive only / **フラグ未設定時は出力バイト一致**) は
+**性能・移植性パッチの規律であって、バグ修正には適用しない**。理由は 3 つある。
+
+1. **ゲート = 既定で wrong code。** 「フラグを立てたときだけ正しい GC ルートを張る」
+   という形は、裏返せば「**既定では未ルートのまま誤答する**」という意味になる。
+   ゲートは「新しい挙動を選択的に入れる」ための道具であって、
+   「正しさを選択的に入れる」ための道具ではない。
+   `SP_UNMASKED_SETJMP` を OFF にしたビルドは**遅いだけ**だが、
+   `SP_GC_ROOT` を OFF にしたビルドは**間違っている**。この差は本質的である。
+2. **「未設定時バイト一致」という検証手段が原理的に成立しない。**
+   この規律が意味を持つのは「ゲートを外せば upstream と 1 バイトも変わらない」ことを
+   毎回実測できるからだが、バグ修正の**目的そのもの**が出力を変えること
+   (誤答 → 正答、SIGSEGV → 完走) である。バイト一致は満たせないし、
+   満たしてしまったら修正が効いていない。
+   代わりの検証は **(a) 全件スイート緑 / (b) ストレス下の赤集合が単調に減ること /
+   (c) 元から通っていたプログラムの stdout がバイト一致すること** の 3 点で行う
+   ((c) だけが「バイト一致」の生き残りで、**対象がバイナリではなく出力**である点が違う)。
+3. **行き先が違う。** Patch 1/2/4 は「fork にだけ載る spinel-llvm の都合」だが、
+   バグ修正は **upstream (matz/spinel) に返すべきもの**である。
+   fork に載せるのは upstream PR が通るまでの繋ぎであって、
+   `docs/upstream_candidates.md` の該当行と 1:1 で対応させる必要がある。
+   **したがってゲートしないが、台帳には必ず記録する** — 記録の目的は
+   「無効化できるようにすること」ではなく、**追跡可能性 (どのコミットが何を直したか) と
+   upstream PR へのマッピング**である。
+
+**additive only は結果的にほぼ守られている**が、それは規律としてではなく
+バグの性質による — 未ルート値に `SP_GC_ROOT` を足す修正は定義上加算的である。
+E020 の codegen 側だけが既存行を書き換えており (`emit_expr` 直置き →
+ルート付き一時への lowering)、これは**同じファイル内の `Hash#slice` が既に書いている形**に
+揃えたものである。
+
+**逆に、ゲートの byte-identity 性質は本セクションの修正によって壊れていない** —
+Patch 1/2/4 のフラグ OFF ビルドは修正の前後で `.o` バイト一致を保つ (§検証)。
+バグ修正は Patch 群と**直交している**。
+
+### 一覧
+
+| # | 名前 | 層 | ファイル | ± 行 | Edoc | upstream 台帳 |
+|---|---|---|---|---|---|---|
+| **B1** | インライン化 yielding `initialize` が構築中インスタンスを未 root | codegen | `src/codegen_call.c` | **+10 / −0** | [E019](../docs/experiments/E019_set_enumerable_gc_corruption.md) | **S4 / A1** |
+| **B2** | `Hash#merge` の両オペランドが未 root | codegen + runtime | `src/codegen_call_recv.c`, `lib/spinel_rt.h` | **+29 / −8** | [E020](../docs/experiments/E020_hash_predicates_missing_root.md) | **S5** (= S2 と同族) |
+| **B3** | `sp_program_name` (`$0`) がルート集合に居ない | runtime | `lib/spinel_rt.h` | **+10 / −0** | [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §4 | **S3** |
+| **B4** | `sp_box_brat` の `num`/`den` が未 root | runtime | `lib/sp_cold.c` | **+10 / −0** | [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §3e (C1) | **S2** |
+| **B5** | `sp_brat_to_s` / `sp_brat_inspect` の文字列中間値が未 root | runtime | `lib/sp_cold.c` | **+14 / −3** | [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §3e (C2) | **S2** |
+| **B6** | `sp_MatchData_inspect` の `sp_String` builder が未 root | runtime | `lib/sp_re.c` | **+8 / −1** | [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §3c (D1) | **S8** (D のランタイム側) |
+
+**合計 +81 / −12、5 ファイル** (`src/codegen_call.c` / `src/codegen_call_recv.c` /
+`lib/spinel_rt.h` / `lib/sp_cold.c` / `lib/sp_re.c`)。
+**ゲート無し = 常時有効。** 恒久 footprint の勘定は Patch 群 (+90 行) とは**別に**数える。
+
+さらに **回帰テスト 2 本**を `test/` に追加している (下記 §回帰テスト)。
+
+### 共通の根因 — 「未ルートの窓」
+
+6 件すべてが**同じ 1 つの形**である:
+
+> **GC が管理するオブジェクトが、C のローカル変数・関数実引数・無名一時のいずれかにしか
+> 存在しない状態で、その先で割り当て (= 収集点) を踏む。**
+> collector はシャドウスタック (`sp_gc_roots[]`) / 停止中の fiber / globals hook しか
+> 走査しないので、C スタック上のそのポインタは**見えない**。
+> 収集が窓に入るとオブジェクトは回収され、
+> 以降の読み書きは解放済みメモリに対して行われる。
+
+違うのは**どの emit site / どの関数が窓を開けているか**だけで、
+修正はすべて「窓の手前で `SP_GC_ROOT` を張る」に落ちる。
+既定の閾値 (256 KiB) では窓に収集が入る確率が低いので**普段は発現しない**が、
+`SPINEL_GC_STRESS=1` (閾値 2048 バイト)・大きな割り当てを含む本体・
+codegen 摂動のいずれかで確実に発現する。**ストレスはバグを作らず、窓を開けるだけである。**
+
+---
+
+### B1: インライン化 yielding `initialize` が構築中インスタンスを未 root
+
+- **根因 (1 行)**: `src/codegen_call.c:159` `emit_ctor_yield_inline()` が
+  `sp_X_new()` の直後に `SP_GC_ROOT` を張らないまま `initialize` の本体を展開するため、
+  **構築中のインスタンス自身**が本体の割り当てで回収され、
+  文式のあとに呼び出し元が張るルートが**死んだオブジェクトのスロット**になる。
+- **Edoc**: [E019](../docs/experiments/E019_set_enumerable_gc_corruption.md)
+  (`docs/experiments/results/E019/root_cause.md` が機構、`blast_radius.txt` が影響半径)
+- **改変**: `src/codegen_call.c` **+10 / −0** (実質 1 行 + 9 行のコメント)。
+  同じ関数がインライン本体の**ローカルには**既に `SP_GC_ROOT` を張っており、
+  **インスタンスだけが漏れていた**。`is_val` (value type) は by-value の構造体で
+  GC ポインタではないので除外する。
+- **なぜゲートしないか**: 発現条件は「`initialize` が `yield` を持つクラスの `new`」で
+  **`Set` 固有ではない** (`def initialize; …; yield self; end` 形のユーザークラス全部)。
+  ゲート OFF は「そのクラス群を既定で壊しておく」ことを意味する。
+- **検証**:
+  - 影響半径は**全数**で測ってある — `test/*.rb` 2856 本を修正前後のコンパイラで C に落として
+    1 本ずつ `cmp`: **生成 C が変わるのは 51 本 (1.8%)・追加 247 行・削除 0 行・
+    追加行は `SP_GC_ROOT(_tN);` の 1 種類のみ** = **厳密に加算的**。
+  - `set_*`/`enum*` 83 本: verifier abort **12 → 3**、赤 **18 → 10**、新しい赤 **0**。
+  - E021 が独立に S4 の 44 件へ当て直し、**A1 クラスタ 8 件が 8/8 PASS**。
+  - **E024 (本統合)**: ストレス全件で **A1 クラスタ 8 件が 8/8 緑**
+    (E021 の `xcheck_e019_patch.tsv` と 1 件も違わない)。
+    新規回帰テスト `test/ctor_yield_inline_self_rooted.rb` が
+    **既定閾値で修正前 SIGSEGV 10/10 → 修正後 PASS**。
+- **upstream**: `docs/upstream_candidates.md` **S4** (クラスタ A1)。PR 適性 **高**、ゲート不要。
+
+### B2: `Hash#merge` の両オペランドが未 root
+
+- **根因 (1 行)**: `src/codegen_call_recv.c:5137` が `emit_expr(recv)` を C の実引数位置に
+  直接置くため、`h.merge(x).merge(y)` (多引数 merge が lower される形でもある) の
+  **内側 merge の戻り値**がどこからもルートされず、外側 merge 冒頭の `sp_XHash_new()` が
+  それを回収し、`calloc` が**同じブロックをゼロ埋めで返す** (`outer == inner`)。
+- **Edoc**: [E020](../docs/experiments/E020_hash_predicates_missing_root.md)
+  (`results/E020/root_cause.md` / `alloc_trace.txt` が `outer == inner` の実証)
+- **改変**: `src/codegen_call_recv.c` **+27 / −6** (同変種 merge `:5137` と
+  異変種 str merge `:5112` の 2 箇所を**両オペランドをルート付き一時に落とす
+  statement-expression** に変える) + `lib/spinel_rt.h` **+2 / −2**
+  (`sp_StrPolyHash_merge` / `sp_SymPolyHash_merge` に `SP_GC_ROOT(a); SP_GC_ROOT(b);`)。
+  **本セクション唯一の「既存行の書き換え」**だが、
+  移行先は**同じファイルの `Hash#slice` (`:5170`) と bigint bitwise が既に書いている形**である。
+  兄弟の `sp_PolyPolyHash_merge` / `sp_SymPolyHash_update` は既に root を持っており、
+  この 2 本だけが欠けていた = **設計判断ではなく漏れ**。
+- **なぜゲートしないか**: **プラグイン不要・生成 C 無編集の 3 行の純 Ruby が
+  無改造 stock を `-O0`〜`-O3` すべてで落とす** (`{a: 1, b: 2, c: 3}` が `{c: 3}` になる)。
+  ゲート OFF = `Hash#merge` の連鎖が既定でサイレント誤答する。
+- **検証**:
+  - blast radius: 2856 件の `-S` 出力比較で**バイト一致 2772 / 一時番号ずれのみ 64 /
+    実質差分 20**、実質差分の**変更行は 1 行残らず `Hash_merge` を含む**。
+  - plain 全件 **2887 pass / 0 fail / 0 error** (LIB のみ / CG+LIB の 2 構成とも)。
+  - stress 下、生成 C が変わった 84 件を直接対照: **FAIL 16 → 15**、
+    `hash_ctor_merge_clone_transform` が **FAIL 5/5 → PASS 5/5**、**PASS → FAIL は 0**。
+  - **E024 (本統合)**: ストレス全件でも `hash_ctor_merge_clone_transform` が緑。
+    回帰テスト `test/hash_merge_chain_rooted.rb` を suite に常設。
+- **upstream**: **S5**。S2 (bigint オペランド) と**同じ emit 族の穴**なので、
+  報告は S2 と 1 本にまとめる。PR 材料 (純 Ruby 再現体・既定閾値で落ちる回帰テスト・
+  パッチ・blast radius・全件緑) は揃っている。
+
+### B3: `sp_program_name` (`$0`) がルート集合に居ない
+
+- **根因 (1 行)**: `main()` が `sp_program_name = sp_str_dup_external(argv[0])` で
+  str-heap から確保するのに `sp_re_mark_globals` がそれを mark しないため、
+  **最初の `sp_str_sweep` が回収**し、以降の `$0` / `$PROGRAM_NAME` 読み出しが
+  すべて use-after-free になる。
+- **Edoc**: [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §4
+  (前段の機構は [E017](../docs/experiments/E017_gcroots_soundness_fix.md) §R2)
+- **改変**: `lib/spinel_rt.h` **+10 / −0** (`sp_re_mark_globals` に
+  `sp_mark_string(sp_program_name);` の **1 行** + 9 行のコメント)。
+  同関数には **`sp_argv` を全く同じ理由で mark する既存コード**が隣にあり
+  (`:1165` のコメントが「`sp_str_dup_external` した argv 文字列は mark しないと
+  最初の sweep で消える」と明言)、**`$0` はその隣に並ぶだけ**である。
+  E017 が挙げたもう 1 案 (codegen が `$0` を巻き上げる) は読み出し側の対症療法で、
+  `$0` を読む経路が増えるたびに再発するので採らない。
+- **なぜゲートしないか**: 初期値の rodata `SPL("")` 以外、**`$0` を読むプログラムは
+  既定で壊れている**。摂動 (`-fno-unroll-loops` 単独) で落ちる程度の薄氷である。
+- **検証**: 系統 cc・stress 下 5 回走行で正答した回数 —
+  stock **1/5** (摂動下 **0/5**) → パッチ適用 **5/5 (摂動の有無によらず)**。
+  クラスタは 1 件で閉じている (S4 の 44 件に `$0` を読むテストが無いので追加の効果は 0)。
+  **E024 (本統合)**: ストレス全件を回すと `literal_string_markers` が base で赤・fix で緑になり、
+  **S4 の 44 件の「外」に居た 1 件が実際に落ちた** — E021 §3e の「S3 は 0 件」は
+  「44 件の中では 0 件」の意味だったことがはっきりした。
+- **upstream**: **S3**。
+
+### B4: `sp_box_brat` の `num`/`den` が未 root
+
+- **根因 (1 行)**: `lib/sp_cold.c:2959` `sp_box_brat()` が `num`/`den` を
+  C の実引数にしか置かないまま末尾で `sp_gc_alloc` を呼ぶ
+  (関数中の他の `sp_bigint_*` はすべて `sp_gc_alloc_nogc` なので**そこが唯一の収集点**)。
+  回収されると `sp_bigint_finalizer` が `mpz_clear` + `free(limbs)` し、
+  直後の `p->num = num` が**解放済みポインタを publish** する。
+- **Edoc**: [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §3e (クラスタ C1)
+- **改変**: `lib/sp_cold.c` **+10 / −0** (`SP_GC_ROOT(num); SP_GC_ROOT(den);` の 1 行 + コメント)。
+- **なぜゲートしないか**: 症状が **`(0/0)` と印字**するサイレント誤答である。
+  数字が機構を語っており (`mpz_clear` 済みの limb を読んでいる)、
+  「フラグ次第で有理数が 0/0 になる」ビルドを既定にする理由が無い。
+  `sp_brat_*_poly` の全呼び出し元をここ 1 箇所でまとめて覆える。
+- **検証**: stress 下 2 件が緑 (E021 `validation_runtime_patches.tsv`)。
+  **E024 (本統合)**: ストレス全件で `bignum_rational_arith` /
+  `rational_bigint_and_complex_zero` の 2 件が緑 (E021 の測定と一致)。
+  **`bignum_rational_basic` / `bignum_receiver_methods` は赤のまま** —
+  E008 §2.1 が挙げた `lib/sp_bigint.c` の `gcd`/`lcm` 中間値が未着手だからで、想定どおり。
+- **upstream**: **S2**。E008 が予言した族の**実際に発火している site** の 1 つ
+  (発火していたのは codegen の算術式ではなくランタイム内部だった)。
+
+### B5: `sp_brat_to_s` / `sp_brat_inspect` の文字列中間値が未 root
+
+- **根因 (1 行)**: `lib/sp_cold.c:3010` が
+  `ns = sp_bigint_to_s(r->num)` を root しないまま次の `sp_bigint_to_s(r->den)` を呼ぶため、
+  **分子の文字列が分母の整形中に回収**され、`"(/3)"` (分子だけ空) と印字される。
+- **Edoc**: [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §3e (クラスタ C2)
+- **改変**: `lib/sp_cold.c` **+14 / −3** — 中間値を名前付きにして
+  `SP_GC_ROOT_STR` を各段に張る (`sp_brat_inspect` も同型なので同時に直す)。
+  **本セクションで既存行を書き換えるもう 1 件**だが、
+  書き換えは「入れ子式を 1 段ずつ let に開く」だけで意味論は同じ。
+- **なぜゲートしないか**: B4 と同じ — サイレント誤答であり、既定で正しくあるべき。
+- **検証**: stress 下 `bigint_to_s_is_a_heap_string` が緑
+  (E021 `validation_runtime_patches.tsv`)。**E024 (本統合)**: ストレス全件でも同じ 1 件が緑。
+- **upstream**: **S2** (B4 と 1 本で出す)。
+
+### B6: `sp_MatchData_inspect` の `sp_String` builder が未 root
+
+- **根因 (1 行)**: `lib/sp_re.c:190` の builder `sp_String *b = sp_String_new(...)` が
+  未 root のままループ内で `sp_str_inspect` / `sp_str_substr` (= 割り当て) を呼ぶため、
+  `b` とそのデータバッファが回収され、次の `sp_String_append` が
+  解放済みポインタを realloc して **macOS libmalloc が SIGABRT** する。
+- **Edoc**: [E021](../docs/experiments/E021_stress_failure_taxonomy.md) §3c (クラスタ D1)
+- **改変**: `lib/sp_re.c` **+8 / −1** (`SP_GC_ROOT(b);` の 1 行 + コメント)。
+  ランタイムの同型 `sp_IntArrayPtrArray_inspect` (`lib/spinel_rt.h`) は
+  **既に `SP_GC_ROOT(s)` を持っている** — ここだけが揃っていなかった。
+- **なぜゲートしないか**: プロセスが落ちる。
+- **検証**: stress 下 `regex_value_as_match_arg` が緑。
+  **E024 (本統合)**: ストレス全件でも同じ 1 件が緑。
+- **upstream**: **S8** の (D) のうち**ランタイム側**。
+  **codegen 側の同型 (`sp_obj_inspect_sw`) は未修正**である
+  (root を足すと `object_default_display` の SIGABRT が SIGSEGV に**変わる** =
+  そのテストにはもう 1 つ別のバグがある)。**ここは意図的に閉じていない。**
+
+---
+
+### 回帰テスト (`test/` への追加 2 本)
+
+台帳の他のセクションと違い、バグ修正は**スイートに恒久的な番人を残す**。
+どちらも **`SPINEL_GC_STRESS` 無し = 既定閾値で修正前に落ちる** ことを条件に選んだ
+(スイートにストレスレーンが無いので、ストレス専用の再現体は番人にならない)。
+
+| テスト | 守る修正 | 修正前 (既定閾値) | 修正後 | 実行時間 |
+|---|---|---|---|---|
+| `test/hash_merge_chain_rooted.rb` | **B2** | `true true true true` (**FAIL**、5/5 決定的) | `false false false false` **PASS** | 0.03 s |
+| `test/ctor_yield_inline_self_rooted.rb` | **B1** | **SIGSEGV (rc=139)、10/10 決定的** | `false` **PASS** | 0.005 s |
+
+- `hash_merge_chain_rooted.rb` は E020 の成果物をそのまま採用した
+  (`results/E020/proposed_test_hash_merge_chain_rooted.rb`)。
+  ループ + 位相をずらす `pad = Array.new(i % 11)` で窓を掃く形。
+- `ctor_yield_inline_self_rooted.rb` は **E024 で新規に作った**。
+  E019 の最小再現 (3 行、`Set` を使うもの) は**ストレス専用**で既定閾値では落ちないため
+  番人にならない — `sp_Set` がプール化クラスで recycle がペイロードを温存するからである
+  (E019 §5)。そこで E019 自身の結論「**`Set` 固有ではない。
+  `def initialize; …; yield self; end` 形のユーザークラスは全部候補**」を使い、
+  **プール化されていないユーザークラス**で、かつ `initialize` の本体が
+  既定閾値 (256 KiB) を自力で跨ぐだけ割り当てる形にした。
+  結果は**プールに庇われないぶん E019 の再現体より強い** (誤答ではなく SIGSEGV)。
+  反復数 20/40/60/100 × `n` の増分 0/3/7/13 の **16 通りすべてで修正前 SIGSEGV** =
+  位相依存のナイフエッジではない (E019 の `Set` 版を既定閾値で落とす試みは
+  `M=4000` でだけ落ち `M=6000/8000` では落ちないナイフエッジだった。
+  **その版は採用していない。**)。
+- **E019 の元の 3 行再現体 (`results/E019/minimal_repro.rb`) は `test/` に入れていない。**
+  ストレス専用でスイートに該当レーンが無く、入れても常に緑になるだけで番人にならない
+  (E008 の `test/bigint_operand_rooted.rb` が抱えた問題と同じ)。
+  記録としては本台帳の B1 と E019 の Edoc に残る。
+
+### 検証 (統合、E024)
+
+作業ツリー: `vendor/spinel` worktree `fix/gc-roots-batch1` @ `1aee3d55` + 6 パッチ。
+Apple M1 Max / macOS 26.6.1 / **系統 cc (Apple clang) のみ、LLVM プラグイン無し、
+ThinLTO 無し**、`make -j4`。
+
+| ゲート | 結果 |
+|---|---|
+| **パッチ適用** | 6 本すべて `git apply` **クリーン** (競合 0。`fix_brat_to_s` が同一ファイル内の `fix_box_brat` の +10 行ぶん offset するのみ) |
+| **plain 全件 `make -j4 test`** | **2889 pass / 0 fail / 0 error** (2887 + 新設の回帰テスト 2 本) |
+| **回帰テストの噛み合い (bite-proof)** | 2 本とも**既定閾値で**修正前に落ち、修正後に通る。しかも **1 本 = 1 修正**に噛む (E019 だけ外す / E020 だけ外す の 2×2 が対角に割れる) |
+| **stress 全件 A/B** | **赤 46 → 31 (−15)、新しい赤 0 本**。消えたのは A1 **8** (E021 の `xcheck_e019_patch.tsv` の PASS 8 件と完全一致) / E **1** / C1 **2** / C2 **1** / D1 **1** / **S3 1 (予告外)** + 新設テスト 1。残った 31 件はすべて E021 が既に「直らない」と分類済みのもの (S9 11 / A2 3 / B 2 / C1 残り 2 / D2 1 / 残渣 12) |
+| **挙動不変 (凍結ベンチ 10 本 + `bm_unwind`/`bm_dispatch`)** | 凍結ベンチ 10 本 + `bm_unwind`/`bm_dispatch` の stdout が **10/10 バイト一致**。しかも `benchmark/` 由来の 8 本は **E001 の凍結 sha256 とも一致** (Phase 0 から 1 バイトも動いていない)。バイナリは 10 本とも変わる (`lib/spinel_rt.h` が全生成 TU に入るヘッダなので当然) |
+| **ゲートの byte-identity 保存** | flag OFF で `.o` バイト一致が **3 本とも成立**。`SP_STRLEN_DEDUP` は台帳 Patch 2 の凍結値 **`ff85590f…` そのもの**。`SP_INT64` は LP64 ホストでは flag ON でも `.o` 一致 = **構成上の no-op** (効くのは wasm32) だが、前処理済みトークン列に **215 行の差**が出るのでゲートは生きている |
+
+詳細は [E024](../docs/experiments/E024_vendor_fixes_integration.md) と
+`docs/experiments/results/E024/`。
+
+### 未修正で残しているもの (honest boundary)
+
+本セクションは「同族のバグを全部直した」とは主張しない。
+**E024 のストレス全件 A/B で、適用後もなお 31 件が赤である** (適用前は 45 件 + 新設テスト 1)。
+内訳はすべて既知:
+
+| クラスタ | 件数 | 状態 |
+|---|---:|---|
+| **S9** (入れ子配列の行が潰れる族) | **11** | 未根因特定 |
+| **A2** (蓄積配列 / yield しないコンストラクタ) | **3** | 根因証明済み・修正なし → S8 |
+| **B** (capture セルの scan が `NULL`) | **2** | 根因証明済み・修正なし → S8 |
+| **C1 の残り** | **2** | E008 §2.1 の `gcd`/`lcm` 中間値が未着手 |
+| **D2** (`sp_obj_inspect_sw`) | **1** | root を足すと SIGABRT → SIGSEGV に変わる別バグ同居 |
+| 未分類の残渣 | **12** | E021 §4 の残渣 |
+
+**新しい赤は 1 本も増えていないが、ストレス下のスイートは緑にならない。**
+本セクションは「赤を単調に減らした」以上のことは主張しない。
+
+**性能は 1 度も測っていない。** 6 本すべてがシャドウスタックの push/pop を増やす方向で、
+B1 は生成 C に 247 行の `SP_GC_ROOT` を足す。**出荷判定にベンチは含まれていない**
+(E021 §5.5 が挙げた宿題は E024 でも未消化)。
+
+**プラグイン (`SpinelGCRoots`) / ThinLTO は 1 度も通していない。**
+検証はすべて系統 cc (Apple clang) である。

@@ -159,6 +159,16 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   buf_printf(b, "sp_%s %s_t%d = sp_%s_new(", c->classes[ci].c_name, is_val ? "" : "*", st, c->classes[ci].c_name);
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   buf_puts(b, ");\n");
+  /* Root the instance under construction. The inlined `initialize` body that
+     follows allocates (its own locals, the ivar containers it builds, every
+     helper it calls), so any of those allocations can collect -- and until the
+     statement expression finishes and the CALLER roots its result temp, this
+     pointer is the object's only reference and lives in a plain C local the
+     collector cannot see. Under SPINEL_GC_STRESS the object is swept mid-body
+     and the caller's SP_GC_ROOT then registers a dangling slot (E019). A
+     value-type instance is a by-value struct, not a GC pointer, so it takes no
+     root. */
+  if (!is_val) { emit_indent(b, g_indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", st); }
   snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
   g_self = selfbuf;
   g_self_deref = is_val ? "." : "->";

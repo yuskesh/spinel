@@ -1221,6 +1221,16 @@ static void sp_re_mark_globals(void) {
   SP_GLB_PHASE("globals:argv");
   for (mrb_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
   if (sp_argv_array_cache) sp_gc_mark(sp_argv_array_cache);
+  /* $0 / $PROGRAM_NAME has exactly the sp_argv problem described above: main()
+     sets sp_program_name = sp_str_dup_external(argv[0]), which allocates from
+     the str-heap with mark byte 0xfe, and nothing marks it. The first
+     sp_str_sweep reaps it, so every later `$0` read is a use-after-free. It
+     survives today only because the freed block usually is not reused; under
+     SPINEL_GC_STRESS=1, or under any codegen perturbation that shifts the
+     allocation order (-fno-unroll-loops alone is enough), it does not. The
+     initial value is the rodata SPL("") literal, which sp_mark_string ignores
+     because its marker byte is not 0xfe. */
+  sp_mark_string(sp_program_name);
   SP_GLB_PHASE("globals:exceptions");
   sp_mark_in_flight_exceptions();
   SP_GLB_PHASE("globals:proc-homes");
@@ -4410,7 +4420,7 @@ static void sp_StrPolyHash_delete(sp_StrPolyHash*h,const char*k){ sp_gc_wb((void
 /* Hash#merge for str_poly_hash. Same shape as the
    StrIntHash / SymPolyHash siblings -- copy recv's entries into a
    fresh hash, then overlay other's. */
-static sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b){sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_StrPolyHash_set(r,a->order[i],sp_StrPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_StrPolyHash_set(r,b->order[i],sp_StrPolyHash_get(b,b->order[i]));return r;}
+static sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_StrPolyHash_set(r,a->order[i],sp_StrPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_StrPolyHash_set(r,b->order[i],sp_StrPolyHash_get(b,b->order[i]));return r;}
 static sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=h->default_v;for(mrb_int i=0;i<h->len;i++)sp_StrPolyHash_set(r,h->order[i],sp_StrPolyHash_get(h,h->order[i]));return r;}
 static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if(!h)return h;for(mrb_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(mrb_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
 static void sp_StrPolyHash_clear(sp_StrPolyHash*h){ sp_gc_wb((void*)h);if(!h)return;for(mrb_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;}
@@ -4482,7 +4492,7 @@ static sp_IntArray*sp_SymPolyHash_keys(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_IntArr
 static sp_PolyArray*sp_SymPolyHash_values(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(mrb_int i=0;i<h->len;i++)sp_PolyArray_push(a,sp_SymPolyHash_get(h,h->order[i]));return a;}
 static mrb_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(mrb_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
 static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(mrb_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
-static sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b){sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_SymPolyHash_get(b,b->order[i]));return r;}
+static sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=a->default_v;for(mrb_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_SymPolyHash_get(b,b->order[i]));return r;}
 static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(mrb_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
 /* OpenStruct: a dynamic-member object (#3135). Members are named at run time
    (JSON keys, CLI args, ...) so they cannot be static C fields; the backing is
