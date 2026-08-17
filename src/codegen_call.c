@@ -4562,6 +4562,40 @@ static int kwh_named_kwarg_fills(Compiler *c, Scope *m, int kwh) {
     if (kn && callee_param_is_declared_kwarg(c, m, kn)) n++;
   }
   return n;
+  }
+
+/* A builtin pre-arm in front of the poly method dispatch answers with a value
+   the RUNTIME shapes (sp_poly_first / sp_poly_sum / sp_poly_enum_proc all hand
+   back a boxed sp_RbVal).  The slot it lands in, though, is typed from whatever
+   arm analyze let win -- and when a user class owns the name, that is usually
+   the USER method's return type.  Unboxing a boxed Integer with `.v.s` because
+   the slot happens to be a `const char *` is a type confusion, not a
+   conversion: `class U; def first; "user"; end; end` + a genuine Array receiver
+   SEGFAULTED (E045 census, mislabelled "wrong answer" there because the crash
+   ate the buffered stdout; E048 measured rc=139).
+
+   analyze already records what the builtin surface alone would answer
+   (c->poly_builtin_ty[id], #3459).  Emit the pre-arm only when that answer can
+   actually live in the slot -- a poly slot holds anything, and an exact type
+   match is fine.  Otherwise decline the arm: the value falls into the switch
+   below and leaves through its default, which is the same loud NoMethodError
+   the other 32 members of this family already give.  Loud beats memory-unsafe;
+   making the arm ANSWER correctly needs the slot widened to poly, which is a
+   separate (and much wider) change -- see E048 for the line. */
+static int poly_unbox_reads_word(TyKind t) {
+  /* emit_unbox_text lowers these to a read of the boxed payload word
+     (.v.i / .v.f / .v.b).  A mis-tagged box then yields a garbage number --
+     wrong, but it never dereferences.  Every other slot type unboxes through a
+     pointer cast or a struct dereference, which turns a mis-tagged box into a
+     wild load. */
+  return t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_SYMBOL;
+}
+static int poly_builtin_arm_fits(Compiler *c, int id, TyKind ret) {
+  if (ret == TY_POLY) return 1;                 /* a poly slot holds anything */
+  TyKind bt = (c->poly_builtin_ty && id < c->node_cap) ? c->poly_builtin_ty[id] : TY_UNKNOWN;
+  if (bt != TY_UNKNOWN && bt == ret) return 1;  /* the builtin answers exactly this slot */
+  if (poly_unbox_reads_word(ret)) return 1;     /* payload read: cannot dereference */
+  return 0;                                     /* pointer-backed slot: would be a wild load */
 }
 
 static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
@@ -4809,11 +4843,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           if (sp_streq(name, "min"))
             snprintf(tg + tn, sizeof tg - (size_t)tn,
                      " || _t%d.cls_id == SP_BUILTIN_TIME", tv);
+          if (poly_builtin_arm_fits(c, id, ret)) {
           buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) ||"
                         " sp_poly_is_hash_kind(_t%d.cls_id)%s)) { _t%d = ", tv, tv, tv, tg, tr);
           if (ret == TY_POLY) buf_puts(b, cex);
           else emit_unbox_text(c, ret, cex, b);
           buf_puts(b, "; }\nelse ");
+          }
         }
       }
       /* A zero-arg String transform whose name a user class ALSO owns. The
@@ -4939,10 +4975,12 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (pen_op) {
           char pcall[160];
           snprintf(pcall, sizeof pcall, "sp_poly_enum_proc(_t%d, %s, _t%d)", tv, pen_op, blk_tmp0);
+          if (poly_builtin_arm_fits(c, id, ret)) {
           buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id))) { _t%d = ", tv, tv, tv, tr);
           if (ret == TY_POLY) buf_puts(b, pcall);
           else emit_unbox_text(c, ret, pcall, b);
           buf_puts(b, "; }\nelse ");
+          }
         } }
       int cls0_d = -1, cls0_rd = -1;
       int cls0_mi = c->nclasses > 0 ? comp_method_in_chain(c, 0, name, &cls0_d) : -1;
@@ -27840,6 +27878,15 @@ else {
   }
   if (sp_streq(name, "hash") && recv >= 0 && argc == 0 &&
       rt != TY_MATCHDATA &&   /* MatchData has a dedicated content hash (#3014) */
+      /* The shortcut answers an mrb_int.  For an OBJECT receiver it already
+         declines when a user #hash exists, but a POLY receiver made a user
+         class owning the name invisible: analyze then typed the node from that
+         user method (a String, say) and this int was cast straight into the
+         slot -- `(const char *)sp_rbval_hash_key(...)`, which fputs then
+         dereferenced.  rc=139 (E045 census c025, E048).  Only take the
+         shortcut when the slot can actually hold an Integer. */
+      (comp_ntype(c, id) == TY_INT || comp_ntype(c, id) == TY_POLY ||
+       comp_ntype(c, id) == TY_UNKNOWN) &&
       (!ty_is_object(rt) ||
        (comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&
         /* structs keep their dedicated value-based hash arm below */

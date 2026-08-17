@@ -1,0 +1,8 @@
+user-first
+first: NoMethodError
+user-sum
+sum: NoMethodError
+user-max
+max: NoMethodError
+user-hash
+hash: NoMethodError
