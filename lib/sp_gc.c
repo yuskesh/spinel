@@ -14,6 +14,14 @@
 #endif
 #include <unistd.h>
 #include "sp_gc.h"
+#if defined(SP_REQUEST_ARENA)
+/* sp_gc.h routes callers' sp_gc_mark* to nothing; the definitions below are the
+   real ones and must keep their own names (E064, Patch 6). They are unreachable
+   in this build -- sp_gc_collect returns before any of them runs. */
+#undef sp_gc_mark
+#undef sp_gc_mark_all
+#undef sp_gc_mark_drain
+#endif
 #include <signal.h>
 #include <unistd.h>
 #include "sp_marshal.h"   /* sp_marshal_vt -- the instance lives here (always linked) */
@@ -378,6 +386,20 @@ static SP_NOINLINE void sp_gc_verify_gen_run(void) {
 }
 
 void sp_gc_collect(void){
+#if defined(SP_REQUEST_ARENA)
+  /* The single point at which the whole collector is switched off (E064,
+     Patch 6). Every other entry point -- sp_gc_collect_retune,
+     sp_str_collect_retune, sp_gc_collect_retune_all, sp_gc_collect_request
+     (GC.start), sp_stw_collect -- funnels through here, and the string sweep
+     runs from inside it, so one return covers the mark, the object sweep, the
+     string sweep, every finalizer and every recycle hook.
+
+     This is what makes the arena SAFE rather than merely fast: an allocation
+     that still reaches the old heap (a weak-linked sp_gc_alloc_nogc from
+     lib/sp_bigint.c, a package's own call) is simply never reclaimed, which is
+     the arena's contract, instead of being swept with an empty root set. */
+  return;
+#endif
   size_t ob_before = sp_gc_bytes;
   int full=(sp_gc_cycle%sp_gc_full_interval==0);sp_gc_cycle++;
   if(full)sp_gc_full_runs++;
