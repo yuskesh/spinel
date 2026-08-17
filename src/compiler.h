@@ -745,6 +745,12 @@ static inline int comp_ty_value_obj(const Compiler *c, TyKind t) {
 const char *poly_enum_op_for(const char *name);
 int poly_container_read_p(const char *name);
 
+/* The names whose poly method dispatch can grow an arm that serves a BUILTIN
+   receiver once the result slot is widened to poly.  analyze's widen consults
+   this so it only boxes nodes whose switch will really gain such an arm; see
+   the definition for why the answer has to be a name list. */
+int poly_builtin_arm_name_p(const char *name);
+
 /* 1 for a Class-valued receiver whose class is only known at run time (a
    variable, or a call returning a class); 0 for a constant or accessor
    receiver, which resolve statically (#3415). */

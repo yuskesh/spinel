@@ -1252,6 +1252,34 @@ int poly_container_read_p(const char *name) {
   return 0;
 }
 
+/* Widening a poly call's result slot only buys something when the switch the
+   dispatch emits actually grows an arm for a builtin receiver -- otherwise the
+   box is pure cost.  The arms that a poly result slot ENABLES are exactly the
+   container reads above (emit_poly_method_dispatch re-enters the ordinary
+   emission for them, gated on poly_container_read_p and a poly slot) plus
+   #to_a (its own is_poly_to_a branch, likewise gated on a poly slot).
+   Every other builtin arm in that switch is emitted regardless of the slot's
+   width -- the length-like, empty?, predicate, clear, String-transform, split,
+   OpenStruct and rewind arms all fit a narrow slot or decline on their own --
+   so widening for those names changes nothing but the boxing.
+
+   Why a name list and not a call into codegen: the arm gates live inside
+   emit_poly_method_dispatch, which runs AFTER analyze and whose own gate reads
+   the very type analyze is computing (`ret == TY_POLY`), so asking codegen
+   directly is circular.  Two other routes were rejected -- a second
+   analyze/codegen pass (codegen carries generation state: g_tmp, g_pd_skip,
+   the arg-override stack) and lifting the whole gate expression out of the
+   emitter (it also depends on the re-entered emission's TEXT, line "an
+   emission that fell through to the raise token adds nothing", which no
+   predicate can answer).  So this is a deliberate over-approximation of the
+   arm: every node it admits either grows an arm or falls back to exactly the
+   pre-widen behaviour, and every node it refuses keeps the pre-widen
+   behaviour by construction.  It is one list read by both sides, next to
+   poly_container_read_p, rather than a copy in analyze.  (spinel-llvm E065.) */
+int poly_builtin_arm_name_p(const char *name) {
+  return poly_container_read_p(name) || sp_streq(name, "to_a");
+}
+
 /* A Class-valued receiver that carries its class only at run time: a variable,
    or a call whose result is a class (`Job.set(1).run(2)` -- ActiveJob's chained
    `set`). Excludes a constant receiver and an accessor call, which resolve
