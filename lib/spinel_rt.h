@@ -2001,6 +2001,31 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
 static inline mrb_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;
 }
+/* IO write of a BOXED operand. The tag is the exact answer to the one question
+   the two write entries disagree about -- "does this pointer carry a marker
+   byte?" -- so a String (or a shared-mutable String handle, whose payload is
+   0xfd-marked) writes its own header length, embedded NUL and all, and
+   everything else is stringified and sized with strlen, because sp_poly_to_s
+   can answer an unmarked static class/symbol name that sp_str_byte_len would
+   read out of bounds at s[-1].
+   Without this entry the codegen had to choose between the two at COMPILE
+   time from the inferred type, so a String whose type had widened to TY_POLY
+   (`R2.get` -> `String | nil`) took the strlen arm and was silently truncated
+   at its first NUL. Same dispatch the IO arm of sp_poly_binop `<<` already
+   makes; this just gives the write/syswrite/<< call sites one name for it. */
+static inline mrb_int sp_File_write_val(sp_File *f, sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_File_write_bin(f, v.v.s);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    return sp_File_write_bin(f, sp_String_cstr((sp_String *)v.v.p));
+  return sp_File_write(f, sp_poly_to_s(v));
+}
+/* write_nonblock's counterpart: same split, non-blocking entries. */
+static inline mrb_int sp_sock_write_nb_val(sp_File *f, sp_RbVal v, mrb_bool exc) {
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_sock_write_nb_bin(f, v.v.s, exc);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    return sp_sock_write_nb_bin(f, sp_String_cstr((sp_String *)v.v.p), exc);
+  return sp_sock_write_nb(f, sp_poly_to_s(v), exc);
+}
 typedef sp_RbVal (*sp_user_binop_fn)(const char *op, sp_RbVal a, sp_RbVal b, mrb_bool *handled);
 static sp_user_binop_fn sp_user_binop_hook = NULL;
 static sp_RbVal sp_poly_binop_bad(const char *op, sp_RbVal recv, sp_RbVal arg) {

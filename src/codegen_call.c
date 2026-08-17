@@ -23,6 +23,15 @@ static void emit_unbox_poly_ret(Compiler *c, TyKind slot, const char *expr, Buf 
   emit_unbox_text(c, slot, expr, b);
 }
 
+/* Can a value of this static type BE a String at run time? Only the two top
+   types can: every other TyKind names a representation that is not a marked
+   byte string. The IO write family emits a strlen-sized call for a
+   non-TY_STRING operand (sp_poly_to_s can hand back an unmarked static
+   class/symbol name), which silently truncated a binary String whose inferred
+   type had widened -- so those sites ask this instead, and route a maybe-String
+   through the boxed entry that decides on the run-time tag. */
+static int ty_may_be_string(TyKind t) { return t == TY_POLY || t == TY_UNKNOWN; }
+
 static int parse_named_format(const char *fmt, Buf *rew, const char **names,
                               int *name_len, int maxn) {
   int n = 0, has_named = 0, has_positional = 0;
@@ -13460,17 +13469,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
         /* String operand -> the _bin entry (header length, so an embedded NUL
            is written); anything else reaches sp_poly_to_s, whose static
            class/symbol names carry no marker byte. See sp_File_write above. */
-        int skw = comp_ntype(c, argv[0]) == TY_STRING;
-        const char *wfn = skw ? "sp_sock_write_nb_bin" : "sp_sock_write_nb";
+        TyKind wtn = comp_ntype(c, argv[0]);
+        int skw = wtn == TY_STRING;
+        int mbs = ty_may_be_string(wtn);   /* boxed entry: decide on the tag */
+        const char *wfn = mbs ? "sp_sock_write_nb_val"
+                              : skw ? "sp_sock_write_nb_bin" : "sp_sock_write_nb";
         if (no_exc8) {
           int tw = ++g_tmp;
           buf_printf(b, "({ mrb_int _t%d = %s(%s, ", tw, wfn, r);
-          emit_str_expr(c, argv[0], b);
+          if (mbs) emit_boxed(c, argv[0], b); else emit_str_expr(c, argv[0], b);
           buf_printf(b, ", 0); _t%d == SP_INT_NIL"
                         " ? sp_box_sym(sp_sym_intern(\"wait_writable\")) : sp_box_int(_t%d); })", tw, tw);
         }
         else {
-          buf_printf(b, "%s(%s, ", wfn, r); emit_str_expr(c, argv[0], b);
+          buf_printf(b, "%s(%s, ", wfn, r);
+          if (mbs) emit_boxed(c, argv[0], b); else emit_str_expr(c, argv[0], b);
           buf_puts(b, ", 1)");
         }
       }
@@ -13615,7 +13628,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
          a static class/symbol name with no marker byte, which _bin would read
          out of bounds at s[-1]. */
       if (argc == 1) {
-        int sk = comp_ntype(c, argv[0]) == TY_STRING;
+        TyKind wt = comp_ntype(c, argv[0]);
+        int sk = wt == TY_STRING;
+        /* a maybe-String operand cannot be classified here: dispatch on the
+           run-time tag instead of truncating at the first NUL */
+        if (ty_may_be_string(wt)) {
+          buf_printf(b, "sp_File_write_val(%s, ", r); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+          free(rb.p); return;
+        }
         buf_printf(b, "%s(%s, ", sk ? "sp_File_write_bin" : "sp_File_write", r);
         if (sk) emit_expr(c, argv[0], b);
         else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
@@ -13625,7 +13645,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
         int tw = ++g_tmp;
         buf_printf(b, "({ mrb_int _t%d = 0;", tw);
         for (int k = 0; k < argc; k++) {
-          int sk = comp_ntype(c, argv[k]) == TY_STRING;
+          TyKind wt = comp_ntype(c, argv[k]);
+          int sk = wt == TY_STRING;
+          if (ty_may_be_string(wt)) {
+            buf_printf(b, " _t%d += sp_File_write_val(%s, ", tw, r);
+            emit_boxed(c, argv[k], b); buf_puts(b, ");");
+            continue;
+          }
           buf_printf(b, " _t%d += %s(%s, ", tw, sk ? "sp_File_write_bin" : "sp_File_write", r);
           if (sk) emit_expr(c, argv[k], b);
           else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[k], b); buf_puts(b, ")"); }
@@ -13640,7 +13666,14 @@ void emit_call(Compiler *c, int id, Buf *b) {
       /* IO#<< writes the (stringified) operand and returns self, so it chains
          (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
       int t = ++g_tmp;
-      int sk = comp_ntype(c, argv[0]) == TY_STRING;
+      TyKind lt2 = comp_ntype(c, argv[0]);
+      int sk = lt2 == TY_STRING;
+      if (ty_may_be_string(lt2)) {
+        buf_printf(b, "({ sp_File *_t%d = %s; sp_File_write_val(_t%d, ", t, r, t);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "); _t%d; })", t);
+        free(rb.p); return;
+      }
       buf_printf(b, "({ sp_File *_t%d = %s; %s(_t%d, ", t, r,
                  sk ? "sp_File_write_bin" : "sp_File_write", t);
       if (sk) emit_expr(c, argv[0], b);
@@ -13826,11 +13859,18 @@ void emit_call(Compiler *c, int id, Buf *b) {
       if (sp_streq(name, "write") && argc >= 1) {
         /* Same String/non-String split as the TY_IO arm: a String knows its own
            byte count, a stringified value may be an unmarked static name. */
-        int sk2 = comp_ntype(c, argv[0]) == TY_STRING;
+        TyKind wt2 = comp_ntype(c, argv[0]);
+        int sk2 = wt2 == TY_STRING;
+        if (ty_may_be_string(wt2)) {
+          buf_printf(b, "sp_File_write_val(_t%d, ", tio2);
+          emit_boxed(c, argv[0], b); buf_puts(b, "); })");
+        }
+        else {
         buf_printf(b, "%s(_t%d, ", sk2 ? "sp_File_write_bin" : "sp_File_write", tio2);
         if (sk2) emit_expr(c, argv[0], b);
         else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
         buf_puts(b, "); })");
+        }
       }
       else if (sp_streq(name, "puts") || sp_streq(name, "print")) {
         /* sp_File_puts appends a newline per argument unless the argument
