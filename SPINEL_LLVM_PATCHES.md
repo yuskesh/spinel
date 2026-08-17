@@ -1310,3 +1310,99 @@ B10 (+50) とは**別に**数える。
   ただし byte-identity 規律は原理的に満たせないので、
   **「挙動同一 + 差分の構造分類 + 性能ゲート」**という新しい検証クラスが要る (E049 §6)。
 - **upstream**: `docs/upstream_candidates.md` **S18**。PR 適性 **高**、ゲート不要。報告は hold 継続。
+
+---
+
+# バグ修正 batch 7 (B13) — `IO#write` 族が推論型 `TY_POLY` の String を NUL で切る (spinel-llvm E059)
+
+**wrong-code、silent。** B10 / B11 (S18 族) とは別の根因で、
+**「実行時のタグでしか決められない判断を、コンパイル時の推論型で決めていた」**
+という一点に尽きる。壊れていないプログラムの生成 C は 1 バイトも動かない
+(**影響半径 0 / 2988**)。
+
+## 一覧表への追加行
+
+| # | 名前 | 層 | ファイル | ± 行 | Edoc | upstream 台帳 |
+|---|---|---|---|---|---|---|
+| **B13** | `IO#write` 族が推論型 `TY_POLY` の String を strlen で測って NUL で切る | codegen + runtime | `src/codegen_call.c`, `lib/spinel_rt.h` | **+72 / −8** | [E059](../docs/experiments/E059_batch7_groundwork.md) | **S23** |
+
+**ゲート無し = 常時有効。** 回帰テストを 1 本追加する
+(`test/io_write_poly_binary.rb` + `.rb.expected`)。
+恒久 footprint は Patch 群 (+90) / B1〜B7 (+473/−21) / B8〜B9 (+174/−3) /
+B10 (+50) / B11 (+47) / B12 (+56/−1) とは**別に**数える。
+
+> **B12 は欠番ではない** — 同じ出荷 (E068) の batch 6 として先に載っている。
+> 番号は E049/E050 の起票順、出荷順は E068 の適用順 (B13 → B12) である。
+
+---
+
+### B13: `IO#write` 族が poly の String を NUL で切る
+
+- **根因 (1 行)**: `src/codegen_call.c` の `IO#write` / `#syswrite` / `#<<` /
+  `#write_nonblock` / `File#write` は、**引数の推論型が `TY_STRING` かどうか**で
+  2 つのランタイム入口を**コンパイル時に**選ぶ:
+
+  ```c
+  int sk = comp_ntype(c, argv[0]) == TY_STRING;
+  buf_printf(b, "%s(%s, ", sk ? "sp_File_write_bin" : "sp_File_write", r);
+  ```
+
+  `sp_File_write_bin` はヘッダ長 (`sp_str_byte_len`) で、`sp_File_write` は
+  `strlen` で測る。推論型が `TY_POLY` (`String | nil` 等) だと `sk == 0` に落ち、
+  生成 C は `sp_File_write(io, sp_poly_to_s(v))` になる —— **実行時には
+  String そのものが入っているのに strlen で測られ、最初の NUL で切られる。**
+  例外も警告も出ず、native でも wasm でも同じに起きる。
+- **なぜ `TY_STRING` でない側が `strlen` 入口なのか (元の設計意図)**:
+  `sp_poly_to_s` は**マーカーバイトを持たない静的なクラス名・シンボル名**を
+  返しうる。`_bin` 入口は `s[-1]` を読むので、それに渡すと rodata の範囲外読みになる。
+  つまり**どちらの入口も単独では正しくない**。判断材料 (「このポインタは
+  マーカー付きか」) は**実行時のタグにしかない**。
+- **再現 (無改造 `7d8a6408`)**:
+
+  ```ruby
+  def maybe(c) = c ? nil : "AB" + 0.chr + "CD" + 255.chr   # String | nil = TY_POLY
+  v = maybe(false)
+  f = File.open(p, "wb"); f.write(v); f.close
+  File.binread(p).bytesize      # => 2   (CRuby: 6)
+  ```
+
+  E055 §10(b) は 67 バイトの PNG が 8 バイトで返るところでこれを踏み、
+  `.to_s` を挟んで回避していた。
+- **改変**: **codegen `+47 / −8`、runtime `+25 / −0`**。
+  - `lib/spinel_rt.h`: **箱を受け取る入口**を 2 本足す。
+    `sp_File_write_val(sp_File *, sp_RbVal)` は `v.tag == SP_TAG_STR`
+    (と `SP_BUILTIN_STRBUF` — payload は 0xfd マーカー付き) なら `_bin` へ、
+    それ以外は `sp_poly_to_s` + `strlen` 入口へ。
+    `sp_sock_write_nb_val` は `write_nonblock` 用の同型。
+    **判断材料をコンパイル時の推論型から実行時のタグに移しただけ**で、
+    ディスパッチの形は `sp_poly_binop` の `<<` の IO アーム
+    (`lib/spinel_rt.h:2922`) が既に書いているものと同じ。
+  - `src/codegen_call.c`: `ty_may_be_string(TyKind) = (t == TY_POLY || t == TY_UNKNOWN)`
+    を足し、**実行時に String になりうる型のときだけ**箱入口を出す。
+    5 emit site (write argc==1 / argc>=2 / `<<` / poly-IO レシーバの write /
+    write_nonblock)。`TY_STRING` 側も他の具体型側も**1 バイトも変えない**。
+- **検証** (E059 で計測、E068 の統合ツリーで再測):
+  - **影響半径 0 / 2988。** `test/*.rb` の生成 C が**全件バイト一致**
+    (E068 で pristine `7d8a6408` に対し再確認、`changed=0`)。
+    **壊れていないプログラムの生成 C は動かない。**
+  - **ランタイム `.o` は 1 本も変わらない** (`lib/spinel_rt.h` に足した 2 関数は
+    どの `lib/*.c` からも呼ばれない)。変わるオブジェクトは
+    `build/csrc/codegen_call.o` の 1 本だけ (E068 で全 110 `.o` を照合)。
+  - **`__TEXT` バイト一致 26 / 26** (`doom/bin/doom.rb`、`doom/bin/bench_tic.rb`、
+    `test/str_*.rb` 24 本)。
+    (macOS のバイナリは LC_UUID があるので同一ツリー 2 回でも全体としては
+    一致しない。`otool -tV` の `__TEXT` を比べている。)
+  - **番人は bite-proof**: `7d8a6408` では `2 / 4 / 2 / 2 / … / [65, 66]`、
+    修正後は `6 / 12 / 6 / 6 / … / [65, 66, 0, 67, 68, 255]` = **CRuby 3.4.1 と一致**。
+  - **CRuby 差動 12 sink × 2 型 = 24 本**: poly オペランドの
+    `write` / `write(a,b)` / `syswrite` / `<<` / `File#write` の **5 本が
+    DIVERGE → MATCH**。`TY_STRING` オペランドは 24 本すべて不変。
+- **同族で直していないもの (honest boundary)**:
+  - **`IO#print` / `IO#puts` / `Kernel#print` は型に関係なく切れる** —
+    `sp_File_print` / `sp_File_puts` が `strlen` しか持たないため、
+    **`TY_STRING` の String でも切れる**。B13 の対象外 (別根因)。
+    → `docs/upstream_candidates.md` の新規行 **S26**。
+  - **`[$stdout][0].write(v)` は 0 バイト書いて `NoMethodError`** になる。
+    poly ディスパッチが IO のアームを持たない S18 族の残渣。→ **S27**。
+- **upstream**: `docs/upstream_candidates.md` **S23**。PR 適性 **高**、ゲート不要。
+  報告は hold 継続。
