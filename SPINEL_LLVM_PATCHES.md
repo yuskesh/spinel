@@ -1222,3 +1222,91 @@ builtin レシーバがその答えを失う」**。codegen 自身が `emit_poly
   **S12 と同族**なので、報告するなら
   「ディスパッチの case 一覧が手で維持されていて builtin が漏れる」という
   1 本の systemic report にまとめるのが正しい。報告は hold 継続。
+
+---
+
+# バグ修正 batch 5 (B11) — poly ディスパッチのビルトイン pre-arm の型混同 (spinel-llvm E045/E048)
+
+**B10 (batch 4) と同じ S18 族だが、別の根因である。** B10 は「default アームに
+ビルトインの代弁が無い」(RAISE) を Exception の 4 属性について閉じた。
+B11 が閉じるのは **「ビルトイン pre-arm が実行時に箱で返る値を、
+ユーザーアーム由来で型付けされたスロットへ非box で落とす」**という
+**メモリ非安全**な別面である。
+
+## 一覧表への追加行
+
+| # | 名前 | 層 | ファイル | ± 行 | Edoc | upstream 台帳 |
+|---|---|---|---|---|---|---|
+| **B11** | poly ディスパッチのビルトイン pre-arm がスロット型と食い違う箱を非box で落とし SIGSEGV | codegen | `src/codegen_call.c` | **+47 / −0** | [E045](../docs/experiments/E045_poly_dispatch_builtin_fallback.md) / [E048](../docs/experiments/E048_poly_dispatch_general_fix.md) | **S18** (S12 と同族) |
+
+**ゲート無し = 常時有効。** 回帰テストを 1 本追加する
+(`test/poly_builtin_arm_type_confusion.rb` + `.rb.expected`)。
+恒久 footprint は Patch 群 (+90) / B1〜B7 (+473/−21) / B8〜B9 (+174/−3) /
+B10 (+50) とは**別に**数える。
+
+---
+
+### B11: ビルトイン pre-arm の型混同 (SIGSEGV)
+
+- **根因 (1 行)**: `src/codegen_call.c` は poly メソッドディスパッチの switch の手前に
+  ビルトイン pre-arm を出す (`if (tag==OBJ && (array_kind||hash_kind)) { _tR = ...; }`)。
+  そこで呼ぶ `sp_poly_first` / `sp_poly_sum` / `sp_poly_enum_proc` は
+  **`sp_RbVal` (箱) を返す**が、`_tR` は**ユーザーメソッドの戻り型**で型付けされている。
+  スロットが `const char *` のとき `.v.s` は**箱入り Integer をポインタとして読む型混同**で、
+  最初の使用が wild load になる。`#hash` の shortcut は
+  `(const char *)sp_rbval_hash_key(...)` という**明示キャスト**なので C の型検査も素通りする。
+- **再現 (無改造 `c02ca2cf`)**:
+
+  ```ruby
+  class U
+    def first = "user-first"
+  end
+  def show_first(x)
+    puts x.first
+  end
+  show_first(U.new)
+  show_first([1, 2, 3])   # rc=139 (SIGSEGV)
+  ```
+
+  **共有ヘルパ形でなければ再現しない** — ブロック形 (`arr.each { |v| v.first }`) は
+  スロットが poly になるので**今日でも正しく動く**。この観察が
+  「一般解はスロットを poly に広げること」という E049 の設計判断の決め手になった。
+- **E045 の census の分類が間違っていたことも本バッチで判明した**:
+  E045 の「WRONG 7」は**終了コードを見ていなかった**ため、
+  **クラッシュ (stdout がバッファごと失われる) が「答えが違う」に化けていた**。
+  終了コード込みで測り直した base の内訳は
+  **OK 12 / RAISE 32 / SIGSEGV 6 / silent 2 / CERR 8**。
+  **差動ハーネスは終了コードを判定に入れること。**
+- **改変**: `src/codegen_call.c` **+47 / −0**。
+  analyze が既に記録しているビルトイン面だけの答え (`c->poly_builtin_ty[id]`, #3459) が
+  スロットに入らないなら **pre-arm を出さない**:
+  - `ret == TY_POLY` なら出す (poly スロットは何でも入る)
+  - `bt == ret` なら出す (ビルトインの答えがちょうどこの型)
+  - `ret` が **語読みのスロット** (`TY_INT` / `TY_FLOAT` / `TY_BOOL` / `TY_SYMBOL`、
+    `.v.i` / `.v.f` / `.v.b` = デリファレンスしない) なら出す
+  - それ以外 (ポインタ系スロット) は**出さない** → 値は switch の default に落ち、
+    **族の他のメンバと同じ loud な `NoMethodError`** になる
+  `#hash` の shortcut にも「スロットが Integer を持てるときだけ取る」ガードを足した。
+- **これは「正しく答えるようにする」修正ではない。**
+  **「メモリ非安全を loud な失敗に落とす」修正**である。
+  族の穴 (RAISE) は塞がらないが、**踏んだときにプロセスが壊れなくなる**。
+- **検証**:
+  - **影響半径 1 / 2987**。変わるのは `poly_attr_reader_shadows_builtin` だけで、
+    **その 1 本が危険そのもの** (`(sp_poly_max(_t10)).v.s` が `const char *` スロットに落ちる)。
+    テストは **PASS のまま** (そのテストのレシーバは常にユーザーオブジェクトなので
+    pre-arm は実行時に発火しない)。
+  - **census 遷移は 6 件だけ、すべて `SIGSEGV → RAISE`。** 他は 1 件も動かない。
+    **SIGSEGV 6 → 0。**
+  - **plain 全件 3019 pass / 0 fail / 0 error** (3018 + 新設の番人 1 本)。番人は base `c02ca2cf` で **rc=139**、修正後 rc=0。
+  - **全ゲート**: E018 (310 差動 + 14 拒否、**バイト一致**) / E033 **30** / E034 **20** /
+    E037 **44** / E038 **210** / E039 **199** / E042 **403** = **906 / 906 PASS**、
+    さらに **DOOM 側も回した** (bin/spinel が変わるため) — E044 **19 / 19**、E047 **20 / 20**。
+    **合計 945 / 945 PASS、FAIL 0。** `gates.tsv` は 8 本とも無変化
+    (E042 だけ末尾の集計コメント 1 行が増える)
+- **族の残り (未修正)**: census の **RAISE 38 / silent 2 / CERR 8**。
+  **一般解は E049 が確定した「アームの型が食い違うならノードを `TY_POLY` に広げる」**で、
+  プロトタイプは半径 16/2987・census OK 12 → 23・`sp_Set` バイト一致まで実測済み
+  ([E049](../docs/experiments/E049_ty_poly_widen_design.md)、**batch 6 候補**)。
+  ただし byte-identity 規律は原理的に満たせないので、
+  **「挙動同一 + 差分の構造分類 + 性能ゲート」**という新しい検証クラスが要る (E049 §6)。
+- **upstream**: `docs/upstream_candidates.md` **S18**。PR 適性 **高**、ゲート不要。報告は hold 継続。
