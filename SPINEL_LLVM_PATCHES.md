@@ -41,10 +41,12 @@
 |---|---|---|---|---|---|
 | 1 | `SP_UNMASKED_SETJMP` — mask-free 非局所脱出 | `lib/spinel_rt.h` | **+20 / −0** | `-DSP_UNMASKED_SETJMP` (既定 OFF) | コミット済み (aa84459c) |
 | 2 | `SP_STRLEN_DEDUP` — `s[i]` の `sp_str_length` 二重計算除去 | `lib/sp_str.c` | **+17 / −0** | `-DSP_STRLEN_DEDUP` (既定 OFF) | コミット済み (b01289c3) |
-| 4 | `SP_INT64` — `mrb_int` をポインタ幅から切り離す | `lib/sp_types.h`, `lib/sp_core.h` | **+53 / −0** | `-DSP_INT64` (既定 OFF) | 本コミット |
+| 4 | `SP_INT64` — `mrb_int` をポインタ幅から切り離す | `lib/sp_types.h`, `lib/sp_core.h` | **+53 / −0** | `-DSP_INT64` (既定 OFF) | コミット済み (2eeb5f30) |
+| 5 | `SP_TU_NO_BIGINT` — 推論駆動の bigint 部分系除去 | `lib/sp_alloc.h`, `src/codegen.c` | **+139 / −0** | `SPINEL_ELIM_BIGINT=1` (既定 OFF) | 本コミット (E062) |
 
 **現 footprint = 恒久 footprint = `lib/spinel_rt.h` (Patch 1) + `lib/sp_str.c` (Patch 2) +
-`lib/sp_types.h` / `lib/sp_core.h` (Patch 4) の 4 ファイル・計 +90 行。**
+`lib/sp_types.h` / `lib/sp_core.h` (Patch 4) + `lib/sp_alloc.h` / `src/codegen.c` (Patch 5) の
+6 ファイル・計 +229 行。**
 
 > **Patch 3 (bigint GC 会計) は意図的な欠番** — E008 の安全性分析が未ルート中間値の
 > サイレント破壊を実証したため実装中止。番号は再利用しない。
@@ -585,6 +587,211 @@
     リンクは通り実行時に値だけ壊れる。driver フラグ化が要る。
 
 - **適用日**: 2026-08-15 (E010)。**コミットしていない — working tree のみ、既定 OFF。**
+
+---
+
+### Patch 5: `SP_TU_NO_BIGINT` — Bignum を作れないと証明済みのプログラムから bigint 部分系を落とす
+
+- **目的**: Spinel は全プログラム型推論を持つので、`TY_BIGINT` がどこにも推論されず、
+  `--int-overflow` が `promote` でなく、`Marshal` も使わないプログラムは
+  **Bignum を作れないことが既に証明されている**。にもかかわらず `lib/sp_bigint.o`
+  (mpz/mpn/`udiv`/Toom-3) と `lib/sp_cold.c` の `sp_brat_*` が丸ごとリンクされる。
+  取り分は **wasm32 で 51.9 KB (小さいプログラムの 28.8%)**、**native で 35.8 KB (21.6%)**、
+  実アプリ (mvc-blog) でも **wasm 54.1 KB / gzip 19.6 KB**。
+- **対応 Edoc**: [E062](../docs/experiments/E062_size_reduction.md)
+  (前段: [E025](../docs/experiments/E025_bigint_reachability.md) が保持辺を全数同定し、
+  ヘッダ半分を実証。**codegen 半分 (`g_uses_bigint` の算出) が未実装だったのを本パッチが埋めた**)。
+  出荷は [E068](../docs/experiments/E068_unified_ship.md)。
+
+**Patch 5 は `src/` に触る最初のパッチである。** Patch 1/2/4 は「codegen に触れば
+additive でなくなる (生成 C が変わる = バイト一致ゲートを自力で壊す)」という理由で
+`lib/` に閉じていたが、Patch 5 は**生成 C を変えることが目的**なので、
+バイト一致ゲートの意味が 1 段変わる — 「フラグ未設定時に」生成 C がバイト一致する、
+という条件付きの主張になる (実測は下記、全 2,989 本)。
+
+- **改変箇所 (2 ファイル・+139 行・追加のみ)**:
+
+  **(a) `lib/sp_alloc.h`** — `sp_BigRational` の typedef 直後に `#ifdef SP_TU_NO_BIGINT`
+  ブロックを 1 個。+59 行。E025 の `gate_sp_alloc_h.patch` と同一内容
+  (bigint API 40 本を内部リンケージの raising stub に解決する。
+  C11 6.2.2p4/p5 により後続の裸の再宣言が内部リンケージを継承する)。
+
+  **(b) `src/codegen.c`** — +80 行。`scan_prologue_features` の直後に
+  `static int ty_forces_bigint(TyKind)` と `static int program_uses_bigint(Compiler *c)` を
+  新設 (+72 行、うち 40 行はコメント) し、
+  既存の `SP_TU_NO_POLY_RENDER` emit の直後で呼ぶ (+8 行):
+
+  ```c
+  {
+    const char *elim_bigint = getenv("SPINEL_ELIM_BIGINT");
+    if (elim_bigint && *elim_bigint == '1' && !program_uses_bigint(c))
+      buf_puts(&b, "#define SP_TU_NO_BIGINT 1\n");
+  }
+  ```
+
+- **`program_uses_bigint` の定義と、なぜそれで足りるか**:
+
+  ```
+  uses_bigint =  g_promote_mode                      /* (3) */
+              || g_uses_marshal                      /* (4) */
+              || ∃ ntype[i] / scope.ret / local / ivar ∈ {TY_BIGINT, TY_RATIONAL}
+                                                     /* (1)(2)(5) */
+              || ∃ IntegerNode に "bigval" 属性        /* (1) 構文側の保険 */
+              || ∃ RationalNode                       /* (5) 構文側の保険 */
+              || ∃ Rational / to_r / rationalize / quo という名前         /* (5) 同 */
+  ```
+
+  Bignum が生まれうる経路は 5 つしかない (E025 §1 の全数同定 + **E062 が見つけた 1 本**):
+
+  1. **int64 に入らない整数リテラル** — ノードが `bigval` 属性を持ち `TY_BIGINT` になる
+     (`src/codegen_expr.c:624` の `sp_bigint_new_str`)。
+  2. **既に Bignum であるものへの演算** — codegen の bigint emit site
+     (~20 箇所) は**すべて `comp_ntype(...) == TY_BIGINT` にゲートされている**。
+     `comp_ntype` は `c->ntype[]` を読む = **本スキャンが読むのと同じ配列**なので、
+     スキャンと emitter は原理的に食い違えない。`sp_bigint_rand` も同ゲート。
+  3. **`--int-overflow=promote`** — 任意の整数演算が昇格しうる。`raise` / `wrap` には
+     昇格経路が無く、`spinel_rt.h` の PROMOTE アームは
+     `#ifdef SP_INT_OVERFLOW_MODE_PROMOTE` で不在。
+  4. **`Marshal.load`** — `lib/sp_marshal.c:332` が**ランタイム TU の中で**バイト列から
+     Bignum を作る。TU ローカルの static stub はこの TU を shadow しないので、
+     `TY_BIGINT` が 1 つも無くてもフラグを立てなければならない。既存の `g_uses_marshal`
+     がそのまま条件になる。
+  5. **boxed な `Rational`** — **E025 の辺の目録が取りこぼしていた 1 本**。
+     `sp_poly_cmp` (`spinel_rt.h:2421`) の最初の分岐は
+     `sp_poly_is_brat(a) || sp_poly_is_brat(b) || sp_poly_is_rational(a) || sp_poly_is_rational(b)`
+     で、**Rational でも** `sp_brat_cmp_poly` → `sp_poly_to_brat` に落ちる。
+     そして `sp_poly_to_brat` (`:1952-1957`) は
+     **素の `sp_Rational` の int64 な num/den を `sp_bigint_new_int` で Bignum にする**。
+     つまり **Bignum がプログラムのどこにも無くても、Rational が poly 比較に届けば
+     bigint API に届く**。E025 の `edges.tsv` はこの辺を
+     「`sp_poly_eq` の `case SP_TAG_BIGINT:` アーム経由」と分類していたが、
+     実際には `sp_poly_cmp` の**Rational アーム**である。
+     実測: この条件が無いと `test/rational_step.rb` と
+     `test/rational_eq_poly_operand.rb` がゲート ON で `RuntimeError` を上げる (E062 §3b)。
+
+  **(1) と (5) を構文側でも見る理由**は E025 の Honest boundary が名指しした穴 —
+  `TY_BIGINT` が `TY_POLY` へ widening されるとスロットの最終型から `TY_BIGINT` が
+  消えうる — を塞ぐため。リテラルの `bigval` 属性は widening で消えない。
+
+  > **⚠ 罠: `-include-pch` はこのゲートを黙って無効化する。**
+  > `spinel_rt.h` を PCH に焼いてから `-include-pch` で流し込むと、
+  > 生成 C の `#define SP_TU_NO_BIGINT 1` は**すでに構文解析済みのヘッダ AST に届かない**。
+  > `vendor/spinel` の `Makefile` はテストをまさにその形でビルドする
+  > (`Makefile:811-819`、`PCH_PLAIN` / `PCH_NOPOLY` の 2 変種を `head -2` で選ぶ)。
+  > 実測 (`def f;1;end; puts f`、native): **`-include-pch` あり 165,688 B ・
+  > `sp_bigint_to_s` がリンクされたまま / なし 129,848 B ・シンボル消滅**。
+  > したがって **`make test` はそのままではゲートを 1 度も実行しない**。
+  > 検証時は `PCH_USE_PLAIN= PCH_USE_NOPOLY=` を渡すこと。
+  > **`bin/spinel app.rb -o app` の本番経路と `tools/wasm/spinel-wasm` は PCH を使わない**ので
+  > 実利用には影響しない。upstream に出すなら
+  > 第 3 の PCH 変種 (`nobigint`) を足すか、`head -2` のセレクタを拡張するのが筋。
+
+  逆に、`String#to_i` / `Integer("…")` / `**` / `<<` の**実行時**経路は Bignum を作らない —
+  `sp_format` / `sp_str` / `sp_core` の数値パースは bigint を 1 本も参照せず (E025 §1)、
+  `**` と `<<` は raise モードで `sp_int_pow` / `sp_int_shl_ck` が `RangeError` を上げる。
+
+- **境界**:
+
+  > **`raise` / `wrap` モードでは意味論の差分ゼロ。** 昇格経路が無いので、
+  > `TY_BIGINT` がどこにも無ければ Bignum は本当に作れない。
+  >
+  > **`promote` モードではフラグが立たない** (`g_promote_mode` が無条件に 1 を返す)。
+  > 60 本サンプルで確認 (すべて NOGATE)。
+  >
+  > **証明が間違っていたときの failure mode は raise であって誤答ではない。**
+  > `-DSP_TU_NO_BIGINT` を `puts 2 ** 100` に**強制**すると
+  > `internal: a Bignum reached a translation unit compiled with SP_TU_NO_BIGINT
+  > (whole-program inference proved none exists) (RuntimeError)` で exit 1。
+  > E010/E012 が確立した「観測される答えを持つものは raise」と同じ形。
+  >
+  > **ヘッダ側の `sp_alloc.h` shadowing は C11 6.2.2p4/p5 に依存する。**
+  > clang 21/22 で警告なしに通ることを確認済み。gcc その他は未検証 (E025 から継承)。
+
+- **有効化 (make の knob)**:
+
+  ```bash
+  # 単体バイナリ: 環境変数を spinel に渡すだけ。ランタイムアーカイブは無改造で可
+  # (stub はヘッダに居るので生成 TU にしか要らない)
+  SPINEL_ELIM_BIGINT=1 bin/spinel app.rb -o app
+
+  # wasm (tools/wasm/spinel-wasm の --elim-bigint が上と同じことをする)
+  tools/wasm/spinel-wasm app.rb -o app.wasm --elim-bigint
+
+  # スイート -- PCH を必ず切ること (上の罠)
+  SPINEL_ELIM_BIGINT=1 make -k test -j6 PCH_USE_PLAIN= PCH_USE_NOPOLY=
+  ```
+
+  > **Patch 1/2/4 との違い**: Patch 4 は「生成 TU とアーカイブの両方に届かないと
+  > ABI が静かに割れる」最も危険なフラグだったが、Patch 5 は**生成 TU にしか効かない**
+  > (stub は `spinel_rt.h` 経由で取り込まれる static)。
+  > アーカイブ側に渡し忘れても壊れない — 渡す先が無い。
+
+- **挙動差分**: 未設定で完全に既存挙動 (**生成 C が全 2,989 本でバイト一致**、下記)。
+  設定時のみ、Bignum を作れないと証明された TU が `#define SP_TU_NO_BIGINT 1` を出す。
+
+- **検証 (E062 = 2026-08-17、E068 = 統合ツリーでの再測。Apple M1 Max / macOS 26.6.1 /
+  Apple clang / llvm@22 + wasi-libc)**:
+
+  | ゲート | 結果 |
+  |---|---|
+  | **`spinel -c` の生成 C、フラグ未設定、`test/*.rb` 全数** | **E068 統合ツリーで 2,989 / 2,989 バイト一致** (直前コミット B12 の出力に対して `changed=0`)。E062 の単独計測は 2,988 / 2,988 |
+  | **ランタイム `.o` (フラグ未設定)** | **110 / 110 バイト一致** — 変わるのはコンパイラ側の `build/csrc/codegen.o` と、git rev を埋める `build/csrc/main.o` のみ |
+  | `git diff --numstat` | **2 files changed, 139 insertions(+), 0 deletions(-)** = additive 厳守 |
+  | **ゲート健全性 — 静的 (全数)**: 「`#define SP_TU_NO_BIGINT 1` を出した TU に bigint 参照が残っていないか」 | **E068 で UNSOUND 0 / 2,989**。内訳 **GATED 2,857 (95.6%)** / NOGATE-USES 49 / NOGATE-CLEAN 83。**E062 の 2,988 本の分類と 1 件残らず一致**する (増えた 1 本は B13 の番人で GATED) |
+  | **ゲート健全性 — 動的**: bigint 隣接テストを ON/OFF で実行して stdout 比較 | **この検査が (5) の Rational 辺を見つけた**。静的 grep は「ゲートが立った TU に bigint 参照が無い」しか言えず、**ヘッダの中の辺は見えない** — 必要条件であって十分条件ではないことの実例 |
+  | `--int-overflow=promote` (60 本サンプル) | **60/60 NOGATE** (`g_promote_mode` が無条件に 1) |
+  | **フルスイート (フラグ ON、`PCH_USE_PLAIN= PCH_USE_NOPOLY=` = ゲートが本当に効く形)** | **3,019 pass / 0 fail / 0 error** (E062 `suite_on_nopch.txt`) |
+  | **フルスイート (フラグ OFF)** | **E068 統合ツリーで 3,020 / 0 / 0** |
+  | (参考) フルスイート (フラグ ON、PCH あり) | 3,019 pass / 0 fail / 0 error — **ただしこれはゲートを実行していない**。上の ⚠ 参照 |
+  | negative control: `-DSP_TU_NO_BIGINT` を `puts 2 ** 100` に**強制** | `RuntimeError` + exit 1 (**黙って誤答しない**)。`--elim-bigint` を要求しても同じプログラムでは**ゲートが立たない**ことも確認 |
+  | e2e: mvc-blog の CGI シナリオ 9 本 (node WASI、base vs gate) | **9/9 stdout バイト一致** (`--size-opt` 併用、`-Oz` 併用でも 9/9) |
+  | コンパイル時間 (mvc-blog `spinel -c`、3 回) | OFF 0.06-0.07 s / ON 0.06 s = **差なし**。フラグ未設定なら `program_uses_bigint` は短絡で 1 度も呼ばれず、`getenv` 1 回だけ |
+  | e2e: workerd (`wrangler dev --local`) | `GET /posts` 200 / `POST /posts` 303 / `GET /` 303 — ゲート ON のモジュールで正常応答 |
+
+- **サイズ (これが本パッチの唯一の目的)**:
+
+  | target | プログラム | フラグ OFF | フラグ ON | Δ raw | Δ gzip -9 |
+  |---|---|---:|---:|---:|---:|
+  | wasm32 | `def f;1;end; puts f` | 180,172 | 128,267 | **−51,905 (−28.8%)** | −17,961 (−24.6%) |
+  | wasm32 | `fib.rb` | 180,868 | 128,948 | **−51,920 (−28.7%)** | −17,959 (−24.5%) |
+  | wasm32 | hello-http (examples) | 246,496 | 192,375 | **−54,121 (−22.0%)** | −19,674 (−20.9%) |
+  | wasm32 | **mvc-blog** (`--host-api`) | 585,767 | 531,645 | **−54,122 (−9.2%)** | **−19,611 (−13.2%)** |
+  | wasm32 (Fastly guest) | mvc-blog | 593,570 | 539,448 | **−54,122 (−9.1%)** | −19,567 (−12.9%) |
+  | wasm32 | `puts "hello"` (control) | 75,588 | 75,590 | +2 | +5 |
+  | native | `def f;1;end; puts f` | 165,688 | 129,856 | **−35,832 (−21.6%)** | −19,661 (−29.8%) |
+  | native | mvc-blog (`-I native`) | 380,920 | 327,656 | **−53,264 (−14.0%)** | −24,306 (−14.3%) |
+
+  E025 の予測 (wasm −51,286 / native −35,792) を **±0.1% で再現**した。
+
+- **upstream PR 可能性**: **高い。ただし本パッチの `getenv` ゲートは外して出す。**
+  - E025 の英語 issue 草稿 (`docs/experiments/results/E025/upstream_proposal.md`) の
+    §4(a) が求めていた「codegen 側の `g_uses_bigint`」が本パッチの中身そのものである。
+    草稿との差は 3 点。**(i)** `Random#rand` を条件に入れていない
+    (`sp_bigint_rand` の emit が `comp_ntype == TY_BIGINT` ゲートなので (2) に吸収される)、
+    **(ii)** widening 対策を「widening 前に見る」ではなく
+    「リテラルの `bigval` 属性を構文的に見る + 全数実測で穴が無いことを確認」で行った。
+    どちらも草稿より**簡単**な方向の訂正である。**(iii) は草稿より難しい方向の訂正**で、
+    こちらの方が重要: **`edges.tsv` が `sp_brat_cmp_poly` への辺を BIGINT-タグ由来と
+    分類していたのは誤りで、実際には `sp_poly_cmp` の Rational アームからも来る** (上記 (5))。
+    issue を出すときは §2 の表と §4(a) の擬似コードを両方差し替えること。
+  - upstream に出すなら `getenv` を外して**無条件**にするのが筋 (opt-in である理由が
+    spinel-llvm 側の台帳規律だけなので)。その形なら `src/codegen.c` は
+    `if (!program_uses_bigint(c)) buf_puts(...)` の 1 行になる。
+  - eBPF/LLVM 固有のロジックを一切含まない。既存の `SP_TU_NO_POLY_RENDER` と同型。
+  - `docs/upstream_candidates.md` **S14**。
+
+- **未検証事項 (honest boundary)**:
+  - **`SP_THREADS` ビルドで 1 度も焼いていない。** stub は生成 TU にしか居ないので
+    静的には無影響だが未実測。
+  - **`-Wunused-function` 系の警告は見ていない。** 生成 TU は `-Wno-all` で焼かれるので
+    実害は無いが、upstream が別の警告設定を持つなら 40 本の未使用 static が問題になりうる。
+  - **落ちる関数の内訳を数え直していない** (E025 の「43 本」をそのまま引く)。
+  - **Linux / GNU ld (`--gc-sections`) での取り分は未計測** (E025 から継承)。
+  - **`--elim-bigint` が立たない 132 本のうち、実際に bigint を使う 49 本を
+    「本当に必要」と個別確認はしていない。** ゲートが立たない方向は安全側なので実害は無い。
+  - **Patch 6 との重ね掛けサイズは未計測** (独立のはずだが実測していない)。
+
+- **適用日**: 2026-08-17 (E062 実装 / E068 出荷)。
 
 ---
 

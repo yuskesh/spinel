@@ -906,6 +906,65 @@ double sp_round_half_down(double x);
    sp_bigint_* ops below are resolved at the final link against the
    generated TU, same as sp_sprintf. ---- */
 typedef struct { sp_Bigint *num, *den; } sp_BigRational;
+/* ===== E025 demonstrator: SP_TU_NO_BIGINT ==================================
+   Additive, opt-in, TU-local.  Mirrors the existing SP_TU_NO_POLY_RENDER gate
+   (spinel_rt.h:8821): a generated TU whose whole-program inference proved that
+   no Bignum/BigRational value can exist defines SP_TU_NO_BIGINT before the
+   include, and the bigint API resolves to internal-linkage raising stubs
+   instead of lib/sp_bigint.o.  The arms in the poly helpers that reference
+   these names stay syntactically intact (and stay unreachable), so nothing
+   else in the header changes; --gc-sections / -dead_strip then never reaches
+   the mpz/mpn mass.  C11 6.2.2p4/p5: the later bare re-declarations inherit
+   the internal linkage established here.
+   ======================================================================= */
+#ifdef SP_TU_NO_BIGINT
+__attribute__((noreturn)) void sp_raise_cls(const char *cls, const char *msg);
+static void sp_bigint_unreachable(void) {
+  sp_raise_cls("RuntimeError",
+               "internal: a Bignum reached a translation unit compiled with "
+               "SP_TU_NO_BIGINT (whole-program inference proved none exists)");
+}
+static int sp_bigint_sign(sp_Bigint *b) { sp_bigint_unreachable(); return 0; }
+static sp_Bigint *sp_bigint_sub(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_new_int(int64_t v) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_gcd(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_div(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static const char *sp_bigint_to_s(sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static double sp_bigint_to_double(sp_Bigint *b) { sp_bigint_unreachable(); return 0.0; }
+static void sp_brat_scan(void *p) { sp_bigint_unreachable(); }
+static sp_RbVal sp_box_brat(sp_Bigint *num, sp_Bigint *den) { sp_bigint_unreachable(); return sp_box_nil(); }
+static sp_RbVal sp_brat_from_bigint(sp_Bigint *n) { sp_bigint_unreachable(); return sp_box_nil(); }
+static const char *sp_brat_to_s(sp_BigRational *r) { sp_bigint_unreachable(); return NULL; }
+static const char *sp_brat_inspect(sp_BigRational *r) { sp_bigint_unreachable(); return NULL; }
+static mrb_float sp_brat_to_f(sp_BigRational *r) { sp_bigint_unreachable(); return 0.0; }
+static const char *sp_bigint_to_s_base(sp_Bigint *b, mrb_int base) { sp_bigint_unreachable(); return NULL; }
+static int sp_bigint_even_p(sp_Bigint *b) { sp_bigint_unreachable(); return 0; }
+static sp_Bigint *sp_bigint_abs_v(sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static mrb_int sp_bigint_bit_length(sp_Bigint *b) { sp_bigint_unreachable(); return 0; }
+static int64_t sp_bigint_to_int(sp_Bigint *b) { sp_bigint_unreachable(); return 0; }
+static int sp_bigint_cmp(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return 0; }
+static sp_Bigint *sp_bigint_add(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_mul(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_lcm(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_shl(sp_Bigint *a, int64_t n) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_pow(sp_Bigint *base, int64_t exp) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_round_prec(sp_Bigint *b, int64_t ndigits, int mode) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_isqrt(sp_Bigint *a) { sp_bigint_unreachable(); return NULL; }
+static mrb_int sp_bigint_digits_buf(sp_Bigint *a, mrb_int base, mrb_int **out) { sp_bigint_unreachable(); return 0; }
+static size_t sp_bigint_byte_len(sp_Bigint *b) { sp_bigint_unreachable(); return 0; }
+static size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap) { sp_bigint_unreachable(); return 0; }
+static sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, size_t n) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_and(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_or(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_xor(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_shr(sp_Bigint *a, int64_t n) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_new_str(const char *s, int base) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_mod(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_remainder(sp_Bigint *a, sp_Bigint *b) { sp_bigint_unreachable(); return NULL; }
+static sp_Bigint *sp_bigint_powmod(sp_Bigint *base, mrb_int exp, sp_Bigint *mod) { sp_bigint_unreachable(); return NULL; }
+static void sp_bigint_free(sp_Bigint *b) { sp_bigint_unreachable(); }
+static sp_Bigint *sp_bigint_not(sp_Bigint *a) { sp_bigint_unreachable(); return NULL; }
+#endif /* SP_TU_NO_BIGINT */
 int sp_bigint_sign(sp_Bigint *b);
 sp_Bigint *sp_bigint_sub(sp_Bigint *a, sp_Bigint *b);
 sp_Bigint *sp_bigint_new_int(int64_t v);
