@@ -42,11 +42,15 @@
 | 1 | `SP_UNMASKED_SETJMP` — mask-free 非局所脱出 | `lib/spinel_rt.h` | **+20 / −0** | `-DSP_UNMASKED_SETJMP` (既定 OFF) | コミット済み (aa84459c) |
 | 2 | `SP_STRLEN_DEDUP` — `s[i]` の `sp_str_length` 二重計算除去 | `lib/sp_str.c` | **+17 / −0** | `-DSP_STRLEN_DEDUP` (既定 OFF) | コミット済み (b01289c3) |
 | 4 | `SP_INT64` — `mrb_int` をポインタ幅から切り離す | `lib/sp_types.h`, `lib/sp_core.h` | **+53 / −0** | `-DSP_INT64` (既定 OFF) | コミット済み (2eeb5f30) |
-| 5 | `SP_TU_NO_BIGINT` — 推論駆動の bigint 部分系除去 | `lib/sp_alloc.h`, `src/codegen.c` | **+139 / −0** | `SPINEL_ELIM_BIGINT=1` (既定 OFF) | 本コミット (E062) |
+| 5 | `SP_TU_NO_BIGINT` — 推論駆動の bigint 部分系除去 | `lib/sp_alloc.h`, `src/codegen.c` | **+139 / −0** | `SPINEL_ELIM_BIGINT=1` (既定 OFF) | コミット済み (778c2bec、E062) |
+| 6 | `SP_REQUEST_ARENA` — per-request bump allocator (収集器と root 機構の全廃) | `lib/sp_gc.h`, `lib/sp_gc.c`, `lib/sp_alloc.h`, `lib/sp_alloc.c` | **+222 / −0** | `-DSP_REQUEST_ARENA` (既定 OFF) | 本コミット (E064) |
+| 6b | `--request-arena` — driver フラグと variant archive の選択 | `src/main.c`, `Makefile` | **+51 / −1** | 同上 (driver 側の入口) | 本コミット (E064) |
+| 6c | `--request-arena` — wasm driver 側の入口 + reactor 拒否 | `tools/wasm/spinel-wasm` (**spinel-llvm 側、vendor 外**) | **+15 / −0** | 同上 | spinel-llvm リポジトリで管理 |
 
 **現 footprint = 恒久 footprint = `lib/spinel_rt.h` (Patch 1) + `lib/sp_str.c` (Patch 2) +
-`lib/sp_types.h` / `lib/sp_core.h` (Patch 4) + `lib/sp_alloc.h` / `src/codegen.c` (Patch 5) の
-6 ファイル・計 +229 行。**
+`lib/sp_types.h` / `lib/sp_core.h` (Patch 4) + `lib/sp_alloc.h` / `src/codegen.c` (Patch 5) +
+`lib/sp_gc.h` / `lib/sp_gc.c` / `lib/sp_alloc.c` (Patch 6) + `src/main.c` / `Makefile` (Patch 6b) の
+11 ファイル・計 +502 行** (Patch 6c は vendor 外なので勘定に入れない)。
 
 > **Patch 3 (bigint GC 会計) は意図的な欠番** — E008 の安全性分析が未ルート中間値の
 > サイレント破壊を実証したため実装中止。番号は再利用しない。
@@ -792,6 +796,280 @@ additive でなくなる (生成 C が変わる = バイト一致ゲートを自
   - **Patch 6 との重ね掛けサイズは未計測** (独立のはずだが実測していない)。
 
 - **適用日**: 2026-08-17 (E062 実装 / E068 出荷)。
+
+---
+
+### Patch 6: `SP_REQUEST_ARENA` — 1 リクエスト = 1 プロセスのモデルで収集器と root 機構を丸ごと外す
+
+- **目的**: Workers / Fastly の実行モデルは E013 が CGI 契約として確定させた
+  「リクエストごとに instantiate → `_start` → インスタンス破棄」であり、
+  **メモリ回収はインスタンスの死が一括で行う**。プロセスの中で誰かが回収する必要は
+  原理的に無い。にもかかわらずランタイムは mark-sweep コレクタを持ち、生成 C は
+  そのために関数ごとに root を登録する。取り分は 3 層:
+  ① **サイズ** — mvc-blog で **wasm raw −185,059 B (−31.60%) / gzip −27,559 B (−18.56%)**、
+     native ファイル **−69,616 B (−18.28%)**、加えて**どの形でも一定の
+     data+bss −1.05 MB** (`sp_gc_roots[65536]` 512 KB + `sp_gc_remembered[65536]` 512 KB。
+     Mach-O では zerofill なので触らない限り RSS には出ない)。**wasm では実際に払う**:
+     モジュールの初期リニアメモリが **14 → 6 pages (−8 pages = −512 KB)** で、
+     instantiate のたびにコミットされる = リクエストごとに 512 KB。
+  ② **速度 (参考値)** — E015 が root 登録の除去だけで 10 本ベンチ合計 **−5.94%**、
+     `bm_ao_render` 単体 **−26.13%** を実測している。
+     自己時間 (E005) が 14.4% しかないのに 26% 動くのは、`SP_GC_ROOT(v)` が `&v` を取り
+     **局所変数が関数全体でメモリに落ちる**から (フレーム 784 B → 464 B、
+     スタック往復 −54%)。E064 の実測は下記。
+  ③ **健全性 — バグクラスの消滅** — S2/S5/S9 族 (E019/E020/E021/E023/E024/E028 が
+     潰してきたバグクラス) はすべて「**収集点をまたいで生きている一時値が root 集合に
+     入っていない**」の言い換えで、収集点が消えると主語を失う。
+     **未修正のベース `2eeb5f30` で 26 本の再現体を走らせ、GC ビルドで 18 本が発火する
+     一方、アリーナビルドでは 26/26 が正答する**ことを実測した。
+     これは「バグが直った」ではなく「**バグの発火条件が消えた**」という別種の主張である。
+- **対応 Edoc**: [E064](../docs/experiments/E064_request_arena.md)
+  (前段: [E013](../docs/experiments/E013_workers_lifecycle_imports.md) が per-request 契約を、
+  [E015](../docs/experiments/E015_gc_root_elision_pass_poc.md) が root 機構の価格を、
+  [E021](../docs/experiments/E021_stress_failure_taxonomy.md) がバグクラスの全数分類を確定させた。
+  [E005](../docs/experiments/E005_profiling_first.md) §5 のランキング #3
+  「GC ヒープの slab/arena 化」が本パッチで初めて着手された)。
+  出荷は [E068](../docs/experiments/E068_unified_ship.md)。
+
+**Patch 6 は `lib/` に閉じた最後発のパッチで、Patch 1/2/4 と同じ強い形の
+バイト一致ゲートを満たす** (フラグ OFF でランタイム `.o` がバイト一致)。
+Patch 6b は `src/` に触るが**触るのは driver (`main.c`) であって codegen ではない**ので、
+生成 C は**フラグ ON でも**変わらない — Patch 5 が「フラグ OFF のとき生成 C が一致」に
+弱めた条件を、Patch 6 は無条件に満たす。
+
+- **改変箇所 (4 ファイル・+222 行・追加のみ)**。すべてのハンクが
+  `#if defined(SP_REQUEST_ARENA)` … `#else` … `#endif` の囲い込みか純粋な挿入で、
+  **元の行は 1 行も書き換えていない**:
+
+  **(a) `lib/sp_gc.c`** — +22 行。中心はこの 1 個:
+
+  ```c
+  void sp_gc_collect(void){
+  #if defined(SP_REQUEST_ARENA)
+    return;
+  #endif
+    size_t ob_before = sp_gc_bytes;   /* (upstream そのまま) */
+  ```
+
+  加えて `#include "sp_gc.h"` の直後に `#undef sp_gc_mark` / `_all` / `_drain` の 3 行
+  (ヘッダが呼び出し側だけを no-op 化するので、実体はここで名前を取り戻す)。
+
+  **(b) `lib/sp_gc.h`** — +76 行。root マクロ 5 本の no-op 化、`SP_GC_STACK_MAX` を 1 に、
+  `sp_gc_wb` / `SP_WBO` の no-op 化、mark ヘルパ 6 本の空 inline 化、
+  `sp_gc_mark*` 3 本の呼び出し側マクロ化、そして `sp_arena_alloc` の inline fast path。
+
+  **(c) `lib/sp_alloc.c`** — +101 行。`sp_arena_more` (チャンク確保と上限ポリシー) と、
+  `sp_gc_alloc` / `sp_gc_alloc_nogc` の先頭に置いたアリーナ枝。
+
+  **(d) `lib/sp_alloc.h`** — +23 行。`sp_str_alloc` の先頭に置いたアリーナ枝。
+
+  **Patch 5 とファイルが 1 枚だけ重なる** (`lib/sp_alloc.h`) が、**ハンクは重ならない** —
+  Patch 5 は `sp_BigRational` typedef の直後 (旧 713 行)、Patch 6 は `sp_str_alloc` の中
+  (旧 188 行)。E068 の統合適用でも衝突は出ていない。
+
+- **なぜ「収集を止める」が中心で「割り当てを移す」が中心ではないか (= なぜ additive のままでいられるか)**:
+
+  `sp_gc_collect_retune` / `sp_str_collect_retune` / `sp_gc_collect_retune_all` /
+  `sp_gc_collect_request` (`GC.start`) / `sp_stw_collect` はすべて `sp_gc_collect` に合流し、
+  文字列 sweep もその中から走る。だから **1 個の `return;` が mark・オブジェクト sweep・
+  文字列 sweep・全ファイナライザ・全 recycle フックを同時に止める**。
+
+  この向きが安全性の根拠である。逆向き (「全割り当てをアリーナに移したこと」を根拠にする)
+  だと、**取りこぼした割り当て 1 箇所が致命傷**になる — root 集合が空のまま mark が走り、
+  生きているオブジェクトが解放される。実際 `lib/sp_bigint.c:5288,5309` は
+  `sp_gc_alloc_nogc` を **weak extern の関数ポインタとして test してから**呼ぶので
+  マクロ化できず、パッケージが自前で呼ぶ経路も原理的に列挙できない。
+  この設計ならそれらは単に「回収されない」だけで、それはアリーナの契約そのものである。
+
+  ⇒ **`src/` の codegen には 1 行も触らない**。`SP_GC_ROOT` はマクロ、`sp_str_alloc` は
+  `static inline` なので、生成 C を 1 バイトも変えずに両方を差し替えられる。
+
+- **`sp_gc_hdr` / `sp_str_hdr` を今までどおり書く理由**: ヘッダは収集器以外も読む —
+  `sp_gc_is_frozen` / `sp_gc_freeze` (`spinel_rt.h:545,546`)、`sp_PolyArray_push` /
+  `sp_PolyArray_fin` の `h->size` (`sp_alloc.h:482,516,519`)、文字列側はマーカバイト 0xfe と
+  `sp_str_has_hdr` / `sp_str_byte_len` / `sp_str_is_binary`。**レイアウトを 1 バイトも
+  動かさないことで、それらに一切触らずに済む。**
+
+- **`sp_gc_bytes` の加算だけ残す理由**: `sp_PolyArray_push` は成長のたびに
+  `sp_gc_bytes_sub` するので、対になる加算が無いと `size_t` がアンダーフローする。
+  文字列側は sweep が消えた時点で減算者がいないので、そちらの加算は外した
+  (代償は `GC.stat` の `str_bytes` / `str_count` が 0 を返すこと)。
+
+- **`sp_gc_nroots` を残す理由**: 生成 C が例外の着地ウォーターマークとして
+  `sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;` を**マクロを経由せず直接**書く
+  (`src/codegen_stmt.c:5282,5437,8495` ほか)。常に 0 のまま動く。
+  「root 機構を全部消す」と書くとここで壊れる。
+
+- **チャンクを `calloc` する理由**: `sp_gc_alloc` は元々 `calloc` である。
+  アリーナは切り出したメモリを再利用しないので、**チャンクを `calloc` するだけで
+  ゼロ埋めの意味論が 1 オブジェクトあたり 0 コストで保存される**
+  (「bump にすると `memset` が要る」という素朴な予想が外れる場所)。
+  初回 64 KB、以後 2 倍、上限 4 MB。1 チャンクに入らない要求は専用チャンク。
+
+- **境界 (安全性解析の結論、spinel-llvm 側 `results/E064/finalizer_census.txt`)**:
+
+  > **不可 (契約違反)**: **1 プロセスが複数リクエストを捌く形**。reactor モジュール
+  > (E011: 1 インスタンスで 13,006 リクエスト)、listen して回るサーバ、常駐 CLI、
+  > DOOM のような対話ループ。bump ポインタを戻す者がいないので、リクエスト 1 ではなく
+  > **N 回目に落ちる**という最悪の壊れ方をする。`tools/wasm/spinel-wasm` (Patch 6c) は
+  > `--mode reactor` との併用をエラーで拒否し、`src/main.c` (Patch 6b) は `SP_THREADS`
+  > (Thread/Mutex/Queue) との併用をエラーで拒否する。
+  >
+  > **不可 (資源)**: **1 リクエストの中で File / Dir ハンドルを GC 任せで捨て続ける**
+  > プログラム。ファイナライザは 1 本も走らないので fd を枯渇させうる。
+  > 全数 census の結果、外部資源を持つファイナライザは 2 種だけである —
+  > `sp_File_fin` (`lib/sp_io.c:34`、`fclose`) と `sp_Dir_fin` (`lib/sp_cold.c:1760`、
+  > `closedir`)。明示 `close` / ブロック形式なら影響なし。
+  > `sp_Fiber_fin` (`lib/sp_fiber.c:254`) は fiber スタックの `munmap` なので、
+  > fiber を大量に作り捨てる形はアドレス空間を消費する。
+  > ソケットは `int fd` を明示 `close` する設計で GC フックを通らない (`lib/sp_net.c`)。
+  >
+  > **可 (影響なし)**: 残り 18 種のファイナライザはすべて memory only
+  > (`free` / bigint のリム配列) で、インスタンスと一緒に死ぬ。
+  > **codegen が生成 C に書くファイナライザは `NULL` のみ** — ユーザ定義クラスは
+  > 自前のファイナライザを持たない。
+  >
+  > **観測可能な差 (仕様)**: `GC.stat` の `str_bytes` / `str_count` が 0、`cycle` /
+  > `full_runs` が常に 0、`GC.start` が no-op。`SPINEL_GC_STRESS` /
+  > `SPINEL_GC_VERIFY` / `SPINEL_GC_MINOR` は無効。
+
+- **有効化 (make の knob)**:
+
+  ```bash
+  # 単体バイナリ (Patch 6b の driver フラグ経由。variant archive を一度作る)
+  make arena-archive
+  bin/spinel app.rb --request-arena -o app
+
+  # wasm / Workers (Patch 6c、spinel-llvm 側の tools/wasm)
+  tools/wasm/spinel-wasm app.rb --request-arena --emit-worker dist
+
+  # スイート -- make は $(COPT) に依存していないので、古いオブジェクトを先に消す
+  # (消さないと生成 TU だけに define が届いた混成ビルドになる。下の ⚠ を参照)
+  rm -f build/*.o build/regexp/*.o build/mt/*.o build/mt/regexp/*.o lib/libspinel_rt*.a
+  make -k test COPT="-O2 -DSP_REQUEST_ARENA" PCH_ROOT=build/pch/clangO2-arena
+
+  # 実行時の上限 (既定 64 MB)
+  SPINEL_ARENA_MAX_MB=96 ./app
+  ```
+
+  > **Patch 1/2/4/5 との違い**: Patch 5 は生成 TU にしか効かないので渡し忘れても壊れない。
+  > **Patch 6 は Patch 4 (`SP_INT64`) と同じ「両方に届かないと静かに割れる」種類**である —
+  > `sp_str_alloc` と `SP_GC_ROOT` 群はヘッダ常駐なので、生成 TU だけに define を渡すと
+  > TU はアリーナから文字列を取り、アーカイブ側のコレクタはそれを sweep する
+  > (**「バグが存在しえない設計」から use-after-free を作る唯一の方法**)。
+  > だから `SP_THREADS` の `libspinel_rt_mt.a` と同じ前例に従い、
+  > 同じメンバ・同じフラグ + define 1 個の **variant archive `lib/libspinel_rt_arena.a`**
+  > を建て、driver が両者を必ず一緒に選ぶ。`tools/wasm/spinel-wasm` 側は
+  > **flags 配列 (`$CFLAGS`) に足す**ので、オブジェクトキャッシュのキーが
+  > 変わり半分だけフラグが付いた状態が構造的に作れない。
+
+  > **⚠ 罠 (負の対照として実測済み): `make` は `$(COPT)` に依存していない。**
+  > 温まったツリーで `make test COPT="-O2 -DSP_REQUEST_ARENA"` を打つと、毎回作り直される
+  > テスト TU にだけ define が届き、`build/*.o` (= `lib/libspinel_rt.a`) は古いフラグの
+  > まま残る。E064 の最初の ON 実行がそれで、**3,003 pass / 16 fail、16 本すべて沈黙した
+  > 誤答**になった (`results/E064/mixed_build_negative_control.tsv`)。
+  > これは事故だが、**上の「両方に届かないと静かに割れる」が実物として観測された**もので
+  > もある。スイートを回す前に `rm -f build/*.o build/regexp/*.o build/mt/*.o
+  > build/mt/regexp/*.o lib/libspinel_rt*.a` すること。
+  > 同じ理由で `rbs-seed-test` も落ちる — レシピが `$(CC) -O0 -Ilib …` を手書きしていて
+  > `$(CFLAGS)` を通さない (define を足せば `boundary.expected` と一致する、実測)。
+  > **出荷経路 (`--request-arena` + `lib/libspinel_rt_arena.a`、`tools/wasm/spinel-wasm` の
+  > フラグ配列) はこの罠を構造的に踏めない** — 前者は専用の `build/arena/` を持ち、
+  > 後者はオブジェクトキャッシュのキーにフラグを畳んでいる。
+
+- **メモリ (サイズの話とは別)**:
+
+  | 形 | OFF peak RSS | ON peak RSS | |
+  |---|---:|---:|---|
+  | mvc `/posts` (1 リクエスト) | 0.94 MB | **0.94 MB** | 横ばい |
+  | `bm_fib` | 1.44 MB | 1.42 MB | 横ばい |
+  | `bm_ao_render 16` | 1.88 MB | **25.09 MB** | **13×** |
+  | `bm_ao_render 64` | 1.98 MB | **65.69 MB** | **33×** |
+
+  **アリーナの高水位は「生きている量」ではなく「割り当てた総量」である。**
+  per-request の形では両者がほぼ一致するので横ばい、割り当てを回し続ける形では 33 倍。
+  **適用範囲が数字で引かれている。**
+  wasm 側は逆に純益で、**モジュールの初期リニアメモリが 14 → 6 pages
+  (−8 pages = −512 KB)**。instantiate のたびに本当にコミットされるページなので、
+  リクエストごとに 512 KB。
+
+- **挙動差分**: 未設定で完全に既存挙動 (**ランタイム `.o` がバイト一致**、下記)。
+  設定時のみ収集器が停止し、`sp_gc_alloc` / `sp_gc_alloc_nogc` / `sp_str_alloc` が
+  bump allocator になる。
+
+- **検証 (E064 = 2026-08-17、E068 = 統合ツリーでの再測。Apple M1 Max / macOS 26.6.1 /
+  Apple clang 21.0.0 / llvm@22 + wasi-libc / node v24.12.0 / workerd)**:
+
+  | ゲート | 結果 |
+  |---|---|
+  | **ランタイム `.o`、フラグ OFF、make と同一 cmdline で pre/post** | **E064 で 53/53 バイト一致。E068 の統合ツリーでは全 110 `.o` を照合し、直前コミット (Patch 5) に対して変わるのは `build/csrc/main.o` 1 本のみ** (= Patch 6b の driver 分。ランタイム側は 1 本も動かない)。**これが主ゲート** |
+  | `lib/libspinel_rt.a` / `_mt.a` のメンバ (`ar x` 後 `diff -r`) | 全メンバ一致。アーカイブ本体の差は **56 バイト = `ar` のタイムスタンプメタデータのみ** |
+  | **生成 C、全 `test/*.rb`、直前コミットの `bin/spinel` vs patched** | **E068 で 2,989 / 2,989 バイト一致**。**フラグ ON でも同じ** (`src/` の codegen に触らないので)。E064 の単独計測は 2,988 / 2,988 |
+  | `git diff --numstat` | Patch 6 **4 files, +222 / −0**、Patch 6b **2 files, +51 / −1** = additive 厳守 |
+  | **フルスイート (フラグ OFF)** | **E068 統合ツリーで 3,020 / 0 / 0** |
+  | **フルスイート (フラグ ON)** | **3,008 pass / 11 fail / 0 error** (E064)。11 本の内訳: **メモリ上限で loud に落ちる 8 本** (全部 GC ルートの回帰テストで、収集を起こすために大量に割り当てる形。上限を上げると **8/8 が正答する** — 6 本 512 MB / 2 本 2048 MB)、**収集器そのものを検査するテスト 3 本** (`gc_stat_string_heap` / `string_plus_heap_gc` / `proc_arg_channel_released`)、**想定外の壊れ方 0 本** |
+  | **免疫実証 — 未修正ベース `2eeb5f30` で S2/S5/S9 再現体 26 本** | GC build: **PASS 8 / WRONG-OUTPUT 15 / rc=1 2 / SIGSEGV 1**。arena build: **PASS 26 / 26** |
+  | positive control: `--request-arena` が実際に効いている証拠 | 生成バイナリから `sp_gc_collect` の本体・`sp_gc_roots` (512 KB) ・`sp_gc_remembered` (512 KB) が消える (data+bss −1.05 MB、どの形でも一定) |
+  | negative control: 上限超過 | `/big?mb=512` が **HTTP 500 + `x-spinel-exit: 1`**、本文は使用量つきの `spinel: request arena exhausted` (静かな OOM でも trap でもない) |
+  | negative control: 混成ビルド | `make test COPT=` の混成が **16 本の沈黙した誤答**を出す (上の ⚠。出荷経路は構造的に踏めない) |
+  | e2e: workerd (`wrangler dev --local`)、mvc-blog 4 route | **GC build と 4/4 で status・バイト数・本文 sha256 が一致** |
+
+- **サイズ**:
+
+  | target | プログラム | 生成 C の `SP_GC_ROOT*` | OFF | ON | Δ raw | Δ gzip -9 |
+  |---|---|---:|---:|---:|---:|---:|
+  | wasm32 | **mvc-blog** (`--host-api`) | 496 | 585,701 | 400,642 | **−185,059 (−31.60%)** | **−27,559 (−18.56%)** |
+  | wasm32 | `bm_fib` | 0 | 180,802 | 158,912 | −21,890 (−12.11%) | −5,910 (−8.06%) |
+  | wasm32 | `puts "hello"` | 0 | 75,594 | 58,202 | −17,392 (−23.01%) | −5,062 (−17.83%) |
+  | native | mvc-blog (`-I native`) | 496 | 380,920 | 311,304 | **−69,616 (−18.28%)** | — |
+  | native | `bm_ao_render` | 120 | 222,312 | 186,616 | −35,696 (−16.06%) | — |
+  | native | `bm_fib` | 0 | 165,848 | 146,568 | −19,280 (−11.63%) | — |
+  | native | `puts "hello"` | 0 | 76,728 | 57,560 | −19,168 (−24.98%) | — |
+  | native (data+bss) | **全形共通** | — | 〜1,340,000 | 〜290,000 | **−1,050,000 前後 (一定)** | — |
+
+  `hello` が root 0 本なのに −25% 縮むのは、消えたのが root 登録ではなく
+  **コレクタ本体** (mark / sweep / retune / verify / 世代チェック) だから。
+  root 登録の寄与は mvc の `__text` −23.3% と ao の −19.6% に出ている。
+  Patch 5 (`SP_TU_NO_BIGINT`) は同じ mvc-blog で raw −54 KB / gzip −19.6 KB なので、
+  **Patch 6 は raw で 3.4 倍大きい**。**両者は独立なので重ねられる (重ね掛けは未実測)。**
+
+- **性能 (hyperfine 1.20.0、`--shell=none`、`caffeinate -i`、A/B は 1 回の起動でインターリーブ。
+  1 セッション・1 回なので参考値)**:
+
+  | 形 | 構成 | min | mean ± σ | Δ min |
+  |---|---|---:|---:|---:|
+  | **mvc `/posts` (1 プロセス = 1 リクエスト、50 runs)** | OFF | 1.882 ms | 2.005 ± 0.125 | — |
+  | | **ON** | **1.761 ms** | 1.878 ± 0.098 | **−6.44%** |
+  | `bm_ao_render 64` (10 runs、`SPINEL_ARENA_MAX_MB=3000`) | OFF | 71.8 ms | 72.8 ± 0.5 | — |
+  | | **ON** | **67.7 ms** | 69.1 ± 0.7 | **−5.7%** |
+  | `bm_fib` (10 runs) | OFF | 23.879 ms | 24.171 ± 0.241 | — |
+  | | ON | 23.728 ms | 24.369 ± 0.859 | −0.64% (σ 以下) |
+
+  mean の差は σ の 1.2 倍程度で、P001 の判定基準 (>3% かつ >3σ) を min では満たすが
+  mean では満たさない。**出荷判断に使うには測り直しが要る** (サイズが主目的なので
+  速度は出荷条件にしていない)。
+  `bm_ao_render` は `user`/`sys` の内訳が機序を名指ししている — OFF 70.7/1.1 ms に対し
+  ON 38.2/25.4 ms。**アリーナは mark/sweep の user 時間を、65 MB 分のページフォルトという
+  sys 時間に付け替えている。**
+
+- **upstream PR 可能性**: **中。** 「per-request でしか正しくない」という契約が
+  upstream の想定 (汎用 Ruby 実装) と正面から違うので、無条件パッチにはできない。
+  ただし個別の部品は一般性がある:
+  - `SP_GC_STACK_MAX` を小さくできる形は既に upstream のヘッダが謳っている
+    (embedded 向けの `-DSP_GC_STACK_MAX=<n>`)。本パッチはそれを 1 まで押し切っただけ。
+  - **`sp_gc_collect` に「収集を止める 1 点」がある**という発見自体は
+    (`SPINEL_GC_DISABLE` のような一時的な no-GC 区間として) 汎用に使える。
+    upstream には `GC.disable` が無いので、これは素直な issue になる。
+  - `sp_gc_alloc` の bump 化は E005 §5 ランキング #3 の「GC ヒープの slab/arena 化」で、
+    **収集を伴う slab は別の仕事**である (本パッチは収集しないので簡単な方だけをやった)。
+    upstream に出すならその区別を先に書くこと。
+
+- **未検証事項 (honest boundary)**: E064 §7 を参照。要点は
+  **速度は 1 セッション・単発の参考値**、**Patch 5 との重ね掛けサイズは未実測**、
+  **長命プロセスでの誤用を静的に強制できるのは reactor と `SP_THREADS` の 2 つだけ**
+  (それ以外は文書の契約)。
+
+- **適用日**: 2026-08-17 (E064 実装 / E068 出荷)。
 
 ---
 
