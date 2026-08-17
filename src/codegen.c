@@ -6910,6 +6910,76 @@ static void scan_prologue_features(Compiler *c) {
   }
 }
 
+/* ---- SP_TU_NO_BIGINT: can this program hold a Bignum at all? --------------
+   Same shape as the g_emit_sym_rt / SP_TU_NO_POLY_RENDER pair above, for the
+   bigint subsystem.  A TU that answers 0 here defines SP_TU_NO_BIGINT before
+   including spinel_rt.h, which resolves the bigint API to internal-linkage
+   raising stubs (lib/sp_alloc.h): the `case SP_TAG_BIGINT:` arms in the boxed
+   value helpers stay syntactically intact and stay unreachable, and
+   --gc-sections / -dead_strip then never reaches lib/sp_bigint.o.  Measured in
+   spinel-llvm E025: -51,286 B (28.6%) on wasm32, -35,792 B (21.6%) native.
+
+   A Bignum can only come into existence through one of:
+     (1) an integer literal that does not fit int64  -> the node carries
+         "bigval" and infers TY_BIGINT (src/codegen_expr.c sp_bigint_new_str);
+     (2) an operation on something that is already a Bignum -> every such emit
+         site in codegen_{call,expr,stmt}.c is gated on comp_ntype(...) ==
+         TY_BIGINT, i.e. on exactly the array this scan reads, so the scan and
+         the emitter cannot disagree;
+     (3) --int-overflow=promote, where any integer op can promote (the RAISE
+         and WRAP modes raise / wrap instead: no promotion path exists, and the
+         PROMOTE arms in spinel_rt.h are #ifdef'd out);
+     (4) Marshal.load, which mints one from bytes inside lib/sp_marshal.c --
+         a runtime TU the TU-local stubs do not shadow, so it must set the flag
+         even when no slot is typed TY_BIGINT;
+     (5) a boxed *Rational*.  sp_poly_cmp (spinel_rt.h:2421) routes any operand
+         pair in which either side is a Rational through sp_brat_cmp_poly ->
+         sp_poly_to_brat, and sp_poly_to_brat mints Bignums out of a plain
+         int64 num/den pair (spinel_rt.h:1954-1956).  So a Rational reaching a
+         poly comparison touches the bigint API with no Bignum anywhere in the
+         program.  This is the one edge E025's inventory classified as
+         BIGINT-tag-guarded when it is in fact Rational-guarded; without this
+         clause test/rational_step.rb and test/rational_eq_poly_operand.rb
+         raise under the gate (E062 measured it).  The other promotion arms
+         (SP_POLY_INT_OP :1939, sp_poly_pow :2728, sp_poly_shl :2949) really
+         are #ifdef SP_INT_OVERFLOW_MODE_PROMOTE and are covered by (3).
+   (1) and (5) are also checked syntactically, so a later widening of the
+   producing slot to TY_POLY cannot hide them.  Everything here
+   over-approximates: the failure mode of a wrong 1 is 51 KB, of a wrong 0 a
+   RuntimeError. */
+static int ty_forces_bigint(TyKind t) {
+  return t == TY_BIGINT || t == TY_RATIONAL;
+}
+static int program_uses_bigint(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (g_promote_mode) return 1;                       /* (3) */
+  if (g_uses_marshal) return 1;                       /* (4) */
+  for (int i = 0; i < nt->count && i < c->node_cap; i++)
+    if (ty_forces_bigint(c->ntype[i])) return 1;      /* (1) (2) (5) */
+  for (int sc = 0; sc < c->nscopes; sc++) {
+    if (ty_forces_bigint(c->scopes[sc].ret)) return 1;
+    for (int l = 0; l < c->scopes[sc].nlocals; l++)
+      if (ty_forces_bigint(c->scopes[sc].locals[l].type)) return 1;
+  }
+  for (int k = 0; k < c->nclasses; k++)
+    for (int j = 0; j < c->classes[k].nivars; j++)
+      if (ty_forces_bigint(c->classes[k].ivar_types[j])) return 1;
+  for (int i = 0; i < nt->count; i++) {
+    const char *ty = nt_type(nt, i);
+    if (!ty) continue;
+    if (sp_streq(ty, "IntegerNode") && nt_str(nt, i, "bigval")) return 1;
+    if (sp_streq(ty, "RationalNode")) return 1;
+    if (sp_streq(ty, "CallNode") || sp_streq(ty, "ConstantReadNode") ||
+        sp_streq(ty, "ConstantPathNode")) {
+      const char *nm = nt_str(nt, i, "name");
+      if (nm && (sp_streq(nm, "Rational") || sp_streq(nm, "to_r") ||
+                 sp_streq(nm, "rationalize") || sp_streq(nm, "quo")))
+        return 1;
+    }
+  }
+  return 0;
+}
+
 /* Emit one top-level output unit (a method, constructor, BEGIN/END block, or the
    top-level body). Outside SP_COLLECT_ERRORS this is just the bare call. In
    collect mode each unit runs under a setjmp: an `unsupported` gap longjmps back
@@ -7125,6 +7195,16 @@ char *codegen_program(const NodeTable *nt) {
      this TU deliberately omits). */
   if (!g_emit_sym_rt)
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
+  /* Whole-program inference proved no Bignum can exist: tell the header, so
+     the bigint API resolves to TU-local raising stubs and the linker drops
+     lib/sp_bigint.o (spinel-llvm Patch 5 / E025 / E062).  Opt-in while it is
+     a fork patch -- with SPINEL_ELIM_BIGINT unset the generated C is
+     byte-identical to upstream's. */
+  {
+    const char *elim_bigint = getenv("SPINEL_ELIM_BIGINT");
+    if (elim_bigint && *elim_bigint == '1' && !program_uses_bigint(c))
+      buf_puts(&b, "#define SP_TU_NO_BIGINT 1\n");
+  }
   buf_puts(&b, "#include \"spinel_rt.h\"\n");
   /* FFI extern declarations and buffer storage */
   {
