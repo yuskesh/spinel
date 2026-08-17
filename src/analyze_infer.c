@@ -4293,8 +4293,15 @@ else {
       /* A container read the poly dispatch may have to serve from a builtin
          Array or Hash: record what the builtin surface alone would answer, so
          codegen can shape that arm (its emitters read the node's own type, and
-         the node here holds the union). Computed once per node. */
-      if (recv >= 0 && !an_builtin_only && poly_container_read_p(name) &&
+         the node here holds the union). Computed once per node.
+
+         The gate is poly_builtin_arm_name_p, not poly_container_read_p: the
+         disagreement widen below needs this answer for #to_a too, whose arm is
+         likewise unlocked by a poly result slot.  It stays a NAME gate --
+         opening it to every name a user class owns (what E050 tried) widens
+         nodes whose switch grows no arm at all, which is measurable cost for
+         no correctness. */
+      if (recv >= 0 && !an_builtin_only && poly_builtin_arm_name_p(name) &&
           nt_ref(nt, id, "block") < 0 && c->poly_builtin_ty &&
           id < c->node_cap && c->poly_builtin_ty[id] == TY_UNKNOWN &&
           an_user_defines_or_reads(c, name)) {
@@ -4582,6 +4589,30 @@ else {
          The builtin answer's own shape is recorded for codegen, which emits
          the builtin arm by re-entering the ordinary emission and has to know
          whether that produces an array pointer or a boxed value. */
+      /* The general form of the same problem.  A user class owns the name AND
+         the builtin surface would answer this receiver with a DIFFERENT type,
+         so no single C slot can hold both answers -- box it.  Both types are
+         already known here (bt from the re-derivation above, r from the user
+         union), so this is a disagreement between two computed answers, not a
+         guess about what might flow in: with either side unknown it does not
+         fire.  That is why it does not need (and must not use) the
+         poly_expr_flows_container evidence the rule below asks for -- that
+         evidence guards a different widen (infer_container_flow widening the
+         locals and returns that RECEIVE a container, which can reach a class's
+         own ivars); this one widens only the call node's own result type.
+
+         poly_builtin_arm_name_p and argc == 0 mirror the gates on the arms
+         this widen exists to unlock (emit_poly_method_dispatch: the container
+         re-entry and the is_poly_to_a branch, both argc == 0, block-free and
+         name-gated).  Widening outside them boxes a call whose switch grows no
+         builtin arm, which is cost with no answer bought -- E050 measured
+         +147.7% on one such node (an attr_reader named `value`). */
+      if (found && !an_builtin_only && argc == 0 &&
+          nt_ref(nt, id, "block") < 0 && poly_builtin_arm_name_p(name) &&
+          c->poly_builtin_ty && id < c->node_cap) {
+        TyKind bt = c->poly_builtin_ty[id];
+        if (bt != TY_UNKNOWN && bt != r) return TY_POLY;
+      }
       if (found && !an_builtin_only && poly_container_read_p(name) &&
           nt_ref(nt, id, "block") < 0 && poly_expr_flows_container(c, recv)) {
         return an_poly_concrete(c, name, TY_POLY);
