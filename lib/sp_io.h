@@ -65,6 +65,7 @@ mrb_int sp_sock_setsockopt(sp_File *f, mrb_int level, mrb_int opt, mrb_int value
 sp_SockOpt *sp_sock_getsockopt(sp_File *f, mrb_int level, mrb_int opt);
 mrb_int sp_sock_listen(sp_File *f, mrb_int backlog);
 void sp_File_puts(sp_File *f, const char *s);
+void sp_File_puts_bin(sp_File *f, const char *s);   /* header length; codegen String values only */
 void sp_File_print(sp_File *f, const char *s);
 mrb_int sp_File_flush(sp_File *f);
 mrb_bool sp_File_eof_p(sp_File *f);

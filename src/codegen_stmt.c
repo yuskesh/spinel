@@ -59,8 +59,13 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "); fputs(_fs, stdout); putchar('\\n'); }\n");
   }
   else if (t == TY_STRING) {
-    buf_puts(b, "{ const char *_ps = (const char *)("); emit_expr(c, arg, b);
-    buf_puts(b, "); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n");
+    /* sp_puts_str sizes with the string header, so an embedded NUL is
+       written and the trailing-newline check reads the true last byte (S26);
+       NULL (nil) prints the blank line, as the open-coded form did. The
+       (const char *) cast is load-bearing, exactly as it was in that form: a
+       String-typed value out of an &block-lowered recursion arrives as an
+       mrb_int carrying the pointer bits (test/recursive_implicit_yield_value). */
+    buf_puts(b, "sp_puts_str((const char *)("); emit_expr(c, arg, b); buf_puts(b, "));\n");
   }
   else if (t == TY_BOOL) {
     buf_puts(b, "puts(("); emit_expr(c, arg, b); buf_puts(b, ") ? \"true\" : \"false\");\n");
@@ -81,8 +86,8 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
       buf_printf(b, "printf(\"%%lld\\n\", (long long)sp_IntArray_get(%s, _t%d));\n", a, ti);
     else if (t == TY_FLOAT_ARRAY)
       buf_printf(b, "{ const char *_fs = sp_float_to_s(sp_FloatArray_get(%s, _t%d)); fputs(_fs, stdout); putchar('\\n'); }\n", a, ti);
-    else /* str */
-      buf_printf(b, "{ const char *_ps = sp_StrArray_get(%s, _t%d); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n", a, ti);
+    else /* str: header length, so an embedded NUL prints (S26) */
+      buf_printf(b, "sp_puts_str(sp_StrArray_get(%s, _t%d));\n", a, ti);
     free(ab.p);
   }
   else if (t == TY_EXCEPTION) {
@@ -227,8 +232,8 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "fputs(sp_float_to_s("); emit_expr(c, arg, b); buf_puts(b, "), stdout);\n");
   }
   else if (t == TY_STRING) {
-    buf_puts(b, "{ const char *_s = ("); emit_expr(c, arg, b);
-    buf_puts(b, "); if (_s) fputs(_s, stdout); }\n");
+    /* header length: print of a binary String writes every byte (S26) */
+    buf_puts(b, "sp_print_str("); emit_expr(c, arg, b); buf_puts(b, ");\n");
   }
   else if (t == TY_BIGINT) {
     buf_puts(b, "{ const char *_bs = sp_bigint_to_s((sp_Bigint *)("); emit_expr(c, arg, b);
@@ -272,10 +277,11 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, ")); if (_ps) fputs(_ps, stdout); }\n");
   }
   else if (t == TY_POLY || ty_is_object(t)) {
-    int tv = ++g_tmp;
-    buf_printf(b, "{ sp_RbVal _t%d = ", tv);
+    /* boxed: the run-time tag decides -- a String prints its header length,
+       everything else stringifies through sp_poly_to_s as before (S26) */
+    buf_puts(b, "sp_print_val(");
     if (t == TY_POLY) emit_expr(c, arg, b); else emit_boxed(c, arg, b);
-    buf_printf(b, "; const char *_ps%d = sp_poly_to_s(_t%d); if (_ps%d) fputs(_ps%d, stdout); }\n", tv, tv, tv, tv);
+    buf_puts(b, ");\n");
   }
   else if (t == TY_RANGE) {
     /* print of a Range renders its to_s ("first..last"), no newline. */

@@ -13702,14 +13702,22 @@ void emit_call(Compiler *c, int id, Buf *b) {
          the format/sprintf codegen below (#1498 / #1508). */
       Buf *abs = (Buf *)calloc(argc > 0 ? (size_t)argc : 1, sizeof(Buf));
       int *aarr = (int *)calloc(argc > 0 ? (size_t)argc : 1, sizeof(int));
+      int *astr = (int *)calloc(argc > 0 ? (size_t)argc : 1, sizeof(int));
       for (int k = 0; k < argc; k++) {
         TyKind akt = comp_ntype(c, argv[k]);
-        if (sp_streq(name, "puts") && (ty_is_array(akt) || akt == TY_POLY_ARRAY || akt == TY_POLY)) {
-          /* an Array argument prints one element per line (#2813) */
+        if (sp_streq(name, "puts") && (ty_is_array(akt) || akt == TY_POLY_ARRAY || akt == TY_POLY || akt == TY_UNKNOWN)) {
+          /* an Array argument prints one element per line (#2813); a
+             maybe-String (TY_POLY / TY_UNKNOWN) goes boxed the same way, so
+             the run-time tag can pick the header-length entry (S26) */
           aarr[k] = 1;
           emit_boxed(c, argv[k], &abs[k]);
         }
-        else if (akt == TY_STRING) emit_expr(c, argv[k], &abs[k]);
+        else if (!sp_streq(name, "puts") && ty_may_be_string(akt)) {
+          /* print's maybe-String: boxed, decided on the run-time tag (S26) */
+          aarr[k] = 1;
+          emit_boxed(c, argv[k], &abs[k]);
+        }
+        else if (akt == TY_STRING) { astr[k] = 1; emit_expr(c, argv[k], &abs[k]); }
         else { buf_puts(&abs[k], "sp_poly_to_s("); emit_boxed(c, argv[k], &abs[k]); buf_puts(&abs[k], ")"); }
       }
       /* puts uses sp_File_puts, which appends a newline per argument (and only
@@ -13730,11 +13738,17 @@ void emit_call(Compiler *c, int id, Buf *b) {
           const char *at = abs[k].p ? abs[k].p : "\"\"";
           if (is_puts && aarr[k])
             buf_printf(g_pre, "sp_File_puts_val(%s, %s); ", r, at);
+          else if (is_puts && astr[k])
+            /* the _bin entry sizes with the header (S26) and answers NULL
+               (nil) with the blank line itself, so no `?:""` coalesce */
+            buf_printf(g_pre, "sp_File_puts_bin(%s, %s); ", r, at);
           else if (is_puts) {
             int ts = ++g_tmp;
             buf_printf(g_pre, "sp_File_puts(%s, ({ const char *_t%d = %s; _t%d ? _t%d : \"\"; })); ",
                        r, ts, at, ts, ts);
           }
+          else if (aarr[k]) buf_printf(g_pre, "sp_File_write_val(%s, %s); ", r, at);
+          else if (astr[k]) buf_printf(g_pre, "sp_File_write_bin(%s, %s); ", r, at);
           else buf_printf(g_pre, "sp_File_write(%s, %s); ", r, at);
           free(abs[k].p);
         }
@@ -13744,6 +13758,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
       else for (int k = 0; k < argc; k++) free(abs[k].p);
       free(abs);
       free(aarr);
+      free(astr);
       buf_puts(b, "((mrb_int)0)");
       free(rb.p); return;
     }
@@ -13880,17 +13895,21 @@ void emit_call(Compiler *c, int id, Buf *b) {
         for (int k2 = 0; k2 < argc; k2++) {
           TyKind akt2 = comp_ntype(c, argv[k2]);
           Buf ab2; memset(&ab2, 0, sizeof ab2);
-          int arr2 = 0;
-          if (is_puts2 && (ty_is_array(akt2) || akt2 == TY_POLY)) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
-          else if (akt2 == TY_STRING) emit_expr(c, argv[k2], &ab2);
+          int arr2 = 0, str2 = 0;
+          if (is_puts2 && (ty_is_array(akt2) || akt2 == TY_POLY_ARRAY || akt2 == TY_POLY || akt2 == TY_UNKNOWN)) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
+          else if (!is_puts2 && ty_may_be_string(akt2)) { arr2 = 1; emit_boxed(c, argv[k2], &ab2); }
+          else if (akt2 == TY_STRING) { str2 = 1; emit_expr(c, argv[k2], &ab2); }
           else { buf_puts(&ab2, "sp_poly_to_s("); emit_boxed(c, argv[k2], &ab2); buf_puts(&ab2, ")"); }
           const char *at2 = ab2.p ? ab2.p : "\"\"";
           if (is_puts2 && arr2) buf_printf(b, "sp_File_puts_val(_t%d, %s); ", tio2, at2);
+          else if (is_puts2 && str2) buf_printf(b, "sp_File_puts_bin(_t%d, %s); ", tio2, at2);
           else if (is_puts2) {
             int ts2 = ++g_tmp;
             buf_printf(b, "sp_File_puts(_t%d, ({ const char *_t%d = %s; _t%d ? _t%d : \"\"; })); ",
                        tio2, ts2, at2, ts2, ts2);
           }
+          else if (arr2) buf_printf(b, "sp_File_write_val(_t%d, %s); ", tio2, at2);
+          else if (str2) buf_printf(b, "sp_File_write_bin(_t%d, %s); ", tio2, at2);
           else buf_printf(b, "sp_File_write(_t%d, %s); ", tio2, at2);
           free(ab2.p);
         }
@@ -22881,14 +22900,34 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       const char *fd = is_err ? "stderr" : "stdout";
       if (sp_streq(name, "puts") || sp_streq(name, "print")) {
         int want_nl = sp_streq(name, "puts");
+        const char *iofn = is_err ? "sp_io_stderr()" : "sp_io_stdout()";
         /* Join with the comma operator so the whole thing stays a single C
            expression -- valid both as a statement and in value position (a
-           return/if-else arm). puts adds a newline after each argument. */
+           return/if-else arm). puts adds a newline after each argument. A
+           String (or maybe-String) argument goes through the sp_File entries
+           -- header length, and puts' trailing-newline check on the true last
+           byte (S26); the singleton handle wraps the same FILE*, so the
+           interleaving with the fputs/fprintf arms is preserved. */
         for (int k = 0; k < argc; k++) {
           if (k > 0) buf_puts(b, ", ");
           TyKind at = comp_ntype(c, argv[k]);
-          if (at == TY_STRING) { buf_printf(b, "fputs("); emit_expr(c, argv[k], b); buf_printf(b, ", %s)", fd); }
-          else if (at == TY_INT) { buf_printf(b, "fprintf(%s, \"%%lld\", (long long)(", fd); emit_expr(c, argv[k], b); buf_puts(b, "))"); }
+          if (at == TY_STRING) {
+            /* the puts entries return void: parenthesize with `, 0` so the
+               comma chain keeps a value in expression position */
+            if (want_nl) buf_puts(b, "(");
+            buf_printf(b, "%s(%s, ", want_nl ? "sp_File_puts_bin" : "sp_File_write_bin", iofn);
+            emit_expr(c, argv[k], b); buf_puts(b, ")");
+            if (want_nl) buf_puts(b, ", 0)");
+            continue;   /* puts_bin appends the newline itself */
+          }
+          if (ty_may_be_string(at)) {
+            if (want_nl) buf_puts(b, "(");
+            buf_printf(b, "%s(%s, ", want_nl ? "sp_File_puts_val" : "sp_File_write_val", iofn);
+            emit_boxed(c, argv[k], b); buf_puts(b, ")");
+            if (want_nl) buf_puts(b, ", 0)");
+            continue;   /* puts_val appends the newline itself */
+          }
+          if (at == TY_INT) { buf_printf(b, "fprintf(%s, \"%%lld\", (long long)(", fd); emit_expr(c, argv[k], b); buf_puts(b, "))"); }
           else { buf_printf(b, "fputs(sp_poly_to_s("); emit_expr(c, argv[k], b); buf_printf(b, "), %s)", fd); }
           if (want_nl) buf_printf(b, ", fputc('\\n', %s)", fd);
         }
