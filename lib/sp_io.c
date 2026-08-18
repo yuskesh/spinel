@@ -1007,17 +1007,40 @@ const char *sp_File_inspect(sp_File *f) {SP_GC_ROOT(f);
   return sp_sprintf("#<%s:%s>", cls, p);
 }
 
-void sp_File_puts(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
-  SP_IO_OPEN(f);
-  if (!s) return;
-  size_t n = strlen(s);
+/* Shared puts core: `n` is the operand byte length (strlen for the
+   bare-literal-safe entry, sp_str_byte_len for the binary one). Both the
+   write and the appended-newline decision follow the same `n`: CRuby's
+   IO#puts adds the newline unless the operand's LAST byte is one, and with a
+   strlen-measured binary operand that check read the byte before the first
+   NUL instead of the last byte of the string. */
+static void sp_File_puts_len(sp_File *f, const char *s, size_t n) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
   if (f->is_sock) {
     sp_sock_write(f, s, n);
     if (n == 0 || s[n - 1] != '\n') sp_sock_write(f, "\n", 1);
     return;
   }
-  fputs(s, f->fp);
+  fwrite(s, 1, n, f->fp);
   if (n == 0 || s[n - 1] != '\n') fputc('\n', f->fp);
+}
+
+void sp_File_puts(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
+  SP_IO_OPEN(f);
+  if (!s) return;
+  sp_File_puts_len(f, s, strlen(s));
+}
+
+/* Binary-safe puts: paired like sp_File_write / sp_File_write_bin (see the
+   comment there) -- sizes the operand with the header length, so an embedded
+   NUL is written instead of truncating, and the trailing-newline check reads
+   the true last byte. Reads s[-1], so it is for CODEGEN-emitted String values
+   only. One deliberate asymmetry with the plain entry: a NULL operand is nil
+   here (the codegen's String arm holds nullable String locals) and CRuby's
+   `puts nil` prints the bare newline, so NULL writes "\n" rather than
+   no-op'ing -- which lets the emitter drop its `?:""` coalesce. */
+void sp_File_puts_bin(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);
+  SP_IO_OPEN(f);
+  if (!s) { sp_File_puts_len(f, "", 0); return; }
+  sp_File_puts_len(f, s, sp_str_byte_len(s));
 }
 
 void sp_File_print(sp_File *f, const char *s) {SP_GC_ROOT(f);SP_GC_ROOT_STR(s);

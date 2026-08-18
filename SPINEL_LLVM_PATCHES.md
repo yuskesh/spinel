@@ -2151,3 +2151,86 @@ B10 (+50) / B11 (+47) / B12 (+67/−2) とは**別に**数える。
     poly ディスパッチが IO のアームを持たない S18 族の残渣。→ **S27**。
 - **upstream**: `docs/upstream_candidates.md` **S23**。PR 適性 **高**、ゲート不要。
   報告は hold 継続。
+
+---
+
+# バグ修正 batch 8 (B14) — 出力族 (`IO#print` / `IO#puts` / `Kernel#print` / `Kernel#puts`) が binary String を NUL で切る (spinel-llvm E086)
+
+**wrong-code、silent、S23 (B13) より危険。** B13 と同じ「strlen が String を測る」族だが、
+根因は別: **出力族には `_bin` 対がそもそも存在しなかった**。だから
+**推論型が `TY_STRING` でも切れ**、S23 で効いた `.to_s` の回避が効かない。
+さらに `IO#puts` は末尾改行の判定 (`s[n-1]`) も strlen の `n` で行うので、
+binary String では**間違ったバイトを「最後のバイト」として読んでいた**。
+
+## 一覧表への追加行
+
+| # | 名前 | 層 | ファイル | ± 行 | Edoc | upstream 台帳 |
+|---|---|---|---|---|---|---|
+| **B14** | 出力族 (print/puts × IO/Kernel) が String を strlen で測って NUL で切る + puts の末尾改行判定が誤バイトを読む | codegen + runtime | `src/codegen_call.c`, `src/codegen_stmt.c`, `lib/sp_io.c`, `lib/sp_io.h`, `lib/spinel_rt.h` | **+140 / −34** | [E086](../docs/experiments/E086_batch8_s26.md) | **S26** |
+
+**ゲート無し = 常時有効。** 回帰テストを 1 本追加する
+(`test/io_print_puts_binary.rb` + `.rb.expected`、修正前は 9 カウント中 8 つと
+生バイト全行が CRuby と食い違う bite-proof)。
+
+---
+
+### B14: 出力族が binary String を NUL で切る
+
+- **根因 (1 行)**: 書き込み族 (`IO#write` 系) には `sp_File_write` / `sp_File_write_bin`
+  の対があるのに、出力族の入口 (`sp_File_puts`、TY_IO アームが print に使う
+  `sp_File_write`、Kernel#print/puts のインライン `fputs` 展開、`sp_poly_puts`、
+  `sp_splat_puts` / `sp_splat_print`、`sp_File_puts_val`) は**全部 strlen 側しか
+  持っていなかった**。マーカーバイト付き String 値 (`sp_str_byte_len` が
+  ヘッダ長を返せる値) が来ても strlen で測られ、最初の NUL で切れる。
+- **入口の全数調査**: E086 で probe 41 本 (sink 種 × オペランド類) を CRuby 3.4.1 と
+  差動し、**35 本が DIVERGE** (残 6 は NUL 無しの対照)。`$stdout` / `$stderr` /
+  IO ローカル / File / Kernel、print / puts、TY_STRING / TY_POLY / builder
+  (`<<` で構築した 0xfd payload) / 凍結 / NUL リテラル / splat / 配列引数の全組合せ。
+- **改変** (B13 と同じ設計原則 = **判断材料を実行時の表現に移す**):
+  - `lib/sp_io.c`: `sp_File_puts` を長さ受けコア `sp_File_puts_len` に括り出し、
+    `sp_File_puts_bin` (ヘッダ長、**NULL は nil = 素の改行**) を追加。
+    fputs → `fwrite(s, 1, n)` で、書くバイトも改行判定も同じ `n` に従う。
+  - `lib/spinel_rt.h`: Kernel 側の `sp_puts_str` / `sp_print_str` (String 値、
+    ヘッダ長) と `sp_print_val` (箱、タグで分岐 — `sp_File_write_val` の
+    Kernel#print 版) を追加。`sp_poly_puts` の STR / STR_ARRAY / STRBUF アーム、
+    `sp_splat_puts` / `sp_splat_print`、`sp_File_puts_val` の STR / STRBUF を
+    長さベースに。
+  - `src/codegen_call.c`: TY_IO アーム — print の `TY_STRING` は
+    `sp_File_write_bin`、maybe-String (`TY_POLY` / `TY_UNKNOWN`) は
+    `sp_File_write_val` (箱)。puts の `TY_STRING` は `sp_File_puts_bin`
+    (NULL 合体 `?:""` は _bin 側の nil 規約で不要に)、boxed 条件に
+    `TY_UNKNOWN` を追加。poly-IO アームも同型 (+`TY_POLY_ARRAY` を boxed 条件へ
+    — 1 本目のアームとの整合)。`$stdout`/`$stderr` の GlobalVariableRead
+    fallback アームも同じ 4 入口に置換。
+  - `src/codegen_stmt.c`: `emit_puts_one` の TY_STRING アーム → `sp_puts_str`
+    (**`(const char *)` キャストは維持** — &block 降下した再帰の String 値は
+    mrb_int で届く。落とすと `test/recursive_implicit_yield_value` が
+    コンパイルに失敗する。実測で踏んだ)、TY_STR_ARRAY 要素 → 同。
+    `emit_print_one` の TY_STRING → `sp_print_str`、TY_POLY/オブジェクト →
+    `sp_print_val`。
+- **同じ行の付随修正 (記録)**: `sp_poly_puts` の STRBUF アームは `puts(3)` を
+  使っていたので、**末尾が既に `\n` の builder 文字列に二重改行を足していた**
+  (CRuby は足さない)。長さ判定への統一で同時に直った。probe
+  `io_puts_strbuf` / `k_puts_strbuf` が差動で確認。
+- **検証** (台帳の非ゲート健全性規律 3 点):
+  - **probe 41 本: 35 DIVERGE → 41 / 41 MATCH** (バイト数 + md5 + 終了コード)。
+  - **影響半径 1,133 / 2,990** (生成 C が変わったテスト)。B13 と違い radius 0 では
+    **ありえない** (TY_STRING の print/puts は普通のプログラムに普通にある)。
+    そのため全量帰属で示した: カウンタ正規化後の **diff 全 3,406 hunk が
+    print/puts 族の構文だけに触れる。非帰属 hunk は 0**。生成エラーは base 0 / fix 0。
+  - **`make test` 3,021 / 0 / 0** (3,020 + 番人 1 本)。
+  - **ランタイム `.o`**: 変わるのは `sp_io.o` (+ `mt` / `arena` 版) と
+    `build/csrc/codegen_call.o` / `codegen_stmt.o` のみ。`spinel_rt.h` に足した
+    4 関数はどの `lib/*.c` からも呼ばれない (B13 と同じ)。
+  - **番人は bite-proof**: 素の `8e30ae3c` では `2/2/3/3/3/6/3/3/3` + 切れた生バイト、
+    修正後は `6/6/7/7/6/14/3/3/6` + 全バイト = **CRuby 3.4.1 と一致**。
+- **同族で直していないもの (honest boundary)**:
+  - **ユーザー定義 `#to_s` が binary String を返す場合の `puts obj` / `print obj`**
+    (オブジェクト to_s アームは従来のまま fputs)。to_s の返りが poly の場合は
+    `sp_poly_to_s` の返りにマーカーが無い可能性があり、`s[-1]` を読めない。
+  - **`TY_EXCEPTION` の message** を puts する場合 (同上)。
+  - `$stdout`/`$stderr` fallback アームの**非 String 型** (`fputs(sp_poly_to_s(…))`
+    + 無条件改行) は従来のまま — String と maybe-String だけ置換した。
+  - StringIO の print/puts/write は**元から binary-safe** (E086 probe で確認)。
+- **upstream**: `docs/upstream_candidates.md` **S26**。PR 適性 **高**、ゲート不要。
+  報告は hold 継続。

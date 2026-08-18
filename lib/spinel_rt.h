@@ -274,7 +274,7 @@ static inline sp_int sp_iremainder(sp_int a, sp_int b) {
    The actual overflow check is wrapped through
    `sp_int_*_overflow_p` helpers so non-gcc/clang compilers fall back
    to a portable unsigned-arithmetic implementation. The shape
-   mirrors mruby's mrb_int_*_overflow in include/mruby/numeric.h.
+   mirrors mruby's sp_int_*_overflow in include/mruby/numeric.h.
 
    The outer sp_int_add/sub/mul/neg are GCC statement-expression
    macros (`({ ... })`) rather than functions: an earlier inline-
@@ -1640,11 +1640,38 @@ static inline sp_bool sp_class_eq(sp_Class a, sp_Class b) {
 }
 static inline const char *sp_poly_to_s(sp_RbVal v);   /* defined below; used by the user-object arm */
 static inline sp_File *sp_poly_to_file(sp_RbVal v); /* defined below; IO.select's user-#to_io unwrap */
+/* Kernel#puts / #print of a String VALUE on stdout. Every TY_STRING
+   expression the codegen emits is marker-framed (an 0xff/0xf1 literal, an
+   0xfe/0xfc heap string, an 0xfd builder payload), so sp_str_byte_len is the
+   true byte count -- strlen cut a binary String at its first NUL and, for
+   puts, then read the wrong "last" byte for the trailing-newline check (S26,
+   the Kernel-side counterpart of sp_File_write_bin / sp_File_puts_bin).
+   NULL is nil: puts prints the blank line, print prints nothing. */
+static inline void sp_puts_str(const char *s) {
+  if (!s) { putchar('\n'); return; }
+  size_t n = sp_str_byte_len(s);
+  fwrite(s, 1, n, stdout);
+  if (n == 0 || s[n - 1] != '\n') putchar('\n');
+}
+static inline void sp_print_str(const char *s) {
+  if (s) fwrite(s, 1, sp_str_byte_len(s), stdout);
+}
+/* Kernel#print of a BOXED operand: the run-time tag decides, exactly like
+   sp_File_write_val (see there) -- a String (or a builder handle, whose
+   payload is 0xfd-marked) prints its own header length, anything else is
+   stringified and printed with fputs, because sp_poly_to_s can answer an
+   unmarked static class/symbol name that s[-1] readers must not touch. */
+static inline void sp_print_val(sp_RbVal v) {
+  if (v.tag == SP_TAG_STR) { sp_print_str(v.v.s); return; }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    sp_print_str(sp_String_cstr((sp_String *)v.v.p)); return;
+  }
+  { const char *s = sp_poly_to_s(v); if (s) fputs(s, stdout); }
+}
 static inline void sp_poly_puts(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: printf("%lld\n", (long long)v.v.i); break;
-    case SP_TAG_STR: if (v.v.s) { fputs(v.v.s, stdout); if (!*v.v.s || v.v.s[strlen(v.v.s)-1] != '\n') putchar('\n'); }
-    else putchar('\n'); break;
+    case SP_TAG_STR: sp_puts_str(v.v.s); break;
     case SP_TAG_FLT: { fputs(sp_float_to_s(v.v.f), stdout); putchar('\n'); break; }
     case SP_TAG_BOOL: puts(v.v.b ? "true" : "false"); break;
     case SP_TAG_NIL: putchar('\n'); break;
@@ -1672,11 +1699,7 @@ static inline void sp_poly_puts(sp_RbVal v) {
         }
         case SP_BUILTIN_STR_ARRAY: {
           sp_StrArray *_a = (sp_StrArray *)v.v.p;
-          for (sp_int _i = 0; _i < _a->len; _i++) {
-            const char *_s = _a->data[_i];
-            if (_s) { fputs(_s, stdout); if (!*_s || _s[strlen(_s)-1] != '\n') putchar('\n'); }
-            else putchar('\n');
-          }
+          for (sp_int _i = 0; _i < _a->len; _i++) sp_puts_str(_a->data[_i]);
           break;
         }
         case SP_BUILTIN_SYM_ARRAY: {
@@ -1690,7 +1713,10 @@ static inline void sp_poly_puts(sp_RbVal v) {
         case SP_BUILTIN_RANGE: puts(sp_Range_inspect((sp_Range *)v.v.p)); break;
         case SP_BUILTIN_FLOAT_RANGE: puts(sp_frange_inspect(*(sp_FloatRange *)v.v.p)); break;
         case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
-        case SP_BUILTIN_STRBUF: puts(sp_String_cstr((sp_String *)v.v.p)); break;
+        /* sp_puts_str, not puts(3): the builder's payload knows its length
+           (embedded NULs print), and puts(3) appended a second newline when
+           the built-up string already ended in one. */
+        case SP_BUILTIN_STRBUF: sp_puts_str(sp_String_cstr((sp_String *)v.v.p)); break;
         case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
         case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
         case SP_BUILTIN_BIG_RATIONAL: puts(sp_brat_to_s((sp_BigRational *)v.v.p)); break;
@@ -4694,6 +4720,12 @@ static void sp_puts_elems(sp_RbVal a) {
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal e = sp_poly_arr_get(a, i);
     if (e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)) { sp_puts_elems(e); continue; }
+    /* a String element (or a builder handle) sizes itself -- sp_poly_to_s +
+       strlen cut it at an embedded NUL and misread the trailing byte (S26) */
+    if (e.tag == SP_TAG_STR) { sp_puts_str(e.v.s); continue; }
+    if (e.tag == SP_TAG_OBJ && e.cls_id == SP_BUILTIN_STRBUF && e.v.p) {
+      sp_puts_str(sp_String_cstr((sp_String *)e.v.p)); continue;
+    }
     const char *s = sp_poly_to_s(e);
     if (s) fputs(s, stdout);
     if (!s || !*s || s[strlen(s) - 1] != 10) putchar(10);
@@ -4707,10 +4739,7 @@ static void sp_splat_puts(sp_RbVal a) {
 }
 static void sp_splat_print(sp_RbVal a) {
   sp_int n = sp_poly_arr_len(a);
-  for (sp_int i = 0; i < n; i++) {
-    const char *s = sp_poly_to_s(sp_poly_arr_get(a, i));
-    if (s) fputs(s, stdout);
-  }
+  for (sp_int i = 0; i < n; i++) sp_print_val(sp_poly_arr_get(a, i));
 }
 static void sp_splat_p(sp_RbVal a) {
   sp_int n = sp_poly_arr_len(a);
@@ -9870,6 +9899,14 @@ static void sp_File_puts_val(sp_File *f, sp_RbVal v) {
     sp_int n = sp_poly_length(v);
     for (sp_int i = 0; i < n; i++) sp_File_puts_val(f, sp_poly_arr_get(v, i));
     return;
+  }
+  /* a String (or builder-handle) element takes the header-length entry: the
+     strlen entry cut it at an embedded NUL and misread the last byte for the
+     trailing-newline check (S26); everything else stays sp_poly_to_s +
+     strlen, whose static names carry no marker byte. */
+  if (v.tag == SP_TAG_STR && v.v.s) { sp_File_puts_bin(f, v.v.s); return; }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    sp_File_puts_bin(f, sp_String_cstr((sp_String *)v.v.p)); return;
   }
   {
     const char *sv = (v.tag == SP_TAG_NIL) ? "" : sp_poly_to_s(v);
