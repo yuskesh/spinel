@@ -2167,6 +2167,7 @@ binary String では**間違ったバイトを「最後のバイト」として�
 | # | 名前 | 層 | ファイル | ± 行 | Edoc | upstream 台帳 |
 |---|---|---|---|---|---|---|
 | **B14** | 出力族 (print/puts × IO/Kernel) が String を strlen で測って NUL で切る + puts の末尾改行判定が誤バイトを読む | codegen + runtime | `src/codegen_call.c`, `src/codegen_stmt.c`, `lib/sp_io.c`, `lib/sp_io.h`, `lib/spinel_rt.h` | **+140 / −34** | [E086](../docs/experiments/E086_batch8_s26.md) | **S26** |
+| **B15** | `include` された module の ivar スロットを誰も書かず `TY_POLY` に落ち、生成 C に 1 行も出ない転写元 scope 経由で includer の struct と共有呼び先を箱に落とす | analyze | `src/analyze_scope.c` | **+152 / −0** | [E096](../docs/experiments/E096_mixin_param_type_leak.md) (**D-12**) | — |
 
 **ゲート無し = 常時有効。** 回帰テストを 1 本追加する
 (`test/io_print_puts_binary.rb` + `.rb.expected`、修正前は 9 カウント中 8 つと
@@ -2234,3 +2235,92 @@ binary String では**間違ったバイトを「最後のバイト」として�
   - StringIO の print/puts/write は**元から binary-safe** (E086 probe で確認)。
 - **upstream**: `docs/upstream_candidates.md` **S26**。PR 適性 **高**、ゲート不要。
   報告は hold 継続。
+
+**ゲート無し = 常時有効。** 回帰テストを 1 本追加する
+(`test/module_ivar_from_includer.rb` + `.rb.expected`、**base でも通る**
+= 意味論を固定する番人。narrow された nilable スロットが `nil` を読み返すこと、
+includer が 2 つで型が食い違っても両方動くことを固定)。
+
+---
+
+### B15: `include` された module の ivar スロットを includer から埋める (D-12)
+
+- **根因 (1 行)**: `process_include_body` (`src/analyze_scope.c:3109`) は
+  `include M` ごとに module のメソッドを includer 用に複製するが、
+  **module 側の元 scope を `is_transplanted_source = 1` で残す** (`:3264`)。
+  codegen はその scope を**出力しない** (`src/codegen.c:7988` / `:8286`) のに
+  推論は最後まで回し、その scope が読む ivar は **`ClassInfo(M)` のスロット**を引く
+  (`src/analyze_infer.c:5637`)。`M` のスロットは誰も書かない — includer の
+  `initialize` は転写されていないので `infer_ivar_types` の def_node 伝播
+  (`src/analyze_scope.c:4160`) が届かない — ので `TY_UNKNOWN` のまま
+  **post-fixpoint の未知 ivar バックストップ (`src/analyze.c:11917`) で `TY_POLY`
+  に確定する**。兄弟からの型の借用は `parent` チェーンしか歩かず、module は
+  includer の親ではないので必ず素通りする。
+- **そこから先の 4 段** (`SP_IVWATCH` で計装済み。最小再現と DOOM で 1 行ずつ同型):
+  1. fixpoint — module スロット `TY_UNKNOWN`、**includer 側は正しく int**
+  2. `analyze.c:11917` — module スロット → `TY_POLY`、`ivar_backstop_changed = 1`
+  3. `analyze.c:12008`〜`:12019` の再走 — 転写元 scope の ivar 読みが poly になり、
+     その poly が param に入る (本体代入 `analyze_pass.c:1388` / module 内の
+     受け手なし呼び出しが**転写元自身**に解決される `:3540` / poly レシーバの
+     ブロードキャスト `:3729`) → **共有呼び先の引数が箱になる**
+  4. `analyze.c:12524` の遅い `infer_ivar_types` — 転写元の poly な ivar 書きが
+     `analyze_scope.c:4160` の転写伝播で **includer のスロットへ**戻る
+     → **includer の struct フィールドが `sp_RbVal` になる**
+
+  漏れは全部 post-fixpoint の産物である。fixpoint 内の poly 再狭窄ブロック
+  (`analyze.c:11605`) は段 2 より前に走るので、この poly を見る機会がない。
+- **改変 (加算のみ、`src/analyze_scope.c` 1 ファイル)**: `infer_ivar_types` の
+  **末尾に 1 行**。呼び出し側 3 箇所 (`analyze.c:11572` / `:11680` / `:12524`) は無改変で、
+  返り値 `changed` がそのまま既存の fixpoint を駆動する。
+
+  ```c
+  changed |= seed_module_ivars_from_includers(c);
+  ```
+
+  本体は `ClassInfo(includer).included_mods` (`process_include_body` が
+  `:3130`〜`:3143` で dedup 記録済み) を辿り、**module が既に持っている ivar 名だけ**
+  について `ClassInfo(m).ivar_types[iv] = ty_unify(…, ClassInfo(includer).ivar_types[same])`
+  を行う。**スロットの新設はしない。** 方向は includer → module の一方向で、
+  逆 (module → includer) は `:4160` の転写伝播に既にあり、本修正はそれを変えない。
+- **なぜ健全か**: `ty_unify` は広げるだけなので単調で、fixpoint の収束条件を
+  壊さない。そして意味的に、転写元 scope の本体を実行しうる `self` の型は
+  **include したクラスのインスタンスに限られる**。その join は正しい上界であり、
+  今日の `TY_POLY` (= 全型の join) より**厳密に狭い**。includer が 1 つなら
+  転写元の型は複製の型と**完全一致**し、転写元の寄与は複製の寄与の**重複**になる。
+  includer が複数で型が食い違えば**正直に poly** に戻る。
+- **ガード 3 本** (「転写元 scope の型が実コードを支配する場合は触らない」):
+  - その module が **toplevel でも include されている** (`c->toplevel_includes`) —
+    このとき転写元 scope は `codegen.c:7988` の `!scope_toplevel_included` により
+    **実際に emit される**。
+  - `--rbs` の ivar pin (`class_ivar_pinned`) と narrow 済み int テーブル
+    (`ivar_int_table`) — `:4153` / `:4171` の転写伝播と同じ条件。
+  - その ivar 名を **module 自身の class-method** (`def self.` / `module_function`)
+    が触っている。`analyze_infer.c:5637` は `s->class_id` でスロットを引くので、
+    生成 C の `civ_M_*` static と転写インスタンスメソッドの ivar は
+    **同じスロットを共有している**。この集合は AST ごとに 1 回だけ作る (`mcm_build`)。
+- **検証** (§型変更修正の検証クラス ⓪①②③):
+  - **⓪ 影響半径 9 / 3,073** (`test/*.rb` 2,990 中 **2** / `doom/bin/*.rb` 22 中 **7** /
+    `benchmark/*.rb` 61 中 **0**)。変わった 2 本の test はどちらも
+    「module の `attr_reader`/`attr_accessor` の ivar を includer だけが書く」形。
+  - **① 挙動同一**: 半径内で実行できた 5 本すべて stdout / stderr / 終了コード一致、
+    **`SPINEL_GC_STRESS=1` でも同じ**。`make test` **3,022 / 0 / 0**。
+  - **② 構造分類 8 / 9 CLASSIFIED** (DOOM 7 本は約 300 の変化関数すべてで残差 0)。
+    残り 1 本 (`attr_reader_override_type`) は module `Sized` が値型に上がった
+    副産物で、**到達不能を機械的に示して放免**した: `sp_Sized_new(` は base でも
+    **呼び出し 0 回**、`cls_id = 4` を書くのはその関数の中だけ、Ruby 側に
+    `Sized.new` は無い (`Sized` は `module`)。
+  - **③ 性能**: ティッカー経路 **−11.75% (3.81σ) の改善**、不変対照 +0.15% (0.06σ)。
+    **台帳で ③ が改善を出した最初の型変更修正**である (B12 は正しさを買う回帰だった)。
+  - 恒久ゲート: **DOOM 131 + `JOBS=1` 112**、base と同じく failures=0。
+  - rtcheck 前後: frontier の poly site **330 → 248 (−82)、増ゼロ**。消えた 82 site は
+    82 件とも R018 baseline の行で、**P2 (mixin 複製) は 36/36 全消滅**、P5 は 54 → 11。
+- **② の負の対照が見つけた盲点 (honest boundary)**: 「箱化が**減る**側の見逃し」を
+  狙った 11 種で **7 検出 / 4 見逃し**。うち 1 つは意味論保存の変異 (対照の設計ミス)
+  で、**真の盲点は 3 本、すべて 1 つの族** = *narrow された nilable スロットの
+  `SP_INT_NIL` 番人規律* (ストアの削除 / 番人定数の破壊 / 読み出しの番人検査の削除)。
+  **① もこの corpus では補償しない** (4 種とも出力が base と 1 バイトも変わらない)。
+  狙い撃ちのプローブ (`sentinel_nil.rb`) と番人テストで塞いだが、
+  **器具としては塞げていない**。
+- **効かない範囲**: 複製 → 複製の ivar 伝播 (`analyze_scope.c:4160`) の精密化と、
+  R018 の P1 / P3 / P4 は対象外 (P1/P3 は B16 が解く)。
+- **upstream**: 未起票。

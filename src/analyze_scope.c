@@ -4073,6 +4073,99 @@ static TyKind ivar_nullable_int_ternary(Compiler *c, int vnode) {
   return infer_type(c, t_nil ? en : tn) == TY_INT ? TY_INT : TY_UNKNOWN;
 }
 
+/* Ivar names a module touches from its OWN class methods (`def self.x` /
+   `module_function`). Those reads/writes resolve to the same ClassInfo slot as
+   the transplanted instance methods' -- in the generated C they are the
+   `civ_M_*` statics -- so the seeding below must leave them alone. Built once
+   per AST (the set depends only on the tree); the list holds just a module's
+   class-method ivars, so the linear lookup stays tiny. */
+static int   mcm_nodes = -1;
+static const char **mcm_name = NULL;
+static int  *mcm_cls = NULL;
+static int   mcm_n = 0, mcm_cap = 0;
+static void mcm_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  mcm_n = 0;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_InstanceVariableReadNode && k != NK_InstanceVariableWriteNode &&
+        k != NK_InstanceVariableOperatorWriteNode &&
+        k != NK_InstanceVariableOrWriteNode && k != NK_InstanceVariableAndWriteNode &&
+        k != NK_InstanceVariableTargetNode) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || !s->is_cmethod || s->class_id < 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int seen = 0;
+    for (int i = 0; i < mcm_n; i++)
+      if (mcm_cls[i] == s->class_id && sp_streq(mcm_name[i], nm)) { seen = 1; break; }
+    if (seen) continue;
+    if (mcm_n >= mcm_cap) {
+      mcm_cap = mcm_cap ? mcm_cap * 2 : 16;
+      mcm_name = realloc(mcm_name, sizeof(*mcm_name) * (size_t)mcm_cap);
+      mcm_cls  = realloc(mcm_cls,  sizeof(*mcm_cls)  * (size_t)mcm_cap);
+      if (!mcm_name || !mcm_cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    mcm_name[mcm_n] = nm; mcm_cls[mcm_n] = s->class_id; mcm_n++;
+  }
+  mcm_nodes = nt->count;
+}
+static int mcm_touched(Compiler *c, int cls, const char *nm) {
+  if (mcm_nodes != c->nt->count) mcm_build(c);
+  for (int i = 0; i < mcm_n; i++)
+    if (mcm_cls[i] == cls && sp_streq(mcm_name[i], nm)) return 1;
+  return 0;
+}
+
+/* D-12: a module included into a class keeps its own scope alive as a
+   transplanted source (is_transplanted_source). Codegen never emits that scope,
+   but inference still walks it, and the ivars it reads resolve to the MODULE's
+   slot -- which nothing writes, because the includer's `initialize` is not a
+   transplanted method and so the def_node propagation in infer_ivar_types
+   cannot reach it. Left UNKNOWN the slot falls to TY_POLY in the post-fixpoint
+   unknown-ivar backstop, and that poly then widens the source scope's params
+   (and through them the params of shared callees), and rides the transplant
+   propagation back into every includer's slot -- boxing struct fields of code
+   that is provably int.
+   Seed the module's slot from the classes that include it instead. With one
+   includer the source scope's types become exactly the copy's, so its
+   contribution is a duplicate of the copy's; with several, the join is over
+   exactly the classes whose instances can run that body, which is strictly
+   narrower than the join over all types. ty_unify only widens, so the fixpoint
+   stays monotonic. Skipped for a module that is ALSO included at top level
+   (there its source scope really is emitted -- scope_toplevel_included), for
+   --rbs pinned and narrowed-int-table slots (as the propagation below), and for
+   names the module's own class methods touch (mcm_touched). */
+static int seed_module_ivars_from_includers(Compiler *c) {
+  int changed = 0;
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    ClassInfo *inc = &c->classes[ci];
+    for (int k = 0; k < inc->nincluded_mods; k++) {
+      int mi = inc->included_mods[k];
+      if (mi < 0 || mi >= c->nclasses || mi == ci) continue;
+      int tl = 0;
+      for (int t = 0; t < c->ntoplevel_includes; t++)
+        if (c->toplevel_includes[t] == mi) { tl = 1; break; }
+      if (tl) continue;
+      ClassInfo *mod = &c->classes[mi];
+      for (int iv = 0; iv < mod->nivars; iv++) {
+        const char *nm = mod->ivars[iv];
+        if (!nm) continue;
+        if (class_ivar_pinned(mod, nm) || mod->ivar_int_table[iv]) continue;
+        if (mcm_touched(c, mi, nm)) continue;
+        int j = comp_ivar_index(inc, nm);
+        if (j < 0) continue;
+        TyKind it = inc->ivar_types[j];
+        if (it == TY_UNKNOWN) continue;
+        TyKind merged = ty_unify(mod->ivar_types[iv], it);
+        sp_ivwatch(nm, "module_seed", mod->ivar_types[iv], merged);
+        if (merged != mod->ivar_types[iv]) { mod->ivar_types[iv] = merged; changed = 1; }
+      }
+    }
+  }
+  return changed;
+}
+
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -4271,6 +4364,9 @@ int infer_ivar_types(Compiler *c) {
       }
     }
   }
+  /* D-12 (E096): includer -> included-module slot. Runs last so the writes
+     merged just above are already in the includer's slot this iteration. */
+  changed |= seed_module_ivars_from_includers(c);
   return changed;
 }
 
