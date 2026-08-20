@@ -11629,6 +11629,27 @@ void analyze_program(Compiler *c) {
           if (nrec >= rcap) { rcap *= 2; recCi = realloc(recCi, sizeof(int) * rcap); recIv = realloc(recIv, sizeof(int) * rcap); }
           recCi[nrec] = ci; recIv[nrec] = iv; nrec++;
         }
+    /* D-13 (E098): the transient-poly self-loop runs ivar -> param -> RETURN ->
+       ivar, and nothing ever re-clears a scope's return type -- infer_return_types
+       only ty_unify's (widens), exactly like the ivar merge this frame already
+       re-clears.  One monotone link is enough to pin the whole loop, so record
+       the poly returns and re-derive them fresh each iteration too.
+       (doom's Renderer#fixed_div: the only poly evidence for its `b` parameter
+       is fixed_div's OWN return value, R018 P1 = 217 of 330 frontier sites.) */
+    int rcap2 = 16, nrrec = 0;
+    int *recRs = (int *)malloc(sizeof(int) * rcap2);
+    for (int s2 = 0; s2 < c->nscopes; s2++) {
+      Scope *sc2 = &c->scopes[s2];
+      /* Honour the two existing "do not recompute the return from the body"
+         pins.  ret_rbs_seeded is an --rbs advisory seed; ret_specialized was
+         set by an inherited-cls-new specialisation.  Clearing either produced
+         ill-typed C in three rbs-seed-test cases (E098, D-13 3). */
+      if (sc2->ret != TY_POLY || !sc2->name) continue;
+      if (sc2->ret_rbs_seeded || sc2->ret_specialized) continue;
+      sc2->ret = TY_UNKNOWN; any = 1;
+      if (nrrec >= rcap2) { rcap2 *= 2; recRs = realloc(recRs, sizeof(int) * rcap2); }
+      recRs[nrrec++] = s2;
+    }
     for (int s = 0; s < c->nscopes; s++) {
       Scope *sc = &c->scopes[s];
       for (int i = 0; i < sc->nparams; i++) {
@@ -11656,6 +11677,7 @@ void analyze_program(Compiler *c) {
     if (any) {
       TyKind *prev = (TyKind *)malloc(sizeof(TyKind) * (nrec > 0 ? nrec : 1));
       TyKind *lprev = (TyKind *)malloc(sizeof(TyKind) * (nlrec > 0 ? nlrec : 1));
+      TyKind *rprev = (TyKind *)malloc(sizeof(TyKind) * (nrrec > 0 ? nrrec : 1));
       for (int iter = 0; iter < 128; iter++) {
         /* stash last-settled values, then re-clear the reset ivars so they
            recompute fresh (narrowing) this iteration. */
@@ -11666,6 +11688,13 @@ void analyze_program(Compiler *c) {
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
         int ch = 0;
         ch |= infer_write_types(c);
+        /* E098 EXPLORATORY: re-clear the recorded poly params HERE, not at the
+           iteration top.  infer_write_types above both reads params (to type
+           locals) and applies body assignments to them; clearing before it
+           would hand it UNKNOWN params for a whole iteration.  Clearing here
+           means infer_param_types re-derives them fresh from the call sites
+           this iteration, and the body-assignment contribution is re-applied
+           by the extra infer_write_types below. */
         ch |= infer_param_types(c);
         ch |= bind_coerce_operator_params(c);   /* 3 + obj calls obj's op WITH obj */
         ch |= infer_param_hash_value(c);
@@ -11686,24 +11715,38 @@ void analyze_program(Compiler *c) {
         ch |= widen_shared_cmp_params(c);
         ch |= infer_cvar_types(c);
         ch |= infer_inherited_ivars(c);
+        /* Clear the recorded poly returns HERE, immediately before their own
+           re-derivation, not at the iteration top.  Everything above binds from
+           call-site arguments and ivars whose types flow THROUGH these returns;
+           clearing at the top hands those passes UNKNOWN returns for a whole
+           iteration, and the loop can then exit with params left UNKNOWN --
+           narrow_isa_guards (which only narrows a local whose type is exactly
+           TY_POLY) then refuses to mark, and an `is_a?` guarded receiver loses
+           its narrowing (benchmark/bm_poly_cells.rb, E098 exploratory z/z2).
+           Clearing here still gives "return = the unify of THIS iteration's
+           return expressions", derived from the freshest ivars and params. */
+        for (int k = 0; k < nrrec; k++) rprev[k] = c->scopes[recRs[k]].ret;
+        for (int k = 0; k < nrrec; k++) c->scopes[recRs[k]].ret = TY_UNKNOWN;
         ch |= infer_return_types(c);
         /* With reset ivars, the re-clear makes infer_ivar_types report change
            every iteration, so converge on ivar value-stability instead. With
            none (only poly params/returns reset), fall back to the normal
            no-change fixpoint so the param/return passes fully settle. */
-        if (nrec > 0 || nlrec > 0) {
+        if (nrec > 0 || nlrec > 0 || nrrec > 0) {
           int stable = 1;
           for (int k = 0; k < nrec; k++)
             if (c->classes[recCi[k]].ivar_types[recIv[k]] != prev[k]) { stable = 0; break; }
           for (int k = 0; stable && k < nlrec; k++)
             if (c->scopes[recLs[k]].locals[recLi[k]].type != lprev[k]) stable = 0;
+          for (int k = 0; stable && k < nrrec; k++)
+            if (c->scopes[recRs[k]].ret != rprev[k]) stable = 0;
           if (stable) break;
         }
         else if (!ch) break;
       }
-      free(prev); free(lprev);
+      free(prev); free(lprev); free(rprev);
     }
-    free(recCi); free(recIv); free(recLs); free(recLi);
+    free(recCi); free(recIv); free(recLs); free(recLi); free(recRs);
   }
 
   /* Backstop: a parameter still unknown but with a `= nil` default is a

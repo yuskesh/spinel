@@ -2168,6 +2168,7 @@ binary String では**間違ったバイトを「最後のバイト」として�
 |---|---|---|---|---|---|---|
 | **B14** | 出力族 (print/puts × IO/Kernel) が String を strlen で測って NUL で切る + puts の末尾改行判定が誤バイトを読む | codegen + runtime | `src/codegen_call.c`, `src/codegen_stmt.c`, `lib/sp_io.c`, `lib/sp_io.h`, `lib/spinel_rt.h` | **+140 / −34** | [E086](../docs/experiments/E086_batch8_s26.md) | **S26** |
 | **B15** | `include` された module の ivar スロットを誰も書かず `TY_POLY` に落ち、生成 C に 1 行も出ない転写元 scope 経由で includer の struct と共有呼び先を箱に落とす | analyze | `src/analyze_scope.c` | **+152 / −0** | [E096](../docs/experiments/E096_mixin_param_type_leak.md) (**D-12**) | — |
+| **B16** | post-fixpoint の再狭窄が戻り型を再導出しないため、ivar → param → 戻り型 → ivar の一過性 poly 自己閉路が最初の推測に固定される | analyze | `src/analyze.c` | **+109 / −3** | [E098](../docs/experiments/E098_param_rederivation.md) (**D-13**) | — |
 
 **ゲート無し = 常時有効。** 回帰テストを 1 本追加する
 (`test/io_print_puts_binary.rb` + `.rb.expected`、修正前は 9 カウント中 8 つと
@@ -2323,4 +2324,90 @@ includer が 2 つで型が食い違っても両方動くことを固定)。
   **器具としては塞げていない**。
 - **効かない範囲**: 複製 → 複製の ivar 伝播 (`analyze_scope.c:4160`) の精密化と、
   R018 の P1 / P3 / P4 は対象外 (P1/P3 は B16 が解く)。
+- **upstream**: 未起票。
+
+**ゲート無し = 常時有効。** 回帰テストを 1 本追加する
+(`test/return_type_renarrow.rb` + `.rb.expected`、**base でも通る** = 意味論の番人。
+自己閉路が int に落ちること、本当に異種な戻りが poly のまま動くこと、
+`is_a?` ガードの narrowing がフレームを越えて生き残ることを固定)。
+**B16 は B15 の上に積む** (単独適用は試していない)。
+
+---
+
+### B16: post-fixpoint の再狭窄は戻り型にも及ぶ (D-13)
+
+- **根因 (1 行)**: `src/analyze.c:11599` の「optimistic re-narrow」フレームは
+  **ivar と素のローカルを毎反復** `TY_UNKNOWN` に戻して再導出し、
+  **poly の param を 1 度だけ**戻す。だが **scope の戻り型 (`Scope->ret`) は
+  1 度も戻さない** — `infer_return_types` も `ty_unify` で広げるだけである。
+  一過性 poly の自己閉路は **ivar → param → 戻り型 → ivar** を通るので、
+  **輪の 1 か所が単調なままなら輪全体が最初の推測に固定される**。
+- **生き証人**: doom の `Renderer#fixed_div(a, b)`。`b` を poly にしている証拠は
+  **`fixed_div` 自身の戻り値の子孫しかない** (spinel-llvm R018 §5.3 P1、
+  frontier 330 site のうち **217 = 65.8%**)。R018 が別の根 (P3) として数えた
+  `Renderer#light_index(scale)` の 6 site は**その影**である — 実引数
+  `@rw_scale` / `@spryscale` は **base の生成 C でも `sp_RbVal`** で、
+  R018 §5.3 の「呼び出し 3 本とも実引数は int」は誤り (R018 §7 自身が
+  P3 を「消去法の推論」と自認していた)。
+- **改変** (`src/analyze.c` 1 ファイル、フレームの中だけ):
+  1. フレーム入口で `sc->ret == TY_POLY` の scope を記録し `TY_UNKNOWN` に戻す。
+     **`ret_rbs_seeded` / `ret_specialized` は除外する**。
+  2. 反復ごとに、**`infer_return_types` の直前で**再クリアする。
+  3. フレーム既存の「値の安定」収束判定に戻り型を含める。
+
+  **論証はフレーム自身のものをそのまま使う** (`analyze.c:11609`〜`:11616` が
+  ivar について書いている): 毎反復クリアすると「戻り型 = その反復の return 式の
+  unify」になり、閉路の int の錨が支配すれば int に落ち、**本当に異種なら poly に
+  戻る**。各反復の中では単調、反復をまたぐと狭窄しうる、上限 128 反復。
+  **新しい機構ではなく、既に 3 種のスロットに適用されている論法を 4 種目に
+  広げただけ**である。
+- **ピンの尊重は任意ではなく実測の要求**: `ret_rbs_seeded` (`--rbs` の advisory seed)
+  と `ret_specialized` (継承 cls-new 特殊化) は `compiler.h:169`/`:171` が
+  「**fixpoint は本体から再計算してはならない**」と既に書いている。無視した版は
+  `rbs-seed-test` を **3 件**落とし、**うち 2 件は生成 C がコンパイルできなかった**。
+  ピンを尊重しても DOOM の効果は 1 も減らない (生成 C がバイト一致)。
+- **クリアの位置も実測の要求**: 反復の**頭**でクリアすると、フレーム本体の
+  `infer_write_types` → `infer_param_types` が**クリア済みの戻り型から param を
+  導出**し、**フレームが param を UNKNOWN のまま離脱**する。すると
+  `narrow_isa_guards` (`analyze.c:11991`) が「型がちょうど `TY_POLY` のローカル
+  だけ narrow する」条件 (`analyze.c:7072`) で弾かれ、**`if v.is_a?(Integer)` の中の
+  受け手 narrowing が静かに止まる** (`benchmark/bm_poly_cells.rb` が poly 呼び出し
+  7 → 8 に増えた)。**`infer_return_types` の直前に移すと消える**: `bm_poly_cells` は
+  base とバイト一致に戻り、DOOM の効果はそのまま、半径は 14 → **12** 本に減り、
+  **`test/*.rb` の変化は 2 本 → 0 本**になった。
+- **param の毎反復リセットは入れていない** (D-13 5 項)。実測で **DOOM への効果は
+  ゼロ** (生成 C がバイト一致) であり、一方 **静的な呼び出し点が 1 本も無い param**
+  (`method(:sym)` 経由・ブロック経由) はリセットすると再導出されず、救済が
+  フレームの**後**の backstop 群 (そこには「`method(:sym)` の param は int を既定に
+  する」経路がある) に委ねられて under-approximation になりうる。
+- **検証** (§型変更修正の検証クラス ⓪①②③、ベースラインは **base + B15**):
+  - **⓪ 影響半径 12 / 3,075** — `test/*.rb` 2,992 中 **0**、`doom/bin/*.rb` 22 中
+    **12**、`benchmark/*.rb` 61 中 **0**。**全 12 本が narrow 方向**。
+  - **① 挙動同一**: DOOM 5 本で stdout / stderr / **終了コード** / 出力ディレクトリ
+    全比較が一致、**`SPINEL_GC_STRESS=1` でも同じ**。`make test` **3,023 / 0 / 0**。
+  - **② 構造分類 5 / 12 CLASSIFIED**。残り 7 本は**同じ 1 関数・同じ 1 対のトークン**
+    だけが残差: `sp_Renderer_init_light_tables` で
+    `sp_poly_div(lv_scale, sp_box_int(cst_DISTMAP))` → `sp_idiv(lv_scale, 2LL)`
+    = **型が付いた式の定数畳み込み**。V を伸ばして隠す代わりに **TU 自身で放免**
+    した — `cst_DISTMAP = 2LL;` という初期化行が**両側に同一で存在する**。
+  - **③ 性能**: **3D 描画経路 −55.84% (37.81σ) = 2.26 倍速**、**Job IR 経路
+    −14.23% (3.59σ)**。tic シミュレーションは −0.38% (B15 が既に取った面)。
+    不変対照 −0.31% (0.19σ)。
+  - 恒久ゲート: **DOOM 131 + `JOBS=1` 112**、base + B15 と同じく failures=0。
+  - rtcheck 前後: frontier の poly site **248 → 25 (−223)、増ゼロ**。
+    **P1 217/217・P3 6/6 が全消滅**。判定は前後とも REJECT (壁は S25)。
+- **B15 と 2 本で R018 frontier の 92.4% (330 → 25) が消える。** 消えた site は
+  1 件残らず R018 の根の表に載る行で、新規は 0。**効く母集団は交わらない** —
+  E096 の最小再現 6 本と R018 切断ラダー 3 本は、B16 では**全部生成 C が
+  バイト一致**である (多段の poly 戻り型自己閉路は小さなプローブに存在しない)。
+- **② の負の対照が見つけた盲点 (honest boundary)**: 10 種で **5 検出 / 5 見逃し**
+  (判定は無変異時の残差との比較で読むこと)。見逃しのうち **3 本は ① が捕まえる**
+  (`sp_int_sub`→`sp_int_add`、`>>`→`<<`、`<=`→`<`) — **これは本修正が新しく作った
+  盲点である**: `sp_poly_shr(a,b)` が `a >> b` になると**演算子が識別子 (検査対象)
+  から約物 (V が素通し) へ移る**。残る **2 本 (`SP_INT_NIL`→`0LL`、`.v.i`→`.v.f`)
+  は ② も ① も見逃す** — B15 と同じ箱/素の表現族で、狙い撃ちプローブ
+  (`sentinel_nil.rb` / `sentinel_return.rb`) と番人テストで塞いだが
+  **器具としては塞げていない**。
+- **効かない範囲**: P4 (poly 容器 11 site) と P5 の残り (11 site)。
+  `realtime_def` の判定は前後とも REJECT で変わらない (壁は S25)。
 - **upstream**: 未起票。
