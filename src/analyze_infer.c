@@ -6968,6 +6968,157 @@ TyKind infer_uncached(Compiler *c, int id) {
   return TY_UNKNOWN;
 }
 
+/* Widening Blame: 合流ノード (配列/ハッシュ リテラル、分岐、rescue) の子を見て
+   MULTI を潰す。**poly を持ち込んだ子が 1 つならそれが source**、
+   **0 なら具体型どうしの衝突 = root**、2 つ以上なら MULTI のまま (v1)。
+   設計 §9.2b-2 / §11。 */
+static SpTypeRef sp_wb_merge_source(Compiler *c, int id, const char *k,
+                                    const char **reason, TyKind *incoming) {
+  const NodeTable *nt = c->nt;
+  int buf[32]; int n = 0;
+  #define SP_WB_ADD(X) do { int _x = (X); if (_x >= 0 && n < 32) buf[n++] = _x; } while (0)
+  #define SP_WB_ADDARR(KEY) do { int _n = 0; const int *_a = nt_arr(nt, id, (KEY), &_n); \
+      for (int _i = 0; _a && _i < _n && n < 32; _i++) SP_WB_ADD(_a[_i]); } while (0)
+  if (sp_streq(k, "ArrayNode") || sp_streq(k, "HashNode") || sp_streq(k, "KeywordHashNode")) {
+    SP_WB_ADDARR("elements");
+    /* ★ 要素ゼロのリテラルは「実際に異種の要素が来た」のではなく、
+       「要素の証拠が無いので保守的に一般の容器で置いた」= 初期化 seed である。
+       原因として別物なので reason を分ける (①、2026-08-24)。 */
+    { int en0 = 0; nt_arr(nt, id, "elements", &en0);
+      if (en0 == 0) {
+        /* 要素が無い = 前段が意味論上存在しない = ROOT (FALLBACK)。
+           MULTI (= UNKNOWN) に落とすと、blame の起点が消える。 */
+        *reason = "empty_container_seed"; return SP_REF_NONE;
+      }
+      *reason = "literal_element_merge"; }
+  } else if (sp_streq(k, "IfNode") || sp_streq(k, "UnlessNode")) {
+    SP_WB_ADD(nt_ref(nt, id, "statements"));
+    SP_WB_ADD(nt_ref(nt, id, "subsequent"));
+    SP_WB_ADD(nt_ref(nt, id, "else_clause"));
+    *reason = "branch_merge";
+  } else if (sp_streq(k, "CaseNode")) {
+    SP_WB_ADDARR("conditions");
+    SP_WB_ADD(nt_ref(nt, id, "else_clause"));
+    *reason = "branch_merge";
+  } else {   /* BeginNode / RescueNode */
+    SP_WB_ADD(nt_ref(nt, id, "statements"));
+    SP_WB_ADD(nt_ref(nt, id, "rescue_clause"));
+    SP_WB_ADD(nt_ref(nt, id, "else_clause"));
+    *reason = "rescue_merge";
+  }
+  #undef SP_WB_ADD
+  #undef SP_WB_ADDARR
+  int npoly = 0, poly_id = -1, conc = -1;
+  for (int i = 0; i < n; i++) {
+    int ch = buf[i];
+    if (!c->ntype || ch >= c->node_cap) continue;
+    TyKind ct = c->ntype[ch];
+    if (ct == TY_UNKNOWN) {           /* AssocNode などは値の側を見る */
+      int v = nt_ref(nt, ch, "value");
+      if (v >= 0 && v < c->node_cap) { ch = v; ct = c->ntype[v]; }
+    }
+    if (ct == TY_POLY) { npoly++; poly_id = ch; }
+    else if (ct != TY_UNKNOWN && conc < 0) conc = ch;
+  }
+  if (npoly == 1) { *incoming = TY_POLY; return SP_REF_NODE(poly_id); }
+  if (npoly == 0 && conc >= 0) {      /* 具体型どうしの衝突 -> root */
+    *incoming = c->ntype[conc]; return SP_REF_NODE(conc);
+  }
+  return SP_REF_MULTI;                /* 2 つ以上 poly / 何も分からない */
+}
+/* Widening Blame (v1): node が poly になったときの source と reason を
+   AST の形から引く。**意味のある種別だけ**を扱い、それ以外は UNINSTRUMENTED。
+   設計は docs/reference/widening_provenance_design.md §4.1。 */
+static SpTypeRef sp_wb_node_source(Compiler *c, int id, const char **reason, TyKind *incoming) {
+  *incoming = TY_UNKNOWN;
+  const NodeTable *nt = c->nt;
+  const char *k = nt_type(nt, id);
+  if (!k) { *reason = "node"; return SP_REF_UNINSTR; }
+  if (sp_streq(k, "LocalVariableReadNode")) {
+    const char *nm = nt_str(nt, id, "name");
+    Scope *sc = nm ? comp_scope_of(c, id) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+    if (lv) { *reason = "read_local"; *incoming = lv->type;
+              return SP_REF_LOCAL((int)(sc - c->scopes), (int)(lv - sc->locals)); }
+    *reason = "read_local"; return SP_REF_UNINSTR;
+  }
+  if (sp_streq(k, "CallNode")) {
+    int recv = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    if (recv >= 0 && nm && c->ntype && recv < c->node_cap) {
+      TyKind rt = c->ntype[recv];
+      if (ty_is_object(rt)) {
+        int mi = comp_method_in_chain(c, ty_object_class(rt), nm, NULL);
+        if (mi >= 0) { *reason = "call_return"; *incoming = (TyKind)c->scopes[mi].ret;
+                       return SP_REF_RETURN(mi); }
+      }
+    }
+    if (recv >= 0 && c->ntype && recv < c->node_cap) {
+      TyKind rt2 = c->ntype[recv];
+      if (rt2 == TY_POLY) {        /* 受信型が poly = 動的 dispatch。受信ノードが親 */
+        *reason = "dynamic_dispatch"; *incoming = TY_POLY; return SP_REF_NODE(recv);
+      }
+      if (rt2 != TY_UNKNOWN && !ty_is_object(rt2)) {
+        /* ★ 受信型が「追跡対象の広がった状態」(poly 容器) なら、前段は存在する:
+           その容器がいつ広がったかを親にする (②、2026-08-24)。
+           受信型が本当に具体 (int / string / int_array …) のときだけ、
+           組み込みの戻り型が定義として poly = root (POLY_EXPLICIT_FALLBACK)。 */
+        if (sp_is_tracked_widened(rt2)) {
+          *reason = "container_indexed_read"; *incoming = rt2; return SP_REF_NODE(recv);
+        }
+        *reason = "builtin_return"; *incoming = rt2; return SP_REF_NONE;
+      }
+    }
+    if (recv < 0 && nm) {          /* 自己呼び出し: 囲みスコープの class から解く */
+      Scope *cur = comp_scope_of(c, id);
+      if (cur && cur->class_id >= 0) {
+        int mi2 = comp_method_in_chain(c, cur->class_id, nm, NULL);
+        if (mi2 >= 0) { *reason = "self_call_return"; *incoming = (TyKind)c->scopes[mi2].ret;
+                        return SP_REF_RETURN(mi2); }
+      }
+    }
+    *reason = "unknown_call"; return SP_REF_UNINSTR;
+  }
+  if (sp_streq(k, "ArrayNode") || sp_streq(k, "HashNode") ||
+      sp_streq(k, "KeywordHashNode") || sp_streq(k, "IfNode") ||
+      sp_streq(k, "UnlessNode") || sp_streq(k, "CaseNode") ||
+      sp_streq(k, "BeginNode") || sp_streq(k, "RescueNode"))
+    return sp_wb_merge_source(c, id, k, reason, incoming);
+  if (sp_streq(k, "InstanceVariableReadNode") || sp_streq(k, "InstanceVariableWriteNode")) {
+    const char *nm2 = nt_str(nt, id, "name");
+    Scope *cur2 = comp_scope_of(c, id);
+    if (nm2 && cur2 && cur2->class_id >= 0) {
+      int ivi = comp_ivar_index(&c->classes[cur2->class_id], nm2);
+      if (ivi >= 0) { *reason = "read_ivar";
+                      *incoming = c->classes[cur2->class_id].ivar_types[ivi];
+                      return SP_REF_IVAR(cur2->class_id, ivi); }
+    }
+    *reason = "read_ivar"; return SP_REF_UNINSTR;
+  }
+  if (sp_streq(k, "YieldNode")) { *reason = "yield"; return SP_REF_UNINSTR; }
+  /* 素通しノード: 型は子からそのまま来る。source は自明なので繋ぐ。 */
+  { int pass_id = -1;
+    if (sp_streq(k, "ParenthesesNode")) pass_id = nt_ref(nt, id, "body");
+    else if (sp_streq(k, "LocalVariableWriteNode") ||
+             sp_streq(k, "InstanceVariableWriteNode") ||
+             sp_streq(k, "ClassVariableWriteNode") ||
+             sp_streq(k, "GlobalVariableWriteNode")) pass_id = nt_ref(nt, id, "value");
+    else if (sp_streq(k, "StatementsNode")) {
+      int bn = 0; const int *bb = nt_arr(nt, id, "body", &bn);
+      if (bb && bn > 0) pass_id = bb[bn - 1];        /* 値は最後の文 */
+    } else if (sp_streq(k, "ReturnNode")) {
+      int an2 = 0; int ar = nt_ref(nt, id, "arguments");
+      const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &an2) : NULL;
+      if (av && an2 > 0) pass_id = av[0];
+    }
+    if (pass_id >= 0 && c->ntype && pass_id < c->node_cap) {
+      /* StatementsNode の body が StatementsNode を包む場合もそのまま辿れる */
+      *reason = "pass_through"; *incoming = c->ntype[pass_id];
+      return SP_REF_NODE(pass_id);
+    }
+  }
+  *reason = k; return SP_REF_UNINSTR;
+}
 TyKind infer_type(Compiler *c, int id) {
   if (id < 0 || id >= c->nt->count) return TY_UNKNOWN;
   /* The face re-inference (infer_call's last resort, and codegen's re-entry)
@@ -7005,7 +7156,22 @@ TyKind infer_type(Compiler *c, int id) {
     int sn_recv = nt_ref(c->nt, id, "receiver");
     if (sn_op && sp_streq(sn_op, "&.") && sn_recv >= 0) t = TY_POLY;
   }
-  if (!an_builtin_only) c->ntype[id] = t;
+  if (!an_builtin_only) {
+    /* Widening Blame: node もスロットの一種 (設計 §1)。ここは infer_type の
+       単一の集中点なので、node の POLY entry transition がほぼ全部通る。
+       source は巨大な switch の結果からは取れないが、**AST の形から意味のある
+       種別だけ**引き当てる (v1)。引けないものは UNINSTRUMENTED = UNKNOWN。 */
+    if (c->ntype && id < c->node_cap && sp_llvm_widen_on() &&
+        sp_is_widening_transition(c->ntype[id], t)) {
+      const char *why = "node"; TyKind inc = TY_UNKNOWN;
+      SpTypeRef src = sp_wb_node_source(c, id, &why, &inc);
+      /* node の型付けは合流ではない: old はキャッシュの前回値、inc は source の型 */
+      sp_widen_note(c, SP_REF_NODE(id), src,
+                    src.kind == SP_SLOT_NONE ? SP_WIDEN_FALLBACK : SP_WIDEN_MATERIALIZE,
+                    c->ntype[id], inc, t, why, id);
+    }
+    c->ntype[id] = t;
+  }
   return t;
 }
 

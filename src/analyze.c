@@ -12367,6 +12367,438 @@ static void expand_static_splat_args(Compiler *c) {
   }
 }
 
+/* --- spinel-llvm patch L5 (SPINEL_LLVM_WIDEN_LOG) ---------------------------
+   不動点の各 pass の後で全スロットを走査し、型が変わったものだけを記録する。
+   「なぜこのスロットが poly になったか」を pass 粒度で答える (--explain-widening)。
+   レコードの形は LLVM Optimization Remarks に倣う: 理由は自由文でなく remark の
+   コードで持ち、人向けの文面は消費側が作る (R026 §2.1)。
+   未設定時は 1 バイトも変わらない。canonical は SPINEL_LLVM_PATCHES.md の L5。 */
+static FILE *g_wlog;
+static int   g_wlog_open;
+static int   g_wlog_iter = -1;
+static const char *g_wlog_region = "pre";
+static long  g_wlog_n;
+static long  g_wlog_ivl;   /* spinel-llvm L5 / E125: probe と probe の間の区間 id */
+struct sp_wsnap {
+  TyKind **loc; int *nloc; int nsc;      /* [scope][local] */
+  TyKind  *ret; int nret;                /* [scope] */
+  TyKind **ivar; int *nivar; int ncl;    /* [class][ivar] */
+  TyKind **cvar; int *ncvar;
+  TyKind  *gv; int ngv;
+};
+static struct sp_wsnap g_wsnap;
+
+static FILE *sp_wlog_file(void) {
+  if (!g_wlog_open) {
+    const char *p = getenv("SPINEL_LLVM_WIDEN_LOG");
+    g_wlog_open = 1;
+    if (p && *p) { g_wlog = fopen(p, "w"); if (g_wlog) fputs("{\"widen\": [\n", g_wlog); }
+  }
+  return g_wlog;
+}
+static void sp_wb_narrow(Compiler *c, SpTypeRef r, TyKind newt);   /* Widening Blame: episode を切る */
+static void sp_wlog_rec2(const char *pass, const char *kind, const char *scope,
+                         const char *name, TyKind from, TyKind to, const TyKind *slot) {
+  FILE *f = g_wlog; if (!f) return;
+  const char *remark = (to == TY_POLY && from != TY_POLY) ? "FirstPoly"
+                     : (from == TY_POLY && to != TY_POLY) ? "Narrow" : "Widen";
+  fprintf(f, "%s  {\"stage\":%d,\"region\":\"%s\",\"iter\":%d,\"pass\":\"%s\","
+             "\"remark\":\"%s\",\"kind\":\"%s\",\"scope\":\"%s\",\"name\":\"%s\","
+             "\"from\":\"%s\",\"to\":\"%s\",\"ivl\":%ld",
+          g_wlog_n++ ? ",\n" : "", g_infer_optimistic ? 1 : 2, g_wlog_region,
+          g_wlog_iter, pass, remark, kind, scope ? scope : "(top)",
+          name ? name : "?", ty_name(from), ty_name(to), g_wlog_ivl);
+  fputc('}', f);
+}
+static void sp_wlog_rec(const char *pass, const char *kind, const char *scope,
+                        const char *name, TyKind from, TyKind to) {
+  sp_wlog_rec2(pass, kind, scope, name, from, to, NULL);
+}
+/* 配列を n 要素まで伸ばし、増えた分を TY_UNKNOWN で埋める。 */
+static void sp_wsnap_grow(TyKind **a, int *have, int want) {
+  if (want <= *have) return;
+  *a = (TyKind *)realloc(*a, (size_t)want * sizeof **a);
+  for (int i = *have; i < want; i++) (*a)[i] = TY_UNKNOWN;
+  *have = want;
+}
+static void sp_wsnap_grow2(TyKind ***a, int **have, int *n, int want) {
+  if (want <= *n) return;
+  *a = (TyKind **)realloc(*a, (size_t)want * sizeof **a);
+  *have = (int *)realloc(*have, (size_t)want * sizeof **have);
+  for (int i = *n; i < want; i++) { (*a)[i] = NULL; (*have)[i] = 0; }
+  *n = want;
+}
+void sp_llvm_widen_probe(Compiler *c, const char *pass) {
+  if (!sp_wlog_file()) return;
+  struct sp_wsnap *S = &g_wsnap;
+  sp_wsnap_grow2(&S->loc, &S->nloc, &S->nsc, c->nscopes);
+  sp_wsnap_grow2(&S->ivar, &S->nivar, &S->ncl, c->nclasses);
+  sp_wsnap_grow2(&S->cvar, &S->ncvar, &S->ncl, c->nclasses);
+  sp_wsnap_grow(&S->ret, &S->nret, c->nscopes);
+  sp_wsnap_grow(&S->gv, &S->ngv, c->ngvars);
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    sp_wsnap_grow(&S->loc[s], &S->nloc[s], sc->nlocals);
+    for (int i = 0; i < sc->nlocals; i++) {
+      LocalVar *lv = &sc->locals[i];
+      if (S->loc[s][i] == lv->type) continue;
+      if (sp_is_tracked_widened(S->loc[s][i]) && !sp_is_tracked_widened(lv->type))
+        sp_wb_narrow(c, SP_REF_LOCAL(s, i), lv->type);   /* episode を切る */
+      sp_wlog_rec2(pass, lv->is_param ? "param" : "local", sc->name, lv->name,
+                   S->loc[s][i], lv->type, &lv->type);
+      S->loc[s][i] = lv->type;
+    }
+    if (S->ret[s] != sc->ret) {
+      if (sp_is_tracked_widened(S->ret[s]) && !sp_is_tracked_widened(sc->ret)) sp_wb_narrow(c, SP_REF_RETURN(s), sc->ret);
+      sp_wlog_rec2(pass, "ret", sc->name, "(return)", S->ret[s], sc->ret, &sc->ret);
+      S->ret[s] = sc->ret;
+    }
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *cl = &c->classes[k];
+    sp_wsnap_grow(&S->ivar[k], &S->nivar[k], cl->nivars);
+    for (int i = 0; i < cl->nivars; i++) {
+      if (S->ivar[k][i] == cl->ivar_types[i]) continue;
+      if (sp_is_tracked_widened(S->ivar[k][i]) && !sp_is_tracked_widened(cl->ivar_types[i]))
+        sp_wb_narrow(c, SP_REF_IVAR(k, i), cl->ivar_types[i]);
+      sp_wlog_rec2(pass, "ivar", cl->name, cl->ivars[i], S->ivar[k][i], cl->ivar_types[i],
+                   &cl->ivar_types[i]);
+      S->ivar[k][i] = cl->ivar_types[i];
+    }
+  }
+  for (int i = 0; i < c->ngvars; i++) {
+    if (S->gv[i] == c->gvars[i].type) continue;
+    sp_wlog_rec2(pass, "gvar", "(global)", c->gvars[i].name, S->gv[i], c->gvars[i].type,
+                 &c->gvars[i].type);
+    S->gv[i] = c->gvars[i].type;
+  }
+  g_wlog_ivl++;   /* spinel-llvm L5 / E125: ここから次の区間 */
+}
+/* spinel-llvm L5 (E123): ty_unify が poly を返した組を数える (R026 の案 B の最小形)。 */
+/* spinel-llvm L5 / E124: ty_unify が poly を返した (site, a, b) を数える。
+   site は呼び出し地点 = どの規則が合流させたか (R026 の案 B)。 */
+struct sp_ujoin { const char *site; unsigned char a, b; unsigned n; long ivl; };
+static struct sp_ujoin *g_uj; static int g_uj_n, g_uj_cap;
+void sp_llvm_unify_note(TyKind a, TyKind b, const char *site) {
+  if (!sp_wlog_file()) return;
+  int x = (int)a, y = (int)b;
+  if (x > y) { int t = x; x = y; y = t; }   /* 対称なので順序を正規化 */
+  for (int i = 0; i < g_uj_n; i++)
+    if (g_uj[i].site == site && g_uj[i].a == (unsigned char)x && g_uj[i].b == (unsigned char)y &&
+        g_uj[i].ivl == g_wlog_ivl) {
+      g_uj[i].n++; return;                  /* site は文字列リテラルなのでポインタ比較でよい */
+    }
+  if (g_uj_n >= g_uj_cap) {
+    g_uj_cap = g_uj_cap ? g_uj_cap * 2 : 128;
+    g_uj = (struct sp_ujoin *)realloc(g_uj, (size_t)g_uj_cap * sizeof *g_uj);
+  }
+  g_uj[g_uj_n].site = site; g_uj[g_uj_n].a = (unsigned char)x;
+  g_uj[g_uj_n].b = (unsigned char)y; g_uj[g_uj_n].n = 1;
+  g_uj[g_uj_n].ivl = g_wlog_ivl; g_uj_n++;
+}
+const char *sp_llvm_last_poly_site;
+static void sp_llvm_unify_dump(void) {
+  FILE *f = g_wlog; if (!f) return;
+  fputs("\n  ],\n  \"unify_poly\": [\n", f);
+  for (int i = 0; i < g_uj_n; i++)
+    fprintf(f, "%s    {\"site\":\"%s\",\"a\":\"%s\",\"b\":\"%s\",\"n\":%u,\"ivl\":%ld}",
+            i ? ",\n" : "", g_uj[i].site ? g_uj[i].site : "?",
+            ty_name((TyKind)g_uj[i].a), ty_name((TyKind)g_uj[i].b), g_uj[i].n, g_uj[i].ivl);
+}
+/* ★ provenance の対象とする「広がった状態」を 1 箇所に閉じ込める (②、2026-08-24)。
+   TY_POLY だけでは、poly な容器 (`@index[name]` の poly_poly_hash など) が
+   いつ・なぜ容器になったかを追えず、blame が「容器を添字で引いた地点」で止まる。 */
+int sp_is_tracked_widened(TyKind t) {
+  return t == TY_POLY || t == TY_POLY_ARRAY ||
+         t == TY_SYM_POLY_HASH || t == TY_STR_POLY_HASH || t == TY_POLY_POLY_HASH;
+}
+/* 遷移表を明示する。TyKind は線形順序ではないので rank を作らない。
+   v1 の対象は 2 段だけ:
+     ① 具体的な配列/ハッシュ (や他の具体型) -> poly 容器
+     ② poly 容器 -> TY_POLY                  (さらなる劣化) */
+int sp_is_widening_transition(TyKind o, TyKind n) {
+  if (!sp_is_tracked_widened(n)) return 0;
+  if (!sp_is_tracked_widened(o)) return 1;              /* ① */
+  if (n == TY_POLY && o != TY_POLY) return 1;           /* ② */
+  return 0;
+}
+/* --- spinel-llvm L5 / Widening Blame (Phase 2) ------------------------------
+   設計は docs/reference/widening_provenance_design.md。
+     event graph : parent_event_id で blame を計算する
+     slot graph  : source -> target で型の流れを説明する
+   active_widen_event[slot] = いま、そのスロットの「広がった状態」を説明している event_id。
+   narrow で 0 に戻し、episode を進める (probe が検出する)。 */
+struct sp_wb {
+  unsigned long long *node;  int nnode;         /* [node_id] */
+  unsigned long long **loc;  int *nloc; int nsc;/* [scope][local] */
+  unsigned long long *ret;   int nret;          /* [scope] */
+  unsigned long long **ivar; int *nivar;        /* [class][ivar] */
+  unsigned long long **cvar; int *ncvar; int ncl;
+  unsigned long long *gv;    int ngv;
+  unsigned *ep_loc_n;                            /* episode は slot 単位で持つ */
+};
+static struct sp_wb g_wb;
+static unsigned long long g_wb_seq;   /* event_id は 1 から。0 = ID なし */
+static long g_wb_n;                   /* 出力したイベント数 */
+/* ★ イベントは構造体で持つ。同一 episode 内で incoming がより確かになったら
+   親を「貼り替える」ため、書き出しは close まで遅らせる (設計の往復で決定)。 */
+struct sp_wb_ev {
+  unsigned long long id;
+  SpTypeRef target, source;
+  SpWidenSemantics sem;
+  TyKind old_ty, source_ty, new_ty;
+  char *reason; const char *region;
+  int site_node, iteration;
+  SpParentKind pkind; unsigned long long pid;
+  int reattached;              /* 貼り替えた回数 (正直さのために持つ) */
+};
+static struct sp_wb_ev *g_wb_ev; static int g_wb_ev_n, g_wb_ev_cap;
+static char *sp_wb_dup(const char *t) {
+  if (!t) t = "?";
+  size_t n = strlen(t) + 1;
+  char *p = (char *)malloc(n);
+  if (p) memcpy(p, t, n);
+  return p;
+}
+static struct sp_wb_ev *sp_wb_ev_find(unsigned long long id) {
+  for (int i = g_wb_ev_n - 1; i >= 0; i--) if (g_wb_ev[i].id == id) return &g_wb_ev[i];
+  return NULL;
+}
+
+static void sp_wb_grow1(unsigned long long **a, int *have, int want) {
+  if (want <= *have) return;
+  *a = (unsigned long long *)realloc(*a, (size_t)want * sizeof **a);
+  for (int i = *have; i < want; i++) (*a)[i] = 0;
+  *have = want;
+}
+static void sp_wb_grow2(unsigned long long ***a, int **have, int *n, int want) {
+  if (want <= *n) return;
+  *a = (unsigned long long **)realloc(*a, (size_t)want * sizeof **a);
+  *have = (int *)realloc(*have, (size_t)want * sizeof **have);
+  for (int i = *n; i < want; i++) { (*a)[i] = NULL; (*have)[i] = 0; }
+  *n = want;
+}
+/* スロットに対応する active_poly_event のスロットを返す (無ければ NULL)。 */
+static unsigned long long *sp_wb_cell(Compiler *c, SpTypeRef r) {
+  switch (r.kind) {
+    case SP_SLOT_NODE:
+      if (r.a < 0) return NULL;
+      sp_wb_grow1(&g_wb.node, &g_wb.nnode, c->node_cap > r.a + 1 ? c->node_cap : r.a + 1);
+      return &g_wb.node[r.a];
+    case SP_SLOT_LOCAL:
+      if (r.a < 0 || r.b < 0) return NULL;
+      sp_wb_grow2(&g_wb.loc, &g_wb.nloc, &g_wb.nsc, c->nscopes > r.a + 1 ? c->nscopes : r.a + 1);
+      sp_wb_grow1(&g_wb.loc[r.a], &g_wb.nloc[r.a], r.b + 1);
+      return &g_wb.loc[r.a][r.b];
+    case SP_SLOT_RETURN:
+      if (r.a < 0) return NULL;
+      sp_wb_grow1(&g_wb.ret, &g_wb.nret, c->nscopes > r.a + 1 ? c->nscopes : r.a + 1);
+      return &g_wb.ret[r.a];
+    case SP_SLOT_IVAR:
+      if (r.a < 0 || r.b < 0) return NULL;
+      sp_wb_grow2(&g_wb.ivar, &g_wb.nivar, &g_wb.ncl, c->nclasses > r.a + 1 ? c->nclasses : r.a + 1);
+      sp_wb_grow2(&g_wb.cvar, &g_wb.ncvar, &g_wb.ncl, c->nclasses > r.a + 1 ? c->nclasses : r.a + 1);
+      sp_wb_grow1(&g_wb.ivar[r.a], &g_wb.nivar[r.a], r.b + 1);
+      return &g_wb.ivar[r.a][r.b];
+    case SP_SLOT_CVAR:
+      if (r.a < 0 || r.b < 0) return NULL;
+      sp_wb_grow2(&g_wb.ivar, &g_wb.nivar, &g_wb.ncl, c->nclasses > r.a + 1 ? c->nclasses : r.a + 1);
+      sp_wb_grow2(&g_wb.cvar, &g_wb.ncvar, &g_wb.ncl, c->nclasses > r.a + 1 ? c->nclasses : r.a + 1);
+      sp_wb_grow1(&g_wb.cvar[r.a], &g_wb.ncvar[r.a], r.b + 1);
+      return &g_wb.cvar[r.a][r.b];
+    case SP_SLOT_GVAR:
+      if (r.a < 0) return NULL;
+      sp_wb_grow1(&g_wb.gv, &g_wb.ngv, c->ngvars > r.a + 1 ? c->ngvars : r.a + 1);
+      return &g_wb.gv[r.a];
+    default: return NULL;   /* NONE / UNINSTRUMENTED / MULTI は場所を持たない */
+  }
+}
+static const char *sp_wb_kind_name(SpSlotKind k) {
+  switch (k) {
+    case SP_SLOT_NODE: return "node";      case SP_SLOT_LOCAL: return "local";
+    case SP_SLOT_RETURN: return "return";  case SP_SLOT_IVAR: return "ivar";
+    case SP_SLOT_CVAR: return "cvar";      case SP_SLOT_GVAR: return "gvar";
+    case SP_SLOT_MULTI: return "(multi)";
+    case SP_SLOT_UNINSTRUMENTED: return "(uninstrumented)";
+    default: return "(none)";
+  }
+}
+static const char *sp_wb_parent_name(SpParentKind k) {
+  switch (k) {
+    case SP_PARENT_ROOT: return "root";   case SP_PARENT_EVENT: return "event";
+    case SP_PARENT_MULTI: return "multi"; default: return "unknown";
+  }
+}
+/* pass 境界で poly -> 非 poly を観測したとき、その slot の active を落とす。
+   次に poly になったら別 episode の entry として記録される (§9.2)。 */
+static void sp_wb_narrow(Compiler *c, SpTypeRef r, TyKind newt) {
+  /* ★ poly -> unknown は「内部リセット」であって narrow ではない。
+     E121 の再狭窄 (Optimistic re-narrow) は毎反復スロットを TY_UNKNOWN に
+     クリアしてから再導出するので、それを episode 境界と数えると
+     反復回数ぶん episode が増える。**具体型に落ち着いたときだけ**切る。 */
+  if (newt == TY_UNKNOWN || sp_is_tracked_widened(newt)) return;
+  unsigned long long *cell = sp_wb_cell(c, r);
+  if (cell) *cell = 0;
+}
+int sp_llvm_widen_on(void) { return sp_wlog_file() != NULL; }
+void sp_widen_note(Compiler *c, SpTypeRef target, SpTypeRef source,
+                   SpWidenSemantics sem, TyKind old_ty, TyKind source_ty,
+                   TyKind new_ty, const char *reason, int site_node) {
+  if (!sp_wlog_file()) return;
+  unsigned long long *cell = sp_wb_cell(c, target);
+  /* ここでは episode を切らない (pass の再計算中は正当に非 poly を通過する)。 */
+  if (!sp_is_widening_transition(old_ty, new_ty)) return;
+  /* ★ old_ty が既に poly なら、この観測は「marginal cause」ではない (設計 §0.1)。
+     貼り替えの材料にもしない — incoming だけ差し替えると old/new と辻褄の合わない
+     レコードになり、`unknown + int -> poly` のような**ありえない組**が root として
+     並ぶ (実際に出た。2026-08-24)。
+     貼り替えは「不動点が再計算して同じスロットに再入したとき」に起きる:
+     infer_write_types は毎周スロットを TY_UNKNOWN にリセットするので、
+     後の周ほど source の型が確かになった状態で entry が再来する。 */
+  /* (old が既に同等以上に広がっている場合は上の遷移判定で弾かれている) */
+
+  /* 親の決定 (設計 §9.2b-2 の v1 判定表) */
+  SpParentKind pk; unsigned long long pid = 0;
+  if (source.kind == SP_SLOT_UNINSTRUMENTED)      pk = SP_PARENT_UNKNOWN;
+  else if (source.kind == SP_SLOT_MULTI)          pk = SP_PARENT_MULTI;
+  else if (source.kind == SP_SLOT_NONE)           pk = SP_PARENT_ROOT;   /* FALLBACK */
+  else if (sem == SP_WIDEN_MERGE) {
+    /* MERGE: target_old_ty と source_ty は合流の被演算子 (設計 §4.0b) */
+    if (source_ty == TY_UNKNOWN)                  pk = SP_PARENT_UNKNOWN;
+    else if (!sp_is_tracked_widened(source_ty))   pk = SP_PARENT_ROOT;   /* 具体型どうしの衝突 */
+    else {
+      unsigned long long *sc2 = sp_wb_cell(c, source);
+      if (sc2 && *sc2) { pk = SP_PARENT_EVENT; pid = *sc2; } else pk = SP_PARENT_UNKNOWN;
+    }
+  } else {
+    /* MATERIALIZE: 合流ではない。まず source の active provenance を見る。
+       無ければ「その source がなぜ poly を運べたか」は観測していない = UNKNOWN。
+       ★ source_ty が具体でも ROOT にはしない (§4.0b)。 */
+    unsigned long long *sc2 = sp_wb_cell(c, source);
+    if (sc2 && *sc2) { pk = SP_PARENT_EVENT; pid = *sc2; }
+    else pk = SP_PARENT_UNKNOWN;
+  }
+
+  /* ★ 貼り替え: 同一 episode に既に event があるなら、作り直さず更新する。
+     不動点は未確定から始まるので「最初の 1 回」は情報が最も少ない
+     (doom で parent=unknown の 8 割が incoming=unknown だった)。
+     より確かな観測 (parent_kind が UNKNOWN でない) が来たら親を貼り替える。 */
+  if (cell && *cell) {
+    struct sp_wb_ev *e = sp_wb_ev_find(*cell);
+    if (!e || pk == SP_PARENT_UNKNOWN) return;   /* 情報が増えないなら触らない */
+    if (e->pkind == pk && e->pid == pid && e->source_ty == source_ty) return;
+    e->source = source; e->source_ty = source_ty; e->pkind = pk; e->pid = pid;
+    e->sem = sem; e->old_ty = old_ty; e->new_ty = new_ty;   /* 観測を丸ごと置き換える */
+    e->site_node = site_node; e->iteration = g_wlog_iter; e->region = g_wlog_region;
+    free(e->reason); e->reason = sp_wb_dup(reason);
+    e->reattached++;
+    return;
+  }
+
+  if (g_wb_ev_n >= g_wb_ev_cap) {
+    g_wb_ev_cap = g_wb_ev_cap ? g_wb_ev_cap * 2 : 256;
+    g_wb_ev = (struct sp_wb_ev *)realloc(g_wb_ev, (size_t)g_wb_ev_cap * sizeof *g_wb_ev);
+  }
+  struct sp_wb_ev *e = &g_wb_ev[g_wb_ev_n++];
+  e->id = ++g_wb_seq; e->target = target; e->source = source;
+  e->sem = sem; e->old_ty = old_ty; e->source_ty = source_ty; e->new_ty = new_ty;
+  e->reason = sp_wb_dup(reason); e->region = g_wlog_region;
+  e->site_node = site_node; e->iteration = g_wlog_iter;
+  e->pkind = pk; e->pid = pid; e->reattached = 0;
+  if (cell) *cell = e->id;
+}
+static void sp_wb_dump(void) {
+  FILE *f = g_wlog; if (!f) return;
+  for (int i = 0; i < g_wb_ev_n; i++) {
+    struct sp_wb_ev *e = &g_wb_ev[i];
+    fprintf(f, "%s    {\"event_id\":%llu,\"target_kind\":\"%s\",\"t_a\":%d,\"t_b\":%d,"
+               "\"source_kind\":\"%s\",\"s_a\":%d,\"s_b\":%d,"
+               "\"semantics\":\"%s\",\"target_old_ty\":\"%s\",\"source_ty\":\"%s\",\"result_ty\":\"%s\","
+               "\"reason\":\"%s\",\"site_node\":%d,\"iteration\":%d,\"region\":\"%s\","
+               "\"parent_kind\":\"%s\",\"parent_event_id\":%llu,\"reattached\":%d}",
+            i ? ",\n" : "", e->id, sp_wb_kind_name(e->target.kind), e->target.a, e->target.b,
+            sp_wb_kind_name(e->source.kind), e->source.a, e->source.b,
+            e->sem == SP_WIDEN_MERGE ? "merge" :
+              e->sem == SP_WIDEN_MATERIALIZE ? "materialize" : "fallback",
+            ty_name(e->old_ty), ty_name(e->source_ty), ty_name(e->new_ty),
+            e->reason ? e->reason : "?", e->site_node, e->iteration,
+            e->region ? e->region : "?", sp_wb_parent_name(e->pkind), e->pid, e->reattached);
+  }
+}
+/* --- end Widening Blame ----------------------------------------------------- */
+/* --- spinel-llvm L5 / E126 Phase 1: poly スロットの inventory --------------
+   解析終了時に「型推論が poly と判断したスロット」を全部出す。
+   ★ 鍵はポインタではなく安定 ID:
+       node   : node_id
+       local  : (scope_idx, local_idx)   ※ locals は realloc で動くのでポインタ不可
+       return : scope_idx
+       ivar   : (class_idx, ivar_idx)
+       gvar   : gvar_idx
+   node_id は L2/L3/L4 の sidecar と同じ鍵なので、codegen の申告と join できる。 */
+static void sp_llvm_inventory(Compiler *c) {
+  FILE *f = g_wlog; if (!f) return;
+  fputs("\n  ],\n  \"poly_inventory\": [\n", f);
+  int n = 0;
+  #define INV_SEP() (n++ ? ",\n" : "")
+  for (int id = 0; c->ntype && id < c->node_cap; id++) {
+    if (c->ntype[id] != TY_POLY) continue;
+    const char *k = nt_type(c->nt, id);
+    fprintf(f, "%s    {\"kind\":\"node\",\"node\":%d,\"node_kind\":\"%s\"}",
+            INV_SEP(), id, k ? k : "?");
+  }
+  for (int s2 = 0; s2 < c->nscopes; s2++) {
+    Scope *sc = &c->scopes[s2];
+    for (int i = 0; i < sc->nlocals; i++) {
+      LocalVar *lv = &sc->locals[i];
+      if (lv->type != TY_POLY) continue;
+      fprintf(f, "%s    {\"kind\":\"%s\",\"scope_id\":%d,\"local_id\":%d,"
+                 "\"scope\":\"%s\",\"slot\":\"%s\"}",
+              INV_SEP(), lv->is_param ? "param" : "local", s2, i,
+              sc->name ? sc->name : "(top)", lv->name ? lv->name : "?");
+    }
+    if (sc->ret == TY_POLY)
+      fprintf(f, "%s    {\"kind\":\"return\",\"scope_id\":%d,\"scope\":\"%s\"}",
+              INV_SEP(), s2, sc->name ? sc->name : "(top)");
+  }
+  for (int k2 = 0; k2 < c->nclasses; k2++) {
+    ClassInfo *cl = &c->classes[k2];
+    for (int i = 0; i < cl->nivars; i++) {
+      if (cl->ivar_types[i] != TY_POLY) continue;
+      fprintf(f, "%s    {\"kind\":\"ivar\",\"class_id\":%d,\"ivar_id\":%d,"
+                 "\"scope\":\"%s\",\"slot\":\"%s\"}",
+              INV_SEP(), k2, i, cl->name ? cl->name : "?",
+              cl->ivars[i] ? cl->ivars[i] : "?");
+    }
+  }
+  for (int k2 = 0; k2 < c->nclasses; k2++) {
+    ClassInfo *cl = &c->classes[k2];
+    for (int i = 0; i < cl->ncvars; i++) {   /* ★ ivar と別 namespace */
+      if (cl->cvar_types[i] != TY_POLY) continue;
+      fprintf(f, "%s    {\"kind\":\"cvar\",\"class_id\":%d,\"cvar_id\":%d,"
+                 "\"scope\":\"%s\",\"slot\":\"%s\"}",
+              INV_SEP(), k2, i, cl->name ? cl->name : "?",
+              cl->cvars[i] ? cl->cvars[i] : "?");
+    }
+  }
+  for (int i = 0; i < c->ngvars; i++) {
+    if (c->gvars[i].type != TY_POLY) continue;
+    fprintf(f, "%s    {\"kind\":\"gvar\",\"gvar_id\":%d,\"slot\":\"%s\"}",
+            INV_SEP(), i, c->gvars[i].name ? c->gvars[i].name : "?");
+  }
+  #undef INV_SEP
+}
+/* --- end E126 Phase 1 ------------------------------------------------------ */
+static void sp_llvm_widen_close(Compiler *c) {
+  if (!g_wlog) return;
+  fputs("\n  ],\n  \"widen_events\": [\n", g_wlog);   /* Widening Blame (Phase 2) */
+  sp_wb_dump();
+  sp_llvm_inventory(c);   /* E126 Phase 1 */
+  sp_llvm_unify_dump();   /* spinel-llvm L5 (E123) */
+  fputs("\n  ]\n}\n", g_wlog);
+  fclose(g_wlog); g_wlog = NULL;
+}
+#define SP_WPROBE(NM) sp_llvm_widen_probe(c, NM)
+/* --- end spinel-llvm patch L5 ---------------------------------------------- */
 void analyze_program(Compiler *c) {
   comp_scope_index_set_frozen(0);  /* scope shape changes during the passes below */
   /* scope 0 = top level */
@@ -12431,42 +12863,69 @@ void analyze_program(Compiler *c) {
       nt_node_set_arr(ntm, st, "body", &bd, 1);
       nt_node_set_ref(ntm, id, "body", st);
       comp_grow_node_arrays(c);
+      SP_WPROBE("comp_grow_node_arrays");
     }
   }
   scope_numbered_block_params(c);
   rename_shadowing_block_params(c);
+  SP_WPROBE("rename_shadowing_block_params");
   /* `:m.to_proc.call(r, a)` -> `r.m(a)`, before the to_proc rewrite below
      turns the receiver into a fixed-arity lambda (#3097). */
   desugar_sym_to_proc_call(c);
+  SP_WPROBE("desugar_sym_to_proc_call");
   desugar_enum_chain_shapes(c);          /* each_char.with_index / each.with_object */
+  SP_WPROBE("desugar_enum_chain_shapes");
   desugar_enum_chain_shapes(c);          /* 2nd pass: shapes the 1st created (e.g.
+  SP_WPROBE("desugar_enum_chain_shapes");
                                             map(&:sym.to_proc): to_proc->lambda first,
                                             then the lambda block attaches) */
   desugar_rightward_nested_pattern(c);   /* `x => {k: C(v:)}` -> one-arm case/in */
   desugar_sort_by_with_index(c);         /* sort_by.with_index -> each_with_index.sort_by */
   desugar_forwarding_to_rest_callee(c);  /* def m(...) = f(*a, **k) -> anon *, ** */
+  SP_WPROBE("desugar_sort_by_with_index");
   desugar_block_implicit_rest(c);        /* |x,| -> |x, __implicit_rest| (destructures) */
+  SP_WPROBE("desugar_block_implicit_rest");
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
+  SP_WPROBE("desugar_block_destructure_params");
   desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
+  SP_WPROBE("desugar_enumerator_produce");
   qualify_colliding_consts(c);
+  SP_WPROBE("qualify_colliding_consts");
   qualify_colliding_classes(c);
+  SP_WPROBE("qualify_colliding_classes");
   walk_scope(c, c->nt->root_id, 0, -1);
   expand_static_splat_args(c);
+  SP_WPROBE("expand_static_splat_args");
   register_singleton_defs(c);   /* def CONST.m / def x.m -> synthesized subclass */
+  SP_WPROBE("register_singleton_defs");
   register_structs(c);
+  SP_WPROBE("register_structs");
   desugar_struct_index_ctor(c);
+  SP_WPROBE("desugar_struct_index_ctor");
   fix_struct_block_scopes(c);
+  SP_WPROBE("fix_struct_block_scopes");
   register_module_functions(c);
+  SP_WPROBE("register_module_functions");
   register_locals(c);
+  SP_WPROBE("register_locals");
   register_attrs(c);
+  SP_WPROBE("register_attrs");
   register_method_visibility(c);
+  SP_WPROBE("register_method_visibility");
   register_aliases(c);
+  SP_WPROBE("register_aliases");
   register_undefs(c);
+  SP_WPROBE("register_undefs");
   register_globals_consts(c);
+  SP_WPROBE("register_globals_consts");
   rewrite_const_alias_receivers(c);
+  SP_WPROBE("rewrite_const_alias_receivers");
   reject_env_value_uses(c);
+  SP_WPROBE("reject_env_value_uses");
   register_ffi_decls(c);
+  SP_WPROBE("register_ffi_decls");
   topup_forwarding_arity(c);
+  SP_WPROBE("topup_forwarding_arity");
 
   /* rescue variables (`rescue => e`) are typed as exception objects. When the
      arm names exactly one user exception subclass that carries ivars, type the
@@ -12512,12 +12971,19 @@ void analyze_program(Compiler *c) {
   }
 
   resolve_parents(c);
+  SP_WPROBE("resolve_parents");
   inherit_members(c);
+  SP_WPROBE("inherit_members");
   register_includes(c);
+  SP_WPROBE("register_includes");
   register_include_attrs(c);
+  SP_WPROBE("register_include_attrs");
   register_extends(c);
+  SP_WPROBE("register_extends");
   register_prepends(c);
+  SP_WPROBE("register_prepends");
   specialize_inherited_cls_new(c);
+  SP_WPROBE("specialize_inherited_cls_new");
 
   /* collect top-level `include <Mod>` / `extend <Mod>` calls so bare method
      calls can resolve to those modules' methods. At the top level the two
@@ -12641,14 +13107,21 @@ void analyze_program(Compiler *c) {
   }
 
   synth_struct_each(c);
+  SP_WPROBE("synth_struct_each");
   synth_enum_to_a(c);
+  SP_WPROBE("synth_enum_to_a");
   synth_to_enum_generators(c);
+  SP_WPROBE("synth_to_enum_generators");
   /* pre-fixpoint: an empty `{}` block-method receiver types as the STR_POLY
      hash so infer_block_params declares its |k, v| params (#2336). */
   mark_empty_hash_receivers(c);
+  SP_WPROBE("mark_empty_hash_receivers");
   mark_empty_hash_enum_locals(c);
+  SP_WPROBE("mark_empty_hash_enum_locals");
   mark_empty_literal_tails(c);
+  SP_WPROBE("mark_empty_literal_tails");
   mark_empty_literal_args(c);
+  SP_WPROBE("mark_empty_literal_args");
   /* after the arg/receiver marks: a bare `{}` with no other context takes its
      variant from the peer it is compared against (#3040) or from the key it is
      indexed with (#3028, #3029) */
@@ -12657,10 +13130,13 @@ void analyze_program(Compiler *c) {
      the node table with method lookups underneath. */
   comp_scope_index_set_frozen(1);
   mark_mixed_key_hash_locals(c);
+  SP_WPROBE("mark_mixed_key_hash_locals");
   mark_empty_hash_cmp_peers(c);
+  SP_WPROBE("mark_empty_hash_cmp_peers");
   (void)mark_empty_hash_key_ctx(c);
   mark_empty_hash_const_writes(c);
   comp_scope_index_set_frozen(0);
+  SP_WPROBE("mark_empty_hash_const_writes");
 
   /* A bare identifier inside a class method that names a `class << self`
      attr reader is an implicit-self read of that singleton attribute; give it
@@ -13062,13 +13538,19 @@ void analyze_program(Compiler *c) {
   for (int pf_round = 0; pf_round < 2; pf_round++) {
   if (pf_round == 1 && !make_yield_proc_forms(c)) break;
   g_infer_optimistic = 1;
+  SP_WPROBE("(before-fixpoint)");   /* spinel-llvm L5: 基準線 */
+  g_wlog_region = "fixpoint";
   for (int iter = 0; iter < 128; iter++) {
     if (iter + 1 > g_fixpoint_rounds) g_fixpoint_rounds = iter + 1;
+    g_wlog_iter = iter;   /* spinel-llvm L5 */
     int ch = 0;
     sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
     build_ie_map(c);  /* refresh instance_exec receiver-class map each pass */
+    SP_WPROBE("build_ie_map");
     ch |= register_ie_block_ivars(c);  /* slot ivars first assigned in iexec blocks */
+    SP_WPROBE("register_ie_block_ivars");
     ch |= infer_write_types(c);
+    SP_WPROBE("infer_write_types");
     /* The table type has to be visible HERE, not after the fixpoint: a
        parameter bound from `@t[k][j]` widens to poly on the first iteration
        and never comes back (parameters only widen). The narrowing needs
@@ -13086,97 +13568,174 @@ void analyze_program(Compiler *c) {
        (needs the receiver kind, so it runs inside the fixpoint). */
     if (desugar_enumerable_via_to_a(c)) ch |= infer_write_types(c);
     narrow_locals_from_arrays(c);
+    SP_WPROBE("narrow_locals_from_arrays");
     ch |= infer_param_types(c);
     reassert_rbs_param_seeds(c);   /* a seed outranks a narrowing derived from one call site */
+    SP_WPROBE("infer_param_types");
     ch |= bind_coerce_operator_params(c);   /* 3 + obj calls obj's op WITH obj */
+    SP_WPROBE("bind_coerce_operator_params");
     ch |= infer_param_hash_value(c);
+    SP_WPROBE("infer_param_hash_value");
     ch |= propagate_prep_params(c);
+    SP_WPROBE("propagate_prep_params");
     ch |= infer_string_params(c);
+    SP_WPROBE("infer_string_params");
     ch |= infer_default_param_types(c);
+    SP_WPROBE("infer_default_param_types");
     ch |= expand_literal_splat_args(c);        /* builtin/proc m(*[a,b]) -> m(a, b) */
+    SP_WPROBE("expand_literal_splat_args");
     ch |= pin_arg_position_hash_new(c);        /* f(Hash.new(d)) -> PolyPoly variant */
+    SP_WPROBE("pin_arg_position_hash_new");
     ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
+    SP_WPROBE("pad_unsupplied_params");
     ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
+    SP_WPROBE("desugar_builtin_method_obj");
     ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
+    SP_WPROBE("desugar_include_math");
     ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
+    SP_WPROBE("desugar_kernel_recv");
     ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
+    SP_WPROBE("desugar_class_literal_ctors");
     ch |= desugar_multi_yield_map_param(c);    /* multi-yield each: map's |x| takes the 1st */
+    SP_WPROBE("desugar_multi_yield_map_param");
     ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
     ch |= give_native_self_calls_a_receiver(c);  /* native class: implicit self -> self.m */
     ch |= give_self_predicates_a_receiver(c);    /* is_a?(X) on implicit self -> self.is_a?(X) */
+    SP_WPROBE("desugar_enum_method_recv");
     ch |= desugar_for_enumerable(c);           /* for x in obj -> for x in obj.__enum_to_a */
+    SP_WPROBE("desugar_for_enumerable");
     ch |= desugar_lazy_terminal(c);            /* lz.sum -> lz.to_a.sum */
+    SP_WPROBE("desugar_lazy_terminal");
     ch |= desugar_string_upto(c);              /* "a".upto("c") -> ("a".."c").each */
+    SP_WPROBE("desugar_string_upto");
     ch |= desugar_file_stat_new(c);            /* File::Stat.new(p) -> File.stat(p) */
+    SP_WPROBE("desugar_file_stat_new");
     ch |= desugar_module_function_call(c);     /* helper(x) in an includer -> M.helper(x) */
+    SP_WPROBE("desugar_module_function_call");
     ch |= desugar_method_block_arg(c);         /* m(&method(:x)) -> m(&method(:x).to_proc) */
+    SP_WPROBE("desugar_method_block_arg");
     ch |= desugar_curry_block_arg(c);          /* iter(&curried) -> iter { |e| curried[e] } */
+    SP_WPROBE("desugar_curry_block_arg");
     ch |= desugar_yielder_block_arg(c);        /* src.each(&y) -> src.each { |e| y << e } */
+    SP_WPROBE("desugar_yielder_block_arg");
     ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
+    SP_WPROBE("desugar_to_enum");
     ch |= type_block_rest_params(c);           /* |*rest| locals are poly arrays */
+    SP_WPROBE("type_block_rest_params");
     ch |= desugar_public_method(c);            /* recv.public_method(:m) -> recv.method(:m) */
+    SP_WPROBE("desugar_public_method");
     ch |= desugar_class_eval_value(c);
+    SP_WPROBE("desugar_class_eval_value");
     ch |= desugar_instance_eval_builtin(c);    /* "s".instance_eval { m } -> splice on a temp */
+    SP_WPROBE("desugar_instance_eval_builtin");
     ch |= desugar_builtin_class_var_recv(c);   /* k = Array; k.new(..) -> Array.new(..) */
+    SP_WPROBE("desugar_builtin_class_var_recv");
     ch |= desugar_compose_method_operand(c);   /* proc >> meth -> proc >> meth.to_proc */
+    SP_WPROBE("desugar_compose_method_operand");
     ch |= desugar_method_curry(c);             /* meth.curry -> meth.to_proc.curry */
     ch |= desugar_curry_arity_to_int(c);       /* proc.curry(obj) -> proc.curry(obj.to_int) */
+    SP_WPROBE("desugar_method_curry");
     ch |= desugar_int_enum_with_index(c);      /* n.times.with_index -> n.times.each.with_index */
+    SP_WPROBE("desugar_int_enum_with_index");
     ch |= widen_shared_cmp_params(c);          /* multi-class <=> takes its operand boxed */
+    SP_WPROBE("widen_shared_cmp_params");
     ch |= desugar_reduce_proc_arg(c);          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
+    SP_WPROBE("desugar_reduce_proc_arg");
     ch |= desugar_block_capture_wrap(c);       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
+    SP_WPROBE("desugar_block_capture_wrap");
     ch |= desugar_user_not_match(c);            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */
+    SP_WPROBE("desugar_user_not_match");
     ch |= desugar_env_enum(c);                 /* ENV.keys/... -> __env_to_h.keys/... */
+    SP_WPROBE("desugar_env_enum");
     ch |= desugar_dir_surface(c);              /* Dir.foreach{} -> entries.each{}, chdir{} splice, ... */           /* C.class_eval { v } -> (->(){v}).call */
+    SP_WPROBE("desugar_dir_surface");
     ch |= desugar_enumerable_chain(c);               /* x.chain(y) / enum+enum -> __enum_chain(x.to_a + y.to_a) */
+    SP_WPROBE("desugar_enumerable_chain");
     ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
+    SP_WPROBE("desugar_implicit_send");
     ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
+    SP_WPROBE("desugar_public_send_recv");
     ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
+    SP_WPROBE("desugar_symbol_string_methods");
     /* re-run inside the fixpoint: a key whose type comes from a PARAMETER is
        still UNKNOWN on the pre-fixpoint pass, so `h[k] ||= []` fell back to
        the StrPolyHash default and handed an Integer key to a const char *
        (#3353). The mark is monotone, so repeating it only ever fills in. */
     ch |= mark_empty_hash_key_ctx(c);
+    SP_WPROBE("mark_empty_hash_key_ctx");
     ch |= desugar_lazy_stateful_stage(c);      /* arr.lazy.uniq -> arr.uniq (finite source) */
+    SP_WPROBE("desugar_lazy_stateful_stage");
     ch |= desugar_lazy_method_call(c);         /* lz.first where `def lz; ...lazy...; end` */
+    SP_WPROBE("desugar_lazy_method_call");
     ch |= desugar_str_range_methods(c);        /* ("a".."e").map -> .to_a.map */
+    SP_WPROBE("desugar_str_range_methods");
     ch |= desugar_sym_to_proc_call(c);         /* :m.to_proc.call(r, a) -> r.m(a) */
+    SP_WPROBE("desugar_sym_to_proc_call");
     ch |= desugar_reduce_method_symbol(c);     /* reduce(:gcd) -> reduce { |a,x| a.gcd(x) } */
+    SP_WPROBE("desugar_reduce_method_symbol");
     ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
+    SP_WPROBE("desugar_symbol_var_block_arg");
     ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
     ch |= desugar_empty_block_body(c);         /* m { } -> m { nil } */
+    SP_WPROBE("desugar_kernel_method_block_arg");
     ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
+    SP_WPROBE("desugar_hash_block_arg");
     ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
+    SP_WPROBE("desugar_dynamic_send");
     ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
+    SP_WPROBE("desugar_toplevel_instance_exec");
     ch |= desugar_binding_lvget(c);            /* binding.local_variable_get(:x) -> x.itself */
+    SP_WPROBE("desugar_binding_lvget");
     ch |= desugar_step_kwargs(c);              /* n.step(to: X, by: Y) -> n.step(X, Y) */
+    SP_WPROBE("desugar_step_kwargs");
     ch |= desugar_respond_to_probe(c);         /* recv.respond_to?(:m) -> probe recv.m type */
+    SP_WPROBE("desugar_respond_to_probe");
     ch |= desugar_symbol_to_proc_call(c);      /* :sym.to_proc.call(x) -> x.sym */
+    SP_WPROBE("desugar_symbol_to_proc_call");
     ch |= desugar_call_op_write(c);            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
+    SP_WPROBE("desugar_call_op_write");
     ch |= desugar_array_at(c);                 /* a.at(i) -> a[i] */
     ch |= desugar_array_first_last(c);         /* arr.first -> arr[0], arr.last -> arr[-1] */
+    SP_WPROBE("desugar_array_at");
     ch |= desugar_to_h_block(c);               /* recv.to_h{|e|[k,v]} -> recv.map{...}.to_h */
+    SP_WPROBE("desugar_to_h_block");
     ch |= desugar_to_proc_block_arg(c);        /* &obj (user to_proc) -> &(obj.to_proc) hoisted once */
+    SP_WPROBE("desugar_to_proc_block_arg");
     ch |= desugar_proc_expr_block_arg(c);      /* &(a >> b) -> hoisted temp */
+    SP_WPROBE("desugar_proc_expr_block_arg");
     ch |= desugar_to_hash_splat(c);            /* f(**obj) -> f(**obj.to_hash) */
+    SP_WPROBE("desugar_to_hash_splat");
     ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
+    SP_WPROBE("desugar_value_callable_forwards");
     ch |= infer_block_params(c);
+    SP_WPROBE("infer_block_params");
     ch |= infer_for_index(c);
+    SP_WPROBE("infer_for_index");
     ch |= infer_catch_block_params(c);
+    SP_WPROBE("infer_catch_block_params");
     /* Resolve constant types before ivar inference: a destructured constant
        (`CLK_1,.. = (1..8).map{...}`) is transiently poly in infer_write_types
        before its array element type settles, and a monotonic ivar that reads
        it (`@clk += CLK_1`) would lock onto that poly. Resolving constants
        first feeds the settled type into ivar inference. */
     ch |= infer_global_const_types(c);
+    SP_WPROBE("infer_global_const_types");
     ch |= infer_multiwrite_const_types(c);
+    SP_WPROBE("infer_multiwrite_const_types");
     ch |= promote_shared_stored_strings(c);
+    SP_WPROBE("promote_shared_stored_strings");
     ch |= promote_append_accumulators(c);
+    SP_WPROBE("promote_append_accumulators");
     ch |= infer_ivar_types(c);
+    SP_WPROBE("infer_ivar_types");
     ch |= infer_cvar_types(c);
+    SP_WPROBE("infer_cvar_types");
     ch |= infer_inherited_ivars(c);
+    SP_WPROBE("infer_inherited_ivars");
     ch |= infer_return_types(c);
+    SP_WPROBE("infer_return_types");
     ch |= backprop_hash_return_types(c);
+    SP_WPROBE("backprop_hash_return_types");
     if (!ch) {
       /* Converged with the ambiguous guesses held at bottom. Clear the flag
          and keep going: a slot whose evidence never arrived is genuinely
@@ -13199,6 +13758,7 @@ void analyze_program(Compiler *c) {
   }
   g_infer_optimistic = 0;
   }
+  g_wlog_region = "post"; g_wlog_iter = -1;   /* spinel-llvm L5 */
 
   /* Optimistic re-narrow: the monotonic fixpoint locks a slot to poly the
      first time it sees a transient poly (a value read before its type settled,
@@ -13288,9 +13848,11 @@ void analyze_program(Compiler *c) {
         for (int k = 0; k < nrec; k++) c->classes[recCi[k]].ivar_types[recIv[k]] = TY_UNKNOWN;
         for (int k = 0; k < nlrec; k++) lprev[k] = c->scopes[recLs[k]].locals[recLi[k]].type;
         for (int k = 0; k < nlrec; k++) c->scopes[recLs[k]].locals[recLi[k]].type = TY_UNKNOWN;
+        SP_WPROBE("(renarrow-clear)");   /* spinel-llvm L5: リセットを可視化する (E121) */
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
         int ch = 0;
         ch |= infer_write_types(c);
+        SP_WPROBE("infer_write_types");
         /* E098 EXPLORATORY: re-clear the recorded poly params HERE, not at the
            iteration top.  infer_write_types above both reads params (to type
            locals) and applies body assignments to them; clearing before it
@@ -13299,25 +13861,42 @@ void analyze_program(Compiler *c) {
            this iteration, and the body-assignment contribution is re-applied
            by the extra infer_write_types below. */
         ch |= infer_param_types(c);
+        SP_WPROBE("infer_param_types");
         ch |= bind_coerce_operator_params(c);   /* 3 + obj calls obj's op WITH obj */
+        SP_WPROBE("bind_coerce_operator_params");
         ch |= infer_param_hash_value(c);
+        SP_WPROBE("infer_param_hash_value");
         ch |= propagate_prep_params(c);
+        SP_WPROBE("propagate_prep_params");
         ch |= infer_string_params(c);
+        SP_WPROBE("infer_string_params");
         ch |= infer_default_param_types(c);
+        SP_WPROBE("infer_default_param_types");
         ch |= infer_block_params(c);
+        SP_WPROBE("infer_block_params");
         ch |= infer_for_index(c);
+        SP_WPROBE("infer_for_index");
         ch |= infer_catch_block_params(c);
+        SP_WPROBE("infer_catch_block_params");
         ch |= infer_global_const_types(c);
+        SP_WPROBE("infer_global_const_types");
         ch |= infer_multiwrite_const_types(c);
+        SP_WPROBE("infer_multiwrite_const_types");
         ch |= infer_ivar_types(c);
+        SP_WPROBE("infer_ivar_types");
         /* AFTER the ivar write-merge: the re-clear zeroes recorded ivars at
            each iteration's top, so a promote gated on STRING must see the
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
         ch |= promote_shared_stored_strings(c);
+        SP_WPROBE("promote_shared_stored_strings");
         ch |= promote_append_accumulators(c);
+        SP_WPROBE("promote_append_accumulators");
         ch |= widen_shared_cmp_params(c);
+        SP_WPROBE("widen_shared_cmp_params");
         ch |= infer_cvar_types(c);
+        SP_WPROBE("infer_cvar_types");
         ch |= infer_inherited_ivars(c);
+        SP_WPROBE("infer_inherited_ivars");
         /* Clear the recorded poly returns HERE, immediately before their own
            re-derivation, not at the iteration top.  Everything above binds from
            call-site arguments and ivars whose types flow THROUGH these returns;
@@ -13331,6 +13910,7 @@ void analyze_program(Compiler *c) {
         for (int k = 0; k < nrrec; k++) rprev[k] = c->scopes[recRs[k]].ret;
         for (int k = 0; k < nrrec; k++) c->scopes[recRs[k]].ret = TY_UNKNOWN;
         ch |= infer_return_types(c);
+        SP_WPROBE("infer_return_types");
         /* With reset ivars, the re-clear makes infer_ivar_types report change
            every iteration, so converge on ivar value-stability instead. With
            none (only poly params/returns reset), fall back to the normal
@@ -13697,7 +14277,9 @@ void analyze_program(Compiler *c) {
      param and argument types are final; before the return recompute below so
      narrowed tails type the enclosing method's return. */
   narrow_nil_guard_params(c);
+  SP_WPROBE("narrow_nil_guard_params");
   narrow_nil_guard_locals(c);
+  SP_WPROBE("narrow_nil_guard_locals");
   /* `if v.is_a?(K)` occurrence typing: reads of a poly v inside the guard's
      then-arm narrow to K's concrete type (post-fixpoint, same read-site unbox
      as the nil guards above). */
@@ -13705,10 +14287,12 @@ void analyze_program(Compiler *c) {
   /* `rescue K => e` where a second arm binds the same name: reads inside an
      arm take that arm's class (#4343). */
   narrow_rescue_arm_reads(c);
+  SP_WPROBE("narrow_isa_guards");
   /* Post-backstop: re-run write type inference so multi-write locals whose
      RHS chains through a now-typed ivar (e.g. @h[bank][idx] where @h was
      just promoted from UNKNOWN to POLY) get their types resolved. */
   infer_write_types(c);
+  SP_WPROBE("infer_write_types");
   /* recompute returns: a method returning such a param is now poly */
   for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
 
@@ -13725,11 +14309,14 @@ void analyze_program(Compiler *c) {
     for (int iter = 0; iter < 16; iter++) {
       int ch = 0;
       ch |= infer_param_types(c);
+      SP_WPROBE("infer_param_types");
       ch |= infer_return_types(c);
+      SP_WPROBE("infer_return_types");
       /* Re-run write-type inference so locals whose types derive from
          function return types (e.g. `x = f([])` after `f`'s param was
          promoted from UNKNOWN to POLY_ARRAY) get updated. */
       ch |= infer_write_types(c);
+      SP_WPROBE("infer_write_types");
       if (!ch) break;
     }
   }
@@ -13798,8 +14385,11 @@ void analyze_program(Compiler *c) {
       for (int iter = 0; iter < 16; iter++) {
         int ch = 0;
         ch |= infer_param_types(c);
+        SP_WPROBE("infer_param_types");
         ch |= infer_return_types(c);
+        SP_WPROBE("infer_return_types");
         ch |= infer_write_types(c);
+        SP_WPROBE("infer_write_types");
         if (!ch) break;
       }
     }
@@ -13850,7 +14440,9 @@ void analyze_program(Compiler *c) {
 
   /* Promote loop-multiplication variables to bigint */
   detect_bigint_loop_vars(c);
+  SP_WPROBE("detect_bigint_loop_vars");
   propagate_bigint_cascade(c);
+  SP_WPROBE("propagate_bigint_cascade");
 
   /* Force-lower `#each` for any class whose synthesized `__enum_to_a` helper is
      actually called (an `enum_for`/`to_enum` survived the rewrite). The helper
@@ -13888,6 +14480,7 @@ void analyze_program(Compiler *c) {
 
   /* mark locals captured by escaping procs (they need heap cells) */
   mark_proc_captures(c);
+  SP_WPROBE("mark_proc_captures");
 
   /* Reachability: an instance/free method is live only if its name is
      referenced somewhere -- as a call name, an alias target, or a symbol
@@ -13895,12 +14488,15 @@ void analyze_program(Compiler *c) {
      are dead code; skipping them avoids type-checking uninvoked methods
      (e.g. a never-called method with an uninferrable param). */
   compute_reachable(c);
+  SP_WPROBE("compute_reachable");
   /* a module method named by Mod.instance_method(:m) is referenced directly */
   unmark_referenced_module_sources(c);
+  SP_WPROBE("unmark_referenced_module_sources");
   /* Which exact cls_ids can appear at runtime -- lets the poly-dispatch switch
      drop `case` arms for classes that are never instantiated (the referenced
      method then DCEs as an unreferenced static). */
   compute_instantiated(c);
+  SP_WPROBE("compute_instantiated");
 
   /* Lower self-recursive yield methods: methods that use `yield` AND call
      themselves recursively. Their implicit block is forwarded as a proc
@@ -14089,6 +14685,7 @@ void analyze_program(Compiler *c) {
      would stay TY_UNKNOWN and be dropped below, leaving an undefined function at
      the poly-dispatch call site. */
   build_ie_map(c);
+  SP_WPROBE("build_ie_map");
   /* Seed the synthesized compiler_state IR-emit helpers' signature types. They
      are called only by the synthesized dump_compiler_state_ir (which has no
      AST), so the param backstop below can't bind them from a call site;
@@ -14150,6 +14747,7 @@ void analyze_program(Compiler *c) {
   /* Block splat params reach only the lowerings that bind them; the rest
      reject loudly here rather than emitting nil-bound or misdeclared bodies. */
   check_block_rest_support(c);
+  SP_WPROBE("check_block_rest_support");
 
   /* Backstop step 2: a reachable method whose parameter STILL has TY_UNKNOWN was
      never bound by a typed call site -- every call reached it with a poly/untyped
@@ -14191,6 +14789,7 @@ void analyze_program(Compiler *c) {
   for (int iter = 0; iter < 8; iter++) {
     int ch = infer_write_types(c);
     ch |= infer_return_types(c);
+    SP_WPROBE("infer_return_types");
     if (!ch) break;
   }
   g_ret_no_new_poly = 0;
@@ -14200,6 +14799,7 @@ void analyze_program(Compiler *c) {
      poly widening sticks, then re-derive return types only so a manual reader
      (`def flags; @flags; end`) reports the now-poly array (#3154). */
   widen_ivars_from_pushed_params(c);
+  SP_WPROBE("widen_ivars_from_pushed_params");
   g_ret_no_new_poly = 1;
   for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
   g_ret_no_new_poly = 0;
@@ -14223,7 +14823,9 @@ void analyze_program(Compiler *c) {
   /* infer_write_types resets non-param locals, undoing the earlier bigint
      loop-variable promotion, so re-apply it. */
   detect_bigint_loop_vars(c);
+  SP_WPROBE("detect_bigint_loop_vars");
   propagate_bigint_cascade(c);
+  SP_WPROBE("propagate_bigint_cascade");
 
   /* A non-parameter local that inference never resolved holds a value of unknown
      static type -- a block param bound to an element of a poly receiver, or a
@@ -14271,6 +14873,7 @@ void analyze_program(Compiler *c) {
      subclass then references a non-existent member). Rebuilds parent-first, so
      the [parent ivars..., own ivars...] cast-compatible layout is preserved. */
   inherit_members(c);
+  SP_WPROBE("inherit_members");
 
   /* Re-run ivar inference now that purely-nil params/locals became poly: an
      ivar fed by such a param (`@x = idx` where every `set` call passed nil)
@@ -14280,6 +14883,7 @@ void analyze_program(Compiler *c) {
   for (int it = 0; it < 8; it++) {
     int ch = infer_ivar_types(c);
     ch |= infer_inherited_ivars(c);
+    SP_WPROBE("infer_inherited_ivars");
     /* An ivar that widens here (e.g. `@query_log`, whose heterogeneous `= []` /
        `.push(str)` / `= prev` writes merge to poly) must carry its new type into
        any local that merely READS it (`prev = @query_log`). Widen such a local
@@ -14289,6 +14893,7 @@ void analyze_program(Compiler *c) {
        pre-widen scalar type: an unsound `sp_StrArray *` <- `sp_RbVal` at
        `local = @ivar` (#1793). */
     ch |= reconcile_locals_reading_ivars(c);
+    SP_WPROBE("reconcile_locals_reading_ivars");
     if (!ch) break;
   }
 
@@ -14338,12 +14943,16 @@ void analyze_program(Compiler *c) {
      the node cache is finalized so the rebuild below propagates the new element
      types to every `arr[i]` / `arr[i].field` site. */
   narrow_int_table_ivars(c);
+  SP_WPROBE("narrow_int_table_ivars");
   narrow_object_arrays(c);
+  SP_WPROBE("narrow_object_arrays");
   narrow_locals_from_arrays(c);
+  SP_WPROBE("narrow_locals_from_arrays");
 
   /* narrow poly locals that are only ever used as ints (drop per-use boxing);
      the rebuild below re-infers their reads/ops at the narrowed int type. */
   narrow_poly_int_locals(c);
+  SP_WPROBE("narrow_poly_int_locals");
 
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)
@@ -14351,6 +14960,11 @@ void analyze_program(Compiler *c) {
       c->scopes[s].locals[i].gc_root = (c->scopes[s].locals[i].type == TY_STRING);
 
   mark_empty_array_operands(c);
+  /* E189: upstream は pass `mark_empty_array_receivers` を削除した。L5 の
+     probe だけを残す (probe は pass の名前を記録するだけで呼び出さない)。
+     `両側を残す` の解決で **PICK 側に混ざっていた旧 upstream の呼び出し**を
+     復活させてしまい、link が undefined reference で落ちた。 */
+  SP_WPROBE("mark_empty_array_receivers");
   for (int id = 0; id < c->nt->count; id++)
     infer_type(c, id);
 
@@ -14530,6 +15144,7 @@ void analyze_program(Compiler *c) {
      the promotion can exclude locals whose address is passed to a byref slot
      (a STRBUF local is an sp_String*, not the const char* slot byref needs). */
   compute_byref_out_params(c);
+  SP_WPROBE("compute_byref_out_params");
   /* handle args cannot ride byref's const char** slot: convert such params
      to the handle representation, cascading through transitive passes. A
      parameter RETAINED in a shared-handle ivar demands the handle for the
@@ -15345,6 +15960,7 @@ void analyze_program(Compiler *c) {
   /* An --rbs seed the settled types statically contradict is a compile error,
      not something to emit a reinterpretation for. */
   mark_nullable_int_locals(c);
+  SP_WPROBE("mark_nullable_int_locals");
   mark_array_or_nil_slots(c);
   /* A local's array KIND has to agree with what its writes actually build. A
      value whose type widens to a poly array LATE -- a map whose block value
@@ -15386,7 +16002,9 @@ void analyze_program(Compiler *c) {
     }
   }
 
+  SP_WPROBE("mark_array_or_nil_slots");
   check_seed_contradictions(c);
+  SP_WPROBE("check_seed_contradictions");
 
   /* A global the program only ever mentions holding nil -- `$log = nil` and
      nothing else, or a read of one never assigned at all -- settles at no type,
@@ -15420,4 +16038,6 @@ void analyze_program(Compiler *c) {
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
             g_fixpoint_rounds >= 128 ? " (CAP -- did not converge)" : "");
+  SP_WPROBE("mark_proc_captures");
+  sp_llvm_widen_close(c);   /* spinel-llvm L5 */
 }

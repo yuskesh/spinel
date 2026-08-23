@@ -4871,6 +4871,10 @@ int infer_ivar_types(Compiler *c) {
            and the box is what keeps them consistent. */
         if (merged == TY_POLY && ci->ivar_types[iv] == TY_POLY_ARRAY && ty_is_array(vt))
           merged = TY_POLY_ARRAY;
+        sp_widen_note(c, SP_REF_IVAR((int)(ci - c->classes), iv),
+                      vnode >= 0 ? SP_REF_NODE(vnode) : SP_REF_UNINSTR,
+                      SP_WIDEN_MERGE, ci->ivar_types[iv], vt, merged,
+                      "ivar_write_merge", vnode);
         sp_ivwatch(nm, "ivar_write_merge", ci->ivar_types[iv], merged);
         if (merged != ci->ivar_types[iv]) { ci->ivar_types[iv] = merged; changed = 1; }
       }
@@ -4890,6 +4894,10 @@ int infer_ivar_types(Compiler *c) {
           if (class_ivar_pinned(tc, nm)) continue;
           int tiv = comp_ivar_intern(tc, nm);
           TyKind tmerged = ty_unify(tc->ivar_types[tiv], vt);
+          sp_widen_note(c, SP_REF_IVAR(ts->class_id, tiv),
+                        vnode >= 0 ? SP_REF_NODE(vnode) : SP_REF_UNINSTR,
+                        SP_WIDEN_MERGE, tc->ivar_types[tiv], vt, tmerged,
+                        "ivar_transplant", vnode);
           sp_ivwatch(nm, "transplant_merge", tc->ivar_types[tiv], tmerged);
           if (tmerged != tc->ivar_types[tiv]) { tc->ivar_types[tiv] = tmerged; changed = 1; }
         }
