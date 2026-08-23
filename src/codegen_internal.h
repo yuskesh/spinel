@@ -434,6 +434,21 @@ int  method_is_void(Scope *s);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);
 void emit_boxed(Compiler *c, int node, Buf *b);
+/* --- spinel-llvm patch L4 (SPINEL_LLVM_CODEGEN_FACTS) -----------------------
+   boxing の「由来」= どの codegen 規則が箱に詰めたかを申告するため、emit_boxed を
+   マクロで emit_boxed_at に差し替え、呼び出し地点を __FILE__:__LINE__ で載せる。
+   codegen 全体の 654 箇所の呼び出しには 1 行も触らない。フラグ未設定時は
+   sp_llvm_cg_fact が即 return するので出力は 1 バイトも変わらない。
+   canonical は SPINEL_LLVM_PATCHES.md の L4 / docs/experiments/E119。 */
+void emit_boxed_at(Compiler *c, int node, Buf *b, const char *site);
+#define SP_LLVM_STR2(x) #x
+#define SP_LLVM_STR(x) SP_LLVM_STR2(x)
+#define emit_boxed(c, n, b) emit_boxed_at((c), (n), (b), __FILE__ ":" SP_LLVM_STR(__LINE__))
+/* 行き先の型を申告してから箱に詰める。dst は呼び出し側が持っている変数を
+   そのまま渡すこと (TY_POLY と手で書くと規則が自明に 0 件になる)。 */
+void sp_llvm_cg_box_dst(TyKind t);
+#define emit_boxed_to(c, n, b, dst) (sp_llvm_cg_box_dst(dst), emit_boxed((c), (n), (b)))
+/* --- end spinel-llvm patch L4 ---------------------------------------------- */
 void emit_rat_coerce(Compiler *c, int node, Buf *b);
 void emit_super(Compiler *c, int id, Buf *b);
 int  emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr);
