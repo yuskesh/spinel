@@ -1218,7 +1218,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
     }
   }
   else if (lv && lv->type == TY_POLY) {
-    emit_boxed(c, v, b);   /* poly slot: box the (non-poly) RHS */
+    emit_boxed_to(c, v, b, lv->type);   /* poly slot: box the (non-poly) RHS */
   }
   else if (lv && lv->type == TY_STR_POLY_HASH &&
            (comp_ntype(c, v) == TY_STR_STR_HASH || comp_ntype(c, v) == TY_STR_INT_HASH)) {
@@ -1892,7 +1892,7 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
 void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b) {
   if (pt == TY_POLY) {
     buf_printf(b, "sp_poly_eq(_t%d, ", t);
-    if (comp_ntype(c, valnode) != TY_POLY) emit_boxed(c, valnode, b);
+    if (comp_ntype(c, valnode) != TY_POLY) emit_boxed_to(c, valnode, b, pt);
     else emit_expr(c, valnode, b);
     buf_puts(b, ")");
   }
@@ -5331,7 +5331,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
       else if (n == 1) {
         buf_printf(b, "%s = ", g_method_pr_var);
         TyKind r0 = ret_arg_ntype(c, a[0]);
-        if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+        if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed_to(c, a[0], b, g_ret_type);
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
@@ -5447,7 +5447,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     TyKind r0 = ret_arg_ntype(c, a[0]);
     buf_puts(b, "{ "); emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
     buf_printf(b, " _t%d = ", tr);
-    if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+    if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed_to(c, a[0], b, g_ret_type);
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
     else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
@@ -5493,7 +5493,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     }
     buf_puts(b, "return ");
     TyKind r0 = ret_arg_ntype(c, a[0]);
-    if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+    if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed_to(c, a[0], b, g_ret_type);
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
     /* a poly return value feeding a narrower (non-poly) return slot -- e.g. a
@@ -7330,7 +7330,7 @@ else {
     }
     else if (ivt == TY_POLY && comp_ntype(c, v) != TY_POLY) {
       /* a poly ivar slot needs a boxed RHS */
-      emit_boxed(c, v, b);
+      emit_boxed_to(c, v, b, ivt);
     }
     else if (ivt == TY_POLY_ARRAY && ty_is_array(comp_ntype(c, v)) &&
              comp_ntype(c, v) != TY_POLY_ARRAY) {
@@ -10399,7 +10399,9 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
                  nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), g_dm_subst_name);
   TyKind vty = is_subst ? comp_ntype(c, g_dm_subst_node) : comp_ntype(c, id);
   int want_poly = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
-  if (want_poly && vty != TY_POLY) emit_boxed(c, is_subst ? g_dm_subst_node : id, b);
+  if (want_poly && vty != TY_POLY)
+    emit_boxed_to(c, is_subst ? g_dm_subst_node : id, b,
+                  g_result_var ? (g_result_poly ? TY_POLY : g_ret_type) : g_ret_type);
   else if (!g_result_var && emit_ret_hash_widen_conv(c, g_ret_type, vty, is_subst ? g_dm_subst_node : id, b)) { }
   else if (!g_result_var && emit_ret_poly_array_conv(c, g_ret_type, vty, is_subst ? g_dm_subst_node : id, b)) { }
   /* a poly tail value feeding a narrower (non-poly) return slot -- a scalar
@@ -11256,7 +11258,7 @@ int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent);
         buf_puts(b, "sp_PolyArray_push("); emit_expr(c, recv, b); buf_puts(b, ", ");
-        emit_boxed(c, argv[a], b); buf_puts(b, ");\n");
+        emit_boxed_to(c, argv[a], b, TY_POLY); buf_puts(b, ");\n");
       }
       return 1;
     }
