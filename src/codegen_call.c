@@ -1328,12 +1328,12 @@ static void emit_poly_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b)
   buf_puts(b, eq ? "" : "(!");
   if (order) {
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, recv, b);
-    buf_printf(b, "; sp_poly_eq(_t%d, ", t); emit_boxed(c, arg, b); buf_puts(b, "); })");
+    buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed_to(c, recv, b, TY_POLY);
+    buf_printf(b, "; sp_poly_eq(_t%d, ", t); emit_boxed_to(c, arg, b, TY_POLY); buf_puts(b, "); })");
   }
   else {
-    buf_puts(b, "sp_poly_eq("); emit_boxed(c, recv, b); buf_puts(b, ", ");
-    emit_boxed(c, arg, b); buf_puts(b, ")");
+    buf_puts(b, "sp_poly_eq("); emit_boxed_to(c, recv, b, TY_POLY); buf_puts(b, ", ");
+    emit_boxed_to(c, arg, b, TY_POLY); buf_puts(b, ")");
   }
   buf_puts(b, eq ? "" : ")");
 }
@@ -9643,21 +9643,21 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           }
           #define EMIT_GATE_ARGS() do { \
             buf_printf(b, ", %d, (sp_RbVal[]){", gac); \
-            for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
+            for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed_to(c, gav[gk], b, TY_POLY); } \
             if (gac == 0) buf_puts(b, "sp_box_nil()"); \
             buf_puts(b, "}"); \
           } while (0)
           if (sp_streq(dflt, "sp_box_nil()") && !ret_scalar) {
             buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg%s(\"%s\", ",
                        gstage ? "_args" : "", nm ? nm : "?");
-            emit_boxed(c, recv, b);
+            emit_boxed_to(c, recv, b, TY_POLY);   /* sp_nomethod_msg */
             if (gstage) EMIT_GATE_ARGS();
             buf_puts(b, "))");
           }
           else {
             buf_printf(b, "(sp_raise_cls(\"NoMethodError\", sp_nomethod_msg%s(\"%s\", ",
                        gstage ? "_args" : "", nm ? nm : "?");
-            emit_boxed(c, recv, b);
+            emit_boxed_to(c, recv, b, TY_POLY);   /* sp_nomethod_msg */
             if (gstage) EMIT_GATE_ARGS();
             buf_printf(b, ")), %s)", ret_scalar ? default_value(ret) : dflt);
           }
@@ -9696,7 +9696,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               emit_boxed(c, recv, b); \
               if (gstage) { \
                 buf_printf(b, ", %d, (sp_RbVal[]){", gac); \
-                for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
+                for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed_to(c, gav[gk], b, TY_POLY); } \
                 if (gac == 0) buf_puts(b, "sp_box_nil()"); \
                 buf_puts(b, "}"); \
               } \
@@ -9705,7 +9705,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             else if (gstage) { \
               buf_printf(b, "sp_stage_args_msg(\"undefined method '%s' for %s\", %d, (sp_RbVal[]){", \
                          nm ? nm : "?", rdesc, gac); \
-              for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed(c, gav[gk], b); } \
+              for (int gk = 0; gk < gac; gk++) { if (gk) buf_puts(b, ", "); emit_boxed_to(c, gav[gk], b, TY_POLY); } \
               if (gac == 0) buf_puts(b, "sp_box_nil()"); \
               buf_puts(b, "})"); \
             } \
@@ -13954,7 +13954,7 @@ void emit_call(Compiler *c, int id, Buf *b) {
     int t = ++g_tmp;
     buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", t); emit_expr(c, recv, b); buf_puts(b, "; ");
     buf_printf(b, "sp_poly_shl(_t%d, ", t);
-    emit_boxed(c, argv[0], b);
+    emit_boxed_to(c, argv[0], b, TY_POLY);
     buf_puts(b, "); })");
     return;
   }
@@ -13963,8 +13963,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && argc == 1 && comp_ntype(c, recv) == TY_POLY &&
       (sp_streq(name, "&") || sp_streq(name, "|") || sp_streq(name, "^"))) {
     int bop = sp_streq(name, "&") ? 0 : sp_streq(name, "|") ? 1 : 2;
-    buf_puts(b, "sp_poly_bitop("); emit_boxed(c, recv, b); buf_puts(b, ", ");
-    emit_boxed(c, argv[0], b); buf_printf(b, ", %d)", bop);
+    buf_puts(b, "sp_poly_bitop("); emit_boxed_to(c, recv, b, TY_POLY); buf_puts(b, ", ");
+    emit_boxed_to(c, argv[0], b, TY_POLY); buf_printf(b, ", %d)", bop);
     return;
   }
   /* `poly >> n`: through sp_poly_shr, which keeps a bignum receiver in bignum
@@ -13973,9 +13973,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
      good (#3371). sp_poly_shr also carries the Proc#>> composition arm. */
   if (recv >= 0 && argc == 1 && comp_ntype(c, recv) == TY_POLY && sp_streq(name, ">>")) {
     buf_puts(b, "sp_poly_shr(");
-    emit_boxed(c, recv, b);
+    emit_boxed_to(c, recv, b, TY_POLY);
     buf_puts(b, ", ");
-    emit_boxed(c, argv[0], b);
+    emit_boxed_to(c, argv[0], b, TY_POLY);
     buf_puts(b, ")");
     return;
   }
@@ -20810,16 +20810,16 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
       if (subtree_may_allocate(nt, argv[0])) {
         int th = ++g_tmp;
         Buf rb; memset(&rb, 0, sizeof rb);
-        emit_boxed(c, recv, &rb);
+        emit_boxed_to(c, recv, &rb, TY_POLY);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
                    th, rb.p ? rb.p : "sp_box_nil()", th);
         free(rb.p);
-        buf_printf(&pcall, "%s(_t%d, ", pfn, th); emit_boxed(c, argv[0], &pcall); buf_puts(&pcall, ")");
+        buf_printf(&pcall, "%s(_t%d, ", pfn, th); emit_boxed_to(c, argv[0], &pcall, TY_POLY); buf_puts(&pcall, ")");
       }
       else {
-        buf_printf(&pcall, "%s(", pfn); emit_boxed(c, recv, &pcall);
-        buf_puts(&pcall, ", "); emit_boxed(c, argv[0], &pcall); buf_puts(&pcall, ")");
+        buf_printf(&pcall, "%s(", pfn); emit_boxed_to(c, recv, &pcall, TY_POLY);
+        buf_puts(&pcall, ", "); emit_boxed_to(c, argv[0], &pcall, TY_POLY); buf_puts(&pcall, ")");
       }
       if (ty_is_object(pres)) emit_unbox_text(c, pres, pcall.p ? pcall.p : "sp_box_nil()", b);
       else buf_puts(b, pcall.p ? pcall.p : "sp_box_nil()");
@@ -20832,7 +20832,7 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
     else if (sp_streq(name, "<=")) cfn = "sp_poly_le";
     else if (sp_streq(name, ">=")) cfn = "sp_poly_ge";
     if (cfn) {
-      buf_printf(b, "%s(", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      buf_printf(b, "%s(", cfn); emit_boxed_to(c, recv, b, TY_POLY); buf_puts(b, ", "); emit_boxed_to(c, argv[0], b, TY_POLY); buf_puts(b, ")");
       return;
     }
   }

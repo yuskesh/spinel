@@ -5930,7 +5930,7 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
      sp_RbVal rather than a raw value (or `void` temp). */
   if (p && pt == TY_UNKNOWN) pt = TY_POLY;
   if (provided >= 0) {
-    if (pt == TY_POLY) emit_boxed(c, provided, out);   /* box into a poly param */
+    if (pt == TY_POLY) emit_boxed_to(c, provided, out, pt);   /* box into a poly param */
     else {
       TyKind at = comp_ntype(c, provided);
       /* An int argument reaching a bigint parameter is promoted at the
@@ -6314,7 +6314,7 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
     }
 else {
       Buf el; memset(&el, 0, sizeof el);
-      emit_boxed(c, argv[i], &el);
+      emit_boxed_to(c, argv[i], &el, TY_POLY);
       buf_printf(b, " sp_PolyArray_push(_t%d, %s);", t, el.p ? el.p : "sp_box_nil()");
       free(el.p);
     }

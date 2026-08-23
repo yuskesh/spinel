@@ -11165,7 +11165,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "; ");
       free(call.p);
     }
-    else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[2], b); buf_puts(b, "; "); }
+    else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed_to(c, argv[2], b, TY_POLY); buf_puts(b, "; "); }
     /* Store the possibly-promoted array back into the receiver so a typed->poly
        promotion survives: assign to a local/ivar lvalue, or write to outer's slot
        for a computed `outer[idx]` receiver; otherwise splice in place. */

@@ -441,8 +441,13 @@ static int call_returns_nullable_int(Compiler *c, int node) {
 
 /* spinel-llvm L3 (SPINEL_LLVM_CODEGEN_FACTS): 実体はこのファイルの後方。 */
 void sp_llvm_cg_fact(int node, const char *what, const char *detail);
-void emit_boxed(Compiler *c, int node, Buf *b) {
-  sp_llvm_cg_fact(node, "boxing", NULL);
+/* spinel-llvm L4: 由来つきの申告 (site = 呼び出し地点)。実体は後方。 */
+void sp_llvm_cg_fact_at(int node, const char *what, const char *detail, const char *site);
+/* spinel-llvm L4: 直後の emit_boxed の行き先。emit_boxed_at が読んで消す。 */
+static TyKind g_llvm_box_dst; static int g_llvm_box_dst_on;
+void sp_llvm_cg_fact_box(int node, const char *ty, const char *dst, const char *site);
+void sp_llvm_cg_box_dst(TyKind t) { g_llvm_box_dst = t; g_llvm_box_dst_on = 1; }
+void emit_boxed_at(Compiler *c, int node, Buf *b, const char *site) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
      below rather than being boxed by the shared node type (#2454). */
@@ -451,7 +456,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (pty && sp_streq(pty, "ParenthesesNode")) {
       int pbody = nt_ref(c->nt, node, "body"); int pbn = 0;
       const int *pbd = pbody >= 0 ? nt_arr(c->nt, pbody, "body", &pbn) : NULL;
-      if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
+      if (pbn == 1) { emit_boxed_at(c, pbd[0], b, site); return; }  /* L4: 委譲。申告は内側が出す */
     }
   }
   {
@@ -461,12 +466,19 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (bty0 && sp_streq(bty0, "SplatNode")) {
       int inner0 = nt_ref(c->nt, node, "expression");
       buf_puts(b, "sp_splat_to_array(");
-      if (inner0 >= 0) emit_boxed(c, inner0, b); else buf_puts(b, "sp_box_nil()");
+      if (inner0 >= 0) emit_boxed_at(c, inner0, b, site); else buf_puts(b, "sp_box_nil()");  /* L4: 委譲 */
       buf_puts(b, ")");
       return;
     }
   }
   TyKind t = comp_ntype(c, node);
+  /* spinel-llvm L4: ここが boxing の申告点。委譲 (Parentheses/Splat) の後なので
+     1 つの箱が 2 件に数えられることはない。detail = 箱に入れる値の型で、
+     "poly" は「既に箱なので何も詰めない」経路 (すぐ下の t == TY_POLY) を指す。
+     site = 呼び出し地点 = どの codegen 規則が詰めたか。 */
+  { const char *dstn = g_llvm_box_dst_on ? ty_name(g_llvm_box_dst) : NULL;
+    g_llvm_box_dst_on = 0;   /* 消費: 次の boxing に漏らさない */
+    sp_llvm_cg_fact_box(node, ty_name(t), dstn, site); }
   /* Lowered self-recursive yield in a boxed value position (a `{ yield }` block
      whose value rides the universal proc slot): the enclosing method's block is
      the runtime __yblk__ proc, which publishes its boxed result into
@@ -7147,7 +7159,23 @@ static const char *sp_llvm_cgf_path(void) {
   if (!inited) { inited = 1; p = getenv("SPINEL_LLVM_CODEGEN_FACTS"); if (p && !*p) p = NULL; }
   return p;
 }
+void sp_llvm_cg_fact_at(int node, const char *what, const char *detail, const char *site);
 void sp_llvm_cg_fact(int node, const char *what, const char *detail) {
+  sp_llvm_cg_fact_at(node, what, detail, NULL);
+}
+/* spinel-llvm L4: boxing 専用。dst = 行き先の型 (申告のある site だけ)。 */
+void sp_llvm_cg_fact_box(int node, const char *ty, const char *dst, const char *site) {
+  if (!sp_llvm_cgf_path() || node < 0) return;
+  sp_llvm_cg_fact_at(node, "boxing", ty, site);
+  if (dst) {   /* 直前に書いた 1 件へ足す */
+    g_llvm_cgf.len -= 1; if (g_llvm_cgf.p) g_llvm_cgf.p[g_llvm_cgf.len] = 0;   /* 閉じ括弧を剥がす */
+    buf_puts(&g_llvm_cgf, ",\"dst\":\"");
+    json_escape_into(&g_llvm_cgf, dst);
+    buf_puts(&g_llvm_cgf, "\"}");
+  }
+}
+/* spinel-llvm L4: site つき。site == NULL なら L3 と同じ 1 行を書く。 */
+void sp_llvm_cg_fact_at(int node, const char *what, const char *detail, const char *site) {
   if (!sp_llvm_cgf_path() || node < 0) return;
   if (g_llvm_cgf_n++ > 0) buf_puts(&g_llvm_cgf, ",\n");
   buf_printf(&g_llvm_cgf, "    {\"node\":%d,\"fact\":\"", node);
@@ -7156,6 +7184,11 @@ void sp_llvm_cg_fact(int node, const char *what, const char *detail) {
   if (detail) {
     buf_puts(&g_llvm_cgf, ",\"detail\":\"");
     json_escape_into(&g_llvm_cgf, detail);
+    buf_puts(&g_llvm_cgf, "\"");
+  }
+  if (site) {                                   /* spinel-llvm L4 */
+    buf_puts(&g_llvm_cgf, ",\"site\":\"");
+    json_escape_into(&g_llvm_cgf, site);
     buf_puts(&g_llvm_cgf, "\"");
   }
   buf_puts(&g_llvm_cgf, "}");

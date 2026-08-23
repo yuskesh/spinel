@@ -502,7 +502,7 @@ static int node_is_raise(Compiler *c, int nd) {
 static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *bty = nt_type(nt, nd);
-  if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) { emit_boxed(c, nd, b); return; }
+  if (res == TY_POLY && comp_ntype(c, nd) != TY_POLY) { emit_boxed_to(c, nd, b, res); return; }
   if (ty_is_array(res) && bty && sp_streq(bty, "ArrayNode")) {
     int bn = 0; nt_arr(nt, nd, "elements", &bn);
     if (bn == 0) {
@@ -2175,12 +2175,12 @@ void emit_expr(Compiler *c, int id, Buf *b) {
           else if (it == TY_NIL)
             /* a statically-nil splat contributes nothing (`[*nil]` == []) */
             buf_printf(g_pre, ";\n");
-          else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, inner, &bx); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", t, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
+          else { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_to(c, inner, &bx, TY_POLY); buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", t, bx.p ? bx.p : "sp_box_nil()"); free(bx.p); }
           free(el.p);
         }
 else {
           Buf el; memset(&el, 0, sizeof el);
-          emit_boxed(c, els[j], &el);
+          emit_boxed_to(c, els[j], &el, TY_POLY);   /* PolyArray の要素 */
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
           buf_puts(g_pre, el.p ? el.p : "");
@@ -2305,9 +2305,9 @@ else {
       int key = nt_ref(nt, els[j], "key");
       int val = nt_ref(nt, els[j], "value");
       Buf kb; memset(&kb, 0, sizeof kb);
-      if (poly_poly) emit_boxed(c, key, &kb); else emit_expr(c, key, &kb);
+      if (poly_poly) emit_boxed_to(c, key, &kb, TY_POLY); else emit_expr(c, key, &kb);
       Buf vb; memset(&vb, 0, sizeof vb);
-      if (sym_poly || poly_poly) emit_boxed(c, val, &vb); else emit_expr(c, val, &vb);
+      if (sym_poly || poly_poly) emit_boxed_to(c, val, &vb, TY_POLY); else emit_expr(c, val, &vb);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_%sHash_set(_t%d, ", hn, t);
       buf_puts(g_pre, kb.p ? kb.p : ""); buf_puts(g_pre, ", ");
@@ -2749,7 +2749,7 @@ else {
       Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
       g_pre = &epre; g_indent = 1;
       Buf ev; memset(&ev, 0, sizeof ev);
-      if (rt == TY_POLY && et != TY_POLY) emit_boxed(c, e, &ev);
+      if (rt == TY_POLY && et != TY_POLY) emit_boxed_to(c, e, &ev, rt);
       else emit_expr(c, e, &ev);
       g_pre = sv_pre0; g_indent = sv_ind0;
       if (epre.p) buf_puts(b, epre.p);
@@ -2797,7 +2797,7 @@ else {
       Buf *sv_pre = g_pre; int sv_ind = g_indent;
       g_pre = &rpre; g_indent = 1;
       Buf rv; memset(&rv, 0, sizeof rv);
-      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed(c, r, &rv);
+      if (rt == TY_POLY && comp_ntype(c, r) != TY_POLY) emit_boxed_to(c, r, &rv, rt);
       else emit_expr(c, r, &rv);
       g_pre = sv_pre; g_indent = sv_ind;
       if (rpre.p) buf_puts(b, rpre.p);
