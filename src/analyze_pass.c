@@ -87,6 +87,84 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   return 0;
 }
 
+/* --- spinel-llvm patch L1 (SPINEL_LLVM_SHL_DEFER) ---------------------------
+   `<<` は Integer#<< (shift) と Array#push の曖昧語で、下の push arm は
+   recv_has_scalar_numeric_write() で「数値が代入される受け手は shift」と判定する。
+   その判定は positive evidence を要求するので、fixpoint 初期の
+   「証拠がまだ来ていない」を「証拠が無い」と取り違えてスカラーを配列に格上げし、
+   同じ round の bind_call_params がその配列型をパラメータへ単調 widen で焼き付ける
+   (パラメータは縮まないので受け手が後で int に落ち着いても戻らない)。
+
+   隣の `[]` 読み arm が既に打っている手と同型の保留をかける:
+   受け手への書き込みが 1 つも settle していない間は、第 1 stage
+   (g_infer_optimistic) ではpromotionしない。第 2 stage では従来どおりpromotionするので、
+   証拠が最後まで来なかったスロットの扱いは変わらない。
+
+   spinel-llvm E115 / BACKLOG D1。正典は SPINEL_LLVM_PATCHES.md の L1。 */
+static int sp_llvm_shl_defer(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("SPINEL_LLVM_SHL_DEFER") ? 1 : 0;
+  return on;
+}
+
+/* 受け手のスロットに「まだ型の付いていない書き込み」があるか。
+   空の [] / {} リテラルは型を持たないが容器の証拠ではあるので、
+   「まだ来ていない」には数えない (数えると push accumulator を止めてしまう)。 */
+static int sp_llvm_recv_has_unsettled_write(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  if (!rty) return 0;
+  int is_ivar = sp_streq(rty, "InstanceVariableReadNode");
+  int is_local = sp_streq(rty, "LocalVariableReadNode");
+  if (!is_ivar && !is_local) return 0;
+  const char *rnm = nt_str(nt, recv, "name");
+  if (!rnm) return 0;
+  Scope *rscope = is_local ? comp_scope_of(c, recv) : NULL;
+  const char *wkind = is_ivar ? "InstanceVariableWriteNode" : "LocalVariableWriteNode";
+  if (wrn_nt != nt || wrn_ntc != nt->count) wrn_build(c);
+  if (!wrn_buckets) return 0;
+  int qscope = is_local ? (int)(rscope - c->scopes) : -1;
+  unsigned b = wrn_key(rnm, qscope) % (unsigned)wrn_buckets;
+  for (int id = wrn_head[b]; id >= 0; id = wrn_next[id]) {
+    const char *ty = nt_type(nt, id);
+    if (!ty || !sp_streq(ty, wkind)) continue;
+    const char *wnm = nt_str(nt, id, "name");
+    if (!wnm || !sp_streq(wnm, rnm)) continue;
+    if (is_local && comp_scope_of(c, id) != rscope) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0) continue;
+    const char *vty = nt_type(nt, v);
+    /* 「型がまだ来ていない」ではなく「**数値になりうる式の形をしていて**、型がまだ
+       来ていない」に限る。ガードの目的はシフトを push と読み違えないことなので、
+       そもそも数値になりえない書き込みは保留の理由にならない。こう狭めると、
+       判定を外したときの帰結が「直らない」で済み、「typed だったものが boxed に
+       落ちる」にはならない (広い版は `a = Array.new; a << 1` を落とした — E115 §3b)。
+       括弧は中を見る: `x = ( [1,2] )` は括弧だが数値ではない。 */
+    int vv = v;
+    for (int pg = 0; pg < 8; pg++) {
+      const char *pt = nt_type(nt, vv);
+      if (!pt || !sp_streq(pt, "ParenthesesNode")) break;
+      int pb = nt_ref(nt, vv, "body");
+      int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+      if (!ps || pn != 1) { vv = -1; break; }
+      vv = ps[0];
+    }
+    if (vv < 0) continue;
+    const char *ivty = nt_type(nt, vv);
+    if (!ivty) continue;
+    int arith = sp_streq(ivty, "IntegerNode") || sp_streq(ivty, "FloatNode");
+    if (!arith && sp_streq(ivty, "CallNode")) {
+      const char *cn = nt_str(nt, vv, "name");
+      static const char *OPS[] = {"+","-","*","/","%","&","|","^","<<",">>","~","**",NULL};
+      for (int k = 0; !arith && OPS[k]; k++) if (cn && sp_streq(cn, OPS[k])) arith = 1;
+    }
+    if (!arith) continue;
+    if (infer_type(c, v) == TY_UNKNOWN) return 1;
+  }
+  return 0;
+}
+/* --- end spinel-llvm patch L1 ---------------------------------------------- */
+
 /* Does the receiver slot have a write that is definitely an array? Used to
    tell a genuine push accumulator (`out = []` ... `out << e`) from a slot
    whose `<<` is a user class's own operator. */
@@ -1943,6 +2021,19 @@ int infer_write_types(Compiler *c) {
         if (sp_streq(name, "<<") && recv >= 0 &&
             (an_user_defines_method(c, "<<") || an_native_defines_method(c, "<<")) &&
             !recv_has_array_write(c, recv)) continue;
+        /* spinel-llvm L1 (SPINEL_LLVM_SHL_DEFER): 受け手の書き込みがまだ settle
+           していない間は promotion を保留する。空の [] / {} リテラルは型を持たない
+           が容器の証拠ではあるので unsettled に数えず、配列の証拠があるスロット
+           (recv_has_array_write) も従来どおり即 promotion する。 */
+        if (sp_llvm_shl_defer() && sp_streq(name, "<<") &&
+            sp_llvm_recv_has_unsettled_write(c, recv) &&
+            !recv_has_array_write(c, recv)) {
+          if (getenv("SPINEL_LLVM_SHL_TRACE"))
+            fprintf(stderr, "[shl] defer recv=%s opt=%d line=%d\n",
+                    nt_str(nt, recv, "name") ? nt_str(nt, recv, "name") : "?",
+                    g_infer_optimistic, (int)nt_int(nt, id, "node_line", 0));
+          continue;
+        }
         is_push = 1; vt = push_elem_ty(c, argv[0]);
         for (int ai = 1; ai < an; ai++) vt = ty_unify(vt, push_elem_ty(c, argv[ai]));
       }
