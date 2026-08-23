@@ -356,6 +356,7 @@ TyKind aset_value_type_ex(Compiler *c, int recv, int *nwrites) {
   return acc;
 }
 
+
 /* Unified KEY type of every `name[k] = v` write to this local, or TY_UNKNOWN
    when it has none. Keyed by (scope, name) rather than by a receiver node so a
    post-fixpoint caller can ask about a local it only holds the WRITE of.
@@ -1648,14 +1649,25 @@ int infer_write_types(Compiler *c) {
     /* Params are typed from call sites (monotonic widen); a body assignment
        of a different type widens them too (e.g. `x = "s"` in an int param's
        body -> poly). Only widen -- never let an unknown RHS reset them. */
-    if (lv->is_param) {
-      if (newt != TY_UNKNOWN && !lv->rbs_seeded) {
-        TyKind m2 = ty_unify(lv->type, newt);
-        if (m2 != lv->type) { lv->type = m2; changed = 1; }
+    { Scope *wsc = comp_scope_of(c, id);   /* Widening Blame: 安定 ID を先に取る */
+      int wsi = (int)(wsc - c->scopes), wli = (int)(lv - wsc->locals);
+      int wsrc = nt_ref(nt, id, "value");
+      if (lv->is_param) {
+        if (newt != TY_UNKNOWN && !lv->rbs_seeded) {
+          TyKind m2 = ty_unify(lv->type, newt);
+          sp_widen_note(c, SP_REF_LOCAL(wsi, wli),
+                        wsrc >= 0 ? SP_REF_NODE(wsrc) : SP_REF_UNINSTR,
+                        SP_WIDEN_MERGE, lv->type, newt, m2, "body_assign_param", wsrc);
+          if (m2 != lv->type) { lv->type = m2; changed = 1; }
+        }
+        continue;
       }
-      continue;
+      { TyKind m3 = ty_unify(lv->type, newt);
+        sp_widen_note(c, SP_REF_LOCAL(wsi, wli),
+                      wsrc >= 0 ? SP_REF_NODE(wsrc) : SP_REF_UNINSTR,
+                      SP_WIDEN_MERGE, lv->type, newt, m3, "local_assign", wsrc);
+        lv->type = m3; }
     }
-    lv->type = ty_unify(lv->type, newt);
   }
 
   /* Second targeted pass for `x = recv.instance_eval/exec { ... }` (and
@@ -3238,6 +3250,9 @@ int bind_call_params(Compiler *c, int call_id, int mi) {
       TyKind at = infer_type(c, argv[ai]);
       if (at == TY_NIL && p->type != TY_UNKNOWN && p->type != TY_NIL && !ty_is_object(p->type)) at = TY_POLY;
       TyKind merged = ty_unify(p->type, at);
+      sp_widen_note(c, SP_REF_LOCAL((int)(m - c->scopes), (int)(p - m->locals)),
+                    SP_REF_NODE(argv[ai]), SP_WIDEN_MERGE, p->type, at, merged,
+                    "call_arg", argv[ai]);
       if (merged != p->type) { p->type = merged; changed = 1; }
     }
   }
@@ -8605,6 +8620,12 @@ int infer_return_types(Compiler *c) {
        claims, so a return that re-derives UNKNOWN for any other reason still
        corrects downward. */
     if (r == TY_UNKNOWN && sc->ret == TY_POLY && scope_tail_unresolved_call(c, s)) continue;
+    sp_widen_note(c, SP_REF_RETURN(s),
+                  sc->body >= 0 ? SP_REF_NODE(sc->body) : SP_REF_UNINSTR,
+                  SP_WIDEN_MATERIALIZE, sc->ret,
+                  (sc->body >= 0 && c->ntype && sc->body < c->node_cap)
+                    ? c->ntype[sc->body] : TY_UNKNOWN,
+                  r, "return_from_body", sc->body);
     if (r != sc->ret) { sc->ret = r; changed = 1; }
     /* For a method with a &block param, record the value type its block yields
        (unified across all call sites). Blocks passed to it are emitted returning
