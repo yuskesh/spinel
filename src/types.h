@@ -139,6 +139,15 @@ TyIterShape ty_iter_shape(const char *name);
    (numeric int+float stays POLY for now -- mixed-numeric vars are rare
    and handled when they appear). */
 TyKind ty_unify(TyKind a, TyKind b);
+/* --- spinel-llvm patch L5 / E124 (SPINEL_LLVM_WIDEN_LOG) --------------------
+   poly を作った合流の「由来」= どの規則が合流させたかを記録するため、ty_unify を
+   マクロで ty_unify_at に差し替え、呼び出し地点を __FILE__:__LINE__ で載せる。
+   217 箇所の呼び出しには 1 行も触らない。フラグ未設定なら何も集めない。 */
+TyKind ty_unify_at(TyKind a, TyKind b, const char *site);
+#define SP_LLVM_U2(x) #x
+#define SP_LLVM_U1(x) SP_LLVM_U2(x)
+#define ty_unify(a, b) ty_unify_at((a), (b), __FILE__ ":" SP_LLVM_U1(__LINE__))
+/* --- end spinel-llvm patch L5 / E124 ---------------------------------------- */
 
 /* User-defined object types are encoded above the built-in range so the
    flat TyKind node-type array still works: a class with index i has type

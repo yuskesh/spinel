@@ -318,3 +318,60 @@ int class_is_exc_subclass(Compiler *c, int ci);
 int is_descendant(Compiler *c, int k, int anc);
 #endif
 
+/* --- spinel-llvm patch L5 / Widening Blame (SPINEL_LLVM_WIDEN_LOG) ----------
+   canonical な設計は docs/reference/widening_provenance_design.md。
+   ★ 鍵はポインタではなく安定 ID (locals などは realloc で動く)。
+   ★ namespace は 6 本。ivar と cvar は別配列・別添字なので必ず分ける。 */
+typedef enum {
+  SP_SLOT_NONE = 0,        /* 前段が意味論上存在しない (= root 候補) */
+  SP_SLOT_UNINSTRUMENTED,  /* 前段はあり得るが観測していない (= UNKNOWN) */
+  SP_SLOT_MULTI,           /* 前段が複数 (v1 は UNKNOWN) */
+  SP_SLOT_NODE,
+  SP_SLOT_LOCAL,           /* param も含む。is_param で区別する */
+  SP_SLOT_RETURN,
+  SP_SLOT_IVAR,
+  SP_SLOT_CVAR,
+  SP_SLOT_GVAR
+} SpSlotKind;
+
+typedef struct {
+  SpSlotKind kind;
+  int a, b;   /* node: (node_id, -) / local: (scope_id, local_id)
+                 return: (scope_id, -) / ivar: (class_id, ivar_id)
+                 cvar: (class_id, cvar_id) / gvar: (gvar_id, -) */
+} SpTypeRef;
+
+typedef enum {
+  SP_PARENT_ROOT = 0,   /* 上流に POLY event が本当に無い   -> ROOT */
+  SP_PARENT_EVENT,      /* parent_event_id が有効           -> NON_ROOT */
+  SP_PARENT_MULTI,      /* 親が複数 (v1 は決めない)          -> UNKNOWN */
+  SP_PARENT_UNKNOWN     /* 計装不足で不明                    -> UNKNOWN */
+} SpParentKind;
+
+typedef enum {
+  SP_WIDEN_MERGE = 0,    /* target_old_ty と source_ty は ty_unify の被演算子 */
+  SP_WIDEN_MATERIALIZE,  /* target_old_ty = target の前回値、source_ty = 導いた source の型。
+                            ★ 両者は ty_unify されていない (設計 §4.0) */
+  SP_WIDEN_FALLBACK      /* 意味のある右辺が無い */
+} SpWidenSemantics;
+
+/* POLY entry transition を 1 件記録する。
+   new != TY_POLY / old == TY_POLY のときは何もしない (marginal cause だけを追う)。
+   フラグ未設定なら即 return する。 */
+int  sp_llvm_widen_on(void);
+int  sp_is_tracked_widened(TyKind t);
+int  sp_is_widening_transition(TyKind o, TyKind n);   /* 計装が有効か (高い source 計算を避けるため) */
+void sp_widen_note(Compiler *c, SpTypeRef target, SpTypeRef source,
+                   SpWidenSemantics sem, TyKind target_old_ty, TyKind source_ty,
+                   TyKind result_ty, const char *reason, int site_node);
+
+#define SP_REF_NODE(N)      ((SpTypeRef){ SP_SLOT_NODE,   (N), 0 })
+#define SP_REF_LOCAL(S, I)  ((SpTypeRef){ SP_SLOT_LOCAL,  (S), (I) })
+#define SP_REF_RETURN(S)    ((SpTypeRef){ SP_SLOT_RETURN, (S), 0 })
+#define SP_REF_IVAR(C, I)   ((SpTypeRef){ SP_SLOT_IVAR,   (C), (I) })
+#define SP_REF_CVAR(C, I)   ((SpTypeRef){ SP_SLOT_CVAR,   (C), (I) })
+#define SP_REF_GVAR(I)      ((SpTypeRef){ SP_SLOT_GVAR,   (I), 0 })
+#define SP_REF_NONE         ((SpTypeRef){ SP_SLOT_NONE,   0, 0 })
+#define SP_REF_UNINSTR      ((SpTypeRef){ SP_SLOT_UNINSTRUMENTED, 0, 0 })
+#define SP_REF_MULTI        ((SpTypeRef){ SP_SLOT_MULTI,  0, 0 })
+/* --- end Widening Blame ----------------------------------------------------- */

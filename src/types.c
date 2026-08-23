@@ -128,7 +128,10 @@ TyKind ty_array_elem(TyKind arr) {
    post-fixpoint narrow pass, never by forward inference (a forward mapping
    would cascade the nested type through the fixpoint and destabilize it). */
 
-TyKind ty_unify(TyKind a, TyKind b) {
+void sp_llvm_unify_note(TyKind a, TyKind b, const char *site);   /* spinel-llvm L5 */
+extern const char *sp_llvm_last_poly_site;   /* spinel-llvm L5 / E125 */
+TyKind ty_unify_at(TyKind a, TyKind b, const char *site) {
+  sp_llvm_last_poly_site = NULL;   /* E125: 毎回消してから */
   if (a == b) return a;
   if (a == TY_UNKNOWN) return b;
   if (b == TY_UNKNOWN) return a;
@@ -160,6 +163,10 @@ TyKind ty_unify(TyKind a, TyKind b) {
      to poly stripped every IO method from an `h = nil; h = <accept>` slot. */
   if (a == TY_NIL && b == TY_IO) return b;
   if (b == TY_NIL && a == TY_IO) return a;
+  /* spinel-llvm L5 (E123): どの型どうしの合流が poly を作ったかを数える。
+     未設定時は即 return するだけ。定義は analyze.c。 */
+  sp_llvm_unify_note(a, b, site);
+  sp_llvm_last_poly_site = site;   /* E125: 直後の代入が拾う */
   return TY_POLY;
 }
 
