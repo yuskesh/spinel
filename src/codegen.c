@@ -8295,6 +8295,12 @@ static int scope_sig_degraded(Compiler *c, Scope *s) {
    warning per method whose signature degraded to untyped. Positions come from
    the parser's node_line/node_col/node_file (the SPINEL_DEBUG machinery), so
    the driver enables it. */
+/* --- spinel-llvm patch L2 (SPINEL_LLVM_TYPES_NODE_ID) ------------------- */
+static int sp_llvm_types_node_id(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("SPINEL_LLVM_TYPES_NODE_ID") ? 1 : 0;
+  return on;
+}
 static char *build_types_json(Compiler *c) {
   const NodeTable *nt = c->nt;
   Buf b; memset(&b, 0, sizeof b);
@@ -8320,6 +8326,16 @@ static char *build_types_json(Compiler *c) {
     ty_to_rbs_into(c, t, &rbs);
     json_escape_into(&b, rbs.p ? rbs.p : "");
     free(rbs.p);
+/* spinel-llvm L2 (SPINEL_LLVM_TYPES_NODE_ID): node id とノード種別を足す。
+   位置 (line, col) は一意キーにならない — 同じ col に複数ノードが載る
+   (spinel-llvm R022 §3b で実測)。node id なら 1 対 1 で引ける。
+   直前の "rbs" 文字列を閉じてから継ぎ足すので既存行は 1 行も変えていない。
+   未設定時は 1 バイトも変わらない。正典は SPINEL_LLVM_PATCHES.md の L2。 */
+if (sp_llvm_types_node_id()) {
+  const char *k_ = nt_type(nt, id);
+  buf_printf(&b, "\",\"node\":%d,\"kind\":\"", id);
+  json_escape_into(&b, k_ ? k_ : "");
+}
     buf_puts(&b, "\"}");
     tn++;
   }
