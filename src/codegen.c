@@ -955,7 +955,10 @@ int call_returns_nullable_int(Compiler *c, int node) {
   return 0;
 }
 
+/* spinel-llvm L3 (SPINEL_LLVM_CODEGEN_FACTS): 実体はこのファイルの後方。 */
+void sp_llvm_cg_fact(int node, const char *what, const char *detail);
 void emit_boxed(Compiler *c, int node, Buf *b) {
+  sp_llvm_cg_fact(node, "boxing", NULL);
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
      below rather than being boxed by the shared node type (#2454). */
@@ -9181,6 +9184,42 @@ static void ext_generate_cruby_shim(Compiler *c) {
 }
 
 
+/* --- spinel-llvm patch L3 (SPINEL_LLVM_CODEGEN_FACTS) -----------------------
+   codegen が「型情報をどう使ったか」を node id つきで申告する sidecar。
+   型テーブル (--emit-types, L2) と node id で join して audit する。
+   規律: 最適化しないことは許すが、理由なく型情報を捨てることは許さない。
+   未設定時は 1 バイトも変わらない。正典は SPINEL_LLVM_PATCHES.md の L3。 */
+static Buf g_llvm_cgf;
+static int g_llvm_cgf_n;
+static const char *sp_llvm_cgf_path(void) {
+  static int inited; static const char *p;
+  if (!inited) { inited = 1; p = getenv("SPINEL_LLVM_CODEGEN_FACTS"); if (p && !*p) p = NULL; }
+  return p;
+}
+void sp_llvm_cg_fact(int node, const char *what, const char *detail) {
+  if (!sp_llvm_cgf_path() || node < 0) return;
+  if (g_llvm_cgf_n++ > 0) buf_puts(&g_llvm_cgf, ",\n");
+  buf_printf(&g_llvm_cgf, "    {\"node\":%d,\"fact\":\"", node);
+  json_escape_into(&g_llvm_cgf, what ? what : "");
+  buf_puts(&g_llvm_cgf, "\"");
+  if (detail) {
+    buf_puts(&g_llvm_cgf, ",\"detail\":\"");
+    json_escape_into(&g_llvm_cgf, detail);
+    buf_puts(&g_llvm_cgf, "\"");
+  }
+  buf_puts(&g_llvm_cgf, "}");
+}
+static void sp_llvm_cg_facts_write(void) {
+  const char *p = sp_llvm_cgf_path();
+  if (!p) return;
+  Buf o; memset(&o, 0, sizeof o);
+  buf_puts(&o, "{\n  \"codegen\": [\n");
+  if (g_llvm_cgf.p) buf_puts(&o, g_llvm_cgf.p);
+  buf_puts(&o, "\n  ]\n}\n");
+  emit_write_file(p, o.p ? o.p : "");
+  free(o.p);
+}
+/* --- end spinel-llvm patch L3 ---------------------------------------------- */
 char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
@@ -10703,6 +10742,7 @@ char *codegen_program(const NodeTable *nt) {
     if (g_ext_target && sp_streq(g_ext_target, "cruby"))
       ext_generate_cruby_shim(c);
   }
+  sp_llvm_cg_facts_write();   /* spinel-llvm L3 */
   comp_free(c);
   return b.p;
 }

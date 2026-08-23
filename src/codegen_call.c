@@ -1,4 +1,6 @@
 #include "codegen_internal.h"
+/* spinel-llvm L3 */
+void sp_llvm_cg_fact(int node, const char *what, const char *detail);
 
 /* The call whose poly-hash face is being re-emitted, so the arm that installs
    the face does not fire again on its own substituted receiver. */
@@ -5496,6 +5498,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       if (!obj_default_done)
         buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       buf_printf(b, " } _t%d; })", tr);
+      /* spinel-llvm L3: ここで実際に poly dispatch を出す。受信型を根拠として
+         申告する — 型が具体なのに poly に落ちていれば CG901。 */
+      sp_llvm_cg_fact(id, "dispatch_poly", ty_name(rt));
       return 1;
     }
   }
@@ -6841,6 +6846,9 @@ else {
       free(atmp_ty);
       free(kwtmp);
       free(kwty);
+      /* spinel-llvm L3: ここで実際に poly dispatch を出す。受信型を根拠として
+         申告する — 型が具体なのに poly に落ちていれば CG901。 */
+      sp_llvm_cg_fact(id, "dispatch_poly", ty_name(rt));
       return 1;
     }
   }
