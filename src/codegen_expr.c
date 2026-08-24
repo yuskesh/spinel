@@ -188,7 +188,10 @@ void emit_interp(Compiler *c, int id, Buf *b) {
         buf_puts(&conv, "("); EMIT_IV(); buf_puts(&conv, " ?: sp_str_empty)");
       }
       else if (t == TY_FLOAT) {
-        buf_puts(&conv, "sp_float_to_s(");
+        /* A nil float slot interpolates as "", the same as a nil int slot
+           (sp_w_int) and a nil string slot (?: sp_str_empty).  The sentinel is
+           a reserved NaN payload, so an ordinary NaN still renders as "NaN". */
+        buf_puts(&conv, "sp_float_opt_to_s(");
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_BOOL) {
