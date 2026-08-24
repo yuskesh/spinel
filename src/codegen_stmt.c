@@ -80,7 +80,8 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     if (t == TY_INT_ARRAY)
       buf_printf(b, "printf(\"%%lld\\n\", (long long)sp_IntArray_get(%s, _t%d));\n", a, ti);
     else if (t == TY_FLOAT_ARRAY)
-      buf_printf(b, "{ const char *_fs = sp_float_to_s(sp_FloatArray_get(%s, _t%d)); fputs(_fs, stdout); putchar('\\n'); }\n", a, ti);
+        /* a nil element prints as an empty line, the same as `puts <nil float>` */
+      buf_printf(b, "{ const char *_fs = sp_float_opt_to_s(sp_FloatArray_get(%s, _t%d)); fputs(_fs, stdout); putchar('\\n'); }\n", a, ti);
     else /* str */
       buf_printf(b, "{ const char *_ps = sp_StrArray_get(%s, _t%d); if (_ps) fputs(_ps, stdout); if (!_ps || !*_ps || _ps[strlen(_ps)-1] != '\\n') putchar('\\n'); }\n", a, ti);
     free(ab.p);
@@ -229,7 +230,8 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "printf(\"%lld\", (long long)"); emit_expr(c, arg, b); buf_puts(b, ");\n");
   }
   else if (t == TY_FLOAT) {
-    buf_puts(b, "fputs(sp_float_to_s("); emit_expr(c, arg, b); buf_puts(b, "), stdout);\n");
+    /* print of a nil float writes nothing, as puts already does (sp_float_opt_to_s). */
+    buf_puts(b, "fputs(sp_float_opt_to_s("); emit_expr(c, arg, b); buf_puts(b, "), stdout);\n");
   }
   else if (t == TY_STRING) {
     buf_puts(b, "{ const char *_s = ("); emit_expr(c, arg, b);
@@ -894,7 +896,7 @@ else {
         emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", wt);
         if (at == TY_STRING) emit_expr(c, argv[k], b);
         else if (at == TY_INT) { buf_puts(b, "sp_int_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
-        else if (at == TY_FLOAT) { buf_puts(b, "sp_float_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
+        else if (at == TY_FLOAT) { buf_puts(b, "sp_float_opt_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
         else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); }
         else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[k], b); buf_puts(b, ")"); }
         buf_puts(b, ";\n");
