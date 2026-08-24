@@ -755,6 +755,8 @@ const char *hash_box_cls(TyKind t);
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 TyKind yield_site_type(Compiler *c, int node);
 void emit_int_expr(Compiler *c, int node, Buf *b);
+void emit_int_expr_ranged(Compiler *c, int node, Buf *b, const char *site);  /* L7 */
+void sp_llvm_bound_debug(Compiler *c, int recv, int key, int site);  /* E129 */
 void emit_str_expr(Compiler *c, int node, Buf *b);
 int emit_unresolved_coerced(Compiler *c, int node, TyKind target, Buf *b);
 void emit_int_divisor(Compiler *c, int node, Buf *b);

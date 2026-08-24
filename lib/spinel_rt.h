@@ -827,6 +827,19 @@ static inline mrb_int sp_str_getbyte(const char *s, mrb_int i) {
 }
 /* String#getbyte: a negative index counts from the end, and an out-of-range
    index is nil (SP_INT_NIL, a nullable int) -- not 0 or an adjacent byte. */
+/* --- spinel-llvm patch L7 (range fact のチャネル) --------------------------
+   解析が「この式の値は [lo,hi] に入る」と主張したとき、その主張を
+   実行時に検査する (SPINEL_ASSERT_RANGES)。assume を出す前に必ず通す門。
+   canonical: docs/researches/R027_range_analysis_design.md / docs/experiments/E128。 */
+static inline mrb_int sp_rng_check(mrb_int v, mrb_int lo, mrb_int hi, const char *site) {
+  if (v < lo || v > hi) {
+    fprintf(stderr, "spinel: RANGE ASSERTION FAILED at %s: %lld not in [%lld,%lld]\n",
+            site, (long long)v, (long long)lo, (long long)hi);
+    abort();
+  }
+  return v;
+}
+/* --- end spinel-llvm patch L7 ---------------------------------------------- */
 static inline mrb_int sp_str_getbyte_opt(const char *s, mrb_int i) {
   if (!s) sp_nil_recv("getbyte");
   mrb_int bl = (mrb_int)sp_str_byte_len(s);
