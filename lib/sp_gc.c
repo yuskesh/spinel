@@ -13,6 +13,8 @@
 #define malloc_trim(x) ((void)0)
 #endif
 #include <unistd.h>
+#include <fcntl.h>   /* spinel-llvm L8 */
+#include <time.h>    /* spinel-llvm L8 */
 #include "sp_gc.h"
 #if defined(SP_REQUEST_ARENA)
 /* sp_gc.h routes callers' sp_gc_mark* to nothing; the definitions below are the
@@ -385,6 +387,66 @@ static SP_NOINLINE void sp_gc_verify_gen_run(void) {
     free(cand);
 }
 
+/* --- spinel-llvm patch L8 (SPINEL_GC_TRACE) --------------------------------
+   軸 D (ポーズ実時間)。GC.stat の cycle/full_runs は**累積回数**なので、
+   フレーム落ちの主指標である**最大ポーズ**が原理的に取れない。ここは収集
+   1 回につき 1 行を出す。
+
+     gc;<cycle>;<minor|major>;<us>;<bytes_before>;<bytes_after>;<threshold>
+
+   SPINEL_GC_TRACE=<path|1> でのみ有効。未設定時は下の 1 分岐だけで、
+   出力もコードパスも patch 前と一致する (SPINEL_ALLOC_REPORT と同じ形)。
+
+   ★ malloc を使わないこと。この計器は gcmon (E131) と同時に当てられるのが
+   前提で、stdio の fopen は FILE のバッファを確保する。実際 gcmon の
+   プローブは atexit の fopen で +1 malloc / +1 free を出し、観測器の
+   自己検算を落とした。ここは open(2)/write(2) と stack バッファで書く。
+   canonical: docs/experiments/E132、台帳 SPINEL_LLVM_PATCHES.md L8。 */
+/* sp_gc_threshold は lib/sp_alloc.h:475 のもの。ヘッダを増やして
+   include 順に依存するより、依存シンボルをここに 1 行で名指しする
+   (gcmon_contract.h と同じ方針)。 */
+extern size_t sp_gc_threshold;
+
+static int sp_gc_trace_fd = -2;   /* -2 = 未初期化 / -1 = off */
+static int sp_gc_trace_open(void);
+
+/* ★ 収集が 1 度も起きなくてもファイルは作る。
+   最初は遅延 open にしていたが、それだと SPINEL_GC_TRACE を立てて収集が 0 回
+   だったときにファイルが存在しない = 消費側から「収集 0」と「計器が走らなかった」
+   が区別できない。E131 で塞いだ Z-7 (「何も走らなかった」が緑になる) と同型の穴を
+   計器の側に作ることになるので、constructor で開いてヘッダだけ書いておく。 */
+__attribute__((constructor)) static void sp_gc_trace_init(void) { sp_gc_trace_open(); }
+
+static int sp_gc_trace_open(void) {
+  const char *e = getenv("SPINEL_GC_TRACE");
+  if (!e || !*e || (e[0] == '0' && e[1] == 0)) { sp_gc_trace_fd = -1; return -1; }
+  if (e[0] == '1' && e[1] == 0) { sp_gc_trace_fd = 2; }
+  else {
+    int fd = open(e, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    sp_gc_trace_fd = (fd < 0) ? -1 : fd;
+  }
+  if (sp_gc_trace_fd >= 0) {
+    static const char hdr[] =
+      "# spinel gc trace (L8): gc;cycle;kind;us;bytes_before;bytes_after;threshold\n";
+    ssize_t w = write(sp_gc_trace_fd, hdr, sizeof hdr - 1); (void)w;
+  }
+  return sp_gc_trace_fd;
+}
+
+static void sp_gc_trace_row(int cycle, int full, long long us,
+                            size_t before, size_t after, size_t thr) {
+  char line[192];
+  int n = snprintf(line, sizeof line, "gc;%d;%s;%lld;%zu;%zu;%zu\n",
+                   cycle, full ? "major" : "minor", us, before, after, thr);
+  if (n > 0) { ssize_t w = write(sp_gc_trace_fd, line, (size_t)n); (void)w; }
+}
+
+static long long sp_gc_trace_now_us(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+}
+/* --- end spinel-llvm patch L8 ---------------------------------------------- */
 void sp_gc_collect(void){
 #if defined(SP_REQUEST_ARENA)
   /* The single point at which the whole collector is switched off (E064,
@@ -401,6 +463,12 @@ void sp_gc_collect(void){
   return;
 #endif
   size_t ob_before = sp_gc_bytes;
+  /* L8: 未設定なら分岐 1 個で抜ける */
+  long long sp_gc_trace_t0 = 0;
+  if (sp_gc_trace_fd != -1) {
+    if (sp_gc_trace_fd == -2) sp_gc_trace_open();
+    if (sp_gc_trace_fd >= 0) sp_gc_trace_t0 = sp_gc_trace_now_us();
+  }
   int full=(sp_gc_cycle%sp_gc_full_interval==0);sp_gc_cycle++;
   if(full)sp_gc_full_runs++;
   /* new mark generation: every object becomes unmarked without touching it.
@@ -548,6 +616,10 @@ void sp_gc_collect(void){
      benefit at a fraction of the cost. */
   if(full&&(sp_gc_full_runs%4)==1)malloc_trim(0);
   if(sp_gc_obj_retune_hook)sp_gc_obj_retune_hook(ob_before);
+  /* L8: 1 収集 = 1 行。retune の後に取るので threshold は実効値 */
+  if (sp_gc_trace_fd >= 0)
+    sp_gc_trace_row(sp_gc_cycle, full, sp_gc_trace_now_us() - sp_gc_trace_t0,
+                    ob_before, sp_gc_bytes, sp_gc_threshold);
 }
 
 /* Issue #1302: optional RSS ceiling via SPINEL_MAX_HEAP_MB; checked only
