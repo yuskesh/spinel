@@ -89,8 +89,11 @@ mrb_int sp_IntArray_cmp(sp_IntArray *a, sp_IntArray *b);
 static void sp_FloatArray_fin(void*p){sp_FloatArray*a=(sp_FloatArray*)p;sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(mrb_float)*a->cap);h->size-=sizeof(mrb_float)*a->cap;free(a->data);}
 static sp_FloatArray*sp_FloatArray_new(void){sp_FloatArray*a=(sp_FloatArray*)sp_gc_alloc(sizeof(sp_FloatArray),sp_FloatArray_fin,NULL);a->cap=16;a->data=(mrb_float*)malloc(sizeof(mrb_float)*a->cap);if(!a->data)sp_oom_die();a->len=0;{sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));h->size+=sizeof(mrb_float)*a->cap;sp_gc_bytes_add(sizeof(mrb_float)*a->cap);}return a;}
 static inline void sp_FloatArray_push(sp_FloatArray*a,mrb_float v){if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return;}if(a->len>=a->cap){sp_gc_hdr*h=(sp_gc_hdr*)((char*)a-sizeof(sp_gc_hdr));sp_gc_bytes_sub(sizeof(mrb_float)*a->cap);h->size-=sizeof(mrb_float)*a->cap;a->cap=((((((a->cap*2))))))+1;a->data=(mrb_float*)realloc(a->data,sizeof(mrb_float)*a->cap);h->size+=sizeof(mrb_float)*a->cap;sp_gc_bytes_add(sizeof(mrb_float)*a->cap);}a->data[a->len++]=v;}
-static inline mrb_float sp_FloatArray_pop(sp_FloatArray*a){if(!a||a->len<=0)return 0.0;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return 0.0;}return a->data[--a->len];}
-static inline mrb_float sp_FloatArray_shift(sp_FloatArray*a){if(!a||a->len==0)return 0.0;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return 0.0;}mrb_float v=a->data[0];for(mrb_int i=0;i+1<a->len;i++)a->data[i]=a->data[i+1];a->len--;return v;}
+/* Empty pop/shift return the float nil sentinel, matching IntArray (#826/#832)
+   and CRuby (`[].pop` is nil, not 0.0). The frozen path returns the sentinel too,
+   so the two element types stay symmetric there as well. */
+static inline mrb_float sp_FloatArray_pop(sp_FloatArray*a){if(!a||a->len<=0)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}return a->data[--a->len];}
+static inline mrb_float sp_FloatArray_shift(sp_FloatArray*a){if(!a||a->len==0)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}mrb_float v=a->data[0];for(mrb_int i=0;i+1<a->len;i++)a->data[i]=a->data[i+1];a->len--;return v;}
 /* FloatArray is 0-based (no `start` offset, unlike IntArray). delete_at
    returns 0.0 on out-of-range (delete_at's nil there). */
 static inline mrb_float sp_FloatArray_delete_at(sp_FloatArray*a,mrb_int i){if(!a)return 0.0;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return 0.0;}if(i<0)i+=a->len;if(i<0||i>=a->len)return 0.0;mrb_float v=a->data[i];for(mrb_int j=i;j+1<a->len;j++)a->data[j]=a->data[j+1];a->len--;return v;}
