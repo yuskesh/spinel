@@ -282,6 +282,129 @@ TyKind yield_site_type(Compiler *c, int node) {
   return (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) ? u : t;
 }
 
+/* --- E129: 記号的な上界が取れるかを数えるだけの計器 ------------------------
+   証明器は作らない。添字 site ごとに
+     (a) 受け手が ivar なら、その ivar に `Array.new(n, ...)` で入る n の記号
+     (b) 添字の名前を縛る比較 (`x < E` / `x <= E`) が同じスコープにあるか
+   を印字する。R027 §3b / E129。 */
+static const char *sp_bd_sym(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return NULL;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_InstanceVariableReadNode || k == NK_LocalVariableReadNode ||
+      k == NK_ConstantReadNode) return nt_str(nt, node, "name");
+  if (k == NK_IntegerNode) return "(literal)";
+  return NULL;
+}
+/* `@a = Array.new(n, ...)` を探して n の記号を返す */
+static const char *sp_bd_len_sym(Compiler *c, const char *ivname) {
+  const NodeTable *nt = c->nt;
+  if (!ivname) return NULL;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_InstanceVariableWriteNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, ivname)) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_CallNode) continue;
+    const char *cn = nt_str(nt, v, "name");
+    int r = nt_ref(nt, v, "receiver");
+    if (!cn || !sp_streq(cn, "new") || r < 0) continue;
+    const char *rn = nt_str(nt, r, "name");
+    if (!rn || !sp_streq(rn, "Array")) continue;
+    int an = 0; int ar = nt_ref(nt, v, "arguments");
+    const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &an) : NULL;
+    if (an < 1 || !av) continue;
+    const char *sym = sp_bd_sym(c, av[0]);
+    if (sym) return sym;
+  }
+  return NULL;
+}
+/* 同じスコープに `idxname < E` / `idxname <= E` があれば E の記号を返す */
+static const char *sp_bd_guard_sym(Compiler *c, int site, const char *idxname) {
+  const NodeTable *nt = c->nt;
+  if (!idxname) return NULL;
+  Scope *sc = comp_scope_of(c, site);
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    if (comp_scope_of(c, id) != sc) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "<") && !sp_streq(nm, "<="))) continue;
+    int r = nt_ref(nt, id, "receiver");
+    const char *rn = sp_bd_sym(c, r);
+    if (!rn || !sp_streq(rn, idxname)) continue;
+    int an = 0; int ar = nt_ref(nt, id, "arguments");
+    const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &an) : NULL;
+    if (an != 1 || !av) continue;
+    const char *sym = sp_bd_sym(c, av[0]);
+    if (sym) return sym;
+  }
+  return NULL;
+}
+void sp_llvm_bound_debug(Compiler *c, int recv, int key, int site) {
+  static int on = -1;
+  if (on < 0) on = getenv("SPINEL_LLVM_BOUND_DEBUG") ? 1 : 0;
+  if (!on) return;
+  const char *arr = sp_bd_sym(c, recv);
+  const char *idx = sp_bd_sym(c, key);
+  const char *lensym = (recv >= 0 && nt_kind(c->nt, recv) == NK_InstanceVariableReadNode)
+                         ? sp_bd_len_sym(c, arr) : NULL;
+  const char *guard = idx ? sp_bd_guard_sym(c, site, idx) : NULL;
+  fprintf(stderr, "[bd] arr=%s len=%s idx=%s guard=%s %s\n",
+          arr ? arr : "(式)", lensym ? lensym : "-", idx ? idx : "(式)",
+          guard ? guard : "-",
+          (lensym && guard && sp_streq(lensym, guard)) ? "MATCH" : "");
+}
+/* --- spinel-llvm patch L7 (range fact) -------------------------------------
+   v1 の事実生成器は 1 規則だけ: `x & C` (C は正の整数リテラル) ⟹ [0, C]。
+   健全で局所的。`i < len` は次段 (E129) の仕事。
+   出力は 3 モード:
+     フラグ無し                   何も出さない (バイト一致)
+     SPINEL_ASSERT_RANGES         実行時検査 sp_rng_check
+     SPINEL_LLVM_RANGE_ASSUME     __builtin_assume
+   canonical: R027 / E128。 */
+static int sp_llvm_rng_mode(void) {
+  static int m = -1;
+  if (m < 0) m = getenv("SPINEL_ASSERT_RANGES") ? 1
+              : getenv("SPINEL_LLVM_RANGE_ASSUME") ? 2 : 0;
+  return m;
+}
+/* `x & C` の C を返す (見つからなければ 0)。 */
+static long long sp_llvm_mask_of(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, node) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm || !sp_streq(nm, "&")) return 0;
+  int an = 0; int ar = nt_ref(nt, node, "arguments");
+  const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &an) : NULL;
+  int recv = nt_ref(nt, node, "receiver");
+  if (an != 1 || recv < 0 || !av) return 0;
+  /* 受信側・引数側のどちらがリテラルでもよい */
+  for (int k = 0; k < 2; k++) {
+    int lit = k ? recv : av[0];
+    int other = k ? av[0] : recv;
+    if (nt_kind(nt, lit) != NK_IntegerNode) continue;
+    if (comp_ntype(c, other) != TY_INT) continue;
+    long long v = nt_int(nt, lit, "value", -1);
+    if (v > 0) return v;   /* x & C (C > 0) は [0, C] */
+  }
+  return 0;
+}
+/* 範囲つきで整数式を出す。範囲が分からない / モード off なら普通に出す。 */
+void emit_int_expr_ranged(Compiler *c, int node, Buf *b, const char *site) {
+  int mode = sp_llvm_rng_mode();
+  long long m = mode ? sp_llvm_mask_of(c, node) : 0;
+  if (!m) { emit_int_expr(c, node, b); return; }
+  if (mode == 1) {
+    buf_printf(b, "sp_rng_check(");
+    emit_int_expr(c, node, b);
+    buf_printf(b, ", 0, %lldLL, \"%s\")", m, site ? site : "?");
+  } else {
+    buf_puts(b, "({ mrb_int _rv = ");
+    emit_int_expr(c, node, b);
+    buf_printf(b, "; __builtin_assume(_rv >= 0 && _rv <= %lldLL); _rv; })", m);
+  }
+}
+/* --- end spinel-llvm patch L7 ---------------------------------------------- */
 /* A user object in a concretely-typed slot: CRuby's implicit conversion
    protocol. The argument's class is static here, so a class defining the
    conversion method (#to_str for a const char* slot, #to_int for sp_int)
