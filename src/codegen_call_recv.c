@@ -2653,6 +2653,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       if ((sp_streq(name, "[]") || sp_streq(name, "at")) && argc == 1) {
+        sp_llvm_bound_debug(c, recv, argv[0], id);   /* E129 */
         buf_printf(b, "sp_%sArray_get(", k);
         emit_expr(c, recv, b); buf_puts(b, ", ");
         if (infer_type(c, argv[0]) == TY_POLY) {
@@ -7520,7 +7521,9 @@ int emit_scalar_call(Compiler *c, int id, Buf *b) {
       else if (sp_streq(name, "getbyte") && argc == 1) {
         /* Bounds/negative-correct: a negative index counts from the end and an
            out-of-range index is nil (SP_INT_NIL) -- getbyte is a nullable int. */
-        buf_printf(b, "sp_str_getbyte_opt(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+        buf_printf(b, "sp_str_getbyte_opt(%s, ", r);
+        emit_int_expr_ranged(c, argv[0], b, "getbyte");   /* L7 */
+        buf_puts(b, ")");
       }
       else if (sp_streq(name, "squeeze") && argc == 0) buf_printf(b, "sp_str_squeeze(%s)", r);
       else if (sp_streq(name, "squeeze") && argc == 1) { buf_printf(b, "sp_str_squeeze_chars(%s, ", r); emit_str_expr(c, argv[0], b); buf_puts(b, ")"); }

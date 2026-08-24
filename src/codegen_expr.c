@@ -612,6 +612,7 @@ static void emit_index_get(Compiler *c, int recv, int key, Buf *b) {
     return;
   }
   if (ty_is_array(rt)) {
+    sp_llvm_bound_debug(c, recv, key, key);   /* E129: 記号を数えるだけ (site は key で代用) */
     const char *k = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
     buf_printf(b, "sp_%sArray_get(", k ? k : "Poly");
     if (g_iow_recv_ref) buf_puts(b, g_iow_recv_ref); else emit_expr(c, recv, b);
