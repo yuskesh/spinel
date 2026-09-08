@@ -210,6 +210,16 @@ extern int sp_alloc_report_on;
 void sp_alloc_report_count(void *scan, size_t bytes);
 void sp_alloc_report_str(size_t bytes);
 void sp_alloc_report_tag(void *scan, const char *name);
+/* The report on demand: request() raises a flag the counting path honours on
+   the next allocation (async-signal-safe, one store); dump() writes the table
+   now. Both are portable; the signal that usually calls them is installed by
+   sp_alloc_report_signal.c, which exists only where sigaction does. */
+void sp_alloc_report_request(void);
+void sp_alloc_report_dump(void);
+/* Installs whatever asks for a dump while the program runs. Defined by
+   sp_alloc_report_signal.c where sigaction exists; a target without signals
+   (wasm32-wasi) links a no-op under this name instead of that TU. */
+void sp_alloc_report_arm_trigger(void);
 
 /* Binary (ASCII-8BIT) strings. spinel keeps no per-string encoding tag:
    String#length counts UTF-8 code points while the bytes stay valid UTF-8 and

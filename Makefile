@@ -434,7 +434,7 @@ build/sp_cold.o: lib/sp_cold.c $(RT_HDRS)
 
 SP_RT_LIB = lib/libspinel_rt.a
 
-RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_hash sp_proc sp_exc sp_re sp_random sp_fiber sp_sched sp_io sp_cold sp_process sp_process_status
+RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_alloc sp_alloc_report_signal sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_array sp_str sp_hash sp_proc sp_exc sp_re sp_random sp_fiber sp_sched sp_io sp_cold sp_process sp_process_status
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^
