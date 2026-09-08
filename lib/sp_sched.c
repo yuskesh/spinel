@@ -1365,6 +1365,17 @@ sp_RbVal sp_Thread_value(sp_thread *t) {
   return t->retval;
 }
 
+#ifdef SP_NO_STACK_SWITCH
+/* A target with no stack switching (wasm32-wasi: no getcontext/makecontext/
+   swapcontext) has exactly one thread, because a second one would need a fiber
+   to run on. Thread.pass then has nobody to hand the processor to, and the
+   cooperative IO parks that call it (sp_io_wait_readable / _writable) simply
+   poll again. The body below would still be correct on such a target -- the
+   main-thread arm is the one taken -- but it REFERENCES the transfer, and a
+   reference is enough to make the linker demand the context functions the
+   target cannot supply (E009 s3). Compiled out rather than branched around. */
+void sp_Thread_pass(void) {}
+#else
 void sp_Thread_pass(void) {
   SCHED_LOCK();
   sp_thread *self = g_current;
@@ -1382,6 +1393,7 @@ void sp_Thread_pass(void) {
     sp_fiber_fire_inject_if_pending();   /* a #kill/#raise delivered while paused */
   }
 }
+#endif
 
 sp_thread *sp_Thread_current(void) { return g_current; }
 
