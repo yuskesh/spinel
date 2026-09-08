@@ -9,7 +9,6 @@
 #include <unistd.h>     /* sysconf (worker count) */
 #include <time.h>       /* clock_gettime (Kernel#sleep) */
 #include <errno.h>      /* EINTR (sleep fallback) */
-#include <sys/wait.h>   /* waitpid (sp_sched_wait_child) */
 #include <signal.h>     /* preemption signal (SIGURG by default) */
 #include <strings.h>    /* strcasecmp (SPINEL_PREEMPT_SIGNAL by name) */
 #include <stdint.h>     /* intptr_t (worker id passed via pthread arg) */
@@ -864,39 +863,6 @@ int sp_sched_other_threads_live(void) {
     while (t) { if (t != g_current) { other = 1; break; } t = t->all_next; } }
   SCHED_UNLOCK();
   return other;
-}
-/* Wait for one child without holding the OS worker while other green threads
-   have to run. A blocking waitpid answers for the whole worker, and a started
-   green thread is pinned to its worker, so `spin build --verbose` deadlocked:
-   the parent waited for the compiler, the compiler filled the stderr pipe and
-   blocked writing, and the reader thread that would have drained it could not
-   be scheduled (#4381). The cooperative build has the same shape with one OS
-   thread and several fibers.
-
-   Poll and hand the scheduler back between attempts, but only while another
-   thread is alive -- a program with one thread keeps the blocking wait and its
-   exact wake-up. sp_Thread_pass runs a runnable sibling immediately; the sleep
-   only keeps a busy loop from burning the core while the child works, and it
-   caps at 5ms, which is nothing against a wait long enough to matter. */
-int sp_sched_wait_child(int pid, int *status) {
-  int r;
-  if (!sp_sched_other_threads_live()) {
-    do { r = (int)waitpid((pid_t)pid, status, 0); } while (r < 0 && errno == EINTR);
-    return r;
-  }
-  { double back = 0.0002;
-    for (;;) {
-      do { r = (int)waitpid((pid_t)pid, status, WNOHANG); } while (r < 0 && errno == EINTR);
-      if (r != 0) return r;   /* reaped, or an error for the caller to report */
-      sp_Thread_pass();
-#ifdef SP_THREADS
-      sp_sched_sleep(back);
-#else
-      { struct timespec rq; rq.tv_sec = 0; rq.tv_nsec = (long)(back * 1e9);
-        while (nanosleep(&rq, &rq) == -1 && errno == EINTR) {} }
-#endif
-      if (back < 0.005) back *= 2.0;
-    } }
 }
 static void reg_remove(sp_thread *t) {
   if (t->all_prev) t->all_prev->all_next = t->all_next;
