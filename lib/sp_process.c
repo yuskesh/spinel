@@ -47,6 +47,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <errno.h>
+#include <time.h>       /* nanosleep: the cooperative wait's back-off */
 
 #include "sp_alloc.h"   /* sp_PolyArray, sp_RbVal, sp_box_*, sp_raise_cls */
 #include "sp_process_status.h"   /* sp_ProcessStatus, sp_box_process_status */
@@ -272,12 +273,57 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   return (sp_int)pid;
 }
 
-/* The wait itself lives in the scheduler (sp_sched_wait_child): a blocking
-   waitpid answers for the OS worker, and a started green thread is pinned to
-   its worker, so blocking here stalls the thread that may have to drain this
-   child's output before it can exit (#4381). */
+/* ---- the child wait: a process facility, so it lives here and not in the
+   scheduler. waitpid needs <sys/wait.h>; keeping it out of sp_sched.c leaves the
+   scheduler buildable on a target with no process layer at all (wasm32-wasi
+   links the plain scheduler for Thread.pass / Mutex / Queue while this TU is
+   simply absent). The polling shape is the scheduler's concern and it exposes
+   what this needs. Declared here rather than through sp_sched.h: see the note
+   at the top on this TU's includes. */
+extern int  sp_sched_other_threads_live(void);
+extern void sp_Thread_pass(void);
+#ifdef SP_THREADS
+extern void sp_sched_sleep(double seconds);
+#endif
+/* Wait for one child without holding the OS worker while other green threads
+   have to run. A blocking waitpid answers for the whole worker, and a started
+   green thread is pinned to its worker, so `spin build --verbose` deadlocked:
+   the parent waited for the compiler, the compiler filled the stderr pipe and
+   blocked writing, and the reader thread that would have drained it could not
+   be scheduled (#4381). The cooperative build has the same shape with one OS
+   thread and several fibers.
+
+   Poll and hand the scheduler back between attempts, but only while another
+   thread is alive -- a program with one thread keeps the blocking wait and its
+   exact wake-up. sp_Thread_pass runs a runnable sibling immediately; the sleep
+   only keeps a busy loop from burning the core while the child works, and it
+   caps at 5ms, which is nothing against a wait long enough to matter. */
+int sp_sched_wait_child(int pid, int *status) {
+  int r;
+  if (!sp_sched_other_threads_live()) {
+    do { r = (int)waitpid((pid_t)pid, status, 0); } while (r < 0 && errno == EINTR);
+    return r;
+  }
+  { double back = 0.0002;
+    for (;;) {
+      do { r = (int)waitpid((pid_t)pid, status, WNOHANG); } while (r < 0 && errno == EINTR);
+      if (r != 0) return r;   /* reaped, or an error for the caller to report */
+      sp_Thread_pass();
+#ifdef SP_THREADS
+      sp_sched_sleep(back);
+#else
+      { struct timespec rq; rq.tv_sec = 0; rq.tv_nsec = (long)(back * 1e9);
+        while (nanosleep(&rq, &rq) == -1 && errno == EINTR) {} }
+#endif
+      if (back < 0.005) back *= 2.0;
+    } }
+}
+
+/* A blocking waitpid answers for the OS worker, and a started green thread is
+   pinned to its worker, so blocking here stalls the thread that may have to
+   drain this child's output before it can exit (#4381) -- hence the wait above.
+*/
 sp_PolyArray *sp_process_waitpid2(sp_int pid) {
-  extern int sp_sched_wait_child(int pid, int *status);   /* see the note at the top on this TU's includes */
   int status = 0;
   pid_t r = (pid_t)sp_sched_wait_child((int)pid, &status);
   if (r < 0) {
