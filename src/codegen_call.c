@@ -18760,17 +18760,21 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
         /* String operand -> the _bin entry (header length, so an embedded NUL
            is written); anything else reaches sp_poly_to_s, whose static
            class/symbol names carry no marker byte. See sp_File_write above. */
-        int skw = comp_ntype(c, argv[0]) == TY_STRING;
-        const char *wfn = skw ? "sp_sock_write_nb_bin" : "sp_sock_write_nb";
+        TyKind wtn = comp_ntype(c, argv[0]);
+        int skw = wtn == TY_STRING;
+        int mbs = ty_may_be_string(wtn);   /* boxed entry: decide on the tag (S23, batch 7) */
+        const char *wfn = mbs ? "sp_sock_write_nb_val"
+                              : skw ? "sp_sock_write_nb_bin" : "sp_sock_write_nb";
         if (no_exc8) {
           int tw = ++g_tmp;
           buf_printf(b, "({ sp_int _t%d = %s(%s, ", tw, wfn, r);
-          emit_to_s_expr(c, argv[0], b);
+          if (mbs) emit_boxed(c, argv[0], b); else emit_to_s_expr(c, argv[0], b);
           buf_printf(b, ", 0); _t%d == SP_INT_NIL"
                         " ? sp_box_sym(sp_sym_intern(\"wait_writable\")) : sp_box_int(_t%d); })", tw, tw);
         }
         else {
-          buf_printf(b, "%s(%s, ", wfn, r); emit_to_s_expr(c, argv[0], b);
+          buf_printf(b, "%s(%s, ", wfn, r);
+          if (mbs) emit_boxed(c, argv[0], b); else emit_to_s_expr(c, argv[0], b);
           buf_puts(b, ", 1)");
         }
       }
@@ -18979,7 +18983,15 @@ static void emit_call_body(Compiler *c, int id, Buf *b) {
       /* IO#<< writes the (stringified) operand and returns self, so it chains
          (`io << a << b`). Hold the handle in a temp, write, yield the handle. */
       int t = ++g_tmp;
-      int sk = comp_ntype(c, argv[0]) == TY_STRING;
+      TyKind lt2 = comp_ntype(c, argv[0]);
+      int sk = lt2 == TY_STRING;
+      if (ty_may_be_string(lt2)) {
+        /* a maybe-String decides on the run-time tag (S23, batch 7) */
+        buf_printf(b, "({ sp_File *_t%d = %s; sp_File_write_val(_t%d, ", t, r, t);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "); _t%d; })", t);
+        free(rb.p); return;
+      }
       buf_printf(b, "({ sp_File *_t%d = %s; %s(_t%d, ", t, r,
                  sk ? "sp_File_write_bin" : "sp_File_write", t);
       emit_to_s_expr(c, argv[0], b);

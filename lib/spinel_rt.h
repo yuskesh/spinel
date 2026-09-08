@@ -1640,6 +1640,33 @@ static inline sp_bool sp_class_eq(sp_Class a, sp_Class b) {
 }
 static inline const char *sp_poly_to_s(sp_RbVal v);   /* defined below; used by the user-object arm */
 static inline sp_File *sp_poly_to_file(sp_RbVal v); /* defined below; IO.select's user-#to_io unwrap */
+/* IO write of a BOXED operand. The tag is the exact answer to the one question
+   the two write entries disagree about -- "does this pointer carry a marker
+   byte?" -- so a String (or a shared-mutable String handle, whose payload is
+   0xfd-marked) writes its own header length, embedded NUL and all, and
+   everything else is stringified and sized with strlen, because sp_poly_to_s
+   can answer an unmarked static class/symbol name that sp_str_byte_len would
+   read out of bounds at s[-1].
+   Without this entry the codegen had to choose between the two at COMPILE
+   time from the inferred type, so a String whose type had widened to TY_POLY
+   (`R2.get` -> `String | nil`) took the strlen arm and was silently truncated
+   at its first NUL. Same dispatch the IO arm of sp_poly_binop `<<` already
+   makes; this just gives the <<, write_nonblock and print call sites one name
+   for it (spinel-llvm batch 7 / E059; the write / syswrite sites themselves
+   are upstream's since 4f20f900). */
+static inline sp_int sp_File_write_val(sp_File *f, sp_RbVal v) {
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_File_write_bin(f, v.v.s);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    return sp_File_write_bin(f, sp_String_cstr((sp_String *)v.v.p));
+  return sp_File_write(f, sp_poly_to_s(v));
+}
+/* write_nonblock's counterpart: same split, non-blocking entries. */
+static inline sp_int sp_sock_write_nb_val(sp_File *f, sp_RbVal v, sp_bool exc) {
+  if (v.tag == SP_TAG_STR && v.v.s) return sp_sock_write_nb_bin(f, v.v.s, exc);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)
+    return sp_sock_write_nb_bin(f, sp_String_cstr((sp_String *)v.v.p), exc);
+  return sp_sock_write_nb(f, sp_poly_to_s(v), exc);
+}
 /* Kernel#puts / #print of a String VALUE on stdout. Every TY_STRING
    expression the codegen emits is marker-framed (an 0xff/0xf1 literal, an
    0xfe/0xfc heap string, an 0xfd builder payload), so sp_str_byte_len is the
