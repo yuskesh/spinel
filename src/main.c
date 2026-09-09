@@ -152,6 +152,17 @@ static void resolve_lib_dir(const char *argv0, char *out, size_t outsz) {
 /* Append the FFI link/cflag markers the codegen embedded in the C source.
    Each marker line is a C comment of the form  PREFIX <flags> SP/  where
    PREFIX is e.g. the SPINEL_LINK opener; `prefix` includes that opener. */
+/* Marker lines the GENERATOR emits, matched only at the start of a line.
+   A C string literal cannot contain a raw newline -- codegen escapes them --
+   so a Ruby string that happens to spell the marker cannot satisfy this,
+   which a plain strstr for the runtime symbol could not tell apart. */
+static int has_marker_line(const char *csrc, const char *marker) {
+  size_t n = strlen(marker);
+  for (const char *p = csrc; (p = strstr(p, marker)) != NULL; p += n)
+    if (p == csrc || p[-1] == '\n') return 1;
+  return 0;
+}
+
 static void scrape_ffi_markers(const char *csrc, const char *prefix, Str *out) {
   size_t plen = strlen(prefix);
   const char *p = csrc;
@@ -433,6 +444,18 @@ int main(int argc, char **argv) {
     fprintf(stderr, "spinel: -E (run) cannot be combined with -o/-c/-S\n");
     return 2;
   }
+  /* --arena selects an ARCHIVE and a define on the compile line; -c/-S stop
+     before either exists, and the C itself is byte-identical in the two
+     configurations. Accepting the combination would hand back C that says
+     nothing about which runtime it was meant for, and skip the GC/Thread
+     refusals below -- so refuse it rather than ignore the flag. */
+  if (arena_mode && (c_only || stdout_mode)) {
+    fprintf(stderr, "spinel: --arena cannot be combined with -c/-S. The generated C is\n"
+                    "spinel: the same either way; --arena is the -DSP_PROCESS_ARENA compile\n"
+                    "spinel: and the libspinel_rt_arena.a link, which -c/-S never reach.\n"
+                    "spinel: Compile the program with --arena, or drop --arena to emit C.\n");
+    return 2;
+  }
 
   const char *ov_define = NULL;
   if (sp_streq(int_overflow, "raise"))   ov_define = "-DSP_INT_OVERFLOW_MODE_RAISE";
@@ -638,11 +661,11 @@ int main(int argc, char **argv) {
      variant (libspinel_rt_mt.a) plus -lpthread; everything else links the
      byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
      marker and the two-variant build in the Makefile. */
-  int uses_threads = strstr(csrc, "/* SPINEL_USES_THREADS */") != NULL;
+  int uses_threads = has_marker_line(csrc, "/* SPINEL_USES_THREADS */\n");
   /* A frame past the fiber stack crashes on the guard page rather than
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */
-  int fiber_frame_guard = strstr(csrc, "/* SPINEL_FIBER_FRAME_GUARD */") != NULL;
+  int fiber_frame_guard = has_marker_line(csrc, "/* SPINEL_FIBER_FRAME_GUARD */\n");
   const char *rt_lib = uses_threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
   /* --arena: the generated TU and the archive MUST agree on the define.
      sp_str_alloc and the SP_GC_ROOT macros are header-resident, so a TU built
@@ -661,18 +684,20 @@ int main(int argc, char **argv) {
     /* GC-dependent operations are refused, not quietly turned into no-ops.
        The check reads what the compiler EMITTED, not how the program spelled
        it: GC.start, GC.send(:start), a call inside a reachable method, and a
-       second constant aliased to GC all converge on the same runtime call, and
-       a check written against the receiver's name in the source misses the
-       alias. The names below are runtime entry points, so a new way of writing
-       an existing operation cannot slip past; a genuinely new collector entry
-       point would have to be added here. */
-    static const struct { const char *sym; const char *what; } gc_entries[] = {
-      { "sp_gc_collect_request(", "GC.start / GC.compact" },
-      { "sp_gc_stat(",            "GC.stat" },
+       second constant aliased to GC all converge on the same emission site,
+       and a check written against the receiver's name in the source misses
+       the alias. Each marker is set AT that site (codegen_call.c) rather than
+       searched for as a runtime symbol in the finished C, because
+       `puts "sp_gc_stat("` puts the symbol in the C without calling it. A
+       genuinely new collector entry point has to be given a marker here. */
+    static const struct { const char *marker; const char *what; } gc_entries[] = {
+      { "/* SPINEL_CALLS_GC GC.start */\n",   "GC.start" },
+      { "/* SPINEL_CALLS_GC GC.compact */\n", "GC.compact" },
+      { "/* SPINEL_CALLS_GC GC.stat */\n",    "GC.stat" },
       { NULL, NULL }
     };
-    for (int g = 0; gc_entries[g].sym; g++) {
-      if (strstr(csrc, gc_entries[g].sym)) {
+    for (int g = 0; gc_entries[g].marker; g++) {
+      if (has_marker_line(csrc, gc_entries[g].marker)) {
         fprintf(stderr,
           "spinel: --arena refuses %s: this build has no collector, so the call "
           "would do nothing at all rather than fail.\n"

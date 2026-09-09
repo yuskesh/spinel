@@ -65,11 +65,6 @@ typedef struct { int tag; int cls_id; union { sp_int i; const char *s; sp_float 
    generated TU -- both consult this for the array and the SP_GC_ROOT bound).
    Too small overflows silently into a dropped root (UAF), so size it to the
    program's deepest live-root nesting. */
-/* SP_PROCESS_ARENA: the process-lifetime arena has no collection
-   point, so no root is ever pushed and the 512 KB static array below is dead
-   weight -- in a 128 MB Workers isolate it is real linear memory, and it is the
-   dominant static allocation of a minimal binary (the note under the #ifndef).
-   One entry keeps every declaration and bound check well-formed. */
 /* The root stack keeps its normal size: the roots are still pushed (see the
    note on the macros above), so a smaller array would overflow and
    _sp_gc_root_push would start dropping entries. */
@@ -97,35 +92,18 @@ static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
 static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
 #define _SP_GC_CONCAT2(a,b) a##b
 #define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
-/* ---- SP_PROCESS_ARENA: the root machinery, disabled ----
-   In this configuration reclamation happens once, when the process exits, so
-   sp_gc_alloc and sp_str_alloc never collect (see sp_alloc.c) and the collector
-   never walks a root. A root that is never read is a store nobody loads.
-   Removing it also removes the &local that forced the local into memory for the
-   whole function.
+/* ---- SP_PROCESS_ARENA and the root machinery ----
+   The root macros are the same in both configurations. Under the arena nothing
+   ever walks the root stack, so the pushes and pops are bookkeeping that no
+   reader consumes; they are kept because removing them changed observable
+   behaviour. The macros take &v, which is what keeps a local in memory across
+   the setjmp/longjmp that catch/throw and raise/rescue are built on, and the
+   generated C does not declare every such local volatile. Making them no-ops
+   made `i = 0; catch(:done) { i += 1; throw :done }; p i` print 0.
 
-   The speed effect of that second part was measured by the predecessor project
-   on its own tree and hardware, not here, so no figure is quoted.
-
-   sp_gc_nroots itself is kept (it stays 0): the generated TU reads it directly
-   for the exception-landing watermark (sp_exc_rootmark[...] = sp_gc_nroots),
-   which is not spelled through any macro here. */
-/* The root machinery is NOT disabled under the arena, and that is deliberate.
-   Turning SP_GC_ROOT into ((void)0) is an optimisation, not part of what makes
-   this mode safe -- the safety comes from the collector never running. It also
-   changes observable behaviour: the macros take &v, which forces the local into
-   memory, and a local that lives in a register instead is indeterminate after a
-   longjmp. catch/throw and raise/rescue are built on setjmp/longjmp, and the
-   generated C does not mark every such local volatile, so removing the macros
-   made `i = 0; catch(:done) { i += 1; throw :done }; p i` print 0 rather than 1.
-   The roots are pushed and popped as usual here; nothing ever walks them. */
-#if 0
-#define SP_GC_SAVE()        ((void)0)
-#define SP_GC_ROOT(v)       ((void)0)
-#define SP_GC_ROOT_RBVAL(v) ((void)0)
-#define SP_GC_ROOT_STR(v)   ((void)0)
-#define SP_GC_RESTORE()     ((void)0)
-#else
+   That is not a claim that &v satisfies the C rule for longjmp -- it does not.
+   It is what the collecting build does and what its behaviour has been verified
+   against, and the arena takes the same path rather than a different one. */
 #define SP_GC_SAVE() int __attribute__((cleanup(sp_gc_cleanup))) _gc_saved = sp_gc_nroots
 #define SP_GC_ROOT(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)&(v))
 /* Root a poly (sp_RbVal) local: tag the stored slot's low bit so the mark
@@ -139,7 +117,6 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    header walk. Use this for string parameters in runtime helpers. */
 #define SP_GC_ROOT_STR(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)2))
 #define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
-#endif  /* SP_PROCESS_ARENA */
 
 /* ---- write barrier ----
    A generational mark walks the young objects and whatever the roots reach; an
@@ -343,8 +320,16 @@ void *sp_gc_arena_more(size_t n);          /* new chunk, or die loud */
 size_t sp_gc_arena_reserved_bytes(void);   /* chunk bytes taken from libc */
 size_t sp_gc_arena_used_bytes(void);       /* bytes handed out (chunk granularity) */
 static inline void *sp_gc_arena_alloc(size_t n) {
+  /* A size that cannot be rounded to the alignment cannot be served either;
+     hand it to the slow path, which refuses loudly rather than wrapping to a
+     small number and returning a short block. */
+  if (n > (size_t)-1 - (size_t)15) return sp_gc_arena_more(n);
   n = (n + (size_t)15) & ~(size_t)15;   /* calloc's alignment, preserved */
   char *p = sp_gc_arena_cur;
+  /* Before the first chunk exists both pointers are NULL. Subtracting them is
+     undefined, so the empty state is its own branch rather than arithmetic that
+     happens to give zero. */
+  if (p == NULL) return sp_gc_arena_more(n);
   if ((size_t)(sp_gc_arena_end - p) < n) return sp_gc_arena_more(n);
   sp_gc_arena_cur = p + n;
   return p;

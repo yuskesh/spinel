@@ -23520,9 +23520,11 @@ else { memcpy(dir, sf, n); dir[n] = 0; } }
   /* GC module methods */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC")) {
-    if (sp_streq(name, "start") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return; }
-    if (sp_streq(name, "compact") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return; }
-    if (sp_streq(name, "stat") && argc == 0) { buf_puts(b, "sp_gc_stat()"); return; }
+    /* Each of these records the operation in g_calls_gc so the driver can
+       see that a collector entry was really emitted (SPINEL_CALLS_GC). */
+    if (sp_streq(name, "start") && argc == 0) { g_calls_gc |= SP_CALLS_GC_START; buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return; }
+    if (sp_streq(name, "compact") && argc == 0) { g_calls_gc |= SP_CALLS_GC_COMPACT; buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return; }
+    if (sp_streq(name, "stat") && argc == 0) { g_calls_gc |= SP_CALLS_GC_STAT; buf_puts(b, "sp_gc_stat()"); return; }
   }
 
   /* Fiber class methods: Fiber.yield(val) and Fiber.current */

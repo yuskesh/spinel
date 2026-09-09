@@ -424,17 +424,63 @@ static size_t sp_gc_arena_chunk = SP_ARENA_CHUNK0;
 static int    sp_gc_arena_chunks = 0;
 size_t sp_gc_arena_reserved_bytes(void) { return sp_gc_arena_reserved; }
 size_t sp_gc_arena_used_bytes(void) {
+  if (sp_gc_arena_cur == NULL) return 0;   /* no chunk yet: nothing to subtract */
   return sp_gc_arena_reserved - (size_t)(sp_gc_arena_end - sp_gc_arena_cur);
+}
+
+/* A request the arena can never serve, or a limit that cannot be represented.
+   Loud and final, like exhaustion, because there is nothing to fall back on. */
+static void sp_gc_arena_refuse(const char *what, size_t n) {
+  fprintf(stderr,
+    "spinel: arena request refused: %s\n"
+    "spinel:   request   %20zu B\n"
+    "spinel:   limit     %20zu B  [SPINEL_ARENA_MAX_MB, compiled default SP_ARENA_MAX_MB=%d]\n",
+    what, n, sp_gc_arena_limit, (int)SP_ARENA_MAX_MB);
+  fflush(stderr);
+  exit(1);
+}
+
+/* SPINEL_ARENA_MAX_MB, parsed strictly: digits only, non-empty, no sign, no
+   trailing text, and a value whose byte count fits in size_t. atol() would
+   accept "12abc" as 12 and a negative as a huge size_t after the cast. */
+static size_t sp_gc_arena_limit_from_env(const char *e) {
+  const char *q = e;
+  unsigned long long v = 0;
+  if (!q || !*q) return 0;
+  for (; *q; q++) {
+    if (*q < '0' || *q > '9') {
+      fprintf(stderr, "spinel: SPINEL_ARENA_MAX_MB must be a whole number of "
+                      "megabytes, got \"%s\"\n", e);
+      fflush(stderr); exit(1);
+    }
+    if (v > (0xFFFFFFFFFFFFFFFFull - (unsigned long long)(*q - '0')) / 10ull) {
+      fprintf(stderr, "spinel: SPINEL_ARENA_MAX_MB is too large: \"%s\"\n", e);
+      fflush(stderr); exit(1);
+    }
+    v = v * 10ull + (unsigned long long)(*q - '0');
+  }
+  if (v == 0) return 0;
+  if (v > (unsigned long long)((size_t)-1) / (1024ull * 1024ull)) {
+    fprintf(stderr, "spinel: SPINEL_ARENA_MAX_MB does not fit in an address "
+                    "space this wide: \"%s\"\n", e);
+    fflush(stderr); exit(1);
+  }
+  return (size_t)v * (size_t)(1024 * 1024);
 }
 void *sp_gc_arena_more(size_t n) {
   if (!sp_gc_arena_limit) {
-    const char *e = getenv("SPINEL_ARENA_MAX_MB");
-    long v = (e && *e) ? atol(e) : 0;
-    sp_gc_arena_limit = (v > 0) ? (size_t)v * 1024u * 1024u
-                             : (size_t)SP_ARENA_MAX_MB * 1024u * 1024u;
+    size_t from_env = sp_gc_arena_limit_from_env(getenv("SPINEL_ARENA_MAX_MB"));
+    sp_gc_arena_limit = from_env ? from_env
+                                 : (size_t)SP_ARENA_MAX_MB * (size_t)(1024 * 1024);
   }
+  /* The fast path sends an unroundable size here rather than wrapping it. */
+  if (n > (size_t)-1 - (size_t)15) sp_gc_arena_refuse("size cannot be aligned", n);
   size_t want = sp_gc_arena_chunk;
-  if (want < n) want = (n + (size_t)(SP_ARENA_CHUNK0 - 1)) & ~(size_t)(SP_ARENA_CHUNK0 - 1);
+  if (want < n) {
+    if (n > (size_t)-1 - (size_t)(SP_ARENA_CHUNK0 - 1))
+      sp_gc_arena_refuse("size cannot be rounded to a chunk", n);
+    want = (n + (size_t)(SP_ARENA_CHUNK0 - 1)) & ~(size_t)(SP_ARENA_CHUNK0 - 1);
+  }
   /* Loud, with the usage, and never silent: there is no collector to fall back
      on, so exceeding the limit is a contract violation rather than back
      pressure. There is deliberately no recoverable error here -- raising at an
@@ -442,7 +488,9 @@ void *sp_gc_arena_more(size_t n) {
      agreed. The limit bounds what the arena hands out; allocations the runtime
      makes outside the GC heap (container storage, regexp and scratch buffers,
      bigint limbs, fiber stacks) are not counted by it. */
-  if (sp_gc_arena_reserved + want > sp_gc_arena_limit) {
+  /* Compared against what is left rather than by adding, so a huge `want`
+     cannot wrap past the limit and look like it fits. */
+  if (want > sp_gc_arena_limit || sp_gc_arena_reserved > sp_gc_arena_limit - want) {
     fprintf(stderr,
       "spinel: arena exhausted\n"
       "spinel:   request   %12zu B (%zu MB)\n"
@@ -486,7 +534,8 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
      GC.stat and SPINEL_ALLOC_REPORT keep answering (nothing reads it as a
      trigger any more). The heap path below is left in place, unmodified and
      unreachable, so this hunk deletes nothing. */
-  { size_t need_r = sizeof(sp_gc_hdr) + sz;
+  { if (sz > (size_t)-1 - sizeof(sp_gc_hdr)) sp_oom_die();
+    size_t need_r = sizeof(sp_gc_hdr) + sz;
     sp_gc_hdr *h_r = (sp_gc_hdr *)sp_gc_arena_alloc(need_r);
     h_r->finalize = fin; h_r->scan = scn; h_r->size = need_r;
     if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);

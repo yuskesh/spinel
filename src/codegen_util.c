@@ -568,6 +568,12 @@ int g_gen_obj_with = 0;
 int g_uses_regex = 0;
 int g_uses_argv = 0;
 int g_uses_threads = 0;
+/* Bitmask of collector entries the generator actually EMITTED, set at the
+   emission site (codegen_call.c) and reported by the SPINEL_CALLS_GC marker.
+   Set where the call is produced rather than scanned for in the finished C:
+   the runtime symbol can also appear inside a Ruby string literal, and a
+   text search cannot tell that from a call. */
+unsigned g_calls_gc = 0;
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 TyKind g_ie_next_ty = TY_UNKNOWN;

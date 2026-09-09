@@ -371,6 +371,10 @@ extern int g_gen_obj_with;  /* >=1 instantiated Data: emit+install sp_obj_with (
 extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_threads;
+#define SP_CALLS_GC_START   1u
+#define SP_CALLS_GC_COMPACT 2u
+#define SP_CALLS_GC_STAT    4u
+extern unsigned g_calls_gc;
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
 extern int g_has_user_coerce;
