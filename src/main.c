@@ -658,6 +658,33 @@ int main(int argc, char **argv) {
                       "combination is refused rather than guessed. Drop --arena.\n");
       return 1;
     }
+    /* GC-dependent operations are refused, not quietly turned into no-ops.
+       The check reads what the compiler EMITTED, not how the program spelled
+       it: GC.start, GC.send(:start), a call inside a reachable method, and a
+       second constant aliased to GC all converge on the same runtime call, and
+       a check written against the receiver's name in the source misses the
+       alias. The names below are runtime entry points, so a new way of writing
+       an existing operation cannot slip past; a genuinely new collector entry
+       point would have to be added here. */
+    static const struct { const char *sym; const char *what; } gc_entries[] = {
+      { "sp_gc_collect_request(", "GC.start / GC.compact" },
+      { "sp_gc_stat(",            "GC.stat" },
+      { NULL, NULL }
+    };
+    for (int g = 0; gc_entries[g].sym; g++) {
+      if (strstr(csrc, gc_entries[g].sym)) {
+        fprintf(stderr,
+          "spinel: --arena refuses %s: this build has no collector, so the call "
+          "would do nothing at all rather than fail.\n"
+          "spinel: nothing is reclaimed while the process runs, so a program "
+          "calling it to bound its footprint would keep going and then exit over "
+          "the arena limit, with nothing pointing at the cause.\n"
+          "spinel: remove the call, or build without --arena.\n",
+          gc_entries[g].what);
+        free(csrc);
+        return 1;
+      }
+    }
     rt_lib = "libspinel_rt_arena.a";
   }
   free(csrc);
