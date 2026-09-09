@@ -70,9 +70,9 @@ typedef struct { int tag; int cls_id; union { sp_int i; const char *s; sp_float 
    weight -- in a 128 MB Workers isolate it is real linear memory, and it is the
    dominant static allocation of a minimal binary (the note under the #ifndef).
    One entry keeps every declaration and bound check well-formed. */
-#if defined(SP_PROCESS_ARENA) && !defined(SP_GC_STACK_MAX)
-#define SP_GC_STACK_MAX 1
-#endif
+/* The root stack keeps its normal size: the roots are still pushed (see the
+   note on the macros above), so a smaller array would overflow and
+   _sp_gc_root_push would start dropping entries. */
 #ifndef SP_GC_STACK_MAX
 #define SP_GC_STACK_MAX 65536
 #endif
@@ -110,7 +110,16 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    sp_gc_nroots itself is kept (it stays 0): the generated TU reads it directly
    for the exception-landing watermark (sp_exc_rootmark[...] = sp_gc_nroots),
    which is not spelled through any macro here. */
-#if defined(SP_PROCESS_ARENA)
+/* The root machinery is NOT disabled under the arena, and that is deliberate.
+   Turning SP_GC_ROOT into ((void)0) is an optimisation, not part of what makes
+   this mode safe -- the safety comes from the collector never running. It also
+   changes observable behaviour: the macros take &v, which forces the local into
+   memory, and a local that lives in a register instead is indeterminate after a
+   longjmp. catch/throw and raise/rescue are built on setjmp/longjmp, and the
+   generated C does not mark every such local volatile, so removing the macros
+   made `i = 0; catch(:done) { i += 1; throw :done }; p i` print 0 rather than 1.
+   The roots are pushed and popped as usual here; nothing ever walks them. */
+#if 0
 #define SP_GC_SAVE()        ((void)0)
 #define SP_GC_ROOT(v)       ((void)0)
 #define SP_GC_ROOT_RBVAL(v) ((void)0)
