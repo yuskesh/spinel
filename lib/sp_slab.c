@@ -668,6 +668,28 @@ void *sp_slab_alloc_obj(size_t need, void (*fin)(void *), void (*scn)(void *)) {
 int sp_gc_alloc_fast_ok = 0;
 static void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (*scn)(void *));
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
+#if defined(SP_PROCESS_ARENA)
+  /* The arena's object path, re-applied here by the rebase onto upstream. The
+     function this branch was written into -- sp_gc_alloc in lib/sp_alloc.c --
+     was moved into this file and split into a lean front and
+     sp_gc_alloc_full. ONE BRANCH STILL COVERS THE WHOLE PATH, because
+     sp_gc_alloc_full is static and its only callers are the three tail-calls
+     below.
+
+     No trigger, no list, no lock. The header is still written and still sits
+     in front of the payload: sp_gc_is_frozen / sp_gc_freeze /
+     sp_PolyArray_push / sp_PolyArray_fin read it, and keeping the layout
+     identical keeps every one of those correct without touching them.
+     sp_gc_bytes is still maintained so GC.stat and SPINEL_ALLOC_REPORT keep
+     answering (nothing reads it as a trigger any more). The slab path below is
+     left in place, unmodified and unreachable, so this hunk deletes nothing. */
+  { size_t need_r = sizeof(sp_gc_hdr) + sz;
+    sp_gc_hdr *h_r = (sp_gc_hdr *)sp_gc_arena_alloc(need_r);
+    h_r->finalize = fin; h_r->scan = scn; h_r->size = need_r;
+    if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
+    sp_gc_bytes_add(need_r);
+    return (char *)h_r + sizeof(sp_gc_hdr); }
+#endif
   size_t need = sizeof(sp_gc_hdr) + sz;
   if (__builtin_expect(!sp_gc_alloc_fast_ok || need > 256, 0)) return sp_gc_alloc_full(sz, fin, scn);
   if (__builtin_expect(SP_GC_CTR_GET(sp_gc_bytes) > SP_GC_CTR_GET(sp_gc_threshold), 0)) return sp_gc_alloc_full(sz, fin, scn);
