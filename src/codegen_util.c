@@ -574,6 +574,11 @@ int g_uses_threads = 0;
    the runtime symbol can also appear inside a Ruby string literal, and a
    text search cannot tell that from a call. */
 unsigned g_calls_gc = 0;
+/* Off unless the driver asked for the arena. The markers are metadata for
+   --arena's refusal and nothing else reads them, so emitting them into every
+   program's C would change the default configuration's output for no reason
+   the default configuration has. Set by src/main.c before codegen runs. */
+int g_want_arena_markers = 0;
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 TyKind g_ie_next_ty = TY_UNKNOWN;

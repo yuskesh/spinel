@@ -10543,9 +10543,11 @@ char *codegen_program(const NodeTable *nt) {
      its own line, and the driver anchors its match to a line start -- a Ruby
      string literal is emitted with its newlines escaped, so it cannot
      produce one. --arena reads these to refuse the operation outright. */
-  if (g_calls_gc & SP_CALLS_GC_START)   buf_puts(&b, "/* SPINEL_CALLS_GC GC.start */\n");
-  if (g_calls_gc & SP_CALLS_GC_COMPACT) buf_puts(&b, "/* SPINEL_CALLS_GC GC.compact */\n");
-  if (g_calls_gc & SP_CALLS_GC_STAT)    buf_puts(&b, "/* SPINEL_CALLS_GC GC.stat */\n");
+  if (g_want_arena_markers) {
+    if (g_calls_gc & SP_CALLS_GC_START)   buf_puts(&b, "/* SPINEL_CALLS_GC GC.start */\n");
+    if (g_calls_gc & SP_CALLS_GC_COMPACT) buf_puts(&b, "/* SPINEL_CALLS_GC GC.compact */\n");
+    if (g_calls_gc & SP_CALLS_GC_STAT)    buf_puts(&b, "/* SPINEL_CALLS_GC GC.stat */\n");
+  }
 
   if (g_ext_init_name) {
     ext_refuse_param_mutation(c);

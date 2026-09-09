@@ -236,6 +236,11 @@ static inline char *sp_str_alloc(size_t len) {
      that marker (sp_str_has_hdr, sp_str_byte_len, sp_str_is_binary), so a
      string from the arena is indistinguishable from a heap one to its readers.
      0xfe never becomes 0xfc here because no mark ever runs. */
+  /* `total` above is sizeof(hdr) + 1 + len + 1; a len within that constant of
+     SIZE_MAX wraps it to a small number, and the marker and trailing NUL below
+     would then be written past the end of a tiny allocation. Checked on `len`,
+     before the addition that would already have wrapped. */
+  if (len > (size_t)-1 - (sizeof(sp_str_hdr) + 2)) sp_oom_die();
   h = (sp_str_hdr *)sp_gc_arena_alloc(total);
   h->size = (uint32_t)total;
   h->len = (uint32_t)len;

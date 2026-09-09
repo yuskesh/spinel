@@ -416,6 +416,17 @@ int sp_gc_collection_wanted(void) {
    more should raise it rather than treat the default as a budget. */
 #define SP_ARENA_MAX_MB 64
 #endif
+/* MB -> bytes at line ~474 is a plain multiply, and -DSP_ARENA_MAX_MB=<huge>
+   would wrap it to a SMALL limit rather than a large one -- the same failure the
+   environment parser already refuses at run time, but silent, and biased toward
+   refusing allocations rather than allowing them. It is a build-time constant,
+   so it is checked at build time. Zero is rejected too: a zero limit leaves
+   sp_gc_arena_limit falsy, so the lazy initialiser re-runs forever and every
+   request is refused. */
+typedef char sp_arena_max_mb_must_fit[
+  ((SP_ARENA_MAX_MB) > 0 &&
+   (unsigned long long)(SP_ARENA_MAX_MB) <=
+     (unsigned long long)((size_t)-1) / (1024ULL * 1024ULL)) ? 1 : -1];
 char *sp_gc_arena_cur = NULL;
 char *sp_gc_arena_end = NULL;
 static size_t sp_gc_arena_reserved = 0;
@@ -580,7 +591,11 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
 }
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
 #if defined(SP_PROCESS_ARENA)
-  { size_t need_r = sizeof(sp_gc_hdr) + sz;
+  /* Same guard as sp_gc_alloc: a size within sizeof(sp_gc_hdr) of SIZE_MAX would
+     wrap the header addition to a SMALL need_r, and the arena would hand back a
+     few bytes for a request the caller believes was enormous. */
+  { if (sz > (size_t)-1 - sizeof(sp_gc_hdr)) sp_oom_die();
+    size_t need_r = sizeof(sp_gc_hdr) + sz;
     sp_gc_hdr *h_r = (sp_gc_hdr *)sp_gc_arena_alloc(need_r);
     h_r->finalize = fin; h_r->scan = scn; h_r->size = need_r;
     if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);

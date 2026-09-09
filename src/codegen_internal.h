@@ -375,6 +375,7 @@ extern int g_uses_threads;
 #define SP_CALLS_GC_COMPACT 2u
 #define SP_CALLS_GC_STAT    4u
 extern unsigned g_calls_gc;
+extern int g_want_arena_markers;
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
 extern int g_has_user_coerce;

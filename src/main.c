@@ -36,6 +36,9 @@ extern int g_no_root_elision;
 extern int g_require_gate_cli;
 extern int g_inline_hot;
 extern int g_no_write_barrier;
+/* Set before codegen_program: ask for the SPINEL_CALLS_GC markers. Only
+   --arena reads them, so only --arena asks for them (see below). */
+extern int g_want_arena_markers;
 extern const char *g_ext_init_name;
 extern const char *g_ext_entries;
 extern const char *g_ext_target;
@@ -575,6 +578,11 @@ int main(int argc, char **argv) {
     ext_feat[fl] = 0;
     if (fl) g_ext_feature = ext_feat;
   }
+  /* --arena is the only consumer of the SPINEL_CALLS_GC markers, so only
+     --arena asks for them: without this the default configuration's C would
+     gain a line for every program that calls GC, which is a change to the
+     default output with no default-configuration purpose. */
+  g_want_arena_markers = arena_mode;
   char *csrc = codegen_program(nt);
   nt_free(nt);
   if (seed_path[0]) remove(seed_path);
