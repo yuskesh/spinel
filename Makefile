@@ -42,6 +42,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
+.PHONY: arena-archive
 .PHONY: all regexp rbs_extract rbs-test rbs-seed-test re-lit-test reject-test backtrace-test gc-minor-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench gc-phases-test \
@@ -463,6 +464,32 @@ RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 
 $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)))
 	ar rcs $@ $^
+
+# ---- Per-request arena variant (-DSP_PROCESS_ARENA; E064, Patch 6) ----
+# Same members and same flags as the plain archive plus one define. Built on
+# demand (`make arena-archive`), never by `all`, so the default build graph and
+# every default artifact stay bit-for-bit what they were. Selected by
+# src/main.c when --arena is given; the TU and the archive must carry
+# the define together (sp_str_alloc and the SP_GC_ROOT macros are
+# header-resident), which is the whole reason this archive exists.
+SP_RT_ARENA_LIB = lib/libspinel_rt_arena.a
+ARENA_DEF = -DSP_PROCESS_ARENA
+
+# Specific before generic, as in the mt pair above.
+build/arena/regexp/%.o: lib/regexp/%.c lib/regexp/re_internal.h
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) $(ARENA_DEF) -Ilib/regexp $< -o $@
+
+build/arena/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(ARENA_DEF) -Ilib -Ilib/regexp $< -o $@
+
+RE_ARENA_OBJ = $(patsubst lib/regexp/%.c,build/arena/regexp/%.o,$(RE_SRC))
+
+$(SP_RT_ARENA_LIB): $(RE_ARENA_OBJ) $(addprefix build/arena/,$(addsuffix .o,$(RT_MEMBERS)))
+	ar rcs $@ $^
+
+arena-archive: $(SP_RT_ARENA_LIB)
 
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The single-threaded gate links the plain archive even for threaded tests

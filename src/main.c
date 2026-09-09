@@ -272,7 +272,12 @@ static void usage(void) {
     "  -e STR      Inline Ruby source (repeatable; joined with newlines)\n"
     "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
-    "  --dump-ast  Print the text AST and exit (debug)\n");
+    "  --dump-ast  Print the text AST and exit (debug)\n"
+    "  --arena     Process-lifetime arena: allocation without a collector.\n"
+    "                 Nothing is reclaimed while the program runs; the process\n"
+    "                 exit reclaims everything. Intended for short-lived work.\n"
+    "                 Over SPINEL_ARENA_MAX_MB it exits loudly.\n"
+    "                 Requires lib/libspinel_rt_arena.a (make arena-archive)\n");
 }
 
 int main(int argc, char **argv) {
@@ -283,6 +288,7 @@ int main(int argc, char **argv) {
   const char *opt_level = "2";
   const char *int_overflow = "raise";
   const char *rbs_dir = NULL;
+  int arena_mode = 0;   /* --arena (E064, Patch 6b) */
   int c_only = 0, stdout_mode = 0, run_mode = 0, dump_ast = 0;
   int emit_rbs = 0, emit_types = 0, emit_symbol_map = 0;
   int debug = 0, line_map = 1, want_g = 0, profile = 0;
@@ -319,6 +325,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--profile"))     { profile = 1; want_g = 1; i++; }
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
+    else if (sp_streq(a, "--arena")) { arena_mode = 1; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */
     else if (sp_streq(a, "--no-root-elision")) { g_no_root_elision = 1; i++; }
@@ -637,6 +644,22 @@ int main(int argc, char **argv) {
      large-frame brake -- ask for the warning back (#3913). */
   int fiber_frame_guard = strstr(csrc, "/* SPINEL_FIBER_FRAME_GUARD */") != NULL;
   const char *rt_lib = uses_threads ? "libspinel_rt_mt.a" : "libspinel_rt.a";
+  /* --arena: the generated TU and the archive MUST agree on the define.
+     sp_str_alloc and the SP_GC_ROOT macros are header-resident, so a TU built
+     with the arena against the heap archive would allocate strings from the
+     arena while the archive's collector still swept them -- the one way to get
+     a use-after-free out of a design whose whole point is that it cannot have
+     one. Hence a dedicated archive rather than a flag on the TU alone. */
+  if (arena_mode) {
+    if (uses_threads) {
+      fprintf(stderr, "spinel: --arena is single-threaded only; this program "
+                      "uses Thread/Queue/Mutex (SP_THREADS). What an arena means "
+                      "for a worker's own heap has not been established, so the "
+                      "combination is refused rather than guessed. Drop --arena.\n");
+      return 1;
+    }
+    rt_lib = "libspinel_rt_arena.a";
+  }
   free(csrc);
 
   /* Output binary path: -E uses a temp so the cwd stays clean. */
@@ -707,6 +730,7 @@ int main(int argc, char **argv) {
      references through the runtime headers get the matching thread-local
      storage class. initial-exec keeps those reads a single segment load. */
   if (uses_threads) s_add(&cmd, "-DSP_THREADS -ftls-model=initial-exec ");
+  if (arena_mode) s_add(&cmd, "-DSP_PROCESS_ARENA ");
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   s_add_arg(&cmd, c_path);
   /* --link objects/archives sit between the generated TU and the runtime
