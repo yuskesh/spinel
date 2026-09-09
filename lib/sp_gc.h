@@ -65,6 +65,14 @@ typedef struct { int tag; int cls_id; union { sp_int i; const char *s; sp_float 
    generated TU -- both consult this for the array and the SP_GC_ROOT bound).
    Too small overflows silently into a dropped root (UAF), so size it to the
    program's deepest live-root nesting. */
+/* SP_PROCESS_ARENA: the process-lifetime arena has no collection
+   point, so no root is ever pushed and the 512 KB static array below is dead
+   weight -- in a 128 MB Workers isolate it is real linear memory, and it is the
+   dominant static allocation of a minimal binary (the note under the #ifndef).
+   One entry keeps every declaration and bound check well-formed. */
+#if defined(SP_PROCESS_ARENA) && !defined(SP_GC_STACK_MAX)
+#define SP_GC_STACK_MAX 1
+#endif
 #ifndef SP_GC_STACK_MAX
 #define SP_GC_STACK_MAX 65536
 #endif
@@ -89,6 +97,26 @@ static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
 static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
 #define _SP_GC_CONCAT2(a,b) a##b
 #define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
+/* ---- SP_PROCESS_ARENA: the root machinery, disabled ----
+   In this configuration reclamation happens once, when the process exits, so
+   sp_gc_alloc and sp_str_alloc never collect (see sp_alloc.c) and the collector
+   never walks a root. A root that is never read is a store nobody loads.
+   Removing it also removes the &local that forced the local into memory for the
+   whole function.
+
+   The speed effect of that second part was measured by the predecessor project
+   on its own tree and hardware, not here, so no figure is quoted.
+
+   sp_gc_nroots itself is kept (it stays 0): the generated TU reads it directly
+   for the exception-landing watermark (sp_exc_rootmark[...] = sp_gc_nroots),
+   which is not spelled through any macro here. */
+#if defined(SP_PROCESS_ARENA)
+#define SP_GC_SAVE()        ((void)0)
+#define SP_GC_ROOT(v)       ((void)0)
+#define SP_GC_ROOT_RBVAL(v) ((void)0)
+#define SP_GC_ROOT_STR(v)   ((void)0)
+#define SP_GC_RESTORE()     ((void)0)
+#else
 #define SP_GC_SAVE() int __attribute__((cleanup(sp_gc_cleanup))) _gc_saved = sp_gc_nroots
 #define SP_GC_ROOT(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)&(v))
 /* Root a poly (sp_RbVal) local: tag the stored slot's low bit so the mark
@@ -102,6 +130,7 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    header walk. Use this for string parameters in runtime helpers. */
 #define SP_GC_ROOT_STR(v) int __attribute__((cleanup(_sp_gc_root_pop))) _SP_GC_CONCAT(_sp_gcr_, __COUNTER__) = _sp_gc_root_push((void**)((uintptr_t)&(v) | (uintptr_t)2))
 #define SP_GC_RESTORE() sp_gc_nroots = _gc_saved
+#endif  /* SP_PROCESS_ARENA */
 
 /* ---- write barrier ----
    A generational mark walks the young objects and whatever the roots reach; an
@@ -122,7 +151,12 @@ static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
    itself, so it works wherever the store appears -- a statement, or an
    assignment inside a larger expression. The statement expression evaluates the
    object once, which a comma form would not. */
+#if defined(SP_PROCESS_ARENA)
+/* No mark ever runs, so the remembered set has no reader (E064). */
+#define SP_WBO(x) (x)
+#else
 #define SP_WBO(x) ({ __typeof__(x) _sp_wbo = (x); sp_gc_wb((void *)_sp_wbo); _sp_wbo; })
+#endif
 #define SP_GC_REMEMBERED_MAX 65536
 extern void *sp_gc_remembered[SP_GC_REMEMBERED_MAX];
 extern int sp_gc_nremembered;
@@ -143,6 +177,9 @@ extern int sp_gc_str_minor_only;
    inline. Inlining all of it cost ~5% on optcarrot, whose inner loops write
    object references per scanline. */
 void sp_gc_wb_slow(void *obj);
+#if defined(SP_PROCESS_ARENA)
+static inline void sp_gc_wb(void *obj) { (void)obj; }
+#else
 static inline void sp_gc_wb(void *obj) {
   /* Nothing reads the remembered set unless a minor mark runs, and whether one
      can is decided once, from the environment, before main. So with the
@@ -152,6 +189,7 @@ static inline void sp_gc_wb(void *obj) {
      barrier was doing its full work in both. */
   if (__builtin_expect(sp_gc_minor_on, 0)) sp_gc_wb_slow(obj);
 }
+#endif  /* SP_PROCESS_ARENA */
 /* Young object heap. Threaded build: per-worker lists (one pusher each, since a
    started thread is pinned to its worker), so allocation pushes without the
    CAS-on-shared-head that made object-heavy parallel workloads bounce a cache
@@ -283,6 +321,27 @@ static inline void sp_gc_bytes_sub(size_t n) {
 #define SP_GC_HEAP_PUSH(hdr) do { (hdr)->next = sp_gc_heap; sp_gc_heap = (hdr); } while (0)
 #endif
 
+/* ---- SP_PROCESS_ARENA: the process-lifetime bump allocator ----
+   One monotonically growing region, never reclaimed inside the process. The
+   chunks are calloc'd, so every slice handed out is already zero and
+   sp_gc_alloc keeps its calloc semantics at no per-object cost. Growth and the
+   exhaustion policy (loud death, with the usage in the message) live in
+   sp_gc_arena_more, out of line, in lib/sp_alloc.c. */
+#if defined(SP_PROCESS_ARENA)
+extern char *sp_gc_arena_cur;
+extern char *sp_gc_arena_end;
+void *sp_gc_arena_more(size_t n);          /* new chunk, or die loud */
+size_t sp_gc_arena_reserved_bytes(void);   /* chunk bytes taken from libc */
+size_t sp_gc_arena_used_bytes(void);       /* bytes handed out (chunk granularity) */
+static inline void *sp_gc_arena_alloc(size_t n) {
+  n = (n + (size_t)15) & ~(size_t)15;   /* calloc's alignment, preserved */
+  char *p = sp_gc_arena_cur;
+  if ((size_t)(sp_gc_arena_end - p) < n) return sp_gc_arena_more(n);
+  sp_gc_arena_cur = p + n;
+  return p;
+}
+#endif
+
 /* ---- Collector entry points (defined in lib/sp_gc.c) ---- */
 int  sp_gc_verify_on(void);   /* SPINEL_GC_VERIFY is set (diagnostics only) */
 extern const char *sp_gc_dbg_phase;   /* which root group the mark walk is in */
@@ -290,6 +349,14 @@ extern void *sp_gc_dbg_ctx;
 void sp_gc_mark(void *obj);
 void sp_gc_mark_all(void);
 void sp_gc_mark_drain(void);
+#if defined(SP_PROCESS_ARENA)
+/* Never called (sp_gc_collect returns immediately), so route every caller's
+   copy to nothing. lib/sp_gc.c #undefs these three right after including this
+   header, so the real definitions still compile and stay linkable. */
+#define sp_gc_mark(o)      ((void)(o))
+#define sp_gc_mark_all()   ((void)0)
+#define sp_gc_mark_drain() ((void)0)
+#endif
 extern int sp_gc_minor;
 extern int sp_gc_minor_on;
 extern int sp_gc_verify_gen;
@@ -420,6 +487,14 @@ extern const char *(*sp_obj_cls_name_fn)(int cls_id);
 
 /* ---- Hot inline mark helpers (inlined into both sides) ----
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked; others skipped. */
+#if defined(SP_PROCESS_ARENA)
+static inline void sp_mark_string(const char *s) { (void)s; }
+static inline void sp_mark_rbval(sp_RbVal v) { (void)v; }
+static inline void sp_cell_scan_str(void *p) { (void)p; }
+static inline void sp_cell_scan_ptr(void *p) { (void)p; }
+static inline void sp_cell_scan_rbval(void *p) { (void)p; }
+static inline void sp_gc_mark_root_entry(void **e) { (void)e; }
+#else
 static inline void sp_mark_string(const char *s) {
   if (!s) return;
   if ((unsigned char)s[-1] == 0xfe) {
@@ -466,5 +541,6 @@ static inline void sp_gc_mark_root_entry(void **e) {
   else if (u & (uintptr_t)2) { sp_mark_string(*(const char **)(u & ~(uintptr_t)2)); }
   else { void *o = *e; if (o) sp_gc_mark(o); }
 }
+#endif  /* SP_PROCESS_ARENA */
 
 #endif

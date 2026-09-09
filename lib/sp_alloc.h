@@ -229,6 +229,29 @@ void sp_alloc_report_tag(void *scan, const char *name);
 static inline char *sp_str_alloc(size_t len) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
   sp_str_hdr *h;
+#if defined(SP_PROCESS_ARENA)
+  /* Same shape as below minus the trigger and the list link (E064, Patch 6).
+     The header, the 0xfe marker byte and the trailing NUL are written exactly
+     as the heap path writes them: every string predicate in the tree keys off
+     that marker (sp_str_has_hdr, sp_str_byte_len, sp_str_is_binary), so a
+     string from the arena is indistinguishable from a heap one to its readers.
+     0xfe never becomes 0xfc here because no mark ever runs. */
+  h = (sp_str_hdr *)sp_gc_arena_alloc(total);
+  h->size = (uint32_t)total;
+  h->len = (uint32_t)len;
+  h->hash = 0;
+  /* No byte counter: nothing reads it here. The object counter (sp_gc_bytes)
+     IS kept in sp_gc_alloc because sp_PolyArray_push subtracts from it on every
+     grow and would underflow a size_t without the matching add; the string
+     counter has no such subtractor once the sweep is gone. The visible
+     consequence is that GC.stat's str_bytes/str_count report 0 -- there is no
+     string list to walk. */
+  { char *body_a = (char *)(h + 1);
+    body_a[0] = (char)0xfe;
+    body_a[1 + len] = 0;
+    if (sp_alloc_report_on) sp_alloc_report_str(len);
+    return body_a + 1; }
+#endif
   /* String-heap pressure drives its own collection (see sp_str_heap_bytes).
      Collect BEFORE the new allocation, like sp_gc_alloc, so the string being
      built isn't yet live during the sweep. Operands of the calling op (e.g. the

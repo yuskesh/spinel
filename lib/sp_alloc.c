@@ -394,7 +394,105 @@ int sp_gc_collection_wanted(void) {
 #endif
 }
 
+#if defined(SP_PROCESS_ARENA)
+/* ---- SP_PROCESS_ARENA: the bump allocator (E064, Patch 6) ----
+   Chunked so a hello-world does not reserve megabytes and a big response is
+   still served: the first chunk is small and each next one doubles up to a
+   cap. Chunks are calloc'd and never reused, so every slice is already zero --
+   sp_gc_alloc's calloc semantics survive at zero per-object cost.
+   The tail of a chunk that cannot fit the next request is abandoned; the waste
+   is bounded by one allocation's size per chunk. */
+#ifndef SP_ARENA_CHUNK0
+#define SP_ARENA_CHUNK0    (64u * 1024u)
+#endif
+#ifndef SP_ARENA_CHUNK_MAX
+#define SP_ARENA_CHUNK_MAX (4u * 1024u * 1024u)
+#endif
+#ifndef SP_ARENA_MAX_MB
+/* Default ceiling. 64 MB is a starting value, not a measured one: nothing here
+   profiles what a real program needs, and the right number depends entirely on
+   the workload. SPINEL_ARENA_MAX_MB overrides it at run time and
+   -DSP_ARENA_MAX_MB=<n> at build time, and a program that legitimately needs
+   more should raise it rather than treat the default as a budget. */
+#define SP_ARENA_MAX_MB 64
+#endif
+char *sp_gc_arena_cur = NULL;
+char *sp_gc_arena_end = NULL;
+static size_t sp_gc_arena_reserved = 0;
+static size_t sp_gc_arena_limit = 0;
+static size_t sp_gc_arena_chunk = SP_ARENA_CHUNK0;
+static int    sp_gc_arena_chunks = 0;
+size_t sp_gc_arena_reserved_bytes(void) { return sp_gc_arena_reserved; }
+size_t sp_gc_arena_used_bytes(void) {
+  return sp_gc_arena_reserved - (size_t)(sp_gc_arena_end - sp_gc_arena_cur);
+}
+void *sp_gc_arena_more(size_t n) {
+  if (!sp_gc_arena_limit) {
+    const char *e = getenv("SPINEL_ARENA_MAX_MB");
+    long v = (e && *e) ? atol(e) : 0;
+    sp_gc_arena_limit = (v > 0) ? (size_t)v * 1024u * 1024u
+                             : (size_t)SP_ARENA_MAX_MB * 1024u * 1024u;
+  }
+  size_t want = sp_gc_arena_chunk;
+  if (want < n) want = (n + (size_t)(SP_ARENA_CHUNK0 - 1)) & ~(size_t)(SP_ARENA_CHUNK0 - 1);
+  /* Loud, with the usage, and never silent: there is no collector to fall back
+     on, so exceeding the limit is a contract violation rather than back
+     pressure. There is deliberately no recoverable error here -- raising at an
+     arbitrary allocation point would need semantics this configuration has not
+     agreed. The limit bounds what the arena hands out; allocations the runtime
+     makes outside the GC heap (container storage, regexp and scratch buffers,
+     bigint limbs, fiber stacks) are not counted by it. */
+  if (sp_gc_arena_reserved + want > sp_gc_arena_limit) {
+    fprintf(stderr,
+      "spinel: arena exhausted\n"
+      "spinel:   request   %12zu B (%zu MB)\n"
+      "spinel:   in use    %12zu B (%zu MB) over %d chunk(s)\n"
+      "spinel:   reserved  %12zu B (%zu MB)\n"
+      "spinel:   limit     %12zu B (%zu MB)  [SPINEL_ARENA_MAX_MB, "
+      "compiled default SP_ARENA_MAX_MB=%d]\n"
+      "spinel: SP_PROCESS_ARENA has no collector by construction -- nothing can "
+      "be reclaimed while the process runs. Raise SPINEL_ARENA_MAX_MB, or build "
+      "without -DSP_PROCESS_ARENA.\n",
+      n, n >> 20,
+      sp_gc_arena_used_bytes(), sp_gc_arena_used_bytes() >> 20, sp_gc_arena_chunks,
+      sp_gc_arena_reserved, sp_gc_arena_reserved >> 20,
+      sp_gc_arena_limit, sp_gc_arena_limit >> 20, (int)SP_ARENA_MAX_MB);
+    fflush(stderr);
+    exit(1);
+  }
+  char *p = (char *)calloc(1, want);
+  if (!p) {
+    fprintf(stderr,
+      "spinel: arena: calloc(%zu) failed with %zu MB already reserved\n",
+      want, sp_gc_arena_reserved >> 20);
+    fflush(stderr);
+    exit(1);
+  }
+  sp_gc_arena_reserved += want;
+  sp_gc_arena_chunks++;
+  if (sp_gc_arena_chunk < SP_ARENA_CHUNK_MAX) sp_gc_arena_chunk *= 2;
+  sp_gc_arena_cur = p + n;
+  sp_gc_arena_end = p + want;
+  return p;
+}
+#endif  /* SP_PROCESS_ARENA */
+
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
+#if defined(SP_PROCESS_ARENA)
+  /* No trigger, no list, no lock. The header is still written and still sits in
+     front of the payload: sp_gc_is_frozen / sp_gc_freeze / sp_PolyArray_push /
+     sp_PolyArray_fin read it, and keeping the layout identical keeps every one
+     of those correct without touching them. sp_gc_bytes is still maintained so
+     GC.stat and SPINEL_ALLOC_REPORT keep answering (nothing reads it as a
+     trigger any more). The heap path below is left in place, unmodified and
+     unreachable, so this hunk deletes nothing. */
+  { size_t need_r = sizeof(sp_gc_hdr) + sz;
+    sp_gc_hdr *h_r = (sp_gc_hdr *)sp_gc_arena_alloc(need_r);
+    h_r->finalize = fin; h_r->scan = scn; h_r->size = need_r;
+    if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
+    sp_gc_bytes_add(need_r);
+    return (char *)h_r + sizeof(sp_gc_hdr); }
+#endif
 #ifdef SP_THREADS
   /* Lock-free fast path: the list push is a CAS (SP_GC_HEAP_PUSH) and the live-
      byte counter is atomic, so concurrent allocations need no mutex -- the old
@@ -432,6 +530,14 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
 #endif
 }
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
+#if defined(SP_PROCESS_ARENA)
+  { size_t need_r = sizeof(sp_gc_hdr) + sz;
+    sp_gc_hdr *h_r = (sp_gc_hdr *)sp_gc_arena_alloc(need_r);
+    h_r->finalize = fin; h_r->scan = scn; h_r->size = need_r;
+    if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
+    sp_gc_bytes_add(need_r);
+    return (char *)h_r + sizeof(sp_gc_hdr); }
+#endif
   size_t need = sizeof(sp_gc_hdr) + sz;
   sp_gc_hdr *h = (sp_gc_hdr *)calloc(1, need);
   if (!h) sp_oom_die();
