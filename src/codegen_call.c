@@ -27932,7 +27932,13 @@ else {
          slot -- `(const char *)sp_rbval_hash_key(...)`, which fputs then
          dereferenced.  rc=139 (E045 census c025, E048).  Only take the
          shortcut when the slot can actually hold an Integer. */
-      (comp_ntype(c, id) == TY_INT || comp_ntype(c, id) == TY_POLY ||
+      (comp_ntype(c, id) == TY_INT ||
+       /* A POLY slot only when no user class owns #hash: otherwise analyze
+          widened the slot for the user arm (spinel-llvm batch 6), the poly
+          dispatch below carries both arms, and this shortcut would drop the
+          raw sp_int into an sp_RbVal slot (E189: `sp_poly_puts(sp_rbval_hash_key(..))`
+          did not compile). */
+       (comp_ntype(c, id) == TY_POLY && !user_defines_or_reads(c, "hash")) ||
        comp_ntype(c, id) == TY_UNKNOWN) &&
       (!ty_is_object(rt) ||
        (comp_method_in_chain(c, ty_object_class(rt), "hash", NULL) < 0 &&
