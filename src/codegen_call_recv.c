@@ -6074,21 +6074,29 @@ else {
             buf_printf(b, "sp_%sHash_dup(", hn); emit_expr(c, recv, b); buf_puts(b, ")");
             return 1;
           } }
-        /* cross-variant str merge: promote both sides to str_poly_hash */
-        if ((rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH) &&
-            ty_is_hash(at) && ty_hash_key(at) == TY_STRING && at != rt) {
-          buf_puts(b, "sp_StrPolyHash_merge(");
-          const char *rfn = rt == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
-                                                   : "sp_StrPolyHash_from_str_str_hash(";
-          buf_puts(b, rfn); emit_expr(c, recv, b); buf_puts(b, "), ");
-          const char *afn = at == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
-                          : at == TY_STR_STR_HASH  ? "sp_StrPolyHash_from_str_str_hash("
-                                                   : NULL;
-          if (afn) { buf_puts(b, afn); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-          else { emit_expr(c, argv[0], b); }
-          buf_puts(b, ")");
-          return 1;
-        }
+/* cross-variant str merge: promote both sides to str_poly_hash.
+   Both promotions ALLOCATE, and C leaves their order unspecified, so
+   the first hash built is a live-but-unrooted temporary across the
+   second one's allocation -- a collect there frees it and calloc hands
+   the block straight back (spinel-llvm E020, batch 1 B2). Evaluate into
+   rooted temps, the same shape the bigint bitwise operands and
+   Hash#slice use. */
+if ((rt == TY_STR_INT_HASH || rt == TY_STR_STR_HASH) &&
+    ty_is_hash(at) && ty_hash_key(at) == TY_STRING && at != rt) {
+  const char *rfn = rt == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
+                                           : "sp_StrPolyHash_from_str_str_hash(";
+  const char *afn = at == TY_STR_INT_HASH ? "sp_StrPolyHash_from_str_int_hash("
+                  : at == TY_STR_STR_HASH  ? "sp_StrPolyHash_from_str_str_hash("
+                                           : NULL;
+  int tl = ++g_tmp, tr2 = ++g_tmp;
+  buf_printf(b, "({ sp_StrPolyHash *_t%d = %s", tl, rfn);
+  emit_expr(c, recv, b);
+  buf_printf(b, "); SP_GC_ROOT(_t%d); sp_StrPolyHash *_t%d = ", tl, tr2);
+  if (afn) { buf_puts(b, afn); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else { emit_expr(c, argv[0], b); }
+  buf_printf(b, "; SP_GC_ROOT(_t%d); sp_StrPolyHash_merge(_t%d, _t%d); })", tr2, tl, tr2);
+  return 1;
+}
         /* any other cross-variant merge (mismatched key or value layout):
            fold both sides through the universal boxed merge -- passing the
            argument raw into the receiver-layout helper read it through the
@@ -6133,7 +6141,20 @@ else {
             return 1;
           }
         }
-        buf_printf(b, "sp_%sHash_merge(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
+/* Both operands go into rooted temps before the merge runs. Either one
+   can be a fresh heap object with no other reference (a chained
+   `h.merge(x).merge(y)`, which is also what a multi-argument merge
+   lowers to, puts the inner merge's result in the receiver slot), the
+   merge itself allocates, and evaluating one operand can collect while
+   the other is only held in a C temporary -- with the C operand order
+   unspecified besides (spinel-llvm E020, batch 1 B2; the lib-side
+   SP_GC_ROOT(a)/(b) upstream added covers the merge's own body, not the
+   window between the inner merge returning and the outer one starting).
+   Same shape as the bigint bitwise operands and Hash#slice. */
+{
+int tml = ++g_tmp, tmr = ++g_tmp;
+buf_printf(b, "({ sp_%sHash *_t%d = ", hn, tml); emit_expr(c, recv, b);
+buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash *_t%d = ", tml, hn, tmr);
         /* a str_poly receiver may be merged with a concrete str-keyed hash;
            coerce the argument to the receiver's variant first */
         if (rt == TY_STR_POLY_HASH && (at == TY_STR_STR_HASH || at == TY_STR_INT_HASH)) {
@@ -6154,7 +6175,8 @@ else {
           buf_printf(b, "; (sp_%sHash*)_t%d.v.p; })", hn, t);
         }
         else emit_expr(c, argv[0], b);
-        buf_puts(b, ")");
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%sHash_merge(_t%d, _t%d); })", tmr, hn, tml, tmr);
+        }
         return 1;
       }
       /* except(*keys): a copy of the hash without the given keys (the variants
