@@ -104,6 +104,15 @@ static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
 static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
 #define _SP_GC_CONCAT2(a,b) a##b
 #define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
+/* The root machinery is NOT disabled under the arena, and that is deliberate.
+   Turning SP_GC_ROOT into ((void)0) is an optimisation, not part of what makes
+   this mode safe -- the safety comes from the collector never running. It also
+   changes observable behaviour: the macros take &v, which forces the local into
+   memory, and a local that lives in a register instead is indeterminate after a
+   longjmp. catch/throw and raise/rescue are built on setjmp/longjmp, and the
+   generated C does not mark every such local volatile, so removing the macros
+   made `i = 0; catch(:done) { i += 1; throw :done }; p i` print 0 rather than 1.
+   The roots are pushed and popped as usual here; nothing ever walks them. */
 #define SP_GC_SAVE() int SP_CLEANUP(sp_gc_cleanup) _gc_saved = sp_gc_nroots
 /* A `const char *` slot is a String, and takes the string tag (below) whichever
    macro roots it: a mutable String's payload (marker 0xfd) is kept alive by

@@ -91,9 +91,14 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/arena-suite.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT TERM
 mkdir -p "$(dirname "$out")"
 
-{ ls test/*.rb; ls packages/*/test/*.rb 2>/dev/null || true; } \
-  | grep -v -e '^test/regexp_unicode_casefold\.rb$' -e '^test/regexp_unicode_ctype\.rb$' \
-  | grep -v '^packages/openssl/test/' > "$work/corpus"
+# The corpus is the Makefile's own TESTS and PKG_TESTS, read from it rather
+# than reconstructed. Reimplementing its filters put six cases on the wrong
+# side: it excludes four promote_* tests this build does not run, and includes
+# the two regexp_unicode ones and the eight openssl ones that a hand-written
+# filter dropped.
+{ make -n -p 2>/dev/null | grep -m1 '^TESTS :*=' | cut -d= -f2-
+  make -n -p 2>/dev/null | grep -m1 '^PKG_TESTS :*=' | cut -d= -f2-
+} | tr ' ' '\n' | grep '\.rb$' | sort -u > "$work/corpus"
 total=$(wc -l < "$work/corpus" | tr -d ' ')
 echo "arena-suite: $total cases through bin/spinel --arena, -j$jobs" >&2
 
