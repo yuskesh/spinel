@@ -175,7 +175,12 @@ typedef struct { int nv; int np; } sp_gc_frame_hdr;
    itself, so it works wherever the store appears -- a statement, or an
    assignment inside a larger expression. The statement expression evaluates the
    object once, which a comma form would not. */
+#if defined(SP_PROCESS_ARENA)
+/* No mark ever runs, so the remembered set has no reader (E064). */
+#define SP_WBO(x) (x)
+#else
 #define SP_WBO(x) ({ __typeof__(x) _sp_wbo = (x); sp_gc_wb((void *)_sp_wbo); _sp_wbo; })
+#endif
 #ifndef SP_GC_REMEMBERED_MAX
 #define SP_GC_REMEMBERED_MAX 65536
 #endif
@@ -234,6 +239,9 @@ static inline void sp_gc_pin_remembered(void *obj) {
 extern void *sp_gc_pinned[SP_GC_PINNED_MAX];
 extern int sp_gc_npinned;
 extern int sp_gc_pin_overflow;
+#if defined(SP_PROCESS_ARENA)
+static inline void sp_gc_wb(void *obj) { (void)obj; }
+#else
 static inline void sp_gc_wb(void *obj) {
   /* Nothing reads the remembered set unless a minor mark runs, and whether one
      can is decided once, from the environment, before main. So with the
@@ -256,6 +264,7 @@ static inline void sp_gc_wb(void *obj) {
     sp_gc_wb_slow(obj);
   }
 }
+#endif  /* SP_PROCESS_ARENA */
 /* Young object heap. Threaded build: per-worker lists (one pusher each, since a
    started thread is pinned to its worker), so allocation pushes without the
    CAS-on-shared-head that made object-heavy parallel workloads bounce a cache
@@ -450,6 +459,26 @@ void  sp_slab_release(void);
 void  sp_slab_release_worker(int wid);   /* one worker's lists, by their owner, beside the program */
 void  sp_slab_release_from(int first);   /* the slots from `first` on, under the barrier */
 extern int sp_slab_on;
+/* ---- SP_PROCESS_ARENA: the process-lifetime bump allocator ----
+   One monotonically growing region, never reclaimed inside the process. The
+   chunks are calloc'd, so every slice handed out is already zero and
+   sp_gc_alloc keeps its calloc semantics at no per-object cost. Growth and the
+   exhaustion policy (loud death, with the usage in the message) live in
+   sp_gc_arena_more, out of line, in lib/sp_alloc.c. */
+#if defined(SP_PROCESS_ARENA)
+extern char *sp_gc_arena_cur;
+extern char *sp_gc_arena_end;
+void *sp_gc_arena_more(size_t n);          /* new chunk, or die loud */
+size_t sp_gc_arena_reserved_bytes(void);   /* chunk bytes taken from libc */
+size_t sp_gc_arena_used_bytes(void);       /* bytes handed out (chunk granularity) */
+static inline void *sp_gc_arena_alloc(size_t n) {
+  n = (n + (size_t)15) & ~(size_t)15;   /* calloc's alignment, preserved */
+  char *p = sp_gc_arena_cur;
+  if ((size_t)(sp_gc_arena_end - p) < n) return sp_gc_arena_more(n);
+  sp_gc_arena_cur = p + n;
+  return p;
+}
+#endif
 
 /* ---- Collector entry points (defined in lib/sp_gc.c) ---- */
 int  sp_gc_verify_on(void);   /* SPINEL_GC_VERIFY is set (diagnostics only) */
@@ -462,6 +491,14 @@ extern void *sp_gc_dbg_ctx;
 void sp_gc_mark(void *obj);
 void sp_gc_mark_all(void);
 void sp_gc_mark_drain(void);
+#if defined(SP_PROCESS_ARENA)
+/* Never called (sp_gc_collect returns immediately), so route every caller's
+   copy to nothing. lib/sp_gc.c #undefs these three right after including this
+   header, so the real definitions still compile and stay linkable. */
+#define sp_gc_mark(o)      ((void)(o))
+#define sp_gc_mark_all()   ((void)0)
+#define sp_gc_mark_drain() ((void)0)
+#endif
 extern int sp_gc_minor;
 extern int sp_gc_young_probe_on, sp_gc_young_probe_hit;
 extern int sp_gc_age_survivors, sp_gc_age_on, sp_gc_root_phase;
@@ -689,6 +726,20 @@ extern int (*sp_class_is_module_fn)(sp_Class c);
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked (0xfa -> 0xf8 for a
  * collectable frozen one); others skipped. */
 void sp_gc_mark_str(const char *s);   /* lib/sp_gc.c: the bitmap mark of a slab string, the byte of a malloc'd one */
+#if defined(SP_PROCESS_ARENA)
+static inline void sp_mark_string(const char *s) { (void)s; }
+static inline void sp_mark_rbval(sp_RbVal v) { (void)v; }
+/* Added by the rebase onto upstream: upstream grew a second rbval mark
+   entry (sp_mark_rbval_scratch, which handles the scratch slot and then
+   calls sp_mark_rbval). Under the arena every mark is a no-op, so the new
+   entry is stubbed like the one it wraps -- without this an --arena build
+   fails on an implicit declaration from lib/spinel_rt.h. */
+static inline void sp_mark_rbval_scratch(sp_RbVal v) { (void)v; }
+static inline void sp_cell_scan_str(void *p) { (void)p; }
+static inline void sp_cell_scan_ptr(void *p) { (void)p; }
+static inline void sp_cell_scan_rbval(void *p) { (void)p; }
+static inline void sp_gc_mark_root_entry(void **e) { (void)e; }
+#else
 static inline void sp_mark_string(const char *s) {
   if (!s) return;
   /* 0xfe or 0xfa in one compare: a second branch in this layout-sensitive
@@ -780,5 +831,6 @@ static inline void sp_gc_mark_root_entry(void **e) {
   if ((u & (uintptr_t)3) == (uintptr_t)3) sp_gc_mark_frame((const sp_gc_frame_hdr *)(u & ~(uintptr_t)3));
   else sp_gc_mark_root_entry_flat(e);
 }
+#endif  /* SP_PROCESS_ARENA */
 
 #endif
