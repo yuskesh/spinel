@@ -42,7 +42,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: arena-archive
+.PHONY: arena-archive test-arena test-arena-baseline
 .PHONY: all regexp rbs_extract rbs-test rbs-seed-test re-lit-test reject-test backtrace-test gc-minor-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate check gate-legs gate-test gate-bench gc-phases-test \
@@ -472,6 +472,17 @@ $(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)
 # src/main.c when --arena is given; the TU and the archive must carry
 # the define together (sp_str_alloc and the SP_GC_ROOT macros are
 # header-resident), which is the whole reason this archive exists.
+# Run the corpus through the product --arena path and classify what happens.
+# Not part of `test`: it is a second configuration, and its refusals are results
+# rather than failures. The baseline target runs the identical harness with the
+# collector, which is how a failure is attributed to the configuration rather
+# than to the harness.
+test-arena: all arena-archive
+	CC=$(CC) scripts/arena-suite.sh -j 8 -o build/arena-results.tsv
+
+test-arena-baseline: all
+	ARENA=0 CC=$(CC) scripts/arena-suite.sh -j 8 -o build/baseline-results.tsv
+
 SP_RT_ARENA_LIB = lib/libspinel_rt_arena.a
 ARENA_DEF = -DSP_PROCESS_ARENA
 

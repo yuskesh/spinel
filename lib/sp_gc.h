@@ -493,6 +493,7 @@ static inline void sp_mark_rbval(sp_RbVal v) { (void)v; }
 static inline void sp_cell_scan_str(void *p) { (void)p; }
 static inline void sp_cell_scan_ptr(void *p) { (void)p; }
 static inline void sp_cell_scan_rbval(void *p) { (void)p; }
+static inline void sp_cell_scan_procint(void *p) { (void)p; }
 static inline void sp_gc_mark_root_entry(void **e) { (void)e; }
 #else
 static inline void sp_mark_string(const char *s) {
