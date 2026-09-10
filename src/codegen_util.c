@@ -590,25 +590,62 @@ int g_core_root_count = 0;
 const char *g_core_snapshot_id = NULL;
 const char *g_core_map_path = NULL;
 
-/* The identity spelling the driver uses: `name` for a top-level def,
-   `Class.name` for a singleton, `Class#name` for an instance method. Built from
-   the scope, never from emitted text. */
-void core_scope_identity(Compiler *c, Scope *s, char *out, size_t n) {
-  if (s->class_id >= 0 && s->is_cmethod)
-    snprintf(out, n, "%s.%s", c->classes[s->class_id].name, s->name ? s->name : "");
-  else if (s->class_id >= 0)
-    snprintf(out, n, "%s#%s", c->classes[s->class_id].name, s->name ? s->name : "");
-  else
-    snprintf(out, n, "%s", s->name ? s->name : "");
+/* The ONE resolved mapping. Built once by core_resolve_selection() before any
+   emission, and the only thing every consumer reads afterwards -- the name is
+   never re-derived from a scope at the point of use, because two derivations
+   are two chances to disagree. NULL entries cannot occur: resolution either
+   fills every row or exits. */
+typedef struct { int scope; char *identity; char *symbol; } CoreRoot;
+static CoreRoot *g_core_table = NULL;
+static int g_core_table_len = 0;
+static int g_core_resolved = 0;
+
+static char *core_dup(const char *t) {
+  size_t n = strlen(t) + 1;
+  char *out = (char *)malloc(n);
+  if (!out) { fputs("spinel: --core: out of memory\n", stderr); exit(1); }
+  memcpy(out, t, n);
+  return out;
 }
 
-int scope_is_core_root(Compiler *c, Scope *s) {
-  if (g_core_root_count <= 0 || !s || !s->name) return 0;
-  char id[512];
-  core_scope_identity(c, s, id, sizeof id);
-  for (int i = 0; i < g_core_root_count; i++)
-    if (g_core_roots[i] && sp_streq(g_core_roots[i], id)) return 1;
-  return 0;
+static void core_die(const char *fmt, ...) {
+  va_list ap; va_start(ap, fmt);
+  fputs("spinel: --core: ", stderr);
+  vfprintf(stderr, fmt, ap);
+  fputc('\n', stderr);
+  va_end(ap);
+  exit(1);
+}
+
+/* The identity spelling the driver uses. Heap-allocated rather than written
+   into a fixed buffer: a snprintf into char[512] silently truncates a long
+   class or method name, and two different methods can truncate to the same
+   text -- which would make the identity check pass on the wrong scope. */
+char *core_scope_identity(Compiler *c, Scope *s) {
+  const char *nm = s->name ? s->name : "";
+  if (s->class_id < 0) return core_dup(nm);
+  const char *cls = c->classes[s->class_id].name;
+  size_t n = strlen(cls) + 1 + strlen(nm) + 1;
+  char *out = (char *)malloc(n);
+  if (!out) core_die("out of memory");
+  snprintf(out, n, "%s%s%s", cls, s->is_cmethod ? "." : "#", nm);
+  return out;
+}
+
+/* The snapshot id becomes part of a C identifier, so it has to be one. Anything
+   else would either fail to compile with a diagnostic naming a symbol the user
+   never wrote, or -- for an empty id -- silently produce `spc__name`, which two
+   different builds would share. */
+static void core_check_snapshot_id(void) {
+  const char *e = g_core_snapshot_id;
+  if (!e || !*e) core_die("--core-id must not be empty");
+  size_t n = strlen(e);
+  if (n > 64) core_die("--core-id is longer than 64 characters: %zu", n);
+  for (const char *q = e; *q; q++)
+    if (!((*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'z') ||
+          (*q >= 'A' && *q <= 'Z') || *q == '_'))
+      core_die("--core-id must be [A-Za-z0-9_]+, got \"%s\"", e);
+  if (e[0] >= '0' && e[0] <= '9') return;  /* fine: it never starts an identifier */
 }
 
 /* spc_<snapshot-id>_<method-id>. A namespace of its own rather than external
@@ -616,17 +653,136 @@ int scope_is_core_root(Compiler *c, Scope *s) {
    because a bare sp_<name> can collide with a runtime helper, and giving one
    external linkage would reopen that. `spc` is not one of the reserved runtime
    prefixes and the runtime defines no spc_ symbol. */
-void core_root_symbol(Compiler *c, Scope *s, Buf *b) {
-  buf_puts(b, "spc_");
-  buf_puts(b, g_core_snapshot_id ? g_core_snapshot_id : "0");
-  buf_puts(b, "_");
-  if (s->class_id >= 0 && s->is_cmethod)
-    buf_printf(b, "%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
-  else if (s->class_id >= 0)
-    buf_printf(b, "%s_%s", c->classes[s->class_id].c_name, mc(s->name));
-  else
-    buf_printf(b, "%s", mc(s->name));
+static char *core_build_symbol(Compiler *c, Scope *s) {
+  (void)c;
+  const char *m = mc(s->name);
+  size_t n = 4 + strlen(g_core_snapshot_id) + 1 + strlen(m) + 1;
+  char *out = (char *)malloc(n);
+  if (!out) core_die("out of memory");
+  snprintf(out, n, "spc_%s_%s", g_core_snapshot_id, m);
+  return out;
 }
+
+/* Resolve every selected identity, once, before anything is emitted.
+   Deliberately independent of whether a mapping is written: the checks below
+   are what make an unknown identity a build failure, and gating them on
+   --core-map would let the same input succeed by falling back to the ordinary
+   body when no map was asked for. */
+void core_resolve_selection(Compiler *c) {
+  g_core_resolved = 1;
+  if (g_core_root_count <= 0) return;
+  core_check_snapshot_id();
+  g_core_table = (CoreRoot *)calloc((size_t)g_core_root_count, sizeof(CoreRoot));
+  if (!g_core_table) core_die("out of memory");
+  g_core_table_len = g_core_root_count;
+
+  for (int i = 0; i < g_core_root_count; i++) {
+    const char *want = g_core_roots[i] ? g_core_roots[i] : "";
+    if (!*want) core_die("an empty method identity was selected");
+    /* The same identity twice is a caller mistake, and counting matches would
+       hide it: two selections resolving to one scope still totals two. */
+    for (int j = 0; j < i; j++)
+      if (sp_streq(g_core_roots[j] ? g_core_roots[j] : "", want))
+        core_die("method identity \"%s\" was selected more than once", want);
+    /* This slice accepts a top-level `def` only. A class or singleton method
+       reaches its callers through dispatch paths this seam has not been shown
+       to cover, so it is refused rather than emitted and hoped for. */
+    if (strchr(want, '.') || strchr(want, '#'))
+      core_die("\"%s\": only a top-level method can be selected in this slice; "
+               "Class.name and Class#name are not supported yet", want);
+
+    int found = -1;
+    for (int si = 0; si < c->nscopes; si++) {
+      Scope *s = &c->scopes[si];
+      if (!s->name) continue;
+      char *id = core_scope_identity(c, s);
+      int hit = sp_streq(id, want);
+      free(id);
+      if (!hit) continue;
+      /* Each identity must name exactly one scope. Two is not a tie to break;
+         it means the identity does not identify a method. */
+      if (found >= 0)
+        core_die("method identity \"%s\" matches more than one method", want);
+      found = si;
+    }
+    if (found < 0)
+      core_die("method identity \"%s\" matches no method in this program", want);
+    g_core_table[i].scope = found;
+    g_core_table[i].identity = core_dup(want);
+    g_core_table[i].symbol = core_build_symbol(c, &c->scopes[found]);
+  }
+
+  /* Injectivity, over the SYMBOLS rather than the identities: two identities
+     that differ can still mangle to one symbol. */
+  for (int i = 0; i < g_core_table_len; i++)
+    for (int j = 0; j < i; j++)
+      if (sp_streq(g_core_table[i].symbol, g_core_table[j].symbol))
+        core_die("\"%s\" and \"%s\" both map to the symbol %s",
+                 g_core_table[j].identity, g_core_table[i].identity,
+                 g_core_table[i].symbol);
+
+  /* Collision with a name this program already emits. Compared against the
+     producer's own scope names, not by searching the generated text. */
+  for (int i = 0; i < g_core_table_len; i++) {
+    for (int si = 0; si < c->nscopes; si++) {
+      if (si == g_core_table[i].scope || !c->scopes[si].name) continue;
+      Buf nb; memset(&nb, 0, sizeof nb);
+      emit_method_cname(c, &c->scopes[si], &nb);
+      int clash = nb.p && sp_streq(nb.p, g_core_table[i].symbol);
+      free(nb.p);
+      if (clash)
+        core_die("the symbol %s for \"%s\" collides with another method in this program",
+                 g_core_table[i].symbol, g_core_table[i].identity);
+    }
+  }
+}
+
+int scope_is_core_root(Compiler *c, Scope *s) {
+  (void)c;
+  if (g_core_table_len <= 0 || !s) return 0;
+  int si = (int)(s - c->scopes);
+  for (int i = 0; i < g_core_table_len; i++)
+    if (g_core_table[i].scope == si) return 1;
+  return 0;
+}
+
+/* The symbol comes from the resolved table. Nothing recomputes a mangle here. */
+void core_root_symbol(Compiler *c, Scope *s, Buf *b) {
+  int si = (int)(s - c->scopes);
+  for (int i = 0; i < g_core_table_len; i++)
+    if (g_core_table[i].scope == si) { buf_puts(b, g_core_table[i].symbol); return; }
+  core_die("internal: no symbol for scope %d", si);
+}
+
+/* Write the mapping to a temporary path and publish it by rename, so an
+   unusable input or a failed write leaves any previous mapping intact rather
+   than replacing it with a truncated one. Every write is checked. */
+void core_write_mapping(Compiler *c) {
+  if (!g_core_map_path || g_core_table_len <= 0) return;
+  size_t tn = strlen(g_core_map_path) + 5;
+  char *tmp = (char *)malloc(tn);
+  if (!tmp) core_die("out of memory");
+  snprintf(tmp, tn, "%s.tmp", g_core_map_path);
+  FILE *mf = fopen(tmp, "w");
+  if (!mf) core_die("cannot write %s", tmp);
+  int bad = fprintf(mf, "#identity\tsymbol\tsignature\n") < 0;
+  for (int i = 0; i < g_core_table_len && !bad; i++) {
+    Buf sig; memset(&sig, 0, sizeof sig);
+    emit_method_signature(c, &c->scopes[g_core_table[i].scope], &sig);
+    bad = fprintf(mf, "%s\t%s\t%s\n", g_core_table[i].identity,
+                  g_core_table[i].symbol, sig.p ? sig.p : "") < 0;
+    free(sig.p);
+  }
+  if (fflush(mf) != 0) bad = 1;
+  if (fclose(mf) != 0) bad = 1;
+  if (bad) { remove(tmp); core_die("writing %s failed", g_core_map_path); }
+  if (rename(tmp, g_core_map_path) != 0) {
+    remove(tmp);
+    core_die("cannot publish the mapping at %s", g_core_map_path);
+  }
+  free(tmp);
+}
+
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 TyKind g_ie_next_ty = TY_UNKNOWN;
