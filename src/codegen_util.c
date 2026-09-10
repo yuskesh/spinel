@@ -770,12 +770,9 @@ void core_write_mapping(Compiler *c) {
   if (!g_core_map_path || g_core_table_len <= 0) return;
 
   /* Same directory as the destination: rename is only atomic within one
-     filesystem, and /tmp is frequently a different one. */
+     filesystem, and /tmp is frequently a different one. '/' only: the targets
+     here are Debian and macOS. */
   const char *slash = strrchr(g_core_map_path, '/');
-#ifdef _WIN32
-  const char *bslash = strrchr(g_core_map_path, '\\');
-  if (bslash && (!slash || bslash > slash)) slash = bslash;
-#endif
   size_t dlen = slash ? (size_t)(slash - g_core_map_path) : 1;
   const char *dir = slash ? g_core_map_path : ".";
 
@@ -809,15 +806,15 @@ void core_write_mapping(Compiler *c) {
   if (fflush(mf) != 0) bad = 1;
   if (fclose(mf) != 0) bad = 1;
   if (bad) { remove(tmp); core_die("writing %s failed", g_core_map_path); }
-  /* rename() replaces an existing destination on POSIX; Windows does not, so
-     the old file is removed first there. Either way the destination is only
-     touched once the content is complete on disk. */
-#ifdef _WIN32
-  remove(g_core_map_path);
-#endif
+  /* rename() replaces an existing destination in one step, so the destination
+     is only ever the old content or the new one. If it cannot, the existing
+     destination is LEFT ALONE and the build fails: losing a usable mapping to
+     make room for one that could not be published would be worse than not
+     publishing. Nothing removes the destination first for that reason. */
   if (rename(tmp, g_core_map_path) != 0) {
     remove(tmp);
-    core_die("cannot publish the mapping at %s", g_core_map_path);
+    core_die("cannot publish the mapping at %s; the existing file, if any, is "
+             "unchanged", g_core_map_path);
   }
   free(tmp);
 }
