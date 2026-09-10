@@ -189,5 +189,22 @@ fi
   && ok "no exclusive temporary file is left in the destination directory" \
   || bad "no exclusive temporary file is left in the destination directory"
 
+# A rename that cannot succeed. Nothing removes the destination first, so a
+# failure to publish must leave what was already there and fail the build --
+# losing a usable mapping to make room for one that could not be published
+# would be worse than not publishing. A directory as the destination is a
+# rename target that always refuses.
+mkdir -p "$w/asdir"; printf 'KEEP\n' > "$w/asdir/marker"
+if ./bin/spinel "$w/lower.rb" --core lower --core-id=$ID --core-map="$w/asdir" -S >/dev/null 2>&1; then
+  bad "a mapping that cannot be published fails the build" "it succeeded"
+else
+  [ "$(cat "$w/asdir/marker" 2>/dev/null)" = "KEEP" ] \
+    && ok "a mapping that cannot be published fails and leaves the destination alone" \
+    || bad "a mapping that cannot be published leaves the destination alone" "it was disturbed"
+fi
+[ -z "$(ls "$w"/.spinel-core-map.* 2>/dev/null)" ] \
+  && ok "a failed publish leaves no temporary file behind" \
+  || bad "a failed publish leaves no temporary file behind"
+
 printf '\ncore seam: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
