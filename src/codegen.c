@@ -23646,6 +23646,8 @@ char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   plain_note_parsed(c);   /* ahead of the analysis's desugars */
   analyze_program(c);
+  /* Resolve every selected core identity before emission, even without a map. */
+  core_resolve_selection(c);
   double tcg = sp_timing_now();
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }
   /* --dump-repr: the analysis's answer, printed once the compile passes */
@@ -23656,6 +23658,8 @@ char *codegen_program(const NodeTable *nt) {
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
   mc_number_versions(c);
   mc_resolve_clashes(c);   /* two methods spelling one C name get two */
+  /* A selected root's symbol against every other method's settled C name. */
+  core_check_emitted_names(c);
   /* From here on a yield reads the type of the block spliced at THIS site,
      not the union the node cache holds across sites (#3784). Installed after
      analysis so the fixpoint keeps seeing the cache unchanged. */
@@ -24555,38 +24559,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_pool_fwd) memset(g_pool_fwd, 0, (size_t)g_pool_fwd_n);
   g_needs_proc_poly_argslot = 0;
 
-  /* The mapping: resolved identity -> symbol -> signature, one row per selected
-     root, written for the core side to consume. It is emitted from the scope
-     table, so the core side never re-derives a name or reads the generated C. */
-  if (g_core_map_path && g_core_root_count > 0) {
-    FILE *mf = fopen(g_core_map_path, "w");
-    if (!mf) {
-      fprintf(stderr, "spinel: --core-map: cannot write %s\n", g_core_map_path);
-      exit(1);
-    }
-    fprintf(mf, "#identity\tsymbol\tsignature\n");
-    int written = 0;
-    for (int si = 0; si < c->nscopes; si++) {
-      Scope *cs = &c->scopes[si];
-      if (!scope_is_core_root(c, cs)) continue;
-      char id[512]; core_scope_identity(c, cs, id, sizeof id);
-      Buf sym; memset(&sym, 0, sizeof sym); core_root_symbol(c, cs, &sym);
-      Buf sig; memset(&sig, 0, sizeof sig); emit_method_signature(c, cs, &sig);
-      fprintf(mf, "%s\t%s\t%s\n", id, sym.p ? sym.p : "", sig.p ? sig.p : "");
-      free(sym.p); free(sig.p);
-      written++;
-    }
-    fclose(mf);
-    /* Every selected identity has to have resolved to exactly one scope. A
-       root the driver named and this compiler did not find is a disagreement
-       about method identity, which is the one thing the mapping exists to make
-       impossible; failing here is the whole point. */
-    if (written != g_core_root_count) {
-      fprintf(stderr, "spinel: --core: %d selected root(s) but %d matched a "
-                      "method in this program\n", g_core_root_count, written);
-      exit(1);
-    }
-  }
+  core_write_mapping(c);
 
   if (g_ext_init_name) {
     ext_refuse_param_mutation(c);
