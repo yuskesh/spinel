@@ -91,5 +91,67 @@ link "$w/co.o" "$w/mis.bin" "$w/e4" \
   && bad "a different snapshot id fails the link" "it linked" \
   || ok "a core object from a different snapshot id does not link"
 
+
+# ---- fail-closed on the selection input -----------------------------------
+# Each of these must REFUSE. The first pair is the one that matters most: the
+# validation must not depend on --core-map, or omitting the map turns an unknown
+# identity into a silent fallback to the ordinary hosted body.
+refuses() { # label, args...
+  _l=$1; shift
+  if ./bin/spinel "$@" >/dev/null 2>"$w/r.err"; then
+    bad "$_l" "accepted"
+  else
+    [ -s "$w/r.err" ] && ok "$_l  ($(head -1 "$w/r.err" | cut -c1-72))" \
+                      || bad "$_l" "refused without saying why"
+  fi
+}
+refuses "an unknown identity is refused WITHOUT --core-map" \
+  "$w/lower.rb" --core nosuch --core-id=$ID -S
+refuses "an unknown identity is refused with --core-map" \
+  "$w/lower.rb" --core nosuch --core-id=$ID --core-map="$w/u.tsv" -S
+refuses "the same identity twice is refused" \
+  "$w/lower.rb" --core lower --core lower --core-id=$ID -S
+refuses "an empty snapshot id is refused" \
+  "$w/lower.rb" --core lower --core-id= -S
+refuses "a snapshot id that is not a C identifier is refused" \
+  "$w/lower.rb" --core lower --core-id=a-b -S
+refuses "an over-long snapshot id is refused" \
+  "$w/lower.rb" --core lower --core-id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -S
+refuses "a Class.method identity is refused in this slice" \
+  "$w/lower.rb" --core M.lower --core-id=$ID -S
+refuses "a Class#method identity is refused in this slice" \
+  "$w/lower.rb" --core 'K#lower' --core-id=$ID -S
+
+# Two identities that mangle to one symbol. `?` becomes `_p`, so `a?` and `a_p`
+# collide; injectivity is checked over symbols, not identities, for this reason.
+cat > "$w/coll.rb" <<'RB'
+def a?(x)
+  x < 1
+end
+
+def a_p(x)
+  x < 2
+end
+
+puts a?(3)
+puts a_p(4)
+RB
+refuses "two identities mapping to one symbol are refused" \
+  "$w/coll.rb" --core 'a?' --core a_p --core-id=$ID -S
+
+# An unusable mapping path must fail the build, not be ignored.
+refuses "an unwritable mapping path fails the build" \
+  "$w/lower.rb" --core lower --core-id=$ID --core-map=/nonexistent-dir/m.tsv -S
+
+# A refused build must not have replaced an existing mapping.
+printf 'PREVIOUS\n' > "$w/keep.tsv"
+./bin/spinel "$w/lower.rb" --core nosuch --core-id=$ID --core-map="$w/keep.tsv" -S >/dev/null 2>&1 || true
+[ "$(cat "$w/keep.tsv")" = "PREVIOUS" ] \
+  && ok "a refused build leaves an existing mapping untouched" \
+  || bad "a refused build leaves an existing mapping untouched" "it was overwritten"
+[ -z "$(ls "$w"/*.tmp 2>/dev/null)" ] \
+  && ok "no temporary mapping file is left behind" \
+  || bad "no temporary mapping file is left behind"
+
 printf '\ncore seam: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
