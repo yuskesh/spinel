@@ -1,4 +1,6 @@
 #include "codegen_internal.h"
+#include <errno.h>
+#include <unistd.h>
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -754,17 +756,48 @@ void core_root_symbol(Compiler *c, Scope *s, Buf *b) {
   core_die("internal: no symbol for scope %d", si);
 }
 
-/* Write the mapping to a temporary path and publish it by rename, so an
-   unusable input or a failed write leaves any previous mapping intact rather
-   than replacing it with a truncated one. Every write is checked. */
+/* Write the mapping through a temporary file in the DESTINATION's directory and
+   publish it by rename, so an unusable input or a failed write leaves any
+   previous mapping intact rather than replacing it with a truncated one. Every
+   write is checked.
+
+   The temporary name is created exclusively and is unique per attempt. A fixed
+   "<map>.tmp" would truncate a file of that name that the build did not create
+   -- a real path, since a caller may well keep one -- and two concurrent
+   invocations writing different mappings would share it and interleave. Only a
+   file this function created is ever removed. */
 void core_write_mapping(Compiler *c) {
   if (!g_core_map_path || g_core_table_len <= 0) return;
-  size_t tn = strlen(g_core_map_path) + 5;
-  char *tmp = (char *)malloc(tn);
-  if (!tmp) core_die("out of memory");
-  snprintf(tmp, tn, "%s.tmp", g_core_map_path);
-  FILE *mf = fopen(tmp, "w");
-  if (!mf) core_die("cannot write %s", tmp);
+
+  /* Same directory as the destination: rename is only atomic within one
+     filesystem, and /tmp is frequently a different one. */
+  const char *slash = strrchr(g_core_map_path, '/');
+#ifdef _WIN32
+  const char *bslash = strrchr(g_core_map_path, '\\');
+  if (bslash && (!slash || bslash > slash)) slash = bslash;
+#endif
+  size_t dlen = slash ? (size_t)(slash - g_core_map_path) : 1;
+  const char *dir = slash ? g_core_map_path : ".";
+
+  char *tmp = NULL;
+  FILE *mf = NULL;
+  for (int attempt = 0; attempt < 64 && !mf; attempt++) {
+    size_t tn = dlen + 64;
+    free(tmp);
+    tmp = (char *)malloc(tn);
+    if (!tmp) core_die("out of memory");
+    snprintf(tmp, tn, "%.*s%s.spinel-core-map.%ld.%d",
+             (int)dlen, dir, slash ? "/" : "", (long)getpid(), attempt);
+    /* "wx" creates exclusively: it fails rather than truncating an existing
+       file, which is what makes this safe to do beside the caller's own files
+       and safe against a concurrent invocation. */
+    mf = fopen(tmp, "wx");
+    if (!mf && errno != EEXIST) break;
+  }
+  if (!mf) {
+    core_die("cannot create a temporary file beside %s", g_core_map_path);
+  }
+
   int bad = fprintf(mf, "#identity\tsymbol\tsignature\n") < 0;
   for (int i = 0; i < g_core_table_len && !bad; i++) {
     Buf sig; memset(&sig, 0, sizeof sig);
@@ -776,6 +809,12 @@ void core_write_mapping(Compiler *c) {
   if (fflush(mf) != 0) bad = 1;
   if (fclose(mf) != 0) bad = 1;
   if (bad) { remove(tmp); core_die("writing %s failed", g_core_map_path); }
+  /* rename() replaces an existing destination on POSIX; Windows does not, so
+     the old file is removed first there. Either way the destination is only
+     touched once the content is complete on disk. */
+#ifdef _WIN32
+  remove(g_core_map_path);
+#endif
   if (rename(tmp, g_core_map_path) != 0) {
     remove(tmp);
     core_die("cannot publish the mapping at %s", g_core_map_path);
