@@ -499,6 +499,12 @@ test-arena: all arena-archive
 test-arena-guards: arena-archive
 	CC='$(CC)' scripts/arena-alloc-guards.sh
 
+# The --core seam: a selected root's symbol, its missing body, and that a
+# missing or mismatched core object fails the link instead of falling back.
+.PHONY: test-core-seam
+test-core-seam: all
+	CC='$(CC)' scripts/core-seam-check.sh
+
 # The collector leg on its own, recorded and not gated (the script says so).
 test-arena-baseline: all arena-archive
 	ARENA=0 CC='$(CC)' scripts/arena-suite.sh -j 8 -o build/arena-baseline.tsv

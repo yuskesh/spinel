@@ -1690,6 +1690,7 @@ const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b)
 /* The mangled C name: sp_<name> for free functions, sp_<Class>_<name>
    for instance methods. */
 void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
+  if (scope_is_core_root(c, s)) { core_root_symbol(c, s, b); return; }
   if (s->class_id >= 0 && s->is_cmethod)
     buf_printf(b, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
   else if (s->class_id >= 0)
@@ -2275,7 +2276,10 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
      -rdynamic exposes sp_<Class>_<method> to backtrace_symbols and the
      frames demangle (Exception#backtrace / Kernel#caller). Toplevel methods
      keep `static` -- a bare sp_<name> could collide with a runtime helper. */
-  const char *stor = ((g_debug && s->class_id >= 0) || s->is_ext_entry) ? "" : "static ";
+  /* A --core root is defined by a separately produced object, so it needs a
+     real symbol: external linkage, exactly as an ext entry gets. */
+  const int core_root = scope_is_core_root(c, s);
+  const char *stor = ((g_debug && s->class_id >= 0) || s->is_ext_entry || core_root) ? "" : "static ";
   /* An instance method of a never-instantiated class has had its poly-dispatch
      arm dropped (compute_instantiated) and -- no instance ever existing -- has
      no direct call site either, so it is emitted but unreferenced. Mark it
@@ -2286,7 +2290,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   const char *unused = (s->class_id >= 0 && !s->is_cmethod &&
                         !c->classes[s->class_id].instantiated)
                        ? "__attribute__((unused)) " : "";
-  const char *ihint = s->is_ext_entry ? ""   /* exported: no inline linkage */
+  const char *ihint = (s->is_ext_entry || core_root) ? ""  /* exported: no inline linkage */
                     : method_inline_force(c, s) ? "inline __attribute__((always_inline)) "
                     : (method_inline_hint(c, s) ? "inline " : "");
   if (method_is_void(s)) { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); buf_puts(b, "void "); }
@@ -3025,6 +3029,16 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     snprintf(ypr9, sizeof ypr9, "lv_%s", s->blk_param);
     g_yield_proc_ref = ypr9;
     g_yield_slot_ty = TY_POLY;
+  }
+
+  /* A --core root's body comes from the separately produced core object, so
+     the hosted TU emits the declaration and stops. This is what makes a missing
+     or mismatched core object a LINK failure instead of a silent fallback to
+     the hosted body: there is no hosted body left to fall back to. */
+  if (scope_is_core_root(c, s)) {
+    emit_method_signature(c, s, b);
+    buf_puts(b, ";\n");
+    return;
   }
 
   if (s->cs_synth) { emit_compiler_state_method(c, s, b); return; }
@@ -10536,6 +10550,39 @@ char *codegen_program(const NodeTable *nt) {
   memset(&g_procs, 0, sizeof g_procs);
   memset(&g_proc_protos, 0, sizeof g_proc_protos);
   g_needs_proc_poly_argslot = 0;
+
+  /* The mapping: resolved identity -> symbol -> signature, one row per selected
+     root, written for the core side to consume. It is emitted from the scope
+     table, so the core side never re-derives a name or reads the generated C. */
+  if (g_core_map_path && g_core_root_count > 0) {
+    FILE *mf = fopen(g_core_map_path, "w");
+    if (!mf) {
+      fprintf(stderr, "spinel: --core-map: cannot write %s\n", g_core_map_path);
+      exit(1);
+    }
+    fprintf(mf, "#identity\tsymbol\tsignature\n");
+    int written = 0;
+    for (int si = 0; si < c->nscopes; si++) {
+      Scope *cs = &c->scopes[si];
+      if (!scope_is_core_root(c, cs)) continue;
+      char id[512]; core_scope_identity(c, cs, id, sizeof id);
+      Buf sym; memset(&sym, 0, sizeof sym); core_root_symbol(c, cs, &sym);
+      Buf sig; memset(&sig, 0, sizeof sig); emit_method_signature(c, cs, &sig);
+      fprintf(mf, "%s\t%s\t%s\n", id, sym.p ? sym.p : "", sig.p ? sig.p : "");
+      free(sym.p); free(sig.p);
+      written++;
+    }
+    fclose(mf);
+    /* Every selected identity has to have resolved to exactly one scope. A
+       root the driver named and this compiler did not find is a disagreement
+       about method identity, which is the one thing the mapping exists to make
+       impossible; failing here is the whole point. */
+    if (written != g_core_root_count) {
+      fprintf(stderr, "spinel: --core: %d selected root(s) but %d matched a "
+                      "method in this program\n", g_core_root_count, written);
+      exit(1);
+    }
+  }
 
   /* Collector-entry markers, the same discipline as SPINEL_USES_THREADS but
      emitted here rather than beside it: g_calls_gc is set while the call is

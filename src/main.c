@@ -39,6 +39,13 @@ extern int g_no_write_barrier;
 /* Set before codegen_program: ask for the SPINEL_CALLS_GC markers. Only
    --arena reads them, so only --arena asks for them (see below). */
 extern int g_want_arena_markers;
+/* --core: resolved selection, snapshot id and mapping path. The Extended driver
+   owns resolution and the snapshot manifest; these are inputs, not decisions
+   made here. */
+extern const char **g_core_roots;
+extern int g_core_root_count;
+extern const char *g_core_snapshot_id;
+extern const char *g_core_map_path;
 extern const char *g_ext_init_name;
 extern const char *g_ext_entries;
 extern const char *g_ext_target;
@@ -340,6 +347,15 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
     else if (sp_streq(a, "--arena")) { arena_mode = 1; i++; }
+    else if (sp_streq(a, "--core") && i + 1 < argc) {
+      g_core_roots = (const char **)realloc((void *)g_core_roots,
+                                            (size_t)(g_core_root_count + 1) * sizeof(char *));
+      if (!g_core_roots) { fprintf(stderr, "spinel: out of memory\n"); return 1; }
+      g_core_roots[g_core_root_count++] = argv[i + 1];
+      i += 2;
+    }
+    else if (!strncmp(a, "--core-id=", 10))  { g_core_snapshot_id = a + 10; i++; }
+    else if (!strncmp(a, "--core-map=", 11)) { g_core_map_path = a + 11; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */
     else if (sp_streq(a, "--no-root-elision")) { g_no_root_elision = 1; i++; }
@@ -452,6 +468,23 @@ int main(int argc, char **argv) {
      configurations. Accepting the combination would hand back C that says
      nothing about which runtime it was meant for, and skip the GC/Thread
      refusals below -- so refuse it rather than ignore the flag. */
+  /* --core needs a snapshot id: it is half of every emitted symbol, and it is
+     what makes a hosted declaration and a core definition from different builds
+     fail to link rather than link wrongly. The Extended driver computes it. */
+  if (g_core_root_count > 0 && !g_core_snapshot_id) {
+    fprintf(stderr, "spinel: --core requires --core-id=<snapshot id>. The id is\n"
+                    "spinel: half of every emitted core symbol; without it a hosted\n"
+                    "spinel: declaration and a core object from different builds would\n"
+                    "spinel: link to each other.\n");
+    return 2;
+  }
+  /* --core omits the selected bodies, so a link needs the core object. This
+     driver does not have it; emitting C or an object is the supported use. */
+  if (g_core_root_count > 0 && !c_only && !stdout_mode) {
+    fprintf(stderr, "spinel: --core emits C whose selected methods have no body;\n"
+                    "spinel: linking them is the caller's step. Use -c or -S.\n");
+    return 2;
+  }
   if (arena_mode && (c_only || stdout_mode)) {
     fprintf(stderr, "spinel: --arena cannot be combined with -c/-S. The generated C is\n"
                     "spinel: the same either way; --arena is the -DSP_PROCESS_ARENA compile\n"
