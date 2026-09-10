@@ -153,5 +153,41 @@ printf 'PREVIOUS\n' > "$w/keep.tsv"
   && ok "no temporary mapping file is left behind" \
   || bad "no temporary mapping file is left behind"
 
+# A file literally named <map>.tmp is a plausible thing for a caller to keep.
+# The mapping writer must not touch it on either path: a fixed temporary name
+# would truncate it, and would also be shared by two concurrent invocations.
+printf 'SENTINEL\n' > "$w/s.tsv.tmp"
+./bin/spinel "$w/lower.rb" --core lower --core-id=$ID --core-map="$w/s.tsv" -S >/dev/null 2>&1
+[ "$(cat "$w/s.tsv.tmp")" = "SENTINEL" ] \
+  && ok "a file named <map>.tmp is untouched on the success path" \
+  || bad "a file named <map>.tmp is untouched on the success path" "it was written to"
+printf 'SENTINEL\n' > "$w/s.tsv.tmp"
+./bin/spinel "$w/lower.rb" --core nosuch --core-id=$ID --core-map="$w/s.tsv" -S >/dev/null 2>&1 || true
+[ "$(cat "$w/s.tsv.tmp")" = "SENTINEL" ] \
+  && ok "a file named <map>.tmp is untouched on the failure path" \
+  || bad "a file named <map>.tmp is untouched on the failure path" "it was written to"
+
+# Concurrent invocations writing the same destination must not share a
+# temporary file. Each should either win or lose cleanly; none may leave a
+# half-written mapping or a stray temporary behind.
+i=1
+while [ $i -le 8 ]; do
+  ( ./bin/spinel "$w/lower.rb" --core lower --core-id=id$i \
+      --core-map="$w/conc.tsv" -S >/dev/null 2>&1; echo $? > "$w/rc$i" ) &
+  i=$((i+1))
+done
+wait
+if grep -qv '^0$' "$w"/rc1 "$w"/rc2 "$w"/rc3 "$w"/rc4 "$w"/rc5 "$w"/rc6 "$w"/rc7 "$w"/rc8 2>/dev/null; then
+  bad "eight concurrent writes to one mapping all succeed" "$(cat "$w"/rc* | tr '\n' ' ')"
+else
+  ok "eight concurrent writes to one mapping all succeed"
+fi
+[ "$(wc -l < "$w/conc.tsv" | tr -d ' ')" = "2" ] \
+  && ok "the mapping left by concurrent writers is one complete row" \
+  || bad "the mapping left by concurrent writers is one complete row" "$(wc -l < "$w/conc.tsv") lines"
+[ -z "$(ls "$w"/.spinel-core-map.* 2>/dev/null)" ] \
+  && ok "no exclusive temporary file is left in the destination directory" \
+  || bad "no exclusive temporary file is left in the destination directory"
+
 printf '\ncore seam: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
