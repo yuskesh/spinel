@@ -61,6 +61,9 @@ extern const char **g_core_roots;
 extern int g_core_root_count;
 extern const char *g_core_snapshot_id;
 extern const char *g_core_map_path;
+/* --inputs-out: the ledger of files the frontend actually opened. Written by
+   src/spinel_parse.c, which is the one place every load goes through. */
+int sp_inputs_write(const char *path);
 extern const char *g_ext_init_name;
 extern const char *g_ext_entries;
 extern const char *g_ext_target;
@@ -608,6 +611,7 @@ int main(int argc, char **argv) {
   const char *rbs_dir = NULL;
   extern int sp_inline_rbs_enabled, sp_inline_rbs_failed;
   int arena_mode = 0;   /* --arena (E064, Patch 6b) */
+  const char *inputs_out = NULL;   /* --inputs-out=<path> */
   int c_only = 0, stdout_mode = 0, run_mode = 0, dump_ast = 0;
   int print_build = 0;   /* --print-build: emit the build ingredients, run nothing */
   int cc_jobs = 0;       /* --jobs=N: compile the C as N units in parallel (#4847); 0 = auto */
@@ -681,6 +685,7 @@ int main(int argc, char **argv) {
     }
     else if (!strncmp(a, "--core-id=", 10))  { g_core_snapshot_id = a + 10; i++; }
     else if (!strncmp(a, "--core-map=", 11)) { g_core_map_path = a + 11; i++; }
+    else if (!strncmp(a, "--inputs-out=", 13)) { inputs_out = a + 13; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */
     else if (sp_streq(a, "--no-root-elision")) { g_no_root_elision = 1; i++; }
@@ -1108,6 +1113,13 @@ int main(int argc, char **argv) {
   double tm_cg = sp_timing_now();
   char *csrc = codegen_program(nt);
   sp_timing_end(tm_cg, "codegen_program", "");
+  /* The ledger is written once parsing and generation are done, and BEFORE any
+     of the early returns below: -S and -c leave by different doors, and a
+     ledger written past one of them would be absent exactly when a caller asked
+     for C and wanted to know what produced it. A failure here fails the build;
+     a ledger that quietly loses an entry is worse than none, because it is
+     trusted. */
+  if (inputs_out && sp_inputs_write(inputs_out) != 0) { free(csrc); return 1; }
   nt_free(nt);
   decide_write_log();
   if (seed_path[0]) remove(seed_path);
