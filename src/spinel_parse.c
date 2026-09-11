@@ -1764,6 +1764,31 @@ static int sp_inputs_on = 0;
 
 void sp_inputs_enable(void) { sp_inputs_on = 1; }
 
+/* A load request the frontend RECOGNISED and did not satisfy from a file.
+ *
+ * The ledger records what was opened, and a require that resolves to no file is
+ * honestly absent from it -- but "I opened one file" and "I analysed everything
+ * this program asks to load" are different statements, and only the first is
+ * something a list of opened files can make. Measured: the contract reader
+ * resolves `require "json"` to nothing and replaces it with a comment, while
+ * the hosted compiler resolves it to a package file and reads it. A consumer
+ * comparing the reader's ledger against a single-file snapshot would find
+ * nothing amiss.
+ *
+ * So the count is kept beside the list, and writing a ledger for a run that
+ * recognised an unsatisfied load is refused. This changes no resolution and no
+ * language semantics: without --inputs-out nothing here runs, and the frontend
+ * still does exactly what it did with the require. */
+static int sp_inputs_unsatisfied = 0;
+static char sp_inputs_unsatisfied_name[256];
+
+void sp_inputs_note_unsatisfied(const char *feature) {
+  if (!sp_inputs_on) return;
+  if (sp_inputs_unsatisfied == 0 && feature)
+    snprintf(sp_inputs_unsatisfied_name, sizeof sp_inputs_unsatisfied_name, "%s", feature);
+  sp_inputs_unsatisfied++;
+}
+
 /* Recorded RESOLVED. A relative path in a ledger is not a record of anything:
  * reading it back requires knowing the working directory each stage ran in, and
  * the whole point is to compare against a snapshot without having to. A path
@@ -1795,6 +1820,14 @@ int sp_inputs_write(const char *path) {
   if (sp_inputs_len == 0) {
     fprintf(stderr, "spinel: the input ledger is empty; the frontend must have "
                     "read at least the root source\n");
+    return 1;
+  }
+  if (sp_inputs_unsatisfied > 0) {
+    fprintf(stderr,
+            "spinel: %d load request(s) were recognised and not satisfied from a "
+            "file, the first being \"%s\"; a ledger of opened files cannot "
+            "account for them, so it is not written\n",
+            sp_inputs_unsatisfied, sp_inputs_unsatisfied_name);
     return 1;
   }
   /* Written through a file this function creates exclusively, in the
@@ -2630,6 +2663,7 @@ else {
         }
       }
       if (!content) {
+        sp_inputs_note_unsatisfied(lib_name);
         if (sp_lib_is_native(lib_name)) {
           /* Provided natively by the Spinel runtime; the require is a
              harmless no-op, so don't warn. The require-gate still records it
