@@ -16,6 +16,7 @@
  *   A <id> <field> <ids>     - array of references
  */
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -1756,12 +1757,19 @@ else {
 static char **sp_inputs_list = NULL;
 static size_t sp_inputs_len = 0, sp_inputs_cap = 0;
 static int sp_inputs_failed = 0;
+/* Off by default. Recording resolves and copies a path on every read, and the
+   default build has no use for the result -- a caller that never asks for a
+   ledger should not pay for one, nor hold the list for the process's life. */
+static int sp_inputs_on = 0;
+
+void sp_inputs_enable(void) { sp_inputs_on = 1; }
 
 /* Recorded RESOLVED. A relative path in a ledger is not a record of anything:
  * reading it back requires knowing the working directory each stage ran in, and
  * the whole point is to compare against a snapshot without having to. A path
  * that cannot be resolved is a recording failure, not an entry to guess at. */
 static void sp_inputs_record(const char *raw) {
+  if (!sp_inputs_on) return;
   char *path = realpath(raw, NULL);
   if (!path) { sp_inputs_failed = 1; return; }
   if (sp_inputs_len == sp_inputs_cap) {
@@ -1789,21 +1797,53 @@ int sp_inputs_write(const char *path) {
                     "read at least the root source\n");
     return 1;
   }
-  FILE *f = fopen(path, "wb");
-  if (!f) { fprintf(stderr, "spinel: cannot write the input ledger %s\n", path); return 1; }
-  for (size_t i = 0; i < sp_inputs_len; i++) {
-    size_t n = strlen(sp_inputs_list[i]) + 1;   /* the NUL is part of the record */
-    if (fwrite(sp_inputs_list[i], 1, n, f) != n) {
-      fclose(f); remove(path);
-      fprintf(stderr, "spinel: writing the input ledger %s failed\n", path);
-      return 1;
-    }
+  /* Written through a file this function creates exclusively, in the
+     DESTINATION's directory, and published by rename -- the same discipline the
+     symbol mapping uses. Opening the destination directly would truncate an
+     existing ledger before knowing whether a complete one could be written, and
+     two concurrent runs would share it. */
+  size_t plen = strlen(path);
+  const char *slash = strrchr(path, '/');
+  size_t dlen = slash ? (size_t)(slash - path) : 1;
+  char *tmp = (char *)malloc(dlen + 64);
+  if (!tmp) { fprintf(stderr, "spinel: out of memory writing the input ledger\n"); return 1; }
+  FILE *f = NULL;
+  for (int attempt = 0; attempt < 64 && !f; attempt++) {
+    snprintf(tmp, dlen + 64, "%.*s%s.spinel-inputs.%ld.%d",
+             (int)dlen, slash ? path : ".", slash ? "/" : "",
+             (long)getpid(), attempt);
+    /* "wx" creates exclusively: it fails rather than truncating, which is what
+       makes this safe beside the caller's own files. */
+    f = fopen(tmp, "wbx");
+    if (!f && errno != EEXIST) break;
   }
-  if (fflush(f) != 0 || fclose(f) != 0) {
-    remove(path);
+  if (!f) {
+    fprintf(stderr, "spinel: cannot create a temporary file beside the input ledger %s\n", path);
+    free(tmp);
+    return 1;
+  }
+  (void)plen;
+  int bad = 0;
+  for (size_t i = 0; i < sp_inputs_len && !bad; i++) {
+    size_t n = strlen(sp_inputs_list[i]) + 1;   /* the NUL is part of the record */
+    if (fwrite(sp_inputs_list[i], 1, n, f) != n) bad = 1;
+  }
+  /* Both are called: `a || b` would skip the close when the flush failed,
+     leaking the stream and leaving the file open. */
+  if (fflush(f) != 0) bad = 1;
+  if (fclose(f) != 0) bad = 1;
+  if (bad) {
+    remove(tmp); free(tmp);
     fprintf(stderr, "spinel: writing the input ledger %s failed\n", path);
     return 1;
   }
+  if (rename(tmp, path) != 0) {
+    remove(tmp); free(tmp);
+    fprintf(stderr, "spinel: cannot publish the input ledger %s; the existing "
+                    "file, if any, is unchanged\n", path);
+    return 1;
+  }
+  free(tmp);
   return 0;
 }
 

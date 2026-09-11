@@ -49,6 +49,7 @@ extern const char *g_core_map_path;
 /* --inputs-out: the ledger of files the frontend actually opened. Written by
    src/spinel_parse.c, which is the one place every load goes through. */
 int sp_inputs_write(const char *path);
+void sp_inputs_enable(void);
 extern const char *g_ext_init_name;
 extern const char *g_ext_entries;
 extern const char *g_ext_target;
@@ -360,7 +361,13 @@ int main(int argc, char **argv) {
     }
     else if (!strncmp(a, "--core-id=", 10))  { g_core_snapshot_id = a + 10; i++; }
     else if (!strncmp(a, "--core-map=", 11)) { g_core_map_path = a + 11; i++; }
-    else if (!strncmp(a, "--inputs-out=", 13)) { inputs_out = a + 13; i++; }
+    else if (!strncmp(a, "--inputs-out=", 13)) {
+      inputs_out = a + 13;
+      /* Enabled BEFORE the parse, which is the only time it can be: recording
+         starts at the first read. The default path never turns it on. */
+      sp_inputs_enable();
+      i++;
+    }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */
     else if (sp_streq(a, "--no-root-elision")) { g_no_root_elision = 1; i++; }
