@@ -1737,9 +1737,82 @@ else {
 }
 
 /* ---- require_relative resolution ---- */
+/* The input ledger: every file the frontend actually opened.
+ *
+ * Recorded HERE, at the one function every load goes through, rather than
+ * reconstructed from the output. `#line` directives are source positions, so a
+ * file that contributes no emitted code leaves no trace in them -- measured: a
+ * `require_relative` of an empty file appears nowhere in the generated C. The
+ * question this answers is "what did you open", which has one honest place to
+ * be answered from.
+ *
+ * FORMAT: each record is a path followed by a single NUL byte. NUL because a
+ * path may contain a newline, and a line-oriented file would then be ambiguous
+ * to the reader in exactly the case an attacker or an accident would produce.
+ * The reader splits on NUL and on nothing else.
+ *
+ * Failure to record is a BUILD failure, not a missing line: a ledger that
+ * quietly loses an entry is worse than no ledger, because it is trusted. */
+static char **sp_inputs_list = NULL;
+static size_t sp_inputs_len = 0, sp_inputs_cap = 0;
+static int sp_inputs_failed = 0;
+
+/* Recorded RESOLVED. A relative path in a ledger is not a record of anything:
+ * reading it back requires knowing the working directory each stage ran in, and
+ * the whole point is to compare against a snapshot without having to. A path
+ * that cannot be resolved is a recording failure, not an entry to guess at. */
+static void sp_inputs_record(const char *raw) {
+  char *path = realpath(raw, NULL);
+  if (!path) { sp_inputs_failed = 1; return; }
+  if (sp_inputs_len == sp_inputs_cap) {
+    size_t cap = sp_inputs_cap ? sp_inputs_cap * 2 : 16;
+    char **next = (char **)realloc(sp_inputs_list, cap * sizeof(char *));
+    if (!next) { free(path); sp_inputs_failed = 1; return; }
+    sp_inputs_list = next; sp_inputs_cap = cap;
+  }
+  sp_inputs_list[sp_inputs_len++] = path;   /* realpath's buffer, freed never: the
+                                               process is about to end either way */
+}
+
+/* Write the ledger. Returns 0 on success. An empty ledger is an ERROR: the
+ * frontend cannot have produced anything without reading at least the root, so
+ * an empty file would mean the recording broke, and a caller comparing an empty
+ * set against the snapshot would find nothing outside it and conclude all is
+ * well. */
+int sp_inputs_write(const char *path) {
+  if (sp_inputs_failed) {
+    fprintf(stderr, "spinel: the input ledger could not be recorded\n");
+    return 1;
+  }
+  if (sp_inputs_len == 0) {
+    fprintf(stderr, "spinel: the input ledger is empty; the frontend must have "
+                    "read at least the root source\n");
+    return 1;
+  }
+  FILE *f = fopen(path, "wb");
+  if (!f) { fprintf(stderr, "spinel: cannot write the input ledger %s\n", path); return 1; }
+  for (size_t i = 0; i < sp_inputs_len; i++) {
+    size_t n = strlen(sp_inputs_list[i]) + 1;   /* the NUL is part of the record */
+    if (fwrite(sp_inputs_list[i], 1, n, f) != n) {
+      fclose(f); remove(path);
+      fprintf(stderr, "spinel: writing the input ledger %s failed\n", path);
+      return 1;
+    }
+  }
+  if (fflush(f) != 0 || fclose(f) != 0) {
+    remove(path);
+    fprintf(stderr, "spinel: writing the input ledger %s failed\n", path);
+    return 1;
+  }
+  return 0;
+}
+
 static char *read_file(const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) return NULL;
+  /* Recorded on the successful open, before any read can fail: the file was
+     opened either way, and a caller asking what was opened wants that. */
+  sp_inputs_record(path);
   if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
   long len = ftell(f);
   /* Issue #768: ftell returning -1 (stream error) used to wrap len + 1
