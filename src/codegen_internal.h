@@ -1012,6 +1012,7 @@ extern int g_uses_ensure;   /* the program holds an ensure clause: only then is 
 #define SP_CALLS_GC_STAT    4u
 #define SP_CALLS_GC_TOTAL_TIME 8u
 extern unsigned g_calls_gc;
+extern int g_want_arena_markers;
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
 extern int g_has_user_aset;
