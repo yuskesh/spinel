@@ -1642,6 +1642,53 @@ int g_uses_threads = 0;
 int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
 int g_uses_traps = 0;   /* Signal.trap: a delivered trap runs at the same safe points */
 int g_uses_ensure = 0;       /* an ensure clause: the landings that give sp_inflight_cause back */
+/* --core: the RESOLVED method identities the Extended driver selected, the
+   snapshot id it computed, and where to write the mapping. The driver owns
+   resolution and the snapshot; this file only consumes what it was given.
+   Empty means no selection, and every code path below then behaves exactly as
+   it did before the flag existed. */
+const char **g_core_roots = NULL;
+int g_core_root_count = 0;
+const char *g_core_snapshot_id = NULL;
+const char *g_core_map_path = NULL;
+
+/* The identity spelling the driver uses: `name` for a top-level def,
+   `Class.name` for a singleton, `Class#name` for an instance method. Built from
+   the scope, never from emitted text. */
+void core_scope_identity(Compiler *c, Scope *s, char *out, size_t n) {
+  if (s->class_id >= 0 && s->is_cmethod)
+    snprintf(out, n, "%s.%s", c->classes[s->class_id].name, s->name ? s->name : "");
+  else if (s->class_id >= 0)
+    snprintf(out, n, "%s#%s", c->classes[s->class_id].name, s->name ? s->name : "");
+  else
+    snprintf(out, n, "%s", s->name ? s->name : "");
+}
+
+int scope_is_core_root(Compiler *c, Scope *s) {
+  if (g_core_root_count <= 0 || !s || !s->name) return 0;
+  char id[512];
+  core_scope_identity(c, s, id, sizeof id);
+  for (int i = 0; i < g_core_root_count; i++)
+    if (g_core_roots[i] && sp_streq(g_core_roots[i], id)) return 1;
+  return 0;
+}
+
+/* spc_<snapshot-id>_<method-id>. A namespace of its own rather than external
+   linkage on sp_<name>: `mc_top` keeps top-level methods static precisely
+   because a bare sp_<name> can collide with a runtime helper, and giving one
+   external linkage would reopen that. `spc` is not one of the reserved runtime
+   prefixes and the runtime defines no spc_ symbol. */
+void core_root_symbol(Compiler *c, Scope *s, Buf *b) {
+  buf_puts(b, "spc_");
+  buf_puts(b, g_core_snapshot_id ? g_core_snapshot_id : "0");
+  buf_puts(b, "_");
+  if (s->class_id >= 0 && s->is_cmethod)
+    buf_printf(b, "%s_s_%s", c->classes[s->class_id].c_name, mc(s->name));
+  else if (s->class_id >= 0)
+    buf_printf(b, "%s_%s", c->classes[s->class_id].c_name, mc(s->name));
+  else
+    buf_printf(b, "%s", mc(s->name));
+}
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 int g_has_user_aset = 0;

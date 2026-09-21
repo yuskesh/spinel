@@ -1007,6 +1007,13 @@ static inline int poll_in_pure(Compiler *c, int n) {
 }
 extern int g_loop_uncounted, g_poll_loop_nest;
 extern int g_uses_ensure;   /* the program holds an ensure clause: only then is an exception ever in flight (sp_inflight_cause) */
+extern const char **g_core_roots;
+extern int g_core_root_count;
+extern const char *g_core_snapshot_id;
+extern const char *g_core_map_path;
+void core_scope_identity(Compiler *c, Scope *s, char *out, size_t n);
+int scope_is_core_root(Compiler *c, Scope *s);
+void core_root_symbol(Compiler *c, Scope *s, Buf *b);
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
 extern int g_has_user_aset;

@@ -51,6 +51,13 @@ extern int g_require_gate_cli;
 extern const char *g_ruby_description;
 extern int g_inline_hot;
 extern int g_no_write_barrier;
+/* --core: resolved selection, snapshot id and mapping path. The Extended driver
+   owns resolution and the snapshot manifest; these are inputs, not decisions
+   made here. */
+extern const char **g_core_roots;
+extern int g_core_root_count;
+extern const char *g_core_snapshot_id;
+extern const char *g_core_map_path;
 extern const char *g_ext_init_name;
 extern const char *g_ext_entries;
 extern const char *g_ext_target;
@@ -653,6 +660,15 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--share-strings")) { set_env("SPINEL_SHARE_STRINGS", "1"); i++; }
     else if (sp_streq(a, "--warn-widen"))  { warn_widen = 1; i++; }
     else if (sp_streq(a, "--check-stores")) { check_stores = 1; i++; }
+    else if (sp_streq(a, "--core") && i + 1 < argc) {
+      g_core_roots = (const char **)realloc((void *)g_core_roots,
+                                            (size_t)(g_core_root_count + 1) * sizeof(char *));
+      if (!g_core_roots) { fprintf(stderr, "spinel: out of memory\n"); return 1; }
+      g_core_roots[g_core_root_count++] = argv[i + 1];
+      i += 2;
+    }
+    else if (!strncmp(a, "--core-id=", 10))  { g_core_snapshot_id = a + 10; i++; }
+    else if (!strncmp(a, "--core-map=", 11)) { g_core_map_path = a + 11; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */
     else if (sp_streq(a, "--no-root-elision")) { g_no_root_elision = 1; i++; }
@@ -837,6 +853,23 @@ int main(int argc, char **argv) {
   /* Mode-conflict checks mirror the old driver. */
   if (run_mode && (output || c_only || stdout_mode)) {
     fprintf(stderr, "spinel: -E (run) cannot be combined with -o/-c/-S\n");
+    return 2;
+  }
+  /* --core needs a snapshot id: it is half of every emitted symbol, and it is
+     what makes a hosted declaration and a core definition from different builds
+     fail to link rather than link wrongly. The Extended driver computes it. */
+  if (g_core_root_count > 0 && !g_core_snapshot_id) {
+    fprintf(stderr, "spinel: --core requires --core-id=<snapshot id>. The id is\n"
+                    "spinel: half of every emitted core symbol; without it a hosted\n"
+                    "spinel: declaration and a core object from different builds would\n"
+                    "spinel: link to each other.\n");
+    return 2;
+  }
+  /* --core omits the selected bodies, so a link needs the core object. This
+     driver does not have it; emitting C or an object is the supported use. */
+  if (g_core_root_count > 0 && !c_only && !stdout_mode) {
+    fprintf(stderr, "spinel: --core emits C whose selected methods have no body;\n"
+                    "spinel: linking them is the caller's step. Use -c or -S.\n");
     return 2;
   }
 
