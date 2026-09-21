@@ -13,6 +13,7 @@ lib/libspinel_rt.a
 lib/libspinel_rt_mt.a
 lib/libspinel_rt_mt_tsan.a
 lib/wasm32-wasi/
+lib/libspinel_rt_arena.a
 lib/libspbi.a
 packages/*/build/
 # Dev convenience symlink to bin/spinel (created by `make`)
