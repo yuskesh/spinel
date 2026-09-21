@@ -683,7 +683,8 @@ void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
      sp_gc_bytes is still maintained so GC.stat and SPINEL_ALLOC_REPORT keep
      answering (nothing reads it as a trigger any more). The slab path below is
      left in place, unmodified and unreachable, so this hunk deletes nothing. */
-  { size_t need_r = sizeof(sp_gc_hdr) + sz;
+  { if (sz > (size_t)-1 - sizeof(sp_gc_hdr)) sp_oom_die();
+    size_t need_r = sizeof(sp_gc_hdr) + sz;
     sp_gc_hdr *h_r = (sp_gc_hdr *)sp_gc_arena_alloc(need_r);
     h_r->finalize = fin; h_r->scan = scn; h_r->size = need_r;
     if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
