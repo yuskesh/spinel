@@ -904,6 +904,12 @@ $(SP_RT_NOGC_LIB): $(patsubst lib/regexp/%.c,build/nogc/regexp/%.o,$(RE_SRC)) $(
 $(SP_RT_MT_NOGC_LIB): $(patsubst lib/regexp/%.c,build/mt-nogc/regexp/%.o,$(RE_SRC)) $(addprefix build/mt-nogc/,$(addsuffix .o,$(RT_MEMBERS) sp_gc_none)) $(PLATFORM_MT_OBJ)
 	$(AR_DET) ar rcs $@ $^
 
+# The --core seam: a selected root's symbol, its missing body, and that a
+# missing or mismatched core object fails the link instead of falling back.
+.PHONY: test-core-seam
+test-core-seam: all
+	CC='$(CC)' scripts/core-seam-check.sh
+
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
 # but uninstrumented, so a race shows only when it corrupts the output. This
