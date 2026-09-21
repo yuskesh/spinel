@@ -493,6 +493,11 @@ static void usage(void) {
     "              in the program (default: apply them; docs/inline-rbs.md)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
     "  --dump-ast  Print the text AST and exit (debug)\n"
+    "  --arena     Process-lifetime arena: allocation without a collector.\n"
+    "                 Nothing is reclaimed while the program runs; the process\n"
+    "                 exit reclaims everything. Intended for short-lived work.\n"
+    "                 Over SPINEL_ARENA_MAX_MB it exits loudly.\n"
+    "                 Requires lib/libspinel_rt_arena.a (make arena-archive)\n"
     "  --dump-value-positions  Print the value positions of each method body and of\n"
     "              the program, and exit (debug)\n"
     "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n");
@@ -581,6 +586,7 @@ int main(int argc, char **argv) {
   const char *int_overflow = "raise";
   const char *rbs_dir = NULL;
   extern int sp_inline_rbs_enabled, sp_inline_rbs_failed;
+  int arena_mode = 0;   /* --arena (E064, Patch 6b) */
   int c_only = 0, stdout_mode = 0, run_mode = 0, dump_ast = 0;
   int print_build = 0;   /* --print-build: emit the build ingredients, run nothing */
   int cc_jobs = 0;       /* --jobs=N: compile the C as N units in parallel (#4847); 0 = auto */
@@ -644,6 +650,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--share-strings")) { set_env("SPINEL_SHARE_STRINGS", "1"); i++; }
     else if (sp_streq(a, "--warn-widen"))  { warn_widen = 1; i++; }
     else if (sp_streq(a, "--check-stores")) { check_stores = 1; i++; }
+    else if (sp_streq(a, "--arena")) { arena_mode = 1; i++; }
     /* keep every GC root, so a suspected miscompile can be bisected against
        the same binary rather than against a different build. */
     else if (sp_streq(a, "--no-root-elision")) { g_no_root_elision = 1; i++; }
@@ -839,6 +846,11 @@ int main(int argc, char **argv) {
   /* Let the analyzer widen accumulating int locals to bigint more freely in
      promote mode (block-iteration loops, not just `while`). See analyze.h. */
   g_promote_mode = sp_streq(int_overflow, "promote");
+  if (arena_mode && (target_wasi || exc_abort)) {
+    fprintf(stderr, "spinel: --arena cannot be combined with --target=wasm32-wasi "
+                    "or --exceptions=abort; these arena runtimes are unsupported.\n");
+    return 1;
+  }
   if (exc_abort && !target_wasi) {
     fprintf(stderr, "spinel: --exceptions=abort is for --target=wasm32-wasi\n");
     return 1;
@@ -1154,6 +1166,27 @@ int main(int argc, char **argv) {
   int uses_crypt = strstr(csrc, "sp_str_crypt(") != NULL;  /* String#crypt: link -lcrypt */
   int uses_cext;
   const char *rt_lib = runtime_archive(csrc, uses_threads, target_wasi, exc_abort, &uses_cext);
+  /* --arena: the generated TU and the archive MUST agree on the define.
+     sp_str_alloc and the SP_GC_ROOT macros are header-resident, so a TU built
+     with the arena against the heap archive would allocate strings from the
+     arena while the archive's collector still swept them -- the one way to get
+     a use-after-free out of a design whose whole point is that it cannot have
+     one. Hence a dedicated archive rather than a flag on the TU alone. */
+  if (arena_mode) {
+    if (uses_threads) {
+      fprintf(stderr, "spinel: --arena is single-threaded only; this program "
+                      "uses Thread/Queue/Mutex (SP_THREADS). What an arena means "
+                      "for a worker's own heap has not been established, so the "
+                      "combination is refused rather than guessed. Drop --arena.\n");
+      return 1;
+    }
+    if (uses_cext) {
+      fprintf(stderr, "spinel: --arena cannot be combined with C extensions; "
+                      "an arena C extension runtime is unsupported.\n");
+      return 1;
+    }
+    rt_lib = "libspinel_rt_arena.a";
+  }
   free(csrc);
   if (!rt_lib) { if (c_is_temp) remove(c_path); return 1; }
   /* wasm has no threads without SharedArrayBuffer and no stack switching
@@ -1302,6 +1335,7 @@ int main(int argc, char **argv) {
        archive have to agree on the storage class of the per-worker globals. */
     bi_put(&bi, "cflag", "-ftls-model=initial-exec");
   }
+  if (arena_mode) s_add(&cmd, "-DSP_PROCESS_ARENA ");
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   bi_put_toks(&bi, "cflag", ffi_cflags.p);
   /* Every flag that changes how the generated C compiles goes before the
