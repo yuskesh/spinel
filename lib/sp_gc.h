@@ -104,15 +104,18 @@ static inline void _sp_gc_root_pop(int *added) { if (*added) sp_gc_nroots--; }
 static inline void sp_gc_cleanup(int *p) { sp_gc_nroots = *p; }
 #define _SP_GC_CONCAT2(a,b) a##b
 #define _SP_GC_CONCAT(a,b) _SP_GC_CONCAT2(a,b)
-/* The root machinery is NOT disabled under the arena, and that is deliberate.
-   Turning SP_GC_ROOT into ((void)0) is an optimisation, not part of what makes
-   this mode safe -- the safety comes from the collector never running. It also
-   changes observable behaviour: the macros take &v, which forces the local into
-   memory, and a local that lives in a register instead is indeterminate after a
-   longjmp. catch/throw and raise/rescue are built on setjmp/longjmp, and the
-   generated C does not mark every such local volatile, so removing the macros
-   made `i = 0; catch(:done) { i += 1; throw :done }; p i` print 0 rather than 1.
-   The roots are pushed and popped as usual here; nothing ever walks them. */
+/* ---- SP_PROCESS_ARENA and the root machinery ----
+   The root macros are the same in both configurations. Under the arena nothing
+   ever walks the root stack, so the pushes and pops are bookkeeping that no
+   reader consumes; they are kept because removing them changed observable
+   behaviour. The macros take &v, which is what keeps a local in memory across
+   the setjmp/longjmp that catch/throw and raise/rescue are built on, and the
+   generated C does not declare every such local volatile. Making them no-ops
+   made `i = 0; catch(:done) { i += 1; throw :done }; p i` print 0.
+
+   That is not a claim that &v satisfies the C rule for longjmp -- it does not.
+   It is what the collecting build does and what its behaviour has been verified
+   against, and the arena takes the same path rather than a different one. */
 #define SP_GC_SAVE() int SP_CLEANUP(sp_gc_cleanup) _gc_saved = sp_gc_nroots
 /* A `const char *` slot is a String, and takes the string tag (below) whichever
    macro roots it: a mutable String's payload (marker 0xfd) is kept alive by
@@ -481,8 +484,16 @@ void *sp_gc_arena_more(size_t n);          /* new chunk, or die loud */
 size_t sp_gc_arena_reserved_bytes(void);   /* chunk bytes taken from libc */
 size_t sp_gc_arena_used_bytes(void);       /* bytes handed out (chunk granularity) */
 static inline void *sp_gc_arena_alloc(size_t n) {
+  /* A size that cannot be rounded to the alignment cannot be served either;
+     hand it to the slow path, which refuses loudly rather than wrapping to a
+     small number and returning a short block. */
+  if (n > (size_t)-1 - (size_t)15) return sp_gc_arena_more(n);
   n = (n + (size_t)15) & ~(size_t)15;   /* calloc's alignment, preserved */
   char *p = sp_gc_arena_cur;
+  /* Before the first chunk exists both pointers are NULL. Subtracting them is
+     undefined, so the empty state is its own branch rather than arithmetic that
+     happens to give zero. */
+  if (p == NULL) return sp_gc_arena_more(n);
   if ((size_t)(sp_gc_arena_end - p) < n) return sp_gc_arena_more(n);
   sp_gc_arena_cur = p + n;
   return p;

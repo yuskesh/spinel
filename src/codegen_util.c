@@ -1642,6 +1642,12 @@ int g_uses_threads = 0;
 int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
 int g_uses_traps = 0;   /* Signal.trap: a delivered trap runs at the same safe points */
 int g_uses_ensure = 0;       /* an ensure clause: the landings that give sp_inflight_cause back */
+/* Bitmask of collector entries the generator actually EMITTED, set at the
+   emission site (codegen_call.c) and reported by the SPINEL_CALLS_GC marker.
+   Set where the call is produced rather than scanned for in the finished C:
+   the runtime symbol can also appear inside a Ruby string literal, and a
+   text search cannot tell that from a call. */
+unsigned g_calls_gc = 0;
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 int g_has_user_aset = 0;
