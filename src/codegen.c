@@ -5262,8 +5262,52 @@ const char *method_ret_zero(Compiler *c, const Scope *s) {
   return default_value_from_compiler(c, s->ret);
 }
 
+/* External method definitions (opt-in). Top-level methods named in the
+   comma-separated $SPINEL_EXTERN_METHODS are emitted as `extern` forward
+   declarations only; their bodies are skipped, to be provided by another
+   translation unit linked into the program. This enables separate compilation
+   of selected methods: a hand-written C implementation, an alternate runtime,
+   or (spinel-ebpf) forwarding a call to an eBPF program.
+
+   The decl uses spinel's canonical value ABI rather than the method's
+   analysis-inferred signature, so the external definition has a fixed,
+   predictable prototype regardless of whole-program type inference:
+   params are `sp_int lv_<name>`, and the return is `sp_int` for a concrete
+   int result, otherwise `void`. With the env unset, codegen is byte-identical. */
+static int toplevel_method_p(Scope *s) {
+  return s->class_id < 0 && s->name && *s->name;
+}
+static int extern_method_p(Scope *s) {
+  if (!toplevel_method_p(s)) return 0;
+  const char *env = getenv("SPINEL_EXTERN_METHODS");
+  if (!env || !*env) return 0;
+  const char *name = s->name;
+  size_t nlen = strlen(name);
+  for (const char *p = env; ; ) {
+    const char *comma = strchr(p, ',');
+    size_t seg = comma ? (size_t)(comma - p) : strlen(p);
+    if (seg == nlen && !strncmp(p, name, nlen)) return 1;
+    if (!comma) break;
+    p = comma + 1;
+  }
+  return 0;
+}
+
 void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   note_method_file(c, s);
+  if (extern_method_p(s)) {
+    /* Canonical value ABI (see SPINEL_EXTERN_METHODS above): extern linkage,
+       sp_int params, sp_int return only for a concrete int (else void). The
+       body is skipped in emit_method, so the prototype loop emits a bare decl. */
+    buf_printf(b, "extern %s sp_%s(", (s->ret == TY_INT) ? "sp_int" : "void", mc(s->name));
+    if (s->nparams == 0) buf_puts(b, "void");
+    else for (int i = 0; i < s->nparams; i++) {
+      if (i) buf_puts(b, ", ");
+      buf_printf(b, "sp_int lv_%s", s->pnames[i]);
+    }
+    buf_puts(b, ")");
+    return;
+  }
   /* In a debug build, give instance/class methods external linkage so
      -rdynamic exposes sp_<Class>_<method> to backtrace_symbols and the
      frames demangle (Exception#backtrace / Kernel#caller). A toplevel method
@@ -7030,6 +7074,10 @@ static const char *method_self_root(Compiler *c, Scope *s) {
   return body >= 0 && subtree_may_allocate(c->nt, body) ? m : NULL;
 }
 void emit_method(Compiler *c, Scope *s, Buf *b) {
+  /* External methods (SPINEL_EXTERN_METHODS) have no native body — the prototype
+     loop emits an `extern` forward declaration and the definition is linked in
+     from another translation unit. */
+  if (extern_method_p(s)) return;
   /* an IO handle has no slots for a program's instance variables */
   if (s->class_id >= 0 && !s->is_cmethod && io_family_class(c, s->class_id) &&
       scope_uses_ivars(c, (int)(s - c->scopes)))
