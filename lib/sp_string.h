@@ -256,6 +256,22 @@ static SP_NOINLINE sp_String*sp_String_new_static1(unsigned char c){
   return r;
 }
 static SP_NOINLINE sp_String*sp_String_new_shared_make(const char*s);
+/* The mutable handle constructors own their 0xfd payload (including inline
+   storage). No payload is shared with a snapshot/dup. Frozen literal handles
+   are rejected before inspecting their immutable storage. */
+static inline void sp_String_ffi_prepare(sp_String *s) {
+  if (!s) sp_raise_cls("TypeError", "str_inout requires a String");
+  if (sp_String_is_frozen(s)) sp_raise_cls("FrozenError", "str_inout cannot borrow a frozen String");
+  if (!s->data || ((unsigned char *)s->data)[-1] != 0xfd ||
+      ((sp_str_hdr *)sp_fd_base(s->data))->next != (sp_str_hdr *)(void *)s)
+    sp_raise_cls("RuntimeError", "str_inout requires an owned mutable String payload");
+}
+static inline char *sp_String_cstr_mut(sp_String *s) { return s->data; }
+static inline void sp_String_ffi_publish(sp_String *s) {
+  s->data[s->len] = 0;
+  sp_fd_publish(s);
+}
+
 static inline sp_String*sp_String_new_shared(const char*s){
   if(!s)return NULL;
   unsigned char mk=((const unsigned char*)s)[-1];

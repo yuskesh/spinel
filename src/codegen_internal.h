@@ -2560,6 +2560,7 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
 int node_is_empty_container(Compiler *c, int node);
 int emit_call_block_arg_stmt(Compiler *c, int id, Buf *b, int indent);   /* codegen_call.c */
 int an_empty_container_kind(Compiler *c, int b);
+int ffi_mutable_string_identity(Compiler *c, int value);
 TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);
 int range_float_begin(Compiler *c, int recv);
