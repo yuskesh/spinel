@@ -535,6 +535,9 @@ static void usage(void) {
     "  --defer-refusals  Build anyway: a refused statement raises\n"
     "               NotImplementedError when reached (a refusal outside any\n"
     "               statement of a method, when the method is called)\n"
+    "  --no-loop-sig-poll  Loops do not poll for a delivered signal: a default\n"
+    "               SIGINT or SIGTERM is raised at the next safe point outside\n"
+    "               the loop instead. The C says so (SP_NO_LOOP_SIG_POLL)\n"
     "  --ext-init NAME    Emit a host-callable library: NAME() replaces main\n"
     "  --ext-entry M.m,.. Export these module methods (with -c; writes a .h contract)\n"
     "  --ext-class C,..   Export the instance methods of these classes (or `all`)\n"
@@ -1046,6 +1049,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--line-map"))    { line_map = 1; i++; }
     else if (sp_streq(a, "--no-line-map")) { line_map = 0; i++; }
     else if (sp_streq(a, "--defer-refusals")) { g_opt_defer_refusals = 1; i++; }
+    else if (sp_streq(a, "--no-loop-sig-poll")) { set_env("SPINEL_NO_LOOP_SIG_POLL", "1"); i++; }
     else if (sp_streq(a, "--warn-widen"))  { warn_widen = 1; i++; }
     else if (sp_streq(a, "--check-stores")) { check_stores = 1; i++; }
     else if (sp_streq(a, "--core") && i + 1 < argc) {
