@@ -105,6 +105,7 @@ Recognized type specs:
 | `:double` | `double` | `float` |
 | `:bool` | `int` | `bool` |
 | `:str` | `const char *` | `string` (NUL-terminated) |
+| `:str_inout` | `char *` | mutable String, argument only; bounded call-duration borrow |
 | `:binstr` | `const char *` | `string` (a return is binary-safe) |
 | `:ptr` | `void *` | `ptr`; an argument also takes an `IO::Buffer` (its base address) |
 | `:float_array` | `const double *` | `Array<Float>` (`.data` pointer) |
@@ -155,6 +156,29 @@ As an argument or an `ffi_callback` parameter, `:binstr` (and the ffi
 gem's `:string`) is the same as `:str`: a `const char *`. nil passes
 NULL and a non-String raises `TypeError`. The length is not part of it,
 so pass the bytesize separately as `:size_t` if the bytes may hold NUL.
+
+`:str_inout` is an explicit **argument-only** mutable String borrow (`char *`).
+It is reserved for `ffi_func` arguments, not returns, callbacks, struct fields
+or the separate native-binding DSL. It requires a proven original handle (locals, fields, supported readers and
+method parameters); an unproved identity route, nil or a non-String is refused.
+Fields with inheritance, attribute writers or conditional/rebinding forms not
+covered by the producer proof are refused. Ordinary method-return aliases,
+container elements and reflective writes are outside this initial slice.
+A frozen String raises `FrozenError` before entry (or is refused statically).
+The caller passes the byte length separately. C may change only the existing
+bytes, including NUL bytes; it must not resize, free, retain the address, change
+the terminator, run Ruby, or allocate/collect through Spinel. All arguments are
+prepared before taking the borrowed byte addresses, with the String handles
+rooted. Owned mutable payloads are reused; snapshots/duplicates have separate
+storage. After return the original length is retained and String caches are
+invalidated. Existing `:str` semantics do not change.
+
+This initial slice refuses threaded programs, asynchronous Ruby entry points
+(including signal handlers), `blocking: true` borrowing calls, and programs
+with **any FFI callback declaration**, including unreachable declarations.
+It supplies no concurrent/reentrant locking contract. Run the explicit native
+checks with `CC=clang sh scripts/ffi-string-borrow-check.sh`; they do not run a
+Ruby reference implementation.
 
 `:float_array` / `:int_array` hand the C side a pointer to the Spinel
 Array's contiguous storage (`.data`). Length is **not** part of the

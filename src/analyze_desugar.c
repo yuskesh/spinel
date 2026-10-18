@@ -20292,7 +20292,7 @@ static int ffi_builtin_type_name(const char *n) {
   static const char *const T[] = {
     "void", "bool", "char", "uchar", "short", "ushort", "int", "uint", "long", "ulong",
     "long_long", "ulong_long", "float", "double", "long_double", "pointer", "string", "strptr",
-    "buffer_in", "buffer_out", "buffer_inout", "int8", "uint8", "int16", "uint16", "int32",
+    "str_inout", "buffer_in", "buffer_out", "buffer_inout", "int8", "uint8", "int16", "uint16", "int32",
     "uint32", "int64", "uint64", "float32", "float64", "size_t", "ssize_t", "intptr_t",
     "uintptr_t", "ptrdiff_t", "off_t", "time_t", "pid_t", "uid_t", "gid_t", "mode_t",
     "socklen_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t",

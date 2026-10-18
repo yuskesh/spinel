@@ -204,6 +204,22 @@ static inline void sp_String_append_bin(sp_String*s,const char*t){
 SP_COLD void sp_String_chill(sp_String*r,const char*s);
 int sp_String_chilled_now(sp_String*h);
 const char*sp_sym_to_s_chilled(sp_sym id);
+/* The mutable handle constructors own their 0xfd payload (including inline
+   storage). No payload is shared with a snapshot/dup. Frozen literal handles
+   are rejected before inspecting their immutable storage. */
+static inline void sp_String_ffi_prepare(sp_String *s) {
+  if (!s) sp_raise_cls("TypeError", "str_inout requires a String");
+  if (sp_String_is_frozen(s)) sp_raise_cls("FrozenError", "str_inout cannot borrow a frozen String");
+  if (!s->data || ((unsigned char *)s->data)[-1] != 0xfd ||
+      ((sp_str_hdr *)sp_fd_base(s->data))->next != (sp_str_hdr *)(void *)s)
+    sp_raise_cls("RuntimeError", "str_inout requires an owned mutable String payload");
+}
+static inline char *sp_String_cstr_mut(sp_String *s) { return s->data; }
+static inline void sp_String_ffi_publish(sp_String *s) {
+  s->data[s->len] = 0;
+  sp_fd_publish(s);
+}
+
 static inline sp_String*sp_String_new_shared(const char*s){
   if(!s)return NULL;   /* nil into a shared-string slot stays nil (a nullable String, #4567) */
   /* Read every property of `s` HERE, before the allocation below: the handle's

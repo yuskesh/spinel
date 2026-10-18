@@ -2101,6 +2101,7 @@ void ty_recv_call_extra_args(const Compiler *c, const int *av, int argc,
                               TyKind *arg1, int *range_has_float_bound);
 int node_is_empty_container(const NodeTable *nt, int node);
 int an_empty_container_kind(Compiler *c, int b);
+int ffi_mutable_string_identity(Compiler *c, int value);
 TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);
 int range_float_begin(Compiler *c, int recv);
