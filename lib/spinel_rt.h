@@ -17490,6 +17490,7 @@ void sp_exc_print_uncaught(const char *cls, const char *msg, sp_StrArray *bt);  
 void sp_exc_resignal(const char *cls, const char *msg);   /* lib/sp_cold.c */
 void sp_raise_stack_overflow(void);   /* lib/sp_exc.c */
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg);   /* lib/sp_exc.c */
+SP_NORETURN SP_COLD void sp_abort_uncaught(const char *cls, const char *msg);   /* lib/sp_exc.c */
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
 /* Unwrap a boxed Proc -- one read out of a container (#3655). */

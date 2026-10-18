@@ -1917,6 +1917,7 @@ static void *sp_exc_raise_cause(int cont, void *raised) {
   if (h) return h == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(h, raised);
   return sp_exc_implicit_cause(sp_inflight_cause, raised);
 }
+SP_NORETURN SP_COLD static void sp_exc_end_uncaught(const char *cls, const char *msg);
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* a raise leaves any region a signal may be raised in at once (#9222):
      what follows allocates */
@@ -2022,6 +2023,36 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* A killed main fiber (Fiber#kill, lib/sp_fiber.c) ends the program with
      status 1 after the at_exit hooks, as CRuby does. */
   if (strcmp(cls, "FiberKillSignal") == 0) exit(sp_exc_at_exit(1));
+  sp_exc_end_uncaught(cls, msg);
+}
+/* An uncaught exception reported from outside any frame that could catch it
+   (decision 0015 of Spinel Extended). A native core object has no setjmp
+   stack and no runtime to raise into, so an arithmetic failure in it ends the
+   program the way --exceptions=abort ends one: the at_exit hooks run, the
+   report is the one an uncaught raise of `cls` prints, and the status is the
+   one it exits with. The rescue frames armed around the call are not
+   consulted and the ensure clauses between do not run. External, like the
+   rest of this file, because the hosted shim that calls it is compiled as its
+   own translation unit. */
+SP_NORETURN SP_COLD void sp_abort_uncaught(const char *cls, const char *msg) {
+  sp_sig_async_ok = 0;
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg);
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_exc_msg_plain(msg);
+  SP_GC_ROOT_STR(msg);
+#if SP_BT_AVAILABLE
+  if (sp_bt_enabled) sp_bt_n = sp_bt_capture(sp_bt_buf, 256);
+#endif
+  sp_bt_keep = 0;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  /* nothing is being raised: an object left pending by the program is not
+     this exception and must not supply its message or trace */
+  sp_pending_exc_obj = NULL;
+  sp_exc_end_uncaught(cls, msg);
+}
+/* The end of an uncaught exception: report it and end the program. Shared by
+   sp_raise_cls, once no frame catches it, and sp_abort_uncaught. `msg` must
+   already be laundered and rooted, as both callers do on entry. */
+SP_NORETURN SP_COLD static void sp_exc_end_uncaught(const char *cls, const char *msg) {
   /* CRuby's report prints what #message answers, so an exception class that
      defines its own #message (or #to_s, which the default #message calls)
      prints that text rather than the one stored at #new. A `raise Class`
@@ -2036,11 +2067,11 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* An uncaught exception prints its text AFTER the hooks have run, which is
      the order CRuby prints them in, and the status is theirs to change (a hook
      that calls `exit 5` makes an uncaught raise exit 5, still printing the
-     error). `msg` survives the hooks because it was laundered onto the string
-     heap and rooted at the top of this function and that root is never popped;
-     `cls` is a codegen-emitted literal the collector never touches. The
-     backtrace substrate is not so lucky: a hook that raises overwrites it, so
-     a debug build keeps its own copy across the drain. */
+     error). `msg` survives the hooks because the caller laundered it onto the
+     string heap and rooted it, and that root is never popped; `cls` is a
+     codegen-emitted literal the collector never touches. The backtrace
+     substrate is not so lucky: a hook that raises overwrites it, so a debug
+     build keeps its own copy across the drain. */
 #if SP_BT_AVAILABLE
   /* The object may have kept its original trace across a bare raise inside
      ensure. Hooks clear the pending object, so root its trace before draining. */
