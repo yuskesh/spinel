@@ -26805,6 +26805,241 @@ static int an_ruby_runs_unseen(Compiler *c) {
   return 0;
 }
 
+/* An explicit mutable FFI borrow demands the original holder. Reuse the
+   opaque-C mutation demand and its parameter/alias propagation, rather than
+   wrapping the read face in a new handle. Unknown identity routes are checked
+   at emission after the ordinary handle fixpoint settles. */
+static const char *ffi_borrow_field_refusal(Compiler *c, int owner, const char *name) {
+  if (owner < 0 || !name) return "str_inout has no resolved instance field";
+  if (c->classes[owner].parent >= 0) return "str_inout does not admit inherited fields";
+  if (comp_writer_in_chain(c, owner, name + 1, NULL))
+    return "str_inout does not admit fields declaring attr_writer or attr_accessor";
+  int nd = 0; const int *desc = comp_descendants(c, owner, &nd);
+  for (int i = 0; i < nd; i++)
+    if (desc[i] != owner) return "str_inout does not admit inherited field writes";
+  for (int n = 0; n < c->nt->count; n++) {
+    NodeKind k = nt_kind(c->nt, n);
+    if (k != NK_InstanceVariableOrWriteNode && k != NK_InstanceVariableAndWriteNode &&
+        k != NK_InstanceVariableOperatorWriteNode && k != NK_InstanceVariableTargetNode) continue;
+    const char *wn = nt_str(c->nt, n, "name");
+    if (wn && sp_streq(wn, name) && comp_ivar_owner(c, n) == owner)
+      return "str_inout requires plain @ivar = value producers; conditional or compound field stores are not proved";
+  }
+  return NULL;
+}
+static int ffi_borrow_field_admitted(Compiler *c, int owner, const char *name) {
+  return ffi_borrow_field_refusal(c, owner, name) == NULL;
+}
+
+static int demand_ffi_mutable_strings(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int has_borrow = 0;
+  for (int fi = 0; fi < c->n_ffi_funcs; fi++)
+    for (int i = 0; i < c->ffi_funcs[fi].nargs; i++)
+      has_borrow |= sp_streq(c->ffi_funcs[fi].args[i], "str_inout");
+  if (!has_borrow) return 0;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    Scope *scope = comp_scope_of(c, n);
+    if (scope && scope != &c->scopes[0] && !scope->reachable) continue;
+    int recv = nt_ref(nt, n, "receiver");
+    const char *name = nt_str(nt, n, "name");
+    if (recv < 0 || !name) continue;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+    const char *mod = nt_str(nt, recv, "name");
+    int fi = mod ? ffi_find_func(c, mod, name) : -1;
+    if (fi < 0) continue;
+    int args = nt_ref(nt, n, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    for (int i = 0; i < argc && i < c->ffi_funcs[fi].nargs; i++) {
+      if (!sp_streq(c->ffi_funcs[fi].args[i], "str_inout")) continue;
+      if (c->ffi_funcs[fi].blocking || an_ruby_runs_unseen(c))
+        unsupported_feature(c, n, "str_inout requires synchronous execution without threads, asynchronous Ruby entry or FFI callback declarations (including unreachable declarations)");
+      NodeKind ak = nt_kind(nt, argv[i]);
+      if (ak == NK_LocalVariableReadNode) {
+        Scope *scope = comp_scope_of(c, argv[i]);
+        const char *name = nt_str(nt, argv[i], "name");
+        LocalVar *local = scope && name ? scope_local(scope, name) : NULL;
+        if (local && local->type != TY_STRING && local->type != TY_STRBUF)
+          unsupported_feature(c, argv[i], "str_inout requires a typed String identity; boxed/non-String locals are not borrow routes");
+        if (local && (local->is_cell || local->is_block_param))
+          unsupported_feature(c, argv[i], "str_inout does not admit captured locals or block parameters");
+      }
+      if (ak == NK_CallNode && is_aref_name(nt_str(nt, argv[i], "name")))
+        unsupported_feature(c, argv[i], "str_inout does not admit container element routes");
+      int owner = -1; char ivar[256];
+      if (an_reader_ivar_of(c, argv[i], &owner, ivar, sizeof ivar)) {
+        const char *refusal = ffi_borrow_field_refusal(c, owner, ivar);
+        if (refusal) unsupported_feature(c, argv[i], refusal);
+        changed |= strbuf_promote_ivar(c, owner, ivar);
+        int iv = owner >= 0 ? comp_ivar_index(&c->classes[owner], ivar) : -1;
+        if (iv >= 0 && c->classes[owner].ivar_str_shared[iv] && !c->strbuf_box[argv[i]]) {
+          comp_set_strbuf_box(c, argv[i], 1);
+          comp_sn_retype(c, argv[i], TY_STRBUF);
+          changed = 1;
+        }
+      }
+      else {
+        if (ak == NK_CallNode)
+          unsupported_feature(c, argv[i], "str_inout cannot preserve original String identity through an ordinary call argument; pass a local or proven reader handle");
+        changed |= cext_demand_string(c, argv[i]);
+      }
+    }
+  }
+  /* A handle parameter can pull a caller's local into the shared set in
+     the following round. Carry a reader assignment into that local back
+     to its original field, just as the ordinary reader mutation rule does. */
+  if (has_borrow) NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    const char *name = nt_str(nt, w, "name");
+    Scope *scope = comp_scope_of(c, w);
+    LocalVar *local = scope && name ? scope_local(scope, name) : NULL;
+    if (!local || local->type != TY_STRBUF || !local->str_shared) continue;
+    int value = nt_ref(nt, w, "value"), owner = -1;
+    char ivar[256];
+    if (value >= 0 && nt_kind(nt, value) == NK_InstanceVariableReadNode) {
+      const char *name = nt_str(nt, value, "name");
+      owner = comp_ivar_owner(c, value);
+      if (!name) continue;
+      snprintf(ivar, sizeof ivar, "%s", name);
+    }
+    else if (!an_reader_ivar_of(c, value, &owner, ivar, sizeof ivar)) continue;
+
+    if (!ffi_borrow_field_admitted(c, owner, ivar)) continue;
+    changed |= strbuf_promote_ivar(c, owner, ivar);
+    int iv = owner >= 0 ? comp_ivar_index(&c->classes[owner], ivar) : -1;
+    if (iv >= 0 && c->classes[owner].ivar_str_shared[iv] && !c->strbuf_box[value]) {
+      comp_set_strbuf_box(c, value, 1);
+      comp_sn_retype(c, value, TY_STRBUF);
+      changed = 1;
+    }
+  }
+  return changed;
+}
+
+/* Validate only the producer graph of an explicitly borrowed String. A
+   handle slot alone is insufficient: wrapping an ordinary method's copied
+   return in a handle would still lend a snapshot. Reuse the existing freshness
+   proof, scope/caller index and reader resolution; unknown routes refuse. */
+/* Default mode has no --share-strings freshness graph. Its initial borrow
+   slice admits builtin fresh String operations and direct user methods whose
+   every return is itself such a fresh expression, never a stored local. */
+static int ffi_borrow_fresh_value(Compiler *c, int value, int depth) {
+  const NodeTable *nt = c->nt;
+  value = an_unparen(nt, value);
+  if (value < 0 || depth > 16) return 0;
+  NodeKind kind = nt_kind(nt, value);
+  if (kind == NK_StringNode || kind == NK_InterpolatedStringNode) return 1;
+  if (kind != NK_CallNode) return 0;
+  int recv = nt_ref(nt, value, "receiver");
+  const char *name = nt_str(nt, value, "name");
+  if (!name) return 0;
+  int targets[CPT_MAX], n = cplan_targets(c, value, targets, CPT_MAX);
+  if (n == 0) {
+    const char *rc = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+    if (rc && sp_streq(rc, "String") && sp_streq(name, "new") && !share_builtin_overridden(c, "String", "new")) return 1;
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    if (ty_is_array(rt) && sp_streq(name, "pack") && !share_builtin_overridden(c, "Array", "pack")) {
+      int args = nt_ref(nt, value, "arguments"), ac = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      /* buffer: can return an existing String, so only the ordinary fresh form. */
+      return ac == 1 && nt_kind(nt, av[0]) != NK_SplatNode &&
+             nt_kind(nt, av[0]) != NK_KeywordHashNode && nt_ref(nt, value, "block") < 0;
+    }
+    return an_fresh_string_value(c, value);
+  }
+  if (n != 1 || cplan_user_fresh(c, value)->dispatch != CP_DIRECT) return 0;
+  int mi = targets[0];
+  if (mi <= 0 || !ffi_borrow_fresh_value(c, scope_body_last(c, mi), depth + 1)) return 0;
+  NT_FOREACH_KIND(nt, NK_ReturnNode, r) {
+    if (comp_scope_of(c, r) != &c->scopes[mi]) continue;
+    int args = nt_ref(nt, r, "arguments"), ac = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+    if (ac != 1 || !ffi_borrow_fresh_value(c, av[0], depth + 1)) return 0;
+  }
+  return 1;
+}
+
+static int ffi_borrow_identity_walk(Compiler *c, int value, unsigned char *seen, int depth);
+static int ffi_borrow_ivar_identity(Compiler *c, int owner, const char *name,
+                                    unsigned char *seen, int depth) {
+  if (!ffi_borrow_field_admitted(c, owner, name)) return 0;
+  int iv = comp_ivar_index(&c->classes[owner], name);
+  if (iv < 0 || c->classes[owner].ivar_types[iv] != TY_STRBUF ||
+      !c->classes[owner].ivar_str_shared[iv]) return 0;
+  int found = 0;
+  const NodeTable *nt = c->nt;
+  for (int w = 0; w < nt->count; w++) {
+    NodeKind kind = nt_kind(nt, w);
+    if (kind != NK_InstanceVariableWriteNode && kind != NK_InstanceVariableOrWriteNode &&
+        kind != NK_InstanceVariableAndWriteNode && kind != NK_InstanceVariableOperatorWriteNode &&
+        kind != NK_InstanceVariableTargetNode) continue;
+
+    const char *wn = nt_str(c->nt, w, "name");
+    if (!wn || !sp_streq(wn, name) || comp_ivar_owner(c, w) != owner) continue;
+    if (kind != NK_InstanceVariableWriteNode) return 0;
+    found = 1;
+    if (!ffi_borrow_identity_walk(c, nt_ref(c->nt, w, "value"), seen, depth + 1)) return 0;
+  }
+  return found;
+}
+static int ffi_borrow_identity_walk
+(Compiler *c, int value, unsigned char *seen, int depth) {
+  const NodeTable *nt = c->nt;
+  value = an_unparen(nt, value);
+  if (value < 0 || depth > 64) return 0;
+  if (seen[value]) return 1;
+  seen[value] = 1;
+  NodeKind kind = nt_kind(nt, value);
+  if (kind == NK_LocalVariableReadNode) {
+    const char *name = nt_str(nt, value, "name");
+    Scope *scope = comp_scope_of(c, value);
+    LocalVar *local = scope && name ? scope_local(scope, name) : NULL;
+    if (!local || local->type != TY_STRBUF || !local->str_shared || local->is_block_param || local->is_cell) return 0;
+    int found = 0;
+    for (int w = comp_lvw_first_sc(c, (int)(scope - c->scopes), name); w >= 0; w = comp_lvw_next_sc(c, w)) {
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode) return 0;
+      found = 1;
+      if (!ffi_borrow_identity_walk(c, nt_ref(nt, w, "value"), seen, depth + 1)) return 0;
+    }
+    if (local->is_param) {
+      int pi = an_param_idx(scope, name), nc = 0;
+      int *calls = strbuf_scope_callers(c, (int)(scope - c->scopes), scope, &nc);
+      for (int i = 0; i < nc; i++) {
+        int arg = pi >= 0 ? arg_layout_param_node(c, scope, calls[i], pi, NULL) : -1;
+        if (!ffi_borrow_identity_walk(c, arg, seen, depth + 1)) { free(calls); return 0; }
+        found = 1;
+      }
+      free(calls);
+    }
+    return found;
+  }
+  if (kind == NK_InstanceVariableReadNode)
+    return ffi_borrow_ivar_identity(c, comp_ivar_owner(c, value), nt_str(nt, value, "name"), seen, depth);
+  if (kind == NK_CallNode) {
+    int owner = -1; char ivar[256];
+    if (an_reader_ivar_of(c, value, &owner, ivar, sizeof ivar))
+      return ffi_borrow_ivar_identity(c, owner, ivar, seen, depth);
+  }
+  return ffi_borrow_fresh_value(c, value, 0);
+}
+int ffi_mutable_string_identity(Compiler *c, int value) {
+  if (an_ruby_runs_unseen(c)) return 0;
+  /* Reflective writes have no bounded producer graph in this slice. */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, call) {
+    const char *name = nt_str(c->nt, call, "name");
+    if (sp_streq(name, "instance_variable_set") || sp_streq(name, "eval") ||
+        sp_streq(name, "class_eval") || sp_streq(name, "module_eval") ||
+        sp_streq(name, "send") || sp_streq(name, "public_send") || sp_streq(name, "__send__")) return 0;
+  }
+  unsigned char *seen = calloc((size_t)c->nt->count, 1);
+
+  if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int ok = ffi_borrow_identity_walk(c, value, seen, 0);
+  free(seen);
+  return ok;
+}
+
 /* Is local p of method m a parameter that may take a borrowed buffer, as
    far as its own slot goes? */
 static int param_borrow_slot_ok(const LocalVar *p) {
@@ -48630,7 +48865,8 @@ static void an_phase_storage(Compiler *c) {
   for (int round = 0;; round++) {
     for (;;) {
       handle_arg_tab_init(c, &hat);
-      int ch = promote_params_stored_in_shared_ivars(c, &hat);
+      int ch = demand_ffi_mutable_strings(c);
+      ch |= promote_params_stored_in_shared_ivars(c, &hat);
       if (convert_byref_handle_params(c, &hat)) ch = 1;
       if (lift_poly_alias_reads(c, &hat)) ch = 1;
       if (promote_local_alias_pairs(c)) ch = 1;

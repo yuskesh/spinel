@@ -1787,7 +1787,13 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             root_strs = (ai < fixed_argc ? ffi_spec_is_str(c->ffi_funcs[fi].args[ai])
                                          : is_vararg && comp_ntype(c, argv[ai]) == TY_STRING) &&
                         ffi_str_arg_collectable(c, argv[ai]);
-        int use_temps = blocking || iob_temps || nstr_args >= 2 || root_strs;
+        int mutable_strs = 0;
+        for (int ai = 0; ai < fixed_argc && ai < argc; ai++)
+          mutable_strs |= sp_streq(c->ffi_funcs[fi].args[ai], "str_inout");
+        if (mutable_strs && (g_uses_threads || takes_cb || c->n_ffi_callbacks || c->ffi_funcs[fi].blocking))
+          unsupported(c, id, "str_inout requires a synchronous, non-threaded call without FFI callbacks");
+        int use_temps = blocking || iob_temps || nstr_args >= 2 || root_strs || mutable_strs;
+
         /* So can a sibling argument that allocates, with no Ruby code in
            sight: a String made where it stands in the call (a handle's copy,
            a call's answer) is held by the C argument list alone. Each such
@@ -1797,6 +1803,8 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         int hold_strs = !root_strs && ffi_str_arg_beside_alloc(c, fi, argc, argv, fixed_argc, is_vararg);
         Buf pre_buf; memset(&pre_buf, 0, sizeof pre_buf);
         Buf base_buf; memset(&base_buf, 0, sizeof base_buf);
+        Buf borrow_prepare; memset(&borrow_prepare, 0, sizeof borrow_prepare);
+        Buf borrow_publish; memset(&borrow_publish, 0, sizeof borrow_publish);
         /* blocking: the buffers are locked across the call (hold after every
            base is taken, since taking one may raise) and released after it */
         Buf hold_buf; memset(&hold_buf, 0, sizeof hold_buf);
@@ -1824,7 +1832,27 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (cbidx >= 0) { emit_ffi_callback_arg(c, cbidx, argv[ai], &call_buf); continue; }
           size_t arg_at = call_buf.len;   /* the converted argument, for the temp form */
           const FfiSpecInfo *asi = ffi_spec_lookup(spec);
+          if (sp_streq(spec, "str_inout")) {
+            Buf handle; memset(&handle, 0, sizeof handle);
+            int hview = view_push_repr(c, argv[ai], VR_STRBUF_BOX, 1);
+            int original = ffi_mutable_string_identity(c, argv[ai]) &&
+                           strbuf_slot_text(c, argv[ai], &handle);
+            view_pop(c, hview);
+            if (!original) {
+              free(handle.p);
+              unsupported(c, argv[ai], "str_inout cannot preserve original String identity through this producer (ordinary method returns and unproved aliases are refused)");
+              return 1;
+            }
+            buf_printf(&pre_buf, "sp_String *_bs%d_%d = %s; SP_GC_ROOT(_bs%d_%d); ", tb, ai, handle.p, tb, ai);
+            free(handle.p);
+            /* Every handle is prepared before any interior address is taken. */
+            buf_printf(&borrow_prepare, "sp_String_ffi_prepare(_bs%d_%d); ", tb, ai);
+            buf_printf(&borrow_publish, "sp_String_ffi_publish(_bs%d_%d); ", tb, ai);
+            buf_printf(&call_buf, "sp_String_cstr_mut(_bs%d_%d)", tb, ai);
+            continue;
+          }
           int ptr_slot = asi && sp_streq(asi->c_type, "void *");
+
           int iob_writing = !sp_streq(spec, "buffer_in");
           if (ptr_slot && iob_cls >= 0 && (at == ty_object(iob_cls) || (at == TY_POLY && use_temps))) {
             if (at == TY_POLY) {
@@ -1930,7 +1958,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (use_temps) {
             /* move the converted argument out to a temp ahead of the call */
             ffi_arg_to_temp(&call_buf, arg_at, &pre_buf, ffi_c_type(spec), tb, ai,
-                            hold || (root_strs && ffi_spec_is_str(spec) && ffi_str_arg_collectable(c, argv[ai])));
+                            hold || ((root_strs || mutable_strs) && ffi_spec_is_str(spec) && ffi_str_arg_collectable(c, argv[ai])));
           }
           else if (hold) ffi_arg_hold(&call_buf, arg_at, &pre_buf, tb, ai);
         }
@@ -1966,7 +1994,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             }
             /* behind the fixed arguments' temps, in order, when a String
                among them is rooted */
-            if (root_strs)
+            if (root_strs || mutable_strs)
               ffi_arg_to_temp(&call_buf, arg_at, &pre_buf,
                               at == TY_STRING ? "const char *" : at == TY_FLOAT ? "double" : "sp_int",
                               tb, ai, at == TY_STRING && ffi_str_arg_collectable(c, argv[ai]));
@@ -1991,14 +2019,16 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         else if (use_temps || hold_strs) {
           Buf w; memset(&w, 0, sizeof w);
           if (is_void_ret)
-            buf_printf(&w, "({ %s%s%s; })", pre_buf.p ? pre_buf.p : "", base_buf.p ? base_buf.p : "", call_buf.p);
+            buf_printf(&w, "({ %s%s%s%s; %s})", pre_buf.p ? pre_buf.p : "", borrow_prepare.p ? borrow_prepare.p : "", base_buf.p ? base_buf.p : "", call_buf.p, borrow_publish.p ? borrow_publish.p : "");
           else
-            buf_printf(&w, "({ %s%s%s _b%d_r = %s; _b%d_r; })", pre_buf.p ? pre_buf.p : "",
-                       base_buf.p ? base_buf.p : "", ffi_c_type(ret_spec), tb, call_buf.p, tb);
+            buf_printf(&w, "({ %s%s%s%s _b%d_r = %s; %s_b%d_r; })", pre_buf.p ? pre_buf.p : "",
+                       borrow_prepare.p ? borrow_prepare.p : "", base_buf.p ? base_buf.p : "", ffi_c_type(ret_spec), tb, call_buf.p, borrow_publish.p ? borrow_publish.p : "", tb);
           free(call_buf.p); call_buf = w;
         }
         free(pre_buf.p);
         free(base_buf.p);
+        free(borrow_prepare.p);
+        free(borrow_publish.p);
         free(hold_buf.p);
         free(rel_buf.p);
         if (is_void_ret) {

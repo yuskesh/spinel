@@ -4780,6 +4780,16 @@ void register_ffi_decls(Compiler *c) {
       int an = 0;
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
 
+      if (sp_streq(dname, "native_func") || sp_streq(dname, "native_method") || sp_streq(dname, "native_new")) {
+        int ctor = sp_streq(dname, "native_new"), ai = ctor ? 0 : 1;
+        if (!ctor && an > 2 && sp_streq(ffi_arg_str(nt, args[2]), "str_inout"))
+          ffi_decl_error(c, s, "str_inout is only supported for ffi_func arguments, not native bindings");
+        int ns = 0; const int *specs = an > ai ? nt_arr(nt, args[ai], "elements", &ns) : NULL;
+        for (int i = 0; i < ns; i++)
+          if (sp_streq(ffi_arg_str(nt, specs[i]), "str_inout"))
+            ffi_decl_error(c, s, "str_inout is only supported for ffi_func arguments, not native bindings");
+      }
+
       /* native_func :name, [arg_specs], ret_spec, "c_symbol" (Path B).
          Specs are the spinel type language (any/string/int/float/bool). */
       if (sp_streq(dname, "native_func")) {
@@ -5040,6 +5050,8 @@ void register_ffi_decls(Compiler *c) {
           continue;
         }
         const char *csym = a_csym >= 0 ? ffi_arg_str(nt, a_csym) : NULL;
+        if (sp_streq(ret_spec, "str_inout"))
+          ffi_decl_error(c, s, "str_inout is an argument-only borrow spec");
         /* grow array */
         c->ffi_funcs = ffi_grow(c->ffi_funcs, c->n_ffi_funcs, &c->c_ffi_funcs, 16, sizeof(FfiFunc));
         int fi = c->n_ffi_funcs++;
@@ -5115,7 +5127,13 @@ void register_ffi_decls(Compiler *c) {
           const char *spec = ffi_arg_str(nt, elems[ei]);
           arg_specs[ei] = strdup(spec ? spec : "");
         }
+        if (sp_streq(ret_spec, "str_inout"))
+          ffi_decl_error(c, s, "str_inout is only supported for ffi_func arguments, not callbacks");
+        for (int ei = 0; ei < en; ei++)
+          if (sp_streq(arg_specs[ei], "str_inout"))
+            ffi_decl_error(c, s, "str_inout is only supported for ffi_func arguments, not callbacks");
         arg_specs[en] = NULL;  /* the allocated sentinel slot */
+
         c->ffi_callbacks = ffi_grow(c->ffi_callbacks, c->n_ffi_callbacks, &c->c_ffi_callbacks, 8, sizeof(FfiCallback));
         int ci = c->n_ffi_callbacks++;
         c->ffi_callbacks[ci].mod       = strdup(mname);
@@ -5148,6 +5166,8 @@ void register_ffi_decls(Compiler *c) {
           /* a member's spec is an FFI type (ffi_spec.c); any other word had
              no C type and the member was emitted as `void` (#9092: :string?,
              the native DSL's spelling, which no ffi_struct member has) */
+          if (sp_streq(fs, "str_inout"))
+            ffi_decl_error(c, pair[1], "str_inout is an argument-only borrow spec, not a struct field");
           TyKind fty = ffi_spec_to_ty(fs);
           if (fty == TY_UNKNOWN || fty == TY_NIL) {
             char msg[256];
@@ -5191,7 +5211,24 @@ void register_ffi_decls(Compiler *c) {
       }
     }
   }
+  int has_mutable_borrow = 0;
+  for (int fi = 0; fi < c->n_ffi_funcs; fi++)
+    for (int ai = 0; ai < c->ffi_funcs[fi].nargs; ai++)
+      has_mutable_borrow |= sp_streq(c->ffi_funcs[fi].args[ai], "str_inout");
+  if (has_mutable_borrow) NT_FOREACH_KIND(nt, NK_CallNode, call) {
+    const char *name = nt_str(nt, call, "name");
+    if (sp_streq(name, "trap"))
+      ffi_decl_error(c, call, "str_inout requires synchronous execution without trap handlers");
+    if (sp_streq(name, "instance_variable_set") || sp_streq(name, "eval") ||
+        sp_streq(name, "class_eval") || sp_streq(name, "module_eval") ||
+        sp_streq(name, "send") || sp_streq(name, "public_send") || sp_streq(name, "__send__")) {
+      char msg[256];
+      snprintf(msg, sizeof msg, "str_inout does not admit reflective operation %s anywhere in the program", name);
+      ffi_decl_error(c, call, msg);
+    }
+  }
   bare_native_func_calls(c);
+
 }
 
 /* Resolve Module.<method> against ffi_struct declarations. See compiler.h. */
