@@ -15572,6 +15572,7 @@ static void sp_exc_print_uncaught(const char *cls, const char *msg, sp_StrArray 
 }
 #ifdef SPINEL_EXT_HOST
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg);
+SP_NORETURN SP_COLD void sp_abort_uncaught(const char *cls, const char *msg);
 #else
 /* The C stack ran out. Unlike the handler-stack exhaustion below, this one
    CAN be rescued: the frames that filled the stack are about to be unwound,
@@ -15634,6 +15635,55 @@ static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
 #else
 # define SP_EXC_UNWINDS 1
 #endif
+/* The end of an uncaught exception: report it and end the program. Shared by
+   sp_raise_cls, once no frame catches it, and sp_abort_uncaught. `msg` must
+   already be laundered and rooted, as both callers do on entry. */
+SP_NORETURN SP_COLD static void sp_exc_end_uncaught(const char *cls, const char *msg) {
+  /* CRuby's report prints what #message answers, so an exception class that
+     defines its own #message (or #to_s, which the default #message calls)
+     prints that text rather than the one stored at #new. A `raise Class`
+     carries no object, so one is made to ask. Ask before the hooks run: once
+     they allocate, nothing roots the pending object. */
+  if (sp_user_exc_message_fn) {
+    sp_Exception *e = sp_pending_exc_obj ? (sp_Exception *)sp_pending_exc_obj : sp_exc_new(cls, msg);
+    SP_GC_ROOT(e);
+    const char *own = sp_user_exc_message_fn(e);
+    if (own) { msg = sp_msg_heapify(own); SP_GC_ROOT_STR(msg); }
+  }
+  /* An uncaught exception prints its text AFTER the hooks have run, which is
+     the order CRuby prints them in, and the status is theirs to change (a hook
+     that calls `exit 5` makes an uncaught raise exit 5, still printing the
+     error). `msg` survives the hooks because the caller laundered it onto the
+     string heap and rooted it, and that root is never popped; `cls` is a
+     codegen-emitted literal the collector never touches. The backtrace
+     substrate is not so lucky: a hook that raises overwrites it, so a debug
+     build keeps its own copy across the drain. */
+#if SP_BT_AVAILABLE
+  /* The object may have kept its original trace across a bare raise inside
+     ensure. Hooks clear the pending object, so root its trace before draining. */
+  sp_StrArray *_bt_obj = (sp_bt_enabled && sp_pending_exc_obj)
+    ? ((sp_Exception *)sp_pending_exc_obj)->backtrace : NULL;
+  if (_bt_obj) _sp_gc_root_push((void **)&_bt_obj);
+  void *_bt_keep[256];
+  int _bt_keep_n = (sp_bt_enabled && sp_bt_n > 0) ? sp_bt_n : 0;
+  if (_bt_keep_n > 0) memcpy(_bt_keep, sp_bt_buf, sizeof(void *) * (size_t)_bt_keep_n);
+#endif
+  { int status = sp_at_exit_run(1);
+#if SP_BT_AVAILABLE
+    if (_bt_keep_n > 0) { memcpy(sp_bt_buf, _bt_keep, sizeof(void *) * (size_t)_bt_keep_n); sp_bt_n = _bt_keep_n; }
+    sp_exc_print_uncaught(cls, msg, _bt_obj);
+#else
+    sp_exc_print_uncaught(cls, msg, NULL);
+#endif
+    sp_exc_resignal(cls, msg);
+#ifdef SP_EXC_ABORT
+    (void)status;
+    sp_exc_abort_trap();   /* --exceptions=abort: the host's failure (sp_setjmp.h) */
+#else
+    exit(status);
+#endif
+  }
+}
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* a raise leaves any region a signal may be raised in at once (#9222):
      what follows allocates */
@@ -15739,50 +15789,32 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* A killed main fiber (Fiber#kill, lib/sp_fiber.c) ends the program with
      status 1 after the at_exit hooks, as CRuby does. */
   if (strcmp(cls, "FiberKillSignal") == 0) exit(sp_at_exit_run(1));
-  /* CRuby's report prints what #message answers, so an exception class that
-     defines its own #message (or #to_s, which the default #message calls)
-     prints that text rather than the one stored at #new. A `raise Class`
-     carries no object, so one is made to ask. Ask before the hooks run: once
-     they allocate, nothing roots the pending object. */
-  if (sp_user_exc_message_fn) {
-    sp_Exception *e = sp_pending_exc_obj ? (sp_Exception *)sp_pending_exc_obj : sp_exc_new(cls, msg);
-    SP_GC_ROOT(e);
-    const char *own = sp_user_exc_message_fn(e);
-    if (own) { msg = sp_msg_heapify(own); SP_GC_ROOT_STR(msg); }
-  }
-  /* An uncaught exception prints its text AFTER the hooks have run, which is
-     the order CRuby prints them in, and the status is theirs to change (a hook
-     that calls `exit 5` makes an uncaught raise exit 5, still printing the
-     error). `msg` survives the hooks because it was laundered onto the string
-     heap and rooted at the top of this function and that root is never popped;
-     `cls` is a codegen-emitted literal the collector never touches. The
-     backtrace substrate is not so lucky: a hook that raises overwrites it, so
-     a debug build keeps its own copy across the drain. */
+  sp_exc_end_uncaught(cls, msg);
+}
+/* An uncaught exception reported from outside any frame that could catch it
+   (decision 0015 of Spinel Extended). A native core object has no setjmp
+   stack and no runtime to raise into, so an arithmetic failure in it ends the
+   program the way --exceptions=abort ends one: the at_exit hooks run, the
+   report is the one an uncaught raise of `cls` prints, and the status is the
+   one it exits with. The rescue frames armed around the call are not
+   consulted and the ensure clauses between do not run. External, unlike the
+   rest of this path, because the hosted shim that calls it is compiled as its
+   own translation unit. */
+SP_NORETURN SP_COLD void sp_abort_uncaught(const char *cls, const char *msg) {
+  sp_sig_async_ok = 0;
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg);
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_exc_msg_plain(msg);
+  SP_GC_ROOT_STR(msg);
 #if SP_BT_AVAILABLE
-  /* The object may have kept its original trace across a bare raise inside
-     ensure. Hooks clear the pending object, so root its trace before draining. */
-  sp_StrArray *_bt_obj = (sp_bt_enabled && sp_pending_exc_obj)
-    ? ((sp_Exception *)sp_pending_exc_obj)->backtrace : NULL;
-  if (_bt_obj) _sp_gc_root_push((void **)&_bt_obj);
-  void *_bt_keep[256];
-  int _bt_keep_n = (sp_bt_enabled && sp_bt_n > 0) ? sp_bt_n : 0;
-  if (_bt_keep_n > 0) memcpy(_bt_keep, sp_bt_buf, sizeof(void *) * (size_t)_bt_keep_n);
+  if (sp_bt_enabled) sp_bt_n = backtrace(sp_bt_buf, 256);
 #endif
-  { int status = sp_at_exit_run(1);
-#if SP_BT_AVAILABLE
-    if (_bt_keep_n > 0) { memcpy(sp_bt_buf, _bt_keep, sizeof(void *) * (size_t)_bt_keep_n); sp_bt_n = _bt_keep_n; }
-    sp_exc_print_uncaught(cls, msg, _bt_obj);
-#else
-    sp_exc_print_uncaught(cls, msg, NULL);
-#endif
-    sp_exc_resignal(cls, msg);
-#ifdef SP_EXC_ABORT
-    (void)status;
-    sp_exc_abort_trap();   /* --exceptions=abort: the host's failure (sp_setjmp.h) */
-#else
-    exit(status);
-#endif
-  } }
+  sp_bt_keep = 0;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  /* nothing is being raised: an object left pending by the program is not
+     this exception and must not supply its message or trace */
+  sp_pending_exc_obj = NULL;
+  sp_exc_end_uncaught(cls, msg);
+}
 #endif
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
