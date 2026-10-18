@@ -989,6 +989,13 @@ extern int g_uses_traps;
    (sp_sig_run_pending), one with no thread raises the default SIGINT or
    SIGTERM there (sp_sig_poll_raise, which never returns) */
 static inline int sig_polls(void) { return g_uses_traps || !g_uses_threads; }
+/* --no-loop-sig-poll (SPINEL_NO_LOOP_SIG_POLL): loops carry no signal poll,
+   neither at the back-edge nor in the condition. Opt-in, for a build that
+   must not reach sp_sig_poll_raise from a loop; a signal then waits for the
+   next safe point outside the loop (a method on a call cycle, a runtime
+   wait). The generated C says so with #define SP_NO_LOOP_SIG_POLL. */
+int no_loop_sig_poll(void);
+static inline int loop_sig_polls(void) { return sig_polls() && !no_loop_sig_poll(); }
 static inline const char *sig_poll_stmt(void) {
   return g_uses_traps ? "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_run_pending()"
                       : "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_sig_pending_flag, __ATOMIC_RELAXED))) sp_sig_poll_raise()";
