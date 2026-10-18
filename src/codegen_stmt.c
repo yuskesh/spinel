@@ -12195,7 +12195,7 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
   g_pre = sv_pre; g_indent = sv_ind;
   /* a proved loop polls ahead of its test (hc_bounded_index); a condition with
      a prelude has no single test to put them ahead of, so it keeps its checks */
-  int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers || sig_polls());
+  int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers || loop_sig_polls());
   if (proved && cpre.p && cpre.p[0]) { pr->bi = NULL; proved = 0; }
   if (proved) {
     Buf hcc; memset(&hcc, 0, sizeof hcc);
@@ -12224,7 +12224,7 @@ static void emit_while_loop(Compiler *c, int id, Buf *b, int indent, int is_unti
       if (g_uses_finalizers)
         buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s; ", hc_mark());
       /* (a counted loop another loop of its function encloses keeps none) */
-      if (sig_polls() && g_poll_loop_nest == 0 && !poll_in_pure(c, id))
+      if (loop_sig_polls() && g_poll_loop_nest == 0 && !poll_in_pure(c, id))
         buf_printf(b, "%s%s; ", sig_poll_stmt(), hc_mark());
     }
     if (is_until) buf_puts(b, "!(");

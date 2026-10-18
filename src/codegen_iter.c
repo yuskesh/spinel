@@ -4479,7 +4479,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      the cache reloads after one runs, as after a safepoint. */
   if (polls_here && g_uses_finalizers) { emit_indent(b, indent); buf_printf(b, "if (SP_UNLIKELY(SP_ATOMIC_LOAD(&sp_fin_pending_flag, __ATOMIC_RELAXED))) sp_fin_run_pending()%s;\n", hc_mark()); }
   /* and for a delivered Signal.trap, Ruby code as a finalizer is */
-  if (polls_here && sig_polls() && (poll_uncounted || poll_nest == 1) && !poll_in_pure(c, body)) {
+  if (polls_here && loop_sig_polls() && (poll_uncounted || poll_nest == 1) && !poll_in_pure(c, body)) {
     emit_indent(b, indent); buf_printf(b, "%s%s;\n", sig_poll_stmt(), hc_mark());
   }
   emit_stmts(c, body, b, indent);

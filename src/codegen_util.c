@@ -35,6 +35,11 @@ int collect_mode(void) { return 1; }
    NotImplementedError (naming the refusal) where it stands, and a method
    refused outside its statements to one that raises when it is called; the
    build goes on. */
+int no_loop_sig_poll(void) {
+  static int v = -1;
+  if (v < 0) { const char *e = getenv("SPINEL_NO_LOOP_SIG_POLL"); v = e && *e ? 1 : 0; }
+  return v;
+}
 int defer_refusals(void) {
   static int v = -1;
   if (v < 0) { const char *e = getenv("SPINEL_DEFER_REFUSALS"); v = e && *e ? 1 : 0; }
