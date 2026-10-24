@@ -17,9 +17,14 @@
  *   spinel -e 'puts 42'         compile inline source (default name: a)
  *   spinel -E app.rb a b c      compile to a temp dir, run, ARGV=[a,b,c]
  */
+/* M1: opt-in generic MLIR transport; no MLIR dependency. */
+extern int sp_emit_mlir_enabled;
+extern const char *sp_emit_mlir_overflow;
+extern const char *sp_emit_mlir_path;
 #include "node_table.h"
 #include "value_pos.h"
 #include "spinel_rev.h"
+extern NodeTable *sp_emit_mlir_pristine;
 #include "codegen.h"
 #include "analyze.h"
 #include "repr.h"
@@ -38,6 +43,7 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include "timing.h"
+#include "emit_mlir_snapshot.inc"
 
 extern int g_no_root_elision;
 extern int g_no_root_frame;
@@ -743,6 +749,12 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--check-bop-arity")) return builtin_ops_arity_check() ? 1 : 0;
     else if (sp_streq(a, "--dump-traits"))  { g_dump_traits = 1; i++; }
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
+else if (!strncmp(a, "--emit-mlir=", 12) && a[12]) {
+  sp_emit_mlir_enabled = 1; sp_emit_mlir_path = a+12; i++;
+}
+else if (sp_streq(a, "--emit-mlir") || sp_streq(a, "--emit-mlir=")) {
+  fprintf(stderr, "spinel: --emit-mlir=<path> requires a nonempty path\n"); return 2;
+}
     else if (table_mode_of(a))             { dump_ast = table_mode_of(a); i++; }
     else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
     /* The C compiler is half of what a spinel build is, so name it too: a bug
@@ -1060,6 +1072,14 @@ int main(int argc, char **argv) {
 #if defined(__i386__)
   else target_i386 = 1;
 #endif
+if (sp_emit_mlir_enabled) {
+  if (dump_ast || emit_types || emit_rbs || emit_symbol_map || run_mode || stdout_mode || c_only || output) {
+    fprintf(stderr, "spinel: --emit-mlir=<path> is a standalone transport mode\n"); return 2;
+  }
+  setenv("SPINEL_LINE_MAP", "1", 1);
+  setenv("SPINEL_MLIR_POSITIONS", "1", 1);
+  sp_emit_mlir_overflow = int_overflow;
+}
   double tm_front = sp_timing_now();
   NodeTable *nt = sp_parse_file(source, argv[0]);
   if (eval_path[0]) remove(eval_path);
@@ -1071,6 +1091,7 @@ int main(int argc, char **argv) {
   }
 
   if (dump_ast) { int rc = run_table_mode(nt, dump_ast); nt_free(nt); if (seed_path[0]) remove(seed_path); return rc; }
+if (sp_emit_mlir_enabled) sp_emit_mlir_pristine = sp_emit_mlir_snapshot(nt);
   sp_timing_end(tm_front, "frontend", "");
 
   /* the CRuby shim's feature name (Init_<feature>, the require name) derives
@@ -1087,6 +1108,9 @@ int main(int argc, char **argv) {
     ext_feat[fl] = 0;
     if (fl) g_ext_feature = ext_feat;
   }
+if (sp_emit_mlir_enabled && !sp_emit_mlir_pristine) {
+  fprintf(stderr, "spinel: MLIR pristine snapshot failed\n"); nt_free(nt); return 1;
+}
   double tm_cg = sp_timing_now();
   char *csrc = codegen_program(nt);
   sp_timing_end(tm_cg, "codegen_program", "");
@@ -1102,6 +1126,10 @@ int main(int argc, char **argv) {
   if (seed_path[0]) remove(seed_path);
   if (!csrc) { fprintf(stderr, "spinel: codegen failed\n"); return 1; }
 
+if (sp_emit_mlir_enabled) {
+  free(csrc); nt_free(sp_emit_mlir_pristine); sp_emit_mlir_pristine = NULL;
+  return 0;
+}
   /* Emit modes already wrote their file; codegen returned empty C, unless
      --emit-types was asked for the C on stdout as well. */
   if (emit_rbs || emit_types || emit_symbol_map) {
