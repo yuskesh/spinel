@@ -18,14 +18,14 @@
  *   spinel -E app.rb a b c      compile to a temp dir, run, ARGV=[a,b,c]
  */
 /* M1: opt-in generic MLIR transport; no MLIR dependency. */
-const char *sp_analysis_root_spec = 0;
-int sp_emit_mlir_enabled = 0;
-const char *sp_emit_mlir_overflow = "raise";
-const char *sp_emit_mlir_path = 0;
+extern const char *sp_analysis_root_spec;
+extern int sp_emit_mlir_enabled;
+extern const char *sp_emit_mlir_overflow;
+extern const char *sp_emit_mlir_path;
 #include "node_table.h"
 #include "value_pos.h"
 #include "spinel_rev.h"
-NodeTable *sp_emit_mlir_pristine = NULL;
+extern NodeTable *sp_emit_mlir_pristine;
 #include "analysis_root.h"
 #include "codegen.h"
 #include "analyze.h"

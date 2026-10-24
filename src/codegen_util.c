@@ -1,5 +1,6 @@
 extern int sp_emit_mlir_enabled;
 #include "codegen_internal.h"
+#include "emit_mlir_globals.inc"
 #include "share.h"
 #include "call_plan.h"
 #include "repr.h"
