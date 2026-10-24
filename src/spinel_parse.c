@@ -8923,7 +8923,9 @@ const char *g_opt_emit_types, *g_opt_emit_rbs, *g_opt_emit_symbol_map, *g_opt_pr
 static void sp_parse_positions_from_opts(void) {
   int on = g_opt_debug || g_opt_line_map || g_opt_positions;
   g_emit_line = on ? 1 : 0;
+if (getenv("SPINEL_MLIR_POSITIONS")) g_emit_line = on = 1;
   g_emit_end = (on && (g_opt_emit_types || g_opt_warn_widen)) ? 1 : 0;
+if (getenv("SPINEL_MLIR_POSITIONS")) g_emit_end = 1;
 }
 
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {

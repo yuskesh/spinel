@@ -23689,7 +23689,11 @@ static void emit_toplevel_fns(Compiler *c, Buf *body) {
   ext_emit_method_tables(c, body);
 }
 
+#include "emit_mlir.inc"
 char *codegen_program(const NodeTable *nt) {
+if (sp_emit_mlir_enabled && atexit(mlir_on_exit)) {
+  fprintf(stderr, "spinel: MLIR exit handler registration failed\n"); exit(1);
+}
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
   Compiler *c = comp_new(nt);
@@ -24643,6 +24647,10 @@ char *codegen_program(const NodeTable *nt) {
   /* Every refusal was reported as its unit was abandoned; the run fails here,
      once, with nothing written (SP_COLLECT_ERRORS emits the rest regardless,
      for a reduction). */
+if (sp_emit_mlir_enabled) {
+  int mlir_rc = mlir_emit(c);
+  if (mlir_rc || g_ndiags) { comp_free(c); free(b.p); exit(1); }
+}
   if (types_out) {
     char *json = build_types_json(c);
     write_text_file(types_out, json);
