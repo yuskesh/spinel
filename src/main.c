@@ -18,6 +18,7 @@
  *   spinel -E app.rb a b c      compile to a temp dir, run, ARGV=[a,b,c]
  */
 /* M1: opt-in generic MLIR transport; no MLIR dependency. */
+extern const char *sp_analysis_root_spec;
 extern int sp_emit_mlir_enabled;
 extern const char *sp_emit_mlir_overflow;
 extern const char *sp_emit_mlir_path;
@@ -25,6 +26,7 @@ extern const char *sp_emit_mlir_path;
 #include "value_pos.h"
 #include "spinel_rev.h"
 extern NodeTable *sp_emit_mlir_pristine;
+#include "analysis_root.h"
 #include "codegen.h"
 #include "analyze.h"
 #include "repr.h"
@@ -755,6 +757,13 @@ else if (!strncmp(a, "--emit-mlir=", 12) && a[12]) {
 else if (sp_streq(a, "--emit-mlir") || sp_streq(a, "--emit-mlir=")) {
   fprintf(stderr, "spinel: --emit-mlir=<path> requires a nonempty path\n"); return 2;
 }
+else if (!strncmp(a, "--analysis-root=", 16) && a[16]) {
+  if (!facts_queue_root_request(a+16)) return 2;
+  sp_analysis_root_spec=a+16; i++;
+}
+else if (sp_streq(a,"--analysis-root") || sp_streq(a,"--analysis-root=")) {
+  fprintf(stderr,"spinel: analysis root requires METHOD:TYPE[,TYPE...]\n"); return 2;
+}
     else if (table_mode_of(a))             { dump_ast = table_mode_of(a); i++; }
     else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
     /* The C compiler is half of what a spinel build is, so name it too: a bug
@@ -1079,6 +1088,9 @@ if (sp_emit_mlir_enabled) {
   setenv("SPINEL_LINE_MAP", "1", 1);
   setenv("SPINEL_MLIR_POSITIONS", "1", 1);
   sp_emit_mlir_overflow = int_overflow;
+}
+if (sp_analysis_root_spec && (!sp_emit_mlir_enabled || !facts_parse_root_request(sp_analysis_root_spec))) {
+  fprintf(stderr,"spinel: analysis root requires emit-mlir and valid METHOD:TYPE[,TYPE...]\n"); return 2;
 }
   double tm_front = sp_timing_now();
   NodeTable *nt = sp_parse_file(source, argv[0]);

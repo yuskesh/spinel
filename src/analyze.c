@@ -1,6 +1,7 @@
 #include "cext_bridge.h"
 #include <stdint.h>
 #include <limits.h>
+#include "analysis_root.h"
 #include "analyze_internal.h"
 #include "builtin_ops.h"
 #include "repr.h"
@@ -566,6 +567,7 @@ void compute_reachable(Compiler *c, int typed) {
     sc->reachable = 0;
     int is_root = (s == 0 || !sc->name || sp_streq(sc->name, "initialize") ||
                    method_name_implicitly_invoked(sc->name) || sc->is_ext_entry);
+    if (facts_scope_is_root(s)) is_root=1;
     if (is_root) { sc->reachable = 1; queue[qtail++] = s; }
   }
 
@@ -1036,6 +1038,7 @@ void compute_instantiated(Compiler *c, int early) {
       }
     }
   }
+  if (sp_analysis_root_spec) facts_root_census(c);
   if (disable)
     for (int k = 0; k < c->nclasses; k++) {
       /* main's ivars live on the Toplevel pseudo-class, which is never built */
@@ -6279,6 +6282,7 @@ static void apply_inline_rbs(Compiler *c) {
   free(sown);
 }
 
+#include "analysis_root.inc"
 static void apply_rbs_seeds(Compiler *c, const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) return;
@@ -45893,6 +45897,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
     if (g_inline_rbs_bad) exit(1);
   }
 
+  if (sp_analysis_root_spec) facts_seed_root(c);
   /* Scope shape (count, class_id, name, is_cmethod) is fixed from here on, so
      the method-lookup index can be used; it is rebuilt if the scope count ever
      grows. This is where comp_method_in_class / comp_cmethod_in_class are
