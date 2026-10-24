@@ -1,4 +1,6 @@
+extern int sp_emit_mlir_enabled;
 #include "codegen_internal.h"
+#include "emit_mlir_globals.inc"
 #include "share.h"
 #include "call_plan.h"
 #include "repr.h"
@@ -59,6 +61,7 @@ int g_ndecide_cap = 0;
 int g_nd_call_id = -1;
 void nd_stamp(int id, int kind) {
   static int on = -1;
+  if (sp_emit_mlir_enabled) on = 1;
   if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
   if (!on || id < 0) return;
   if (id >= g_ndecide_cap) {
@@ -411,6 +414,7 @@ void ucall_report(Compiler *c) {
 void nd_callee(Compiler *c, int id, int mi, int owner_ci, int add) {
   if (g_plan_check) ucall_observe(c, id, mi, owner_ci, add);
   static int on = -1;
+  if (sp_emit_mlir_enabled) on = 1;
   if (on < 0) { const char *et = getenv("SPINEL_EMIT_TYPES"); on = (et && *et) ? 1 : 0; }
   if (!on || id < 0 || mi < 0 || mi >= c->nscopes) return;
   Scope *m = &c->scopes[mi];

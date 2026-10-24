@@ -5409,9 +5409,11 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
     const char *et = getenv("SPINEL_EMIT_TYPES");
     const char *ww = getenv("SPINEL_WARN_WIDEN");
     const char *nc = getenv("SPINEL_NEW_CLAIMS");
+if (getenv("SPINEL_MLIR_POSITIONS")) g_emit_line = on = 1;
     g_emit_end = (on && ((et && *et) || (ww && *ww) || (nc && *nc))) ? 1 : 0;
   }
 
+if (getenv("SPINEL_MLIR_POSITIONS")) g_emit_end = 1;
   /* Resolve require_relative and plain require */
   /* Register the entry file itself as already-included, so a circular
      require_relative pointing back at it resolves to the dedup stub
