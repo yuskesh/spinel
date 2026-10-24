@@ -174,6 +174,7 @@ static pm_node_t **g_stmt_next, **g_stmt_end;
 static const uint8_t *g_owner;
 static int sp_line_map_n = 0;
 static char **sp_file_table;   /* id -> path; defined with the map builder below */
+#include "source_map_pin_decl.inc"
 
 /* The file a node was written in when that is a required file, or NULL for
    the entry script (file id 0) and when the map could not be built. */
@@ -973,6 +974,7 @@ static int flatten_node(pm_node_t *node) {
       fid = sp_line_file[bl];
       if (sp_disp_line[bl] > 0) { orig = sp_disp_line[bl]; fid = sp_disp_file[bl]; }
     }
+    if (sp_m3_active()) sp_m3_fix_start(id, bl, &orig, &fid);
     emit_int(id, "node_line", (long long)orig);
     emit_int(id, "node_file", (long long)fid);
     /* Column is concatenation-stable (require splicing is line-based), so the
@@ -990,6 +992,7 @@ static int flatten_node(pm_node_t *node) {
         eorig = sp_line_orig[el];
         if (sp_disp_line[el] > 0) eorig = sp_disp_line[el];
       }
+      if (sp_m3_active()) sp_m3_fix_end(id, el, fid, &eorig);
       emit_int(id, "node_end_line", (long long)eorig);
       emit_int(id, "node_end_col", (long long)le.column);
     }
@@ -2908,6 +2911,7 @@ else if (len < 12 || strncmp(line + len - 12, "SPINEL_COND>", 12) != 0) {
   free(stk_dline);
 }
 
+#include "source_map_pin.inc"
 /* Lexically collapse "." and ".." path segments, like File.expand_path,
    without touching the filesystem. require_relative targets are formed as
    `dir + "/" + rel_path` and then have ".rb" appended; a rel_path ending in
@@ -5495,6 +5499,7 @@ else {
   /* the buffer-line -> (file, original line) map, from the buffer Prism
      parses: its marker lines are comments */
   if (g_src_map) sp_build_line_map(source, source_file);
+  if (g_src_map && sp_m3_active()) sp_m3_build(source);
 
   size_t source_len = strlen(source);
   sp_find_builtin_ranges(source);

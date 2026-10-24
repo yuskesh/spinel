@@ -186,6 +186,7 @@ static void mlir_evidence(Buf *b,Compiler *c) {
   }
 }
 #include "analysis_root_emit.inc"
+#include "source_map_pin_emit.inc"
 static int mlir_emit(Compiler *c) {
   mlir_emitted=1; /* Includes writer failure: never publish twice from atexit. */
   Buf b={0}; int ok=1;
@@ -198,6 +199,7 @@ if (sp_analysis_root_spec) { mlir_root_header(&b,c); goto mlir_root_header_done;
   mlir_cstr(&b,sp_emit_mlir_overflow);
   buf_printf(&b,", spinel_facts.refusal_checked = true, spinel_facts.refusal_count = %d : i64} {\n",g_ndiags);
 mlir_root_header_done: ;
+if (!mlir_m3_check()) ok=0;
   if (g_ndiags) for (int i=0;i<g_ndiags;++i) {
     SpDiag *d=&g_diags[i];
     buf_puts(&b,"  \"spinel_facts.diagnostic\"() {severity = \"error\", file = "); mlir_cstr(&b,d->file);
