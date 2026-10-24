@@ -1,3 +1,4 @@
+#include "analysis_root.h"
 /* M1: generic MLIR transport, included after existing metadata helpers. */
 #include <fcntl.h>
 #include <unistd.h>
@@ -184,9 +185,11 @@ static void mlir_evidence(Buf *b,Compiler *c) {
     buf_puts(b,"} : () -> ()\n");
   }
 }
+#include "analysis_root_emit.inc"
 static int mlir_emit(Compiler *c) {
   mlir_emitted=1; /* Includes writer failure: never publish twice from atexit. */
   Buf b={0}; int ok=1;
+if (sp_analysis_root_spec) { mlir_root_header(&b,c); goto mlir_root_header_done; }
   buf_puts(&b,"module attributes {spinel_facts.version = 1 : i64, spinel_facts.producer = \"spinel\", "
     "spinel_facts.producer_revision = \"ad4bb8c4238ddeaa801dc434b84f0b5cfd865af1+M1\", "
     "spinel_facts.profile = \"spinel-codegen-v1\", spinel_facts.status = ");
@@ -194,6 +197,7 @@ static int mlir_emit(Compiler *c) {
   buf_printf(&b,", spinel_facts.integer_bits = %d : i64, spinel_facts.overflow = ",sp_target_int_bits);
   mlir_cstr(&b,sp_emit_mlir_overflow);
   buf_printf(&b,", spinel_facts.refusal_checked = true, spinel_facts.refusal_count = %d : i64} {\n",g_ndiags);
+mlir_root_header_done: ;
   if (g_ndiags) for (int i=0;i<g_ndiags;++i) {
     SpDiag *d=&g_diags[i];
     buf_puts(&b,"  \"spinel_facts.diagnostic\"() {severity = \"error\", file = "); mlir_cstr(&b,d->file);
