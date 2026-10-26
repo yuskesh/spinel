@@ -66,6 +66,7 @@ void strbuf_arg_index_free(Compiler *c);
    the default gates and optcarrot (which pins wrap) see no behavior change. */
 extern int g_promote_mode;
 extern int g_exc_abort;   /* --exceptions=abort (src/main.c) */
+extern int g_gc_none;     /* --gc=none (src/main.c) */
 /* is a def's value (the Symbol it names) used? par: an_parent_map */
 int an_def_value_used(const NodeTable *nt, const int *par, int v);
 int *an_parent_map(const NodeTable *nt);
