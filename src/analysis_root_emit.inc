@@ -29,5 +29,8 @@ static void mlir_root_header(Buf *b,Compiler *c) {
   }
   buf_puts(b,"}");
   }
+  if(sp_typing_probe_enabled&&!g_ndiags){
+    buf_puts(b,"]");sp_typing_probe_metadata(b,c);buf_puts(b,"} {\n");return;
+  }
   buf_puts(b,"]} {\n");
 }
