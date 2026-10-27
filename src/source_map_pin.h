@@ -6,4 +6,5 @@
 #define SP_M3_SOURCE_MAP_PIN_H
 extern int sp_m3_fail_count, sp_m3_fail_node, sp_m3_fail_file, sp_m3_fail_line;
 extern const char *sp_m3_fail_reason;
+extern int sp_m3_top_file;   /* M4': the top-level file's id (M3's sp_m3_top_file) */
 #endif

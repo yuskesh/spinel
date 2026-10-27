@@ -10,3 +10,11 @@ int sp_emit_mlir_enabled = 0;
 const char *sp_emit_mlir_overflow = "raise";
 const char *sp_emit_mlir_path = 0;
 NodeTable *sp_emit_mlir_pristine = NULL;
+/* M4' on this pin: the typing probe's settings, for the same reason. */
+int sp_typing_probe_enabled;
+int sp_typing_probe_child;
+int sp_typing_probe_fd = -1;
+char *sp_typing_probe_before;
+char sp_typing_probe_before_hash[65];
+const char *sp_typing_probe_source;
+char *sp_typing_probe_stderr;
