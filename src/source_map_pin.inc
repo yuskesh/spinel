@@ -18,6 +18,7 @@
    Spinel's own sp_line_orig, __LINE__ and the flag-off path are untouched. */
 int sp_m3_fail_count = 0, sp_m3_fail_node = -1, sp_m3_fail_file = -1, sp_m3_fail_line = 0;
 const char *sp_m3_fail_reason = NULL;
+int sp_m3_top_file = 0;
 static int sp_m3_built = 0, sp_m3_n = 0;
 static int *sp_m3_file = NULL, *sp_m3_orig = NULL;
 static unsigned char *sp_m3_reason = NULL;   /* 0 verified, 1 marker, 2 content */

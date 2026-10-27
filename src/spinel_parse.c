@@ -2839,7 +2839,7 @@ static void sp_build_line_map(const char *src, const char *toplevel) {
     fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
   }
   int sp = 0;
-  stk_file[sp] = sp_intern_file(toplevel);
+  stk_file[sp] = sp_m3_top_file = sp_intern_file(toplevel);
   stk_next[sp] = 1;
 
   int bl = 1;

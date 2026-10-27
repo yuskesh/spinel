@@ -27,6 +27,7 @@ extern const char *sp_emit_mlir_path;
 #include "spinel_rev.h"
 extern NodeTable *sp_emit_mlir_pristine;
 #include "analysis_root.h"
+#include "typing_probe.h"
 #include "codegen.h"
 #include "analyze.h"
 #include "repr.h"
@@ -577,6 +578,7 @@ static void runtime_includes(Str *cmd, Str *bi, const char *lib_dir, int uses_ce
   { char rgi[4096]; snprintf(rgi, sizeof rgi, "%s%cregexp", lib_dir, PATH_SEP); bi_put(bi, "include", rgi); }
 }
 
+#include "typing_probe_main.inc"
 int main(int argc, char **argv) {
 #ifdef SP_WORK_COUNT
   atexit(work_report);
@@ -776,6 +778,10 @@ else if (!strncmp(a, "--analysis-root=", 16) && a[16]) {
 else if (sp_streq(a,"--analysis-root") || sp_streq(a,"--analysis-root=")) {
   fprintf(stderr,"spinel: analysis root requires METHOD:TYPE[,TYPE...]\n"); return 2;
 }
+    else if (sp_streq(a,"--emit-typing-probe")) {
+      if(sp_typing_probe_enabled){fprintf(stderr,"spinel: duplicate --emit-typing-probe\n");return 2;}
+      sp_typing_probe_enabled=1;i++;
+    }
     else if (table_mode_of(a))             { dump_ast = table_mode_of(a); i++; }
     else if (sp_streq(a, "-h") || sp_streq(a, "--help")) { usage(); return 0; }
     /* The C compiler is half of what a spinel build is, so name it too: a bug
@@ -1121,6 +1127,11 @@ if (sp_emit_mlir_enabled) {
 if (sp_analysis_root_spec && (!sp_emit_mlir_enabled || !facts_parse_root_request(sp_analysis_root_spec))) {
   fprintf(stderr,"spinel: analysis root requires emit-mlir and valid METHOD:TYPE[,TYPE...]\n"); return 2;
 }
+  sp_typing_probe_source=source;
+  if(sp_typing_probe_enabled && (!sp_emit_mlir_enabled || !sp_analysis_root_spec)){
+    fprintf(stderr,"spinel: --emit-typing-probe requires --emit-mlir and analysis roots\n");return 2;
+  }
+  if(!sp_typing_probe_prepare())return 1;
   double tm_front = sp_timing_now();
   NodeTable *nt = sp_parse_file(source, argv[0]);
   if (eval_path[0]) remove(eval_path);

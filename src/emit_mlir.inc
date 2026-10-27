@@ -2,6 +2,7 @@
 /* M1: generic MLIR transport, included after existing metadata helpers. */
 #include <fcntl.h>
 #include <unistd.h>
+#include "typing_probe.h"
 extern int sp_emit_mlir_enabled;
 extern const char *sp_emit_mlir_overflow;
 extern const char *sp_emit_mlir_path;
@@ -187,7 +188,9 @@ static void mlir_evidence(Buf *b,Compiler *c) {
 }
 #include "analysis_root_emit.inc"
 #include "source_map_pin_emit.inc"
+#include "typing_probe_emit.inc"
 static int mlir_emit(Compiler *c) {
+  if(sp_typing_probe_child)return probe_send_json(c);
   mlir_emitted=1; /* Includes writer failure: never publish twice from atexit. */
   Buf b={0}; int ok=1;
 if (sp_analysis_root_spec) { mlir_root_header(&b,c); goto mlir_root_header_done; }
