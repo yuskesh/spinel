@@ -17128,7 +17128,6 @@ static void scan_prologue_features(Compiler *c) {
   g_uses_marshal = 0;
   g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0; g_uses_traps = 0;
   g_uses_ensure = 0;
-  g_calls_gc = 0;
   g_uses_program_name = 0;
   g_reads_match_regs = 0;
   for (int i = 0; i < nt->count; i++) {
@@ -20831,19 +20830,6 @@ if (sp_emit_mlir_enabled && atexit(mlir_on_exit)) {
   g_needs_proc_poly_argslot = 0;
 
   core_write_mapping(c);
-
-  /* Collector-entry markers, the same discipline as SPINEL_USES_THREADS but
-     emitted here rather than beside it: g_calls_gc is set while the call is
-     generated, which happens after the prelude is written. Each marker is on
-     its own line, and the driver anchors its match to a line start -- a Ruby
-     string literal is emitted with its newlines escaped, so it cannot
-     produce one. --arena reads these to refuse the operation outright. */
-  if (g_want_arena_markers) {
-    if (g_calls_gc & SP_CALLS_GC_START)   buf_puts(&b, "/* SPINEL_CALLS_GC GC.start */\n");
-    if (g_calls_gc & SP_CALLS_GC_COMPACT) buf_puts(&b, "/* SPINEL_CALLS_GC GC.compact */\n");
-    if (g_calls_gc & SP_CALLS_GC_STAT)    buf_puts(&b, "/* SPINEL_CALLS_GC GC.stat */\n");
-    if (g_calls_gc & SP_CALLS_GC_TOTAL_TIME) buf_puts(&b, "/* SPINEL_CALLS_GC GC.total_time */\n");
-  }
 
   if (g_ext_init_name) {
     ext_refuse_param_mutation(c);

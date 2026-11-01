@@ -1653,18 +1653,6 @@ int g_uses_threads = 0;
 int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
 int g_uses_traps = 0;   /* Signal.trap: a delivered trap runs at the same safe points */
 int g_uses_ensure = 0;       /* an ensure clause: the landings that give sp_inflight_cause back */
-/* Bitmask of collector entries the generator actually EMITTED, set at the
-   emission site (codegen_call.c) and reported by the SPINEL_CALLS_GC marker.
-   Set where the call is produced rather than scanned for in the finished C:
-   the runtime symbol can also appear inside a Ruby string literal, and a
-   text search cannot tell that from a call. */
-unsigned g_calls_gc = 0;
-/* Off unless the driver asked for the arena. The markers are metadata for
-   --arena's refusal and nothing else reads them, so emitting them into every
-   program's C would change the default configuration's output for no reason
-   the default configuration has. Set by src/main.c before codegen runs. */
-int g_want_arena_markers = 0;
-
 /* --core: the RESOLVED method identities the Extended driver selected, the
    snapshot id it computed, and where to write the mapping. The driver owns
    resolution and the snapshot; this file only consumes what it was given.

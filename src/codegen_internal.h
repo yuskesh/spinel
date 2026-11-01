@@ -1014,12 +1014,6 @@ static inline int poll_in_pure(Compiler *c, int n) {
 }
 extern int g_loop_uncounted, g_poll_loop_nest;
 extern int g_uses_ensure;   /* the program holds an ensure clause: only then is an exception ever in flight (sp_inflight_cause) */
-#define SP_CALLS_GC_START   1u
-#define SP_CALLS_GC_COMPACT 2u
-#define SP_CALLS_GC_STAT    4u
-#define SP_CALLS_GC_TOTAL_TIME 8u
-extern unsigned g_calls_gc;
-extern int g_want_arena_markers;
 extern const char **g_core_roots;
 extern int g_core_root_count;
 extern const char *g_core_snapshot_id;

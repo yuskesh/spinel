@@ -60,9 +60,6 @@ extern int g_require_gate_cli;
 extern const char *g_ruby_description;
 extern int g_inline_hot;
 extern int g_no_write_barrier;
-/* Set before codegen_program: ask for the SPINEL_CALLS_GC markers. Only
-   --arena reads them, so only --arena asks for them (see below). */
-extern int g_want_arena_markers;
 /* --core: resolved selection, snapshot id and mapping path. The Extended driver
    owns resolution and the snapshot manifest; these are inputs, not decisions
    made here. */
@@ -270,17 +267,6 @@ static void resolve_lib_dir(const char *argv0, char *out, size_t outsz) {
 /* Append the FFI link/cflag markers the codegen embedded in the C source.
    Each marker line is a C comment of the form  PREFIX <flags> SP/  where
    PREFIX is e.g. the SPINEL_LINK opener; `prefix` includes that opener. */
-/* Marker lines the GENERATOR emits, matched only at the start of a line.
-   A C string literal cannot contain a raw newline -- codegen escapes them --
-   so a Ruby string that happens to spell the marker cannot satisfy this,
-   which a plain strstr for the runtime symbol could not tell apart. */
-static int has_marker_line(const char *csrc, const char *marker) {
-  size_t n = strlen(marker);
-  for (const char *p = csrc; (p = strstr(p, marker)) != NULL; p += n)
-    if (p == csrc || p[-1] == '\n') return 1;
-  return 0;
-}
-
 static void scrape_ffi_markers(const char *csrc, const char *prefix, Str *out) {
   size_t plen = strlen(prefix);
   const char *p = csrc;
@@ -533,11 +519,6 @@ static void usage(void) {
     "              in the program (default: apply them; docs/inline-rbs.md)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
     "  --dump-ast  Print the text AST and exit (debug)\n"
-    "  --arena     Process-lifetime arena: allocation without a collector.\n"
-    "                 Nothing is reclaimed while the program runs; the process\n"
-    "                 exit reclaims everything. Intended for short-lived work.\n"
-    "                 Over SPINEL_ARENA_MAX_MB it exits loudly.\n"
-    "                 Requires lib/libspinel_rt_arena.a (make arena-archive)\n"
     "  --dump-value-positions  Print the value positions of each method body and of\n"
     "              the program, and exit (debug)\n"
     "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n");
@@ -627,7 +608,6 @@ int main(int argc, char **argv) {
   const char *int_overflow = "raise";
   const char *rbs_dir = NULL;
   extern int sp_inline_rbs_enabled, sp_inline_rbs_failed;
-  int arena_mode = 0;   /* --arena (E064, Patch 6b) */
   const char *inputs_out = NULL;   /* --inputs-out=<path> */
   int c_only = 0, stdout_mode = 0, run_mode = 0, dump_ast = 0;
   int print_build = 0;   /* --print-build: emit the build ingredients, run nothing */
@@ -699,7 +679,6 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--share-strings")) { set_env("SPINEL_SHARE_STRINGS", "1"); i++; }
     else if (sp_streq(a, "--warn-widen"))  { warn_widen = 1; i++; }
     else if (sp_streq(a, "--check-stores")) { check_stores = 1; i++; }
-    else if (sp_streq(a, "--arena")) { arena_mode = 1; i++; }
     else if (sp_streq(a, "--core") && i + 1 < argc) {
       g_core_roots = (const char **)realloc((void *)g_core_roots,
                                             (size_t)(g_core_root_count + 1) * sizeof(char *));
@@ -919,11 +898,6 @@ else if (sp_streq(a,"--analysis-root") || sp_streq(a,"--analysis-root=")) {
     fprintf(stderr, "spinel: -E (run) cannot be combined with -o/-c/-S\n");
     return 2;
   }
-  /* --arena selects an ARCHIVE and a define on the compile line; -c/-S stop
-     before either exists, and the C itself is byte-identical in the two
-     configurations. Accepting the combination would hand back C that says
-     nothing about which runtime it was meant for, and skip the GC/Thread
-     refusals below -- so refuse it rather than ignore the flag. */
   /* --core needs a snapshot id: it is half of every emitted symbol, and it is
      what makes a hosted declaration and a core definition from different builds
      fail to link rather than link wrongly. The Extended driver computes it. */
@@ -941,13 +915,6 @@ else if (sp_streq(a,"--analysis-root") || sp_streq(a,"--analysis-root=")) {
                     "spinel: linking them is the caller's step. Use -c or -S.\n");
     return 2;
   }
-  if (arena_mode && (c_only || stdout_mode)) {
-    fprintf(stderr, "spinel: --arena cannot be combined with -c/-S. The generated C is\n"
-                    "spinel: the same either way; --arena is the -DSP_PROCESS_ARENA compile\n"
-                    "spinel: and the libspinel_rt_arena.a link, which -c/-S never reach.\n"
-                    "spinel: Compile the program with --arena, or drop --arena to emit C.\n");
-    return 2;
-  }
 
   const char *ov_define = NULL;
   if (sp_streq(int_overflow, "raise"))   ov_define = "-DSP_INT_OVERFLOW_MODE_RAISE";
@@ -957,11 +924,6 @@ else if (sp_streq(a,"--analysis-root") || sp_streq(a,"--analysis-root=")) {
   /* Let the analyzer widen accumulating int locals to bigint more freely in
      promote mode (block-iteration loops, not just `while`). See analyze.h. */
   g_promote_mode = sp_streq(int_overflow, "promote");
-  if (arena_mode && (target_wasi || exc_abort)) {
-    fprintf(stderr, "spinel: --arena cannot be combined with --target=wasm32-wasi "
-                    "or --exceptions=abort; these arena runtimes are unsupported.\n");
-    return 1;
-  }
   if (exc_abort && !target_wasi) {
     fprintf(stderr, "spinel: --exceptions=abort is for --target=wasm32-wasi\n");
     return 1;
@@ -1169,11 +1131,6 @@ if (sp_emit_mlir_enabled) sp_emit_mlir_pristine = sp_emit_mlir_snapshot(nt);
     ext_feat[fl] = 0;
     if (fl) g_ext_feature = ext_feat;
   }
-  /* --arena is the only consumer of the SPINEL_CALLS_GC markers, so only
-     --arena asks for them: without this the default configuration's C would
-     gain a line for every program that calls GC, which is a change to the
-     default output with no default-configuration purpose. */
-  g_want_arena_markers = arena_mode;
 if (sp_emit_mlir_enabled && !sp_emit_mlir_pristine) {
   fprintf(stderr, "spinel: MLIR pristine snapshot failed\n"); nt_free(nt); return 1;
 }
@@ -1287,7 +1244,7 @@ if (sp_emit_mlir_enabled) {
      variant (libspinel_rt_mt.a) plus -lpthread; everything else links the
      byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
      marker and the two-variant build in the Makefile. */
-  int uses_threads = has_marker_line(csrc, "/* SPINEL_USES_THREADS */\n");
+  int uses_threads = strstr(csrc, "/* SPINEL_USES_THREADS */") != NULL;
   /* --exceptions=abort: what leaves through a frame by longjmp is refused,
      as the analysis refused rescue, retry and catch: a break out of a block
      that is not spliced in, a return out of a proc, a Fiber's switch. The
@@ -1309,61 +1266,10 @@ if (sp_emit_mlir_enabled) {
   /* A frame past the fiber stack crashes on the guard page rather than
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */
-  int fiber_frame_guard = has_marker_line(csrc, "/* SPINEL_FIBER_FRAME_GUARD */\n");
+  int fiber_frame_guard = strstr(csrc, "/* SPINEL_FIBER_FRAME_GUARD */") != NULL;
   int uses_crypt = strstr(csrc, "sp_str_crypt(") != NULL;  /* String#crypt: link -lcrypt */
   int uses_cext;
   const char *rt_lib = runtime_archive(csrc, uses_threads, target_wasi, exc_abort, &uses_cext);
-  /* --arena: the generated TU and the archive MUST agree on the define.
-     sp_str_alloc and the SP_GC_ROOT macros are header-resident, so a TU built
-     with the arena against the heap archive would allocate strings from the
-     arena while the archive's collector still swept them -- the one way to get
-     a use-after-free out of a design whose whole point is that it cannot have
-     one. Hence a dedicated archive rather than a flag on the TU alone. */
-  if (arena_mode) {
-    if (uses_threads) {
-      fprintf(stderr, "spinel: --arena is single-threaded only; this program "
-                      "uses Thread/Queue/Mutex (SP_THREADS). What an arena means "
-                      "for a worker's own heap has not been established, so the "
-                      "combination is refused rather than guessed. Drop --arena.\n");
-      return 1;
-    }
-    if (uses_cext) {
-      fprintf(stderr, "spinel: --arena cannot be combined with C extensions; "
-                      "an arena C extension runtime is unsupported.\n");
-      return 1;
-    }
-    /* GC-dependent operations are refused, not quietly turned into no-ops.
-       The check reads what the compiler EMITTED, not how the program spelled
-       it: GC.start, GC.send(:start), a call inside a reachable method, and a
-       second constant aliased to GC all converge on the same emission site,
-       and a check written against the receiver's name in the source misses
-       the alias. Each marker is set AT that site (codegen_call_module.c) rather than
-       searched for as a runtime symbol in the finished C, because
-       `puts "sp_gc_stat("` puts the symbol in the C without calling it. A
-       genuinely new collector entry point has to be given a marker here. */
-    static const struct { const char *marker; const char *what; } gc_entries[] = {
-      { "/* SPINEL_CALLS_GC GC.start */\n",   "GC.start" },
-      { "/* SPINEL_CALLS_GC GC.compact */\n", "GC.compact" },
-      { "/* SPINEL_CALLS_GC GC.stat */\n",    "GC.stat" },
-      { "/* SPINEL_CALLS_GC GC.total_time */\n", "GC.total_time" },
-      { NULL, NULL }
-    };
-    for (int g = 0; gc_entries[g].marker; g++) {
-      if (has_marker_line(csrc, gc_entries[g].marker)) {
-        fprintf(stderr,
-          "spinel: --arena refuses %s: this build has no collector, so the call "
-          "would do nothing at all rather than fail.\n"
-          "spinel: nothing is reclaimed while the process runs, so a program "
-          "calling it to bound its footprint would keep going and then exit over "
-          "the arena limit, with nothing pointing at the cause.\n"
-          "spinel: remove the call, or build without --arena.\n",
-          gc_entries[g].what);
-        free(csrc);
-        return 1;
-      }
-    }
-    rt_lib = "libspinel_rt_arena.a";
-  }
   free(csrc);
   if (!rt_lib) { if (c_is_temp) remove(c_path); return 1; }
   /* wasm has no threads without SharedArrayBuffer and no stack switching
@@ -1512,7 +1418,6 @@ if (sp_emit_mlir_enabled) {
        archive have to agree on the storage class of the per-worker globals. */
     bi_put(&bi, "cflag", "-ftls-model=initial-exec");
   }
-  if (arena_mode) s_add(&cmd, "-DSP_PROCESS_ARENA ");
   if (ffi_cflags.p) s_add(&cmd, ffi_cflags.p);
   bi_put_toks(&bi, "cflag", ffi_cflags.p);
   /* Every flag that changes how the generated C compiles goes before the

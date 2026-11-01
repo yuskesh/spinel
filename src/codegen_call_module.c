@@ -944,7 +944,7 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   /* GC module methods */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC")) {
-    if (sp_streq(name, "start") && argc == 0) { g_calls_gc |= SP_CALLS_GC_START; buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return 1; }
+    if (sp_streq(name, "start") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return 1; }
     /* GC.start(full_mark:, immediate_mark:, immediate_sweep:): one collector,
        one kind of collection -- the options are hints, their values
        evaluated for what they do */
@@ -962,19 +962,17 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         for (int e = 0; e < en; e++) {
           buf_puts(b, "(void)("); emit_expr(c, nt_ref(nt, els[e], "value"), b); buf_puts(b, "), ");
         }
-        g_calls_gc |= SP_CALLS_GC_START;
         buf_puts(b, "sp_gc_collect_request(), (sp_int)0)");
         return 1;
       }
     }
-    if (sp_streq(name, "compact") && argc == 0) { g_calls_gc |= SP_CALLS_GC_COMPACT; buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return 1; }
-    if (sp_streq(name, "stat") && argc == 0) { g_calls_gc |= SP_CALLS_GC_STAT; buf_puts(b, "sp_gc_stat()"); return 1; }
+    if (sp_streq(name, "compact") && argc == 0) { buf_puts(b, "(sp_gc_collect_request(), (sp_int)0)"); return 1; }
+    if (sp_streq(name, "stat") && argc == 0) { buf_puts(b, "sp_gc_stat()"); return 1; }
     /* the time every collection so far took (sp_gc_stat_seconds), in
        nanoseconds as CRuby answers it */
-    if (sp_streq(name, "total_time") && argc == 0) { g_calls_gc |= SP_CALLS_GC_TOTAL_TIME; buf_puts(b, "((sp_int)(sp_gc_stat_seconds * 1e9))"); return 1; }
+    if (sp_streq(name, "total_time") && argc == 0) { buf_puts(b, "((sp_int)(sp_gc_stat_seconds * 1e9))"); return 1; }
     /* GC.stat(key): the one statistic, ArgumentError for a key not kept */
     if (sp_streq(name, "stat") && argc == 1 && nt_kind(nt, argv[0]) != NK_KeywordHashNode) {
-      g_calls_gc |= SP_CALLS_GC_STAT;
       buf_puts(b, "sp_gc_stat_key("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
