@@ -109,6 +109,17 @@ static inline int sp_worker_id_shadow(void) { return 0; }
 #endif
 void sp_slab_note(const void *p, int what);
 extern int sp_slab_verify_on;
+/* SP_GC_EVENTS (a build switch, off by default): the event recorder below
+   shares every site that notes a slot for the verifier. Without the switch
+   SP_SLAB_NOTING is sp_slab_verify_on itself, so the default build reads the
+   same tokens as before. */
+#ifdef SP_GC_EVENTS
+extern int sp_gc_events_on;
+void sp_gc_events_slot(const void *p, int what);
+#define SP_SLAB_NOTING (sp_slab_verify_on || sp_gc_events_on)
+#else
+#define SP_SLAB_NOTING sp_slab_verify_on
+#endif
 
 /* 16-byte steps to 256, then coarser: an object header is 48 bytes and a
    string header 24, and most blocks are a header plus a few words, so the
@@ -517,7 +528,7 @@ static inline void *sp_slab_take(sp_slab_worker *wk, int cls, sp_slab_chunk *ch,
     if (sp_slab_run(wk, cls, payload)) {
       char *p = wk->rnext[payload][cls];
       wk->rnext[payload][cls] = p + csize;
-      if (sp_slab_verify_on) sp_slab_note(p, 40 + (int)e + (payload ? 2 : 0));
+      if (SP_SLAB_NOTING) sp_slab_note(p, 40 + (int)e + (payload ? 2 : 0));
       return p;
     }
   }
@@ -646,7 +657,7 @@ static SP_NOINLINE void *sp_slab_alloc_slow(size_t need, int payload, int zero) 
     /* the next run of the cached word, if the word is of this kind */
     if (sp_slab_run(wk, cls, payload)) {
       p = wk->rnext[payload][cls]; wk->rnext[payload][cls] = (char *)p + csize;
-      if (sp_slab_verify_on) sp_slab_note(p, 40 + (int)(sp_slab_epoch & 1) + (payload ? 2 : 0));
+      if (SP_SLAB_NOTING) sp_slab_note(p, 40 + (int)(sp_slab_epoch & 1) + (payload ? 2 : 0));
     }
     if (!p && ch) p = sp_slab_take(wk, cls, ch, csize, payload);
     if (!p) p = sp_slab_refill(wk, cls, csize, payload);
@@ -681,7 +692,7 @@ static SP_INLINE void *sp_slab_alloc_in(size_t need, int payload, int fin, int z
          the refill measured worse: the string stores miss the cache on
          purpose, and the demand fills quintupled. */
       if (zero) sp_slab_zero(p, csize);
-      if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(p, 40 + (int)(sp_slab_epoch & 1) + (payload ? 2 : 0));
+      if (SP_EXPECT(SP_SLAB_NOTING, 0)) sp_slab_note(p, 40 + (int)(sp_slab_epoch & 1) + (payload ? 2 : 0));
       return p;
     }
   }
@@ -699,7 +710,7 @@ void *sp_slab_alloc_obj(size_t need, void (*fin)(void *), void (*scn)(void *)) {
   void *p = sp_slab_alloc_in(need, 0, fin != NULL, 1);
   sp_gc_hdr *h = (sp_gc_hdr *)p;
   h->finalize = fin; h->scan = scn; h->size = need;
-  if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(p, 1);
+  if (SP_EXPECT(SP_SLAB_NOTING, 0)) sp_slab_note(p, 1);
   return p;
 }
 /* The object allocation of the program, moved here from lib/sp_alloc.c so
@@ -791,7 +802,7 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
   h->finalize = fin; h->scan = scn; h->size = need;
   if (SP_EXPECT(sp_alloc_report_on, 0)) sp_alloc_report_count((void *)scn, sz);
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
-  if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(h, 1);
+  if (SP_EXPECT(SP_SLAB_NOTING, 0)) sp_slab_note(h, 1);
   /* Stored only when it changes, which is once. Every lean allocation on
      every worker reads the flag, and the line it sits on holds the slab's other
      switches the allocation paths read (sp_slab_verify_on, sp_slab_epoch), so
@@ -799,7 +810,7 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
      allocation that came this way -- one past 256 bytes, a run that ran dry,
      a collection due -- and their next allocations missed on it. The byte
      count was made per-worker for the same reason (sp_gc_bytes_add). */
-  { int ok = sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on;
+  { int ok = sp_gc_stress_checked && sp_slab_on > 0 && !SP_SLAB_NOTING && !sp_alloc_report_on;
     if (SP_GC_CTR_GET(sp_gc_alloc_fast_ok) != ok) SP_GC_CTR_SET(sp_gc_alloc_fast_ok, ok); }
   return (char *)h + sizeof(sp_gc_hdr);
 #else
@@ -816,8 +827,8 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
   h->finalize = fin; h->scan = scn; h->size = need;
   if (SP_EXPECT(sp_alloc_report_on, 0)) sp_alloc_report_count((void *)scn, sz);
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
-  if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(h, 1);
-  SP_GC_CTR_SET(sp_gc_alloc_fast_ok, sp_gc_stress_checked && sp_slab_on > 0 && !sp_slab_verify_on && !sp_alloc_report_on);
+  if (SP_EXPECT(SP_SLAB_NOTING, 0)) sp_slab_note(h, 1);
+  SP_GC_CTR_SET(sp_gc_alloc_fast_ok, sp_gc_stress_checked && sp_slab_on > 0 && !SP_SLAB_NOTING && !sp_alloc_report_on);
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 #endif
@@ -825,7 +836,7 @@ static SP_NOINLINE void *sp_gc_alloc_full(size_t sz, void (*fin)(void *), void (
 /* A block the collector will sweep: an object (zeroed) or a heap string */
 void *sp_slab_alloc(size_t need) {
   void *p = sp_slab_alloc_in(need, 0, 0, 1);
-  if (SP_EXPECT(sp_slab_verify_on, 0)) sp_slab_note(p, 1);
+  if (SP_EXPECT(SP_SLAB_NOTING, 0)) sp_slab_note(p, 1);
   return p;
 }
 /* A heap string: the bump of sp_slab_alloc_in with the str bit set in the
@@ -833,7 +844,7 @@ void *sp_slab_alloc(size_t need) {
    slot from its address instead (chunk, bitmap, word, bit) was two thirds of
    the cost of allocating a short string. */
 void *sp_slab_alloc_str(size_t need) {
-  if (SP_EXPECT(sp_slab_on > 0 && need <= SP_SLAB_MAX && !sp_slab_verify_on, 1)) {
+  if (SP_EXPECT(sp_slab_on > 0 && need <= SP_SLAB_MAX && !SP_SLAB_NOTING, 1)) {
     int cls = sp_slab_cls_of[(need + 15) >> 4];
     sp_slab_worker *wk = &sp_slab_wk[SP_SLAB_WID()];
     char *q = wk->rnext[0][cls];
@@ -848,14 +859,14 @@ void *sp_slab_alloc_str(size_t need) {
   if (sp_slab_on > 0 && sp_slab_owns(p)) {
     sp_slab_loc l; sp_slab_locate(p, &l);
     bm_or(&l.bm->str[l.w], l.bit);
-    if (sp_slab_verify_on) sp_slab_note(p, 2);
+    if (SP_SLAB_NOTING) sp_slab_note(p, 2);
   }
   return p;
 }
 /* A block no sweep frees: a container's payload, dying by an explicit free */
 void *sp_slab_alloc_raw(size_t need) {
   void *p = sp_slab_alloc_in(need, 1, 0, 0);
-  if (sp_slab_verify_on) sp_slab_note(p, 3);
+  if (SP_SLAB_NOTING) sp_slab_note(p, 3);
   return p;
 }
 /* the header gained a finalizer or a recycler after its allocation */
@@ -863,14 +874,14 @@ void sp_slab_set_fin(void *h) {
   if (sp_slab_on <= 0 || !sp_slab_owns(h)) return;
   sp_slab_loc l; sp_slab_locate(h, &l);
   bm_or(&l.bm->fin[l.w], l.bit);
-  if (sp_slab_verify_on) sp_slab_note(h, 4);
+  if (SP_SLAB_NOTING) sp_slab_note(h, 4);
 }
 /* a frozen heap string: kept until the program ends, as a static literal is */
 void sp_slab_pin(const void *p) {
   if (sp_slab_on <= 0 || !sp_slab_owns(p)) return;
   sp_slab_loc l; sp_slab_locate(p, &l);
   bm_or(&l.bm->pin[l.w], l.bit);
-  if (sp_slab_verify_on) sp_slab_note(p, 9);
+  if (SP_SLAB_NOTING) sp_slab_note(p, 9);
 }
 /* A dead header about to be handed to its pool: pinned, out of every
    sweep's reach, until the pool hands it out again or frees it. Its
@@ -889,7 +900,7 @@ void sp_slab_relive(void *h) {
   sp_slab_loc l; sp_slab_locate(h, &l);
   bm_or(&l.bm->young[sp_slab_epoch & 1][l.w], l.bit);
   bm_and(&l.bm->pin[l.w], ~l.bit);
-  if (sp_slab_verify_on) sp_slab_note(h, 5 + 10 * (int)(sp_slab_epoch & 1));
+  if (SP_SLAB_NOTING) sp_slab_note(h, 5 + 10 * (int)(sp_slab_epoch & 1));
 }
 /* ---- SPINEL_GC_STRESS=2: the quarantine ----
    A slot a sweep frees is the next slot its class hands out, and until then
@@ -974,6 +985,9 @@ static sp_slab_shadow_rec *sp_slab_shadow = NULL;
 extern int sp_gc_cycle;
 #define SP_SHADOW(p) (sp_slab_shadow ? &sp_slab_shadow[((uintptr_t)(p) - sp_slab_base) >> 5] : NULL)
 void sp_slab_note(const void *p, int what) {
+#ifdef SP_GC_EVENTS
+  if (sp_gc_events_on) sp_gc_events_slot(p, what);
+#endif
   if (!sp_slab_verify_on || !sp_slab_owns(p)) return;
   if (!sp_slab_shadow) {
     void *m = mmap(NULL, (sp_slab_cap >> 5) * sizeof(sp_slab_shadow_rec), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -1086,11 +1100,11 @@ void sp_slab_free(void *p) {
   SP_SLAB_CLEAR(l.bm->str[l.w]);
   SP_SLAB_CLEAR(l.bm->mark[l.w]);
   SP_SLAB_CLEAR(l.bm->old[l.w]);
-  if (SP_EXPECT(sp_slab_quar != NULL, 0)) { sp_slab_frees++; if (sp_slab_verify_on) sp_slab_note(p, 6); sp_slab_quarantine(l.ch, l.bm, l.w, l.bit, 0, 1); return; }
+  if (SP_EXPECT(sp_slab_quar != NULL, 0)) { sp_slab_frees++; if (SP_SLAB_NOTING) sp_slab_note(p, 6); sp_slab_quarantine(l.ch, l.bm, l.w, l.bit, 0, 1); return; }
   SP_SLAB_CLEAR(l.bm->pin[l.w]);
 #undef SP_SLAB_CLEAR
   sp_slab_frees++;
-  if (sp_slab_verify_on) sp_slab_note(p, 6);
+  if (SP_SLAB_NOTING) sp_slab_note(p, 6);
   sp_slab_avail_push(l.ch);
 }
 
@@ -1271,9 +1285,9 @@ void sp_slab_sweep_worker(int wid, int full, int aging, int (*die)(void *hdr), s
       if (parked) {
         dead &= ~parked;
         acc.parked += (size_t)SP_POPCOUNT64(parked) * csize;   /* this cycle's, beside the ones counted above */
-        if (sp_slab_verify_on) { uint64_t v = parked; while (v) { unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1; sp_slab_note(sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, 8 + 10 * (int)pe); } }
+        if (SP_SLAB_NOTING) { uint64_t v = parked; while (v) { unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1; sp_slab_note(sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, 8 + 10 * (int)pe); } }
       }
-      if (sp_slab_verify_on) { uint64_t v = yv & ~dead; while (v) { unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1; sp_slab_note(sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, 30 + (int)pe); } }
+      if (SP_SLAB_NOTING) { uint64_t v = yv & ~dead; while (v) { unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1; sp_slab_note(sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, 30 + (int)pe); } }
       if (dead) {
         uint64_t sd = dead & bm_load(&bm->str[w]);
         acc.freed_str += (size_t)SP_POPCOUNT64(sd) * csize;
@@ -1282,7 +1296,7 @@ void sp_slab_sweep_worker(int wid, int full, int aging, int (*die)(void *hdr), s
         if (sd) bm_and(&bm->str[w], ~dead);
         if (full && (ov & dead)) bm_and(&bm->old[w], ~dead);
         freed += (size_t)SP_POPCOUNT64(dead);
-        if (sp_slab_verify_on) { uint64_t v = dead; while (v) { unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1; sp_slab_note(sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, 7); } }
+        if (SP_SLAB_NOTING) { uint64_t v = dead; while (v) { unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1; sp_slab_note(sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, 7); } }
         if (SP_EXPECT(sp_slab_quar != NULL, 0)) sp_slab_quarantine(ch, bm, w, dead, sd, 0);
       }
       /* the epoch's word is spent: dead, promoted or carried, every bit is
@@ -1542,3 +1556,132 @@ void sp_slab_release(void) {
   }
   for (int w = 0; w < SP_SLAB_NWK; w++) sp_slab_release_worker(w);
 }
+
+/* ---- SP_GC_EVENTS: a record of every slab slot's life ----
+   Built only with -DSP_GC_EVENTS (`make events-runtime`). At run time it
+   records only when SPINEL_GC_EVENTS names an output file. Every record is
+   written into storage mapped once at start-up, so recording allocates
+   nothing on the heap it watches; the file is written at exit with write(2).
+
+   A record is 32 bytes: seq, cycle, addr, extra, size, what, aux.
+     what 1/2/3   object / heap string / payload allocated (size = slot size;
+                  for an object aux = the header's size and extra = its scan
+                  function, which names its class)
+     what 5/15    a parked header relived into y0/y1     what 6  freed explicitly
+     what 7       swept dead                             what 8/18 parked by a sweep
+     what 9       pinned for the program's life
+     what 30/31   survived a sweep of y0/y1 (aux 1: it is old now, promoted)
+     what 40-43   a slot taken into y0/y1, +2 for a payload (the verifier's codes)
+     what 100     a collection begins: aux bit 0 full, bit 1 minor;
+                  size = root entries; extra = live bytes before it
+     what 101     a root: addr = its stack slot, aux = its tag, size = the
+                  1-based root entry it belongs to, extra = the value it holds
+     what 200     at exit, a slot still allocated: aux = its bits
+                  (1 y0, 2 y1, 4 old, 8 pin, 16 string, 32 finalizer)
+     what 300     a mark the program placed: extra = its id
+   Slots past SP_SLAB_MAX and the malloc'd blocks are not slab slots and are
+   not recorded. */
+#ifdef SP_GC_EVENTS
+#include <fcntl.h>
+#include <unistd.h>
+typedef struct {
+  uint32_t seq, cycle;
+  uint64_t addr, extra;
+  uint32_t size;
+  uint16_t what, aux;
+} sp_gc_events_rec;
+int sp_gc_events_on = 0;
+static sp_gc_events_rec *sp_gc_events_buf = NULL;
+static size_t sp_gc_events_n = 0, sp_gc_events_cap = 0;
+static uint64_t sp_gc_events_dropped = 0;
+static uint32_t sp_gc_events_seq = 0;
+static int sp_gc_events_fd = -1;
+void sp_gc_events_add(int what, const void *addr, uint32_t size, uint32_t aux, uint64_t extra) {
+  if (!sp_gc_events_on) return;
+  if (sp_gc_events_n == sp_gc_events_cap) { sp_gc_events_dropped++; return; }
+  sp_gc_events_rec *r = &sp_gc_events_buf[sp_gc_events_n++];
+  r->seq = sp_gc_events_seq++;
+  r->cycle = (uint32_t)sp_gc_cycle;
+  r->addr = (uint64_t)(uintptr_t)addr;
+  r->extra = extra;
+  r->size = size;
+  r->what = (uint16_t)what;
+  r->aux = (uint16_t)aux;
+}
+void sp_gc_events_slot(const void *p, int what) {
+  if (sp_slab_on <= 0 || !sp_slab_owns(p)) return;
+  sp_slab_loc l; sp_slab_locate(p, &l);
+  uint32_t aux = 0; uint64_t extra = 0;
+  if (what == 1) {
+    const sp_gc_hdr *h = (const sp_gc_hdr *)p;
+    aux = (uint32_t)h->size;
+    extra = (uint64_t)(uintptr_t)h->scan;
+  } else if (what == 30 || what == 31) {
+    aux = (bm_load(&l.bm->old[l.w]) & l.bit) ? 1 : 0;
+  }
+  sp_gc_events_add(what, p, sp_slab_csize[l.ch->cls], aux, extra);
+}
+/* a mark the program places between its steps (tools/gcviz binds it) */
+void sp_gc_events_mark(long id) { sp_gc_events_add(300, NULL, 0, 0, (uint64_t)id); }
+static void sp_gc_events_census(void) {
+  if (sp_slab_on <= 0) return;
+  for (uintptr_t a = sp_slab_base; a < sp_slab_brk; a += SP_SLAB_ARENA) {
+    sp_slab_arena *ar = (sp_slab_arena *)a;
+    for (int i = SP_SLAB_FIRST; i < (int)SP_SLAB_NCHUNK; i++) {
+      sp_slab_chunk *ch = &ar->ch[i];
+      if (!ch->in_use) continue;
+      sp_slab_bm *bm = sp_slab_bm_of(ch);
+      unsigned nw = (ch->nslots + 63) >> 6, csize = sp_slab_csize[ch->cls];
+      for (unsigned w = 0; w < nw; w++) {
+        uint64_t v = bm->young[0][w] | bm->young[1][w] | bm->old[w] | bm->pin[w];
+        while (v) {
+          unsigned b = (unsigned)SP_CTZ64(v); v &= v - 1;
+          uint64_t bit = (uint64_t)1 << b;
+          unsigned bits = ((bm->young[0][w] & bit) ? 1u : 0u) | ((bm->young[1][w] & bit) ? 2u : 0u)
+                        | ((bm->old[w] & bit) ? 4u : 0u) | ((bm->pin[w] & bit) ? 8u : 0u)
+                        | ((bm->str[w] & bit) ? 16u : 0u) | ((bm->fin[w] & bit) ? 32u : 0u);
+          sp_gc_events_add(200, sp_slab_chunk_base(ch) + (size_t)((w << 6) + b) * csize, csize, bits, 0);
+        }
+      }
+    }
+  }
+}
+static void sp_gc_events_write(const void *p, size_t n) {
+  const char *c = (const char *)p;
+  while (n > 0) {
+    ssize_t k = write(sp_gc_events_fd, c, n);
+    if (k <= 0) return;
+    c += k; n -= (size_t)k;
+  }
+}
+static void sp_gc_events_flush(void) {
+  if (!sp_gc_events_on) return;
+  /* the claimed runs hold young bits for slots never handed out: release
+     them first, as a collection does, so the census names only real slots */
+  sp_slab_runs_release();
+  sp_gc_events_census();
+  sp_gc_events_on = 0;
+  struct { char magic[8]; uint32_t version, rec_size; uint64_t count, dropped; } hd;
+  memcpy(hd.magic, "SPGCEV1", 8);
+  hd.version = 1; hd.rec_size = (uint32_t)sizeof(sp_gc_events_rec);
+  hd.count = sp_gc_events_n; hd.dropped = sp_gc_events_dropped;
+  sp_gc_events_write(&hd, sizeof hd);
+  sp_gc_events_write(sp_gc_events_buf, sp_gc_events_n * sizeof(sp_gc_events_rec));
+  close(sp_gc_events_fd);
+}
+SP_CONSTRUCTOR static void sp_gc_events_init(void) {
+  const char *path = getenv("SPINEL_GC_EVENTS");
+  if (!path || !*path) return;
+  size_t cap = (size_t)1 << 20;
+  const char *mx = getenv("SPINEL_GC_EVENTS_MAX");
+  if (mx && *mx) { long n = atol(mx); if (n > 0) cap = (size_t)n; }
+  void *m = mmap(NULL, cap * sizeof(sp_gc_events_rec), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  if (m == MAP_FAILED) { fprintf(stderr, "spinel: SPINEL_GC_EVENTS: cannot map %zu records\n", cap); return; }
+  sp_gc_events_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (sp_gc_events_fd < 0) { fprintf(stderr, "spinel: SPINEL_GC_EVENTS: cannot open %s\n", path); munmap(m, cap * sizeof(sp_gc_events_rec)); return; }
+  sp_gc_events_buf = (sp_gc_events_rec *)m;
+  sp_gc_events_cap = cap;
+  sp_gc_events_on = 1;
+  atexit(sp_gc_events_flush);
+}
+#endif
