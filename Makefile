@@ -843,6 +843,18 @@ cext-exceptions-test: lib/libspinel_cext_rt.a build/cext/host.c
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
 	$(AR_DET) ar rcs $@ $^
 
+# Opt-in runtime that records the collector's slot events (-DSP_GC_EVENTS,
+# read by lib/sp_slab.c and lib/sp_gc.c). Not built by default; the regular
+# archive's members are not recompiled.
+.PHONY: events-runtime
+events-runtime: lib/libspinel_events_rt.a
+build/events/%.o: lib/%.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -DSP_GC_EVENTS -Ilib $< -o $@
+lib/libspinel_events_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc sp_slab,$(RT_MEMBERS)))) build/events/sp_gc.o build/events/sp_slab.o $(PLATFORM_OBJ)
+	@rm -f $@
+	ar rcs $@ $^
+
 # ---- Threaded runtime variant (-DSP_THREADS) ----
 # Same sources, compiled with -DSP_THREADS, linked when the program uses
 # Thread/Mutex/Queue/... (see codegen's SPINEL_USES_THREADS marker and the

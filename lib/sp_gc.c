@@ -1495,6 +1495,41 @@ static void sp_fd_retired_sweep(void) {
   for (int w = 0; w < SP_FD_RETIRED_LISTS && !sp_fd_nretired; w++) sp_fd_nretired = sp_fd_retired[w].n > 0;
 }
 
+#ifdef SP_GC_EVENTS
+/* SP_GC_EVENTS (lib/sp_slab.c): a collection's start and the root stack it
+   marks from, entry by entry; a frame entry is decoded as sp_gc_mark_frame
+   decodes it. */
+void sp_gc_events_add(int what, const void *addr, uint32_t size, uint32_t aux, uint64_t extra);
+extern int sp_gc_events_on;
+static void sp_gc_events_root(void **e, uint32_t entry) {
+  uintptr_t u = (uintptr_t)e;
+  unsigned tag = (unsigned)(u & (uintptr_t)3);
+  void *slot = (void *)(u & ~(uintptr_t)3);
+  uint64_t v = 0;
+  if (tag == 1) {
+    const sp_RbVal *rv = (const sp_RbVal *)slot;
+    if (rv->tag == SP_TAG_STR || rv->tag == SP_TAG_OBJ || rv->tag == SP_TAG_BIGINT) v = (uint64_t)(uintptr_t)rv->v.p;
+  } else {
+    v = (uint64_t)(uintptr_t)*(void **)slot;
+  }
+  sp_gc_events_add(101, slot, entry, tag, v);
+}
+static void sp_gc_events_cycle(int full) {
+  sp_gc_events_add(100, NULL, (uint32_t)sp_gc_nroots, (uint32_t)((full ? 1 : 0) | (sp_gc_minor ? 2 : 0)), (uint64_t)sp_gc_bytes);
+  for (int i = 0; i < sp_gc_nroots; i++) {
+    void **e = sp_gc_root_at(i);
+    if (((uintptr_t)e & (uintptr_t)3) == (uintptr_t)3) {
+      const sp_gc_frame_hdr *h = (const sp_gc_frame_hdr *)((uintptr_t)e & ~(uintptr_t)3);
+      const sp_RbVal *vv = (const sp_RbVal *)(h + 1);
+      for (int k = 0; k < h->nv; k++) sp_gc_events_root((void **)((uintptr_t)&vv[k] | (uintptr_t)1), (uint32_t)i + 1);
+      void **const *pp = (void **const *)(vv + h->nv);
+      for (int k = 0; k < h->np; k++) if (pp[k]) sp_gc_events_root(pp[k], (uint32_t)i + 1);
+    } else {
+      sp_gc_events_root(e, (uint32_t)i + 1);
+    }
+  }
+}
+#endif
 void sp_gc_collect(void){
   /* The previous cycle's sweep may still be running beside the mutators:
      finish it before anything here walks a list or reads a live total. */
@@ -1553,6 +1588,9 @@ void sp_gc_collect(void){
      anything the minor missed. */
   if (sp_gc_nremembered > sp_gc_rem_peak) sp_gc_rem_peak = sp_gc_nremembered;
   sp_gc_minor = sp_gc_minor_on && !full && !sp_gc_rem_overflow && !sp_gc_pin_overflow;
+#ifdef SP_GC_EVENTS
+  if (sp_gc_events_on) sp_gc_events_cycle(full);
+#endif
   /* Sweep beside the mutators rather than under the barrier? Only with a
      driver, and not under the diagnostic modes that read the lists between
      mark and sweep (verify, the generational verifier, aging's young probe). */
