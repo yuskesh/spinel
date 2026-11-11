@@ -1671,11 +1671,17 @@ void sp_slab_release(void) {
      what 200     at exit, a slot still allocated: aux = its bits
                   (1 y0, 2 y1, 4 old, 8 pin, 16 string, 32 finalizer)
      what 300     a mark the program placed: extra = its id
+     what 400     one frame of the stack that allocated the slot just
+                  recorded (what 1/2/3): addr = the slot, aux = the frame's
+                  depth (0 is the one nearest the allocator), size = the
+                  frames recorded, extra = its return address
+     what 401     the same for the collection just begun (what 100), addr 0
    Slots past SP_SLAB_MAX and the malloc'd blocks are not slab slots and are
    not recorded. */
 #ifdef SP_GC_EVENTS
 #include <fcntl.h>
 #include <unistd.h>
+#include <unwind.h>
 typedef struct {
   uint32_t seq, cycle;
   uint64_t addr, extra;
@@ -1700,6 +1706,24 @@ void sp_gc_events_add(int what, const void *addr, uint32_t size, uint32_t aux, u
   r->what = (uint16_t)what;
   r->aux = (uint16_t)aux;
 }
+/* The stack that allocated a slot or started a collection, read from the
+   unwind tables (.eh_frame), so frames built without a frame pointer do not
+   cut it short. The unwinder allocates nothing. Return addresses are
+   recorded as they are; tools/gcviz turns them into source lines. */
+#define SP_GC_EVENTS_FRAMES 12
+typedef struct { uintptr_t ip[SP_GC_EVENTS_FRAMES + 1]; int n; } sp_gc_events_bt;
+static _Unwind_Reason_Code sp_gc_events_bt_frame(struct _Unwind_Context *c, void *arg) {
+  sp_gc_events_bt *b = (sp_gc_events_bt *)arg;
+  if (b->n == SP_GC_EVENTS_FRAMES + 1) return _URC_END_OF_STACK;
+  b->ip[b->n++] = (uintptr_t)_Unwind_GetIP(c);
+  return _URC_NO_REASON;
+}
+void sp_gc_events_site(int what, const void *p) {
+  sp_gc_events_bt b; b.n = 0;
+  _Unwind_Backtrace(sp_gc_events_bt_frame, &b);
+  int n = b.n - 1;   /* frame 0 is this function */
+  for (int k = 0; k < n; k++) sp_gc_events_add(what, p, (uint32_t)n, (uint32_t)k, (uint64_t)b.ip[k + 1]);
+}
 void sp_gc_events_slot(const void *p, int what) {
   if (sp_slab_on <= 0 || !sp_slab_owns(p)) return;
   sp_slab_loc l; sp_slab_locate(p, &l);
@@ -1712,6 +1736,7 @@ void sp_gc_events_slot(const void *p, int what) {
     aux = (bm_load(&l.bm->old[l.w]) & l.bit) ? 1 : 0;
   }
   sp_gc_events_add(what, p, sp_slab_csize[l.ch->cls], aux, extra);
+  if (what >= 1 && what <= 3) sp_gc_events_site(400, p);
 }
 /* a mark the program places between its steps (tools/gcviz binds it) */
 void sp_gc_events_mark(long id) { sp_gc_events_add(300, NULL, 0, 0, (uint64_t)id); }

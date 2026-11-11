@@ -1497,10 +1497,11 @@ static void sp_fd_retired_sweep(void) {
 
 #ifdef SP_GC_EVENTS
 /* SP_GC_EVENTS (lib/sp_slab.c): a collection's start and the root stack it
-   marks from, entry by entry; a frame entry is decoded as sp_gc_mark_frame
-   decodes it. */
+   marks from, entry by entry (a frame entry is decoded as sp_gc_mark_frame
+   decodes it), then the stack that started it. */
 void sp_gc_events_add(int what, const void *addr, uint32_t size, uint32_t aux, uint64_t extra);
 extern int sp_gc_events_on;
+void sp_gc_events_site(int what, const void *p);
 static void sp_gc_events_root(void **e, uint32_t entry) {
   uintptr_t u = (uintptr_t)e;
   unsigned tag = (unsigned)(u & (uintptr_t)3);
@@ -1528,6 +1529,7 @@ static void sp_gc_events_cycle(int full) {
       sp_gc_events_root(e, (uint32_t)i + 1);
     }
   }
+  sp_gc_events_site(401, NULL);
 }
 #endif
 void sp_gc_collect(void){
