@@ -709,7 +709,7 @@ static void sp_gc_pool_relink(sp_gc_hdr *h) {
      reuses pooled headers for */
   h->marked = 0; h->old = 0; h->dirty = 0; h->frozen = 0; h->aged = 0;
   if (sp_slab_owns(h)) sp_slab_relive(h);
-  else SP_GC_HEAP_PUSH(h);
+  else { SP_GC_HEAP_PUSH(h); SP_GC_EV_POOL(h); }
   sp_gc_bytes_add(h->size);
 }
 

@@ -844,14 +844,15 @@ $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLAT
 	$(AR_DET) ar rcs $@ $^
 
 # Opt-in runtime that records the collector's slot events (-DSP_GC_EVENTS,
-# read by lib/sp_slab.c and lib/sp_gc.c). Not built by default; the regular
-# archive's members are not recompiled.
+# every member compiled with it; the program is compiled with it too, since
+# the pools in lib/spinel_rt.h and lib/sp_alloc.h record their reuse). Not
+# built by default; the regular archive's members are not recompiled.
 .PHONY: events-runtime
 events-runtime: lib/libspinel_events_rt.a
 build/events/%.o: lib/%.c $(RT_HDRS)
 	@mkdir -p $(@D)
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -DSP_GC_EVENTS -Ilib $< -o $@
-lib/libspinel_events_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc sp_slab,$(RT_MEMBERS)))) build/events/sp_gc.o build/events/sp_slab.o $(PLATFORM_OBJ)
+lib/libspinel_events_rt.a: $(RE_OBJ) $(addprefix build/events/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
 	@rm -f $@
 	ar rcs $@ $^
 
