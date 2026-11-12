@@ -860,7 +860,7 @@ void *sp_slab_alloc_str(size_t need) {
     sp_slab_loc l; sp_slab_locate(p, &l);
     bm_or(&l.bm->str[l.w], l.bit);
     if (SP_SLAB_NOTING) sp_slab_note(p, 2);
-  }
+  } else if (SP_SLAB_NOTING) sp_slab_note(p, 2);
   return p;
 }
 /* A block no sweep frees: a container's payload, dying by an explicit free */
@@ -1088,7 +1088,7 @@ static void sp_slab_avail_push(sp_slab_chunk *ch) {
    generation and loses its marks; the chunk goes back on the owner's list. */
 SP_TLS unsigned long sp_slab_frees = 0;   /* this thread's explicit frees, counted (sp_gc_die_cb reads it around a recycler) */
 void sp_slab_free(void *p) {
-  if (!sp_slab_owns(p)) { free(p); return; }
+  if (!sp_slab_owns(p)) { if (SP_SLAB_NOTING) sp_slab_note(p, 6); free(p); return; }
   sp_slab_loc l; sp_slab_locate(p, &l);
   uint64_t nb = ~l.bit;
   /* only the words that hold the bit: a payload is pinned and nothing else,
@@ -1115,8 +1115,10 @@ void sp_slab_free(void *p) {
 void *sp_pl_realloc(void *p, size_t newn) {
   if (!p) return sp_slab_alloc_raw(newn);
   if (!sp_slab_owns(p)) {
+    if (SP_SLAB_NOTING) sp_slab_note(p, 6);
     void *q = realloc(p, newn);
     if (!q) sp_oom_die();
+    if (SP_SLAB_NOTING) sp_slab_note(q, 3);
     return q;
   }
   sp_slab_chunk *ch = sp_slab_chunk_of(p);
@@ -1584,12 +1586,30 @@ void sp_slab_release(void) {
                   depth (0 is the one nearest the allocator), size = the
                   frames recorded, extra = its return address
      what 401     the same for the collection just begun (what 100), addr 0
-   Slots past SP_SLAB_MAX and the malloc'd blocks are not slab slots and are
-   not recorded. */
+     what 11/12/13 an object / heap string / payload malloc'd outside the slab
+                  (past SP_SLAB_MAX, the slab off or full): size = the block's
+                  usable size where the C library tells it, else 0; for an
+                  object extra = its scan function; followed by its stack (400)
+     what 14      a malloc'd object header taken back from a pool (slab off):
+                  a new life at the same address; followed by its stack (400)
+     what 16      a malloc'd block freed explicitly
+     what 17      a malloc'd block swept dead from a collector list
+     what 32      a malloc'd block that survived a young sweep: aux 1 moved
+                  to the old list (promoted), aux 0 kept young (aging)
+   A payload malloc'd outside the slab is on no list, so the census at exit
+   names slab slots only. */
 #ifdef SP_GC_EVENTS
 #include <fcntl.h>
 #include <unistd.h>
 #include <unwind.h>
+#if defined(__APPLE__)
+#include <malloc/malloc.h>
+#define SP_GC_EVENTS_MSIZE(p) malloc_size(p)
+#elif defined(__GLIBC__)
+#define SP_GC_EVENTS_MSIZE(p) malloc_usable_size((void *)(p))
+#else
+#define SP_GC_EVENTS_MSIZE(p) 0
+#endif
 typedef struct {
   uint32_t seq, cycle;
   uint64_t addr, extra;
@@ -1633,7 +1653,16 @@ void sp_gc_events_site(int what, const void *p) {
   for (int k = 0; k < n; k++) sp_gc_events_add(what, p, (uint32_t)n, (uint32_t)k, (uint64_t)b.ip[k + 1]);
 }
 void sp_gc_events_slot(const void *p, int what) {
-  if (sp_slab_on <= 0 || !sp_slab_owns(p)) return;
+  if (sp_slab_on <= 0 || !sp_slab_owns(p)) {
+    if (what >= 1 && what <= 3) {
+      uint64_t scan = what == 1 ? (uint64_t)(uintptr_t)((const sp_gc_hdr *)p)->scan : 0;
+      sp_gc_events_add(what + 10, p, (uint32_t)SP_GC_EVENTS_MSIZE(p), 0, scan);
+      sp_gc_events_site(400, p);
+    } else if (what == 6) {
+      sp_gc_events_add(16, p, 0, 0, 0);
+    }
+    return;
+  }
   sp_slab_loc l; sp_slab_locate(p, &l);
   uint32_t aux = 0; uint64_t extra = 0;
   if (what == 1) {
@@ -1646,6 +1675,15 @@ void sp_gc_events_slot(const void *p, int what) {
   sp_gc_events_add(what, p, sp_slab_csize[l.ch->cls], aux, extra);
   if (what >= 1 && what <= 3) sp_gc_events_site(400, p);
 }
+/* a malloc'd object header taken back from a pool; the pool reuses it
+   without the allocator, so the record starts its life here */
+void sp_gc_events_pool(const void *h) {
+  if (!sp_gc_events_on) return;
+  sp_gc_events_add(14, h, (uint32_t)SP_GC_EVENTS_MSIZE(h), 0, (uint64_t)(uintptr_t)((const sp_gc_hdr *)h)->scan);
+  sp_gc_events_site(400, h);
+}
+/* a malloc'd block on a collector list: swept (17) or survived (32) */
+void sp_gc_events_list(const void *p, int what, unsigned aux) { sp_gc_events_add(what, p, 0, aux, 0); }
 /* a mark the program places between its steps (tools/gcviz binds it) */
 void sp_gc_events_mark(long id) { sp_gc_events_add(300, NULL, 0, 0, (uint64_t)id); }
 static void sp_gc_events_census(void) {

@@ -14,6 +14,16 @@
 #endif
 #include "sp_alloc.h"
 #include "sp_dtoa.h"   /* sp_format_float for locale-independent Float#to_s */
+#ifdef SP_GC_EVENTS
+/* SP_GC_EVENTS (lib/sp_slab.c): a malloc'd block's sweep or survival, on
+   the lists the collector keeps for blocks outside the slab */
+extern int sp_gc_events_on;
+void sp_gc_events_list(const void *p, int what, unsigned aux);
+void sp_gc_events_slot(const void *p, int what);
+#define SP_GC_EV_LIST(p, w, a) do { if (sp_gc_events_on) sp_gc_events_list((p), (w), (a)); } while (0)
+#else
+#define SP_GC_EV_LIST(p, w, a) ((void)0)
+#endif
 /* Per-site allocation attribution (SPINEL_ALLOC_SITES=1, on top of
    SPINEL_ALLOC_REPORT). The site is the raw return address of the frame that
    asked for the allocation -- captured here, symbolised only at dump time, so
@@ -771,6 +781,9 @@ void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *)) {
   if (sp_alloc_report_on) sp_alloc_report_count((void *)scn, sz);
   SP_HEAP_LOCK();
   SP_GC_HEAP_PUSH(h); sp_gc_bytes_add(need);
+#ifdef SP_GC_EVENTS
+  if (sp_gc_events_on) sp_gc_events_slot(h, 1);
+#endif
   SP_HEAP_UNLOCK();
   return (char *)h + sizeof(sp_gc_hdr);
 }
@@ -824,12 +837,14 @@ static void sp_str_sweep_young(sp_str_hdr **head, sp_str_hdr **keep_head, sp_str
         else body[0] = (char)0xfe;
       }
       else if (m == 0xf8) SP_ATOMIC_STORE((unsigned char *)body, (unsigned char)0xfa, __ATOMIC_RELAXED);
+      SP_GC_EV_LIST(h, 32, 1);
       h->next = keep;
       if (!keep) tail = h;
       keep = h;
       moved += h->size & SP_STR_SIZE_MASK;
     }
     else {
+      SP_GC_EV_LIST(h, 17, 0);
       sp_str_lcache_drop(body + 1);
       sp_slab_free(h);
     }
@@ -947,6 +962,7 @@ static void sp_str_sweep_old(sp_str_hdr **head, size_t *bytes) {
     else {
       *pp = h->next;
       *bytes -= h->size & SP_STR_SIZE_MASK;
+      SP_GC_EV_LIST(h, 17, 0);
       sp_str_lcache_drop(body + 1);
       sp_slab_free(h);
     }

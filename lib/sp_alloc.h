@@ -983,7 +983,7 @@ static inline sp_PolyArray *sp_PolyArray_new(void) {
     ph->marked = 0; ph->old = 0; ph->dirty = 0;
     ph->recycle = sp_PolyArray_pool_recycle;
     if (sp_slab_owns(ph)) sp_slab_relive(ph);
-    else SP_GC_HEAP_PUSH(ph);
+    else { SP_GC_HEAP_PUSH(ph); SP_GC_EV_POOL(ph); }
     sp_gc_bytes_add(ph->size);
     sp_PolyArray *a = (sp_PolyArray *)((char *)ph + sizeof(sp_gc_hdr));
     a->len = 0;

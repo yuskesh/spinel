@@ -396,6 +396,13 @@ static inline int sp_slab_owns(const void *p) { return (uintptr_t)p - sp_slab_ba
 #else
 #define SP_GC_HEAP_PUSH(hdr) do { if (!sp_slab_owns(hdr)) { (hdr)->next = sp_gc_heap; sp_gc_heap = (hdr); } } while (0)
 #endif
+#ifdef SP_GC_EVENTS
+/* SP_GC_EVENTS (lib/sp_slab.c): a malloc'd header taken back from a pool */
+void sp_gc_events_pool(const void *h);
+#define SP_GC_EV_POOL(h) sp_gc_events_pool(h)
+#else
+#define SP_GC_EV_POOL(h) ((void)0)
+#endif
 
 /* ---- Slab allocator for GC objects and heap strings (lib/sp_slab.c) ----
  * sp_slab_alloc answers a zeroed block of `need` bytes (header included) from

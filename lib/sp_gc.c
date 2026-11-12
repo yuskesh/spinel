@@ -21,6 +21,15 @@
 #include <signal.h>
 #include <unistd.h>
 #include "sp_marshal.h"   /* sp_marshal_vt -- the instance lives here (always linked) */
+#ifdef SP_GC_EVENTS
+/* SP_GC_EVENTS (lib/sp_slab.c): a malloc'd block's sweep or survival, on
+   the lists the collector keeps for blocks outside the slab */
+extern int sp_gc_events_on;
+void sp_gc_events_list(const void *p, int what, unsigned aux);
+#define SP_GC_EV_LIST(p, w, a) do { if (sp_gc_events_on) sp_gc_events_list((p), (w), (a)); } while (0)
+#else
+#define SP_GC_EV_LIST(p, w, a) ((void)0)
+#endif
 void sp_str_verify_begin(void);   /* lib/sp_alloc.c: string side of the generational check */
 void sp_str_lcache_clear(void);   /* lib/sp_alloc.c: this thread's string-length cache */
 void sp_str_mark_settle(int full);  /* lib/sp_alloc.c: the slab strings' old total, from this mark */
@@ -747,10 +756,10 @@ void (*sp_gc_obj_retune_hook)(size_t before) = NULL;
 size_t sp_gc_ct_swept = 0, sp_gc_ct_marked = 0;
 static void sp_gc_sweep_young(sp_gc_hdr **pp){
   size_t kept=0, promoted=0;
-  while(*pp){sp_gc_hdr*h=*pp;SP_GC_CTR_ADD(sp_gc_ct_swept,1);if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}
+  while(*pp){sp_gc_hdr*h=*pp;SP_GC_CTR_ADD(sp_gc_ct_swept,1);if(h->marked!=sp_gc_mark_gen){*pp=h->next;SP_GC_EV_LIST(h,17,0);if(h->recycle){h->recycle(h);}
   else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));sp_slab_free(h);}}
-  else if(sp_gc_age_survivors&&!h->aged){h->aged=1;kept+=h->size;pp=&h->next;}   /* first survival: stays young */
-  else{*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;h->old=1;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;promoted++;}}
+  else if(sp_gc_age_survivors&&!h->aged){h->aged=1;kept+=h->size;pp=&h->next;SP_GC_EV_LIST(h,32,0);}   /* first survival: stays young */
+  else{SP_GC_EV_LIST(h,32,1);*pp=h->next;h->next=sp_gc_old_heap;sp_gc_old_heap=h;h->old=1;sp_gc_old_bytes+=h->size;sp_gc_bytes+=h->size;promoted++;}}
   sp_gc_young_kept_bytes+=kept;
   sp_gc_npromoted+=promoted;
 }
@@ -1401,6 +1410,15 @@ static void sp_gc_events_root(void **e, uint32_t entry) {
   sp_gc_events_add(101, slot, entry, tag, v);
 }
 static void sp_gc_events_cycle(int full) {
+#ifdef SP_THREADS
+  if (sp_gc_conc_sweep_hook || sp_gc_par_mark_hook) {
+#else
+  if (sp_gc_conc_sweep_hook) {
+#endif
+    fputs("spinel: SPINEL_GC_EVENTS: this program runs collector helper threads; recording stops here\n", stderr);
+    sp_gc_events_on = 0;
+    return;
+  }
   sp_gc_events_add(100, NULL, (uint32_t)sp_gc_nroots, (uint32_t)((full ? 1 : 0) | (sp_gc_minor ? 2 : 0)), (uint64_t)sp_gc_bytes);
   for (int i = 0; i < sp_gc_nroots; i++) {
     void **e = sp_gc_root_at(i);
@@ -1589,7 +1607,7 @@ void sp_gc_collect(void){
     if(sp_gc_rem_overflow){ for(sp_gc_hdr*h=sp_gc_old_heap;h;h=h->next)h->dirty=0; sp_slab_each_object(0,1,sp_gc_clear_dirty_cb,NULL); }
     else for(int ri=0;ri<sp_gc_nremembered;ri++)((sp_gc_hdr*)sp_gc_remembered[ri]-1)->dirty=0;
     sp_gc_hdr**pp=&sp_gc_old_heap;
-    while(*pp){sp_gc_hdr*h=*pp;SP_PREFETCH(h->next);SP_GC_CTR_ADD(sp_gc_ct_swept,1);if(h->marked!=sp_gc_mark_gen){*pp=h->next;if(h->recycle){h->recycle(h);}
+    while(*pp){sp_gc_hdr*h=*pp;SP_PREFETCH(h->next);SP_GC_CTR_ADD(sp_gc_ct_swept,1);if(h->marked!=sp_gc_mark_gen){*pp=h->next;SP_GC_EV_LIST(h,17,0);if(h->recycle){h->recycle(h);}
     else{if(h->finalize)h->finalize((char*)h+sizeof(sp_gc_hdr));sp_slab_free(h);}}
     else{pp=&h->next;}}
     sp_gc_old_bytes=sp_gc_mk_bytes-sp_gc_mk_young_bytes;
