@@ -24442,11 +24442,14 @@ if (sp_emit_mlir_enabled && atexit(mlir_on_exit)) {
   /* gsub / sub / scan record their last match only for a program that reads
      it (g_reads_match_regs) */
   if (g_reads_match_regs) buf_puts(body, "    sp_re_track_last = 1;\n");
-  /* The ARGV copy loop only matters if the program reads ARGV / ARGF / $*. */
+  /* The ARGV copy loop only matters if the program reads ARGV / ARGF / $*.
+     sp_argv.len counts the slots already written: a copy can start a
+     collection, which marks sp_argv.data[0 .. len), and the malloc block
+     may be a reused one whose unwritten slots hold old bytes. */
   if (g_uses_argv)
     /* (one String representation: the runtime keeps ARGV's and $0's Strings,
        so a slot that takes one copies it, sp_str_retained) */
-    buf_puts(body, "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.len = argc - 1; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) sp_argv.data[_ai] = sp_str_retained(sp_str_dup_external(argv[_ai + 1])); }\n");
+    buf_puts(body, "    { int argc = _sp_main_argc; char **argv = _sp_main_argv; sp_argv.data = (const char**)malloc(sizeof(const char*) * (size_t)(argc > 1 ? argc - 1 : 1)); for (int _ai = 0; _ai < argc - 1; _ai++) { sp_argv.data[_ai] = sp_str_retained(sp_str_dup_external(argv[_ai + 1])); sp_argv.len = _ai + 1; } }\n");
   if (g_uses_program_name)
     /* argv[0] lives in the process's argument block, not the string heap, so it
      carries no marker byte -- and `$0` is an ordinary Ruby String the caller
