@@ -10247,7 +10247,9 @@ static void sp_puts_elems(sp_RbVal a) {
   if (sp_poly_recur_seen(SP_POLY_RECUR_PUTS, a.v.p, NULL)) { puts("[...]"); return; }
   int pmark = sp_poly_recur_push(SP_POLY_RECUR_PUTS, a.v.p, NULL);
   for (sp_int i = 0; i < n; i++) {
-    sp_RbVal e = sp_poly_arr_get(a, i);
+    /* A StrArray element arrives as a String handle (SP_SEBOX); unwrap it so
+       it takes the sized arm below and an embedded NUL is written. */
+    sp_RbVal e = sp_rbval_str(sp_poly_arr_get(a, i));
     if (e.tag == SP_TAG_OBJ && sp_poly_is_array_kind(e.cls_id)) { sp_puts_elems(e); continue; }
     if (e.tag == SP_TAG_STR && e.v.s) { sp_puts_str_line(e.v.s); continue; }
     sp_puts_cstr_line(sp_poly_to_s(e));
