@@ -929,6 +929,11 @@ test-core-seam: all
 test-prune-roots: all
 	scripts/prune-roots-check.sh
 
+# A generated main run twice in one process marks only its own ARGV slots.
+.PHONY: test-argv-rerun
+test-argv-rerun: all
+	CC='$(CC)' scripts/argv-rerun-check.sh
+
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
 # but uninstrumented, so a race shows only when it corrupts the output. This
