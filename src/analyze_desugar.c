@@ -33149,6 +33149,43 @@ static int pum_body_speaks(const PumBody *pb, int n) {
   }
   return 0;
 }
+#include "analysis_root.h"   /* sp_facts_roots: the --analysis-root requests */
+extern const char **g_core_roots;   /* src/codegen_util.c: the --core identities */
+extern int g_core_root_count;
+/* a root name, and its method name when it is spelled Class#m or Class.m.
+   The hash keeps the pointer, so the copy lives in *own until the caller
+   frees it with the hash. */
+typedef struct { char **v; int n, cap; } PumOwned;
+static void pum_add_root_name(ANameHash *named, PumOwned *own, const char *v, size_t n) {
+  if (!v || n == 0) return;
+  char *s = strndup(v, n);
+  if (!s) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (own->n == own->cap) {
+    int nc = own->cap ? own->cap * 2 : 8;
+    char **nv = realloc(own->v, sizeof(char *) * (size_t)nc);
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    own->v = nv; own->cap = nc;
+  }
+  own->v[own->n++] = s;
+  if (!anh_has(named, s)) anh_add(named, s);
+  const char *sep = NULL;
+  for (const char *q = s; *q; q++) if (*q == '#' || *q == '.') sep = q;
+  if (sep && sep[1] && !anh_has(named, sep + 1)) anh_add(named, sep + 1);
+}
+static void pum_add_root_names(ANameHash *named, PumOwned *own) {
+  for (int r = 0; r < sp_facts_root_count; r++)
+    if (sp_facts_roots[r].method) pum_add_root_name(named, own, sp_facts_roots[r].method, strlen(sp_facts_roots[r].method));
+  const char *env = getenv("SPINEL_EXTERN_METHODS");
+  for (const char *p = env; p && *p; ) {
+    const char *comma = strchr(p, ',');
+    size_t seg = comma ? (size_t)(comma - p) : strlen(p);
+    pum_add_root_name(named, own, p, seg);
+    if (!comma) break;
+    p = comma + 1;
+  }
+  for (int i = 0; i < g_core_root_count; i++)
+    if (g_core_roots[i]) pum_add_root_name(named, own, g_core_roots[i], strlen(g_core_roots[i]));
+}
 int prune_unnamed_methods(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   /* (an --ext-entry or --ext-class method is a root nothing names) */
@@ -33226,6 +33263,11 @@ int prune_unnamed_methods(Compiler *c) {
         if (im[j].name && !anh_has(&named, im[j].name)) anh_add(&named, im[j].name);
     }
   }
+  /* the methods named from outside the program text: an --analysis-root's
+     method, a $SPINEL_EXTERN_METHODS entry and a --core identity are roots
+     that nothing in the program may call */
+  PumOwned root_names = {0};
+  pum_add_root_names(&named, &root_names);
   /* a super names the method of its def's name, in an ancestor */
   const int *par = comp_parent_map(c);
   static const NodeKind SUPERS[] = { NK_SuperNode, NK_ForwardingSuperNode };
@@ -33277,5 +33319,7 @@ int prune_unnamed_methods(Compiler *c) {
   }
   free(drop);
   anh_free(&named); anh_free(&defined);
+  for (int i = 0; i < root_names.n; i++) free(root_names.v[i]);
+  free(root_names.v);
   return blanked;
 }

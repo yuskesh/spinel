@@ -923,6 +923,12 @@ $(SP_RT_MT_NOGC_LIB): $(patsubst lib/regexp/%.c,build/mt-nogc/regexp/%.o,$(RE_SR
 test-core-seam: all
 	CC='$(CC)' scripts/core-seam-check.sh
 
+# The prune of unnamed methods keeps an --analysis-root method and a --core
+# identity that no call in the program names.
+.PHONY: test-prune-roots
+test-prune-roots: all
+	scripts/prune-roots-check.sh
+
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
 # The gate links a threaded test against the mt archive, as the driver does,
 # but uninstrumented, so a race shows only when it corrupts the output. This
